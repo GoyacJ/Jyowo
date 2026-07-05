@@ -1359,7 +1359,7 @@ pnpm check:frontend-docs
 - [x] Complete task-completion analysis.
 - [x] Run read-only subagent audit for Task 1.
 - [x] Fix audit findings and re-run targeted verification.
-- [ ] Commit:
+- [x] Commit:
 
 ```bash
 git add crates/jyowo-harness-contracts docs/backend docs/frontend
@@ -2440,40 +2440,56 @@ execution log alone.
 
 **Checklist:**
 
-- [ ] Add a failing test where vector-similar, lexically different records are
+- [x] Add a failing test where vector-similar, lexically different records are
   recalled and ranked.
-- [ ] Add a failing test for default lexical-only recall with no embedding
+- [x] Add a failing test for default lexical-only recall with no embedding
   provider and default manager policy.
-- [ ] Add failing tests for FTS insert/update/delete synchronization.
-- [ ] Add a failing test proving row decode errors surface as provider errors.
-- [ ] Add a failing test proving access counters returned to callers reflect
+- [x] Add failing tests for FTS insert/update/delete synchronization.
+- [x] Add a failing test proving row decode errors surface as provider errors.
+- [x] Add a failing test proving access counters returned to callers reflect
   the updated SQLite columns.
-- [ ] Add failing tests for embedding `missing` state and dimension mismatch
+- [x] Add failing tests for embedding `missing` state and dimension mismatch
   typed error.
-- [ ] Implement candidate retrieval so lexical and semantic candidates can both
+- [x] Implement candidate retrieval so lexical and semantic candidates can both
   enter ranking.
-- [ ] Normalize ranking behavior when vector score is absent or lower the
+- [x] Normalize ranking behavior when vector score is absent or lower the
   default threshold only through explicit policy.
-- [ ] Move FTS synchronization into SQL triggers or document and gate a changed
+- [x] Move FTS synchronization into SQL triggers or document and gate a changed
   design if triggers are rejected.
-- [ ] Replace silent `.filter_map(|r| r.ok())` paths with error propagation.
-- [ ] Reconcile row columns and `metadata_json` so access state is not stale.
-- [ ] Write `missing` for records awaiting embeddings and validate stored
+- [x] Replace silent `.filter_map(|r| r.ok())` paths with error propagation.
+- [x] Reconcile row columns and `metadata_json` so access state is not stale.
+- [x] Write `missing` for records awaiting embeddings and validate stored
   embedding dimensions.
-- [ ] Run:
+- [x] Run:
 
 ```bash
 cargo test -p jyowo-harness-memory --test local_provider -- --nocapture
 cargo test -p jyowo-harness-memory --test recall -- --nocapture
 ```
 
-- [ ] Run read-only subagent audit for Task 16.
+- [x] Run read-only subagent audit for Task 16.
 - [ ] Commit:
 
 ```bash
 git add crates/jyowo-harness-memory/src/local crates/jyowo-harness-memory/tests/local_provider.rs crates/jyowo-harness-memory/tests/recall.rs
 git commit -m "fix(memory): complete local hybrid recall provider"
 ```
+
+**Execution log:**
+
+| Date | Command | Exit | Evidence |
+|---|---|---:|---|
+| 2026-07-05 13:51 CST | `cargo test -p jyowo-harness-memory --test local_provider -- --nocapture` | 101 | Red tests failed for vector recall, lexical default threshold, FTS triggers, embedding missing state, dimension mismatch, access metadata, and corrupt row surfacing before production fixes. |
+| 2026-07-05 14:00 CST | `cargo test -p jyowo-harness-memory --test local_provider -- --nocapture` | 101 | Follow-up red tests failed for old DB FTS trigger repair and local `kind_filter` handling after read-only audit findings. |
+| 2026-07-05 14:01 CST | `cargo fmt --all --check` | 0 | Rust formatting gate passed. |
+| 2026-07-05 14:01 CST | `cargo test -p jyowo-harness-memory --test local_provider -- --nocapture` | 0 | `28 passed; 0 failed`. |
+| 2026-07-05 14:01 CST | `cargo test -p jyowo-harness-memory --test recall -- --nocapture` | 0 | Command passed; this target currently has `0` active tests without `provider-registry`. |
+| 2026-07-05 14:02 CST | Read-only subagent audit | 0 | Initial audit found old DB trigger migration and `kind_filter` gaps. Both were fixed with tests; follow-up audit requested before commit. |
+| 2026-07-05 14:07 CST | `cargo fmt --all --check` | 0 | Rust formatting gate passed after final crowding fix. |
+| 2026-07-05 14:07 CST | `cargo test -p jyowo-harness-memory --test local_provider -- --nocapture` | 0 | `28 passed; 0 failed` after final crowding fix. |
+| 2026-07-05 14:07 CST | `cargo test -p jyowo-harness-memory --test recall -- --nocapture` | 0 | Command passed; this target currently has `0` active tests without `provider-registry`. |
+| 2026-07-05 14:07 CST | `pnpm check:docs` | 0 | Agent docs, frontend docs, backend docs, memory architecture policy, and testing docs passed after regenerating `docs/testing/test-inventory.md`. |
+| 2026-07-05 14:08 CST | Read-only subagent audit | 0 | Follow-up audit reported no blocking findings in Task 16 scope. |
 
 #### Task 17: Fix Provider Registry Fanout, Attribution, Budgets, And Plugins
 

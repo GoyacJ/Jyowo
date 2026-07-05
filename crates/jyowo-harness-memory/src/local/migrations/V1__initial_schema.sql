@@ -44,8 +44,26 @@ CREATE VIRTUAL TABLE memory_records_fts USING fts5(
     tokenize='unicode61 remove_diacritics 2'
 );
 
--- FTS sync is managed by application code (LocalMemoryProvider),
--- not by SQL triggers. This avoids FTS5 content-table delete complexities.
+CREATE TRIGGER memory_records_fts_ai
+AFTER INSERT ON memory_records
+BEGIN
+    INSERT INTO memory_records_fts(content, metadata_text, memory_id, tenant_id)
+    VALUES (new.content, new.metadata_json, new.id, new.tenant_id);
+END;
+
+CREATE TRIGGER memory_records_fts_au
+AFTER UPDATE OF content, metadata_json, id, tenant_id ON memory_records
+BEGIN
+    DELETE FROM memory_records_fts WHERE memory_id = old.id;
+    INSERT INTO memory_records_fts(content, metadata_text, memory_id, tenant_id)
+    VALUES (new.content, new.metadata_json, new.id, new.tenant_id);
+END;
+
+CREATE TRIGGER memory_records_fts_ad
+AFTER DELETE ON memory_records
+BEGIN
+    DELETE FROM memory_records_fts WHERE memory_id = old.id;
+END;
 
 -- Embedding table
 CREATE TABLE memory_embeddings (

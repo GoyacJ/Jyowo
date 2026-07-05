@@ -14,6 +14,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 2,
         sql: include_str!("migrations/V2__durable_memory_platform_stores.sql"),
     },
+    Migration {
+        version: 3,
+        sql: include_str!("migrations/V3__memory_records_fts_triggers.sql"),
+    },
 ];
 
 struct Migration {

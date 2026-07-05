@@ -5,8 +5,12 @@
 
 use chrono::Utc;
 use harness_contracts::*;
-use harness_memory::local::LocalMemoryProvider;
-use harness_memory::{MemoryListScope, MemoryQuery, MemoryStore, MemoryVisibilityFilter};
+use harness_memory::local::{LocalMemoryOptions, LocalMemoryProvider, MemoryEmbeddingProvider};
+use harness_memory::{
+    MemoryKindFilter, MemoryListScope, MemoryQuery, MemoryStore, MemoryVisibilityFilter,
+};
+use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -16,6 +20,10 @@ fn make_provider() -> (TempDir, LocalMemoryProvider) {
     let provider = LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE)
         .expect("open provider");
     (dir, provider)
+}
+
+fn open_provider_at(db_path: &std::path::Path) -> LocalMemoryProvider {
+    LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE).expect("open provider")
 }
 
 fn make_record(id: MemoryId, tenant: TenantId, content: &str) -> harness_memory::MemoryRecord {
@@ -28,6 +36,7 @@ fn make_record(id: MemoryId, tenant: TenantId, content: &str) -> harness_memory:
         metadata: harness_memory::MemoryMetadata {
             tags: vec![],
             source: MemorySource::UserInput,
+            evidence: None,
             confidence: 1.0,
             access_count: 0,
             last_accessed_at: None,
@@ -37,6 +46,22 @@ fn make_record(id: MemoryId, tenant: TenantId, content: &str) -> harness_memory:
         },
         created_at: Utc::now(),
         updated_at: Utc::now(),
+    }
+}
+
+fn record_evidence(session_id: SessionId, run_id: RunId, content: &str) -> MemoryEvidence {
+    MemoryEvidence {
+        source: MemorySource::UserInput,
+        origin: MemoryEvidenceOrigin::UserMessage {
+            session_id,
+            run_id,
+            message_id: MessageId::new(),
+        },
+        content_hash: ContentHash(*blake3::hash(content.as_bytes()).as_bytes()),
+        session_id: Some(session_id),
+        run_id: Some(run_id),
+        message_id: None,
+        tool_use_id: None,
     }
 }
 
@@ -51,6 +76,16 @@ fn make_query(tenant: TenantId, text: &str) -> MemoryQuery {
         session_id: None,
         deadline: None,
     }
+}
+
+fn embedding_state(db_path: &std::path::Path, memory_id: MemoryId) -> String {
+    let db = rusqlite::Connection::open(db_path).expect("open db");
+    db.query_row(
+        "SELECT embedding_state FROM memory_embeddings WHERE memory_id = ?1",
+        [memory_id.to_string()],
+        |row| row.get(0),
+    )
+    .expect("embedding state")
 }
 
 // ── Basic CRUD ──
@@ -90,6 +125,80 @@ async fn forget_removes_record() {
     provider.forget(record.id).await.expect("forget");
     let err = provider.get(record.id).await.unwrap_err();
     assert!(matches!(err, MemoryError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn upsert_persists_source_details_and_evidence_json() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.sqlite3");
+    let provider = open_provider_at(&db_path);
+    let child_session = SessionId::new();
+    let run_id = RunId::new();
+    let mut record = make_record(MemoryId::new(), TenantId::SINGLE, "source details");
+    record.metadata.source = MemorySource::SubagentDerived { child_session };
+    record.metadata.evidence = Some(record_evidence(child_session, run_id, &record.content));
+
+    provider.upsert(record.clone()).await.expect("upsert");
+    let got = provider.get(record.id).await.expect("get");
+    assert_eq!(got.metadata.source, record.metadata.source);
+    assert_eq!(got.metadata.evidence, record.metadata.evidence);
+    drop(provider);
+
+    let db = rusqlite::Connection::open(&db_path).expect("open db");
+    let evidence_json: String = db
+        .query_row(
+            "SELECT evidence_json FROM memory_records WHERE id = ?1",
+            [record.id.to_string()],
+            |row| row.get(0),
+        )
+        .expect("evidence json");
+    let stored_evidence: MemoryEvidence =
+        serde_json::from_str(&evidence_json).expect("evidence json");
+    assert_eq!(
+        stored_evidence,
+        record.metadata.evidence.expect("record evidence")
+    );
+}
+
+#[tokio::test]
+async fn embedding_dimension_mismatch_fails_without_partial_record_or_fts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.sqlite3");
+    let provider = LocalMemoryProvider::open_with_options(
+        db_path.to_str().unwrap(),
+        TenantId::SINGLE,
+        LocalMemoryOptions {
+            max_records_per_recall: 50,
+            embedding_provider: Some(std::sync::Arc::new(WrongDimensionEmbedding)),
+        },
+    )
+    .expect("open provider");
+    let record = make_record(MemoryId::new(), TenantId::SINGLE, "bad embedding");
+
+    let err = provider.upsert(record.clone()).await.unwrap_err();
+    assert!(
+        err.to_string().contains("embedding dimension mismatch"),
+        "unexpected error: {err}"
+    );
+    drop(provider);
+
+    let db = rusqlite::Connection::open(&db_path).expect("open db");
+    let record_count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM memory_records WHERE id = ?1",
+            [record.id.to_string()],
+            |row| row.get(0),
+        )
+        .expect("record count");
+    let fts_count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM memory_records_fts WHERE memory_id = ?1",
+            [record.id.to_string()],
+            |row| row.get(0),
+        )
+        .expect("fts count");
+    assert_eq!(record_count, 0);
+    assert_eq!(fts_count, 0);
 }
 
 // ── Tenant isolation ──
@@ -237,6 +346,80 @@ async fn search_order_changes_with_query() {
 }
 
 #[tokio::test]
+async fn recall_includes_vector_candidates_without_lexical_match() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.sqlite3");
+    let provider = LocalMemoryProvider::open_with_options(
+        db_path.to_str().unwrap(),
+        TenantId::SINGLE,
+        LocalMemoryOptions {
+            max_records_per_recall: 50,
+            embedding_provider: Some(Arc::new(KeywordEmbedding)),
+        },
+    )
+    .expect("open provider");
+    let feline = make_record(MemoryId::new(), TenantId::SINGLE, "feline behavior notes");
+    let canine = make_record(MemoryId::new(), TenantId::SINGLE, "canine behavior notes");
+    provider
+        .upsert(feline.clone())
+        .await
+        .expect("upsert feline");
+    provider.upsert(canine).await.expect("upsert canine");
+
+    let mut query = make_query(TenantId::SINGLE, "cat");
+    query.min_similarity = 0.5;
+    let results = provider.recall(query).await.expect("semantic recall");
+
+    assert!(
+        results.iter().any(|record| record.id == feline.id),
+        "semantic match should be recalled even without lexical overlap"
+    );
+}
+
+#[tokio::test]
+async fn default_lexical_recall_survives_default_manager_similarity_floor() {
+    let (_dir, provider) = make_provider();
+    let record = make_record(MemoryId::new(), TenantId::SINGLE, "rust async programming");
+    provider.upsert(record.clone()).await.expect("upsert");
+
+    let mut query = make_query(TenantId::SINGLE, "rust");
+    query.min_similarity = 0.65;
+    let results = provider.recall(query).await.expect("recall");
+
+    assert!(
+        results.iter().any(|candidate| candidate.id == record.id),
+        "default lexical-only local recall should not be filtered out by the default manager threshold"
+    );
+}
+
+#[tokio::test]
+async fn recall_applies_kind_filter_to_lexical_candidates() {
+    let (_dir, provider) = make_provider();
+    let project = make_record(MemoryId::new(), TenantId::SINGLE, "shared filter token");
+    let mut feedback = make_record(MemoryId::new(), TenantId::SINGLE, "shared filter token");
+    feedback.kind = MemoryKind::Feedback;
+    provider
+        .upsert(feedback.clone())
+        .await
+        .expect("upsert feedback");
+    provider
+        .upsert(project.clone())
+        .await
+        .expect("upsert project");
+
+    let mut kinds = BTreeSet::new();
+    kinds.insert(MemoryKind::ProjectFact);
+    let mut query = make_query(TenantId::SINGLE, "filter");
+    query.kind_filter = Some(MemoryKindFilter::OnlyKinds(kinds));
+    query.max_records = 1;
+    let results = provider.recall(query).await.expect("recall");
+
+    assert_eq!(results.len(), 1);
+    assert!(results.iter().any(|record| record.id == project.id));
+    assert!(!results.iter().any(|record| record.id == feedback.id));
+}
+
+#[tokio::test]
 async fn recall_filters_records_below_min_similarity() {
     let (_dir, provider) = make_provider();
     let record = make_record(MemoryId::new(), TenantId::SINGLE, "rust async programming");
@@ -291,6 +474,132 @@ async fn fts_triggers_update_indexed_text_after_update() {
     assert!(results_new.iter().any(|r| r.id == record.id));
 }
 
+#[tokio::test]
+async fn migration_creates_fts_sync_triggers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.sqlite3");
+    let provider = open_provider_at(&db_path);
+    drop(provider);
+
+    let db = rusqlite::Connection::open(&db_path).expect("open db");
+    let trigger_count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'memory_records' AND name LIKE 'memory_records_fts_%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("trigger count");
+
+    assert_eq!(
+        trigger_count, 3,
+        "memory_records must have insert, update, and delete FTS sync triggers"
+    );
+}
+
+#[tokio::test]
+async fn migration_repairs_old_database_missing_fts_triggers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.sqlite3");
+    let record = make_record(MemoryId::new(), TenantId::SINGLE, "legacy indexed content");
+
+    {
+        let db = rusqlite::Connection::open(&db_path).expect("open db");
+        db.execute_batch(
+            "
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+            INSERT INTO schema_version (version, applied_at) VALUES (2, '2026-07-05T00:00:00Z');
+            CREATE TABLE memory_records (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                visibility TEXT NOT NULL,
+                content TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                content_hash TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                confidence REAL NOT NULL DEFAULT 1.0,
+                access_count INTEGER NOT NULL DEFAULT 0,
+                last_accessed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT,
+                deleted_at TEXT
+            );
+            CREATE VIRTUAL TABLE memory_records_fts USING fts5(
+                content,
+                metadata_text,
+                memory_id UNINDEXED,
+                tenant_id UNINDEXED,
+                tokenize='unicode61 remove_diacritics 2'
+            );
+            CREATE TABLE memory_embeddings (
+                memory_id TEXT PRIMARY KEY REFERENCES memory_records(id) ON DELETE CASCADE,
+                embedding_state TEXT NOT NULL CHECK (embedding_state IN ('missing', 'ready', 'failed', 'disabled')),
+                dimension INTEGER,
+                vector_le_f32 BLOB,
+                model_id TEXT,
+                updated_at TEXT NOT NULL,
+                error_kind TEXT
+            );
+            CREATE TABLE memory_tombstones (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                memory_id TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            ",
+        )
+        .expect("old schema");
+        db.execute(
+            "INSERT INTO memory_records (
+                id, tenant_id, kind, visibility, content, metadata_json, content_hash,
+                source_kind, evidence_json, confidence, access_count, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            rusqlite::params![
+                record.id.to_string(),
+                record.tenant_id.to_string(),
+                "project_fact",
+                serde_json::to_string(&record.visibility).expect("visibility json"),
+                record.content,
+                serde_json::to_string(&record.metadata).expect("metadata json"),
+                blake3::hash(record.content.as_bytes()).to_hex().to_string(),
+                "user_input",
+                "{}",
+                record.metadata.confidence,
+                record.metadata.access_count,
+                record.created_at.to_rfc3339(),
+                record.updated_at.to_rfc3339(),
+            ],
+        )
+        .expect("insert old record");
+    }
+
+    let provider = open_provider_at(&db_path);
+    let results = provider
+        .recall(make_query(TenantId::SINGLE, "legacy"))
+        .await
+        .expect("recall");
+    assert!(results.iter().any(|candidate| candidate.id == record.id));
+    drop(provider);
+
+    let db = rusqlite::Connection::open(&db_path).expect("reopen db");
+    let trigger_count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'memory_records' AND name LIKE 'memory_records_fts_%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("trigger count");
+    assert_eq!(trigger_count, 3);
+}
+
 // ── Tombstone / deletion FTS cleanup ──
 
 #[tokio::test]
@@ -315,6 +624,82 @@ async fn deleted_records_removed_from_fts() {
         .await
         .expect("recall after delete");
     assert!(!results.iter().any(|r| r.id == record.id));
+}
+
+#[tokio::test]
+async fn forget_tombstone_uses_deleted_record_content_hash() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.sqlite3");
+    let provider = open_provider_at(&db_path);
+    let record = make_record(MemoryId::new(), TenantId::SINGLE, "delete hash source");
+    let expected_hash = blake3::hash(record.content.as_bytes()).to_hex().to_string();
+    provider.upsert(record.clone()).await.expect("upsert");
+
+    provider.forget(record.id).await.expect("forget");
+    drop(provider);
+
+    let db = rusqlite::Connection::open(&db_path).expect("open db");
+    let tombstone_hash: String = db
+        .query_row(
+            "SELECT content_hash FROM memory_tombstones WHERE memory_id = ?1",
+            [record.id.to_string()],
+            |row| row.get(0),
+        )
+        .expect("tombstone hash");
+    assert_eq!(tombstone_hash, expected_hash);
+}
+
+#[tokio::test]
+async fn tombstone_rejects_regenerating_deleted_content() {
+    let (_dir, provider) = make_provider();
+    let record = make_record(MemoryId::new(), TenantId::SINGLE, "deleted content barrier");
+    provider.upsert(record.clone()).await.expect("upsert");
+    provider.forget(record.id).await.expect("forget");
+
+    let regenerated = make_record(MemoryId::new(), TenantId::SINGLE, "deleted content barrier");
+    let err = provider.upsert(regenerated.clone()).await.unwrap_err();
+    assert!(
+        err.to_string().contains("tombstone"),
+        "unexpected error: {err}"
+    );
+    let record_err = provider.get(regenerated.id).await.unwrap_err();
+    assert!(matches!(record_err, MemoryError::NotFound(_)));
+    let recalled = provider
+        .recall(make_query(TenantId::SINGLE, "deleted content barrier"))
+        .await
+        .expect("recall after rejected regeneration");
+    assert!(recalled.is_empty());
+}
+
+#[tokio::test]
+async fn tombstone_rejects_regenerating_from_same_evidence() {
+    let (_dir, provider) = make_provider();
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let evidence = record_evidence(session_id, run_id, "source transcript fact");
+    let mut record = make_record(
+        MemoryId::new(),
+        TenantId::SINGLE,
+        "deleted wording from transcript",
+    );
+    record.metadata.evidence = Some(evidence.clone());
+    provider.upsert(record.clone()).await.expect("upsert");
+    provider.forget(record.id).await.expect("forget");
+
+    let mut regenerated = make_record(
+        MemoryId::new(),
+        TenantId::SINGLE,
+        "different wording from same transcript",
+    );
+    regenerated.metadata.evidence = Some(evidence);
+    let err = provider.upsert(regenerated.clone()).await.unwrap_err();
+
+    assert!(
+        err.to_string().contains("tombstone"),
+        "unexpected error: {err}"
+    );
+    let record_err = provider.get(regenerated.id).await.unwrap_err();
+    assert!(matches!(record_err, MemoryError::NotFound(_)));
 }
 
 // ── Migrations ──
@@ -377,6 +762,126 @@ async fn embedding_vectors_stored_and_dimension_validated() {
     assert_eq!(got.content, "embed me");
 }
 
+#[tokio::test]
+async fn missing_embedding_provider_records_missing_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.sqlite3");
+    let provider = open_provider_at(&db_path);
+    let record = make_record(MemoryId::new(), TenantId::SINGLE, "awaiting embedding");
+
+    provider.upsert(record.clone()).await.expect("upsert");
+    drop(provider);
+
+    assert_eq!(
+        embedding_state(&db_path, record.id),
+        "missing",
+        "records without a configured embedding provider should remain pending, not disabled"
+    );
+}
+
+#[tokio::test]
+async fn recall_returns_error_for_stored_embedding_dimension_mismatch() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.sqlite3");
+    let provider = LocalMemoryProvider::open_with_options(
+        db_path.to_str().unwrap(),
+        TenantId::SINGLE,
+        LocalMemoryOptions {
+            max_records_per_recall: 50,
+            embedding_provider: Some(Arc::new(KeywordEmbedding)),
+        },
+    )
+    .expect("open provider");
+    let record = make_record(MemoryId::new(), TenantId::SINGLE, "feline behavior notes");
+    provider.upsert(record.clone()).await.expect("upsert");
+    drop(provider);
+
+    let db = rusqlite::Connection::open(&db_path).expect("open db");
+    db.execute(
+        "UPDATE memory_embeddings SET dimension = 3 WHERE memory_id = ?1",
+        [record.id.to_string()],
+    )
+    .expect("corrupt dimension");
+    drop(db);
+
+    let provider = LocalMemoryProvider::open_with_options(
+        db_path.to_str().unwrap(),
+        TenantId::SINGLE,
+        LocalMemoryOptions {
+            max_records_per_recall: 50,
+            embedding_provider: Some(Arc::new(KeywordEmbedding)),
+        },
+    )
+    .expect("reopen provider");
+    let err = provider
+        .recall(make_query(TenantId::SINGLE, "cat"))
+        .await
+        .unwrap_err();
+
+    assert!(
+        err.to_string().contains("embedding dimension mismatch"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn recall_surfaces_corrupt_record_identity() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.sqlite3");
+    let provider = open_provider_at(&db_path);
+    let record = make_record(MemoryId::new(), TenantId::SINGLE, "corrupt identity");
+    provider.upsert(record.clone()).await.expect("upsert");
+    drop(provider);
+
+    let db = rusqlite::Connection::open(&db_path).expect("open db");
+    db.execute(
+        "DELETE FROM memory_embeddings WHERE memory_id = ?1",
+        [record.id.to_string()],
+    )
+    .expect("remove embedding fk");
+    db.execute(
+        "UPDATE memory_records SET id = 'not-a-memory-id' WHERE id = ?1",
+        [record.id.to_string()],
+    )
+    .expect("corrupt record id");
+    db.execute(
+        "UPDATE memory_records_fts SET memory_id = 'not-a-memory-id' WHERE memory_id = ?1",
+        [record.id.to_string()],
+    )
+    .expect("corrupt fts id");
+    drop(db);
+
+    let provider = open_provider_at(&db_path);
+    let err = provider
+        .recall(make_query(TenantId::SINGLE, "corrupt"))
+        .await
+        .unwrap_err();
+
+    assert!(
+        err.to_string().contains("invalid memory id"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn recall_returns_updated_access_metadata() {
+    let (_dir, provider) = make_provider();
+    let record = make_record(MemoryId::new(), TenantId::SINGLE, "access counter");
+    provider.upsert(record.clone()).await.expect("upsert");
+
+    let results = provider
+        .recall(make_query(TenantId::SINGLE, "access"))
+        .await
+        .expect("recall");
+    let recalled = results
+        .iter()
+        .find(|candidate| candidate.id == record.id)
+        .expect("recalled record");
+
+    assert_eq!(recalled.metadata.access_count, 1);
+    assert!(recalled.metadata.last_accessed_at.is_some());
+}
+
 // ── Visibility filtering ──
 
 #[tokio::test]
@@ -392,6 +897,7 @@ async fn visibility_filter_prevents_unauthorized_access() {
         metadata: harness_memory::MemoryMetadata {
             tags: vec![],
             source: MemorySource::UserInput,
+            evidence: None,
             confidence: 1.0,
             access_count: 0,
             last_accessed_at: None,
@@ -472,4 +978,43 @@ async fn list_excludes_deleted_by_default() {
     let list = provider.list(MemoryListScope::All).await.expect("list");
     assert!(list.iter().any(|s| s.id == r1.id));
     assert!(!list.iter().any(|s| s.id == r2.id));
+}
+
+struct WrongDimensionEmbedding;
+
+impl MemoryEmbeddingProvider for WrongDimensionEmbedding {
+    fn embed(&self, _text: &str) -> Option<Vec<f32>> {
+        Some(vec![0.1, 0.2])
+    }
+
+    fn dimension(&self) -> usize {
+        3
+    }
+
+    fn model_id(&self) -> &str {
+        "wrong-dimension"
+    }
+}
+
+struct KeywordEmbedding;
+
+impl MemoryEmbeddingProvider for KeywordEmbedding {
+    fn embed(&self, text: &str) -> Option<Vec<f32>> {
+        let text = text.to_ascii_lowercase();
+        if text.contains("cat") || text.contains("feline") {
+            return Some(vec![1.0, 0.0]);
+        }
+        if text.contains("dog") || text.contains("canine") {
+            return Some(vec![0.0, 1.0]);
+        }
+        Some(vec![0.2, 0.2])
+    }
+
+    fn dimension(&self) -> usize {
+        2
+    }
+
+    fn model_id(&self) -> &str {
+        "keyword-test"
+    }
 }
