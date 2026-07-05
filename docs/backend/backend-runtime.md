@@ -241,21 +241,28 @@ Conversation worktree paging rules:
 durable, conversation-scoped registry for large evidence content.
 
 - `EvidenceRefId` is an opaque id minted only by Rust.
+- SQLite evidence rows live in the same runtime SQLite database as the
+  conversation read model. Desktop must not keep a separate evidence registry
+  database for conversation evidence.
 - The registry stores `kind`, `conversation_id`, `run_id`, source event refs,
   content type, byte length, content hash, redaction state, redaction provenance,
   and retention for each ref.
 - Evidence refs are retained with their owning conversation. Conversation
-  deletion makes refs unreadable.
-- Write order is blob-or-journal-source first, then registry row. If registry
+  deletion and SDK prune paths make refs unreadable for removed sessions.
+- Blob-backed writes store bytes first, then the registry row. If registry
   write fails after blob write, the orphan blob is deleted before returning
   the error.
+- Journal-backed refs store an event id plus JSON pointer. Reads reload the
+  source event payload, extract the pointed value, and re-check byte length and
+  BLAKE3 hash before returning bytes.
 - Read order is registry row first, then source validation: conversation
-  ownership, kind, redaction state, and content hash.
+  ownership, kind, retention, redaction state, redaction provenance, byte
+  length, and content hash.
 - Full command output, full diff patches, and artifact content are fetched by
   opaque ref through dedicated Tauri commands:
-  `get_conversation_command_output(conversation_id, full_output_ref)`,
-  `get_conversation_diff_patch(conversation_id, full_patch_ref)`,
-  `get_artifact_revision_content(conversation_id, content_ref)`.
+  `get_conversation_command_output(conversation_id, full_output_ref, cursor, max_bytes)`,
+  `get_conversation_diff_patch(conversation_id, full_patch_ref, cursor, max_bytes)`,
+  `get_artifact_revision_content(conversation_id, content_ref, cursor, max_bytes)`.
 - Each fetch command validates conversation ownership, ref kind, redaction state,
   and retention before returning bytes.
 - React must never construct, mutate, or authorize an evidence ref.
@@ -291,6 +298,11 @@ Artifacts are versioned workspace entities:
   `content_ref`, and optional `media`.
 - Artifact content bytes are fetched through
   `get_artifact_revision_content(conversationId, contentRef)`.
+- Image artifact preview bytes are fetched through
+  `get_artifact_media_preview(conversationId, artifactId, revisionId, contentRef)`.
+  The command validates the selected artifact, revision, status, kind, projected
+  content or preview ref, evidence owner, retention, redaction provenance, byte
+  length, and hash before returning an image data URL.
 - HTML and code previews are sandboxed. Updates create revisions instead of
   mutating user-visible history.
 

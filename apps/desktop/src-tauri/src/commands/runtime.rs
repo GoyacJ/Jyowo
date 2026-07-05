@@ -729,16 +729,17 @@ pub(crate) async fn build_desktop_harness(
             workspace_root
                 .join(".jyowo")
                 .join("runtime")
-                .join("evidence.sqlite"),
+                .join("conversation-read-model.sqlite"),
         )
         .await
         .map_err(|error| {
             runtime_init_failed(format!("evidence registry initialization failed: {error}"))
         })?,
     );
-    let evidence_ref_store = Arc::new(jyowo_harness_sdk::EvidenceRefStore::new(
+    let evidence_ref_store = Arc::new(jyowo_harness_sdk::EvidenceRefStore::new_with_event_store(
         evidence_registry,
         Arc::clone(&blob_store),
+        Arc::clone(&event_store),
     ));
     let provider_credential_resolver: Arc<dyn ProviderCredentialResolverCap> =
         Arc::new(DesktopProviderCredentialResolver::new(

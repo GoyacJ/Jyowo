@@ -17,6 +17,7 @@ export function DiffPane({
   const commandClient = useCommandClient()
   const [selectedFileIndex, setSelectedFileIndex] = useState(0)
   const [copyingPatchRef, setCopyingPatchRef] = useState<string | null>(null)
+  const [copyError, setCopyError] = useState(false)
   const [patchPagesByRef, setPatchPagesByRef] = useState<
     Record<string, { patch: string; truncated: boolean }>
   >({})
@@ -33,20 +34,29 @@ export function DiffPane({
     }
     if (selectedFile.fullPatchRef) {
       setCopyingPatchRef(selectedFile.fullPatchRef)
+      setCopyError(false)
       try {
-        const response = await commandClient.exportConversationEvidence({
+        const response = await commandClient.getConversationDiffPatch({
           conversationId,
-          kind: 'diff-patch',
-          refId: selectedFile.fullPatchRef,
+          fullPatchRef: selectedFile.fullPatchRef,
         })
-        await navigator.clipboard?.writeText(response.path)
+        if (!navigator.clipboard) throw new Error('Clipboard unavailable')
+        await navigator.clipboard.writeText(response.patch)
+      } catch {
+        setCopyError(true)
       } finally {
         setCopyingPatchRef(null)
       }
       return
     }
     if (selectedFile.preview) {
-      await navigator.clipboard?.writeText(selectedFile.preview)
+      try {
+        setCopyError(false)
+        if (!navigator.clipboard) throw new Error('Clipboard unavailable')
+        await navigator.clipboard.writeText(selectedFile.preview)
+      } catch {
+        setCopyError(true)
+      }
     }
   }
 
@@ -99,6 +109,11 @@ export function DiffPane({
               />
             </div>
           </div>
+          {copyError ? (
+            <div className="border-border border-b px-3 py-1 text-destructive text-xs">
+              {t('diff.copyFailed', 'Copy failed')}
+            </div>
+          ) : null}
 
           {/* Risk flags */}
           {selectedFile.riskFlags && selectedFile.riskFlags.length > 0 ? (
@@ -164,9 +179,11 @@ function FetchPatchPageButton({
     loaded: boolean
     truncated: boolean
   } | null>(null)
+  const [fetchError, setFetchError] = useState(false)
 
   const handleFetch = async () => {
     setFetching(true)
+    setFetchError(false)
     try {
       const response = await commandClient.getConversationDiffPatch({
         conversationId,
@@ -179,6 +196,7 @@ function FetchPatchPageButton({
       })
     } catch {
       setPatchState(null)
+      setFetchError(true)
     } finally {
       setFetching(false)
     }
@@ -196,14 +214,21 @@ function FetchPatchPageButton({
   }
 
   return (
-    <button
-      className="rounded px-2 py-0.5 text-muted-foreground text-xs hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-      disabled={fetching}
-      onClick={handleFetch}
-      type="button"
-    >
-      {fetching ? t('diff.fetching') : t('diff.fetchPatchPage')}
-    </button>
+    <>
+      <button
+        className="rounded px-2 py-0.5 text-muted-foreground text-xs hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        disabled={fetching}
+        onClick={handleFetch}
+        type="button"
+      >
+        {fetching ? t('diff.fetching') : t('diff.fetchPatchPage')}
+      </button>
+      {fetchError ? (
+        <span className="px-2 text-destructive text-xs">
+          {t('diff.fetchPatchPageFailed', 'Failed to load patch page')}
+        </span>
+      ) : null}
+    </>
   )
 }
 

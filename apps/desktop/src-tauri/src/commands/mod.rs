@@ -1429,6 +1429,7 @@ pub async fn list_artifacts(
 pub async fn get_artifact_media_preview(
     conversation_id: String,
     artifact_id: String,
+    content_ref: Option<String>,
     revision_id: Option<String>,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<GetArtifactMediaPreviewResponse, CommandErrorPayload> {
@@ -1437,6 +1438,7 @@ pub async fn get_artifact_media_preview(
         GetArtifactMediaPreviewRequest {
             conversation_id,
             artifact_id,
+            content_ref,
             revision_id,
         },
         &*runtime_state,

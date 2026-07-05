@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Download, ImageIcon } from 'lucide-react'
+import { Copy, Download, ImageIcon } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -30,11 +30,13 @@ export function ArtifactPane({
     initialRevisionId ?? segment.revision.revisionId,
   )
   const [exportedPath, setExportedPath] = useState<string | null>(null)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
 
   useEffect(() => {
     setSelectedArtifactId(segment.artifactId)
     setSelectedRevisionId(initialRevisionId ?? segment.revision.revisionId)
     setExportedPath(null)
+    setCopyState('idle')
   }, [initialRevisionId, segment.artifactId, segment.revision.revisionId])
 
   const artifactsQuery = useQuery({
@@ -60,6 +62,7 @@ export function ArtifactPane({
     !matchedRevision
   const selectedRevision = matchedRevision ?? (waitingForInitialRevision ? undefined : revisions[0])
   const contentRef = selectedRevision?.contentRef
+  const previewRef = selectedRevision?.previewRef ?? contentRef
   const revisionStatus = selectedRevision?.status ?? selectedArtifact?.status ?? segment.status
   const revisionKind = selectedRevision?.kind ?? selectedArtifact?.kind ?? segment.revision.kind
   const isImage = selectedRevision?.media?.kind === 'image' || revisionKind === 'image'
@@ -76,17 +79,19 @@ export function ArtifactPane({
       }),
   })
   const imageQuery = useQuery({
-    enabled: isImage && revisionStatus === 'ready' && Boolean(selectedRevision),
+    enabled: isImage && revisionStatus === 'ready' && Boolean(previewRef),
     queryKey: [
       'workbench-artifact-media-preview',
       conversationId,
       selectedArtifact?.id,
       selectedRevision?.revisionId,
+      previewRef,
     ],
     queryFn: () =>
       commandClient.getArtifactMediaPreview({
         conversationId,
         artifactId: selectedArtifact?.id ?? '',
+        contentRef: previewRef ?? '',
         revisionId: selectedRevision?.revisionId,
       }),
   })
@@ -101,6 +106,39 @@ export function ArtifactPane({
       refId: contentRef,
     })
     setExportedPath(result.path)
+  }
+
+  const copyContent = async () => {
+    if (!contentRef) {
+      return
+    }
+
+    try {
+      let page =
+        contentQuery.data ??
+        (await commandClient.getArtifactRevisionContent({
+          conversationId,
+          contentRef,
+        }))
+      const pages = [page.content]
+
+      while (page.hasMore) {
+        if (!page.nextCursor) {
+          throw new Error('artifact content page is missing next cursor')
+        }
+        page = await commandClient.getArtifactRevisionContent({
+          conversationId,
+          contentRef,
+          cursor: page.nextCursor,
+        })
+        pages.push(page.content)
+      }
+
+      await navigator.clipboard.writeText(pages.join(''))
+      setCopyState('copied')
+    } catch {
+      setCopyState('failed')
+    }
   }
 
   if (!selectedArtifact || !selectedRevision) {
@@ -139,6 +177,7 @@ export function ArtifactPane({
               setSelectedArtifactId(artifact.id)
               setSelectedRevisionId(nextRevision?.revisionId ?? '')
               setExportedPath(null)
+              setCopyState('idle')
             }}
             type="button"
             variant={artifact.id === selectedArtifact.id ? 'secondary' : 'ghost'}
@@ -156,6 +195,7 @@ export function ArtifactPane({
             onClick={() => {
               setSelectedRevisionId(revision.revisionId)
               setExportedPath(null)
+              setCopyState('idle')
             }}
             type="button"
             variant={revision.revisionId === selectedRevision.revisionId ? 'secondary' : 'ghost'}
@@ -172,13 +212,32 @@ export function ArtifactPane({
       ) : null}
 
       {contentRef ? (
-        <div className="flex items-center justify-between gap-2">
-          <Button onClick={exportContent} size="sm" type="button" variant="outline">
-            <Download className="size-4" />
-            {t('inspector.exportArtifactContent', 'Export content')}
-          </Button>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              disabled={!contentRef || contentQuery.isLoading || contentQuery.isError}
+              onClick={copyContent}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              <Copy className="size-4" />
+              {t('inspector.copyArtifactContent', 'Copy content')}
+            </Button>
+            <Button onClick={exportContent} size="sm" type="button" variant="outline">
+              <Download className="size-4" />
+              {t('inspector.exportArtifactContent', 'Export content')}
+            </Button>
+          </div>
           {exportedPath ? (
             <span className="truncate text-muted-foreground text-xs">{exportedPath}</span>
+          ) : null}
+          {copyState !== 'idle' ? (
+            <span className="text-muted-foreground text-xs">
+              {copyState === 'copied'
+                ? t('inspector.artifactContentCopied', 'Content copied')
+                : t('inspector.artifactContentCopyFailed', 'Copy failed')}
+            </span>
           ) : null}
         </div>
       ) : null}

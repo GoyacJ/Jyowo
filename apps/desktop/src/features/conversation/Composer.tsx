@@ -1,8 +1,8 @@
-import { Check, ChevronDown, Paperclip, Send, Shield, X } from 'lucide-react'
+import { Send, X } from 'lucide-react'
+import type { KeyboardEvent } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { cn } from '@/shared/lib/utils'
 import type {
   AttachmentInputModality,
   AttachmentReference,
@@ -13,17 +13,18 @@ import type {
   StartRunRequest,
 } from '@/shared/tauri/commands'
 import { getCommandErrorMessage } from '@/shared/tauri/errors'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/shared/ui/dropdown-menu'
-import { Popover, PopoverContent, PopoverTrigger } from '@/shared/ui/popover'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/shared/ui/tooltip'
 import { ComposerEditor } from './composer/ComposerEditor'
+import { ComposerToolbar } from './composer/ComposerToolbar'
 import type { ComposerDraft } from './composer/composer-draft-store'
 import { clearDraft, getDraft, getEmptyDraft, saveDraft } from './composer/composer-draft-store'
+import {
+  flattenReferenceGroups,
+  ReferenceCombobox,
+  referenceGroups,
+  referenceKey,
+  referenceLabel,
+} from './composer/ReferenceCombobox'
+import { type SlashCommand, SlashCommandMenu, slashCommands } from './composer/SlashCommandMenu'
 
 export type ComposerSubmitPayload = Omit<StartRunRequest, 'conversationId'>
 export type ComposerMode =
@@ -105,7 +106,7 @@ export function Composer({
   const [localPermissionMode, setLocalPermissionMode] = useState<PermissionMode>('default')
   const selectedPermissionMode = permissionMode ?? localPermissionMode
   const selectedModelConfigId = modelConfigId ?? ''
-  const effectiveMode = mode ?? legacyComposerMode(pending, disabled)
+  const effectiveMode = mode ?? fallbackComposerMode(pending, disabled)
   const isDisabled =
     disabled || effectiveMode.kind === 'submitting' || effectiveMode.kind === 'running-disabled'
   const canSubmit = draft.text.trim().length > 0 && selectedModelConfigId.length > 0 && !isDisabled
@@ -116,6 +117,22 @@ export function Composer({
     Boolean(onCancelRun)
   const acceptedAttachmentModalities = getAcceptedAttachmentModalities(modelCapability)
   const supportsAttachments = acceptedAttachmentModalities.length > 0
+  const [slashOpen, setSlashOpen] = useState(false)
+  const [slashActiveIndex, setSlashActiveIndex] = useState(0)
+  const [referenceSource, setReferenceSource] = useState<'editor' | 'toolbar' | null>(null)
+  const [referenceSearch, setReferenceSearch] = useState('')
+  const [referenceCandidates, setReferenceCandidates] =
+    useState<ListReferenceCandidatesResponse>(emptyReferenceCandidates)
+  const [referenceLoading, setReferenceLoading] = useState(false)
+  const [referenceActiveIndex, setReferenceActiveIndex] = useState(0)
+  const referenceGroupItems = useMemo(
+    () => referenceGroups(referenceCandidates, referenceSearch),
+    [referenceCandidates, referenceSearch],
+  )
+  const referenceItems = useMemo(
+    () => flattenReferenceGroups(referenceGroupItems),
+    [referenceGroupItems],
+  )
 
   async function submitDraft() {
     const submittedText = draft.text.trim()
@@ -187,6 +204,169 @@ export function Composer({
     }))
   }
 
+  async function loadReferenceCandidates() {
+    if (!onListReferenceCandidates) {
+      setReferenceCandidates(emptyReferenceCandidates)
+      return
+    }
+
+    setReferenceLoading(true)
+    try {
+      setReferenceCandidates(await onListReferenceCandidates())
+    } finally {
+      setReferenceLoading(false)
+    }
+  }
+
+  function openReferenceCombobox(source: 'editor' | 'toolbar') {
+    setSlashOpen(false)
+    setReferenceSource(source)
+    setReferenceActiveIndex(0)
+    void loadReferenceCandidates()
+  }
+
+  function closeReferenceCombobox() {
+    setReferenceSource(null)
+  }
+
+  function handleToolbarReferenceOpenChange(nextOpen: boolean) {
+    if (nextOpen) {
+      openReferenceCombobox('toolbar')
+    } else if (referenceSource === 'toolbar') {
+      closeReferenceCombobox()
+    }
+  }
+
+  function selectReference(reference: ContextReference) {
+    addContextReference(reference)
+    closeReferenceCombobox()
+    setReferenceSearch('')
+    setReferenceActiveIndex(0)
+    setDraft((currentDraft) => ({
+      ...currentDraft,
+      text: removeTrailingReferenceQuery(currentDraft.text),
+    }))
+  }
+
+  function selectSlashCommand(command: SlashCommand) {
+    setDraft((currentDraft) => ({
+      ...currentDraft,
+      text: replaceTrailingSlash(currentDraft.text, command.prompt),
+    }))
+    setSlashOpen(false)
+    setSlashActiveIndex(0)
+  }
+
+  function handleTextChange(text: string) {
+    setDraft((currentDraft) => ({
+      ...currentDraft,
+      text,
+    }))
+    if (shouldOpenSlashMenu(text)) {
+      setSlashOpen(true)
+      setSlashActiveIndex(0)
+      closeReferenceCombobox()
+      return
+    }
+    const referenceQuery = trailingReferenceQuery(text)
+    if (referenceQuery !== null) {
+      setReferenceSearch(referenceQuery)
+      setReferenceActiveIndex(0)
+      if (referenceSource !== 'editor') {
+        openReferenceCombobox('editor')
+      }
+      setSlashOpen(false)
+      return
+    }
+    setSlashOpen(false)
+    if (referenceSource === 'editor') {
+      closeReferenceCombobox()
+    }
+  }
+
+  function handleEditorKeyCommand(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (slashOpen) {
+      if (event.key === 'ArrowDown') {
+        setSlashActiveIndex((index) => (index + 1) % slashCommands.length)
+        return true
+      }
+      if (event.key === 'ArrowUp') {
+        setSlashActiveIndex((index) => (index - 1 + slashCommands.length) % slashCommands.length)
+        return true
+      }
+      if (event.key === 'Enter') {
+        selectSlashCommand(slashCommands[slashActiveIndex] ?? slashCommands[0])
+        return true
+      }
+      if (event.key === 'Escape') {
+        setSlashOpen(false)
+        return true
+      }
+    }
+
+    if (referenceSource === 'editor') {
+      if (event.key === 'ArrowDown') {
+        setReferenceActiveIndex((index) =>
+          referenceItems.length === 0 ? 0 : (index + 1) % referenceItems.length,
+        )
+        return true
+      }
+      if (event.key === 'ArrowUp') {
+        setReferenceActiveIndex((index) =>
+          referenceItems.length === 0
+            ? 0
+            : (index - 1 + referenceItems.length) % referenceItems.length,
+        )
+        return true
+      }
+      if (event.key === 'Enter') {
+        const selectedReference = referenceItems[referenceActiveIndex]?.reference
+        if (selectedReference) {
+          selectReference(selectedReference)
+        }
+        return true
+      }
+      if (event.key === 'Escape') {
+        closeReferenceCombobox()
+        return true
+      }
+    }
+
+    return false
+  }
+
+  function handleReferenceKeyCommand(event: KeyboardEvent<HTMLInputElement>) {
+    if (!referenceSource) {
+      return false
+    }
+    if (event.key === 'ArrowDown') {
+      setReferenceActiveIndex((index) =>
+        referenceItems.length === 0 ? 0 : (index + 1) % referenceItems.length,
+      )
+      return true
+    }
+    if (event.key === 'ArrowUp') {
+      setReferenceActiveIndex((index) =>
+        referenceItems.length === 0
+          ? 0
+          : (index - 1 + referenceItems.length) % referenceItems.length,
+      )
+      return true
+    }
+    if (event.key === 'Enter') {
+      const selectedReference = referenceItems[referenceActiveIndex]?.reference
+      if (selectedReference) {
+        selectReference(selectedReference)
+      }
+      return true
+    }
+    if (event.key === 'Escape') {
+      closeReferenceCombobox()
+      return true
+    }
+    return false
+  }
+
   return (
     <form
       className="rounded-md border border-border bg-surface px-3 py-2 shadow-sm"
@@ -216,16 +396,37 @@ export function Composer({
 
       <ComposerEditor
         disabled={isDisabled}
-        onChange={(text) =>
-          setDraft((currentDraft) => ({
-            ...currentDraft,
-            text,
-          }))
-        }
+        onChange={handleTextChange}
+        onKeyCommand={handleEditorKeyCommand}
         onSubmit={() => {
           void submitDraft()
         }}
         value={draft.text}
+      />
+      <SlashCommandMenu
+        activeIndex={slashActiveIndex}
+        getCommandLabel={(command) => t(`conversation:composer.slashCommands.${command.id}`)}
+        label={t('conversation:composer.slashCommands.label')}
+        onSelect={selectSlashCommand}
+        open={slashOpen}
+      />
+      <ReferenceCombobox
+        activeIndex={referenceActiveIndex}
+        disabled={isDisabled}
+        groups={referenceGroupItems}
+        label={t('conversation:composer.referenceObject')}
+        loadingLabel={t('conversation:composer.loadingReferences')}
+        loading={referenceLoading}
+        noResultsLabel={t('conversation:composer.noReferences')}
+        onSearchChange={(search) => {
+          setReferenceSearch(search)
+          setReferenceActiveIndex(0)
+        }}
+        onSelectReference={selectReference}
+        onKeyCommand={handleReferenceKeyCommand}
+        open={referenceSource === 'editor'}
+        search={referenceSearch}
+        searchLabel={t('conversation:composer.searchReferences')}
       />
 
       <ComposerContextChips
@@ -252,7 +453,6 @@ export function Composer({
           disabled={isDisabled}
           supportsAttachments={supportsAttachments}
           onAttachFile={handleAttachFile}
-          onListReferenceCandidates={onListReferenceCandidates}
           modelConfigDisabled={modelConfigDisabled}
           modelConfigId={modelConfigId}
           modelConfigs={modelConfigs}
@@ -265,7 +465,18 @@ export function Composer({
             }
             onPermissionModeChange?.(nextMode)
           }}
-          onSelectReference={addContextReference}
+          referenceActiveIndex={referenceActiveIndex}
+          referenceGroups={referenceGroupItems}
+          referenceLoading={referenceLoading}
+          referenceOpen={referenceSource === 'toolbar'}
+          referenceSearch={referenceSearch}
+          onReferenceOpenChange={handleToolbarReferenceOpenChange}
+          onReferenceSearchChange={(search) => {
+            setReferenceSearch(search)
+            setReferenceActiveIndex(0)
+          }}
+          onReferenceKeyCommand={handleReferenceKeyCommand}
+          onSelectReference={selectReference}
         />
         <div className="flex items-center gap-2">
           {canCancelRun ? (
@@ -295,7 +506,7 @@ export function Composer({
   )
 }
 
-function legacyComposerMode(pending: boolean, disabled: boolean): ComposerMode {
+function fallbackComposerMode(pending: boolean, disabled: boolean): ComposerMode {
   if (pending) {
     return { kind: 'submitting' }
   }
@@ -319,297 +530,21 @@ function getAcceptedAttachmentModalities(
   )
 }
 
-function ComposerToolbar({
-  disabled,
-  autoModeAvailable,
-  modelConfigDisabled,
-  modelConfigId,
-  modelConfigs,
-  permissionMode,
-  supportsAttachments,
-  onAttachFile,
-  onListReferenceCandidates,
-  onModelConfigChange,
-  onPermissionModeChange,
-  onSelectReference,
-}: {
-  disabled: boolean
-  autoModeAvailable: boolean
-  modelConfigDisabled: boolean
-  modelConfigId?: string
-  modelConfigs: Array<{ id: string; label: string }>
-  permissionMode: PermissionMode
-  supportsAttachments: boolean
-  onAttachFile: () => void
-  onListReferenceCandidates?: () => Promise<ListReferenceCandidatesResponse>
-  onModelConfigChange?: (modelConfigId: string) => void
-  onPermissionModeChange: (mode: PermissionMode) => void
-  onSelectReference: (reference: ContextReference) => void
-}) {
-  const { t } = useTranslation('conversation')
-
-  return (
-    <TooltipProvider delayDuration={150}>
-      <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
-        <ComposerPermissionModeMenu
-          autoModeAvailable={autoModeAvailable}
-          disabled={disabled}
-          permissionMode={permissionMode}
-          onPermissionModeChange={onPermissionModeChange}
-        />
-        <AttachmentPicker disabled={disabled || !supportsAttachments} onAttachFile={onAttachFile} />
-        <ReferencePicker
-          disabled={disabled}
-          onListReferenceCandidates={onListReferenceCandidates}
-          onSelectReference={onSelectReference}
-        />
-        {modelConfigs.length > 0 ? (
-          <select
-            aria-label={t('modelConfig')}
-            className="h-8 max-w-[220px] rounded-md border border-border bg-background px-2 text-foreground text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={disabled || modelConfigDisabled || !onModelConfigChange}
-            onChange={(event) => onModelConfigChange?.(event.target.value)}
-            value={modelConfigId ?? ''}
-          >
-            <option value="">{t('noModelConfigSelected')}</option>
-            {modelConfigs.map((modelConfig) => (
-              <option key={modelConfig.id} value={modelConfig.id}>
-                {modelConfig.label}
-              </option>
-            ))}
-          </select>
-        ) : null}
-      </div>
-    </TooltipProvider>
-  )
+function shouldOpenSlashMenu(text: string) {
+  return /(^|\s)\/$/.test(text)
 }
 
-const composerPermissionModeOptions = [
-  {
-    value: 'default',
-    labelKey: 'composer.permissionMode.default.label',
-    descriptionKey: 'composer.permissionMode.default.description',
-  },
-  {
-    value: 'auto',
-    labelKey: 'composer.permissionMode.auto.label',
-    descriptionKey: 'composer.permissionMode.auto.description',
-    unavailableDescriptionKey: 'composer.permissionMode.auto.unavailable',
-  },
-  {
-    value: 'bypass_permissions',
-    labelKey: 'composer.permissionMode.bypass.label',
-    descriptionKey: 'composer.permissionMode.bypass.description',
-  },
-] as const satisfies ReadonlyArray<{
-  value: PermissionMode
-  labelKey: string
-  descriptionKey: string
-  unavailableDescriptionKey?: string
-}>
-
-function ComposerPermissionModeMenu({
-  autoModeAvailable,
-  disabled,
-  permissionMode,
-  onPermissionModeChange,
-}: {
-  autoModeAvailable: boolean
-  disabled: boolean
-  permissionMode: PermissionMode
-  onPermissionModeChange: (mode: PermissionMode) => void
-}) {
-  const { t } = useTranslation('conversation')
-  const selectedOption =
-    composerPermissionModeOptions.find((option) => option.value === permissionMode) ??
-    composerPermissionModeOptions[0]
-  const selectedLabel = t(selectedOption.labelKey)
-  const isBypassMode = permissionMode === 'bypass_permissions'
-
-  return (
-    <DropdownMenu>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <DropdownMenuTrigger asChild>
-            <button
-              aria-label={t('composer.permissionMode.ariaLabel', { mode: selectedLabel })}
-              className={cn(
-                'inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2 font-medium text-foreground text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60',
-                isBypassMode && 'border-warning/40 bg-warning/10 text-warning hover:bg-warning/15',
-              )}
-              disabled={disabled}
-              type="button"
-            >
-              <Shield className="size-3.5" />
-              <span className="max-w-[8rem] truncate">{selectedLabel}</span>
-              <ChevronDown className="size-3.5 opacity-70" />
-            </button>
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent>{t('composer.permissionMode.tooltip')}</TooltipContent>
-      </Tooltip>
-      <DropdownMenuContent align="start" className="w-72">
-        {composerPermissionModeOptions.map((option) => {
-          const optionDisabled = option.value === 'auto' && !autoModeAvailable
-          const descriptionKey =
-            optionDisabled && option.unavailableDescriptionKey
-              ? option.unavailableDescriptionKey
-              : option.descriptionKey
-
-          return (
-            <DropdownMenuItem
-              className="items-start gap-3 py-2"
-              disabled={optionDisabled}
-              key={option.value}
-              onSelect={() => {
-                if (!optionDisabled) {
-                  onPermissionModeChange(option.value)
-                }
-              }}
-            >
-              <Shield
-                className={cn(
-                  'mt-0.5 size-4 shrink-0 text-muted-foreground',
-                  option.value === 'bypass_permissions' && 'text-warning',
-                )}
-              />
-              <span className="min-w-0 flex-1 space-y-0.5">
-                <span className="block font-medium text-foreground text-sm">
-                  {t(option.labelKey)}
-                </span>
-                <span className="block whitespace-normal text-muted-foreground text-xs leading-5">
-                  {t(descriptionKey)}
-                </span>
-              </span>
-              {permissionMode === option.value ? (
-                <Check className="mt-0.5 size-4 shrink-0 text-primary" />
-              ) : null}
-            </DropdownMenuItem>
-          )
-        })}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
+function trailingReferenceQuery(text: string) {
+  const match = /(?:^|\s)@([^\s]*)$/.exec(text)
+  return match ? match[1] : null
 }
 
-function AttachmentPicker({
-  disabled,
-  onAttachFile,
-}: {
-  disabled: boolean
-  onAttachFile: () => void
-}) {
-  const { t } = useTranslation('conversation')
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          aria-label={t('composer.attachFile')}
-          className="rounded-md p-1.5 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={disabled}
-          onClick={onAttachFile}
-          type="button"
-        >
-          <Paperclip className="size-4" />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent>{t('composer.attachFile')}</TooltipContent>
-    </Tooltip>
-  )
+function replaceTrailingSlash(text: string, replacement: string) {
+  return text.replace(/(^|\s)\/$/, (_match, prefix: string) => `${prefix}${replacement}`)
 }
 
-function ReferencePicker({
-  disabled,
-  onListReferenceCandidates,
-  onSelectReference,
-}: {
-  disabled: boolean
-  onListReferenceCandidates?: () => Promise<ListReferenceCandidatesResponse>
-  onSelectReference: (reference: ContextReference) => void
-}) {
-  const { t } = useTranslation('conversation')
-  const [open, setOpen] = useState(false)
-  const [search, setSearch] = useState('')
-  const [candidates, setCandidates] =
-    useState<ListReferenceCandidatesResponse>(emptyReferenceCandidates)
-  const [loading, setLoading] = useState(false)
-
-  async function handleOpenChange(nextOpen: boolean) {
-    setOpen(nextOpen)
-    if (!nextOpen || !onListReferenceCandidates) {
-      return
-    }
-
-    setLoading(true)
-    try {
-      setCandidates(await onListReferenceCandidates())
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const groups = useMemo(() => referenceGroups(candidates, search), [candidates, search])
-  const hasCandidates = groups.some((group) => group.items.length > 0)
-
-  return (
-    <Popover open={open} onOpenChange={handleOpenChange}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <PopoverTrigger asChild>
-            <button
-              aria-label={t('composer.referenceObject')}
-              className="rounded-md px-2 py-1 font-mono text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={disabled}
-              type="button"
-            >
-              @
-            </button>
-          </PopoverTrigger>
-        </TooltipTrigger>
-        <TooltipContent>{t('composer.referenceObject')}</TooltipContent>
-      </Tooltip>
-      <PopoverContent align="start" className="w-80 p-2">
-        <input
-          aria-label={t('composer.searchReferences')}
-          className="mb-2 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none"
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder={t('composer.searchReferences')}
-          value={search}
-        />
-        <div className="max-h-72 overflow-auto">
-          {loading ? (
-            <p className="px-2 py-3 text-muted-foreground text-sm">
-              {t('composer.loadingReferences')}
-            </p>
-          ) : null}
-          {!loading && !hasCandidates ? (
-            <p className="px-2 py-3 text-muted-foreground text-sm">{t('composer.noReferences')}</p>
-          ) : null}
-          {groups.map((group) =>
-            group.items.length > 0 ? (
-              <div className="py-1" key={group.label}>
-                <p className="px-2 py-1 font-medium text-muted-foreground text-xs">{group.label}</p>
-                {group.items.map((item) => (
-                  <button
-                    className="block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
-                    key={referenceKey(item.reference)}
-                    onClick={() => {
-                      onSelectReference(item.reference)
-                      setOpen(false)
-                    }}
-                    type="button"
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-            ) : null,
-          )}
-        </div>
-      </PopoverContent>
-    </Popover>
-  )
+function removeTrailingReferenceQuery(text: string) {
+  return text.replace(/(^|\s)@[^\s]*$/, '$1')
 }
 
 function ComposerContextChips({
@@ -685,105 +620,6 @@ function ContextChip({
   )
 }
 
-function referenceGroups(candidates: ListReferenceCandidatesResponse, search: string) {
-  const query = search.trim().toLocaleLowerCase()
-  const matches = (label: string) => !query || label.toLocaleLowerCase().includes(query)
-
-  return [
-    {
-      label: 'Files',
-      items: candidates.files
-        .filter((candidate) => matches(candidate.label))
-        .map((candidate) => ({
-          label: candidate.label,
-          reference: {
-            kind: 'workspace_file',
-            label: candidate.label,
-            path: candidate.path ?? candidate.label,
-          } satisfies ContextReference,
-        })),
-    },
-    {
-      label: 'Artifacts',
-      items: candidates.artifacts
-        .filter((candidate) => candidate.id && matches(candidate.label))
-        .map((candidate) => ({
-          label: candidate.label,
-          reference: {
-            id: candidate.id ?? '',
-            kind: 'artifact',
-            label: candidate.label,
-          } satisfies ContextReference,
-        })),
-    },
-    {
-      label: 'Conversations',
-      items: candidates.conversations
-        .filter((candidate) => candidate.id && matches(candidate.label))
-        .map((candidate) => ({
-          label: candidate.label,
-          reference: {
-            id: candidate.id ?? '',
-            kind: 'conversation',
-            label: candidate.label,
-          } satisfies ContextReference,
-        })),
-    },
-    {
-      label: 'Memories',
-      items: candidates.memories
-        .filter((candidate) => candidate.id && matches(candidate.label))
-        .map((candidate) => ({
-          label: candidate.label,
-          reference: {
-            id: candidate.id ?? '',
-            kind: 'memory',
-            label: candidate.label,
-          } satisfies ContextReference,
-        })),
-    },
-    {
-      label: 'Skills',
-      items: candidates.skills
-        .filter((candidate) => candidate.id && matches(candidate.label))
-        .map((candidate) => ({
-          label: candidate.label,
-          reference: {
-            id: candidate.id ?? '',
-            kind: 'skill',
-            label: candidate.label,
-          } satisfies ContextReference,
-        })),
-    },
-    {
-      label: 'Tools',
-      items: candidates.tools
-        .filter((candidate) => candidate.id && matches(candidate.label))
-        .map((candidate) => ({
-          label: candidate.label,
-          reference: {
-            id: candidate.id ?? '',
-            kind: 'tool',
-            label: candidate.label,
-          } satisfies ContextReference,
-        })),
-    },
-    {
-      label: 'MCP Servers',
-      items: candidates.mcpServers
-        .filter((candidate) => candidate.id && matches(candidate.label))
-        .map((candidate) => ({
-          label: candidate.label,
-          reference: {
-            id: candidate.id ?? '',
-            kind: 'mcp_server',
-            label: candidate.label,
-          } satisfies ContextReference,
-        })),
-    },
-  ]
-}
-
 function addUniqueAttachment(
   attachments: AttachmentReference[],
   attachment: AttachmentReference,
@@ -802,16 +638,4 @@ function addUniqueReference(
   )
     ? references
     : [...references, reference]
-}
-
-function referenceKey(reference: ContextReference) {
-  if (reference.kind === 'workspace_file') {
-    return `${reference.kind}:${reference.path}`
-  }
-
-  return `${reference.kind}:${reference.id}`
-}
-
-function referenceLabel(reference: ContextReference) {
-  return reference.label
 }

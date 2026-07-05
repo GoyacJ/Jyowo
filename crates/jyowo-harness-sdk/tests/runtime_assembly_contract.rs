@@ -306,7 +306,7 @@ fn conversation_turn_permission_override_is_run_scoped() {
 }
 
 #[test]
-fn legacy_conversation_session_hash_accepts_permission_mode_variant() {
+fn session_hash_accepts_permission_mode_variant_payload() {
     block_on(async {
         let workspace = unique_workspace("sdk-legacy-session-permission-hash");
         std::fs::create_dir_all(&workspace).unwrap();

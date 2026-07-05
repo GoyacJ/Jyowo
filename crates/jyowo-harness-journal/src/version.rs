@@ -293,4 +293,15 @@ impl<S: EventStore> EventStore for VersionedEventStore<S> {
     ) -> Result<PruneReport, JournalError> {
         self.inner.prune(tenant, policy).await
     }
+
+    async fn prune_sessions(
+        &self,
+        tenant: TenantId,
+        session_ids: &[SessionId],
+        keep_snapshots: bool,
+    ) -> Result<PruneReport, JournalError> {
+        self.inner
+            .prune_sessions(tenant, session_ids, keep_snapshots)
+            .await
+    }
 }

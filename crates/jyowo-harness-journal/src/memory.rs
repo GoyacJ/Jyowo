@@ -274,16 +274,18 @@ impl EventStore for InMemoryEventStore {
         let cutoff = harness_contracts::now()
             - chrono::Duration::from_std(policy.older_than)
                 .unwrap_or_else(|_| chrono::Duration::zero());
-        let mut events = self.events.lock().await;
-        let mut summaries: Vec<_> = events
-            .iter()
-            .filter_map(|((entry_tenant, session_id), envelopes)| {
-                if *entry_tenant != tenant || envelopes.is_empty() {
-                    return None;
-                }
-                Some((*session_id, envelopes.last()?.recorded_at))
-            })
-            .collect();
+        let mut summaries: Vec<_> = {
+            let events = self.events.lock().await;
+            events
+                .iter()
+                .filter_map(|((entry_tenant, session_id), envelopes)| {
+                    if *entry_tenant != tenant || envelopes.is_empty() {
+                        return None;
+                    }
+                    Some((*session_id, envelopes.last()?.recorded_at))
+                })
+                .collect()
+        };
         summaries.sort_by_key(|(_, last_event_at)| *last_event_at);
         summaries.reverse();
         let keep: HashSet<_> = policy
@@ -302,21 +304,32 @@ impl EventStore for InMemoryEventStore {
                 (last_event_at <= cutoff && !keep.contains(&session_id)).then_some(session_id)
             })
             .collect();
+        self.prune_sessions(tenant, &candidates, policy.keep_snapshots)
+            .await
+    }
+
+    async fn prune_sessions(
+        &self,
+        tenant: TenantId,
+        session_ids: &[SessionId],
+        keep_snapshots: bool,
+    ) -> Result<PruneReport, JournalError> {
         let mut report = PruneReport::default();
-        for session_id in &candidates {
+        let candidate_set: HashSet<_> = session_ids.iter().copied().collect();
+        let mut events = self.events.lock().await;
+        for session_id in session_ids {
             if let Some(removed) = events.remove(&(tenant, *session_id)) {
                 report.events_removed += removed.len() as u64;
             }
         }
-        if !policy.keep_snapshots {
+        if !keep_snapshots {
             let mut snapshots = self.snapshots.lock().await;
-            for session_id in &candidates {
+            for session_id in session_ids {
                 if snapshots.remove(&(tenant, *session_id)).is_some() {
                     report.snapshots_removed += 1;
                 }
             }
         }
-        let candidate_set: HashSet<_> = candidates.into_iter().collect();
         self.lineage.lock().await.retain(|(parent, child, _)| {
             !candidate_set.contains(parent) && !candidate_set.contains(child)
         });

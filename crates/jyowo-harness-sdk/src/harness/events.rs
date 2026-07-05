@@ -20,7 +20,11 @@ impl Harness {
     }
 
     pub fn event_store(&self) -> Arc<dyn EventStore> {
-        Arc::clone(&self.inner.event_store)
+        Arc::new(ConversationDeletionGuardEventStore {
+            inner: Arc::clone(&self.inner.event_store),
+            deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
+            evidence_ref_store: self.inner.evidence_ref_store.clone(),
+        })
     }
 
     pub async fn event_stream(
@@ -55,6 +59,7 @@ pub(super) struct LifecycleHookEventStore {
     pub(super) session_limits: Arc<SessionLimitState>,
     pub(super) deleted_conversation_sessions:
         Arc<parking_lot::Mutex<HashSet<(TenantId, SessionId)>>>,
+    pub(super) evidence_ref_store: Option<Arc<harness_journal::EvidenceRefStore>>,
     pub(super) summary_state: parking_lot::Mutex<MemorySessionSummaryState>,
     #[cfg(feature = "memory-external-slot")]
     pub(super) memory_manager: Option<Arc<harness_memory::MemoryManager>>,
@@ -71,6 +76,7 @@ pub(super) struct ConversationDeletionGuardEventStore {
     pub(super) inner: Arc<dyn EventStore>,
     pub(super) deleted_conversation_sessions:
         Arc<parking_lot::Mutex<HashSet<(TenantId, SessionId)>>>,
+    pub(super) evidence_ref_store: Option<Arc<harness_journal::EvidenceRefStore>>,
 }
 
 #[derive(Default)]
@@ -182,6 +188,8 @@ impl EventStore for ConversationDeletionGuardEventStore {
         tenant: TenantId,
         session_id: SessionId,
     ) -> Result<bool, harness_contracts::JournalError> {
+        invalidate_session_evidence_refs(self.evidence_ref_store.as_ref(), tenant, session_id)
+            .await?;
         self.inner.delete_session(tenant, session_id).await
     }
 
@@ -198,7 +206,27 @@ impl EventStore for ConversationDeletionGuardEventStore {
         tenant: TenantId,
         policy: PrunePolicy,
     ) -> Result<PruneReport, harness_contracts::JournalError> {
-        self.inner.prune(tenant, policy).await
+        prune_with_evidence_invalidation(
+            &self.inner,
+            self.evidence_ref_store.as_ref(),
+            tenant,
+            policy,
+        )
+        .await
+    }
+
+    async fn prune_sessions(
+        &self,
+        tenant: TenantId,
+        session_ids: &[SessionId],
+        keep_snapshots: bool,
+    ) -> Result<PruneReport, harness_contracts::JournalError> {
+        if let Some(evidence_ref_store) = self.evidence_ref_store.as_ref() {
+            invalidate_sessions_evidence_refs(evidence_ref_store, tenant, session_ids).await?;
+        }
+        self.inner
+            .prune_sessions(tenant, session_ids, keep_snapshots)
+            .await
     }
 }
 
@@ -312,6 +340,8 @@ impl EventStore for LifecycleHookEventStore {
         tenant: TenantId,
         session_id: harness_contracts::SessionId,
     ) -> Result<bool, harness_contracts::JournalError> {
+        invalidate_session_evidence_refs(self.evidence_ref_store.as_ref(), tenant, session_id)
+            .await?;
         self.inner.delete_session(tenant, session_id).await
     }
 
@@ -328,8 +358,114 @@ impl EventStore for LifecycleHookEventStore {
         tenant: TenantId,
         policy: PrunePolicy,
     ) -> Result<PruneReport, harness_contracts::JournalError> {
-        self.inner.prune(tenant, policy).await
+        prune_with_evidence_invalidation(
+            &self.inner,
+            self.evidence_ref_store.as_ref(),
+            tenant,
+            policy,
+        )
+        .await
     }
+
+    async fn prune_sessions(
+        &self,
+        tenant: TenantId,
+        session_ids: &[SessionId],
+        keep_snapshots: bool,
+    ) -> Result<PruneReport, harness_contracts::JournalError> {
+        if let Some(evidence_ref_store) = self.evidence_ref_store.as_ref() {
+            invalidate_sessions_evidence_refs(evidence_ref_store, tenant, session_ids).await?;
+        }
+        self.inner
+            .prune_sessions(tenant, session_ids, keep_snapshots)
+            .await
+    }
+}
+
+async fn prune_with_evidence_invalidation(
+    inner: &Arc<dyn EventStore>,
+    evidence_ref_store: Option<&Arc<harness_journal::EvidenceRefStore>>,
+    tenant: TenantId,
+    policy: PrunePolicy,
+) -> Result<PruneReport, harness_contracts::JournalError> {
+    let Some(evidence_ref_store) = evidence_ref_store else {
+        return inner.prune(tenant, policy).await;
+    };
+
+    let candidate_sessions = prune_candidate_sessions(inner.as_ref(), tenant, &policy).await?;
+    invalidate_sessions_evidence_refs(evidence_ref_store, tenant, &candidate_sessions).await?;
+    if candidate_sessions.is_empty() {
+        return Ok(PruneReport::default());
+    }
+    inner
+        .prune_sessions(tenant, &candidate_sessions, policy.keep_snapshots)
+        .await
+}
+
+async fn invalidate_session_evidence_refs(
+    evidence_ref_store: Option<&Arc<harness_journal::EvidenceRefStore>>,
+    tenant: TenantId,
+    session_id: SessionId,
+) -> Result<(), harness_contracts::JournalError> {
+    if let Some(evidence_ref_store) = evidence_ref_store {
+        evidence_ref_store
+            .delete_for_conversation(tenant, &session_id.to_string())
+            .await?;
+    }
+    Ok(())
+}
+
+async fn invalidate_sessions_evidence_refs(
+    evidence_ref_store: &Arc<harness_journal::EvidenceRefStore>,
+    tenant: TenantId,
+    session_ids: &[SessionId],
+) -> Result<(), harness_contracts::JournalError> {
+    for session_id in session_ids {
+        evidence_ref_store
+            .delete_for_conversation(tenant, &session_id.to_string())
+            .await?;
+    }
+    Ok(())
+}
+
+async fn prune_candidate_sessions(
+    event_store: &dyn EventStore,
+    tenant: TenantId,
+    policy: &PrunePolicy,
+) -> Result<Vec<SessionId>, harness_contracts::JournalError> {
+    let mut sessions = event_store
+        .list_sessions(
+            tenant,
+            SessionFilter {
+                since: None,
+                end_reason: None,
+                project_compression_tips: false,
+                limit: u32::MAX,
+            },
+        )
+        .await?;
+    sessions.sort_by_key(|summary| summary.last_event_at);
+    sessions.reverse();
+    let keep: HashSet<_> = policy
+        .keep_latest_n_sessions
+        .map(|limit| {
+            sessions
+                .iter()
+                .take(limit as usize)
+                .map(|summary| summary.session_id)
+                .collect()
+        })
+        .unwrap_or_default();
+    let cutoff = harness_contracts::now()
+        - chrono::Duration::from_std(policy.older_than)
+            .unwrap_or_else(|_| chrono::Duration::zero());
+    Ok(sessions
+        .into_iter()
+        .filter_map(|summary| {
+            (summary.last_event_at <= cutoff && !keep.contains(&summary.session_id))
+                .then_some(summary.session_id)
+        })
+        .collect())
 }
 
 impl LifecycleHookEventStore {
@@ -573,6 +709,263 @@ pub(super) fn subagent_status_from_reason(
             harness_contracts::SubagentStatus::Failed
         }
         _ => harness_contracts::SubagentStatus::Failed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use harness_contracts::{BlobId, ConfigHash, NoopRedactor, SessionCreatedEvent, SnapshotId};
+    use harness_journal::evidence::{
+        EvidenceRefRecord, EvidenceRefSource, InMemoryEvidenceRefRegistry, RedactionProvenance,
+    };
+    use harness_journal::{InMemoryBlobStore, InMemoryEventStore};
+
+    fn evidence_record(id: &str, session_id: SessionId, bytes: &[u8]) -> EvidenceRefRecord {
+        let hash = blake3::hash(bytes);
+        EvidenceRefRecord {
+            id: EvidenceRefId::new(id),
+            kind: EvidenceRefKind::CommandOutput,
+            conversation_id: session_id.to_string(),
+            run_id: RunId::new().to_string(),
+            source_event_refs: Vec::new(),
+            artifact_id: None,
+            revision_id: None,
+            content_type: "text/plain".to_owned(),
+            byte_length: bytes.len() as u64,
+            content_hash: hash.as_bytes().to_vec(),
+            redaction_state: EvidenceRedactionState::Clean,
+            redaction_provenance: RedactionProvenance {
+                redactor_version: "test".to_owned(),
+            },
+            retention: BlobRetention::TenantScoped,
+            source: EvidenceRefSource::Blob {
+                blob_ref: BlobRef {
+                    id: BlobId::new(),
+                    size: bytes.len() as u64,
+                    content_hash: *hash.as_bytes(),
+                    content_type: Some("text/plain".to_owned()),
+                },
+            },
+        }
+    }
+
+    fn session_created(session_id: SessionId) -> Event {
+        Event::SessionCreated(SessionCreatedEvent {
+            session_id,
+            tenant_id: TenantId::SINGLE,
+            options_hash: [1; 32],
+            snapshot_id: SnapshotId::from_u128(1),
+            effective_config_hash: ConfigHash([2; 32]),
+            created_at: harness_contracts::now(),
+        })
+    }
+
+    #[tokio::test]
+    async fn prune_invalidates_matching_evidence_refs() {
+        let event_store: Arc<dyn EventStore> =
+            Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+        let evidence_store = Arc::new(harness_journal::EvidenceRefStore::new(
+            Arc::new(InMemoryEvidenceRefRegistry::new()),
+            Arc::new(InMemoryBlobStore::default()),
+        ));
+        let session_id = SessionId::new();
+        let bytes = b"pruned command output".to_vec();
+        let record = evidence_record("ref-prune", session_id, &bytes);
+        evidence_store
+            .store_blob_evidence(TenantId::SINGLE, record.clone(), bytes)
+            .await
+            .expect("evidence stores");
+        event_store
+            .append(TenantId::SINGLE, session_id, &[session_created(session_id)])
+            .await
+            .expect("event appends");
+
+        let wrapper = ConversationDeletionGuardEventStore {
+            inner: Arc::clone(&event_store),
+            deleted_conversation_sessions: Arc::new(parking_lot::Mutex::new(HashSet::new())),
+            evidence_ref_store: Some(Arc::clone(&evidence_store)),
+        };
+        wrapper
+            .prune(
+                TenantId::SINGLE,
+                PrunePolicy {
+                    older_than: Duration::from_secs(0),
+                    keep_snapshots: false,
+                    keep_latest_n_sessions: None,
+                    target_size_bytes: None,
+                },
+            )
+            .await
+            .expect("prune succeeds");
+
+        let error = evidence_store
+            .read_evidence(
+                TenantId::SINGLE,
+                &session_id.to_string(),
+                &record.id,
+                EvidenceRefKind::CommandOutput,
+            )
+            .await
+            .expect_err("pruned evidence is unreadable");
+        assert!(error.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn prune_invalidates_matching_evidence_refs_before_inner_prune() {
+        let inner = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+        let event_store: Arc<dyn EventStore> = Arc::new(PruneFailingEventStore {
+            inner: Arc::clone(&inner),
+        });
+        let evidence_store = Arc::new(harness_journal::EvidenceRefStore::new(
+            Arc::new(InMemoryEvidenceRefRegistry::new()),
+            Arc::new(InMemoryBlobStore::default()),
+        ));
+        let session_id = SessionId::new();
+        let bytes = b"prune failure command output".to_vec();
+        let record = evidence_record("ref-prune-failure", session_id, &bytes);
+        evidence_store
+            .store_blob_evidence(TenantId::SINGLE, record.clone(), bytes)
+            .await
+            .expect("evidence stores");
+        inner
+            .append(TenantId::SINGLE, session_id, &[session_created(session_id)])
+            .await
+            .expect("event appends");
+
+        let error = prune_with_evidence_invalidation(
+            &event_store,
+            Some(&evidence_store),
+            TenantId::SINGLE,
+            PrunePolicy {
+                older_than: Duration::from_secs(0),
+                keep_snapshots: false,
+                keep_latest_n_sessions: None,
+                target_size_bytes: None,
+            },
+        )
+        .await
+        .expect_err("inner prune failure is returned");
+
+        assert!(error.to_string().contains("forced prune failure"));
+        assert!(evidence_store
+            .read_evidence(
+                TenantId::SINGLE,
+                &session_id.to_string(),
+                &record.id,
+                EvidenceRefKind::CommandOutput,
+            )
+            .await
+            .is_err());
+    }
+
+    struct PruneFailingEventStore {
+        inner: Arc<InMemoryEventStore>,
+    }
+
+    #[async_trait]
+    impl EventStore for PruneFailingEventStore {
+        async fn append(
+            &self,
+            tenant: TenantId,
+            session_id: SessionId,
+            events: &[Event],
+        ) -> Result<JournalOffset, harness_contracts::JournalError> {
+            self.inner.append(tenant, session_id, events).await
+        }
+
+        async fn append_with_metadata(
+            &self,
+            tenant: TenantId,
+            session_id: SessionId,
+            metadata: AppendMetadata,
+            events: &[Event],
+        ) -> Result<JournalOffset, harness_contracts::JournalError> {
+            self.inner
+                .append_with_metadata(tenant, session_id, metadata, events)
+                .await
+        }
+
+        async fn read_envelopes(
+            &self,
+            tenant: TenantId,
+            session_id: SessionId,
+            cursor: ReplayCursor,
+        ) -> Result<
+            futures::stream::BoxStream<'static, EventEnvelope>,
+            harness_contracts::JournalError,
+        > {
+            self.inner.read_envelopes(tenant, session_id, cursor).await
+        }
+
+        async fn query_after(
+            &self,
+            tenant: TenantId,
+            after: Option<harness_contracts::EventId>,
+            limit: usize,
+        ) -> Result<Vec<EventEnvelope>, harness_contracts::JournalError> {
+            self.inner.query_after(tenant, after, limit).await
+        }
+
+        async fn snapshot(
+            &self,
+            tenant: TenantId,
+            session_id: SessionId,
+        ) -> Result<Option<SessionSnapshot>, harness_contracts::JournalError> {
+            self.inner.snapshot(tenant, session_id).await
+        }
+
+        async fn save_snapshot(
+            &self,
+            tenant: TenantId,
+            snapshot: SessionSnapshot,
+        ) -> Result<(), harness_contracts::JournalError> {
+            self.inner.save_snapshot(tenant, snapshot).await
+        }
+
+        async fn compact_link(
+            &self,
+            parent: SessionId,
+            child: SessionId,
+            reason: harness_contracts::ForkReason,
+        ) -> Result<(), harness_contracts::JournalError> {
+            self.inner.compact_link(parent, child, reason).await
+        }
+
+        async fn delete_session(
+            &self,
+            tenant: TenantId,
+            session_id: SessionId,
+        ) -> Result<bool, harness_contracts::JournalError> {
+            self.inner.delete_session(tenant, session_id).await
+        }
+
+        async fn list_sessions(
+            &self,
+            tenant: TenantId,
+            filter: SessionFilter,
+        ) -> Result<Vec<SessionSummary>, harness_contracts::JournalError> {
+            self.inner.list_sessions(tenant, filter).await
+        }
+
+        async fn prune(
+            &self,
+            _tenant: TenantId,
+            _policy: PrunePolicy,
+        ) -> Result<PruneReport, harness_contracts::JournalError> {
+            panic!("prune_with_evidence_invalidation must use exact-session prune")
+        }
+
+        async fn prune_sessions(
+            &self,
+            _tenant: TenantId,
+            _session_ids: &[SessionId],
+            _keep_snapshots: bool,
+        ) -> Result<PruneReport, harness_contracts::JournalError> {
+            Err(harness_contracts::JournalError::Message(
+                "forced prune failure".to_owned(),
+            ))
+        }
     }
 }
 

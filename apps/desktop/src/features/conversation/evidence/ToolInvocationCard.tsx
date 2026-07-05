@@ -13,17 +13,14 @@ export function ToolInvocationCard({
   const { t } = useTranslation('conversation')
   const statusLabel = t(`timeline.toolStatus.${attempt.status}`)
   const originLabel = attempt.origin ? t(`timeline.toolOrigin.${attempt.origin}`) : null
-
-  return (
-    <button
-      className={cn(
-        'w-full rounded-md border border-border px-3 py-2 text-left transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring',
-        attempt.status === 'failed' && 'border-destructive/30',
-      )}
-      data-tool-invocation-id={attempt.id}
-      onClick={onClick}
-      type="button"
-    >
+  const interactive = Boolean(onClick)
+  const className = cn(
+    'w-full rounded-md border border-border px-3 py-2 text-left transition-colors',
+    interactive && 'hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring',
+    attempt.status === 'failed' && 'border-destructive/30',
+  )
+  const content = (
+    <>
       <div className="flex items-center gap-2">
         <Wrench className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="truncate font-medium text-sm">{attempt.toolName}</span>
@@ -60,6 +57,25 @@ export function ToolInvocationCard({
           ) : null}
         </div>
       ) : null}
+    </>
+  )
+
+  if (!interactive) {
+    return (
+      <div className={className} data-tool-invocation-id={attempt.id}>
+        {content}
+      </div>
+    )
+  }
+
+  return (
+    <button
+      className={className}
+      data-tool-invocation-id={attempt.id}
+      onClick={onClick}
+      type="button"
+    >
+      {content}
     </button>
   )
 }

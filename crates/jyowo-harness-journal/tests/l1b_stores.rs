@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -244,6 +243,45 @@ async fn jsonl_store_writes_append_batches_as_committed_segments() {
     assert_eq!(replayed.len(), 2);
 }
 
+#[cfg(feature = "jsonl")]
+#[tokio::test]
+async fn jsonl_prune_sessions_deletes_only_supplied_sessions() {
+    let root = temp_root("jsonl-prune-sessions");
+    let store = JsonlEventStore::open(&root, Arc::new(NoopRedactor))
+        .await
+        .expect("store opens");
+    let deleted = SessionId::new();
+    let retained = SessionId::new();
+
+    store
+        .append(TenantId::SINGLE, deleted, &[event("delete me")])
+        .await
+        .expect("deleted session appends");
+    store
+        .append(TenantId::SINGLE, retained, &[event("keep me")])
+        .await
+        .expect("retained session appends");
+
+    let report = store
+        .prune_sessions(TenantId::SINGLE, &[deleted], false)
+        .await
+        .expect("exact-session prune succeeds");
+
+    assert_eq!(report.events_removed, 1);
+    assert!(read_session_jsonl(&root, deleted).is_empty());
+    let retained_events: Vec<_> = store
+        .read(TenantId::SINGLE, retained, ReplayCursor::FromStart)
+        .await
+        .expect("retained session reads")
+        .collect()
+        .await;
+    assert_eq!(retained_events.len(), 1);
+    assert!(matches!(
+        &retained_events[0],
+        Event::UnexpectedError(UnexpectedErrorEvent { error, .. }) if error == "keep me"
+    ));
+}
+
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_store_satisfies_contract() {
@@ -406,7 +444,9 @@ async fn file_blob_store_rejects_hash_mismatch_and_uses_prefixed_paths() {
 #[tokio::test]
 async fn retention_enforcer_collects_unreferenced_expired_file_blobs() {
     let tenant = TenantId::SINGLE;
-    let store = FileBlobStore::open(temp_root("blob-gc")).expect("file store opens");
+    let root = temp_root("blob-gc");
+    let store = FileBlobStore::open(&root).expect("file store opens");
+    let evidence_blob_store = FileBlobStore::open(&root).expect("evidence blob store handle opens");
     let expired = Bytes::from_static(b"expired");
     let live = Bytes::from_static(b"live");
 
@@ -424,9 +464,38 @@ async fn retention_enforcer_collects_unreferenced_expired_file_blobs() {
         .await
         .expect("live blob writes");
 
-    let live_refs = HashSet::from([live_ref.id]);
+    let evidence_store = EvidenceRefStore::new(
+        Arc::new(InMemoryEvidenceRefRegistry::default()),
+        Arc::new(evidence_blob_store),
+    );
+    evidence_store
+        .store_existing_blob_evidence(
+            tenant,
+            EvidenceRefRecord {
+                id: EvidenceRefId::new("live-ref"),
+                kind: EvidenceRefKind::CommandOutput,
+                conversation_id: "conversation-live".to_owned(),
+                run_id: "run-live".to_owned(),
+                source_event_refs: Vec::new(),
+                artifact_id: None,
+                revision_id: None,
+                content_type: "application/octet-stream".to_owned(),
+                byte_length: live.len() as u64,
+                content_hash: live_ref.content_hash.to_vec(),
+                redaction_state: EvidenceRedactionState::Clean,
+                redaction_provenance: RedactionProvenance {
+                    redactor_version: "test".to_owned(),
+                },
+                retention: BlobRetention::TtlDays(0),
+                source: EvidenceRefSource::Blob {
+                    blob_ref: live_ref.clone(),
+                },
+            },
+        )
+        .await
+        .expect("live evidence registers");
     let report = RetentionEnforcer::default()
-        .collect_garbage(tenant, &store, &live_refs)
+        .collect_garbage(tenant, &store, &evidence_store)
         .await
         .expect("gc succeeds");
 

@@ -155,8 +155,20 @@ impl Harness {
         let session_id = parse_conversation_session_id(conversation_id)?;
         self.catch_up_conversation_projection(tenant_id, session_id)
             .await?;
-        self.conversation_read_model()
-            .await?
+        let read_model = self.conversation_read_model().await?;
+        if let Some(evidence_store) = self.inner.evidence_ref_store.as_ref() {
+            return read_model
+                .page_timeline_with_evidence(
+                    tenant_id,
+                    session_id,
+                    after_cursor,
+                    limit,
+                    evidence_store.clone(),
+                )
+                .await
+                .map_err(HarnessError::Journal);
+        }
+        read_model
             .page_timeline(tenant_id, session_id, after_cursor, limit)
             .await
             .map_err(HarnessError::Journal)
@@ -174,17 +186,24 @@ impl Harness {
         let session_id = parse_conversation_session_id(conversation_id)?;
         self.catch_up_conversation_projection(tenant_id, session_id)
             .await?;
-        let evidence_store = self.evidence_ref_store()?;
-        self.conversation_read_model()
-            .await?
-            .page_worktree_with_evidence(
-                tenant_id,
-                session_id,
-                page_cursor,
-                direction,
-                limit_turns,
-                evidence_store,
-            )
+        let read_model = self.conversation_read_model().await?;
+        if let Some(evidence_store) = self.inner.evidence_ref_store.as_ref() {
+            self.register_artifact_content_evidence_refs(tenant_id, conversation_id)
+                .await?;
+            return read_model
+                .page_worktree_with_evidence(
+                    tenant_id,
+                    session_id,
+                    page_cursor,
+                    direction,
+                    limit_turns,
+                    evidence_store.clone(),
+                )
+                .await
+                .map_err(HarnessError::Journal);
+        }
+        read_model
+            .page_worktree(tenant_id, session_id, page_cursor, direction, limit_turns)
             .await
             .map_err(HarnessError::Journal)
     }
@@ -199,15 +218,22 @@ impl Harness {
         let session_id = parse_conversation_session_id(conversation_id)?;
         self.catch_up_conversation_projection(tenant_id, session_id)
             .await?;
-        let evidence_store = self.evidence_ref_store()?;
-        self.conversation_read_model()
-            .await?
-            .conversation_inspector_item_with_evidence(
-                tenant_id,
-                session_id,
-                selection,
-                evidence_store,
-            )
+        let read_model = self.conversation_read_model().await?;
+        if let Some(evidence_store) = self.inner.evidence_ref_store.as_ref() {
+            self.register_artifact_content_evidence_refs(tenant_id, conversation_id)
+                .await?;
+            return read_model
+                .conversation_inspector_item_with_evidence(
+                    tenant_id,
+                    session_id,
+                    selection,
+                    evidence_store.clone(),
+                )
+                .await
+                .map_err(HarnessError::Journal);
+        }
+        read_model
+            .conversation_inspector_item(tenant_id, session_id, selection)
             .await
             .map_err(HarnessError::Journal)
     }

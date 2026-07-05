@@ -602,20 +602,23 @@ pub(crate) async fn runtime_state_with_harness_for_workspace(
             workspace
                 .join(".jyowo")
                 .join("runtime")
-                .join("evidence.sqlite"),
+                .join("conversation-read-model.sqlite"),
         )
         .await
         .expect("test evidence registry should open"),
     );
-    let evidence_ref_store = Arc::new(EvidenceRefStore::new(
+    let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let event_store_for_evidence = Arc::clone(&event_store) as Arc<dyn harness_journal::EventStore>;
+    let evidence_ref_store = Arc::new(EvidenceRefStore::new_with_event_store(
         evidence_registry,
         Arc::clone(&blob_store),
+        event_store_for_evidence,
     ));
     let harness = Arc::new(
         Harness::builder()
             .with_options(test_harness_options(&workspace))
             .with_model(TestModelProvider::default())
-            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_store(event_store)
             .with_sandbox(NoopSandbox::new())
             .with_blob_store_arc(blob_store)
             .with_evidence_ref_store_arc(evidence_ref_store)

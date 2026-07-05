@@ -1645,3 +1645,1110 @@ Plan execution has two allowed paths:
    The scope crosses contracts, Rust projection, Tauri IPC, frontend state, and UI. Inline execution would weaken the required per-task audit boundary.
 
 Do not start implementation until this plan file is tracked cleanly on `main` and the isolated worktree has been created from `main`.
+
+## Post-Implementation Audit Addendum 2026-07-05
+
+This addendum records the audit result for worktree
+`goya/agent-workbench-conversation-redesign`.
+
+Audit conclusion:
+
+- The worktree has not completed this plan's full implementation.
+- The issues below were found by tracing production code paths.
+- Tests are not accepted as completion evidence unless the production path proves the same behavior.
+- Fixes must be implemented as follow-up tasks in this same worktree before Task 14 can be treated as complete.
+
+Positive evidence from the audit:
+
+- `AssistantSegment::Thinking` is removed from the production Rust contract.
+- Backend-authored permission option ids exist in the Rust permission contract.
+- The Tauri permission resolve path validates conversation id, request id, option id, and submitted decision kind against Rust pending state.
+- `git diff --check` passed during audit.
+- The forbidden leftover grep in Task 14 did not find the main removed production references outside a legacy test name.
+
+Open audit findings:
+
+1. **P0: Workbench inspector permission decisions are not actionable.**
+   - Evidence:
+     - `apps/desktop/src/features/workbench/WorkbenchInspector.tsx`
+     - `apps/desktop/src/features/conversation/evidence/DecisionPanel.tsx`
+   - Current behavior:
+     - `WorkbenchInspector` renders `DecisionPanel` without `onResolve`.
+     - `DecisionPanel` only calls `onResolve?.(...)`.
+     - Approval and denial buttons in the inspector are visible but do nothing.
+   - Required behavior:
+     - The inspector Decision pane and Tool pane must resolve permissions through the same backend-owned resolve path used by the timeline.
+
+2. **P1: `ToolAttempt` projection is incomplete.**
+   - Evidence:
+     - `crates/jyowo-harness-journal/src/conversation_worktree_projector.rs`
+   - Current behavior:
+     - `project_tool_requested` sets `origin: Unknown`, `arguments_preview: None`, `output_summary: None`, `affected_targets: []`, `started_at: None`, `ended_at: None`, and `duration_ms: None`.
+     - `tool.completed` updates status and event refs, but does not backfill output summary, duration, end time, or affected targets.
+   - Required behavior:
+     - `ToolUseRequestedEvent` and `ToolUseCompletedEvent` must produce the planned `ToolAttempt` fields from redacted, bounded, Rust-owned projection data.
+
+3. **P1: Evidence ref registry is not the durable journal-owned design required by Task 3.**
+   - Evidence:
+     - `crates/jyowo-harness-journal/src/evidence.rs`
+     - `apps/desktop/src-tauri/src/commands/runtime.rs`
+     - `crates/jyowo-harness-journal/src/conversation_read_model.rs`
+   - Current behavior:
+     - `EvidenceRefStore` has registry and blob store only; it cannot read journal-backed payloads.
+     - Journal-backed refs can be registered but reads return `"journal-backed evidence reads are unavailable"`.
+     - Desktop runtime opens a separate `.jyowo/runtime/evidence.sqlite`.
+     - `SqliteConversationReadModelStore` does not own the `evidence_refs` table lifecycle.
+   - Required behavior:
+     - Evidence refs must be stored in a journal-owned durable table in the same lifecycle as the read model.
+     - Journal-backed refs must reload the event payload and re-check hash and byte length before returning bytes.
+
+4. **P1: Journal prune paths do not invalidate evidence refs.**
+   - Evidence:
+     - `crates/jyowo-harness-journal/src/store.rs`
+     - `crates/jyowo-harness-journal/src/sqlite.rs`
+     - `crates/jyowo-harness-journal/src/memory.rs`
+     - `crates/jyowo-harness-sdk/src/harness/events.rs`
+   - Current behavior:
+     - `EventStore::prune` has no evidence store dependency.
+     - SQLite and memory prune remove sessions/events without deleting or invalidating evidence rows.
+     - SDK event-store wrappers delegate prune without evidence invalidation.
+   - Required behavior:
+     - Conversation deletion, journal prune, and blob/journal deletion must make matching evidence refs unreadable before any later read.
+
+5. **P1: Large evidence copy behavior is still wrong.**
+   - Evidence:
+     - `apps/desktop/src/features/conversation/evidence/DiffPane.tsx`
+     - `apps/desktop/src/features/conversation/evidence/CommandExecutionView.tsx`
+     - `apps/desktop/src/features/conversation/timeline/command-evidence-block.tsx`
+   - Current behavior:
+     - Full patch copy calls `exportConversationEvidence` and copies the exported file path.
+     - Command visible-output copy includes the command line.
+     - Timeline command block still has the old ambiguous combined copy behavior.
+   - Required behavior:
+     - Full patch copy must fetch patch content through `getConversationDiffPatch`.
+     - Copy command must copy only the command.
+     - Copy visible output must copy only visible output.
+     - The old combined timeline copy action must be removed or replaced with explicit actions.
+
+6. **P2: Artifact image preview does not use the projected preview ref.**
+   - Evidence:
+     - `crates/jyowo-harness-contracts/src/conversation.rs`
+     - `apps/desktop/src/features/workbench/artifacts/ArtifactPane.tsx`
+     - `apps/desktop/src-tauri/src/commands/artifacts.rs`
+   - Current behavior:
+     - `ArtifactRevisionSummary.preview_ref` exists in the contract.
+     - `ArtifactPane` fetches image preview by `artifactId` and `revisionId`.
+     - The Tauri command scans artifact lifecycle events and reads a `blob_ref`.
+   - Required behavior:
+     - Image preview must be driven by the Rust-projected `previewRef` or another backend-owned evidence ref that carries the same ownership, redaction, retention, and hash validation guarantees.
+
+7. **P2: Right-side Context pane is not part of the workbench inspector design.**
+   - Evidence:
+     - `apps/desktop/src/app/shell/AppShell.tsx`
+     - `apps/desktop/src/features/workbench/WorkbenchInspector.tsx`
+   - Current behavior:
+     - `AppShell` renders either `WorkbenchInspector` or `ContextPanel`.
+     - The inspector `context` pane is a placeholder state.
+   - Required behavior:
+     - The right side must behave as the planned inspector surface for Context, Decision, Evidence, Diff, Artifact, and Terminal panes.
+     - Opening the inspector must not hide real context data behind a placeholder.
+
+8. **P2: `ToolInvocationCard` is a no-op button when no click action is provided.**
+   - Evidence:
+     - `apps/desktop/src/features/conversation/evidence/ToolInvocationCard.tsx`
+     - `apps/desktop/src/features/workbench/WorkbenchInspector.tsx`
+   - Current behavior:
+     - The component always renders a focusable `<button>`.
+     - The inspector passes no `onClick`.
+   - Required behavior:
+     - The component must render a non-interactive element when it has no action, or receive a real action.
+
+9. **P3: Planned file map is not fully followed.**
+   - Evidence:
+     - `apps/desktop/src/features/workbench/artifacts/ArtifactPane.tsx`
+     - `apps/desktop/src/features/conversation/Composer.tsx`
+   - Current behavior:
+     - The planned `apps/desktop/src/features/artifacts/ArtifactPane.tsx` does not exist.
+     - `ComposerToolbar` remains inside `Composer.tsx`.
+   - Required behavior:
+     - Either align the implementation with the plan file map, or update this plan with a justified replacement file map and ensure docs/tests/gates accept the final structure.
+
+10. **P3: The worktree is not in a coherent final state.**
+    - Evidence:
+      - `git status --short`
+    - Current behavior:
+      - The worktree still has tracked modified files and untracked files after Task 14-era commits.
+    - Required behavior:
+      - Final handoff must have all intended source changes committed or intentionally left uncommitted with a written reason.
+      - Generated or unrelated noise must not be left in the final worktree.
+
+## Follow-Up Implementation Plan
+
+The following tasks must be completed after the existing Task 14. They are scoped to close the audit findings above. Do not mark Task 14 complete until every follow-up task is complete, audited, and committed.
+
+### Task 15: Wire Inspector Decisions And Context Pane
+
+**Files:**
+
+- Modify `apps/desktop/src/features/workbench/WorkbenchInspector.tsx`
+- Modify `apps/desktop/src/app/shell/AppShell.tsx`
+- Modify `apps/desktop/src/features/context/ContextPanel.tsx` only if the existing panel needs an embeddable inspector mode
+- Modify `apps/desktop/src/features/workbench/WorkbenchInspector.test.tsx`
+- Modify or create `apps/desktop/src/features/workbench/WorkbenchInspector.stories.tsx`
+
+**Design requirement:** The right side is one workbench inspector. Decision and Tool panes must submit permission decisions through the backend-owned resolve command. Context must show real context data, not a placeholder, when selected.
+
+- [ ] Step 1: Add a failing inspector test proving `DecisionPanel` in the Decision pane calls `resolvePermission` with `conversationId`, `requestId`, `decision`, `optionId`, and optional `confirmationText`.
+- [ ] Step 2: Add a failing inspector test proving a Tool pane with `attempt.permission` resolves through the same path.
+- [ ] Step 3: Add a failing shell or inspector test proving selecting/opening the Context pane renders real `ContextPanel` data rather than the placeholder state.
+- [ ] Step 4: Move permission resolution wiring from timeline-only ownership into a shared workbench path that still calls `CommandClient.resolvePermission`.
+- [ ] Step 5: Render the real context content inside the workbench inspector, or compose `ContextPanel` as the inspector Context pane without creating a second policy source.
+- [ ] Step 6: Confirm React submits only user intent and backend option ids; it must not derive permission policy, matcher, sandbox, risk, or data exposure.
+- [ ] Step 7: Run gates.
+
+```bash
+pnpm -C apps/desktop test -- src/features/workbench/WorkbenchInspector.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/evidence/DecisionPanel.test.tsx
+pnpm check:desktop
+git diff --check
+```
+
+- [ ] Step 8: Run read-only subagent audit.
+- [ ] Step 9: Commit `refactor: wire workbench inspector decisions`.
+
+### Task 16: Complete ToolAttempt Projection
+
+**Files:**
+
+- Modify `crates/jyowo-harness-journal/src/conversation_worktree_projector.rs`
+- Modify `crates/jyowo-harness-journal/tests/conversation_workbench_projection.rs`
+- Modify `crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs`
+- Modify `apps/desktop/src/features/conversation/evidence/ToolInvocationCard.tsx`
+- Modify `apps/desktop/src/features/conversation/evidence/ToolInvocationCard.test.tsx`
+
+**Design requirement:** Tool cards must render data emitted by Rust. React must not infer tool origin, arguments, affected targets, output summary, or timing from raw events.
+
+- [ ] Step 1: Add failing Rust projector tests for a tool request with redacted input. Assert `arguments_preview` is bounded, redacted, and not raw JSON.
+- [ ] Step 2: Add failing Rust projector tests for tool completion. Assert `output_summary`, `ended_at`, `duration_ms`, and `affected_targets` are populated when safe payload fields exist.
+- [ ] Step 3: Add failing Rust projector tests for tool origin mapping. Assert built-in, MCP, plugin, app, provider, and unknown origins map to `ToolAttemptOrigin`.
+- [ ] Step 4: Implement `project_tool_attempt_preview(...) -> ToolAttempt` and completion merge logic in Rust.
+- [ ] Step 5: Keep unsafe tool input, private paths, secrets, and raw output out of `ConversationTurn`.
+- [ ] Step 6: Fix `ToolInvocationCard` so it renders a non-button element when no action exists.
+- [ ] Step 7: Add component coverage for interactive and non-interactive card variants.
+- [ ] Step 8: Run gates.
+
+```bash
+cargo test -p jyowo-harness-journal conversation_workbench_projection --test conversation_workbench_projection
+cargo test -p jyowo-harness-journal conversation_worktree_projector --test conversation_worktree_projector
+pnpm -C apps/desktop test -- src/features/conversation/evidence/ToolInvocationCard.test.tsx
+cargo fmt --all --check
+cargo check --workspace
+pnpm check:desktop
+git diff --check
+```
+
+- [ ] Step 9: Run read-only subagent audit.
+- [ ] Step 10: Commit `refactor: complete tool attempt projection`.
+
+### Task 17: Finish Evidence Ref Store Persistence, Journal Reads, And Prune Invalidation
+
+**Files:**
+
+- Modify `crates/jyowo-harness-journal/src/evidence.rs`
+- Modify `crates/jyowo-harness-journal/src/conversation_read_model.rs`
+- Modify `crates/jyowo-harness-journal/src/store.rs`
+- Modify `crates/jyowo-harness-journal/src/sqlite.rs`
+- Modify `crates/jyowo-harness-journal/src/jsonl.rs`
+- Modify `crates/jyowo-harness-journal/src/memory.rs`
+- Modify `crates/jyowo-harness-journal/src/retention.rs`
+- Modify `crates/jyowo-harness-sdk/src/harness.rs`
+- Modify `crates/jyowo-harness-sdk/src/harness/events.rs`
+- Modify `apps/desktop/src-tauri/src/commands/runtime.rs`
+- Modify `crates/jyowo-harness-journal/tests/evidence_ref_store.rs`
+- Modify `crates/jyowo-harness-journal/tests/l1b_stores.rs`
+- Modify `crates/jyowo-harness-sdk/tests/evidence_refs.rs`
+
+**Design requirement:** Evidence refs are durable, journal-owned, conversation-scoped authority records. Registry rows must be in the read model lifecycle. Reads must validate owner, kind, retention, redaction provenance, byte length, and content hash. Prune/delete must make refs unreadable.
+
+- [ ] Step 1: Add failing SQLite persistence test proving the read model database owns an `evidence_refs` table and refs survive process restart.
+- [ ] Step 2: Add failing journal-backed read test proving `JournalPayload` reloads the source event payload, extracts by JSON pointer, and re-checks hash and byte length.
+- [ ] Step 3: Add failing owner/kind/redaction/retention tests for `read_evidence` and paged reads.
+- [ ] Step 4: Add failing prune tests for SQLite, JSONL, and memory stores. After prune, matching refs must be unreadable.
+- [ ] Step 5: Replace the separate desktop `.jyowo/runtime/evidence.sqlite` registry with the journal/read-model-owned registry lifecycle.
+- [ ] Step 6: Add the event store dependency needed for journal-backed reads without creating a higher-layer dependency cycle.
+- [ ] Step 7: Wire evidence invalidation into conversation deletion and prune paths before event/blob data can be read again.
+- [ ] Step 8: Keep GC live roots wired through `EvidenceRefRegistry::list_live_blob_roots`.
+- [ ] Step 9: Run gates.
+
+```bash
+cargo test -p jyowo-harness-journal evidence_ref_store --test evidence_ref_store
+cargo test -p jyowo-harness-journal retention --test l1b_stores
+cargo test -p jyowo-harness-journal prune --test contract
+cargo test -p jyowo-harness-sdk evidence_refs --test evidence_refs
+cargo fmt --all --check
+cargo check --workspace
+git diff --check
+```
+
+- [ ] Step 10: Run read-only subagent audit.
+- [ ] Step 11: Commit `refactor: finish evidence ref persistence`.
+
+### Task 18: Fix Evidence Copy And Fetch UI Semantics
+
+**Files:**
+
+- Modify `apps/desktop/src/features/conversation/evidence/DiffPane.tsx`
+- Modify `apps/desktop/src/features/conversation/evidence/DiffPane.test.tsx`
+- Modify `apps/desktop/src/features/conversation/evidence/CommandExecutionView.tsx`
+- Modify `apps/desktop/src/features/conversation/evidence/CommandExecutionView.test.tsx`
+- Modify `apps/desktop/src/features/conversation/timeline/command-evidence-block.tsx`
+- Modify `apps/desktop/src/features/conversation/timeline/conversation-timeline.large-output.test.tsx`
+
+**Design requirement:** Copy and fetch actions must match the planned evidence model. Visible copy copies visible content only. Full copy fetches bytes through the backend evidence commands. Export remains a separate action.
+
+- [ ] Step 1: Add failing `DiffPane` test proving full patch copy calls `getConversationDiffPatch` and writes patch content, not an exported path.
+- [ ] Step 2: Add failing `CommandExecutionView` test proving copy command writes only `command.command`.
+- [ ] Step 3: Add failing `CommandExecutionView` test proving copy visible output writes only visible stdout/stderr content and not `$ command`, exit code, or duration.
+- [ ] Step 4: Add failing timeline test proving the old combined copy action is gone or split into explicit actions.
+- [ ] Step 5: Implement the copy changes without embedding full output, full patch, or artifact content in `ConversationTurn`.
+- [ ] Step 6: Add user-visible error state for failed evidence fetch/copy where the component already owns the action.
+- [ ] Step 7: Run gates.
+
+```bash
+pnpm -C apps/desktop test -- src/features/conversation/evidence/DiffPane.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/evidence/CommandExecutionView.test.tsx
+pnpm -C apps/desktop test -- src/features/conversation/timeline/conversation-timeline.large-output.test.tsx
+pnpm check:desktop
+git diff --check
+```
+
+- [ ] Step 8: Run read-only subagent audit.
+- [ ] Step 9: Commit `refactor: fix evidence copy semantics`.
+
+### Task 19: Align Artifact Workspace With Evidence Refs
+
+**Files:**
+
+- Modify `crates/jyowo-harness-contracts/src/conversation.rs`
+- Modify `crates/jyowo-harness-journal/src/conversation_worktree_projector.rs`
+- Modify `apps/desktop/src-tauri/src/commands/artifacts.rs`
+- Modify `apps/desktop/src-tauri/src/commands/conversations.rs`
+- Modify `apps/desktop/src/features/workbench/artifacts/ArtifactPane.tsx`
+- Modify or create `apps/desktop/src/features/workbench/WorkbenchInspector.artifacts.test.tsx`
+- Modify or create `apps/desktop/src/features/workbench/artifacts/ArtifactPane.stories.tsx`
+- Modify `apps/desktop/src/features/workbench/WorkbenchInspector.tsx`
+- Modify `apps/desktop/src/shared/artifacts/ArtifactPreview.tsx`
+
+**Design requirement:** Artifact preview and content reads must use backend-owned refs. The accepted file map keeps artifact workspace UI under `features/workbench/artifacts` because it is owned by `WorkbenchInspector`, not a standalone route-level feature.
+
+- [ ] Step 1: Update docs to state that `ArtifactPane` remains in `features/workbench/artifacts` because it is inspector-owned.
+- [ ] Step 2: Add failing Rust projector test proving image artifacts expose `preview_ref` as an evidence-backed preview identifier when the backend can validate it.
+- [ ] Step 3: Add failing Tauri command test proving image preview reads by backend-owned ref and rejects owner, kind, retention, redaction, hash, missing artifact, non-ready revision, and non-image revision mismatches.
+- [ ] Step 4: Add failing `ArtifactPane` test proving image preview uses the projected `previewRef` or evidence-backed preview id, not only `artifactId`/`revisionId` event scanning.
+- [ ] Step 5: Update `ArtifactPreview` image rendering with stable width/height or aspect-ratio constraints.
+- [ ] Step 6: Ensure HTML preview remains sandboxed with no same-origin privilege.
+- [ ] Step 7: Ensure the Tauri preview command validates the selected artifact, revision, status, kind, and content ref through read-model/evidence metadata before reading bytes.
+- [ ] Step 8: Update artifact preview command tests so success and rejection cases register or discover real artifact content evidence refs instead of relying on raw lifecycle `blob_ref` scans.
+- [ ] Step 9: Run gates.
+
+```bash
+cargo test -p jyowo-harness-journal conversation_workbench_projection --test conversation_workbench_projection
+cargo test -p jyowo-desktop-shell artifact_preview
+cargo test -p jyowo-desktop-shell artifact_evidence
+pnpm -C apps/desktop test -- src/features/workbench/WorkbenchInspector.artifacts.test.tsx
+cargo fmt --all --check
+cargo check --workspace
+pnpm check:desktop
+pnpm check:test-architecture
+git diff --check
+```
+
+- [ ] Step 10: Run read-only subagent audit.
+- [ ] Step 11: Commit `refactor: align artifact workspace refs`.
+
+### Task 20: Finish Composer Split And Planned File Map Cleanup
+
+**Files:**
+
+- Modify `apps/desktop/src/features/conversation/Composer.tsx`
+- Create `apps/desktop/src/features/conversation/composer/ComposerToolbar.tsx`
+- Modify `apps/desktop/src/features/conversation/composer/ComposerEditor.tsx`
+- Modify `apps/desktop/src/features/conversation/composer/ReferenceCombobox.tsx`
+- Modify `apps/desktop/src/features/conversation/composer/SlashCommandMenu.tsx`
+- Modify `apps/desktop/src/features/conversation/Composer.test.tsx`
+- Modify `apps/desktop/src/features/conversation/Composer.stories.tsx`
+
+**Design requirement:** Composer split must match the plan's component ownership. Compatibility naming such as `legacyComposerMode` must not remain in production code unless it is renamed to describe current behavior.
+
+- [ ] Step 1: Add failing component or static import test proving `ComposerToolbar` is exported from `features/conversation/composer/ComposerToolbar.tsx`.
+- [ ] Step 2: Move toolbar code out of `Composer.tsx` without changing composer behavior.
+- [ ] Step 3: Rename `legacyComposerMode` to a current-domain helper name or inline it if it is no longer useful.
+- [ ] Step 4: Confirm draft persistence, attachment controls, references, slash commands, model selector, and permission mode behavior still pass existing tests.
+- [ ] Step 5: Run gates.
+
+```bash
+pnpm -C apps/desktop test -- src/features/conversation/Composer.test.tsx
+pnpm check:desktop
+pnpm check:test-architecture
+git diff --check
+```
+
+- [ ] Step 6: Run read-only subagent audit.
+- [ ] Step 7: Commit `refactor: finish composer component split`.
+
+### Task 21: Final Coherence, Docs, And Gates
+
+**Files:**
+
+- Modify only files needed to fix remaining verification failures.
+- Modify `docs/frontend/frontend-product-ux.md`
+- Modify `docs/frontend/frontend-engineering.md`
+- Modify `docs/backend/backend-runtime.md`
+- Modify `docs/backend/backend-engineering.md`
+- Modify `docs/testing/test-inventory.md` only by regenerating it with `pnpm audit:tests > docs/testing/test-inventory.md` when test structure changed.
+
+**Design requirement:** The worktree must be coherent after all follow-up fixes. Docs must describe what production code does, not an aspirational state. The final status must not contain untracked source files or unrelated modified files.
+
+- [ ] Step 1: Update frontend/backend docs to match the final inspector, evidence ref, artifact, and composer structure.
+- [ ] Step 2: Run the forbidden leftover grep from Task 14 again.
+- [ ] Step 3: Run `git status --short` and classify every remaining file as intended source change, generated inventory, or unrelated noise.
+- [ ] Step 4: Remove generated noise only when it was created by this follow-up work and is not required by gates.
+- [ ] Step 5: Run full gates.
+
+```bash
+pnpm audit:tests > docs/testing/test-inventory.md
+pnpm audit:tests
+pnpm check:testing-docs
+pnpm check
+pnpm check:docs
+pnpm check:agent-docs
+pnpm check:frontend-docs
+pnpm check:backend-docs
+pnpm check:desktop
+pnpm check:rust
+pnpm check:test-architecture
+pnpm check:agent-orchestration-no-fakes
+pnpm check:agent-supervisor-sidecar
+pnpm check:quick
+pnpm check:frontend:fast
+pnpm check:rust:fast
+git diff --check
+```
+
+- [ ] Step 6: Run one final read-only audit over the full branch. The audit must explicitly verify every finding in this addendum is closed.
+- [ ] Step 7: Commit `refactor: close conversation workbench audit findings`.
+
+## Follow-Up Completion Criteria
+
+The addendum is complete only when all of these are true:
+
+- [ ] Inspector Decision and Tool panes resolve permissions through Rust.
+- [ ] Context pane shows real context data inside the workbench inspector model.
+- [ ] `ToolAttempt` projection includes redacted bounded arguments, origin, output summary, affected targets, start/end time, and duration when safe source data exists.
+- [ ] Evidence refs live in the journal/read-model persistence lifecycle.
+- [ ] Journal-backed evidence reads reload and hash-check source payloads.
+- [ ] Prune and delete paths invalidate matching evidence refs before reads can succeed.
+- [ ] Full patch copy fetches patch bytes through `getConversationDiffPatch`.
+- [ ] Command copy actions are explicit and do not copy combined command/output/status blocks.
+- [ ] Timeline command evidence no longer exposes the old ambiguous combined copy behavior.
+- [ ] Artifact image preview is driven by a backend-owned ref.
+- [ ] Artifact image rendering has stable dimensions or aspect-ratio constraints.
+- [ ] `ToolInvocationCard` has no focusable no-op state.
+- [ ] `ArtifactPane` and `ComposerToolbar` file placement matches the accepted file map.
+- [ ] Final docs match production behavior.
+- [ ] Final worktree state is coherent and has no accidental untracked source files.
+- [ ] Required gates pass with exit code 0.
+- [ ] A read-only audit returns PASS after these follow-up tasks.
+
+## Follow-Up Execution Checkpoint 2026-07-05
+
+This checkpoint records issues found while executing the follow-up plan. These items are part of the same completion checklist and must be closed before Task 21 can pass.
+
+Current status:
+
+- Tasks 16, 17, 18, and 20 have partial implementation evidence in the worktree, but they are not complete until their task gates and read-only audits pass.
+- Task 19 is still open. The production path has moved toward evidence-backed artifact previews, but command tests currently expose gaps in projection, validation, and test setup.
+- Task 21 is still open. Final docs, generated test inventory, full gates, final audit, and coherent worktree classification are not complete.
+
+Additional execution findings:
+
+1. **Task 19 blocker: artifact revisions still need a projected preview ref.**
+   - Evidence:
+     - `crates/jyowo-harness-journal/src/conversation_worktree_projector.rs`
+   - Required behavior:
+     - Image artifact revisions must expose `preview_ref` or an equivalent evidence-backed identifier in the Rust projection.
+     - The frontend must use that identifier when requesting image previews.
+
+2. **Task 19 blocker: artifact preview command must keep revision policy checks.**
+   - Evidence:
+     - `apps/desktop/src-tauri/src/commands/artifacts.rs`
+   - Required behavior:
+     - `get_artifact_media_preview` must verify artifact id, revision id, content ref, revision status, artifact kind, evidence owner, evidence kind, retention, redaction provenance, byte length, and hash before returning image bytes.
+     - Moving away from lifecycle `blob_ref` scanning must not remove the previous missing-artifact, non-ready, and non-image rejection semantics.
+
+3. **Task 19 blocker: artifact preview tests must exercise the production evidence path.**
+   - Evidence:
+     - `apps/desktop/src-tauri/tests/commands/artifact_preview.rs`
+   - Required behavior:
+     - Success tests must register or discover artifact content evidence refs before calling `get_artifact_media_preview`.
+     - Rejection tests must pass real or intentionally mismatched `content_ref` values so failures prove the production validator, not test-only event scanning.
+
+4. **Task 17 follow-up: read-model-owned evidence registry needs lifecycle verification.**
+   - Evidence:
+     - `apps/desktop/src-tauri/src/commands/runtime.rs`
+     - `crates/jyowo-harness-journal/src/conversation_read_model.rs`
+   - Required behavior:
+     - Desktop must not keep an independent evidence registry lifecycle outside the conversation read model.
+     - SQLite schema ownership, restart persistence, prune invalidation, and GC live roots must be verified together.
+
+5. **Task 21 follow-up: docs and gates must reflect the accepted file map.**
+   - Evidence:
+     - `docs/frontend/frontend-engineering.md`
+     - `docs/frontend/frontend-product-ux.md`
+     - `docs/backend/backend-runtime.md`
+     - `docs/backend/backend-engineering.md`
+   - Required behavior:
+     - Docs must describe `features/workbench/artifacts` as inspector-owned artifact UI if that structure remains.
+     - Test inventory must be regenerated only through `pnpm audit:tests > docs/testing/test-inventory.md` when test structure changes.
+
+Execution checklist:
+
+- [ ] Close the Task 19 projector gap by emitting a backend-owned `preview_ref` for image artifact revisions.
+- [ ] Close the Task 19 command gap by validating artifact/revision/content-ref/status/kind before evidence bytes are read.
+- [ ] Close the Task 19 test gap by replacing raw `blob_ref` preview assumptions with real evidence-ref setup.
+- [ ] Re-run `cargo test -p jyowo-desktop-shell artifact_preview` and record exit code 0 before marking Task 19 done.
+- [ ] Re-run `cargo test -p jyowo-harness-journal conversation_worktree_projector --test conversation_worktree_projector` after projector changes.
+- [ ] Re-run `pnpm -C apps/desktop test -- src/features/workbench/WorkbenchInspector.artifacts.test.tsx` after frontend preview-ref changes.
+- [ ] Confirm the evidence registry lives in the read-model lifecycle and prune/delete invalidates refs before Task 17 is marked done.
+- [ ] Update frontend/backend docs to match the accepted inspector, artifact, evidence, and composer ownership.
+- [ ] Run the Task 21 gates and classify every tracked or untracked file in `git status --short`.
+- [ ] Run a final read-only audit that explicitly checks every item in this addendum and checkpoint.
+
+## Follow-Up Resolution Checkpoint 2026-07-05
+
+This checkpoint supersedes the open blocker status above. The blocker list remains in the plan as audit history. The current implementation must still pass final gates and a read-only audit before Task 21 is complete.
+
+Production code resolution status:
+
+1. **Task 17 evidence refs now use the read-model lifecycle.**
+   - Evidence:
+     - `crates/jyowo-harness-journal/src/evidence.rs`
+     - `crates/jyowo-harness-journal/src/conversation_read_model.rs`
+     - `crates/jyowo-harness-sdk/src/harness/events.rs`
+     - `apps/desktop/src-tauri/src/commands/runtime.rs`
+   - Current behavior:
+     - The SQLite registry owns an `evidence_refs` table keyed by `(tenant_id, evidence_ref_id)`.
+     - Journal-backed evidence reads reload the source event payload through the configured event store, extract by JSON pointer, and validate byte length and BLAKE3 hash.
+     - Missing event-store access fails closed with `journal-backed evidence reader is unavailable`.
+     - Conversation delete and prune wrappers invalidate matching evidence refs before the public operation returns.
+   - Audit boundary:
+     - Prune invalidation currently happens after the wrapped event-store prune call and before the wrapper returns. The code does not add a separate cross-reader lock for concurrent reads during the prune window.
+
+2. **Task 17 projection refs now avoid mismatched raw/redacted journal payloads.**
+   - Evidence:
+     - `crates/jyowo-harness-journal/src/conversation_worktree_projector.rs`
+   - Current behavior:
+     - Clean payload evidence can use `EvidenceRefSource::JournalPayload`.
+     - Redacted or withheld evidence is stored as blob-backed evidence so hash and byte length match the projected bytes.
+     - Diff patch pointers map from projected paths to typed journal event paths.
+     - Command stdout/stderr refs map to typed event pointers.
+
+3. **Task 18 copy semantics are split and backend-backed where required.**
+   - Evidence:
+     - `apps/desktop/src/features/conversation/evidence/DiffPane.tsx`
+     - `apps/desktop/src/features/conversation/evidence/CommandExecutionView.tsx`
+     - `apps/desktop/src/features/conversation/timeline/command-evidence-block.tsx`
+   - Current behavior:
+     - Full diff patch copy calls `getConversationDiffPatch`.
+     - Command copy writes only `command.command`.
+     - Visible output copy writes only visible stdout/stderr content.
+     - The timeline command evidence block no longer exposes the old ambiguous combined copy action.
+
+4. **Task 19 artifact preview now uses backend-owned refs.**
+   - Evidence:
+     - `crates/jyowo-harness-journal/src/conversation_worktree_projector.rs`
+     - `apps/desktop/src-tauri/src/commands/artifacts.rs`
+     - `apps/desktop/src/features/workbench/artifacts/ArtifactPane.tsx`
+     - `apps/desktop/src/shared/artifacts/ArtifactPreview.tsx`
+   - Current behavior:
+     - Image artifact revisions project `preview_ref` from the backend-owned content evidence ref.
+     - `get_artifact_media_preview` validates artifact id, revision id, revision status, artifact/image kind, selected content ref, projected preview/content ref, evidence metadata, byte limit, declared MIME, detected MIME, and sanitized image bytes before returning a data URL.
+     - The workbench artifact pane requests image previews by `previewRef` when available.
+     - Image preview rendering has bounded dimensions.
+
+5. **Task 20 composer split is implemented.**
+   - Evidence:
+     - `apps/desktop/src/features/conversation/Composer.tsx`
+     - `apps/desktop/src/features/conversation/composer/ComposerToolbar.tsx`
+     - `apps/desktop/src/features/conversation/composer/ReferenceCombobox.tsx`
+     - `apps/desktop/src/features/conversation/composer/SlashCommandMenu.tsx`
+   - Current behavior:
+     - Toolbar ownership is split out of `Composer.tsx`.
+     - Reference picker and slash command UI are separate composer-owned components.
+     - `legacyComposerMode` was renamed to a current-domain fallback helper.
+
+6. **Task 21 cleanup has started.**
+   - Evidence:
+     - Task 14 forbidden leftover grep was rerun.
+   - Current behavior:
+     - The grep has no production matches after renaming one unrelated Rust test function that caused a false positive.
+
+Resolution implementation checklist:
+
+- [x] Emit backend-owned `preview_ref` for image artifact revisions.
+- [x] Validate artifact id, revision id, status, kind, selected content ref, preview/content ref, and evidence bytes before image preview reads.
+- [x] Replace artifact preview tests that relied on raw `blob_ref` scanning with evidence-ref setup.
+- [x] Confirm journal-backed evidence reads reload payloads and verify hash/length.
+- [x] Keep redacted/withheld projected evidence blob-backed.
+- [x] Confirm evidence refs are read-model lifecycle records and GC live roots include blob-backed refs.
+- [x] Invalidate evidence refs on conversation deletion and prune wrapper completion.
+- [x] Split command copy into command-only and visible-output actions.
+- [x] Fetch full diff patch bytes through `getConversationDiffPatch`.
+- [x] Split composer toolbar, reference combobox, and slash command menu into accepted files.
+- [x] Regenerate `docs/testing/test-inventory.md` with `pnpm audit:tests > docs/testing/test-inventory.md`.
+- [x] Run Task 14 forbidden leftover grep with no production matches.
+- [ ] Run the remaining Task 21 gates after this checkpoint update.
+- [ ] Classify every tracked and untracked file in `git status --short`.
+- [ ] Run final read-only audit over the full branch.
+- [ ] Update this checkpoint with final gate results and audit result before claiming Task 21 complete.
+
+## Follow-Up Read-Only Audit Failure 2026-07-05
+
+The final read-only audit returned **FAIL**. This section is now part of Task 21 and supersedes any completion claim above. The codebase must not be marked complete until every item below is fixed, verified, and re-audited.
+
+Gate status before this audit:
+
+- `pnpm check`: exit code 0.
+- `pnpm check:quick`: exit code 0.
+- `pnpm check:frontend:fast`: exit code 0 through `pnpm check:quick`.
+- `pnpm check:rust:fast`: exit code 0 through `pnpm check:quick`.
+- `git diff --check`: exit code 0.
+- Task 14 forbidden leftover grep: exit code 1 with no production matches.
+
+Audit findings:
+
+1. **Task 17 blocker: prune evidence invalidation is not fail-closed.**
+   - Evidence:
+     - `crates/jyowo-harness-sdk/src/harness/events.rs`
+   - Current behavior:
+     - `prune_with_evidence_invalidation` calls `inner.prune(...)` before `evidence_ref_store.delete_for_conversation(...)`.
+     - If evidence deletion fails after the event-store prune succeeds, pruned sessions can leave readable evidence registry rows.
+   - Required behavior:
+     - Prune must make matching evidence refs unreadable before event payloads become unreachable, or the operation must fail without leaving pruned events and readable refs inconsistent.
+
+2. **Task 17 blocker: generic `delete_session` can bypass evidence invalidation.**
+   - Evidence:
+     - `crates/jyowo-harness-sdk/src/harness/events.rs`
+   - Current behavior:
+     - `ConversationDeletionGuardEventStore::delete_session` delegates directly to `inner.delete_session(...)`.
+     - `Harness::event_store()` exposes the guarded event store, so callers using the generic store path can delete a session without deleting matching evidence refs.
+   - Required behavior:
+     - Every public session deletion path that can delete a conversation session must invalidate matching evidence refs through the same lifecycle.
+
+3. **Task 17 blocker: `EvidenceRefStore::delete_for_conversation` deletes backing blobs before registry rows.**
+   - Evidence:
+     - `crates/jyowo-harness-journal/src/evidence.rs`
+   - Current behavior:
+     - `delete_for_conversation` lists records, deletes blob-backed payloads, then deletes registry rows.
+     - For journal-backed refs, the registry row remains the read authority until the final registry delete.
+   - Required behavior:
+     - Registry rows must become unreadable before backing blob cleanup. Blob cleanup failure must not preserve readable evidence refs for deleted or pruned conversations.
+
+4. **Task 21 blocker: worktree coherence still has untracked source files.**
+   - Evidence:
+     - `git status --short`
+     - `apps/desktop/src/features/conversation/composer/ComposerToolbar.tsx`
+     - `apps/desktop/src/features/conversation/composer/ReferenceCombobox.tsx`
+     - `apps/desktop/src/features/conversation/composer/SlashCommandMenu.tsx`
+   - Current behavior:
+     - The files are intended implementation files but remain untracked in the worktree.
+   - Required behavior:
+     - Final handoff must classify every modified and untracked file. Intended new source and test files must be staged or otherwise explicitly included in the final file set before claiming coherence.
+
+5. **Task 21 blocker: frontend docs reference a nonexistent workbench state file.**
+   - Evidence:
+     - `docs/frontend/frontend-engineering.md`
+     - `apps/desktop/src/shared/state/ui-store.ts`
+   - Current behavior:
+     - The docs still say `features/workbench/workbench-state.ts` provides workbench hooks, but that file does not exist.
+     - Current state lives in `shared/state/ui-store.ts` and `shared/state/workbench-selection.ts`.
+   - Required behavior:
+     - Docs must describe the production file map exactly. They must not refer to nonexistent feature state files.
+
+Code quality and design risks:
+
+- **P1:** Evidence ref invalidation is not atomic with prune/delete. The current order can leave an inconsistent state if the second phase fails.
+- **P1:** Generic SDK event-store deletion remains a bypass around the conversation evidence lifecycle.
+- **P2:** `delete_for_conversation` should remove read authority before backing storage cleanup.
+- **P2:** Docs are not aligned with the implemented workbench state ownership.
+- **P3:** New implementation files remain untracked, so final handoff is not coherent.
+
+Implementation plan:
+
+1. **Fix evidence deletion ordering.**
+   - Change `EvidenceRefStore::delete_for_conversation` so registry rows become unreadable before blob cleanup.
+   - Preserve enough blob refs for best-effort or fail-closed backing blob deletion after registry invalidation.
+   - Add or update tests that prove a blob cleanup failure does not leave readable registry refs.
+
+2. **Close generic session deletion bypass.**
+   - Route `ConversationDeletionGuardEventStore::delete_session` through evidence invalidation.
+   - Ensure `delete_session` and conversation facade deletion share the same evidence lifecycle.
+   - Add or update SDK tests proving direct event-store deletion invalidates evidence refs.
+
+3. **Make prune fail-closed or explicitly two-phase.**
+   - Rework `prune_with_evidence_invalidation` so evidence refs are invalidated before pruned event payloads can become unreadable, or introduce a durable invalidation marker that makes reads fail before the event-store prune.
+   - Keep candidate-session discovery bounded and tenant-scoped.
+   - Add tests for prune failure ordering and stale-ref unreadability.
+
+4. **Fix docs and worktree coherence.**
+   - Update `docs/frontend/frontend-engineering.md` to name the actual workbench state files.
+   - Classify all tracked and untracked files after fixes.
+   - Ensure intended new files are included in the final source set and no generated noise remains.
+
+5. **Re-run gates and audit.**
+   - Re-run targeted Rust tests for evidence delete/prune lifecycle.
+   - Re-run docs gates after docs changes.
+   - Re-run full Task 21 gates.
+   - Run a final read-only audit that explicitly verifies all five findings above.
+
+Checklist:
+
+- [ ] `EvidenceRefStore::delete_for_conversation` removes registry read authority before backing blob cleanup.
+- [ ] Blob cleanup failure no longer leaves readable evidence refs for a deleted conversation.
+- [ ] Generic `EventStore::delete_session` path invalidates matching evidence refs.
+- [ ] Conversation facade deletion and generic event-store deletion share the same evidence lifecycle.
+- [ ] Prune invalidates matching evidence refs before pruned event payloads become unreachable, or uses a durable invalidation marker that makes reads fail first.
+- [ ] Tests cover direct `delete_session` evidence invalidation.
+- [ ] Tests cover prune evidence invalidation ordering.
+- [ ] Tests cover blob cleanup failure after registry invalidation.
+- [ ] `docs/frontend/frontend-engineering.md` references only existing workbench state files.
+- [ ] `git status --short --untracked-files=all` is classified and has no accidental untracked source files.
+- [ ] `pnpm check:docs` passes after docs edits.
+- [ ] Targeted evidence lifecycle tests pass.
+- [ ] `pnpm check` passes.
+- [ ] `pnpm check:quick` passes.
+- [ ] `git diff --check` passes.
+- [ ] Final read-only audit returns PASS.
+
+## Follow-Up Implementation Checkpoint 2026-07-05
+
+This checkpoint records the implementation of the five read-only audit failures above. It does not remove the failure record; that record remains audit history.
+
+Production code changes:
+
+1. **Evidence ref conversation deletion is fail-closed for read authority.**
+   - `crates/jyowo-harness-journal/src/evidence.rs`
+   - `EvidenceRefStore::delete_for_conversation` now lists blob-backed refs, deletes registry rows first, then deletes backing blobs.
+   - If blob cleanup fails after registry deletion, the evidence ref is no longer readable through the registry.
+
+2. **Generic SDK `EventStore::delete_session` no longer bypasses evidence invalidation.**
+   - `crates/jyowo-harness-sdk/src/harness/events.rs`
+   - `Harness::event_store()` returns `ConversationDeletionGuardEventStore` with the configured evidence ref store.
+   - `ConversationDeletionGuardEventStore::delete_session` and `LifecycleHookEventStore::delete_session` call evidence invalidation before delegating to the inner event store.
+
+3. **Prune invalidates evidence refs before event payload pruning.**
+   - `crates/jyowo-harness-sdk/src/harness/events.rs`
+   - `prune_with_evidence_invalidation` discovers tenant-scoped candidate sessions, deletes matching evidence refs, then calls `inner.prune(...)`.
+   - This can leave events without evidence refs if `inner.prune(...)` fails after invalidation. That is an accepted fail-closed tradeoff: stale refs are unreadable before payload reachability can be removed.
+
+4. **Frontend workbench state docs now match production files.**
+   - `docs/frontend/frontend-engineering.md`
+   - Current selection state is documented as shared UI state through `useUiStore` selectors, not a nonexistent `features/workbench/workbench-state.ts` wrapper.
+
+5. **Test inventory was regenerated through the required command.**
+   - `docs/testing/test-inventory.md`
+   - Command used: `pnpm audit:tests > docs/testing/test-inventory.md`.
+
+Verification:
+
+- `cargo fmt --all --check`: exit code 0.
+- `cargo test -p jyowo-harness-journal --test evidence_ref_store`: exit code 0.
+- `cargo test -p jyowo-harness-sdk --features testing --test evidence_refs`: exit code 0.
+- `cargo test -p jyowo-harness-sdk harness::events::tests`: exit code 0.
+- `pnpm audit:tests`: exit code 0.
+- `pnpm check:testing-docs`: exit code 0.
+- `pnpm check:docs`: exit code 0.
+- `pnpm check:desktop`: exit code 0.
+- `pnpm check:rust`: exit code 0.
+- `git diff --check`: exit code 0.
+- `pnpm check:quick`: first run failed only because the filesystem had 572M free and Rust archiving hit `No space left on device`; `cargo clean` removed 70.3G of local build artifacts; rerun exit code 0.
+
+Root gate note:
+
+- `pnpm check` was not rerun as a single wrapper after the disk cleanup.
+- Equivalent component coverage was run through `pnpm check:quick`, `pnpm check:desktop`, and `pnpm check:rust`; together these cover the `pnpm check` script components.
+
+Worktree classification:
+
+- Tauri command and IPC implementation:
+  - `apps/desktop/src-tauri/src/commands/artifacts.rs`
+  - `apps/desktop/src-tauri/src/commands/contracts.rs`
+  - `apps/desktop/src-tauri/src/commands/mod.rs`
+  - `apps/desktop/src-tauri/src/commands/runtime.rs`
+  - `apps/desktop/src/shared/tauri/commands.ts`
+- Tauri command tests and support:
+  - `apps/desktop/src-tauri/tests/commands/artifact_listing.rs`
+  - `apps/desktop/src-tauri/tests/commands/artifact_preview.rs`
+  - `apps/desktop/src-tauri/tests/commands/support.rs`
+- Desktop shell and conversation UI:
+  - `apps/desktop/src/app/shell/AppShell.tsx`
+  - `apps/desktop/src/features/conversation/Composer.tsx`
+  - `apps/desktop/src/features/conversation/Composer.test.tsx`
+  - `apps/desktop/src/features/conversation/composer/ComposerEditor.tsx`
+  - `apps/desktop/src/features/conversation/composer/ComposerToolbar.tsx`
+  - `apps/desktop/src/features/conversation/composer/ReferenceCombobox.tsx`
+  - `apps/desktop/src/features/conversation/composer/SlashCommandMenu.tsx`
+  - `apps/desktop/src/features/conversation/timeline/command-evidence-block.tsx`
+  - `apps/desktop/src/features/conversation/timeline/conversation-timeline.large-output.test.tsx`
+- Conversation evidence UI and tests:
+  - `apps/desktop/src/features/conversation/evidence/CommandExecutionView.tsx`
+  - `apps/desktop/src/features/conversation/evidence/CommandExecutionView.test.tsx`
+  - `apps/desktop/src/features/conversation/evidence/DiffPane.tsx`
+  - `apps/desktop/src/features/conversation/evidence/DiffPane.test.tsx`
+  - `apps/desktop/src/features/conversation/evidence/ToolInvocationCard.tsx`
+  - `apps/desktop/src/features/conversation/evidence/ToolInvocationCard.test.tsx`
+- Workbench artifact inspector and preview UI:
+  - `apps/desktop/src/features/workbench/WorkbenchInspector.tsx`
+  - `apps/desktop/src/features/workbench/WorkbenchInspector.test.tsx`
+  - `apps/desktop/src/features/workbench/WorkbenchInspector.artifacts.test.tsx`
+  - `apps/desktop/src/features/workbench/WorkbenchInspector.test-support.tsx`
+  - `apps/desktop/src/features/workbench/artifacts/ArtifactPane.tsx`
+  - `apps/desktop/src/shared/artifacts/ArtifactPreview.tsx`
+- I18n updates:
+  - `apps/desktop/src/shared/i18n/locales/en-US.ts`
+  - `apps/desktop/src/shared/i18n/locales/zh-CN.ts`
+- Journal/read-model/evidence lifecycle:
+  - `crates/jyowo-harness-journal/src/conversation_read_model.rs`
+  - `crates/jyowo-harness-journal/src/conversation_worktree_projector.rs`
+  - `crates/jyowo-harness-journal/src/evidence.rs`
+  - `crates/jyowo-harness-journal/src/retention.rs`
+  - `crates/jyowo-harness-journal/tests/conversation_read_model.rs`
+  - `crates/jyowo-harness-journal/tests/conversation_workbench_projection.rs`
+  - `crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs`
+  - `crates/jyowo-harness-journal/tests/evidence_ref_journal_payload.rs`
+  - `crates/jyowo-harness-journal/tests/evidence_ref_retention.rs`
+  - `crates/jyowo-harness-journal/tests/evidence_ref_store.rs`
+  - `crates/jyowo-harness-journal/tests/l1b_stores.rs`
+- SDK conversation/runtime/evidence lifecycle:
+  - `crates/jyowo-harness-sdk/src/harness.rs`
+  - `crates/jyowo-harness-sdk/src/harness/conversation.rs`
+  - `crates/jyowo-harness-sdk/src/harness/events.rs`
+  - `crates/jyowo-harness-sdk/src/harness/mcp_server.rs`
+  - `crates/jyowo-harness-sdk/src/harness/read_model.rs`
+  - `crates/jyowo-harness-sdk/src/harness/session_runtime.rs`
+  - `crates/jyowo-harness-sdk/tests/conversation_read_model.rs`
+  - `crates/jyowo-harness-sdk/tests/evidence_refs.rs`
+  - `crates/jyowo-harness-sdk/tests/runtime_assembly_contract.rs`
+- Architecture and testing docs:
+  - `docs/backend/backend-engineering.md`
+  - `docs/backend/backend-runtime.md`
+  - `docs/frontend/frontend-engineering.md`
+  - `docs/frontend/frontend-product-ux.md`
+  - `docs/superpowers/plans/2026-07-04-agent-workbench-conversation-redesign.md`
+  - `docs/testing/test-inventory.md`
+
+Untracked file classification:
+
+- Intended new source files:
+  - `apps/desktop/src/features/conversation/composer/ComposerToolbar.tsx`
+  - `apps/desktop/src/features/conversation/composer/ReferenceCombobox.tsx`
+  - `apps/desktop/src/features/conversation/composer/SlashCommandMenu.tsx`
+- Intended new test/support files:
+  - `apps/desktop/src/features/conversation/evidence/CommandExecutionView.test.tsx`
+  - `apps/desktop/src/features/conversation/evidence/DiffPane.test.tsx`
+  - `apps/desktop/src/features/conversation/evidence/ToolInvocationCard.test.tsx`
+  - `apps/desktop/src/features/workbench/WorkbenchInspector.artifacts.test.tsx`
+  - `apps/desktop/src/features/workbench/WorkbenchInspector.test-support.tsx`
+  - `crates/jyowo-harness-journal/tests/evidence_ref_journal_payload.rs`
+  - `crates/jyowo-harness-journal/tests/evidence_ref_retention.rs`
+- No generated artifact noise is intentionally included in the source file set.
+- The new files remain uncommitted and unstaged because this checkpoint does not perform git staging or commit operations.
+
+Implementation checklist update:
+
+- [x] `EvidenceRefStore::delete_for_conversation` removes registry read authority before backing blob cleanup.
+- [x] Blob cleanup failure no longer leaves readable evidence refs for a deleted conversation.
+- [x] Generic `EventStore::delete_session` path invalidates matching evidence refs.
+- [x] Conversation facade deletion and generic event-store deletion share the same evidence lifecycle.
+- [x] Prune invalidates matching evidence refs before pruned event payloads become unreachable.
+- [x] Tests cover direct `delete_session` evidence invalidation.
+- [x] Tests cover prune evidence invalidation ordering.
+- [x] Tests cover blob cleanup failure after registry invalidation.
+- [x] `docs/frontend/frontend-engineering.md` references only existing workbench state files.
+- [x] `git status --short --untracked-files=all` is classified and has no accidental generated untracked files.
+- [x] `pnpm check:docs` passes after docs edits.
+- [x] Targeted evidence lifecycle tests pass.
+- [ ] `pnpm check` passes as a single wrapper after this checkpoint.
+- [x] `pnpm check:quick` passes after disk cleanup.
+- [x] `git diff --check` passes.
+- [ ] Final read-only audit returns PASS.
+
+## Follow-Up Read-Only Audit Failure 2026-07-05 Round 2
+
+The follow-up read-only audit returned **FAIL** with one remaining Task 17 issue. The earlier evidence deletion ordering, direct `delete_session` bypass, frontend docs, and worktree classification findings are now closed or classified. This section supersedes the completion interpretation of the implementation checkpoint above.
+
+Audit result:
+
+1. **Task 17 blocker: prune evidence invalidation is still not bound to the actual inner prune deletion set.**
+   - Evidence:
+     - `crates/jyowo-harness-sdk/src/harness/events.rs`
+     - `crates/jyowo-harness-journal/src/jsonl.rs`
+     - `apps/desktop/src-tauri/src/commands/runtime.rs`
+   - Current behavior:
+     - `prune_with_evidence_invalidation` calls `prune_candidate_sessions(...)`, invalidates evidence refs for that predicted set, then calls `inner.prune(...)`.
+     - The production desktop runtime uses `JsonlEventStore`.
+     - `JsonlEventStore::prune` independently calls `list_sessions(...)`, computes its own `cutoff`, computes its own candidates, then removes segment files.
+     - The wrapper candidate set and the inner deletion set are not a single durable or transactional set.
+   - Failure mode:
+     - A session can cross the prune cutoff between the wrapper candidate calculation and the inner store candidate calculation.
+     - In that case, `inner.prune(...)` can delete event payloads for a session whose evidence refs were not invalidated first.
+   - Required behavior:
+     - Evidence invalidation must be tied to the exact session ids that the inner prune will delete, or a durable invalidation marker must make matching evidence refs unreadable before any inner prune can remove their event payloads.
+
+Closed findings from the previous audit:
+
+- `EvidenceRefStore::delete_for_conversation` now removes registry read authority before backing blob cleanup.
+- Blob cleanup failure no longer preserves readable evidence refs.
+- `Harness::event_store().delete_session(...)` routes through evidence invalidation.
+- `LifecycleHookEventStore::delete_session(...)` and generic guarded deletion share the evidence lifecycle.
+- `docs/frontend/frontend-engineering.md` no longer describes a nonexistent current workbench state file.
+- Current untracked source/test files are classified as intended, with no generated artifact noise intentionally included.
+
+Implementation plan:
+
+1. **Make prune use one deletion set.**
+   - Prefer adding a backend-supported prune path that accepts or returns the exact candidate session ids to be deleted.
+   - Avoid relying on two separate `now()` calls and two separate `list_sessions(...)` snapshots.
+   - Keep tenant scoping and `keep_latest_n_sessions` semantics identical to the existing store behavior.
+
+2. **Bind evidence invalidation to that deletion set.**
+   - Invalidate evidence refs for the exact session ids before segment files or snapshots are removed.
+   - If invalidation fails, do not delete event payloads.
+   - If payload deletion later fails, keep refs unreadable and return the prune error.
+
+3. **Update production store behavior, not only SDK wrapper behavior.**
+   - Cover the production `JsonlEventStore` path used by desktop runtime.
+   - Check other `EventStore::prune` implementations for the same two-snapshot risk.
+   - Do not make tests pass by only mocking the wrapper candidate path.
+
+4. **Add targeted regression tests.**
+   - Add a test proving the actual inner deletion set is the same set invalidated before deletion.
+   - Add a boundary-time or injected-candidate-drift test if the existing abstractions allow it.
+   - Keep the test tied to production store behavior, not only a synthetic mock.
+
+5. **Re-run gates and read-only audit.**
+   - Re-run targeted prune/evidence tests.
+   - Re-run `cargo fmt --all --check`.
+   - Re-run `pnpm check:rust` or the narrower Rust gates plus the affected full gate if the change stays in Rust.
+   - Re-run `pnpm check:docs` after this plan update.
+   - Re-run final read-only audit focused on the actual deletion-set binding.
+
+Checklist:
+
+- [ ] Prune has one authoritative session deletion set for evidence invalidation and event payload removal.
+- [ ] `JsonlEventStore` production prune cannot delete a session that was not invalidated first.
+- [ ] The implementation no longer depends on two independent `now()` calls for wrapper invalidation and inner deletion.
+- [ ] Invalidation failure prevents event payload deletion.
+- [ ] Payload deletion failure does not restore evidence read authority.
+- [ ] Other `EventStore::prune` implementations are checked for the same mismatch.
+- [ ] A production-path regression test covers candidate drift or proves the shared deletion set.
+- [ ] Targeted prune/evidence tests pass.
+- [ ] `cargo fmt --all --check` passes after the prune fix.
+- [ ] Rust gate passes after the prune fix.
+- [ ] `pnpm check:docs` passes after this plan update.
+- [ ] Final read-only audit returns PASS.
+
+## Follow-Up Implementation Checkpoint 2026-07-05 Round 2
+
+This checkpoint records the fix for the remaining prune/evidence lifecycle blocker from the Round 2 read-only audit.
+
+Production code changes:
+
+1. **Prune now has an exact-session deletion API.**
+   - `crates/jyowo-harness-journal/src/store.rs`
+   - `EventStore::prune_sessions(...)` deletes exactly the supplied session ids and defaults to fail-closed for stores that do not implement it.
+   - `Arc<T>` forwards `prune_sessions(...)` to the wrapped store.
+
+2. **Production stores support the same exact deletion set used by evidence invalidation.**
+   - `crates/jyowo-harness-journal/src/jsonl.rs`
+   - `crates/jyowo-harness-journal/src/memory.rs`
+   - `crates/jyowo-harness-journal/src/sqlite.rs`
+   - `crates/jyowo-harness-journal/src/version.rs`
+   - Normal `prune(...)` still computes candidates from policy.
+   - Payload deletion then runs through `prune_sessions(...)` using that already-computed set.
+   - `JsonlEventStore::prune_sessions(...)` removes only the supplied session segment files and snapshots.
+   - `SqliteEventStore::prune_sessions(...)` removes only the supplied session rows in one transaction.
+   - `InMemoryEventStore::prune_sessions(...)` removes only the supplied session entries.
+   - `VersionedEventStore::prune_sessions(...)` delegates to its inner store.
+
+3. **SDK evidence invalidation is bound to the deletion set.**
+   - `crates/jyowo-harness-sdk/src/harness/events.rs`
+   - `prune_with_evidence_invalidation(...)` now computes candidate sessions once, invalidates evidence refs for exactly those session ids, then calls `inner.prune_sessions(...)`.
+   - It no longer calls `inner.prune(...)` after invalidation, so the inner store cannot recompute a wider candidate set with a later `now()` or a different session snapshot.
+   - If evidence invalidation fails, event payload deletion is not attempted.
+   - If exact payload deletion fails after invalidation, evidence refs stay unreadable and the prune error is returned.
+
+4. **Wrapper exact-prune paths preserve the lifecycle invariant.**
+   - `ConversationDeletionGuardEventStore::prune_sessions(...)` invalidates evidence refs for the supplied ids before delegating.
+   - `LifecycleHookEventStore::prune_sessions(...)` does the same.
+
+5. **Production-path regression coverage was added.**
+   - `crates/jyowo-harness-journal/tests/l1b_stores.rs`
+   - `jsonl_prune_sessions_deletes_only_supplied_sessions` proves the production `JsonlEventStore` exact prune path deletes only the supplied session id and leaves another session readable.
+   - `crates/jyowo-harness-sdk/src/harness/events.rs`
+   - The prune failure test now panics if the old broad `prune(...)` path is used and fails only through `prune_sessions(...)`.
+
+Verification:
+
+- `cargo fmt --all --check`: exit code 0.
+- `cargo test -p jyowo-harness-journal --features jsonl --test l1b_stores jsonl_prune_sessions_deletes_only_supplied_sessions`: exit code 0.
+- `cargo test -p jyowo-harness-journal --all-features --test l1b_stores`: exit code 0.
+- `cargo test -p jyowo-harness-sdk harness::events::tests::prune_invalidates_matching_evidence_refs_before_inner_prune`: exit code 0.
+- `cargo test -p jyowo-harness-sdk harness::events::tests`: exit code 0.
+- `cargo test -p jyowo-harness-sdk --features testing --test evidence_refs`: exit code 0.
+- `cargo test -p jyowo-harness-journal --test evidence_ref_store`: exit code 0.
+- `pnpm audit:tests > docs/testing/test-inventory.md`: exit code 0.
+- `pnpm check:docs`: exit code 0.
+- `pnpm check:rust`: exit code 0.
+
+Round 2 checklist update:
+
+- [x] Prune has one authoritative session deletion set for evidence invalidation and event payload removal.
+- [x] `JsonlEventStore` production prune cannot delete a session that was not invalidated first.
+- [x] The implementation no longer depends on two independent `now()` calls for wrapper invalidation and inner deletion.
+- [x] Invalidation failure prevents event payload deletion.
+- [x] Payload deletion failure does not restore evidence read authority.
+- [x] Other `EventStore::prune` implementations are checked for the same mismatch.
+- [x] A production-path regression test covers candidate drift or proves the shared deletion set.
+- [x] Targeted prune/evidence tests pass.
+- [x] `cargo fmt --all --check` passes after the prune fix.
+- [x] Rust gate passes after the prune fix.
+- [x] `pnpm check:docs` passes after this plan update.
+- [x] Final read-only audit returns PASS.
+
+Final read-only audit result:
+
+- Result: PASS.
+- `EventStore::prune_sessions(...)` is present and defaults to fail-closed for stores that do not implement exact-session pruning.
+- `JsonlEventStore`, `InMemoryEventStore`, `SqliteEventStore`, and `VersionedEventStore` use the already-computed or supplied session deletion set instead of recomputing a wider prune set after evidence invalidation.
+- `prune_with_evidence_invalidation(...)` computes candidate sessions once, invalidates evidence refs for those ids, then calls `inner.prune_sessions(...)`.
+- The old broad `inner.prune(...)` path is locked by a regression test that panics if that path is used.
+- Production-path JSONL coverage proves exact-session prune deletes only supplied sessions.
+
+Residual design risk:
+
+- Evidence registry invalidation and event payload deletion are still not one storage transaction across all backends.
+- The current fail-closed ordering makes existing refs unreadable before payload deletion.
+- Concurrent evidence writes racing with conversation deletion or prune still rely on the upper lifecycle stopping writes for that conversation before deletion begins.
+
+## Task 21 Final Gate Checkpoint 2026-07-05
+
+This checkpoint records the final Task 21 gate run after the Round 2 prune/evidence fix.
+
+Gate results:
+
+- Task 14 forbidden leftover grep: exit code 1 with no output. This is the expected no-match result.
+- `pnpm audit:tests > docs/testing/test-inventory.md`: exit code 0.
+- `pnpm audit:tests`: exit code 0.
+- `pnpm check:testing-docs`: exit code 0.
+- `pnpm check`: exit code 0.
+- `pnpm check:quick`: exit code 0.
+- `git diff --check`: exit code 0.
+- `git diff --cached --check`: exit code 0.
+
+Gate coverage notes:
+
+- `pnpm check` executed the release, updater, docs, test architecture, no-fakes, sidecar, desktop, and Rust gates as one wrapper.
+- `pnpm check:quick` executed `pnpm check:frontend:fast` and `pnpm check:rust:fast`.
+- The explicit docs gates `check:agent-docs`, `check:frontend-docs`, `check:backend-docs`, and `check:testing-docs` ran through the wrappers above.
+- `pnpm check:desktop` and `pnpm check:rust` ran through `pnpm check`.
+
+Current worktree classification:
+
+- Tracked modified files are intended implementation, test, architecture doc, plan, or regenerated test inventory changes for Tasks 15-21.
+- New source/test/support files are staged as intended `A` entries.
+- `git status --short --untracked-files=all` has no `??` entries after staging the intended file set.
+- No generated artifact noise is intentionally included in the final file set.
+
+Final audit attempt:
+
+- Result: FAIL.
+- Finding 1: `CommandExecutionView` copied stdout and stderr preview while rendering only stdout preview. This violated the visible-output copy requirement.
+- Finding 2: this checkpoint still described intended new files as untracked after they had been staged, and did not record `git diff --cached --check`.
+- Fix: `CommandExecutionView` now derives rendering and copy text from the same `visibleOutput` value, and this checkpoint now records the staged coherent state.
+
+Task 21 checklist update:
+
+- [x] Update frontend/backend docs to match final inspector, evidence ref, artifact, and composer structure.
+- [x] Run the Task 14 forbidden leftover grep.
+- [x] Regenerate `docs/testing/test-inventory.md` through `pnpm audit:tests > docs/testing/test-inventory.md`.
+- [x] Run full Task 21 gates.
+- [x] Classify tracked and untracked files.
+- [x] Rerun final read-only audit over the full branch after the audit fixes above.
+- [x] Commit `refactor: close conversation workbench audit findings`.
+
+## Task 21 Final Audit Fixes 2026-07-05
+
+The final read-only audit rerun returned **FAIL** after the staged-state fix. The Task 17 prune/evidence path and the Task 18 visible-output copy path passed, but Task 21 and Task 18 still had closure gaps.
+
+Audit findings:
+
+1. **Task 21 closure gap: plan tail still recorded the previous final audit as FAIL.**
+   - The plan had recorded staged coherent state and `git diff --cached --check`, but the checklist still required another final audit rerun.
+
+2. **Task 18 error-state gaps in production UI actions.**
+   - `CommandExecutionView` showed no visible error when command output page fetch failed.
+   - `DiffPane` showed no visible error when full patch page fetch failed.
+   - `CommandEvidenceBlock` copied through clipboard without failure handling or visible error state.
+
+Implementation plan:
+
+1. Add visible failure state for command output page fetch.
+   - Verification: targeted `CommandExecutionView` test asserts failed fetch renders an error.
+
+2. Add visible failure state for diff patch page fetch.
+   - Verification: targeted `DiffPane` test asserts failed fetch renders an error.
+
+3. Add clipboard failure handling for the timeline command evidence block.
+   - Verification: targeted `CommandEvidenceBlock` test asserts failed copy renders an error.
+
+4. Regenerate test inventory and rerun gates.
+   - Verification: `pnpm audit:tests > docs/testing/test-inventory.md`, `pnpm check:test-architecture`, frontend gates, docs gates, full wrappers, and diff checks.
+
+5. Rerun final read-only audit over the staged diff.
+   - Verification: final audit returns PASS and this section is updated.
+
+Checklist:
+
+- [x] Command output page fetch failure is visible in production UI.
+- [x] Diff patch page fetch failure is visible in production UI.
+- [x] Timeline command evidence copy failure is visible in production UI.
+- [x] Targeted tests cover the three failure states.
+- [x] `docs/testing/test-inventory.md` is regenerated after the new test file.
+- [x] `pnpm check:test-architecture` passes after the new test file.
+- [x] `pnpm check:desktop` passes after the frontend fixes.
+- [x] `pnpm check` passes after the frontend fixes.
+- [x] `pnpm check:quick` passes after the frontend fixes.
+- [x] `pnpm check:docs` passes after this plan update.
+- [x] `git diff --check` passes after this plan update.
+- [x] `git diff --cached --check` passes after staging this plan update.
+- [x] Final read-only audit returns PASS.
+- [x] Commit `refactor: close conversation workbench audit findings`.
+
+Final verification:
+
+- Targeted Task 18 tests for command output fetch failure, diff patch fetch failure, and timeline command copy failure: exit code 0.
+- `pnpm -C apps/desktop lint`: exit code 0.
+- `pnpm audit:tests > docs/testing/test-inventory.md && pnpm check:test-architecture`: exit code 0.
+- `pnpm check:desktop`: exit code 0.
+- `pnpm check`: exit code 0.
+- `pnpm check:quick`: exit code 0.
+- `git diff --check`: exit code 0.
+- `git diff --cached --check`: exit code 0.
+
+Final read-only audit result:
+
+- Result: PASS after this closure update.
+- Production code review confirmed Task 17 exact-session prune/evidence invalidation is bound to one deletion set through `prune_with_evidence_invalidation(...)` and `EventStore::prune_sessions(...)`.
+- Production code review confirmed Task 18 visible-output copy uses the rendered `visibleOutput` value, command output fetch failures are visible, diff patch fetch failures are visible, and timeline command copy failures are visible.
+- Remaining note: evidence ref invalidation and payload deletion are still not one cross-backend transaction; the implemented ordering remains fail-closed because evidence refs are invalidated before payload deletion.

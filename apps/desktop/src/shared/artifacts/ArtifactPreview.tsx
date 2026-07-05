@@ -86,10 +86,10 @@ export function ArtifactPreview({
         <span className="text-muted-foreground text-xs">{kind}</span>
       </div>
       {imageDataUrl ? (
-        <div className="grid min-h-48 place-items-center bg-muted/20 px-3 py-3">
+        <div className="grid aspect-video min-h-48 place-items-center bg-muted/20 px-3 py-3">
           <img
             alt={title}
-            className="max-h-96 max-w-full rounded-sm object-contain"
+            className="h-full max-h-96 max-w-full rounded-sm object-contain"
             src={imageDataUrl}
           />
         </div>

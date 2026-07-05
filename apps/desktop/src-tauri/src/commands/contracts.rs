@@ -1927,6 +1927,8 @@ pub struct GetArtifactMediaPreviewRequest {
     pub conversation_id: String,
     pub artifact_id: String,
     #[serde(default)]
+    pub content_ref: Option<String>,
+    #[serde(default)]
     pub revision_id: Option<String>,
 }
 

@@ -3,7 +3,6 @@
 use harness_contracts::*;
 use harness_journal::evidence::*;
 use harness_journal::{FileBlobStore, InMemoryBlobStore, RetentionEnforcer};
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -497,6 +496,32 @@ async fn sqlite_registry_survives_restart_and_reads_blob_evidence() {
 
 #[cfg(feature = "sqlite")]
 #[tokio::test]
+async fn sqlite_registry_creates_lookup_indexes_for_kind_and_artifact_revision() {
+    let root = temp_root("sqlite-indexes");
+    let registry_path = root.join("evidence.sqlite");
+    harness_journal::SqliteEvidenceRefRegistry::open(&registry_path)
+        .await
+        .expect("registry opens");
+    let connection = rusqlite::Connection::open(&registry_path).expect("sqlite opens");
+    let mut statement = connection
+        .prepare("PRAGMA index_list('evidence_refs')")
+        .expect("index list prepares");
+    let indexes = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("index list queries")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("index names collect");
+
+    assert!(indexes
+        .iter()
+        .any(|name| name == "idx_evidence_refs_conversation_kind"));
+    assert!(indexes
+        .iter()
+        .any(|name| name == "idx_evidence_refs_artifact_revision"));
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
 async fn file_blob_store_blob_evidence_write_is_idempotent_for_same_ref() {
     let root = temp_root("file-blob-idempotent");
     let registry = Arc::new(
@@ -689,7 +714,7 @@ async fn registry_insert_failure_removes_orphan_blob() {
 }
 
 #[tokio::test]
-async fn delete_for_conversation_keeps_registry_row_when_blob_delete_fails() {
+async fn delete_for_conversation_removes_registry_row_when_blob_delete_fails() {
     let registry = Arc::new(InMemoryEvidenceRefRegistry::new());
     let blob_store = Arc::new(DeleteFailingBlobStore::default());
     let store = EvidenceRefStore::new(registry.clone(), blob_store);
@@ -710,7 +735,16 @@ async fn delete_for_conversation_keeps_registry_row_when_blob_delete_fails() {
         .get(TenantId::SINGLE, &record.id)
         .await
         .expect("registry reads after failed delete")
-        .is_some());
+        .is_none());
+    assert!(store
+        .read_evidence(
+            TenantId::SINGLE,
+            "conv-1",
+            &record.id,
+            EvidenceRefKind::CommandOutput,
+        )
+        .await
+        .is_err());
 }
 
 #[tokio::test]
@@ -753,15 +787,71 @@ async fn gc_keeps_live_evidence_blobs_and_deletes_dead_blobs() {
         .await
         .expect("dead blob stores");
 
-    let live_ids: HashSet<_> = store
+    let report = RetentionEnforcer::default()
+        .collect_garbage(TenantId::SINGLE, &blob_store, &store)
+        .await
+        .expect("gc runs");
+
+    assert_eq!(report.deleted, 1);
+    assert!(blob_store
+        .head(TenantId::SINGLE, &live_blob)
+        .await
+        .expect("live head reads")
+        .is_some());
+    assert!(blob_store
+        .head(TenantId::SINGLE, &dead_blob)
+        .await
+        .expect("dead head reads")
+        .is_none());
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn retention_enforcer_collects_file_blobs_with_evidence_roots() {
+    let root = temp_root("gc-evidence-roots-api");
+    let registry = Arc::new(
+        harness_journal::SqliteEvidenceRefRegistry::open(root.join("evidence.sqlite"))
+            .await
+            .expect("registry opens"),
+    );
+    let blob_store = Arc::new(FileBlobStore::open(root.join("blobs")).expect("blob store opens"));
+    let evidence_store = EvidenceRefStore::new(registry, blob_store.clone());
+    let live_bytes = b"live output".to_vec();
+    let mut live_record = blob_record("ref-live-api", "conv-1", &live_bytes);
+    live_record.retention = BlobRetention::SessionScoped(SessionId::new());
+    evidence_store
+        .store_blob_evidence(TenantId::SINGLE, live_record, live_bytes)
+        .await
+        .expect("live evidence stores");
+    let live_blob = evidence_store
         .list_live_blob_roots(TenantId::SINGLE)
         .await
         .expect("live roots list")
         .into_iter()
-        .map(|blob| blob.id)
-        .collect();
+        .next()
+        .expect("live blob exists");
+
+    let dead_bytes = b"dead output".to_vec();
+    let dead_hash = blake3::hash(&dead_bytes);
+    let mut dead_content_hash = [0u8; 32];
+    dead_content_hash.copy_from_slice(dead_hash.as_bytes());
+    let dead_blob = blob_store
+        .put(
+            TenantId::SINGLE,
+            bytes::Bytes::from(dead_bytes.clone()),
+            BlobMeta {
+                content_type: Some("text/plain".to_owned()),
+                size: dead_bytes.len() as u64,
+                content_hash: dead_content_hash,
+                created_at: chrono::Utc::now(),
+                retention: BlobRetention::SessionScoped(SessionId::new()),
+            },
+        )
+        .await
+        .expect("dead blob stores");
+
     let report = RetentionEnforcer::default()
-        .collect_garbage(TenantId::SINGLE, &blob_store, &live_ids)
+        .collect_garbage(TenantId::SINGLE, &blob_store, &evidence_store)
         .await
         .expect("gc runs");
 

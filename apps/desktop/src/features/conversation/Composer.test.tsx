@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ConversationModelCapability } from '@/shared/tauri/commands'
 
 import { Composer } from './Composer'
+import { ComposerToolbar } from './composer/ComposerToolbar'
 
 const attachment = {
   blobRef: {
@@ -48,6 +49,10 @@ const referenceCandidates = {
 }
 
 describe('Composer', () => {
+  it('exports the toolbar from the composer component folder', () => {
+    expect(ComposerToolbar).toEqual(expect.any(Function))
+  })
+
   it('submits typed text as structured draft', async () => {
     const onSubmit = vi.fn()
 
@@ -295,7 +300,7 @@ describe('Composer', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Reference project object' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Composer.tsx' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Composer.tsx' }))
     expect(screen.getByText('Composer.tsx')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove reference Composer.tsx' }))
@@ -313,6 +318,165 @@ describe('Composer', () => {
     )
   })
 
+  it('opens the slash command menu from the editor trigger', async () => {
+    render(<Composer modelConfigId="provider-config-001" onSubmit={vi.fn()} />)
+
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+      target: { value: '/' },
+    })
+
+    expect(await screen.findByRole('menu', { name: 'Slash commands' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Plan' })).toBeInTheDocument()
+  })
+
+  it('opens the reference combobox from @ and supports keyboard selection', async () => {
+    const onSubmit = vi.fn()
+
+    render(
+      <Composer
+        modelConfigId="provider-config-001"
+        onListReferenceCandidates={vi.fn().mockResolvedValue(referenceCandidates)}
+        onSubmit={onSubmit}
+      />,
+    )
+
+    const input = screen.getByPlaceholderText('Ask Jyowo anything about this project...')
+    fireEvent.change(input, { target: { value: '@' } })
+    expect(await screen.findByRole('listbox', { name: 'Reference project object' })).toBeVisible()
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(await screen.findByText('Build notes')).toBeInTheDocument()
+  })
+
+  it('keeps the editor reference combobox open while typing a reference query', async () => {
+    render(
+      <Composer
+        modelConfigId="provider-config-001"
+        onListReferenceCandidates={vi.fn().mockResolvedValue(referenceCandidates)}
+        onSubmit={vi.fn()}
+      />,
+    )
+
+    const input = screen.getByPlaceholderText('Ask Jyowo anything about this project...')
+    fireEvent.change(input, { target: { value: 'Use @comp' } })
+
+    expect(await screen.findByRole('listbox', { name: 'Reference project object' })).toBeVisible()
+    expect(screen.getByRole('option', { name: 'Composer.tsx' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'Build notes' })).not.toBeInTheDocument()
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(await screen.findByText('Composer.tsx')).toBeInTheDocument()
+    expect(input).toHaveValue('Use ')
+  })
+
+  it('handles toolbar reference keyboard selection without submitting the draft', async () => {
+    const onSubmit = vi.fn()
+
+    render(
+      <Composer
+        modelConfigId="provider-config-001"
+        onListReferenceCandidates={vi.fn().mockResolvedValue(referenceCandidates)}
+        onSubmit={onSubmit}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+      target: { value: 'Use this context' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Reference project object' }))
+
+    const search = await screen.findByRole('combobox', { name: 'Search references' })
+    fireEvent.keyDown(search, { key: 'ArrowDown' })
+    expect(screen.getByRole('option', { name: 'Build notes' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    fireEvent.keyDown(search, { key: 'Enter' })
+
+    expect(await screen.findByText('Build notes')).toBeInTheDocument()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('handles toolbar reference Escape and ArrowUp without submitting the draft', async () => {
+    const onSubmit = vi.fn()
+
+    render(
+      <Composer
+        modelConfigId="provider-config-001"
+        onListReferenceCandidates={vi.fn().mockResolvedValue(referenceCandidates)}
+        onSubmit={onSubmit}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+      target: { value: 'Use this context' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Reference project object' }))
+
+    const search = await screen.findByRole('combobox', { name: 'Search references' })
+    fireEvent.keyDown(search, { key: 'ArrowUp' })
+    expect(screen.getByRole('option', { name: 'Filesystem MCP' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+
+    fireEvent.keyDown(search, { key: 'Escape' })
+
+    expect(
+      screen.queryByRole('listbox', { name: 'Reference project object' }),
+    ).not.toBeInTheDocument()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('keeps empty toolbar reference Enter inside the picker without submitting the draft', async () => {
+    const onSubmit = vi.fn()
+
+    render(
+      <Composer
+        modelConfigId="provider-config-001"
+        onListReferenceCandidates={vi.fn().mockResolvedValue(referenceCandidates)}
+        onSubmit={onSubmit}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+      target: { value: 'Use this context' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Reference project object' }))
+
+    const search = await screen.findByRole('combobox', { name: 'Search references' })
+    fireEvent.change(search, { target: { value: 'no matching reference' } })
+    expect(await screen.findByText('No references found.')).toBeInTheDocument()
+
+    fireEvent.keyDown(search, { key: 'Enter' })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(screen.queryByText('Build notes')).not.toBeInTheDocument()
+  })
+
+  it('closes the slash menu when opening the toolbar reference picker', async () => {
+    render(
+      <Composer
+        modelConfigId="provider-config-001"
+        onListReferenceCandidates={vi.fn().mockResolvedValue(referenceCandidates)}
+        onSubmit={vi.fn()}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+      target: { value: '/' },
+    })
+    expect(await screen.findByRole('menu', { name: 'Slash commands' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reference project object' }))
+
+    expect(await screen.findByRole('listbox', { name: 'Reference project object' })).toBeVisible()
+    expect(screen.queryByRole('menu', { name: 'Slash commands' })).not.toBeInTheDocument()
+  })
+
   it('adds skill, tool, and MCP references from the picker', async () => {
     const onSubmit = vi.fn()
 
@@ -325,11 +489,11 @@ describe('Composer', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Reference project object' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Code review skill' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Code review skill' }))
     fireEvent.click(screen.getByRole('button', { name: 'Reference project object' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Search files' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Search files' }))
     fireEvent.click(screen.getByRole('button', { name: 'Reference project object' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Filesystem MCP' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Filesystem MCP' }))
 
     expect(screen.getByText('Code review skill')).toBeInTheDocument()
     expect(screen.getByText('Search files')).toBeInTheDocument()

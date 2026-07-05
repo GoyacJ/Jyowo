@@ -5,13 +5,20 @@ type ComposerEditorProps = {
   disabled: boolean
   value: string
   onChange: (value: string) => void
+  onKeyCommand?: (event: React.KeyboardEvent<HTMLTextAreaElement>) => boolean
   onSubmit: () => void
 }
 
 const minHeight = 64
 const maxHeight = 160
 
-export function ComposerEditor({ disabled, value, onChange, onSubmit }: ComposerEditorProps) {
+export function ComposerEditor({
+  disabled,
+  value,
+  onChange,
+  onKeyCommand,
+  onSubmit,
+}: ComposerEditorProps) {
   const { t } = useTranslation('conversation')
   const ref = useRef<HTMLTextAreaElement>(null)
 
@@ -29,6 +36,11 @@ export function ComposerEditor({ disabled, value, onChange, onSubmit }: Composer
   }
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (onKeyCommand?.(event)) {
+      event.preventDefault()
+      return
+    }
+
     // Enter submits, Shift+Enter inserts newline
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault()

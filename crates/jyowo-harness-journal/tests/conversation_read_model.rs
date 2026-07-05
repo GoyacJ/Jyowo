@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use harness_contracts::*;
 use harness_journal::*;
 
@@ -23,6 +24,14 @@ fn evidence_store() -> Arc<EvidenceRefStore> {
     ))
 }
 
+fn evidence_store_with_events(envelopes: Vec<EventEnvelope>) -> Arc<EvidenceRefStore> {
+    Arc::new(EvidenceRefStore::new_with_event_store(
+        Arc::new(InMemoryEvidenceRefRegistry::default()),
+        Arc::new(InMemoryBlobStore::default()),
+        Arc::new(StaticEventStore::new(envelopes)),
+    ))
+}
+
 fn test_run_model_snapshot() -> RunModelSnapshot {
     RunModelSnapshot {
         model_config_id: None,
@@ -33,6 +42,113 @@ fn test_run_model_snapshot() -> RunModelSnapshot {
         context_window: 128_000,
         max_output_tokens: 8_192,
         conversation_capability: ConversationModelCapability::default(),
+    }
+}
+
+struct StaticEventStore {
+    envelopes: Vec<EventEnvelope>,
+}
+
+impl StaticEventStore {
+    fn new(envelopes: Vec<EventEnvelope>) -> Self {
+        Self { envelopes }
+    }
+}
+
+#[async_trait::async_trait]
+impl EventStore for StaticEventStore {
+    async fn append(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+        _events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        Err(JournalError::Message(
+            "static event store is read-only".to_owned(),
+        ))
+    }
+
+    async fn read_envelopes(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        _cursor: ReplayCursor,
+    ) -> Result<futures::stream::BoxStream<'static, EventEnvelope>, JournalError> {
+        let envelopes = self
+            .envelopes
+            .iter()
+            .filter(|envelope| envelope.tenant_id == tenant && envelope.session_id == session_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        Ok(Box::pin(futures::stream::iter(envelopes)))
+    }
+
+    async fn query_after(
+        &self,
+        tenant: TenantId,
+        _after: Option<EventId>,
+        limit: usize,
+    ) -> Result<Vec<EventEnvelope>, JournalError> {
+        Ok(self
+            .envelopes
+            .iter()
+            .filter(|envelope| envelope.tenant_id == tenant)
+            .take(limit)
+            .cloned()
+            .collect())
+    }
+
+    async fn snapshot(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+    ) -> Result<Option<SessionSnapshot>, JournalError> {
+        Ok(None)
+    }
+
+    async fn save_snapshot(
+        &self,
+        _tenant: TenantId,
+        _snapshot: SessionSnapshot,
+    ) -> Result<(), JournalError> {
+        Ok(())
+    }
+
+    async fn compact_link(
+        &self,
+        _parent: SessionId,
+        _child: SessionId,
+        _reason: ForkReason,
+    ) -> Result<(), JournalError> {
+        Ok(())
+    }
+
+    async fn delete_session(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+    ) -> Result<bool, JournalError> {
+        Ok(false)
+    }
+
+    async fn list_sessions(
+        &self,
+        _tenant: TenantId,
+        _filter: SessionFilter,
+    ) -> Result<Vec<SessionSummary>, JournalError> {
+        Ok(Vec::new())
+    }
+
+    async fn prune(
+        &self,
+        _tenant: TenantId,
+        _policy: PrunePolicy,
+    ) -> Result<PruneReport, JournalError> {
+        Ok(PruneReport {
+            events_removed: 0,
+            snapshots_removed: 0,
+            bytes_freed: 0,
+        })
     }
 }
 
@@ -503,7 +619,7 @@ async fn safe_tool_process_extracts_only_allowlisted_projection_fields() {
     assert!(!serialized.contains("~/.ssh"));
     assert!(!serialized.contains("example.invalid"));
 
-    let evidence_store = evidence_store();
+    let evidence_store = evidence_store_with_events(envelopes.clone());
     let worktree = store
         .page_worktree_with_evidence(
             tenant_id,
@@ -696,6 +812,328 @@ async fn safe_tool_process_rejects_opaque_url_and_runtime_paths() {
     ] {
         assert!(!serialized.contains(unsafe_fragment));
     }
+}
+
+#[tokio::test]
+async fn sqlite_worktree_projects_backend_permission_options_from_events() {
+    let root = temp_root("worktree-permission-options");
+    let store = SqliteConversationReadModelStore::open(root.join("read-model.sqlite"))
+        .await
+        .expect("read model opens");
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let request_id = RequestId::new();
+    let tool_use_id = ToolUseId::new();
+    let allow_id = PermissionOptionId::new();
+    let deny_id = PermissionOptionId::new();
+    let action_plan_hash = ActionPlanHash::from_hex(
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    )
+    .expect("valid action plan hash");
+    let envelopes = vec![
+        envelope(
+            tenant_id,
+            session_id,
+            0,
+            user_message(run_id, MessageId::new(), "run command"),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            1,
+            Event::ToolUseRequested(ToolUseRequestedEvent {
+                run_id,
+                tool_use_id,
+                tool_name: "bash".to_owned(),
+                input: serde_json::json!({ "command": "cargo test" }),
+                properties: tool_properties(),
+                causation_id: EventId::new(),
+                at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(1),
+            }),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            2,
+            Event::PermissionRequested(PermissionRequestedEvent {
+                request_id,
+                run_id,
+                session_id,
+                tenant_id,
+                tool_use_id,
+                tool_name: "bash".to_owned(),
+                subject: PermissionSubject::CommandExec {
+                    command: "cargo test".to_owned(),
+                    argv: vec!["cargo".to_owned(), "test".to_owned()],
+                    cwd: Some(PathBuf::from("crates/jyowo-harness-journal")),
+                    fingerprint: None,
+                },
+                severity: Severity::High,
+                scope_hint: DecisionScope::ExactCommand {
+                    command: "cargo test".to_owned(),
+                    cwd: Some(PathBuf::from("crates/jyowo-harness-journal")),
+                },
+                fingerprint: None,
+                presented_options: vec![
+                    PermissionDecisionOption {
+                        option_id: allow_id,
+                        decision: Decision::AllowOnce,
+                        scope: DecisionScope::ExactCommand {
+                            command: "cargo test".to_owned(),
+                            cwd: Some(PathBuf::from("crates/jyowo-harness-journal")),
+                        },
+                        lifetime: DecisionLifetime::Once,
+                        matcher_summary: DecisionMatcherSummary {
+                            kind: DecisionMatcherKind::ExactCommand,
+                            label: "cargo test".to_owned(),
+                        },
+                        label: "Allow once".to_owned(),
+                        requires_confirmation: false,
+                        action_plan_hash: action_plan_hash.clone(),
+                        fingerprint: None,
+                    },
+                    PermissionDecisionOption {
+                        option_id: deny_id,
+                        decision: Decision::DenyOnce,
+                        scope: DecisionScope::Any,
+                        lifetime: DecisionLifetime::Once,
+                        matcher_summary: DecisionMatcherSummary {
+                            kind: DecisionMatcherKind::Any,
+                            label: "deny".to_owned(),
+                        },
+                        label: "Deny once".to_owned(),
+                        requires_confirmation: false,
+                        action_plan_hash: action_plan_hash.clone(),
+                        fingerprint: None,
+                    },
+                ],
+                interactivity: InteractivityLevel::FullyInteractive,
+                auto_resolved: false,
+                actor_source: PermissionActorSource::ParentRun,
+                action_plan_hash,
+                review: test_permission_review(),
+                effective_mode: PermissionMode::Default,
+                sandbox_policy: test_sandbox_policy_summary(),
+                causation_id: EventId::new(),
+                at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(2),
+            }),
+        ),
+    ];
+
+    store
+        .apply_envelopes(tenant_id, session_id, &envelopes, None)
+        .await
+        .expect("projection applies");
+
+    let page = store
+        .page_worktree(
+            tenant_id,
+            session_id,
+            None,
+            ConversationTurnPageDirection::After,
+            1,
+        )
+        .await
+        .expect("worktree loads");
+    let assistant = page.turns[0].assistant.as_ref().expect("assistant");
+    let decision = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::ToolGroup(group) => group
+                .attempts
+                .iter()
+                .find_map(|attempt| attempt.permission.as_ref()),
+            _ => None,
+        })
+        .expect("decision projects");
+
+    assert_eq!(
+        decision
+            .decision_options
+            .iter()
+            .map(|option| option.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![allow_id.to_string(), deny_id.to_string()]
+    );
+    assert_eq!(decision.operation, DecisionOperation::Execute);
+    assert_eq!(decision.target.kind, DecisionTargetKind::Command);
+    assert_eq!(decision.target.label, "cargo test");
+}
+
+#[tokio::test]
+async fn sqlite_worktree_projects_command_metadata_and_offloaded_output_from_events() {
+    let root = temp_root("worktree-command-metadata");
+    let store = SqliteConversationReadModelStore::open(root.join("read-model.sqlite"))
+        .await
+        .expect("read model opens");
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let tool_use_id = ToolUseId::new();
+    let blob_store = Arc::new(InMemoryBlobStore::default());
+    let evidence_store = Arc::new(EvidenceRefStore::new(
+        Arc::new(InMemoryEvidenceRefRegistry::default()),
+        blob_store.clone(),
+    ));
+    let output = Bytes::from_static(b"full command output");
+    let output_hash = *blake3::hash(&output).as_bytes();
+    let output_blob = blob_store
+        .put(
+            tenant_id,
+            output.clone(),
+            BlobMeta {
+                content_type: Some("text/plain".to_owned()),
+                size: output.len() as u64,
+                content_hash: output_hash,
+                created_at: chrono::Utc::now(),
+                retention: BlobRetention::TenantScoped,
+            },
+        )
+        .await
+        .expect("blob stores");
+    let envelopes = vec![
+        envelope(
+            tenant_id,
+            session_id,
+            0,
+            user_message(run_id, MessageId::new(), "run command"),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            1,
+            Event::ToolUseRequested(ToolUseRequestedEvent {
+                run_id,
+                tool_use_id,
+                tool_name: "bash".to_owned(),
+                input: serde_json::json!({
+                    "command": "cargo test",
+                    "cwd": "crates/jyowo-harness-journal",
+                    "shell": "bash"
+                }),
+                properties: tool_properties(),
+                causation_id: EventId::new(),
+                at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(1),
+            }),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            2,
+            Event::ToolUseCompleted(ToolUseCompletedEvent {
+                tool_use_id,
+                result: ToolResult::Structured(serde_json::json!({
+                    "exit_status": { "code": 7 },
+                    "stdout_bytes_observed": 4096,
+                    "stderr_bytes_observed": 0
+                })),
+                usage: None,
+                duration_ms: 99,
+                at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(2),
+            }),
+        ),
+        envelope(
+            tenant_id,
+            session_id,
+            3,
+            Event::ToolResultOffloaded(ToolResultOffloadedEvent {
+                tool_use_id,
+                run_id,
+                blob_ref: output_blob,
+                original_metric: BudgetMetric::Bytes,
+                original_size: output.len() as u64,
+                effective_limit: 8,
+                head_chars: 4,
+                tail_chars: 4,
+                at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(3),
+            }),
+        ),
+    ];
+
+    store
+        .apply_envelopes(tenant_id, session_id, &envelopes, None)
+        .await
+        .expect("projection applies");
+
+    let timeline_page = store
+        .page_timeline_with_evidence(tenant_id, session_id, None, 20, evidence_store.clone())
+        .await
+        .expect("timeline loads");
+    let offloaded_event = timeline_page
+        .events
+        .iter()
+        .rev()
+        .find(|event| event.event_type == "tool.completed")
+        .expect("offloaded completion projects");
+    assert!(offloaded_event.payload.get("blobRef").is_none());
+    assert!(offloaded_event.payload.get("blob_ref").is_none());
+    assert!(offloaded_event.payload.get("outputBytes").is_none());
+    assert!(offloaded_event.payload.get("previewBytes").is_none());
+    assert_eq!(offloaded_event.payload["truncated"], true);
+    let timeline_ref = EvidenceRefId::new(
+        offloaded_event.payload["fullOutputRef"]
+            .as_str()
+            .expect("timeline full output ref"),
+    );
+    assert!(!timeline_ref.to_string().starts_with("evidence:"));
+    let timeline_read = evidence_store
+        .read_evidence(
+            tenant_id,
+            &session_id.to_string(),
+            &timeline_ref,
+            EvidenceRefKind::CommandOutput,
+        )
+        .await
+        .expect("timeline offloaded evidence reads");
+    assert_eq!(timeline_read.bytes, output.to_vec());
+
+    let page = store
+        .page_worktree_with_evidence(
+            tenant_id,
+            session_id,
+            None,
+            ConversationTurnPageDirection::After,
+            1,
+            evidence_store.clone(),
+        )
+        .await
+        .expect("worktree loads");
+    let assistant = page.turns[0].assistant.as_ref().expect("assistant");
+    let command = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::Process(process) => process.steps.iter().find_map(|step| {
+                if let Some(ProcessStepDetail::Command(command)) = &step.detail {
+                    Some(command)
+                } else {
+                    None
+                }
+            }),
+            _ => None,
+        })
+        .expect("command projects");
+
+    assert_eq!(command.command, "cargo test");
+    assert_eq!(command.cwd.as_deref(), Some("crates/jyowo-harness-journal"));
+    assert_eq!(command.shell.as_deref(), Some("bash"));
+    assert_eq!(command.exit_code, Some(7));
+    assert_eq!(command.duration_ms, Some(99));
+    assert!(command.truncated);
+    let ref_id = command.full_output_ref.as_ref().expect("full output ref");
+    assert!(!ref_id.to_string().starts_with("evidence:"));
+    let read = evidence_store
+        .read_evidence(
+            tenant_id,
+            &session_id.to_string(),
+            ref_id,
+            EvidenceRefKind::CommandOutput,
+        )
+        .await
+        .expect("offloaded evidence reads");
+    assert_eq!(read.bytes, output.to_vec());
 }
 
 #[tokio::test]
@@ -2448,7 +2886,7 @@ async fn sqlite_conversation_read_model_projects_assistant_review_requested_tool
         .to_string()
         .contains("/Users/goya/.ssh/config"));
     assert_eq!(page.events[3].payload["operation"], "Execute command");
-    assert_eq!(page.events[3].payload["target"], "rm");
+    assert_eq!(page.events[3].payload["target"], "[REDACTED] -rf target");
     assert_eq!(page.events[3].payload["toolUseId"], tool_use_id.to_string());
     assert_eq!(
         page.events[3].payload["actionPlanHash"],

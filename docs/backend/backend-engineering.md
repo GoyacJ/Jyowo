@@ -282,6 +282,7 @@ delete_project
 delete_provider_capability_route
 delete_skill
 export_memory_items
+export_conversation_evidence
 export_support_bundle
 list_artifacts
 list_eval_cases
@@ -294,6 +295,7 @@ get_background_agent
 get_conversation
 get_conversation_command_output
 get_conversation_diff_patch
+get_conversation_inspector_item
 get_execution_settings
 get_memory_item
 get_model_usage_summary
@@ -407,6 +409,11 @@ delete_provider_capability_route(
 ) -> Result<DeleteProviderCapabilityRouteResponse, CommandErrorPayload>
 delete_skill(id: String) -> Result<DeleteSkillResponse, CommandErrorPayload>
 export_memory_items() -> Result<ExportMemoryItemsResponse, CommandErrorPayload>
+export_conversation_evidence(
+  conversation_id: String,
+  kind: String,
+  ref_id: String
+) -> Result<ExportConversationEvidenceResponse, CommandErrorPayload>
 export_support_bundle(
   conversation_id: Option<String>,
   run_id: Option<String>
@@ -416,11 +423,15 @@ list_artifacts(
 ) -> Result<ListArtifactsResponse, CommandErrorPayload>
 get_artifact_media_preview(
   conversation_id: String,
-  artifact_id: String
+  artifact_id: String,
+  revision_id: Option<String>,
+  content_ref: Option<String>
 ) -> Result<GetArtifactMediaPreviewResponse, CommandErrorPayload>
 get_artifact_revision_content(
   conversation_id: String,
-  content_ref: String
+  content_ref: String,
+  cursor: Option<String>,
+  max_bytes: Option<u64>
 ) -> Result<GetArtifactRevisionContentResponse, CommandErrorPayload>
 get_attachment_media_preview(
   conversation_id: String,
@@ -439,12 +450,20 @@ get_background_agent(
 get_conversation(conversation_id: String) -> Result<GetConversationResponse, CommandErrorPayload>
 get_conversation_command_output(
   conversation_id: String,
-  full_output_ref: String
+  full_output_ref: String,
+  cursor: Option<String>,
+  max_bytes: Option<u64>
 ) -> Result<GetConversationCommandOutputResponse, CommandErrorPayload>
 get_conversation_diff_patch(
   conversation_id: String,
-  full_patch_ref: String
+  full_patch_ref: String,
+  cursor: Option<String>,
+  max_bytes: Option<u64>
 ) -> Result<GetConversationDiffPatchResponse, CommandErrorPayload>
+get_conversation_inspector_item(
+  conversation_id: String,
+  selection: ConversationInspectorSelection
+) -> Result<ConversationInspectorItemResponse, CommandErrorPayload>
 get_execution_settings(workspace_path?: string) -> Result<GetExecutionSettingsResponse, CommandErrorPayload>
 get_memory_item(id: String) -> Result<GetMemoryItemResponse, CommandErrorPayload>
 get_model_usage_summary() -> Result<GetModelUsageSummaryResponse, CommandErrorPayload>
@@ -891,12 +910,15 @@ content, not artifacts.
 Optional fields must be omitted instead of serialized as `null`.
 
 `get_artifact_media_preview` must require an explicit conversation id and
-artifact id. It may read the owned blob through runtime state only after
-verifying the artifact belongs to that conversation. It returns only image
-preview data as a data URL plus MIME type and byte count. Non-image artifacts,
-missing artifacts, oversized previews, private paths, blob paths, remote URLs,
-signed URLs, and provider-native payloads must fail closed and must not cross
-IPC.
+artifact id. It may accept revision id and content ref when React has the
+Rust-projected `preview_ref` or `content_ref`. It may read image bytes only
+after verifying the artifact belongs to that conversation, the revision is
+ready, the artifact/revision kind is image-compatible, and the evidence ref
+matches owner, kind, retention, redaction provenance, byte length, and hash.
+It returns only image preview data as a data URL plus MIME type and byte count.
+Non-image artifacts, missing artifacts, non-ready revisions, oversized previews,
+private paths, blob paths, remote URLs, signed URLs, and provider-native
+payloads must fail closed and must not cross IPC.
 
 `get_attachment_media_preview` must require an explicit conversation id and
 attachment id. It may read an attachment blob through runtime state only after

@@ -8,11 +8,13 @@ use bytes::Bytes;
 use futures::StreamExt;
 use harness_contracts::{
     BlobMeta, BlobRef, BlobRetention, BlobStore, ConversationEventRef, EvidenceRedactionState,
-    EvidenceRefId, EvidenceRefKind, JournalError, TenantId,
+    EvidenceRefId, EvidenceRefKind, JournalError, SessionId, TenantId,
 };
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "sqlite")]
 use tokio::sync::Mutex;
+
+use crate::{EventStore, ReplayCursor};
 
 /// A durable registry record for an evidence ref.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -82,6 +84,7 @@ pub trait EvidenceRefRegistry: Send + Sync + 'static {
 pub struct EvidenceRefStore {
     registry: Arc<dyn EvidenceRefRegistry>,
     blob_store: Arc<dyn BlobStore>,
+    event_store: Option<Arc<dyn EventStore>>,
 }
 
 impl EvidenceRefStore {
@@ -90,6 +93,20 @@ impl EvidenceRefStore {
         Self {
             registry,
             blob_store,
+            event_store: None,
+        }
+    }
+
+    #[must_use]
+    pub fn new_with_event_store(
+        registry: Arc<dyn EvidenceRefRegistry>,
+        blob_store: Arc<dyn BlobStore>,
+        event_store: Arc<dyn EventStore>,
+    ) -> Self {
+        Self {
+            registry,
+            blob_store,
+            event_store: Some(event_store),
         }
     }
 
@@ -217,6 +234,33 @@ impl EvidenceRefStore {
         record: EvidenceRefRecord,
     ) -> Result<EvidenceRefId, JournalError> {
         validate_redaction_provenance(&record.redaction_provenance)?;
+        if !matches!(record.source, EvidenceRefSource::JournalPayload { .. }) {
+            return Err(JournalError::Message(
+                "journal evidence must use a journal payload source".to_owned(),
+            ));
+        }
+        if self.event_store.is_some() {
+            self.journal_payload_bytes(tenant, &record).await?;
+        }
+        let id = record.id.clone();
+        self.registry.insert(tenant, record).await?;
+        Ok(id)
+    }
+
+    /// Register evidence content that already exists in the configured blob store.
+    pub async fn store_existing_blob_evidence(
+        &self,
+        tenant: TenantId,
+        record: EvidenceRefRecord,
+    ) -> Result<EvidenceRefId, JournalError> {
+        validate_redaction_provenance(&record.redaction_provenance)?;
+        let EvidenceRefSource::Blob { blob_ref } = &record.source else {
+            return Err(JournalError::Message(
+                "existing blob evidence must use a blob source".to_owned(),
+            ));
+        };
+        self.validate_blob_ref_metadata(tenant, &record, blob_ref)
+            .await?;
         let id = record.id.clone();
         self.registry.insert(tenant, record).await?;
         Ok(id)
@@ -235,25 +279,7 @@ impl EvidenceRefStore {
                 JournalError::Message(format!("evidence ref not found: {ref_id}"))
             })?;
 
-        if record.conversation_id != conversation_id {
-            return Err(JournalError::Message(
-                "evidence ref does not belong to conversation".to_owned(),
-            ));
-        }
-
-        if record.kind != expected_kind {
-            return Err(JournalError::Message(format!(
-                "evidence ref kind mismatch: expected {expected_kind:?}, got {:?}",
-                record.kind
-            )));
-        }
-
-        if matches!(record.redaction_state, EvidenceRedactionState::Withheld) {
-            return Err(JournalError::Message(
-                "evidence content is withheld".to_owned(),
-            ));
-        }
-        validate_redaction_provenance(&record.redaction_provenance)?;
+        validate_evidence_record(&record, conversation_id, expected_kind)?;
 
         let bytes = match &record.source {
             EvidenceRefSource::Blob { blob_ref } => {
@@ -309,9 +335,7 @@ impl EvidenceRefStore {
                 buf
             }
             EvidenceRefSource::JournalPayload { .. } => {
-                return Err(JournalError::Message(
-                    "journal-backed evidence reads are unavailable".to_owned(),
-                ));
+                self.journal_payload_bytes(tenant, &record).await?
             }
         };
 
@@ -386,9 +410,14 @@ impl EvidenceRefStore {
                 page
             }
             EvidenceRefSource::JournalPayload { .. } => {
-                return Err(JournalError::Message(
-                    "journal-backed evidence reads are unavailable".to_owned(),
-                ));
+                let full = self.journal_payload_bytes(tenant, &record).await?;
+                full.get(offset as usize..end as usize)
+                    .ok_or_else(|| {
+                        JournalError::Message(
+                            "evidence read cursor is past the end of content".to_owned(),
+                        )
+                    })?
+                    .to_vec()
             }
         };
 
@@ -422,17 +451,25 @@ impl EvidenceRefStore {
             .registry
             .list_for_conversation(tenant, conversation_id)
             .await?;
-        for record in records {
-            if let EvidenceRefSource::Blob { blob_ref } = record.source {
-                self.blob_store
-                    .delete(tenant, &blob_ref)
-                    .await
-                    .map_err(|e| JournalError::Message(format!("blob delete failed: {e}")))?;
-            }
-        }
+        let blob_refs: Vec<BlobRef> = records
+            .into_iter()
+            .filter_map(|record| match record.source {
+                EvidenceRefSource::Blob { blob_ref } => Some(blob_ref),
+                EvidenceRefSource::JournalPayload { .. } => None,
+            })
+            .collect();
+
         self.registry
             .delete_for_conversation(tenant, conversation_id)
             .await?;
+
+        for blob_ref in blob_refs {
+            self.blob_store
+                .delete(tenant, &blob_ref)
+                .await
+                .map_err(|e| JournalError::Message(format!("blob delete failed: {e}")))?;
+        }
+
         Ok(())
     }
 
@@ -490,7 +527,57 @@ impl EvidenceRefStore {
                 "evidence blob hash mismatch".to_owned(),
             ));
         }
+        if meta.retention != record.retention {
+            return Err(JournalError::Message(
+                "evidence blob retention mismatch".to_owned(),
+            ));
+        }
         Ok(())
+    }
+
+    async fn journal_payload_bytes(
+        &self,
+        tenant: TenantId,
+        record: &EvidenceRefRecord,
+    ) -> Result<Vec<u8>, JournalError> {
+        validate_evidence_record(record, &record.conversation_id, record.kind)?;
+        let EvidenceRefSource::JournalPayload {
+            event_id,
+            json_pointer,
+        } = &record.source
+        else {
+            return Err(JournalError::Message(
+                "evidence ref is not journal-backed".to_owned(),
+            ));
+        };
+        let event_store = self.event_store.as_ref().ok_or_else(|| {
+            JournalError::Message("journal-backed evidence reader is unavailable".to_owned())
+        })?;
+        let session_id = SessionId::parse(&record.conversation_id)
+            .map_err(|error| JournalError::Message(format!("invalid conversation id: {error}")))?;
+        let mut stream = event_store
+            .read_envelopes(tenant, session_id, ReplayCursor::FromStart)
+            .await?;
+        while let Some(envelope) = stream.next().await {
+            if envelope.event_id.to_string() != *event_id {
+                continue;
+            }
+            let value = serde_json::to_value(&envelope.payload)
+                .map_err(|error| JournalError::Message(format!("serialize event: {error}")))?;
+            let selected = if json_pointer.is_empty() {
+                &value
+            } else {
+                value.pointer(json_pointer).ok_or_else(|| {
+                    JournalError::Message("journal evidence JSON pointer not found".to_owned())
+                })?
+            };
+            let bytes = journal_payload_value_bytes(selected)?;
+            validate_materialized_evidence_bytes(record, &bytes)?;
+            return Ok(bytes);
+        }
+        Err(JournalError::Message(
+            "journal evidence source event not found".to_owned(),
+        ))
     }
 }
 
@@ -553,7 +640,35 @@ fn validate_evidence_record(
             "evidence content is withheld".to_owned(),
         ));
     }
-    validate_redaction_provenance(&record.redaction_provenance)
+    validate_redaction_provenance(&record.redaction_provenance)?;
+    validate_evidence_retention(record)
+}
+
+fn validate_evidence_retention(record: &EvidenceRefRecord) -> Result<(), JournalError> {
+    match &record.retention {
+        BlobRetention::TenantScoped | BlobRetention::RetainForever => Ok(()),
+        BlobRetention::SessionScoped(session_id) => {
+            let conversation_session_id =
+                SessionId::parse(&record.conversation_id).map_err(|error| {
+                    JournalError::Message(format!(
+                        "session-scoped evidence has invalid conversation id: {error}"
+                    ))
+                })?;
+            if session_id == &conversation_session_id {
+                Ok(())
+            } else {
+                Err(JournalError::Message(
+                    "session-scoped evidence retention does not match conversation".to_owned(),
+                ))
+            }
+        }
+        BlobRetention::TtlDays(_) => Err(JournalError::Message(
+            "ttl-scoped evidence cannot be read without expiry validation".to_owned(),
+        )),
+        _ => Err(JournalError::Message(
+            "unsupported evidence retention policy".to_owned(),
+        )),
+    }
 }
 
 fn parse_evidence_cursor(cursor: Option<&str>) -> Result<u64, JournalError> {
@@ -604,6 +719,33 @@ fn hash_hex(bytes: &[u8]) -> String {
         let _ = write!(&mut hex, "{byte:02x}");
     }
     hex
+}
+
+fn journal_payload_value_bytes(value: &serde_json::Value) -> Result<Vec<u8>, JournalError> {
+    match value {
+        serde_json::Value::String(value) => Ok(value.as_bytes().to_vec()),
+        _ => serde_json::to_vec(value)
+            .map_err(|error| JournalError::Message(format!("serialize journal payload: {error}"))),
+    }
+}
+
+fn validate_materialized_evidence_bytes(
+    record: &EvidenceRefRecord,
+    bytes: &[u8],
+) -> Result<(), JournalError> {
+    if bytes.len() as u64 != record.byte_length {
+        return Err(JournalError::Message(
+            "evidence content length mismatch".to_owned(),
+        ));
+    }
+    let expected_hash = record_hash_array(record)?;
+    let actual_hash = blake3::hash(bytes);
+    if actual_hash.as_bytes() != &expected_hash {
+        return Err(JournalError::Message(
+            "evidence content hash mismatch".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 // ── In-memory registry for tests ──
@@ -743,7 +885,11 @@ impl SqliteEvidenceRefRegistry {
                  CREATE INDEX IF NOT EXISTS idx_evidence_refs_conversation
                     ON evidence_refs(tenant_id, conversation_id);
                  CREATE INDEX IF NOT EXISTS idx_evidence_refs_kind
-                    ON evidence_refs(tenant_id, kind);",
+                    ON evidence_refs(tenant_id, kind);
+                 CREATE INDEX IF NOT EXISTS idx_evidence_refs_conversation_kind
+                    ON evidence_refs(tenant_id, conversation_id, kind);
+                 CREATE INDEX IF NOT EXISTS idx_evidence_refs_artifact_revision
+                    ON evidence_refs(tenant_id, artifact_id, revision_id);",
             )
             .map_err(journal_sqlite_error)?;
         Ok(Self {

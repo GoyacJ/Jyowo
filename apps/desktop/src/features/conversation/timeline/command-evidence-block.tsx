@@ -1,18 +1,22 @@
 import { Copy } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/shared/lib/utils'
 import type { CommandExecution } from '@/shared/tauri/commands'
 
 export function CommandEvidenceBlock({ execution }: { execution: CommandExecution }) {
   const { t } = useTranslation('conversation')
+  const [copyFailed, setCopyFailed] = useState(false)
   const output = execution.redactionState === 'withheld' ? null : (execution.stdoutPreview ?? null)
 
-  const handleCopy = async () => {
-    const lines = [`$ ${execution.command}`]
-    if (output) lines.push('', output)
-    if (execution.exitCode !== undefined) lines.push('', `exit ${execution.exitCode}`)
-    if (execution.durationMs !== undefined) lines.push(`duration ${execution.durationMs} ms`)
-    await navigator.clipboard?.writeText(lines.join('\n'))
+  const copyText = async (text: string) => {
+    try {
+      setCopyFailed(false)
+      if (!navigator.clipboard) throw new Error('Clipboard unavailable')
+      await navigator.clipboard.writeText(text)
+    } catch {
+      setCopyFailed(true)
+    }
   }
 
   return (
@@ -26,15 +30,24 @@ export function CommandEvidenceBlock({ execution }: { execution: CommandExecutio
             </span>
           ) : null}
         </div>
-        <button
-          aria-label={t('timeline.commandEvidence.copy')}
-          className="inline-flex size-7 items-center justify-center rounded-md text-white/60 hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={handleCopy}
-          type="button"
-        >
-          <Copy className="size-3.5" />
-        </button>
+        <div className="flex gap-1">
+          <CopyButton
+            label={t('timeline.commandEvidence.copyCommand')}
+            onClick={() => void copyText(execution.command)}
+          />
+          {output ? (
+            <CopyButton
+              label={t('timeline.commandEvidence.copyOutput')}
+              onClick={() => void copyText(output)}
+            />
+          ) : null}
+        </div>
       </div>
+      {copyFailed ? (
+        <div className="border-white/10 border-b px-3 py-1 text-red-300 text-xs">
+          {t('timeline.commandEvidence.copyFailed', 'Copy failed')}
+        </div>
+      ) : null}
       <div className="border-white/10 border-b px-3 py-2 font-mono text-xs text-white/90">
         $ {execution.command}
       </div>
@@ -66,5 +79,18 @@ export function CommandEvidenceBlock({ execution }: { execution: CommandExecutio
         ) : null}
       </div>
     </section>
+  )
+}
+
+function CopyButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      aria-label={label}
+      className="inline-flex size-7 items-center justify-center rounded-md text-white/60 hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-ring"
+      onClick={onClick}
+      type="button"
+    >
+      <Copy className="size-3.5" />
+    </button>
   )
 }

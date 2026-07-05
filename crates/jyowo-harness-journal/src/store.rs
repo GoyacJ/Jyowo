@@ -185,6 +185,18 @@ pub trait EventStore: Send + Sync + 'static {
         tenant: TenantId,
         policy: PrunePolicy,
     ) -> Result<PruneReport, JournalError>;
+
+    async fn prune_sessions(
+        &self,
+        tenant: TenantId,
+        session_ids: &[SessionId],
+        keep_snapshots: bool,
+    ) -> Result<PruneReport, JournalError> {
+        let _ = (tenant, session_ids, keep_snapshots);
+        Err(journal_error(
+            "exact-session prune is not supported by this event store",
+        ))
+    }
 }
 
 #[async_trait]
@@ -301,6 +313,17 @@ where
         policy: PrunePolicy,
     ) -> Result<PruneReport, JournalError> {
         self.as_ref().prune(tenant, policy).await
+    }
+
+    async fn prune_sessions(
+        &self,
+        tenant: TenantId,
+        session_ids: &[SessionId],
+        keep_snapshots: bool,
+    ) -> Result<PruneReport, JournalError> {
+        self.as_ref()
+            .prune_sessions(tenant, session_ids, keep_snapshots)
+            .await
     }
 }
 

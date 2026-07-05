@@ -1424,6 +1424,7 @@ const getArtifactMediaPreviewRequestSchema = z
   .object({
     conversationId: z.string().min(1),
     artifactId: z.string().min(1),
+    contentRef: evidenceRefIdSchema.optional(),
     revisionId: z.string().min(1).optional(),
   })
   .strict()

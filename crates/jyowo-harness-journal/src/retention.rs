@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{BlobId, BlobRetention, BlobStore, FileBlobStore, TenantId};
+use harness_contracts::JournalError;
+
+use crate::{BlobId, BlobRetention, BlobStore, EvidenceRefStore, FileBlobStore, TenantId};
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PrunePolicy {
@@ -67,6 +69,25 @@ impl RetentionEnforcer {
     }
 
     pub async fn collect_garbage(
+        &self,
+        tenant: TenantId,
+        store: &FileBlobStore,
+        evidence_store: &EvidenceRefStore,
+    ) -> Result<BlobGcReport, JournalError> {
+        let live_refs = evidence_store
+            .list_live_blob_roots(tenant)
+            .await?
+            .into_iter()
+            .map(|blob| blob.id)
+            .collect::<HashSet<_>>();
+        self.collect_garbage_with_live_refs(tenant, store, &live_refs)
+            .await
+            .map_err(|error| {
+                JournalError::Message(format!("blob garbage collection failed: {error}"))
+            })
+    }
+
+    async fn collect_garbage_with_live_refs(
         &self,
         tenant: TenantId,
         store: &FileBlobStore,

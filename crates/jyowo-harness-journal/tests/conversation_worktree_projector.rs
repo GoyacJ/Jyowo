@@ -1794,7 +1794,7 @@ fn command_tool_projects_command_process_detail() {
                 "toolUseId": "tool-1",
                 "toolName": "Bash",
                 "command": "pnpm check:desktop",
-                "cwd": "/Users/goya/Repo/Git/Jyowo",
+                "cwd": "apps/desktop",
                 "shell": "zsh",
                 "sandboxPolicy": {
                     "mode": "workspace_write",
@@ -1837,7 +1837,7 @@ fn command_tool_projects_command_process_detail() {
         panic!("command detail should be projected");
     };
     assert_eq!(cmd.command.as_str(), "pnpm check:desktop");
-    assert_eq!(cmd.cwd.as_deref(), Some("/Users/goya/Repo/Git/Jyowo"));
+    assert_eq!(cmd.cwd.as_deref(), Some("apps/desktop"));
     assert_eq!(cmd.shell.as_deref(), Some("zsh"));
     assert_eq!(
         cmd.sandbox.as_deref(),
@@ -1847,6 +1847,126 @@ fn command_tool_projects_command_process_detail() {
     assert_eq!(cmd.exit_code, Some(0));
     assert!(!cmd.truncated);
     assert_eq!(cmd.risk_level, RiskLevel::Medium);
+}
+
+#[test]
+fn tool_attempt_projects_safe_preview_origin_targets_and_timing() {
+    let events = vec![
+        user_event(1, "event-user", "run-1", "user-1", "edit file"),
+        event(
+            2,
+            "event-tool-requested",
+            "run-1",
+            "tool.requested",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "apply_patch",
+                "origin": "builtin",
+                "argumentsSummary": "Update src/lib.rs with token=secret-value",
+                "targetPath": "src/lib.rs",
+            }),
+        ),
+        event(
+            3,
+            "event-tool-completed",
+            "run-1",
+            "tool.completed",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "apply_patch",
+                "durationMs": 42,
+                "outputSummary": "Updated src/lib.rs",
+                "affectedTargets": ["src/lib.rs", "/Users/goya/.ssh/id_rsa"],
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let assistant = projection.turns[0].assistant.as_ref().unwrap();
+    let group = assistant
+        .segments
+        .iter()
+        .find_map(tool_group)
+        .expect("tool group exists");
+    let attempt = group.attempts.first().expect("tool attempt exists");
+
+    assert_eq!(attempt.origin, ToolAttemptOrigin::Builtin);
+    assert_eq!(attempt.status, ToolAttemptStatus::Completed);
+    assert_eq!(
+        attempt.arguments_preview.as_deref(),
+        Some("Update src/lib.rs with [REDACTED]")
+    );
+    assert_eq!(
+        attempt.output_summary.as_deref(),
+        Some("Updated src/lib.rs")
+    );
+    assert_eq!(attempt.affected_targets, vec!["src/lib.rs"]);
+    assert_eq!(
+        attempt.started_at.as_deref(),
+        Some("1970-01-01T00:00:02+00:00")
+    );
+    assert_eq!(
+        attempt.ended_at.as_deref(),
+        Some("1970-01-01T00:00:03+00:00")
+    );
+    assert_eq!(attempt.duration_ms, Some(42));
+}
+
+#[test]
+fn tool_attempt_origin_maps_backend_labels() {
+    let cases = [
+        ("builtin", ToolAttemptOrigin::Builtin),
+        ("mcp", ToolAttemptOrigin::Mcp),
+        ("plugin", ToolAttemptOrigin::Plugin),
+        ("app", ToolAttemptOrigin::App),
+        ("provider", ToolAttemptOrigin::Provider),
+        ("unknown", ToolAttemptOrigin::Unknown),
+    ];
+
+    for (index, (origin, expected)) in cases.into_iter().enumerate() {
+        let events = vec![
+            user_event(1, "event-user", "run-1", "user-1", "use tool"),
+            event(
+                2 + index as u64,
+                "event-tool-requested",
+                "run-1",
+                "tool.requested",
+                json!({
+                    "toolUseId": format!("tool-{index}"),
+                    "toolName": "external_tool",
+                    "origin": origin,
+                }),
+            ),
+        ];
+
+        let projection = project_conversation_worktree_snapshot("conversation-1", events);
+        let assistant = projection.turns[0].assistant.as_ref().unwrap();
+        let group = assistant.segments.iter().find_map(tool_group).unwrap();
+        assert_eq!(group.attempts[0].origin, expected);
+    }
+}
+
+#[test]
+fn command_projection_does_not_expose_private_absolute_cwd() {
+    let events = vec![
+        user_event(1, "event-user", "run-1", "user-1", "run command"),
+        event(
+            2,
+            "event-tool-requested",
+            "run-1",
+            "tool.requested",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "Bash",
+                "command": "pnpm test",
+                "cwd": "/Users/goya/Repo/Git/Jyowo",
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let serialized = serde_json::to_string(&projection.turns).unwrap();
+    assert!(!serialized.contains("/Users/goya/Repo/Git/Jyowo"));
 }
 
 #[test]
@@ -1862,7 +1982,7 @@ fn command_tool_carries_permission_metadata_and_truncation_state() {
                 "toolUseId": "tool-1",
                 "toolName": "Bash",
                 "command": "pnpm check:rust",
-                "cwd": "/Users/goya/Repo/Git/Jyowo",
+                "cwd": "crates",
                 "shell": "zsh",
                 "argumentsSummary": "Input withheld from conversation timeline."
             }),
@@ -1880,7 +2000,7 @@ fn command_tool_carries_permission_metadata_and_truncation_state() {
                     "command_exec": {
                         "command": "pnpm check:rust",
                         "argv": ["pnpm", "check:rust"],
-                        "cwd": "/Users/goya/Repo/Git/Jyowo",
+                        "cwd": "crates",
                         "fingerprint": "fingerprint-1"
                     }
                 },
@@ -1932,7 +2052,7 @@ fn command_tool_carries_permission_metadata_and_truncation_state() {
     let Some(ProcessStepDetail::Command(cmd)) = step.detail.as_ref() else {
         panic!("command detail should be projected");
     };
-    assert_eq!(cmd.cwd.as_deref(), Some("/Users/goya/Repo/Git/Jyowo"));
+    assert_eq!(cmd.cwd.as_deref(), Some("crates"));
     assert_eq!(cmd.shell.as_deref(), Some("zsh"));
     assert_eq!(cmd.approval_request_id.as_deref(), Some("request-1"));
     assert_eq!(cmd.risk_level, RiskLevel::High);

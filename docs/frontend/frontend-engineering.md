@@ -187,12 +187,12 @@ type WorkbenchSelection =
   | { kind: 'tool'; conversationId: string; toolUseId: string }
   | { kind: 'command'; conversationId: string; fullOutputRef?: string; eventRef?: ConversationEventRef }
   | { kind: 'diff'; conversationId: string; changeSetId: string }
-  | { kind: 'artifact'; conversationId: string; artifactId: string; revisionId?: string }
+  | { kind: 'artifact'; conversationId: string; artifactId: string; revisionId?: string; previewRef?: string }
 ```
 
 Rules:
 - `shared/state/ui-store.ts` stores `workbenchSelection: WorkbenchSelection | null` and `setWorkbenchSelection`. It may import from `shared/state/workbench-selection.ts` but MUST NOT import from `features/workbench`.
-- `features/workbench/workbench-state.ts` provides feature hooks (`useWorkbenchSelection`, `useSelectEvidence`, `useCloseInspector`) that read from the shared ui-store.
+- Workbench and timeline components read or update selection through `useUiStore` selectors. Do not add a feature-level state wrapper that imports shared state back into `features/workbench`.
 - React stores only UI selection and draft state. Policy decisions stay in Rust.
 - Full output, full patch, and artifact content are fetched by opaque `EvidenceRefId` via `getConversationCommandOutput`, `getConversationDiffPatch`, and `getArtifactRevisionContent` commands. No raw `RunEvent` drives the main canvas.
 - Secrets and private paths are redacted before frontend state; React never sees raw tool input, command output, or chain-of-thought.
@@ -236,6 +236,9 @@ features/conversation
   ConversationCanvas
   ConversationMessage
   Composer
+  composer/ComposerToolbar
+  composer/ReferenceCombobox
+  composer/SlashCommandMenu
   PlanBlock
   ProgressBlock
   ProcessStatusRow
@@ -259,6 +262,10 @@ features/context
   FileReferenceList
   NextActionList
 
+features/workbench
+  WorkbenchInspector
+  artifacts/ArtifactPane
+
 features/activity
   ActivityRail
   ActivityItem
@@ -274,6 +281,9 @@ Component ownership:
   `ToolEvidenceSummary`, `UserAttachmentStrip`, and `ContextCompactionNotice`.
 - `features/workspace` owns project and conversation navigation.
 - `features/context` owns secondary project context and references.
+- `features/workbench` owns the right-side inspector. `features/workbench/artifacts`
+  owns inspector artifact UI because it is selected from `WorkbenchInspector`;
+  route-level artifact pages remain under `features/artifacts`.
 - `features/activity` owns compact execution visibility and detailed drill-down.
 - `app/shell` composes regions and layout only.
 - `routes` compose screens from features and providers.
@@ -527,6 +537,8 @@ list_artifacts({
 get_artifact_media_preview(request: {
   conversationId: string
   artifactId: string
+  revisionId?: string
+  contentRef?: string
 }): {
   dataUrl: string
   mimeType: string
@@ -1097,9 +1109,11 @@ Conversation timeline:
   read raw thought events or raw thought text.
 - Image artifacts render from `ArtifactSegment.media` metadata and lazy-load
   preview bytes through `get_artifact_media_preview`. The preview command
-  accepts only `conversationId` and `artifactId` and returns only an image data
-  URL, MIME type, and byte count. It must not expose blob paths, filesystem
-  paths, remote URLs, signed URLs, or provider-native payloads to React.
+  accepts `conversationId`, `artifactId`, and optional `revisionId`/`contentRef`.
+  React must pass the Rust-projected `previewRef` or `contentRef` when present.
+  The command returns only an image data URL, MIME type, and byte count. It must
+  not expose blob paths, filesystem paths, remote URLs, signed URLs, or
+  provider-native payloads to React.
 - Image attachments render from `ConversationTurn.user.attachments` metadata and
   lazy-load preview bytes through `get_attachment_media_preview`. The preview
   command accepts only `conversationId` and `attachmentId`; React must not pass

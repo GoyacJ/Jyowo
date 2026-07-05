@@ -512,6 +512,7 @@ impl Harness {
         Arc::new(ConversationDeletionGuardEventStore {
             inner: Arc::clone(&self.inner.event_store),
             deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
+            evidence_ref_store: self.inner.evidence_ref_store.clone(),
         })
     }
 }

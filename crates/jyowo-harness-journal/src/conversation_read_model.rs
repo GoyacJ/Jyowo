@@ -10,9 +10,10 @@ use harness_contracts::{
     ConversationInspectorItem, ConversationInspectorItemResponse, ConversationInspectorSelection,
     ConversationMessage, ConversationMessageAuthor, ConversationSnapshot, ConversationSummary,
     ConversationTimelineEvent, ConversationTimelinePage, ConversationTurn, ConversationTurnCursor,
-    ConversationWorktreePage, Decision, DecisionScope, DeltaChunk, Event, EventId, JournalError,
-    MemberLeaveReason, MessageContent, MessagePart, PermissionActorSource, PermissionConfirmation,
-    PermissionMode, PermissionReview, PermissionSubject, ProcessStep, ProcessStepDetail, RequestId,
+    ConversationWorktreePage, Decision, DecisionLifetime, DecisionMatcherKind, DecisionScope,
+    DeltaChunk, Event, EventId, JournalError, MemberLeaveReason, MessageContent, MessagePart,
+    PermissionActorSource, PermissionConfirmation, PermissionDecisionOption, PermissionMode,
+    PermissionReview, PermissionSubject, ProcessStep, ProcessStepDetail, RequestId,
     RoutingPolicyKind, RunId, RunModelSnapshot, SandboxMode, SandboxPolicySummary, SandboxScope,
     SessionId, Severity, SubagentStatus, SubagentTerminationReason, TeamTerminationReason,
     TenantId, ToolAttempt, ToolResult, ToolResultPart, ToolUseId, TopologyKind, UiSafeText,
@@ -22,7 +23,7 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use crate::{
-    journal_error, project_conversation_worktree_snapshot,
+    enrich_event_with_evidence, journal_error, project_conversation_worktree_snapshot,
     project_conversation_worktree_snapshot_with_evidence, ConversationTurnPageDirection,
     ConversationWorktreeProjection, EventEnvelope, EvidenceRefStore, SessionSummary,
 };
@@ -459,6 +460,79 @@ impl SqliteConversationReadModelStore {
         })
     }
 
+    pub async fn page_timeline_with_evidence(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+        after_cursor: Option<ConversationCursor>,
+        limit: usize,
+        evidence_store: Arc<EvidenceRefStore>,
+    ) -> Result<ConversationTimelinePage, JournalError> {
+        let mut events = {
+            let connection = self.connection.lock().await;
+            if let Some(cursor) = after_cursor {
+                let exists = connection
+                    .query_row(
+                        "SELECT 1 FROM conversation_timeline_event
+                         WHERE tenant_id = ?1 AND session_id = ?2 AND event_id = ?3
+                           AND conversation_sequence = ?4",
+                        params![
+                            tenant_id.to_string(),
+                            session_id.to_string(),
+                            cursor.event_id.to_string(),
+                            cursor.conversation_sequence as i64
+                        ],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()
+                    .map_err(journal_error)?
+                    .is_some();
+                if !exists {
+                    return Err(journal_error("conversation cursor is unknown"));
+                }
+            }
+            let after_sequence =
+                after_cursor.map_or(0_i64, |cursor| cursor.conversation_sequence as i64);
+            let mut statement = connection
+                .prepare(
+                    "SELECT event_id, conversation_sequence, run_id, run_sequence, event_type,
+                            source, visibility, timestamp, payload
+                     FROM conversation_timeline_event
+                     WHERE tenant_id = ?1 AND session_id = ?2 AND conversation_sequence > ?3
+                     ORDER BY conversation_sequence ASC
+                     LIMIT ?4",
+                )
+                .map_err(journal_error)?;
+            let rows = statement
+                .query_map(
+                    params![
+                        tenant_id.to_string(),
+                        session_id.to_string(),
+                        after_sequence,
+                        limit.clamp(1, 200) as i64
+                    ],
+                    timeline_event_from_row,
+                )
+                .map_err(journal_error)?;
+            let mut events = Vec::new();
+            for row in rows {
+                events.push(row.map_err(journal_error)?);
+            }
+            events
+        };
+        for event in &mut events {
+            enrich_event_with_evidence(&session_id.to_string(), tenant_id, &evidence_store, event)
+                .await?;
+            sanitize_public_timeline_event(event);
+        }
+        let cursor = events.last().map(|event| event.cursor);
+        Ok(ConversationTimelinePage {
+            events,
+            cursor,
+            gap: false,
+        })
+    }
+
     pub async fn page_worktree(
         &self,
         tenant_id: TenantId,
@@ -507,6 +581,19 @@ impl SqliteConversationReadModelStore {
             evidence_store,
         )
         .await?;
+        Ok(ConversationInspectorItemResponse {
+            item: inspector_item_from_projection(projection, &selection),
+        })
+    }
+
+    pub async fn conversation_inspector_item(
+        &self,
+        tenant_id: TenantId,
+        session_id: SessionId,
+        selection: ConversationInspectorSelection,
+    ) -> Result<ConversationInspectorItemResponse, JournalError> {
+        let events = self.load_complete_timeline(tenant_id, session_id).await?;
+        let projection = project_conversation_worktree_snapshot(&session_id.to_string(), events);
         Ok(ConversationInspectorItemResponse {
             item: inspector_item_from_projection(projection, &selection),
         })
@@ -827,9 +914,6 @@ fn project_envelope(
             {
                 payload["media"] = media;
             }
-            if let Some(blob_ref) = event.blob_ref.as_ref() {
-                payload["blobRef"] = json!(blob_ref);
-            }
             (
                 "artifact.created",
                 "engine",
@@ -861,9 +945,6 @@ fn project_envelope(
                 artifact_media_payload(event.blob_ref.as_ref(), event.kind.as_deref())
             {
                 payload["media"] = media;
-            }
-            if let Some(blob_ref) = event.blob_ref.as_ref() {
-                payload["blobRef"] = json!(blob_ref);
             }
             (
                 "artifact.updated",
@@ -930,6 +1011,12 @@ fn project_envelope(
             if let Some(command) = safe_tool_command_preview(&event.tool_name, &event.input) {
                 payload["command"] = json!(command);
             }
+            if let Some(cwd) = safe_tool_cwd_preview(&event.input) {
+                payload["cwd"] = json!(cwd);
+            }
+            if let Some(shell) = safe_tool_shell_preview(&event.input) {
+                payload["shell"] = json!(shell);
+            }
             if is_file_read_tool_name(&event.tool_name) || is_file_edit_tool_name(&event.tool_name)
             {
                 if let Some(target_path) = safe_tool_target_path_preview(&event.input) {
@@ -994,6 +1081,27 @@ fn project_envelope(
                 event.at,
             )
         }
+        Event::ToolResultOffloaded(event) => {
+            let tool_name = tool_context_tool_name(tx, tenant_id, session_id, event.tool_use_id)?;
+            let mut payload = json!({
+                "blobRef": event.blob_ref,
+                "outputBytes": event.original_size,
+                "previewBytes": event.effective_limit,
+                "toolUseId": event.tool_use_id.to_string(),
+                "truncated": true,
+            });
+            if let Some(tool_name) = tool_name.as_ref() {
+                payload["toolName"] = json!(safe_text(tool_name).as_str());
+            }
+            (
+                "tool.completed",
+                "tool",
+                "redacted",
+                payload,
+                None,
+                event.at,
+            )
+        }
         Event::ToolUseFailed(event) => (
             "tool.failed",
             "tool",
@@ -1030,6 +1138,7 @@ fn project_envelope(
                     "requestId": event.request_id.to_string(),
                     "sandboxPolicy": sandbox_policy_payload(&event.sandbox_policy),
                     "severity": severity_label(event.severity),
+                    "decisionOptions": permission_decision_options_payload(&event.presented_options),
                     "target": subject.target,
                     "toolUseId": event.tool_use_id.to_string(),
                     "workspaceBoundary": "current workspace",
@@ -1469,6 +1578,7 @@ fn event_run_id(
         Event::ToolUseCompleted(event) => {
             tool_context_run_id(tx, tenant_id, session_id, event.tool_use_id)?
         }
+        Event::ToolResultOffloaded(event) => Some(event.run_id),
         Event::ToolUseFailed(event) => {
             tool_context_run_id(tx, tenant_id, session_id, event.tool_use_id)?
         }
@@ -2034,6 +2144,20 @@ fn safe_tool_command_preview(tool_name: &str, input: &Value) -> Option<String> {
     safe_process_preview_text(command)
 }
 
+fn safe_tool_cwd_preview(input: &Value) -> Option<String> {
+    ["cwd", "workingDirectory", "working_directory"]
+        .into_iter()
+        .find_map(|field| input.get(field).and_then(Value::as_str))
+        .and_then(safe_relative_path)
+}
+
+fn safe_tool_shell_preview(input: &Value) -> Option<String> {
+    ["shell", "shellKind", "shell_kind"]
+        .into_iter()
+        .find_map(|field| input.get(field).and_then(Value::as_str))
+        .and_then(safe_process_preview_text)
+}
+
 fn safe_tool_target_path_preview(input: &Value) -> Option<String> {
     ["path", "filePath", "file_path", "targetPath", "target_path"]
         .into_iter()
@@ -2268,6 +2392,11 @@ fn safe_tool_result_exit_code(result: &ToolResult) -> Option<i32> {
     value
         .get("exitCode")
         .or_else(|| value.get("exit_code"))
+        .or_else(|| {
+            value
+                .get("exit_status")
+                .and_then(|status| status.get("code"))
+        })
         .and_then(Value::as_i64)
         .and_then(|value| i32::try_from(value).ok())
 }
@@ -2719,6 +2848,49 @@ fn permission_decision_label(decision: &Decision) -> &'static str {
     }
 }
 
+fn permission_decision_options_payload(options: &[PermissionDecisionOption]) -> Value {
+    Value::Array(
+        options
+            .iter()
+            .map(|option| {
+                json!({
+                    "id": option.option_id.to_string(),
+                    "decision": permission_decision_label(&option.decision),
+                    "label": safe_text(&option.label).as_str(),
+                    "lifetime": decision_lifetime_label(option.lifetime),
+                    "matcher": {
+                        "kind": decision_matcher_kind_label(option.matcher_summary.kind),
+                        "label": safe_text(&option.matcher_summary.label).as_str(),
+                    },
+                    "requiresConfirmation": option.requires_confirmation,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn decision_lifetime_label(lifetime: DecisionLifetime) -> &'static str {
+    match lifetime {
+        DecisionLifetime::Once => "once",
+        DecisionLifetime::Run => "run",
+        DecisionLifetime::Session => "session",
+        DecisionLifetime::Persisted => "persisted",
+    }
+}
+
+fn decision_matcher_kind_label(kind: DecisionMatcherKind) -> &'static str {
+    match kind {
+        DecisionMatcherKind::ExactCommand => "exactCommand",
+        DecisionMatcherKind::ExactArgs => "exactArgs",
+        DecisionMatcherKind::ToolName => "toolName",
+        DecisionMatcherKind::Category => "category",
+        DecisionMatcherKind::PathPrefix => "pathPrefix",
+        DecisionMatcherKind::GlobPattern => "globPattern",
+        DecisionMatcherKind::ExecuteCodeScript => "executeCodeScript",
+        DecisionMatcherKind::Any => "any",
+    }
+}
+
 fn severity_label(severity: Severity) -> &'static str {
     match severity {
         Severity::Info | Severity::Low => "low",
@@ -2802,13 +2974,7 @@ fn decision_scope_display(scope: &DecisionScope) -> String {
 }
 
 fn safe_command_label(command: &str) -> String {
-    let executable_token = command.split_whitespace().next().unwrap_or(command);
-    let executable = Path::new(executable_token)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .unwrap_or(executable_token);
-    safe_text(executable).as_str().to_owned()
+    safe_process_preview_text(command).unwrap_or_else(|| "command".to_owned())
 }
 
 fn safe_path_label(path: &Path) -> String {
@@ -3293,6 +3459,10 @@ fn sanitize_public_timeline_event(event: &mut ConversationTimelineEvent) {
         }
         "tool.completed" => {
             if let Value::Object(payload) = &mut event.payload {
+                payload.remove("blobRef");
+                payload.remove("blob_ref");
+                payload.remove("outputBytes");
+                payload.remove("previewBytes");
                 payload.remove("redactionState");
                 payload.remove("stdout");
                 payload.remove("stderr");

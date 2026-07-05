@@ -69,6 +69,7 @@ async fn get_artifact_media_preview_with_runtime_state_returns_owned_image_data_
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-image".to_owned(),
+            content_ref: None,
             revision_id: None,
         },
         &state,
@@ -98,7 +99,7 @@ async fn get_artifact_media_preview_with_runtime_state_reads_selected_revision_b
     let old_hash = *blake3::hash(&old_image_bytes).as_bytes();
     let new_hash = *blake3::hash(&new_image_bytes).as_bytes();
     let old_revision_at = now();
-    let new_revision_at = old_revision_at;
+    let new_revision_at = old_revision_at + chrono::Duration::seconds(1);
     let blob_store = FileBlobStore::open(
         state
             .workspace_root()
@@ -185,6 +186,7 @@ async fn get_artifact_media_preview_with_runtime_state_reads_selected_revision_b
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-image-revisions".to_owned(),
+            content_ref: None,
             revision_id: Some(old_revision_id.to_string()),
         },
         &state,
@@ -199,6 +201,7 @@ async fn get_artifact_media_preview_with_runtime_state_reads_selected_revision_b
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-image-revisions".to_owned(),
+            content_ref: None,
             revision_id: Some(new_revision_id.to_string()),
         },
         &state,
@@ -213,6 +216,7 @@ async fn get_artifact_media_preview_with_runtime_state_reads_selected_revision_b
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-image-revisions".to_owned(),
+            content_ref: None,
             revision_id: None,
         },
         &state,
@@ -243,6 +247,7 @@ async fn get_artifact_media_preview_with_runtime_state_accepts_image_mime_artifa
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-image-mime-kind".to_owned(),
+            content_ref: None,
             revision_id: None,
         },
         &state,
@@ -277,6 +282,7 @@ async fn get_artifact_media_preview_with_runtime_state_falls_back_to_detected_im
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-image-unsafe-mime".to_owned(),
+            content_ref: None,
             revision_id: None,
         },
         &state,
@@ -309,6 +315,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_safe_non_image_mi
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-image-text-mime".to_owned(),
+            content_ref: None,
             revision_id: None,
         },
         &state,
@@ -385,6 +392,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_cross_session_blo
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-image".to_owned(),
+            content_ref: None,
             revision_id: None,
         },
         &state,
@@ -405,6 +413,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_missing_artifact(
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "missing-artifact".to_owned(),
+            content_ref: None,
             revision_id: None,
         },
         &state,
@@ -434,6 +443,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_not_ready_artifac
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-running".to_owned(),
+            content_ref: None,
             revision_id: None,
         },
         &state,
@@ -464,6 +474,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_non_image_artifac
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-file".to_owned(),
+            content_ref: None,
             revision_id: None,
         },
         &state,
@@ -498,6 +509,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_svg_image_blob() 
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-svg".to_owned(),
+            content_ref: None,
             revision_id: None,
         },
         &state,
@@ -534,6 +546,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_mislabeled_image_
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-mislabeled".to_owned(),
+            content_ref: None,
             revision_id: None,
         },
         &state,
@@ -566,6 +579,7 @@ async fn get_artifact_media_preview_with_runtime_state_rejects_too_large_image_b
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-large".to_owned(),
+            content_ref: None,
             revision_id: None,
         },
         &state,
@@ -603,6 +617,7 @@ async fn get_artifact_media_preview_with_runtime_state_strips_png_text_metadata(
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-png-metadata".to_owned(),
+            content_ref: None,
             revision_id: None,
         },
         &state,
@@ -642,6 +657,7 @@ async fn get_artifact_media_preview_with_runtime_state_strips_jpeg_exif_metadata
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-jpeg-metadata".to_owned(),
+            content_ref: None,
             revision_id: None,
         },
         &state,
@@ -681,6 +697,7 @@ async fn get_artifact_media_preview_with_runtime_state_strips_gif_comment_metada
         GetArtifactMediaPreviewRequest {
             conversation_id: session_id.to_string(),
             artifact_id: "artifact-gif-metadata".to_owned(),
+            content_ref: None,
             revision_id: None,
         },
         &state,

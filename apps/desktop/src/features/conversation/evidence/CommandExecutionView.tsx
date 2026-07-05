@@ -22,21 +22,37 @@ export function CommandExecutionView({
     output: string
     truncated: boolean
   } | null>(null)
+  const [copyFailed, setCopyFailed] = useState(false)
+  const [fetchFailed, setFetchFailed] = useState(false)
 
-  const handleCopyCommand = () => {
-    void navigator.clipboard?.writeText(command.command)
+  const handleCopyCommand = async () => {
+    try {
+      setCopyFailed(false)
+      if (!navigator.clipboard) throw new Error('Clipboard unavailable')
+      await navigator.clipboard.writeText(command.command)
+    } catch {
+      setCopyFailed(true)
+    }
   }
 
-  const handleCopyVisible = () => {
-    const parts = [`$ ${command.command}`]
-    if (command.stdoutPreview) parts.push('', command.stdoutPreview)
-    if (command.stderrPreview) parts.push('', command.stderrPreview)
-    void navigator.clipboard?.writeText(parts.join('\n'))
+  const previewOutput = [command.stdoutPreview, command.stderrPreview].filter(Boolean).join('\n')
+  const visibleOutput = fetchedOutput?.output ?? (previewOutput.length > 0 ? previewOutput : null)
+
+  const handleCopyVisible = async () => {
+    if (!visibleOutput) return
+    try {
+      setCopyFailed(false)
+      if (!navigator.clipboard) throw new Error('Clipboard unavailable')
+      await navigator.clipboard.writeText(visibleOutput)
+    } catch {
+      setCopyFailed(true)
+    }
   }
 
   const handleFetchPage = async () => {
     if (!command.fullOutputRef) return
     setFetchingPage(true)
+    setFetchFailed(false)
     try {
       const response = await commandClient.getConversationCommandOutput({
         conversationId,
@@ -50,12 +66,11 @@ export function CommandExecutionView({
       })
     } catch {
       setFetchedOutput(null)
+      setFetchFailed(true)
     } finally {
       setFetchingPage(false)
     }
   }
-
-  const output = fetchedOutput?.output ?? command.stdoutPreview ?? null
 
   return (
     <section className="overflow-hidden rounded-md border border-border bg-terminal-background text-white">
@@ -77,12 +92,12 @@ export function CommandExecutionView({
         <div className="flex gap-1">
           <CopyButton
             label={t('timeline.commandEvidence.copyCommand')}
-            onClick={handleCopyCommand}
+            onClick={() => void handleCopyCommand()}
           />
-          {output ? (
+          {visibleOutput ? (
             <CopyButton
               label={t('timeline.commandEvidence.copyOutput')}
-              onClick={handleCopyVisible}
+              onClick={() => void handleCopyVisible()}
             />
           ) : null}
           {command.fullOutputRef && command.redactionState !== 'withheld' ? (
@@ -101,6 +116,16 @@ export function CommandExecutionView({
           ) : null}
         </div>
       </div>
+      {copyFailed ? (
+        <div className="border-white/10 border-b px-3 py-1 text-red-300 text-xs">
+          {t('timeline.commandEvidence.copyFailed', 'Copy failed')}
+        </div>
+      ) : null}
+      {fetchFailed ? (
+        <div className="border-white/10 border-b px-3 py-1 text-red-300 text-xs">
+          {t('timeline.commandEvidence.fetchFailed', 'Failed to load output page')}
+        </div>
+      ) : null}
 
       {/* Command line */}
       <div className="border-white/10 border-b px-3 py-2 font-mono text-xs text-white/90">
@@ -132,12 +157,12 @@ export function CommandExecutionView({
       </div>
 
       {/* Output */}
-      {output ? (
+      {visibleOutput ? (
         <pre
           className="max-h-[360px] overflow-auto px-3 py-2 font-mono text-xs leading-5"
           data-testid="command-output-scroll-region"
         >
-          <code>{output}</code>
+          <code>{visibleOutput}</code>
         </pre>
       ) : command.redactionState === 'withheld' ? (
         <div className="px-3 py-4 text-center text-muted-foreground text-xs">

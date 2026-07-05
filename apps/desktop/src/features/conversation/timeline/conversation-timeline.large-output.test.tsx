@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 
 import { fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { appI18n } from '@/shared/i18n/i18n'
 import { createTestCommandClient } from '@/testing/command-client'
 import {
@@ -19,8 +19,14 @@ import {
 import { parseDiffEvidenceLines } from './diff-evidence-block'
 
 describe('ConversationTimeline', () => {
+  const originalClipboard = navigator.clipboard
+
   afterEach(() => {
     resetTimelineTestState()
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: originalClipboard,
+    })
   })
 
   it('renders a Codex-style evidence conversation from the worktree projection', async () => {
@@ -82,6 +88,27 @@ describe('ConversationTimeline', () => {
       .closest('div')
     expect(userBubble).toHaveClass('bg-muted')
     expect(userBubble).not.toHaveClass('bg-primary')
+  })
+
+  it('uses explicit command and output copy actions instead of combined command evidence copy', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    renderTimelineWithClient(
+      <ConversationTimeline title="Evidence conversation" turns={codexStyleEvidenceTurns} />,
+      createTestCommandClient(),
+    )
+
+    expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy command' }))
+    expect(writeText).toHaveBeenCalledWith('pnpm -C apps/desktop test -- SkillsPage')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy output' }))
+    expect(writeText).toHaveBeenCalledWith(expect.not.stringContaining('$ pnpm'))
+    expect(writeText).toHaveBeenCalledWith(expect.not.stringContaining('exit 1'))
   })
 
   it('keeps large diff content inside the evidence scroll region', () => {

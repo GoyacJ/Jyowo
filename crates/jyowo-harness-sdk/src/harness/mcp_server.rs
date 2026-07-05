@@ -601,6 +601,7 @@ impl Harness {
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
             deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
+            evidence_ref_store: self.inner.evidence_ref_store.clone(),
             summary_state: parking_lot::Mutex::new(MemorySessionSummaryState::default()),
             #[cfg(feature = "memory-external-slot")]
             memory_manager,

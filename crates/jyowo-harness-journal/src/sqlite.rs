@@ -569,18 +569,32 @@ impl EventStore for SqliteEventStore {
                 summary.last_event_at <= cutoff && !keep.contains(&summary.session_id)
             })
             .collect();
+        let candidate_sessions: Vec<_> = candidates
+            .iter()
+            .map(|summary| summary.session_id)
+            .collect();
+        self.prune_sessions(tenant, &candidate_sessions, policy.keep_snapshots)
+            .await
+    }
+
+    async fn prune_sessions(
+        &self,
+        tenant: TenantId,
+        session_ids: &[SessionId],
+        keep_snapshots: bool,
+    ) -> Result<PruneReport, JournalError> {
         let mut report = PruneReport::default();
         let mut connection = self.connection.lock().await;
         let tx = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(journal_error)?;
-        for summary in &candidates {
-            let session_id = summary.session_id.to_string();
+        for session_id in session_ids {
+            let session_id_text = session_id.to_string();
             let (event_count, bytes): (i64, Option<i64>) = tx
                 .query_row(
                     "SELECT COUNT(*), SUM(length(body)) FROM events
                      WHERE tenant_id = ?1 AND session_id = ?2",
-                    params![tenant.to_string(), session_id],
+                    params![tenant.to_string(), session_id_text],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .map_err(journal_error)?;
@@ -588,26 +602,26 @@ impl EventStore for SqliteEventStore {
             report.bytes_freed += bytes.unwrap_or_default() as u64;
             tx.execute(
                 "DELETE FROM events WHERE tenant_id = ?1 AND session_id = ?2",
-                params![tenant.to_string(), summary.session_id.to_string()],
+                params![tenant.to_string(), session_id.to_string()],
             )
             .map_err(journal_error)?;
             tx.execute(
                 "DELETE FROM events_fts WHERE tenant_id = ?1 AND session_id = ?2",
-                params![tenant.to_string(), summary.session_id.to_string()],
+                params![tenant.to_string(), session_id.to_string()],
             )
             .map_err(journal_error)?;
-            if !policy.keep_snapshots {
+            if !keep_snapshots {
                 report.snapshots_removed += tx
                     .execute(
                         "DELETE FROM snapshots WHERE tenant_id = ?1 AND session_id = ?2",
-                        params![tenant.to_string(), summary.session_id.to_string()],
+                        params![tenant.to_string(), session_id.to_string()],
                     )
                     .map_err(journal_error)? as u64;
             }
             tx.execute(
                 "DELETE FROM compaction_lineage
                  WHERE parent_session = ?1 OR child_session = ?1",
-                params![summary.session_id.to_string()],
+                params![session_id.to_string()],
             )
             .map_err(journal_error)?;
         }

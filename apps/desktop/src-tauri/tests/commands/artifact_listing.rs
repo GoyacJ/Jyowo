@@ -536,7 +536,7 @@ async fn list_artifacts_with_runtime_state_uses_sanitized_content_refs_after_wor
         .content_ref
         .as_ref()
         .expect("artifact content ref should be present");
-    assert!(content_ref.starts_with("evidence:artifact-content-redacted:"));
+    assert!(!content_ref.starts_with("evidence:"));
     let content = get_artifact_revision_content_with_runtime_state(
         GetArtifactRevisionContentRequest {
             conversation_id: session_id.to_string(),

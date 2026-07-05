@@ -1,7 +1,6 @@
 //! Pure conversation worktree projection.
 
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use crate::evidence::{
@@ -20,11 +19,11 @@ use harness_contracts::{
     ConversationWorktreePage, DataExposure, DataExposureSecretRisk, DecisionConfirmation,
     DecisionKind, DecisionLifetime, DecisionMatcherKind, DecisionMatcherSummary, DecisionOperation,
     DecisionOption, DecisionPolicy, DecisionRequestState, DecisionRequestStatus, DecisionTarget,
-    DecisionTargetKind, ErrorSegment, EvidenceRedactionState, EvidenceRefId, EvidenceRefKind,
-    JournalError, NoticeSegment, ProcessSegment, ProcessSegmentStatus, ProcessStep,
-    ProcessStepDetail, ProcessStepKind, ProcessStepStatus, ReviewRequestSegment, RiskLevel,
-    TenantId, TextSegment, ToolAttempt, ToolAttemptOrigin, ToolAttemptStatus, ToolGroupSegment,
-    UiSafeText, UiVisibility,
+    DecisionTargetKind, ErrorSegment, EventId, EvidenceRedactionState, EvidenceRefId,
+    EvidenceRefKind, JournalError, NoticeSegment, ProcessSegment, ProcessSegmentStatus,
+    ProcessStep, ProcessStepDetail, ProcessStepKind, ProcessStepStatus, ReviewRequestSegment,
+    RiskLevel, TenantId, TextSegment, ToolAttempt, ToolAttemptOrigin, ToolAttemptStatus,
+    ToolGroupSegment, UiSafeText, UiVisibility,
 };
 use serde_json::{Map, Value};
 
@@ -79,6 +78,7 @@ pub fn project_conversation_worktree_snapshot(
                     event_ref.clone(),
                     ToolAttemptStatus::Completed,
                 ) {
+                    state.project_tool_completed_attempt(&event, event_ref.clone());
                     state.project_tool_completed_process_step(&event, event_ref, tool_name);
                 }
             }
@@ -182,7 +182,7 @@ pub fn worktree_projection_page(
     }
 }
 
-async fn enrich_event_with_evidence(
+pub(crate) async fn enrich_event_with_evidence(
     conversation_id: &str,
     tenant_id: TenantId,
     evidence_store: &Arc<EvidenceRefStore>,
@@ -190,12 +190,40 @@ async fn enrich_event_with_evidence(
 ) -> Result<(), JournalError> {
     match event.event_type.as_str() {
         "tool.completed" => {
-            if process_step_kind_for_tool_name(
+            if let Some(blob_ref) = event
+                .payload
+                .get("blobRef")
+                .or_else(|| event.payload.get("blob_ref"))
+                .and_then(blob_ref_from_value)
+            {
+                let content_type = blob_ref
+                    .content_type
+                    .clone()
+                    .unwrap_or_else(|| "text/plain; charset=utf-8".to_owned());
+                let ref_id = register_existing_blob_evidence(
+                    evidence_store,
+                    tenant_id,
+                    conversation_id,
+                    event,
+                    EvidenceRefKind::CommandOutput,
+                    content_type,
+                    None,
+                    None,
+                    blob_ref,
+                )
+                .await?;
+                set_object_field(
+                    &mut event.payload,
+                    "fullOutputRef",
+                    Value::String(String::from(ref_id)),
+                );
+                set_object_field(&mut event.payload, "truncated", Value::Bool(true));
+            } else if process_step_kind_for_tool_name(
                 &string_field(&event.payload, "toolName").unwrap_or_default(),
             ) == ProcessStepKind::Command
             {
-                if let Some(bytes) = command_output_bytes(&event.payload) {
-                    let ref_id = store_blob_payload_evidence(
+                if let Some(source) = command_output_source(&event.payload) {
+                    let ref_id = store_payload_evidence(
                         evidence_store,
                         tenant_id,
                         conversation_id,
@@ -204,7 +232,8 @@ async fn enrich_event_with_evidence(
                         "text/plain; charset=utf-8",
                         None,
                         None,
-                        bytes,
+                        source.bytes,
+                        source.json_pointer,
                     )
                     .await?;
                     set_object_field(
@@ -246,7 +275,8 @@ async fn enrich_diff_evidence(
         let Some(patch) = string_field(file, "patch") else {
             continue;
         };
-        let ref_id = store_blob_payload_evidence(
+        let projection_pointer = format!("/diff/files/{index}/patch");
+        let ref_id = store_payload_evidence(
             evidence_store,
             tenant_id,
             conversation_id,
@@ -256,6 +286,7 @@ async fn enrich_diff_evidence(
             None,
             None,
             patch.into_bytes(),
+            Some(journal_payload_pointer(event, &projection_pointer)),
         )
         .await?;
         refs.push((index, ref_id));
@@ -296,39 +327,27 @@ async fn enrich_artifact_evidence(
     let Some(artifact_id) = string_field(&event.payload, "artifactId") else {
         return Ok(());
     };
-    let Some(blob_ref) = event
-        .payload
-        .get("blobRef")
-        .cloned()
-        .and_then(|value| serde_json::from_value::<BlobRef>(value).ok())
-    else {
-        return Ok(());
-    };
-    let content_type = blob_ref
-        .content_type
-        .clone()
-        .unwrap_or_else(|| "application/octet-stream".to_owned());
-    let ref_id = register_existing_blob_evidence(
-        evidence_store,
-        tenant_id,
-        conversation_id,
-        event,
-        EvidenceRefKind::ArtifactContent,
-        content_type,
-        Some(artifact_id),
-        Some(revision_id),
-        blob_ref,
-    )
-    .await?;
-    set_object_field(
-        &mut event.payload,
-        "contentRef",
-        Value::String(String::from(ref_id)),
-    );
+    if let Some(ref_id) = evidence_store
+        .list_for_conversation(tenant_id, conversation_id)
+        .await?
+        .into_iter()
+        .find(|record| {
+            record.kind == EvidenceRefKind::ArtifactContent
+                && record.artifact_id.as_deref() == Some(artifact_id.as_str())
+                && record.revision_id.as_deref() == Some(revision_id.as_str())
+        })
+        .map(|record| record.id)
+    {
+        set_object_field(
+            &mut event.payload,
+            "contentRef",
+            Value::String(String::from(ref_id)),
+        );
+    }
     Ok(())
 }
 
-async fn store_blob_payload_evidence(
+async fn store_payload_evidence(
     evidence_store: &EvidenceRefStore,
     tenant_id: TenantId,
     conversation_id: &str,
@@ -338,9 +357,25 @@ async fn store_blob_payload_evidence(
     artifact_id: Option<String>,
     revision_id: Option<String>,
     bytes: Vec<u8>,
+    json_pointer: Option<String>,
 ) -> Result<EvidenceRefId, JournalError> {
     let hash = blake3::hash(&bytes);
     let content_hash = hash.as_bytes().to_vec();
+    let redaction_state = redaction_state_from_event(event);
+    let source = match (redaction_state, json_pointer) {
+        (EvidenceRedactionState::Clean, Some(json_pointer)) => EvidenceRefSource::JournalPayload {
+            event_id: event.id.clone(),
+            json_pointer,
+        },
+        _ => EvidenceRefSource::Blob {
+            blob_ref: BlobRef {
+                id: BlobId::new(),
+                size: bytes.len() as u64,
+                content_hash: *hash.as_bytes(),
+                content_type: Some(content_type.to_owned()),
+            },
+        },
+    };
     let record = EvidenceRefRecord {
         id: evidence_ref_id(kind, event, hash.as_bytes()),
         kind,
@@ -352,19 +387,22 @@ async fn store_blob_payload_evidence(
         content_type: content_type.to_owned(),
         byte_length: bytes.len() as u64,
         content_hash,
-        redaction_state: redaction_state_from_event(event),
+        redaction_state,
         redaction_provenance: RedactionProvenance {
             redactor_version: "event-redacted-v1".to_owned(),
         },
         retention: BlobRetention::TenantScoped,
-        source: EvidenceRefSource::JournalPayload {
-            event_id: event.id.clone(),
-            json_pointer: String::new(),
-        },
+        source,
     };
-    evidence_store
-        .store_blob_evidence(tenant_id, record, bytes)
-        .await
+    if matches!(record.source, EvidenceRefSource::JournalPayload { .. }) {
+        evidence_store
+            .store_journal_evidence(tenant_id, record)
+            .await
+    } else {
+        evidence_store
+            .store_blob_evidence(tenant_id, record, bytes)
+            .await
+    }
 }
 
 async fn register_existing_blob_evidence(
@@ -397,7 +435,7 @@ async fn register_existing_blob_evidence(
         source: EvidenceRefSource::Blob { blob_ref },
     };
     evidence_store
-        .store_journal_evidence(tenant_id, record)
+        .store_existing_blob_evidence(tenant_id, record)
         .await
 }
 
@@ -411,23 +449,49 @@ fn evidence_ref_id(
         EvidenceRefKind::DiffPatch => "diff-patch",
         EvidenceRefKind::ArtifactContent => "artifact-content",
     };
-    let mut hash_hex = String::with_capacity(64);
-    for byte in hash {
-        write!(&mut hash_hex, "{byte:02x}").expect("writing to String should not fail");
-    }
-    EvidenceRefId::new(format!("evidence:{kind}:{}:{hash_hex}", event.id))
+    let digest = blake3::hash(format!("{kind}:{}:{}", event.id, hex_hash(hash)).as_bytes());
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    EvidenceRefId::new(EventId::from_u128(u128::from_be_bytes(bytes)).to_string())
 }
 
-fn command_output_bytes(payload: &Value) -> Option<Vec<u8>> {
+fn hex_hash(hash: &[u8; 32]) -> String {
+    hash.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+struct PayloadEvidenceSource {
+    bytes: Vec<u8>,
+    json_pointer: Option<String>,
+}
+
+fn command_output_source(payload: &Value) -> Option<PayloadEvidenceSource> {
     let stdout = string_field(payload, "stdout");
     let stderr = string_field(payload, "stderr");
     match (stdout, stderr) {
         (Some(stdout), Some(stderr)) if !stdout.is_empty() && !stderr.is_empty() => {
-            Some(format!("{stdout}\n{stderr}").into_bytes())
+            Some(PayloadEvidenceSource {
+                bytes: format!("{stdout}\n{stderr}").into_bytes(),
+                json_pointer: None,
+            })
         }
-        (Some(stdout), _) if !stdout.is_empty() => Some(stdout.into_bytes()),
-        (_, Some(stderr)) if !stderr.is_empty() => Some(stderr.into_bytes()),
+        (Some(stdout), _) if !stdout.is_empty() => Some(PayloadEvidenceSource {
+            bytes: stdout.into_bytes(),
+            json_pointer: Some("/result/structured/stdout".to_owned()),
+        }),
+        (_, Some(stderr)) if !stderr.is_empty() => Some(PayloadEvidenceSource {
+            bytes: stderr.into_bytes(),
+            json_pointer: Some("/result/structured/stderr".to_owned()),
+        }),
         _ => None,
+    }
+}
+
+fn journal_payload_pointer(event: &ConversationTimelineEvent, projection_pointer: &str) -> String {
+    match event.event_type.as_str() {
+        "tool.completed" if projection_pointer.starts_with("/diff/") => {
+            format!("/result/structured{projection_pointer}")
+        }
+        _ => projection_pointer.to_owned(),
     }
 }
 
@@ -960,12 +1024,12 @@ impl ProjectionState<'_> {
             order,
             tool_use_id: tool_use_id.clone(),
             tool_name: tool_name.clone(),
-            origin: ToolAttemptOrigin::Unknown,
+            origin: tool_attempt_origin(&event.payload, &tool_name),
             status: ToolAttemptStatus::Running,
-            arguments_preview: None,
+            arguments_preview: tool_arguments_preview(&event.payload),
             output_summary: None,
-            affected_targets: vec![],
-            started_at: None,
+            affected_targets: tool_affected_targets(&event.payload),
+            started_at: Some(event.timestamp.to_rfc3339()),
             ended_at: None,
             duration_ms: None,
             retry_of: None,
@@ -1006,6 +1070,29 @@ impl ProjectionState<'_> {
             return Some(attempt.tool_name.as_str().to_owned());
         }
         None
+    }
+
+    fn project_tool_completed_attempt(
+        &mut self,
+        event: &ConversationTimelineEvent,
+        event_ref: ConversationEventRef,
+    ) {
+        let Some(tool_use_id) = string_field(&event.payload, "toolUseId") else {
+            return;
+        };
+        if let Some(attempt) = self.tool_attempt_mut(&event.run_id, &tool_use_id) {
+            if let Some(summary) = tool_output_summary(&event.payload) {
+                attempt.output_summary = Some(summary);
+            }
+            let targets = tool_affected_targets(&event.payload);
+            if !targets.is_empty() {
+                attempt.affected_targets = targets;
+            }
+            attempt.ended_at = Some(event.timestamp.to_rfc3339());
+            attempt.duration_ms = u64_field(&event.payload, "durationMs")
+                .or_else(|| u64_field(&event.payload, "duration_ms"));
+            attempt.event_refs.push(event_ref);
+        }
     }
 
     fn project_tool_failed(
@@ -1191,6 +1278,8 @@ impl ProjectionState<'_> {
             existing.status = status;
             existing.source = source;
             existing.revision.revision_id = revision_id;
+            existing.revision.preview_ref =
+                artifact_preview_ref(content_ref.as_ref(), &kind, media.as_ref());
             existing.revision.content_ref = content_ref;
             existing.revision.media = media.clone();
             existing.event_refs.push(event_ref);
@@ -1222,7 +1311,7 @@ impl ProjectionState<'_> {
                     source_run_id: event.run_id.clone(),
                     title: title.clone().unwrap_or_else(|| "Artifact".to_owned()),
                     summary: summary.as_ref().map(|s| s.as_str().to_owned()),
-                    preview_ref: None,
+                    preview_ref: artifact_preview_ref(content_ref.as_ref(), &kind, media.as_ref()),
                     content_ref,
                     media: media.clone(),
                 },
@@ -2947,6 +3036,7 @@ fn command_cwd_from_payload(payload: &Value) -> Option<String> {
                 .get("subject")
                 .and_then(|subject| command_cwd_from_payload(subject_body(subject)))
         })
+        .and_then(|cwd| safe_relative_path(&cwd))
 }
 
 fn command_shell_from_payload(payload: &Value) -> Option<String> {
@@ -2955,6 +3045,179 @@ fn command_shell_from_payload(payload: &Value) -> Option<String> {
             .get("input")
             .and_then(|input| string_field(input, "shell"))
     })
+}
+
+fn tool_attempt_origin(payload: &Value, tool_name: &str) -> ToolAttemptOrigin {
+    let origin = string_field(payload, "origin")
+        .or_else(|| string_field(payload, "originKind"))
+        .or_else(|| string_field(payload, "origin_kind"))
+        .or_else(|| string_field(payload, "toolOrigin"))
+        .or_else(|| string_field(payload, "tool_origin"));
+    if let Some(origin) = origin {
+        return tool_attempt_origin_from_label(&origin);
+    }
+    if tool_name.starts_with("mcp__") {
+        return ToolAttemptOrigin::Mcp;
+    }
+    if is_builtin_tool_name(tool_name) {
+        return ToolAttemptOrigin::Builtin;
+    }
+    ToolAttemptOrigin::Unknown
+}
+
+fn tool_attempt_origin_from_label(label: &str) -> ToolAttemptOrigin {
+    let normalized = label.to_ascii_lowercase();
+    if normalized.contains("builtin") || normalized == "core" {
+        ToolAttemptOrigin::Builtin
+    } else if normalized.contains("mcp") {
+        ToolAttemptOrigin::Mcp
+    } else if normalized.contains("plugin") || normalized.contains("skill") {
+        ToolAttemptOrigin::Plugin
+    } else if normalized.contains("app") || normalized.contains("connector") {
+        ToolAttemptOrigin::App
+    } else if normalized.contains("provider") || normalized.contains("model") {
+        ToolAttemptOrigin::Provider
+    } else {
+        ToolAttemptOrigin::Unknown
+    }
+}
+
+fn tool_arguments_preview(payload: &Value) -> Option<String> {
+    [
+        "argumentsPreview",
+        "arguments_preview",
+        "argumentsSummary",
+        "arguments_summary",
+        "inputSummary",
+        "input_summary",
+    ]
+    .into_iter()
+    .find_map(|field| string_field(payload, field))
+    .or_else(|| command_text_from_payload(payload).map(|command| format!("command: {command}")))
+    .map(|value| bounded_ui_preview(&value, 500))
+    .filter(|value| !value.trim().is_empty())
+}
+
+fn tool_output_summary(payload: &Value) -> Option<String> {
+    string_field(payload, "outputSummary")
+        .or_else(|| string_field(payload, "output_summary"))
+        .map(|summary| bounded_ui_preview(&summary, 500))
+        .filter(|summary| {
+            !summary.trim().is_empty() && summary != "Output withheld from conversation timeline."
+        })
+}
+
+fn tool_affected_targets(payload: &Value) -> Vec<String> {
+    let mut targets = Vec::new();
+    for field in [
+        "path",
+        "filePath",
+        "file_path",
+        "targetPath",
+        "target_path",
+        "cwd",
+        "workingDirectory",
+        "working_directory",
+    ] {
+        if let Some(target) =
+            string_field(payload, field).and_then(|value| safe_relative_path(&value))
+        {
+            push_unique(&mut targets, target);
+        }
+    }
+    for field in ["affectedTargets", "affected_targets", "targets"] {
+        if let Some(values) = payload.get(field).and_then(Value::as_array) {
+            for value in values {
+                if let Some(target) = value.as_str().and_then(safe_relative_path) {
+                    push_unique(&mut targets, target);
+                }
+            }
+        }
+    }
+    if let Some(files) = payload
+        .get("diff")
+        .and_then(|diff| diff.get("files"))
+        .and_then(Value::as_array)
+    {
+        for file in files {
+            if let Some(target) =
+                string_field(file, "path").and_then(|value| safe_relative_path(&value))
+            {
+                push_unique(&mut targets, target);
+            }
+        }
+    }
+    targets
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+fn is_builtin_tool_name(tool_name: &str) -> bool {
+    let normalized = tool_name.to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "bash"
+            | "shell"
+            | "read"
+            | "write"
+            | "edit"
+            | "agent"
+            | "apply_patch"
+            | "read_file"
+            | "write_file"
+            | "list_dir"
+            | "grep"
+            | "glob"
+    ) || normalized.contains("fileread")
+        || normalized.contains("filewrite")
+        || normalized.contains("fileedit")
+        || normalized.contains("execute_code")
+}
+
+fn bounded_ui_preview(value: &str, max_chars: usize) -> String {
+    let mut text = ui_text(value).into_string();
+    if text.chars().count() <= max_chars {
+        return text;
+    }
+    text = text.chars().take(max_chars).collect();
+    text.push_str("...");
+    text
+}
+
+fn safe_relative_path(value: &str) -> Option<String> {
+    let trimmed = value.trim().replace('\\', "/");
+    if trimmed.is_empty()
+        || trimmed.starts_with('~')
+        || trimmed.starts_with('/')
+        || trimmed.contains("://")
+        || unsafe_url_starts_at(&trimmed, 0)
+        || is_windows_absolute_path(&trimmed)
+    {
+        return None;
+    }
+    let mut clean = Vec::new();
+    for part in trimmed.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." || unsafe_url_starts_at(part, 0) {
+            return None;
+        }
+        let safe = ui_text(part).into_string();
+        if safe.contains("[REDACTED]") {
+            return None;
+        }
+        clean.push(safe);
+    }
+    if clean.is_empty() {
+        None
+    } else {
+        Some(clean.join("/"))
+    }
 }
 
 fn command_output_is_truncated(payload: &Value) -> bool {
@@ -3571,6 +3834,23 @@ fn artifact_media_kind_label(kind: ArtifactMediaKind) -> &'static str {
 fn is_ready_image_artifact(status: ArtifactStatus, media: Option<&ArtifactMediaPreview>) -> bool {
     matches!(status, ArtifactStatus::Ready)
         && media.is_some_and(|media| matches!(media.kind, ArtifactMediaKind::Image))
+}
+
+fn artifact_preview_ref(
+    content_ref: Option<&EvidenceRefId>,
+    kind: &str,
+    media: Option<&ArtifactMediaPreview>,
+) -> Option<String> {
+    let has_image_media = media.is_some_and(|media| matches!(media.kind, ArtifactMediaKind::Image));
+    let has_image_kind = matches!(
+        artifact_revision_kind_from_str(kind),
+        ArtifactRevisionKind::Image
+    );
+    if has_image_media || has_image_kind {
+        content_ref.map(ToString::to_string)
+    } else {
+        None
+    }
 }
 
 fn assistant_completed_has_tool_uses(value: &Value) -> bool {

@@ -17,6 +17,8 @@ use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use harness_context::{ContextEngine, TokenBudget};
+#[cfg(feature = "sqlite-store")]
+use harness_contracts::BlobError;
 #[cfg(feature = "tool-search")]
 use harness_contracts::CacheImpact;
 #[cfg(any(feature = "memory-builtin", feature = "memory-external-slot"))]
@@ -326,20 +328,18 @@ fn artifact_content_evidence_record(
 
 #[cfg(feature = "sqlite-store")]
 fn sanitized_artifact_content_evidence_ref_id(event_id: EventId, hash: &[u8; 32]) -> EvidenceRefId {
-    let mut hash_hex = String::with_capacity(64);
-    for byte in hash {
-        use std::fmt::Write as _;
-        write!(&mut hash_hex, "{byte:02x}").expect("writing to String should not fail");
-    }
-    EvidenceRefId::new(format!(
-        "evidence:artifact-content-redacted:{event_id}:{hash_hex}"
-    ))
-}
-
-#[cfg(feature = "sqlite-store")]
-fn is_sanitized_artifact_content_ref(id: &EvidenceRefId) -> bool {
-    id.to_string()
-        .starts_with("evidence:artifact-content-redacted:")
+    let digest = blake3::hash(
+        format!(
+            "artifact-content-redacted:{event_id}:{}",
+            hash.iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        )
+        .as_bytes(),
+    );
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    EvidenceRefId::new(EventId::from_u128(u128::from_be_bytes(bytes)).to_string())
 }
 
 #[cfg(feature = "sqlite-store")]
@@ -365,10 +365,36 @@ async fn redacted_artifact_content_bytes(
     redactor: &dyn Redactor,
     tenant: TenantId,
     blob_ref: &BlobRef,
+    expected_session_id: SessionId,
 ) -> Result<Option<(Vec<u8>, EvidenceRedactionState)>, HarnessError> {
-    let mut stream = blob_store.get(tenant, blob_ref).await.map_err(|error| {
-        HarnessError::Other(format!("artifact content blob read failed: {error}"))
-    })?;
+    let meta = match blob_store.head(tenant, blob_ref).await {
+        Ok(Some(meta)) => meta,
+        Ok(None) | Err(BlobError::NotFound(_)) => return Ok(None),
+        Err(error) => {
+            return Err(HarnessError::Other(format!(
+                "artifact content blob head failed: {error}"
+            )))
+        }
+    };
+    if meta.size != blob_ref.size || meta.content_hash != blob_ref.content_hash {
+        return Err(HarnessError::Other(
+            "artifact content blob metadata mismatch".to_owned(),
+        ));
+    }
+    match meta.retention {
+        BlobRetention::TenantScoped => {}
+        BlobRetention::SessionScoped(session_id) if session_id == expected_session_id => {}
+        _ => return Ok(None),
+    }
+    let mut stream = match blob_store.get(tenant, blob_ref).await {
+        Ok(stream) => stream,
+        Err(BlobError::NotFound(_)) => return Ok(None),
+        Err(error) => {
+            return Err(HarnessError::Other(format!(
+                "artifact content blob read failed: {error}"
+            )))
+        }
+    };
     let mut bytes = Vec::with_capacity(blob_ref.size as usize);
     while let Some(chunk) = stream.next().await {
         bytes.extend_from_slice(&chunk);
@@ -378,12 +404,14 @@ async fn redacted_artifact_content_bytes(
             "artifact content blob length mismatch".to_owned(),
         ));
     }
-    let Ok(content) = String::from_utf8(bytes) else {
-        return Ok(None);
-    };
-    let redacted = redactor.redact(&content, &RedactRules::default());
-    let redaction_state = redaction_state_for_text(&content, &redacted);
-    Ok(Some((redacted.into_bytes(), redaction_state)))
+    match String::from_utf8(bytes) {
+        Ok(content) => {
+            let redacted = redactor.redact(&content, &RedactRules::default());
+            let redaction_state = redaction_state_for_text(&content, &redacted);
+            Ok(Some((redacted.into_bytes(), redaction_state)))
+        }
+        Err(error) => Ok(Some((error.into_bytes(), EvidenceRedactionState::Clean))),
+    }
 }
 
 #[cfg(feature = "sqlite-store")]
@@ -598,7 +626,6 @@ impl Harness {
         Ok(refs
             .into_iter()
             .filter(|record| record.kind == EvidenceRefKind::ArtifactContent)
-            .filter(|record| is_sanitized_artifact_content_ref(&record.id))
             .filter_map(|record| {
                 Some(ArtifactContentEvidenceRef {
                     artifact_id: record.artifact_id?,
@@ -618,9 +645,9 @@ impl Harness {
         let session_id = SessionId::parse(conversation_id)
             .map_err(|error| HarnessError::Session(SessionError::Message(error.to_string())))?;
         let evidence_store = self.evidence_ref_store()?;
-        let blob_store = self.inner.blob_store.as_ref().ok_or_else(|| {
-            HarnessError::Other("artifact content blob store is missing".to_owned())
-        })?;
+        let Some(blob_store) = self.inner.blob_store.as_ref() else {
+            return Ok(());
+        };
         let redactor = self
             .inner
             .observer
@@ -649,6 +676,7 @@ impl Harness {
                     redactor.as_ref(),
                     tenant,
                     &blob_ref,
+                    session_id,
                 )
                 .await?
                 {

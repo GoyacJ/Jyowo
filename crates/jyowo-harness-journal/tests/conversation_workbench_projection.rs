@@ -7,6 +7,7 @@
 use chrono::{DateTime, Utc};
 use harness_contracts::*;
 use harness_journal::conversation_worktree_projector::*;
+use harness_journal::evidence::{EvidenceRefRecord, EvidenceRefSource, RedactionProvenance};
 use harness_journal::{EvidenceRefStore, InMemoryBlobStore, InMemoryEvidenceRefRegistry};
 use serde_json::json;
 use std::sync::Arc;
@@ -375,14 +376,10 @@ async fn command_completion_projects_full_output_ref_without_inline_output() {
         .full_output_ref
         .as_ref()
         .expect("full output evidence ref");
-    assert_eq!(
-        full_output_ref
-            .to_string()
-            .rsplit(':')
-            .next()
-            .unwrap()
-            .len(),
-        64
+    let ref_value = full_output_ref.to_string();
+    assert!(
+        !ref_value.starts_with("evidence:"),
+        "evidence refs are opaque ids, not encoded kind/event/hash strings: {ref_value}"
     );
     let read = store
         .read_evidence(
@@ -396,6 +393,85 @@ async fn command_completion_projects_full_output_ref_without_inline_output() {
     assert_eq!(
         String::from_utf8(read.bytes).unwrap(),
         "full stdout\nline 2\nfull stderr"
+    );
+}
+
+#[test]
+fn permission_requested_projects_backend_authored_options() {
+    let cursor = event_cursor();
+    let events = vec![
+        make_event(cursor, "run-1", "run.started", run_started_payload("run-1")),
+        make_event(
+            cursor,
+            "run-1",
+            "user.message.appended",
+            user_message_payload("approve this"),
+        ),
+        make_event(
+            cursor,
+            "run-1",
+            "tool.requested",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "bash"
+            }),
+        ),
+        make_event(
+            cursor,
+            "run-1",
+            "permission.requested",
+            json!({
+                "requestId": "req-1",
+                "toolUseId": "tool-1",
+                "reason": "Needs approval",
+                "effectiveMode": "default",
+                "operation": "Execute command",
+                "target": "cargo test",
+                "severity": "high",
+                "decisionOptions": [
+                    {
+                        "id": "01H00000000000000000000001",
+                        "decision": "approve",
+                        "label": "Allow once",
+                        "lifetime": "once",
+                        "matcher": { "kind": "exactCommand", "label": "cargo test" },
+                        "requiresConfirmation": false
+                    },
+                    {
+                        "id": "01H00000000000000000000002",
+                        "decision": "deny",
+                        "label": "Deny once",
+                        "lifetime": "once",
+                        "matcher": { "kind": "any", "label": "deny" },
+                        "requiresConfirmation": false
+                    }
+                ]
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conv-1", events);
+    let page = worktree_projection_page(projection, false);
+    let assistant = page.turns[0].assistant.as_ref().expect("assistant");
+    let decision = assistant
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::ToolGroup(group) => group
+                .attempts
+                .iter()
+                .find_map(|attempt| attempt.permission.as_ref()),
+            _ => None,
+        })
+        .expect("decision state");
+
+    assert_eq!(
+        decision
+            .decision_options
+            .iter()
+            .map(|option| option.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["01H00000000000000000000001", "01H00000000000000000000002"]
     );
 }
 
@@ -516,6 +592,7 @@ async fn diff_completion_projects_full_patch_ref_without_inline_patch() {
             }),
         ),
     ];
+    let diff_event_id = events[3].id.clone();
 
     let projection = project_conversation_worktree_snapshot_with_evidence(
         "conv-1",
@@ -546,20 +623,27 @@ async fn diff_completion_projects_full_patch_ref_without_inline_patch() {
     assert_eq!(file.preview.as_deref(), Some("@@\n- old\n+ new"));
     assert_ne!(file.preview.as_deref(), Some(patch));
     let full_patch_ref = file.full_patch_ref.as_ref().expect("full patch ref");
-    assert_eq!(
-        full_patch_ref.to_string().rsplit(':').next().unwrap().len(),
-        64
-    );
-    let read = store
-        .read_evidence(
-            TenantId::SINGLE,
-            "conv-1",
-            full_patch_ref,
-            EvidenceRefKind::DiffPatch,
-        )
+    assert!(!full_patch_ref.to_string().starts_with("evidence:"));
+    let record = store
+        .list_for_conversation(TenantId::SINGLE, "conv-1")
         .await
-        .unwrap();
-    assert_eq!(String::from_utf8(read.bytes).unwrap(), patch);
+        .unwrap()
+        .into_iter()
+        .find(|record| record.id == *full_patch_ref)
+        .expect("full patch evidence record");
+    assert_eq!(record.kind, EvidenceRefKind::DiffPatch);
+    assert_eq!(record.byte_length, patch.len() as u64);
+    assert_eq!(
+        record.content_hash,
+        blake3::hash(patch.as_bytes()).as_bytes().to_vec()
+    );
+    assert_eq!(
+        record.source,
+        EvidenceRefSource::JournalPayload {
+            event_id: diff_event_id,
+            json_pointer: "/result/structured/diff/files/0/patch".to_owned(),
+        }
+    );
 }
 
 // ── Thinking/safety projection tests ──
@@ -730,6 +814,31 @@ async fn artifact_projection_uses_event_revision_id_and_content_ref() {
         )
         .await
         .unwrap();
+    store
+        .store_blob_evidence(
+            TenantId::SINGLE,
+            EvidenceRefRecord {
+                id: EvidenceRefId::new("01HARTIFACTCONTENT000000000"),
+                kind: EvidenceRefKind::ArtifactContent,
+                conversation_id: "conv-1".to_owned(),
+                run_id: "run-1".to_owned(),
+                source_event_refs: Vec::new(),
+                artifact_id: Some("artifact-1".to_owned()),
+                revision_id: Some("revision-real-1".to_owned()),
+                content_type: "image/png".to_owned(),
+                byte_length: "artifact body".len() as u64,
+                content_hash: artifact_hash.to_vec(),
+                redaction_state: EvidenceRedactionState::Clean,
+                redaction_provenance: RedactionProvenance {
+                    redactor_version: "event-redacted-v1".to_owned(),
+                },
+                retention: BlobRetention::TenantScoped,
+                source: EvidenceRefSource::Blob { blob_ref },
+            },
+            b"artifact body".to_vec(),
+        )
+        .await
+        .unwrap();
     let events = vec![
         make_event(cursor, "run-1", "run.started", run_started_payload("run-1")),
         make_event(
@@ -745,11 +854,10 @@ async fn artifact_projection_uses_event_revision_id_and_content_ref() {
             json!({
                 "revisionId": "revision-real-1",
                 "artifactId": "artifact-1",
-                "title": "Generated doc",
-                "kind": "document",
+                "title": "Generated image",
+                "kind": "image",
                 "status": "ready",
                 "source": "tool",
-                "blobRef": blob_ref,
                 "contentHash": artifact_hash
             }),
         ),
@@ -788,7 +896,12 @@ async fn artifact_projection_uses_event_revision_id_and_content_ref() {
         .await
         .unwrap();
     assert_eq!(String::from_utf8(read.bytes).unwrap(), "artifact body");
-    assert_eq!(read.content_type, "text/markdown");
+    assert_eq!(read.content_type, "image/png");
+    let expected_preview_ref = content_ref.to_string();
+    assert_eq!(
+        artifact.revision.preview_ref.as_deref(),
+        Some(expected_preview_ref.as_str())
+    );
 }
 
 // ── projection_version tests ──

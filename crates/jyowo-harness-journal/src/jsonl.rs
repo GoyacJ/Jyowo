@@ -665,12 +665,26 @@ impl EventStore for JsonlEventStore {
                 summary.last_event_at <= cutoff && !keep.contains(&summary.session_id)
             })
             .collect();
+        let candidate_sessions: Vec<_> = candidates
+            .iter()
+            .map(|summary| summary.session_id)
+            .collect();
+        self.prune_sessions(tenant, &candidate_sessions, policy.keep_snapshots)
+            .await
+    }
+
+    async fn prune_sessions(
+        &self,
+        tenant: TenantId,
+        session_ids: &[SessionId],
+        keep_snapshots: bool,
+    ) -> Result<PruneReport, JournalError> {
         let mut report = PruneReport::default();
         let mut removed_sessions = HashSet::new();
-        for summary in &candidates {
-            removed_sessions.insert(summary.session_id);
-            report.events_removed += summary.event_count;
-            for path in self.segment_paths(tenant, summary.session_id)? {
+        for session_id in session_ids {
+            let envelopes = self.load_envelopes(tenant, *session_id)?;
+            report.events_removed += envelopes.len() as u64;
+            for path in self.segment_paths(tenant, *session_id)? {
                 if let Ok(meta) = fs::metadata(&path) {
                     report.bytes_freed += meta.len();
                 }
@@ -680,17 +694,15 @@ impl EventStore for JsonlEventStore {
                     Err(error) => return Err(journal_error(error)),
                 }
             }
-            if !policy.keep_snapshots {
-                let snapshot = self.snapshot_path(tenant, summary.session_id);
+            removed_sessions.insert(*session_id);
+            if !keep_snapshots {
+                let snapshot = self.snapshot_path(tenant, *session_id);
                 match fs::remove_file(snapshot) {
                     Ok(()) => report.snapshots_removed += 1,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => return Err(journal_error(error)),
                 }
-                self.snapshots
-                    .lock()
-                    .await
-                    .remove(&(tenant, summary.session_id));
+                self.snapshots.lock().await.remove(&(tenant, *session_id));
             }
         }
         if !removed_sessions.is_empty() {

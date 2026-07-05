@@ -79,6 +79,10 @@ not embed full workflow actions. Large command output, full diff patches, and
 artifact content are fetched by opaque evidence refs (`EvidenceRefId`), never
 embedded inline in `ConversationTurn`.
 
+Artifact workspace UI opened from this inspector belongs under
+`features/workbench/artifacts`. It is inspector-owned, not the route-level
+Artifacts page.
+
 The workbench layout is:
 
 ```text
@@ -195,6 +199,8 @@ The composer is the main action entry. It should support plain language, attachm
 context references, per-run permission mode, tool selection, and send.
 The permission mode control belongs in the composer toolbar, not as the primary
 setting page action. Settings stores the default mode only.
+The toolbar is a conversation composer component and should remain under
+`features/conversation/composer`.
 
 Context panel:
 

@@ -9,9 +9,10 @@ use std::sync::{
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use harness_contracts::{
-    AssistantMessageCompletedEvent, Event, EventId, ForkReason, JournalError, JournalOffset,
-    MessageContent, MessageId, MessageMetadata, NoopRedactor, RunId, SessionId, StopReason,
-    TenantId, UsageSnapshot, UserMessageAppendedEvent,
+    AssistantMessageCompletedEvent, ConversationInspectorItem, ConversationInspectorSelection,
+    Event, EventId, ForkReason, JournalError, JournalOffset, MessageContent, MessageId,
+    MessageMetadata, NoopRedactor, RunId, SessionId, StopReason, TenantId, UsageSnapshot,
+    UserMessageAppendedEvent,
 };
 use harness_journal::{
     AppendMetadata, EventEnvelope, EventEnvelopePage, EventStore, EvidenceRefStore,
@@ -513,4 +514,63 @@ async fn conversation_read_model_facade_returns_worktree_page() {
         run_id.to_string()
     );
     assert!(page.event_cursor.is_some());
+}
+
+#[tokio::test]
+async fn conversation_read_model_facade_worktree_and_inspector_fallback_without_evidence_store() {
+    let store = Arc::new(CountingEventStore::new());
+    let workspace = temp_workspace("conversation-worktree-no-evidence-store");
+    let harness = Harness::builder()
+        .with_options(harness_options(workspace.clone()))
+        .with_model(testing::TestModelProvider::default())
+        .with_store_arc(store.clone())
+        .with_sandbox(testing::NoopSandbox::new())
+        .build()
+        .await
+        .expect("harness should build");
+    let session_id = SessionId::new();
+    let options = SessionOptions::new(workspace).with_session_id(session_id);
+    harness
+        .open_or_create_conversation_session(options)
+        .await
+        .expect("session should open");
+    let run_id = RunId::new();
+    store
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[
+                user_message(run_id, MessageId::new(), "hello"),
+                assistant_message(run_id, MessageId::new(), "hi"),
+            ],
+        )
+        .await
+        .expect("messages should append");
+
+    let page = harness
+        .page_conversation_worktree(
+            &session_id.to_string(),
+            None,
+            harness_journal::ConversationTurnPageDirection::After,
+            1,
+        )
+        .await
+        .expect("worktree page should fall back without evidence store");
+    let turn_id = page.turns[0].id.clone();
+
+    let inspector = harness
+        .get_conversation_inspector_item(
+            &session_id.to_string(),
+            ConversationInspectorSelection::Turn { turn_id },
+        )
+        .await
+        .expect("inspector should fall back without evidence store");
+
+    match inspector.item {
+        ConversationInspectorItem::Turn { turn } => {
+            assert_eq!(turn.user.body.as_str(), "hello");
+            assert_eq!(turn.assistant.unwrap().run_id, run_id.to_string());
+        }
+        other => panic!("expected turn inspector item, got {other:?}"),
+    }
 }

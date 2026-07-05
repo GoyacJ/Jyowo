@@ -45,31 +45,18 @@ pub async fn get_artifact_media_preview_with_runtime_state(
 ) -> Result<GetArtifactMediaPreviewResponse, CommandErrorPayload> {
     ensure_non_empty("conversationId", &request.conversation_id)?;
     ensure_non_empty("artifactId", &request.artifact_id)?;
-    let session_id = parse_session_id(&request.conversation_id)?;
-    let record = find_artifact_media_record(
+    if let Some(content_ref) = request.content_ref.as_deref() {
+        ensure_non_empty("contentRef", content_ref)?;
+    }
+    let _ = parse_session_id(&request.conversation_id)?;
+    read_artifact_image_evidence_preview(
         state,
-        session_id,
+        &request.conversation_id,
         &request.artifact_id,
+        request.content_ref.as_deref(),
         request.revision_id.as_deref(),
     )
-    .await?;
-    if !matches!(
-        record.status,
-        Some(jyowo_harness_sdk::ext::ArtifactStatus::Ready)
-    ) {
-        return Err(invalid_payload(
-            "artifact image preview is not ready".to_owned(),
-        ));
-    }
-    if !is_preview_image_artifact_kind(record.kind.as_deref()) {
-        return Err(invalid_payload(
-            "artifact media preview is only available for images".to_owned(),
-        ));
-    }
-    let blob_ref = record.blob_ref.ok_or_else(|| {
-        runtime_operation_failed("artifact image preview is unavailable".to_owned())
-    })?;
-    read_artifact_image_blob_preview(state, session_id, &request.artifact_id, &blob_ref).await
+    .await
 }
 
 pub async fn get_attachment_media_preview_with_runtime_state(
@@ -152,11 +139,15 @@ pub(crate) async fn collect_artifacts_from_runtime_state(
         BTreeMap::new()
     };
     for artifact in artifacts_by_id.values_mut() {
+        let artifact_kind = artifact.kind.clone();
         for revision in &mut artifact.revisions {
             if let Some(content_ref) =
                 content_refs.get(&(artifact.id.clone(), revision.revision_id.clone()))
             {
                 revision.content_ref = Some(content_ref.clone());
+                if is_artifact_revision_image(&artifact_kind, revision) {
+                    revision.preview_ref = Some(content_ref.clone());
+                }
             }
         }
         artifact
@@ -199,113 +190,15 @@ pub(crate) async fn collect_artifact_content_refs_from_evidence(
     Ok(refs)
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct ArtifactMediaRecord {
-    blob_ref: Option<BlobRef>,
-    kind: Option<String>,
-    status: Option<jyowo_harness_sdk::ext::ArtifactStatus>,
-}
-
-pub(crate) async fn find_artifact_media_record(
-    state: &DesktopRuntimeState,
-    session_id: SessionId,
-    artifact_id: &str,
-    revision_id: Option<&str>,
-) -> Result<ArtifactMediaRecord, CommandErrorPayload> {
-    let Some(harness) = state.harness() else {
-        return Err(runtime_unavailable(
-            "Reading artifact media requires the runtime conversation facade.",
-        ));
-    };
-    if !harness
-        .conversation_session_exists(state.conversation_session_options(session_id))
-        .await
-        .map_err(|error| runtime_operation_failed(error.to_string()))?
-    {
-        return Err(not_found(format!("conversation not found: {session_id}")));
-    }
-
-    let mut after_event_id = None;
-    let mut record: Option<ArtifactMediaRecord> = None;
-    let mut current_kind: Option<String> = None;
-    let mut current_status: Option<jyowo_harness_sdk::ext::ArtifactStatus> = None;
-    loop {
-        let page = harness
-            .page_conversation_events(ConversationEventsPageRequest {
-                options: state.conversation_session_options(session_id),
-                after_event_id,
-                limit: 200,
-            })
-            .await
-            .map_err(|_| runtime_operation_failed("artifact media read failed".to_owned()))?;
-        if page.events.is_empty() {
-            break;
-        }
-
-        for envelope in page.events {
-            match envelope.payload {
-                Event::ArtifactCreated(event) => {
-                    if event.session_id == session_id && event.artifact_id == artifact_id {
-                        let event_revision_id = event.revision_id.to_string();
-                        current_kind = Some(event.kind.clone());
-                        current_status = Some(event.status);
-                        if artifact_revision_media_candidate_matches(
-                            revision_id,
-                            &event_revision_id,
-                        ) {
-                            record = Some(ArtifactMediaRecord {
-                                blob_ref: event.blob_ref,
-                                kind: Some(event.kind),
-                                status: Some(event.status),
-                            });
-                        }
-                    }
-                }
-                Event::ArtifactUpdated(event) => {
-                    if event.session_id != session_id || event.artifact_id != artifact_id {
-                        continue;
-                    }
-                    let event_revision_id = event.revision_id.to_string();
-                    let event_kind = event.kind.or_else(|| current_kind.clone());
-                    let event_status = event.status.or(current_status);
-                    current_kind = event_kind.clone();
-                    current_status = event_status;
-
-                    if artifact_revision_media_candidate_matches(revision_id, &event_revision_id) {
-                        let entry = record.get_or_insert_with(|| ArtifactMediaRecord {
-                            blob_ref: None,
-                            kind: None,
-                            status: None,
-                        });
-                        if let Some(blob_ref) = event.blob_ref {
-                            entry.blob_ref = Some(blob_ref);
-                        }
-                        if let Some(kind) = event_kind {
-                            entry.kind = Some(kind);
-                        }
-                        if let Some(status) = event_status {
-                            entry.status = Some(status);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        after_event_id = page.next_event_id;
-    }
-
-    record.ok_or_else(|| not_found("artifact not found".to_owned()))
-}
-
-fn artifact_revision_media_candidate_matches(
-    requested_revision_id: Option<&str>,
-    event_revision_id: &str,
-) -> bool {
-    match requested_revision_id {
-        Some(requested_revision_id) => requested_revision_id == event_revision_id,
-        None => true,
-    }
+fn is_artifact_revision_image(artifact_kind: &str, revision: &ArtifactRevisionPayload) -> bool {
+    revision.kind == "image"
+        || artifact_kind == "image"
+        || revision.media.as_ref().is_some_and(|media| {
+            media
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind == "image")
+        })
 }
 
 pub(crate) async fn find_attachment_media_record(
@@ -357,86 +250,106 @@ pub(crate) async fn find_attachment_media_record(
     Err(not_found("attachment not found".to_owned()))
 }
 
-pub(crate) async fn read_artifact_image_blob_preview(
+pub(crate) async fn read_artifact_image_evidence_preview(
     state: &DesktopRuntimeState,
-    session_id: SessionId,
+    conversation_id: &str,
     artifact_id: &str,
-    blob_ref: &BlobRef,
+    content_ref: Option<&str>,
+    revision_id: Option<&str>,
 ) -> Result<GetArtifactMediaPreviewResponse, CommandErrorPayload> {
-    let blob_store = FileBlobStore::open(
-        state
-            .workspace_root()
-            .join(".jyowo")
-            .join("runtime")
-            .join("blobs"),
-    )
-    .map_err(|_| runtime_operation_failed("artifact image preview is unavailable".to_owned()))?;
-    let meta = blob_store
-        .head(TenantId::SINGLE, blob_ref)
-        .await
-        .map_err(|_| runtime_operation_failed("artifact image preview is unavailable".to_owned()))?
-        .ok_or_else(|| {
-            runtime_operation_failed("artifact image preview is unavailable".to_owned())
-        })?;
-    if meta.retention != BlobRetention::SessionScoped(session_id) {
-        return Err(invalid_payload(
-            "artifact image preview is unavailable for this conversation".to_owned(),
+    let Some(harness) = state.harness() else {
+        return Err(runtime_unavailable(
+            "Reading artifact media requires the runtime conversation facade.",
         ));
-    }
-    let declared_content_type = meta
-        .content_type
-        .as_deref()
-        .or(blob_ref.content_type.as_deref());
-    let declared_mime_type = match declared_content_type.and_then(declared_mime_token) {
-        Some(mime_type) => match safe_preview_image_mime(mime_type) {
-            Some(image_mime_type) => Some(image_mime_type.to_owned()),
-            None if safe_artifact_mime_type(mime_type).is_some()
-                || mime_type.starts_with("image/") =>
-            {
-                return Err(invalid_payload(
-                    "artifact media preview is only available for images".to_owned(),
-                ));
-            }
-            None => None,
-        },
-        None => None,
     };
-    let size_bytes = meta.size;
-    if size_bytes > MAX_ARTIFACT_MEDIA_PREVIEW_BYTES {
+    let session_id = parse_session_id(conversation_id)?;
+    let artifacts = collect_artifacts_from_runtime_state(state, session_id).await?;
+    let artifact = artifacts
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.id == artifact_id)
+        .ok_or_else(|| not_found("artifact not found".to_owned()))?;
+    let revision = match revision_id {
+        Some(revision_id) => artifact
+            .revisions
+            .iter()
+            .find(|revision| revision.revision_id == revision_id)
+            .ok_or_else(|| not_found("artifact revision not found".to_owned()))?,
+        None => artifact
+            .revisions
+            .first()
+            .ok_or_else(|| invalid_payload("artifact revision not found".to_owned()))?,
+    };
+    if revision.status != "ready" {
         return Err(invalid_payload(
-            "artifact image preview is too large".to_owned(),
+            "artifact media preview is not ready".to_owned(),
         ));
     }
-
-    let mut stream = blob_store
-        .get(TenantId::SINGLE, blob_ref)
-        .await
-        .map_err(|_| {
-            runtime_operation_failed("artifact image preview is unavailable".to_owned())
-        })?;
-    let mut bytes = Vec::with_capacity(size_bytes.min(MAX_ARTIFACT_MEDIA_PREVIEW_BYTES) as usize);
-    while let Some(chunk) = stream.next().await {
-        let next_len = bytes.len().saturating_add(chunk.len());
-        if u64::try_from(next_len).unwrap_or(u64::MAX) > MAX_ARTIFACT_MEDIA_PREVIEW_BYTES {
-            return Err(invalid_payload(
-                "artifact image preview is too large".to_owned(),
-            ));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    let detected_mime = detect_preview_image_mime(&bytes).ok_or_else(|| {
-        invalid_payload("artifact media preview is only available for images".to_owned())
-    })?;
-    if declared_mime_type
-        .as_deref()
-        .is_some_and(|mime_type| mime_type != detected_mime)
-    {
+    if !is_artifact_revision_image(&artifact.kind, revision) {
         return Err(invalid_payload(
             "artifact media preview is only available for images".to_owned(),
         ));
     }
+    let revision_preview_ref = revision
+        .preview_ref
+        .as_deref()
+        .or(revision.content_ref.as_deref());
+    let selected_content_ref = content_ref.or(revision_preview_ref).ok_or_else(|| {
+        invalid_payload("artifact image preview is unavailable for this artifact".to_owned())
+    })?;
+    if revision_preview_ref != Some(selected_content_ref)
+        && revision.content_ref.as_deref() != Some(selected_content_ref)
+    {
+        return Err(invalid_payload(
+            "artifact image preview is unavailable for this artifact".to_owned(),
+        ));
+    }
+    let evidence_refs = harness
+        .list_artifact_content_evidence_refs(TenantId::SINGLE, conversation_id)
+        .await
+        .map_err(|_| {
+            runtime_operation_failed("artifact image preview is unavailable".to_owned())
+        })?;
+    let selected_ref = evidence_refs.iter().rev().find(|record| {
+        record.artifact_id == artifact_id
+            && record.content_ref.to_string() == selected_content_ref
+            && record.revision_id == revision.revision_id
+    });
+    let Some(selected_ref) = selected_ref else {
+        return Err(invalid_payload(
+            "artifact image preview is unavailable for this artifact".to_owned(),
+        ));
+    };
+    let evidence = harness
+        .read_artifact_revision_content(
+            TenantId::SINGLE,
+            conversation_id,
+            &selected_ref.content_ref,
+        )
+        .await
+        .map_err(|_| {
+            runtime_operation_failed("artifact image preview is unavailable".to_owned())
+        })?;
+    if evidence.total_bytes > MAX_ARTIFACT_MEDIA_PREVIEW_BYTES {
+        return Err(invalid_payload(
+            "artifact image preview is too large".to_owned(),
+        ));
+    }
+    let detected_mime = detect_preview_image_mime(&evidence.bytes).ok_or_else(|| {
+        invalid_payload("artifact media preview is only available for images".to_owned())
+    })?;
+    if let Some(declared_mime_type) = declared_mime_token(&evidence.content_type) {
+        match safe_preview_image_mime(declared_mime_type) {
+            Some(image_mime_type) if image_mime_type == detected_mime => {}
+            _ => {
+                return Err(invalid_payload(
+                    "artifact media preview is only available for images".to_owned(),
+                ))
+            }
+        }
+    }
     let (sanitized_bytes, mime_type) =
-        sanitize_artifact_preview_image(&bytes, detected_mime, artifact_id)?;
+        sanitize_artifact_preview_image(&evidence.bytes, detected_mime, artifact_id)?;
     let size_bytes = sanitized_bytes.len() as u64;
 
     Ok(GetArtifactMediaPreviewResponse {
@@ -872,10 +785,6 @@ pub(crate) fn declared_mime_token(value: &str) -> Option<&str> {
         .find(|part| part.contains('/'))
         .map(str::trim)
         .filter(|part| !part.is_empty())
-}
-
-pub(crate) fn is_preview_image_artifact_kind(value: Option<&str>) -> bool {
-    value.is_some_and(|kind| kind == "image" || safe_preview_image_mime(kind).is_some())
 }
 
 pub(crate) fn project_artifact_event(

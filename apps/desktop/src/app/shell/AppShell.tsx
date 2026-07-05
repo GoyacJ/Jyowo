@@ -18,6 +18,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const activeRunsByConversation = useUiStore((state) => state.activeRunsByConversation)
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed)
   const contextPanelCollapsed = useUiStore((state) => state.contextPanelCollapsed)
+  const workbenchSelection = useUiStore((state) => state.workbenchSelection)
   const compactSidebar = useMediaQuery('(max-width: 720px)')
   const inspectorOpen = useUiStore((state) => state.inspectorOpen)
   const setInspectorOpen = useUiStore((state) => state.setInspectorOpen)
@@ -33,7 +34,8 @@ export function AppShell({ children }: { children: ReactNode }) {
     typeof currentSearch.conversationId === 'string' ? currentSearch.conversationId : undefined
   const selectedActiveRun = selectActiveRun(activeRunsByConversation, selectedConversationId)
   const contextAvailable = currentPath === '/'
-  const contextVisible = contextAvailable && !contextPanelCollapsed
+  const contextSelectedInInspector = inspectorOpen && workbenchSelection?.kind === 'context'
+  const contextVisible = contextAvailable && (!contextPanelCollapsed || contextSelectedInInspector)
   const contextRequest =
     contextVisible && selectedActiveRun
       ? { conversationId: selectedActiveRun.conversationId, runId: selectedActiveRun.runId }
@@ -43,7 +45,25 @@ export function AppShell({ children }: { children: ReactNode }) {
   const contextSnapshot = useContextSnapshot(contextRequest, { enabled: contextVisible })
   const sidebarWidth = sidebarCollapsed || compactSidebar ? '48px' : '248px'
   const showInspector = inspectorOpen
-  const showContext = contextVisible
+  const showContext = contextVisible && !showInspector
+  const contextPane = contextVisible ? (
+    <ContextPanel
+      context={contextSnapshot.context}
+      errorMessage={
+        contextSnapshot.error ? getCommandErrorMessage(contextSnapshot.error) : undefined
+      }
+      loading={contextSnapshot.isLoading}
+      onClose={() => {
+        setContextPanelCollapsed(true)
+        setInspectorOpen(false)
+      }}
+      onDecisionSelect={(decision) => {
+        if (decision.requestId) {
+          requestTimelineScroll(`permission:${decision.requestId}`)
+        }
+      }}
+    />
+  ) : null
 
   function openSettings() {
     setInspectorOpen(true)
@@ -105,21 +125,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           <main className="min-h-0 min-w-0 overflow-hidden px-6 pb-6 xl:px-8">{children}</main>
         </div>
         {showInspector ? (
-          <WorkbenchInspector />
+          <WorkbenchInspector contextPane={contextPane} />
         ) : showContext ? (
-          <ContextPanel
-            context={contextSnapshot.context}
-            errorMessage={
-              contextSnapshot.error ? getCommandErrorMessage(contextSnapshot.error) : undefined
-            }
-            loading={contextSnapshot.isLoading}
-            onClose={() => setContextPanelCollapsed(true)}
-            onDecisionSelect={(decision) => {
-              if (decision.requestId) {
-                requestTimelineScroll(`permission:${decision.requestId}`)
-              }
-            }}
-          />
+          contextPane
         ) : null}
       </div>
       <ActivityRail activeRunId={selectedActiveRun?.runId} onOpenSettings={openSettings} />
