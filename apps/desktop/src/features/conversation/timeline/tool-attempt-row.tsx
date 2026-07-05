@@ -114,24 +114,6 @@ export function ToolAttemptRow({
         <div className="grid gap-2 pl-5">
           {attempt.permission ? (
             <div className="grid gap-2">
-              <div className="flex justify-end">
-                <button
-                  aria-label={`Open permission ${attempt.permission.requestId} in inspector`}
-                  className="inline-flex items-center gap-1 rounded px-2 py-1 text-muted-foreground text-xs hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-                  onClick={() => {
-                    setSelection({
-                      kind: 'decision',
-                      conversationId,
-                      requestId: attempt.permission?.requestId ?? '',
-                    })
-                    setInspectorOpen(true)
-                  }}
-                  type="button"
-                >
-                  <ExternalLink className="size-3" />
-                  {t('timeline.openInInspector', 'Open in inspector')}
-                </button>
-              </div>
               <DecisionPanel
                 conversationId={conversationId}
                 decision={attempt.permission}

@@ -3,15 +3,33 @@ import type { ReactNode } from 'react'
 export interface ConversationCanvasProps {
   title: string
   children: ReactNode
+  actions?: ReactNode
+  rightPanel?: ReactNode
+  rightPanelWidth?: number
 }
 
-export function ConversationCanvas({ children, title }: ConversationCanvasProps) {
+export function ConversationCanvas({
+  actions,
+  children,
+  rightPanel,
+  rightPanelWidth = 320,
+  title,
+}: ConversationCanvasProps) {
   return (
-    <section className="mx-auto flex min-h-full w-full max-w-5xl flex-col">
-      <div className="flex-1 pt-3 pb-4">
-        <h1 className="font-semibold text-2xl tracking-normal">{title}</h1>
-        <div className="mt-6 grid gap-5">{children}</div>
+    <section
+      className="grid h-full min-h-0 w-full"
+      style={{
+        gridTemplateColumns: rightPanel ? `minmax(0,1fr) ${rightPanelWidth}px` : 'minmax(0,1fr)',
+      }}
+    >
+      <div className="min-h-0 min-w-0">
+        <header className="flex items-center justify-between gap-3 pt-3 pb-4">
+          <h1 className="min-w-0 truncate font-semibold text-2xl tracking-normal">{title}</h1>
+          {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+        </header>
+        <div className="grid h-[calc(100%-64px)] min-h-0 gap-5">{children}</div>
       </div>
+      {rightPanel}
     </section>
   )
 }

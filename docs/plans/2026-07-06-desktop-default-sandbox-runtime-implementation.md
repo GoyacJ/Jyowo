@@ -57,6 +57,7 @@ Every task must follow this order.
 2. **Read Required Context**
    - Read root `AGENTS.md`.
    - Read `docs/testing/testing-strategy.md`.
+   - After Task 0.5 is complete, read `docs/architecture/harness/crates/harness-sandbox.md`.
    - For backend changes, read:
      - `docs/backend/agent-harness-backend-development-guidelines.md`
      - `docs/backend/backend-runtime.md`
@@ -314,12 +315,30 @@ if spec.policy.network == None:
 
 if spec.policy.network == Unrestricted:
   use OS-level LocalSandbox when available
+  else use DockerSandbox if available
   else use LocalIsolation::None only if workspace policy is not restricted
-  else DockerSandbox if available
 
 if spec.policy.network == LoopbackOnly or AllowList:
   fail closed for process tools until a backend explicitly implements that policy
 ```
+
+Docker fallback is usable only when the desktop factory builds it with the active workspace mounted. The plan must not rely on `DockerSandbox::builder()` defaults, because the current default has no mounted workspace.
+
+Required Docker desktop fallback configuration:
+
+```text
+host workspace root -> /workspace inside the container
+VolumeMount::workspace(host_workspace_root, "/workspace") only for read_write_all workspace policy
+ExecSpec.cwd host paths under host workspace root rewritten to /workspace-relative container paths
+default workdir /workspace when ExecSpec.cwd is absent
+read-only and writable-subpath workspace policies are not supported by Docker fallback until Docker-specific read-only/subpath mount enforcement is implemented and tested
+same non-secret environment passthrough rules as LocalSandbox
+user mapping set to the current uid/gid on Unix when Docker accepts it; otherwise document why ownership remains correct
+image availability checked before reporting Docker as available
+missing Docker binary, daemon, image, or workspace mount support returns a backend-authored unavailable reason
+```
+
+The fallback image must be treated as a real runtime dependency. Do not report Docker as available when `jyowo-workspace:latest` or the configured image cannot execute a trivial command in the mounted `/workspace`.
 
 The router must call the selected backend lifecycle exactly once:
 
@@ -329,6 +348,23 @@ preflight_execute -> before_execute -> execute -> wait -> after_execute
 
 Do not call `before_execute` inside child backend `execute`.
 
+Existing `execute_with_lifecycle` calls `before_execute` and `execute` as separate trait methods on the router. Therefore the router must bind one selected child backend to one execution before child `before_execute` runs.
+
+Required implementation:
+
+```text
+1. Add an opaque per-execution id to ExecContext inside jyowo-harness-sandbox.
+2. Generate that id at the start of execute_with_lifecycle before preflight.
+3. RoutingSandboxBackend::before_execute selects the child exactly once, calls that child's before_execute, and stores a RoutingSelectionLease keyed by the execution id.
+4. RoutingSandboxBackend::execute removes that lease and executes the same child. If no lease exists, fail closed because the lifecycle was bypassed.
+5. RoutingActivityHandle owns the selected child backend and calls that child's after_execute after wait.
+6. Cleanup the lease on child before_execute failure, child execute failure, wait completion, kill, and dropped handle paths where the implementation can observe them.
+```
+
+Do not rerun the selector in `execute` after a child `before_execute` has already succeeded. Do not use a single router-wide selected backend slot.
+
+Because the outer lifecycle still calls `router.after_execute`, router-level `after_execute` must not call a child backend. Child `after_execute` belongs only to the routing activity wrapper. Router-level `after_execute` may emit router telemetry or no-op.
+
 ### HTTP Broker
 
 Add an authorized HTTP broker for tool-originated service calls.
@@ -337,7 +373,8 @@ Required behavior:
 
 - accepts an opaque authorization permit derived from `AuthorizedToolInput`
 - rejects requests whose URL host or port does not match the approved `NetworkAccess::AllowList`
-- rejects raw IP, username/password URL authority, non-http(s) schemes, invalid host, and redirect to a host outside the allowlist
+- rejects public raw IP, username/password URL authority, non-http(s) schemes, invalid host, and redirect to a host outside the allowlist
+- allows loopback IP literals such as `127.0.0.1` and `::1` only when the exact host and port are explicitly present in the approved allowlist; this exists for local integration tests and local dev services, not as a public-IP bypass
 - blocks redirects by default unless the broker validates each redirect target against the same allowlist
 - applies timeout and response byte limits
 - redacts secrets from errors before returning `ToolError`
@@ -407,6 +444,58 @@ git diff --check
 
 **Expected:** implementation worktree exists, plan is present from `main`, and baseline status is known.
 
+## Task 0.5: Add Architecture Docs Before Code Changes
+
+**Goal:** Lock the normative backend design before implementation so later tasks do not invent policy, lifecycle, or UI authority rules.
+
+**Files:**
+
+- Create: `docs/architecture/harness/crates/harness-sandbox.md`
+- Modify: `docs/backend/backend-runtime.md`
+- Modify: `docs/backend/backend-engineering.md`
+- Modify: `docs/backend/backend-quality.md`
+- Modify: docs gate scripts only if existing gates do not validate the new architecture doc reference
+- Test: docs gate scripts if changed
+
+**Docs requirements:**
+
+Document these rules as product architecture, not temporary implementation notes:
+
+- execution channels: `ProcessSandbox`, `HttpBroker`, `ExternalCapability`, `DirectAuthorizedRust`
+- routing process sandbox selection order and fail-closed behavior
+- Docker fallback workspace mount contract: host workspace root mounted at `/workspace` only for `read_write_all`, cwd rewrite, image availability, and unavailable reasons
+- router lifecycle: per-execution selected backend lease, no selector rerun after child `before_execute`, no global selected-backend slot, no duplicate child lifecycle calls
+- authorized HTTP broker: allowlist-only v1, loopback IP literal exception only when explicitly allowlisted, public raw IP denial
+- broker permit claims: session, run, tool use, tool name, approved host rules, action plan hash
+- broker runtime assembly: preflight registry and execution capability use the same broker instance
+- exact meaning of `BypassPermissions` and `DontAsk`
+- local no-isolation mode not being enforcement
+- policy-specific capability reporting
+- frontend status as display-only
+- no production mocks or fake success paths
+
+**Tests first:**
+
+- [ ] If a docs gate script needs an update, add a failing test proving `harness-sandbox.md` is required.
+- [ ] Run the docs gate and confirm the intended failure before implementation if applicable.
+
+**Implementation:**
+
+- [ ] Add or update docs before any Rust or frontend code task starts.
+- [ ] Add docs gate coverage if the existing gate does not enforce the new architecture doc reference.
+- [ ] Re-read the new architecture doc during every later task intent check.
+
+**Gates:**
+
+```bash
+pnpm check:backend-docs
+pnpm check:agent-docs
+pnpm check:docs
+git diff --check
+```
+
+**Audit:** regular subagent audit required. Security audit required because this task documents security policy.
+
 ## Task 1: Add Explicit Tool Execution Channels
 
 **Goal:** Stop treating every network-only action plan as process sandbox work.
@@ -420,7 +509,6 @@ git diff --check
 - Modify: all built-in tool plan call sites that use `action_plan_from_permission_check`
 - Test: `crates/jyowo-harness-tool/tests/api_contract.rs`
 - Test: `crates/jyowo-harness-tool/tests/permission_fingerprint.rs`
-- Test: `crates/jyowo-harness-execution/tests/authorization_flow.rs`
 
 **Design:**
 
@@ -446,6 +534,8 @@ pub execution_channel: ToolExecutionChannel,
 
 Update action plan helpers so every call site must pass the channel explicitly. Do not add a default that preserves old behavior.
 
+`ToolCapability` already derives `Serialize`, `Deserialize`, and `JsonSchema`; keep `ExternalCapability { capability: ToolCapability }` as a typed contract, not a stringly typed capability field. The contract test must snapshot the exact serde shape for built-in and `Custom(String)` capabilities so public payload shape cannot drift.
+
 Expected channel mapping:
 
 | Tools | Channel |
@@ -463,7 +553,6 @@ Expected channel mapping:
 **Tests first:**
 
 - [ ] Add a contract test that fails because `ToolActionPlan` lacks `execution_channel`.
-- [ ] Add an authorization flow test that asserts a network-only `HttpBroker` plan does not call `SandboxBackend::preflight_execute`.
 - [ ] Run the narrow tests and confirm they fail for the expected missing field or old preflight behavior.
 
 **Implementation:**
@@ -472,6 +561,7 @@ Expected channel mapping:
 - [ ] Add `execution_channel` to `ToolActionPlan`.
 - [ ] Change `action_plan_from_permission_check` to require `ToolExecutionChannel`.
 - [ ] Update each built-in tool plan call site explicitly.
+- [ ] Map `SendMessage` to `ExternalCapability { capability: ToolCapability::UserMessenger }` in this task so no temporary network-shaped process channel is introduced.
 - [ ] Ensure permission fingerprints include the execution channel when relevant. If existing canonical hashing already serializes the full request/action plan, add a regression test proving channel changes alter the plan hash.
 
 **Gates:**
@@ -480,7 +570,6 @@ Expected channel mapping:
 cargo test -p jyowo-harness-contracts
 cargo test -p jyowo-harness-tool --features builtin-toolset --test api_contract
 cargo test -p jyowo-harness-tool --features builtin-toolset --test permission_fingerprint
-cargo test -p jyowo-harness-execution --test authorization_flow
 cargo fmt --all --check
 cargo check --workspace
 pnpm check:test-architecture
@@ -540,11 +629,49 @@ git diff --check
 
 **Files:**
 
+- Create: `crates/jyowo-harness-tool/src/network_broker.rs`
+- Modify: `crates/jyowo-harness-tool/src/lib.rs`
+- Modify: `crates/jyowo-harness-tool/src/context.rs`
 - Modify: `crates/jyowo-harness-execution/src/service.rs`
+- Create: `crates/jyowo-harness-execution/src/preflight_registry.rs`
+- Modify: `crates/jyowo-harness-execution/src/lib.rs`
 - Modify: `crates/jyowo-harness-execution/tests/authorization_flow.rs`
 - Modify: `crates/jyowo-harness-tool/tests/orchestrator.rs` if action plan execution needs fixture updates
 
 **Design:**
+
+This task creates the broker preflight interface before `AuthorizationService` uses it. It does not implement the production reqwest transport; that happens in Task 6.
+
+Add a tool-layer preflight capability that can be registered in the runtime without creating a dependency cycle:
+
+```rust
+pub struct NetworkBrokerPreflightRequest {
+    pub tool_name: String,
+    pub tool_use_id: ToolUseId,
+    pub network_access: NetworkAccess,
+    pub action_plan_hash: ActionPlanHash,
+}
+
+#[async_trait]
+pub trait ToolNetworkBrokerPreflightCap: Send + Sync + 'static {
+    async fn preflight_network_request(
+        &self,
+        request: &NetworkBrokerPreflightRequest,
+    ) -> Result<(), ToolError>;
+}
+```
+
+Add an execution preflight registry owned by `jyowo-harness-execution`:
+
+```rust
+pub struct ExecutionPreflightRegistry {
+    pub sandbox_backend: Arc<dyn SandboxBackend>,
+    pub network_broker: Option<Arc<dyn ToolNetworkBrokerPreflightCap>>,
+    pub capabilities: Arc<CapabilityRegistry>,
+}
+```
+
+`AuthorizationService::new` must receive this registry or an equivalent typed struct. Do not add optional parameters that silently disable checks. Missing broker or capability must fail closed with a channel-specific reason.
 
 `AuthorizationService` must keep permission resolution before enforcement preflight. After permission allow:
 
@@ -564,14 +691,17 @@ If the service cannot check a channel because the required broker/capability is 
 - [ ] Add a test where `HttpBroker` + `NetworkAccess::AllowList` passes authorization without invoking sandbox preflight.
 - [ ] Add a test where `ProcessSandbox` + `NetworkAccess::None` still invokes sandbox preflight.
 - [ ] Add a test where `HttpBroker` with `NetworkAccess::None` fails because HTTP cannot execute with no network.
+- [ ] Add a test where `HttpBroker` with missing broker fails before ticket mint.
 - [ ] Add a test where `ExternalCapability` missing capability fails before ticket mint.
 
 **Implementation:**
 
+- [ ] Add `ToolNetworkBrokerPreflightCap` and `ExecutionPreflightRegistry`.
 - [ ] Replace `preflight_spec_for_plan` with channel-specific preflight helpers.
 - [ ] Remove coarse `sandbox_preflight_failure` network checks for non-process channels.
 - [ ] Preserve event ordering: permission requested, permission resolved, enforcement preflight passed/failed, ticket minted only after pass.
 - [ ] Add distinct failure reasons that identify `process_sandbox`, `http_broker`, or `external_capability`.
+- [ ] Keep test-only recording brokers inside tests. Do not add a production noop broker or production fallback broker.
 
 **Gates:**
 
@@ -594,7 +724,7 @@ git diff --check
 
 - Create: `crates/jyowo-harness-sandbox/src/routing.rs`
 - Modify: `crates/jyowo-harness-sandbox/src/lib.rs`
-- Modify: `crates/jyowo-harness-sandbox/src/backend.rs` only if trait changes are strictly needed
+- Modify: `crates/jyowo-harness-sandbox/src/backend.rs`
 - Modify: `crates/jyowo-harness-sandbox/Cargo.toml`
 - Test: `crates/jyowo-harness-sandbox/tests/routing.rs`
 
@@ -615,6 +745,33 @@ impl RoutingSandboxBackend {
 
 Selection must be deterministic and tested. It must choose the first backend whose `preflight_execute(spec)` succeeds and whose backend is available if availability is checkable without executing user code.
 
+`execute_with_lifecycle` must create an opaque execution id before preflight and store it in `ExecContext`. The id is not a public serde contract and must not be exposed to React.
+
+`RoutingSandboxBackend::before_execute` must select exactly one child backend, call that child's `before_execute`, and store a lease keyed by `ExecContext.execution_id`:
+
+```rust
+struct RoutingSelectionLease {
+    selected_backend: Arc<dyn SandboxBackend>,
+    selected_backend_id: String,
+}
+```
+
+`RoutingSandboxBackend::execute` must remove that lease and call only the leased child backend's `execute`. If the lease is missing, execution must fail closed because the caller bypassed lifecycle. It must wrap the returned child `ActivityHandle` in a `RoutingActivityHandle` that owns:
+
+```rust
+struct RoutingActivityHandle {
+    selected_backend: Arc<dyn SandboxBackend>,
+    selected_backend_id: String,
+    inner: Arc<dyn ActivityHandle>,
+    ctx: ExecContext,
+    after_execute_started: AtomicBool,
+}
+```
+
+`RoutingActivityHandle::wait` calls `inner.wait()`, then calls `selected_backend.after_execute(&outcome, &ctx)` exactly once. Do not store the selected backend in a router-wide mutable slot, because concurrent process executions would race.
+
+`RoutingSandboxBackend::after_execute` must not call any child backend; the selected child `after_execute` is already owned by `RoutingActivityHandle`.
+
 Required order for desktop process execution:
 
 ```text
@@ -630,13 +787,18 @@ Do not use `LocalIsolation::None` for `NetworkAccess::None`, `LoopbackOnly`, `Al
 - [ ] Add a stub backend test where router picks the first backend that can enforce `NetworkAccess::None`.
 - [ ] Add a test proving router refuses restricted network policy if only no-isolation local is registered.
 - [ ] Add a test proving `before_execute` and `after_execute` run only on the selected backend.
+- [ ] Add a test proving `execute` fails closed when called without a preceding router `before_execute`.
+- [ ] Add a test proving backend availability changes after `before_execute` cannot switch execution to a different child backend.
+- [ ] Add a concurrent execution test proving two handles selected by the same router keep separate child backends and call the correct `after_execute`.
 - [ ] Add a test proving failure messages list candidate backend ids and reasons.
 
 **Implementation:**
 
 - [ ] Implement `RoutingSandboxBackend`.
-- [ ] Ensure lifecycle wrapping in `execute_with_lifecycle` still calls router `preflight_execute`, then router `before_execute`, selected backend `execute`, and router `after_execute`.
-- [ ] Store selected backend for the current handle if needed to call `after_execute` on the same child backend.
+- [ ] Add an internal execution id to `ExecContext` and initialize it in `execute_with_lifecycle` before preflight.
+- [ ] Ensure lifecycle wrapping in `execute_with_lifecycle` still calls router `preflight_execute`, then router `before_execute`, leased selected backend `execute`, selected child `after_execute` through `RoutingActivityHandle`, and router `after_execute` without child delegation.
+- [ ] Implement `RoutingActivityHandle` for selected-child `after_execute`; do not use router-global selected backend state.
+- [ ] Remove the routing selection lease on execute success, execute failure, before_execute failure, and observable cancellation paths.
 - [ ] Do not make router `capabilities()` claim policies unless at least one child can enforce them.
 
 **Gates:**
@@ -671,19 +833,31 @@ Required behavior:
 ```text
 macOS:
   include LocalSandbox::with_isolation(Seatbelt) when sandbox-exec exists
-  include Docker fallback if Docker is available
+  include Docker fallback only if Docker can run the configured image with the workspace mounted at /workspace
   include LocalIsolation::None only for unrestricted policies
 
 Linux:
   include LocalSandbox::with_isolation(Bubblewrap) when bwrap exists
-  include Docker fallback if Docker is available
+  include Docker fallback only if Docker can run the configured image with the workspace mounted at /workspace
   include LocalIsolation::None only for unrestricted policies
 
 Windows:
   do not claim restricted policy support through JobObject until tests prove it
-  include Docker fallback if Docker is available
+  include Docker fallback only if Docker can run the configured image with the workspace mounted at /workspace
   include LocalIsolation::None only for unrestricted policies
 ```
+
+Desktop Docker fallback construction must use:
+
+```rust
+DockerSandbox::builder()
+    .mount(VolumeMount::workspace(workspace_root, "/workspace"))
+    .lifecycle(ContainerLifecycle::EphemeralPerExec)
+```
+
+This construction is valid only for `read_write_all` workspace policy because `VolumeMount::workspace` is a full read-write mount. For `read_only` or `writable_subpaths`, the router must not select Docker fallback until Docker-specific read-only/subpath mount enforcement exists and has tests.
+
+Add the configured image only through the existing project configuration path if one already exists. Do not introduce a required user setting for common tools. If the default image is missing, return a backend-authored unavailable reason and keep probing the next allowed backend.
 
 The factory must return backend-authored unavailable reasons. Do not panic when a host primitive is absent.
 
@@ -691,11 +865,16 @@ The factory must return backend-authored unavailable reasons. Do not panic when 
 
 - [ ] Add a test proving desktop runtime does not construct the main sandbox with bare `LocalSandbox::new`.
 - [ ] Add a test proving diagnostics runner receives the same routing sandbox.
+- [ ] Add a test proving Docker fallback is registered with `VolumeMount::workspace(workspace_root, "/workspace")` only for `read_write_all` workspace policy.
+- [ ] Add a test proving Docker fallback is not selected for read-only or writable-subpath workspace policies until those mounts are implemented.
+- [ ] Add a test proving a missing Docker image or daemon reports an unavailable reason instead of claiming restricted support.
 - [ ] Add a test proving unsupported restricted process policy returns a specific capability reason.
 
 **Implementation:**
 
 - [ ] Replace the main runtime `LocalSandbox::new(workspace_root)` with the routing factory.
+- [ ] Build Docker fallback with the workspace mount, cwd rewrite, and default `/workspace` workdir only for `read_write_all`.
+- [ ] Return a backend-authored unavailable reason for Docker fallback when a process policy requests read-only or writable-subpath workspace access.
 - [ ] Keep plugin sidecar sandbox behavior separate unless the same factory can be used without weakening sidecar isolation.
 - [ ] Ensure `DesktopDiagnosticsRunner` uses the routing sandbox.
 - [ ] Do not introduce settings that the user must configure before common tools work.
@@ -703,8 +882,11 @@ The factory must return backend-authored unavailable reasons. Do not panic when 
 **Gates:**
 
 ```bash
-cargo test -p jyowo-desktop-shell runtime
-cargo test -p jyowo-desktop-shell diagnostics
+cargo test -p jyowo-desktop-shell runtime_uses_routing_sandbox
+cargo test -p jyowo-desktop-shell diagnostics_runner_uses_routing_sandbox
+cargo test -p jyowo-desktop-shell docker_fallback_mounts_workspace
+cargo test -p jyowo-desktop-shell docker_fallback_rejects_restricted_workspace_mounts
+cargo test -p jyowo-desktop-shell unsupported_restricted_policy_reports_reason
 cargo test -p jyowo-harness-tool --features builtin-toolset --test builtin_diagnostics
 cargo fmt --all --check
 cargo check --workspace
@@ -715,11 +897,12 @@ git diff --check
 
 ## Task 6: Add Authorized HTTP Broker
 
-**Goal:** Provider and web HTTP tools use a broker that enforces approved host rules.
+**Goal:** Provider and web HTTP tools use a production broker transport that enforces approved host rules.
 
 **Files:**
 
-- Create: `crates/jyowo-harness-tool/src/network_broker.rs`
+- Modify: `crates/jyowo-harness-contracts/src/enums.rs` if `ToolCapability::NetworkBroker` does not already exist after earlier tasks
+- Modify: `crates/jyowo-harness-tool/src/network_broker.rs`
 - Modify: `crates/jyowo-harness-tool/src/lib.rs`
 - Modify: `crates/jyowo-harness-tool/src/context.rs` if helper methods are needed
 - Modify: `crates/jyowo-harness-execution/src/lib.rs`
@@ -731,12 +914,19 @@ git diff --check
 
 **Design:**
 
-The opaque permit belongs near `AuthorizedToolInput`, where the ticket and action plan are available.
+The broker preflight interface already exists from Task 3. This task adds the execution permit and production reqwest-backed transport.
+
+The opaque permit belongs near `AuthorizedToolInput`, where the ticket and action plan are available. It must not implement `Clone`, must have private fields, and must have no public constructor outside `AuthorizedToolInput`.
 
 ```rust
 pub struct AuthorizedNetworkPermit {
     ticket: AuthorizedTicketSummary,
+    tool_name: String,
+    tool_use_id: ToolUseId,
+    session_id: SessionId,
+    run_id: RunId,
     network_access: NetworkAccess,
+    approved_hosts: Vec<HostRule>,
     action_plan_hash: ActionPlanHash,
     _private: (),
 }
@@ -746,11 +936,11 @@ impl AuthorizedToolInput {
 }
 ```
 
-The broker trait belongs in `jyowo-harness-tool` so production tools can depend on it without creating a lower-layer cycle.
+The broker trait belongs in `jyowo-harness-tool` so production tools can depend on it without creating a lower-layer cycle. Extend the Task 3 trait instead of creating a parallel capability.
 
 ```rust
 #[async_trait]
-pub trait ToolNetworkBrokerCap: Send + Sync + 'static {
+pub trait ToolNetworkBrokerCap: ToolNetworkBrokerPreflightCap {
     async fn execute_json(
         &self,
         permit: &AuthorizedNetworkPermit,
@@ -759,15 +949,34 @@ pub trait ToolNetworkBrokerCap: Send + Sync + 'static {
 }
 ```
 
+Use a typed capability key for execution lookup:
+
+```rust
+ToolCapability::NetworkBroker
+```
+
+Add this enum variant if it does not already exist. Do not register the production broker under `ToolCapability::Custom(String)`.
+
+Desktop runtime assembly must create exactly one `Arc<dyn ToolNetworkBrokerCap>` and inject that same object into both:
+
+```text
+ExecutionPreflightRegistry.network_broker
+CapabilityRegistry[ToolCapability::NetworkBroker]
+```
+
+Authorization preflight and authorized tool execution must therefore use the same broker instance and the same policy implementation.
+
 Add request types only as needed. Include method, URL, headers, JSON body, multipart payload, timeout, and max response bytes. Do not add generic raw socket support.
 
 Broker validation rules:
 
-- permit must contain `NetworkAccess::AllowList`
+- broker v1 supports only `NetworkAccess::AllowList`; `NetworkAccess::Unrestricted` always fails for brokered tool calls until a separate explicit policy is designed and tested
 - request scheme must be `http` or `https`
 - request host and explicit/effective port must match one approved `HostRule`
+- public raw IP literals are denied; loopback IP literals are allowed only when the exact loopback host and port are explicitly approved
 - redirects are denied unless each redirect target is validated before following
 - response body is capped
+- broker must validate request host rules against the permit's immutable claims, not frontend state or tool-supplied strings
 - error strings are redacted before returning
 
 **Tests first:**
@@ -775,22 +984,30 @@ Broker validation rules:
 - [ ] Add test where an approved host succeeds against a local loopback server.
 - [ ] Add test where a different host fails before any request is sent.
 - [ ] Add test where redirect to an unapproved host fails.
-- [ ] Add test where `NetworkAccess::Unrestricted` fails for brokered tool calls unless the plan explicitly supports unrestricted broker policy.
+- [ ] Add test where public raw IP fails even if the hostname parser accepts it.
+- [ ] Add test where loopback IP succeeds only when the exact loopback host and port are approved.
+- [ ] Add test where `NetworkAccess::Unrestricted` fails for brokered tool calls.
+- [ ] Add test proving permit fields bind to the authorized tool name, tool use id, session id, run id, approved hosts, and action plan hash.
 - [ ] Add test proving the permit cannot be constructed outside `AuthorizedToolInput` in normal production code paths.
+- [ ] Add a desktop runtime assembly test proving `ExecutionPreflightRegistry.network_broker` and `CapabilityRegistry[ToolCapability::NetworkBroker]` point to the same `Arc` instance.
 
 **Implementation:**
 
-- [ ] Add broker trait, permit, and request/response types.
+- [ ] Extend the Task 3 broker trait with execution methods and add permit plus request/response types.
+- [ ] Add `ToolCapability::NetworkBroker` if needed and use it as the only production capability key for broker execution.
 - [ ] Implement `ReqwestToolNetworkBroker` in `jyowo-harness-execution`.
-- [ ] Register the broker in desktop runtime `CapabilityRegistry`.
+- [ ] Create one production broker instance in desktop runtime assembly and inject the same `Arc` into both the execution preflight registry and `CapabilityRegistry`.
+- [ ] Validate every request against permit-owned tool/session/run/action-plan/host claims before network dispatch.
 - [ ] Ensure errors pass through existing redactor or an injected redactor.
 
 **Gates:**
 
 ```bash
+cargo test -p jyowo-harness-contracts
 cargo test -p jyowo-harness-tool --features builtin-toolset --test capabilities
 cargo test -p jyowo-harness-execution --test http_broker
 cargo test -p jyowo-harness-execution --test authorization_flow
+cargo test -p jyowo-desktop-shell network_broker_runtime_assembly_uses_same_instance
 cargo fmt --all --check
 cargo check --workspace
 pnpm check:test-architecture
@@ -811,6 +1028,8 @@ git diff --check
 - Modify: `crates/jyowo-harness-tool/src/builtin/web_fetch.rs`
 - Modify: `crates/jyowo-harness-tool/src/builtin/web_search.rs`
 - Modify: `crates/jyowo-harness-tool/src/provider_media.rs` if media downloads are tool-originated network access
+- Create: `scripts/check-tool-network-broker-boundary.mjs`
+- Modify: `package.json`
 - Modify: tests under `crates/jyowo-harness-tool/tests/`
 - Modify: provider client unit tests that currently construct direct reqwest clients
 
@@ -837,7 +1056,8 @@ If direct reqwest clients remain for unit tests, keep them behind `#[cfg(test)]`
 - [ ] Add a MiniMax test where the request body tries to use a credential base URL outside the approved host and fails before network.
 - [ ] Add WebFetch tests for approved host, disallowed host, and redirect denial.
 - [ ] Add Seedance tests equivalent to MiniMax for approved and denied host.
-- [ ] Add a static-style test or grep-based test that fails if production code calls `reqwest::Client::new` or `Client::builder` in `crates/jyowo-harness-tool/src/provider_minimax.rs`, `builtin/minimax.rs`, `builtin/seedance.rs`, `builtin/web_fetch.rs`, or production web search code.
+- [ ] Add a boundary scanner script that fails if production code outside the broker module imports or constructs `reqwest::Client`, `reqwest::ClientBuilder`, aliases either type, or calls direct fully qualified constructors. The scanner must ignore `#[cfg(test)]` blocks and files under test directories.
+- [ ] Add or update a root package script named `check:tool-network-broker-boundary` and include it in `pnpm check` before `pnpm check:rust`.
 
 **Implementation:**
 
@@ -845,6 +1065,9 @@ If direct reqwest clients remain for unit tests, keep them behind `#[cfg(test)]`
 - [ ] Change Seedance execution to use a brokered transport. If `SeedanceApiClient` lives in `jyowo-harness-model`, either move the HTTP transport boundary into `jyowo-harness-tool` or add a lower-level transport trait without making `jyowo-harness-model` depend on `jyowo-harness-tool`.
 - [ ] Change WebFetch production backend to use `ToolNetworkBrokerCap`.
 - [ ] Change WebSearch production backend to use brokered HTTP or mark it as `ExternalCapability` if it is not an HTTP backend.
+- [ ] Add `scripts/check-tool-network-broker-boundary.mjs` and make it scan only production files. Do not use a simple grep that can miss aliases.
+- [ ] Add `"check:tool-network-broker-boundary": "node scripts/check-tool-network-broker-boundary.mjs"` to root `package.json`.
+- [ ] Add `pnpm check:tool-network-broker-boundary` to root `check` before `pnpm check:rust`.
 - [ ] Ensure provider credentials stay out of logs, traces, events, frontend state, test snapshots, and error strings.
 
 **Gates:**
@@ -854,6 +1077,8 @@ cargo test -p jyowo-harness-tool --features builtin-toolset --test minimax_tools
 cargo test -p jyowo-harness-tool --features builtin-toolset --test seedance_tools
 cargo test -p jyowo-harness-tool --features builtin-toolset --test builtin_tools
 cargo test -p jyowo-harness-tool --features builtin-toolset --test capabilities
+node scripts/check-tool-network-broker-boundary.mjs
+pnpm check:tool-network-broker-boundary
 cargo fmt --all --check
 cargo check --workspace
 pnpm check:test-architecture
@@ -862,26 +1087,27 @@ git diff --check
 
 **Audit:** regular subagent audit and security audit required.
 
-## Task 8: Fix Non-Process Capability Plans
+## Task 8: Audit Non-Process Capability Plans
 
-**Goal:** Tools such as `SendMessage` stop using process-sandbox-shaped network preflight.
+**Goal:** Prove no non-process capability tool still uses a process-sandbox-shaped execution channel.
 
 **Files:**
 
-- Modify: `crates/jyowo-harness-tool/src/builtin/send_message.rs`
-- Modify: any other built-in that declares `NetworkAccess::AllowList` but executes through a non-HTTP capability
+- Modify: `crates/jyowo-harness-tool/src/builtin/send_message.rs` only if Task 1 missed the required channel mapping
+- Modify: any other built-in that declares `NetworkAccess::AllowList` but executes through a non-HTTP capability only if the audit finds one
 - Modify: `crates/jyowo-harness-tool/tests/builtin_tools.rs`
 - Modify: `crates/jyowo-harness-execution/tests/authorization_flow.rs`
 
 **Tests first:**
 
-- [ ] Add a `SendMessage` authorization test proving it uses `ExternalCapability { capability: UserMessenger }`.
+- [ ] Add a `SendMessage` authorization regression test proving Task 1 mapped it to `ExternalCapability { capability: UserMessenger }`.
 - [ ] Add a test proving missing `UserMessengerCap` fails before ticket mint.
 - [ ] Add a test proving present `UserMessengerCap` does not call process sandbox preflight.
+- [ ] Add a scan-style test over built-in action plans proving every `ExternalCapability` plan is checked against a runtime capability and never process sandbox preflight.
 
 **Implementation:**
 
-- [ ] Update `SendMessageTool::plan` to use the external capability channel.
+- [ ] Keep `SendMessageTool::plan` as `ExternalCapability { capability: ToolCapability::UserMessenger }`; if it is not, fix it here and document why Task 1 missed it in the task completion analysis.
 - [ ] Replace network-shaped permission subject if a more accurate existing subject exists. If no accurate subject exists, keep the existing permission subject but document why execution channel, not subject, controls enforcement.
 - [ ] Ensure `execute_authorized` still requires the authorized input and registered capability.
 
@@ -903,7 +1129,8 @@ git diff --check
 
 **Files:**
 
-- Modify: `crates/jyowo-harness-contracts/src/enums.rs` or add a focused contracts file if project convention supports it
+- Create: `crates/jyowo-harness-contracts/src/runtime_execution_status.rs`
+- Modify: `crates/jyowo-harness-contracts/src/lib.rs`
 - Modify: `crates/jyowo-harness-contracts/src/schema_export.rs`
 - Modify: `crates/jyowo-harness-sdk/src/builder.rs`
 - Modify: `crates/jyowo-harness-sdk/src/harness.rs`
@@ -912,7 +1139,8 @@ git diff --check
 - Modify: `apps/desktop/src/shared/tauri` files for command client exposure
 - Modify: relevant frontend settings/workbench/conversation UI files only if an existing diagnostics/status surface exists
 - Test: `apps/desktop/src-tauri/tests/commands.rs`
-- Test: relevant frontend Vitest file near the UI surface
+- Test: `apps/desktop/src/shared/tauri/runtime-execution-status.schema.test.ts`
+- Test: relevant frontend Vitest file near the UI surface only if UI rendering changes
 
 **Design:**
 
@@ -941,6 +1169,7 @@ Frontend must render status from this payload only. Do not infer tool availabili
 **Implementation:**
 
 - [ ] Add contracts and schema export.
+- [ ] Keep status structs in `runtime_execution_status.rs`; do not place non-enum status structs in `enums.rs`.
 - [ ] Add SDK facade method for runtime execution status.
 - [ ] Add Tauri command that returns status.
 - [ ] Add frontend command client method and UI rendering in the existing status/settings/workbench surface.
@@ -949,8 +1178,8 @@ Frontend must render status from this payload only. Do not infer tool availabili
 **Gates:**
 
 ```bash
-cargo test -p jyowo-desktop-shell runtime_execution_status
-pnpm -C apps/desktop test -- runtime execution status
+cargo test -p jyowo-desktop-shell runtime_execution_status_command_returns_backend_payload
+pnpm -C apps/desktop test -- src/shared/tauri/runtime-execution-status.schema.test.ts
 pnpm check:desktop
 pnpm check:frontend-docs
 cargo fmt --all --check
@@ -960,13 +1189,13 @@ git diff --check
 
 **Audit:** regular subagent audit and security audit required.
 
-## Task 10: Add Architecture Docs And Docs Gate Coverage
+## Task 10: Reconcile Architecture Docs And Docs Gate Coverage
 
-**Goal:** The design is documented in normative backend architecture docs and protected by docs gates.
+**Goal:** Keep the Task 0.5 architecture docs aligned with the final implementation and protected by docs gates.
 
 **Files:**
 
-- Create: `docs/architecture/harness/crates/harness-sandbox.md`
+- Modify: `docs/architecture/harness/crates/harness-sandbox.md`
 - Modify: `docs/backend/backend-runtime.md`
 - Modify: `docs/backend/backend-engineering.md`
 - Modify: `docs/backend/backend-quality.md`
@@ -980,6 +1209,10 @@ Document:
 - execution channels
 - routing process sandbox
 - authorized HTTP broker
+- Docker fallback workspace mount contract
+- Docker fallback `read_write_all`-only support until Docker read-only/subpath mounts exist
+- router per-execution lifecycle lease ownership
+- broker permit binding, same-instance runtime assembly, and allowlist-only v1 policy
 - exact meaning of `BypassPermissions` and `DontAsk`
 - local no-isolation mode not being enforcement
 - policy-specific capability reporting
@@ -990,12 +1223,12 @@ Do not write temporary implementation notes into normative docs.
 
 **Tests first:**
 
-- [ ] If a docs gate script needs an update, add a failing test proving `harness-sandbox.md` is required.
-- [ ] Run the docs gate and confirm the intended failure before implementation if applicable.
+- [ ] If implementation changed the Task 0.5 design, add or update a docs gate test proving the normative doc still covers the changed concept.
+- [ ] Run the docs gate and confirm the intended failure before implementation if a docs gate change is needed.
 
 **Implementation:**
 
-- [ ] Add or update docs.
+- [ ] Update docs only for final implementation facts that differ from Task 0.5.
 - [ ] Add docs gate coverage if the existing gate does not enforce the new architecture doc reference.
 
 **Gates:**
@@ -1071,6 +1304,7 @@ pnpm check:desktop
 pnpm check:rust
 pnpm audit:tests
 pnpm check:test-architecture
+pnpm check:tool-network-broker-boundary
 pnpm check:agent-orchestration-no-fakes
 pnpm check:agent-supervisor-sidecar
 pnpm check:quick
@@ -1085,7 +1319,7 @@ git diff --check
 2. Run Bash with `pwd && ls -la`.
 3. Run Diagnostics for Rust or desktop TS.
 4. Run one brokered WebFetch against an approved local test server or a user-approved HTTPS URL.
-5. Run one MiniMax tool against an approved local test server in test mode, or skip only if credentials are unavailable and the automated broker regression already passed.
+5. Run one MiniMax manual-live smoke only with real user-provided credentials and an approved HTTPS provider host. If credentials are unavailable, skip the manual-live call and rely on the automated loopback broker regression. Do not add a production MiniMax test mode.
 6. Confirm unavailable tools show backend-authored reasons.
 ```
 
@@ -1116,8 +1350,11 @@ Return PASS or FAIL with exact file and line evidence.
 - Main desktop runtime no longer uses bare `LocalSandbox::new(workspace_root)` for process tools.
 - Process sandbox preflight is used only for process execution channels.
 - HTTP/provider tools execute through the authorized HTTP broker.
+- Authorization preflight and authorized HTTP execution use the same broker instance.
+- Docker fallback does not claim restricted workspace policy support unless exact Docker mount enforcement exists.
 - Sandbox capability reporting is policy-specific and honest.
 - Unsupported policies fail closed with backend-authored reasons.
 - Frontend renders backend status only.
 - `BypassPermissions` and `DontAsk` still cannot bypass sandbox, network broker, hard policy, tenant/workspace scope, ticket validation, redaction, or event ordering.
+- `pnpm check:tool-network-broker-boundary` exits 0 and is included in root `pnpm check`.
 - `pnpm check` exits 0.

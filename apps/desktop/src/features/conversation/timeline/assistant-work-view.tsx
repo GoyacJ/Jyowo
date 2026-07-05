@@ -32,10 +32,11 @@ export function AssistantWorkView({
   const { t } = useTranslation('conversation')
   const processImageArtifactIds = getProcessImageArtifactIds(assistant)
   const artifactRevisionIdsByArtifactId = getArtifactRevisionIdsByArtifactId(assistant)
+  const toolGroupToolNames = getToolGroupToolNames(assistant)
   const modelLabel = assistant.model?.displayName
 
   return (
-    <section className="max-w-[86%]">
+    <section className="min-w-0 max-w-[1040px]">
       <div className="mb-2 flex items-center gap-2 text-muted-foreground text-xs">
         <span>{t('timeline.assistantAuthor')}</span>
         {modelLabel ? (
@@ -65,6 +66,7 @@ export function AssistantWorkView({
                   key={segment.id}
                   runId={assistant.runId}
                   segment={segment}
+                  toolGroupToolNames={toolGroupToolNames}
                 />
               )
             case 'text':
@@ -127,6 +129,22 @@ export function AssistantWorkView({
       </div>
     </section>
   )
+}
+
+function getToolGroupToolNames(assistant: AssistantWork) {
+  const toolNames = new Set<string>()
+
+  for (const segment of assistant.segments) {
+    if (segment.kind !== 'toolGroup') {
+      continue
+    }
+
+    for (const attempt of segment.attempts) {
+      toolNames.add(attempt.toolName)
+    }
+  }
+
+  return toolNames
 }
 
 function getProcessImageArtifactIds(assistant: AssistantWork) {

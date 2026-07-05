@@ -295,6 +295,14 @@ describe('ConversationTimeline', () => {
       createTestCommandClient(),
     )
 
+    expect(
+      screen.queryByRole('button', { name: 'Open read_file in inspector' }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Open list_files in inspector' }),
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Ran 2 tools/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Open read_file in inspector' }))
     expect(uiStore.getState().workbenchSelection).toEqual({
       kind: 'tool',
@@ -302,14 +310,9 @@ describe('ConversationTimeline', () => {
       toolUseId: 'tool-read-file',
     })
 
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Open permission permission-write-file in inspector' }),
-    )
-    expect(uiStore.getState().workbenchSelection).toEqual({
-      kind: 'decision',
-      conversationId: 'conversation-tool-evidence',
-      requestId: 'permission-write-file',
-    })
+    expect(
+      screen.queryByRole('button', { name: 'Open permission permission-write-file in inspector' }),
+    ).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Open artifact in inspector' }))
     expect(uiStore.getState().workbenchSelection).toEqual({
@@ -318,5 +321,17 @@ describe('ConversationTimeline', () => {
       artifactId: 'artifact-image-001',
       revisionId: 'revision-image-001',
     })
+  })
+
+  it('adds wrapping constraints for long user and assistant content', () => {
+    const longPath = `/Users/goya/${'very-long-path-segment-'.repeat(12)}file.ts`
+    render(<ConversationTimeline title="Long content" turns={[turn(longPath)]} />)
+
+    const userMessage = screen.getByText('Prompt')
+    const assistantMessage = screen.getByText(longPath)
+
+    expect(userMessage).toHaveClass('break-words')
+    expect(assistantMessage).toHaveClass('break-words')
+    expect(assistantMessage.closest('section')).toHaveClass('min-w-0')
   })
 })

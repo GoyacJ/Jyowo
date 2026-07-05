@@ -14,6 +14,7 @@ import type {
   ConversationInspectorSelection,
   ResolvePermissionRequest,
 } from '@/shared/tauri/commands'
+import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { useCommandClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
 import { ArtifactPane } from './artifacts/ArtifactPane'
@@ -65,7 +66,12 @@ function InspectorPaneRenderer({ contextPane, selection }: InspectorPaneRenderer
   if (inspectorQuery.isError) {
     return (
       <InspectorState
-        description={t('inspector.errorDescription', 'The selected evidence could not be loaded.')}
+        action={
+          <Button onClick={() => void inspectorQuery.refetch()} size="sm" type="button">
+            {t('inspector.retry', 'Retry')}
+          </Button>
+        }
+        description={getCommandErrorMessage(inspectorQuery.error)}
         title={t('inspector.error', 'Inspector data failed to load')}
       />
     )
@@ -222,11 +228,20 @@ function inspectorSelectionFromWorkbenchSelection(
   }
 }
 
-function InspectorState({ title, description }: { title: string; description: string }) {
+function InspectorState({
+  action,
+  title,
+  description,
+}: {
+  action?: ReactNode
+  title: string
+  description: string
+}) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
       <h3 className="text-sm font-medium text-foreground">{title}</h3>
       <p className="text-xs text-muted-foreground">{description}</p>
+      {action}
     </div>
   )
 }

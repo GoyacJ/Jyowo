@@ -116,10 +116,10 @@ describe('AppShell', () => {
     expect(within(workspaceNavigation).queryByText('Models')).not.toBeInTheDocument()
     expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'View all activity' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Open inspector' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open inspector' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Share' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Hide context panel' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Show context panel' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Show context panel' })).not.toBeInTheDocument()
     const statusBar = screen.getByRole('region', { name: 'Status' })
 
     expect(within(statusBar).getByText('Ready')).toBeInTheDocument()
@@ -137,6 +137,8 @@ describe('AppShell', () => {
     )
 
     expect(routerSpy.navigate).toHaveBeenCalledWith({ to: '/settings' })
+    expect(uiStore.getState().inspectorOpen).toBe(false)
+    expect(screen.queryByRole('complementary', { name: 'Inspector' })).not.toBeInTheDocument()
   })
 
   it('uses the icon sidebar on narrow viewports', () => {
@@ -183,114 +185,6 @@ describe('AppShell', () => {
     await waitFor(() => {
       expect(screen.getByRole('main')).toContainElement(screen.getByText('Workbench content'))
       expect(contextRequests).toEqual([])
-    })
-  })
-
-  it('keeps active conversation context collapsed until the user opens it', async () => {
-    window.history.pushState(null, '', '/?conversationId=conversation-002')
-    const commandClient = createTestCommandClient({
-      conversations: {
-        conversations: [
-          {
-            id: 'conversation-001',
-            isEmpty: false,
-            title: 'First conversation',
-            updatedAt: '2026-06-17T00:00:00.000Z',
-          },
-          {
-            id: 'conversation-002',
-            isEmpty: false,
-            title: 'Selected conversation',
-            updatedAt: '2026-06-17T00:00:01.000Z',
-          },
-        ],
-      },
-    })
-    const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
-    const trackedClient = {
-      ...commandClient,
-      getContextSnapshot: async (request: Parameters<CommandClient['getContextSnapshot']>[0]) => {
-        contextRequests.push(request)
-        return commandClient.getContextSnapshot(request)
-      },
-    } satisfies CommandClient
-
-    act(() => {
-      uiStore.getState().setActiveRun({
-        conversationId: 'conversation-002',
-        runId: 'run-002',
-      })
-    })
-
-    renderAppShell(trackedClient)
-
-    expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
-    expect(contextRequests).toEqual([])
-
-    fireEvent.click(screen.getByRole('button', { name: 'Show context panel' }))
-
-    await within(screen.getByRole('complementary', { name: 'Context' })).findByText('Desktop App')
-
-    await waitFor(() => {
-      expect(contextRequests).toEqual([{ conversationId: 'conversation-002', runId: 'run-002' }])
-    })
-  })
-
-  it('opens selected idle conversation context as a fixed right column', async () => {
-    window.history.pushState(null, '', '/?conversationId=conversation-002')
-    const commandClient = createTestCommandClient()
-    const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
-    const trackedClient = {
-      ...commandClient,
-      getContextSnapshot: async (request: Parameters<CommandClient['getContextSnapshot']>[0]) => {
-        contextRequests.push(request)
-        return commandClient.getContextSnapshot(request)
-      },
-    } satisfies CommandClient
-
-    const { container } = renderAppShell(trackedClient)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Show context panel' }))
-
-    await within(screen.getByRole('complementary', { name: 'Context' })).findByText('Desktop App')
-
-    expect(container.firstElementChild?.firstElementChild).toHaveStyle({
-      gridTemplateColumns: '248px minmax(0,1fr) 320px',
-    })
-    expect(contextRequests).toEqual([{ conversationId: 'conversation-002' }])
-  })
-
-  it('uses the selected conversation run when multiple conversations are active', async () => {
-    window.history.pushState(null, '', '/?conversationId=conversation-001')
-    const commandClient = createTestCommandClient()
-    const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
-    const trackedClient = {
-      ...commandClient,
-      getContextSnapshot: async (request: Parameters<CommandClient['getContextSnapshot']>[0]) => {
-        contextRequests.push(request)
-        return commandClient.getContextSnapshot(request)
-      },
-    } satisfies CommandClient
-
-    act(() => {
-      uiStore.getState().setActiveRun({
-        conversationId: 'conversation-001',
-        runId: 'run-001',
-      })
-      uiStore.getState().setActiveRun({
-        conversationId: 'conversation-002',
-        runId: 'run-002',
-      })
-    })
-
-    renderAppShell(trackedClient)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Show context panel' }))
-
-    await within(screen.getByRole('complementary', { name: 'Context' })).findByText('Desktop App')
-
-    await waitFor(() => {
-      expect(contextRequests).toEqual([{ conversationId: 'conversation-001', runId: 'run-001' }])
     })
   })
 
@@ -357,31 +251,6 @@ describe('AppShell', () => {
     expect(screen.queryByRole('button', { name: 'Show context panel' })).not.toBeInTheDocument()
   })
 
-  it('minimizes and restores active conversation context', async () => {
-    act(() => {
-      uiStore.getState().setActiveRun({
-        conversationId: 'conversation-001',
-        runId: 'run-001',
-      })
-    })
-
-    renderAppShell()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Show context panel' }))
-
-    await within(screen.getByRole('complementary', { name: 'Context' })).findByText('Desktop App')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Close context' }))
-
-    await waitFor(() => {
-      expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: 'Show context panel' }))
-
-    expect(screen.getByRole('complementary', { name: 'Context' })).toBeInTheDocument()
-  })
-
   it('reflects active run state in the status bar from ui store', async () => {
     act(() => {
       uiStore.getState().setActiveRun({
@@ -397,24 +266,7 @@ describe('AppShell', () => {
     expect(within(statusBar).queryByText('run-001')).not.toBeInTheDocument()
   })
 
-  it('does not render shell permission controls; context decisions scroll the timeline', async () => {
-    const commandClient = createTestCommandClient({
-      contextSnapshot: {
-        activeArtifact: 'App shell (WIP)',
-        decisions: [
-          {
-            detail: 'Critical permission is waiting for decision 01HZ0000000000000000000001.',
-            requestId: '01HZ0000000000000000000001',
-            title: 'Approve shell',
-          },
-        ],
-        files: [{ label: 'src/' }],
-        nextActions: ['Resolve pending runtime decisions'],
-        path: '~/projects/desktop-app',
-        project: 'Desktop App',
-      },
-    })
-
+  it('does not render shell permission or right panel controls', () => {
     act(() => {
       uiStore.getState().setContextPanelCollapsed(false)
       uiStore.getState().setActiveRun({
@@ -423,17 +275,10 @@ describe('AppShell', () => {
       })
     })
 
-    renderAppShell(commandClient)
+    renderAppShell()
 
     expect(screen.queryByRole('button', { name: 'Deny permission' })).not.toBeInTheDocument()
-
-    fireEvent.click(await screen.findByRole('button', { name: /Approve shell/i }))
-
-    await waitFor(() => {
-      expect(uiStore.getState().timelineScrollRequest).toEqual({
-        anchorId: 'permission:01HZ0000000000000000000001',
-        nonce: 1,
-      })
-    })
+    expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('complementary', { name: 'Inspector' })).not.toBeInTheDocument()
   })
 })

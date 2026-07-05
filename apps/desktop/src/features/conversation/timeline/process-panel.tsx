@@ -20,11 +20,13 @@ export function ProcessPanel({
   conversationId,
   runId,
   segment,
+  toolGroupToolNames,
 }: {
   artifactRevisionIdsByArtifactId?: Record<string, string>
   conversationId: string
   runId: string
   segment: ProcessSegment
+  toolGroupToolNames?: Set<string>
 }) {
   const steps = [...(segment.steps ?? [])].sort((left, right) => left.order - right.order)
   const latestCommandStepId = [...steps]
@@ -38,6 +40,7 @@ export function ProcessPanel({
   const displayItems = buildProcessDisplayItems(steps, {
     hasActiveOrFailedCommand,
     latestCommandStepId,
+    toolGroupToolNames,
   })
 
   return (
@@ -128,6 +131,7 @@ function buildProcessDisplayItems(
   context: {
     hasActiveOrFailedCommand: boolean
     latestCommandStepId?: string
+    toolGroupToolNames?: Set<string>
   },
 ): ProcessDisplayItem[] {
   const items: ProcessDisplayItem[] = []
@@ -151,6 +155,10 @@ function buildProcessDisplayItems(
   }
 
   for (const step of steps) {
+    if (isCoveredToolPreparationStep(step, context.toolGroupToolNames)) {
+      continue
+    }
+
     if (isLowSignalCompletedStep(step, context)) {
       pendingGroup.push(step)
       continue
@@ -162,6 +170,14 @@ function buildProcessDisplayItems(
 
   flushGroup()
   return items
+}
+
+function isCoveredToolPreparationStep(step: ProcessStep, toolGroupToolNames?: Set<string>) {
+  if (step.status !== 'complete' || step.kind !== 'tool' || !toolGroupToolNames?.size) {
+    return false
+  }
+
+  return Array.from(toolGroupToolNames).some((toolName) => step.title.includes(toolName))
 }
 
 function defaultDetailOpen(

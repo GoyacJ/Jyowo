@@ -42,7 +42,7 @@ const markdownComponents: Components = {
     return <ol className={cn('ml-5 list-decimal space-y-1', className)} {...props} />
   },
   p({ className, ...props }) {
-    return <p className={cn('leading-7', className)} {...props} />
+    return <p className={cn('break-words leading-7', className)} {...props} />
   },
   pre({ className, ...props }) {
     return (

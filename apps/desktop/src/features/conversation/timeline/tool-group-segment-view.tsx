@@ -1,4 +1,3 @@
-import { ExternalLink } from 'lucide-react'
 import { useUiStore } from '@/shared/state/ui-store'
 import type {
   ConversationEventRef,
@@ -31,8 +30,6 @@ export function ToolGroupSegmentView({
     (state) => state.evidenceDisclosureOpen[completedGroupDisclosureId],
   )
   const setDisclosureOpen = useUiStore((state) => state.setEvidenceDisclosureOpen)
-  const setSelection = useUiStore((state) => state.setWorkbenchSelection)
-  const setInspectorOpen = useUiStore((state) => state.setInspectorOpen)
   const completedGroupOpen = storedCompletedGroupOpen ?? false
 
   return (
@@ -47,28 +44,6 @@ export function ToolGroupSegmentView({
               : undefined
           }
         />
-        {!completedGroupOpen && completedAttempts.length > 0 ? (
-          <div className="flex shrink-0 items-center gap-1">
-            {completedAttempts.map((attempt) => (
-              <button
-                aria-label={`Open ${attempt.toolName} in inspector`}
-                className="inline-flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-                key={attempt.id}
-                onClick={() => {
-                  setSelection({
-                    kind: 'tool',
-                    conversationId,
-                    toolUseId: attempt.toolUseId,
-                  })
-                  setInspectorOpen(true)
-                }}
-                type="button"
-              >
-                <ExternalLink className="size-3.5" />
-              </button>
-            ))}
-          </div>
-        ) : null}
       </div>
       <div className="grid gap-1">
         {completedGroupOpen

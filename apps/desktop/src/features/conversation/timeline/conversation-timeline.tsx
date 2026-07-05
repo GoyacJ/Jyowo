@@ -28,6 +28,7 @@ export function ConversationTimeline({
   onPermissionResolve,
   onReviewContinue,
   retryGap,
+  showTitle = true,
   title,
   turns,
 }: {
@@ -44,6 +45,7 @@ export function ConversationTimeline({
   onPermissionResolve?: (request: ResolvePermissionRequest) => void
   onReviewContinue?: (prompt: string) => void
   retryGap?: () => void
+  showTitle?: boolean
 }) {
   const { t } = useTranslation('conversation')
   const timelineTurns = turns
@@ -152,10 +154,15 @@ export function ConversationTimeline({
   ])
 
   return (
-    <section className="relative mx-auto grid h-full min-h-0 w-full max-w-[900px] grid-rows-[auto_minmax(0,1fr)]">
-      <header className="pt-3 pb-4">
-        <h1 className="font-semibold text-2xl tracking-normal">{title}</h1>
-      </header>
+    <section
+      className="relative grid h-full min-h-0 w-full"
+      style={{ gridTemplateRows: showTitle ? 'auto minmax(0,1fr)' : 'minmax(0,1fr)' }}
+    >
+      {showTitle ? (
+        <header className="pt-3 pb-4">
+          <h1 className="font-semibold text-2xl tracking-normal">{title}</h1>
+        </header>
+      ) : null}
       <div className="min-h-0 overflow-auto pr-1" onScroll={onScroll} ref={viewportRef}>
         <TimelinePageControl
           disabled={loadingEarlier || !loadEarlier}

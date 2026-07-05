@@ -26,14 +26,14 @@ export function ConversationTurnView({
   return (
     <article aria-label={t('turnLabel')} className="grid gap-4">
       <section className="flex justify-end">
-        <div className="flex max-w-[92%] flex-col items-end gap-2 sm:max-w-[78%]">
+        <div className="flex min-w-0 max-w-[92%] flex-col items-end gap-2 sm:max-w-[78%]">
           <UserAttachmentStrip
             attachments={turn.user.attachments ?? []}
             conversationId={turn.conversationId}
           />
-          <div className="w-full rounded-md border border-border bg-muted px-4 py-3 text-foreground">
+          <div className="w-full min-w-0 rounded-md border border-border bg-muted px-4 py-3 text-foreground">
             <div className="mb-1 text-muted-foreground text-xs">{t('userAuthor')}</div>
-            <p className="whitespace-pre-wrap text-sm leading-6">{turn.user.body}</p>
+            <p className="whitespace-pre-wrap break-words text-sm leading-6">{turn.user.body}</p>
           </div>
           <div className="flex w-full items-center justify-end gap-2 px-1 text-[11px] text-muted-foreground/70">
             <time dateTime={turn.user.timestamp} title={t('userMessage.timestampLabel')}>

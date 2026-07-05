@@ -1,15 +1,11 @@
 import { useNavigate, useRouterState } from '@tanstack/react-router'
-import { Command as CommandIcon, PanelRightOpen } from 'lucide-react'
+import { Command as CommandIcon } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ActivityRail } from '@/features/activity/ActivityRail'
-import { ContextPanel } from '@/features/context/ContextPanel'
-import { useContextSnapshot } from '@/features/context/use-context-snapshot'
-import { WorkbenchInspector } from '@/features/workbench/WorkbenchInspector'
 import { OPEN_COMMAND_PALETTE_EVENT } from '@/features/workspace/CommandPalette'
 import { SidebarNav } from '@/features/workspace/SidebarNav'
 import { useUiStore } from '@/shared/state/ui-store'
-import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { Button } from '@/shared/ui/button'
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -17,56 +13,16 @@ export function AppShell({ children }: { children: ReactNode }) {
   const navigate = useNavigate()
   const activeRunsByConversation = useUiStore((state) => state.activeRunsByConversation)
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed)
-  const contextPanelCollapsed = useUiStore((state) => state.contextPanelCollapsed)
-  const workbenchSelection = useUiStore((state) => state.workbenchSelection)
   const compactSidebar = useMediaQuery('(max-width: 720px)')
-  const inspectorOpen = useUiStore((state) => state.inspectorOpen)
-  const setInspectorOpen = useUiStore((state) => state.setInspectorOpen)
-  const setContextPanelCollapsed = useUiStore((state) => state.setContextPanelCollapsed)
-  const requestTimelineScroll = useUiStore((state) => state.requestTimelineScroll)
-  const currentPath = useRouterState({
-    select: (state) => state.location.pathname,
-  })
   const currentSearch = useRouterState({
     select: (state) => state.location.search,
   })
   const selectedConversationId =
     typeof currentSearch.conversationId === 'string' ? currentSearch.conversationId : undefined
   const selectedActiveRun = selectActiveRun(activeRunsByConversation, selectedConversationId)
-  const contextAvailable = currentPath === '/'
-  const contextSelectedInInspector = inspectorOpen && workbenchSelection?.kind === 'context'
-  const contextVisible = contextAvailable && (!contextPanelCollapsed || contextSelectedInInspector)
-  const contextRequest =
-    contextVisible && selectedActiveRun
-      ? { conversationId: selectedActiveRun.conversationId, runId: selectedActiveRun.runId }
-      : contextVisible && selectedConversationId
-        ? { conversationId: selectedConversationId }
-        : {}
-  const contextSnapshot = useContextSnapshot(contextRequest, { enabled: contextVisible })
   const sidebarWidth = sidebarCollapsed || compactSidebar ? '48px' : '248px'
-  const showInspector = inspectorOpen
-  const showContext = contextVisible && !showInspector
-  const contextPane = contextVisible ? (
-    <ContextPanel
-      context={contextSnapshot.context}
-      errorMessage={
-        contextSnapshot.error ? getCommandErrorMessage(contextSnapshot.error) : undefined
-      }
-      loading={contextSnapshot.isLoading}
-      onClose={() => {
-        setContextPanelCollapsed(true)
-        setInspectorOpen(false)
-      }}
-      onDecisionSelect={(decision) => {
-        if (decision.requestId) {
-          requestTimelineScroll(`permission:${decision.requestId}`)
-        }
-      }}
-    />
-  ) : null
 
   function openSettings() {
-    setInspectorOpen(true)
     void navigate({ to: '/settings' })
   }
 
@@ -78,29 +34,12 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div
         className="grid min-h-0"
         style={{
-          gridTemplateColumns: showInspector
-            ? `${sidebarWidth} minmax(0,1fr) 360px`
-            : showContext
-              ? `${sidebarWidth} minmax(0,1fr) 320px`
-              : `${sidebarWidth} minmax(0,1fr)`,
+          gridTemplateColumns: `${sidebarWidth} minmax(0,1fr)`,
         }}
       >
         <SidebarNav compact={compactSidebar} />
         <div className="grid min-h-0 grid-rows-[52px_minmax(0,1fr)]">
           <header className="flex items-center justify-end gap-2 px-4">
-            {contextAvailable && contextPanelCollapsed ? (
-              <Button
-                aria-label={t('actions.showContextPanel')}
-                className="size-8"
-                onClick={() => setContextPanelCollapsed(false)}
-                size="icon"
-                title={t('actions.showContextPanel')}
-                type="button"
-                variant="outline"
-              >
-                <PanelRightOpen className="size-4" />
-              </Button>
-            ) : null}
             <Button
               aria-label={t('actions.openCommandPalette')}
               className="size-8"
@@ -109,26 +48,11 @@ export function AppShell({ children }: { children: ReactNode }) {
               type="button"
               variant="outline"
             >
-              <CommandIcon className="size-4" />
-            </Button>
-            <Button
-              aria-label={inspectorOpen ? t('actions.closeInspector') : t('actions.openInspector')}
-              className="size-8"
-              onClick={() => setInspectorOpen(!inspectorOpen)}
-              size="icon"
-              type="button"
-              variant="outline"
-            >
-              <PanelRightOpen className={`size-4 ${inspectorOpen ? 'rotate-180' : ''}`} />
+              <CommandIcon aria-hidden="true" className="size-4" />
             </Button>
           </header>
           <main className="min-h-0 min-w-0 overflow-hidden px-6 pb-6 xl:px-8">{children}</main>
         </div>
-        {showInspector ? (
-          <WorkbenchInspector contextPane={contextPane} />
-        ) : showContext ? (
-          contextPane
-        ) : null}
       </div>
       <ActivityRail activeRunId={selectedActiveRun?.runId} onOpenSettings={openSettings} />
     </div>

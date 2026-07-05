@@ -11,6 +11,7 @@ import type {
   CommandClient,
   ConversationEventBatchPayload,
   ConversationTurn,
+  GetConversationResponse,
   ListProjectsResponse,
   ListProviderSettingsResponse,
   ModelProviderCatalogResponse,
@@ -30,6 +31,7 @@ import {
 } from '@/testing/conversation-worktree-builders'
 
 import { ConversationWorkspace } from './ConversationWorkspace'
+import { clearDraft } from './composer/composer-draft-store'
 
 type ModelCatalogEntry = ModelProviderCatalogResponse['providers'][number]['models'][number]
 
@@ -152,6 +154,12 @@ describe('ConversationWorkspace', () => {
   afterEach(() => {
     vi.restoreAllMocks()
     uiStore.getState().clearActiveRun()
+    uiStore.getState().setContextPanelCollapsed(true)
+    uiStore.getState().setInspectorOpen(false)
+    uiStore.getState().setWorkbenchSelection(null)
+    uiStore.getState().resetEvidenceDisclosure()
+    clearDraft('conversation-a')
+    clearDraft('conversation-b')
   })
 
   it('renders the conversation body from worktree turns', async () => {
@@ -298,7 +306,8 @@ describe('ConversationWorkspace', () => {
   it('shows loading, empty, and command error states', async () => {
     const { unmount } = renderConversationWorkspace(createTestCommandClient({ delayMs: 10 }))
 
-    expect(screen.getByText('Loading conversation...')).toBeInTheDocument()
+    expect(screen.getByText('Loading conversation')).toBeInTheDocument()
+    expect(screen.queryByText('Loading conversation...')).not.toBeInTheDocument()
     expect(
       await screen.findByRole('heading', { name: 'Build the desktop foundation' }),
     ).toBeInTheDocument()
@@ -315,6 +324,127 @@ describe('ConversationWorkspace', () => {
 
     renderConversationWorkspace(createRejectedTestCommandClient(new Error('IPC unavailable')))
     expect(await screen.findByText('IPC unavailable')).toBeInTheDocument()
+  })
+
+  it('owns the context right column inside the conversation page', async () => {
+    const commandClient = createTestCommandClient()
+    const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
+    const trackedClient = {
+      ...commandClient,
+      getContextSnapshot: async (request: Parameters<CommandClient['getContextSnapshot']>[0]) => {
+        contextRequests.push(request)
+        return commandClient.getContextSnapshot(request)
+      },
+    } satisfies CommandClient
+
+    act(() => {
+      uiStore.getState().setActiveRun({
+        conversationId: 'conversation-001',
+        runId: 'run-001',
+      })
+    })
+
+    const { container } = renderConversationWorkspace(trackedClient, 'conversation-001')
+
+    expect(
+      await screen.findByRole('heading', { name: 'Build the desktop foundation' }),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show context panel' }))
+
+    await within(screen.getByRole('complementary', { name: 'Context' })).findByText('Desktop App')
+    expect(container.firstElementChild).toHaveStyle({
+      gridTemplateColumns: 'minmax(0,1fr) 320px',
+    })
+    expect(contextRequests).toEqual([{ conversationId: 'conversation-001', runId: 'run-001' }])
+  })
+
+  it('opens evidence inspector inside the conversation page right column', async () => {
+    const { container } = renderConversationWorkspace(createTestCommandClient(), 'conversation-001')
+
+    expect(
+      await screen.findByRole('heading', { name: 'Build the desktop foundation' }),
+    ).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show context panel' }))
+    expect(await screen.findByRole('complementary', { name: 'Context' })).toBeInTheDocument()
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Open local_verification in inspector' }),
+    )
+
+    expect(await screen.findByRole('complementary', { name: 'Inspector' })).toBeInTheDocument()
+    expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
+    expect(container.firstElementChild).toHaveStyle({
+      gridTemplateColumns: 'minmax(0,1fr) 360px',
+    })
+    expect(uiStore.getState().workbenchSelection).toEqual({
+      kind: 'tool',
+      conversationId: 'conversation-001',
+      toolUseId: 'tool-fixture-verify',
+    })
+  })
+
+  it('closes stale inspector selection from another conversation', async () => {
+    act(() => {
+      uiStore.getState().setInspectorOpen(true)
+      uiStore.getState().setWorkbenchSelection({
+        kind: 'tool',
+        conversationId: 'conversation-b',
+        toolUseId: 'tool-b',
+      })
+    })
+
+    renderConversationWorkspace(createConversationSwitchClient(), 'conversation-a')
+
+    expect(await screen.findByRole('heading', { name: 'Conversation A' })).toBeInTheDocument()
+    await waitFor(() => {
+      expect(uiStore.getState().inspectorOpen).toBe(false)
+    })
+    expect(screen.queryByRole('complementary', { name: 'Inspector' })).not.toBeInTheDocument()
+  })
+
+  it('keeps drafts isolated by conversation', async () => {
+    const commandClient = createConversationSwitchClient()
+    const rendered = renderConversationWorkspace(commandClient, 'conversation-a')
+
+    fireEvent.change(
+      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
+      {
+        target: { value: 'draft for A' },
+      },
+    )
+
+    rendered.rerender(<ConversationWorkspace conversationId="conversation-b" />)
+
+    const draftB = (await screen.findByPlaceholderText(
+      'Ask Jyowo anything about this project...',
+    )) as HTMLTextAreaElement
+    expect(draftB.value).toBe('')
+
+    fireEvent.change(draftB, { target: { value: 'draft for B' } })
+
+    rendered.rerender(<ConversationWorkspace conversationId="conversation-a" />)
+
+    expect(await screen.findByDisplayValue('draft for A')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('draft for B')).not.toBeInTheDocument()
+  })
+
+  it('keeps manual model selection isolated by conversation', async () => {
+    const commandClient = createConversationSwitchClient()
+    const rendered = renderConversationWorkspace(commandClient, 'conversation-a')
+
+    const modelA = (await screen.findByLabelText('Model')) as HTMLSelectElement
+    expect(modelA.value).toBe('deepseek-config')
+
+    fireEvent.change(modelA, { target: { value: 'minimax-config' } })
+    expect(modelA.value).toBe('minimax-config')
+
+    rendered.rerender(<ConversationWorkspace conversationId="conversation-b" />)
+
+    const modelB = (await screen.findByLabelText('Model')) as HTMLSelectElement
+    expect(modelB.value).toBe('deepseek-config')
   })
 
   it('leaves the model selector empty when no model is selected and no default exists', async () => {
@@ -853,6 +983,78 @@ function projectListResponse(path: string): ListProjectsResponse {
         path,
       },
     ],
+  }
+}
+
+function createConversationSwitchClient(): CommandClient {
+  const baseClient = createTestCommandClient({
+    conversations: {
+      conversations: [
+        {
+          id: 'conversation-a',
+          isEmpty: false,
+          title: 'Conversation A',
+          updatedAt: timestamp,
+        },
+        {
+          id: 'conversation-b',
+          isEmpty: false,
+          title: 'Conversation B',
+          updatedAt: timestamp,
+        },
+      ],
+    },
+    providerSettingsList: switchableProviderSettings,
+  })
+  const conversations: Record<string, GetConversationResponse> = {
+    'conversation-a': {
+      conversation: {
+        id: 'conversation-a',
+        messages: [],
+        modelConfigId: 'deepseek-config',
+        title: 'Conversation A',
+        updatedAt: timestamp,
+      },
+    },
+    'conversation-b': {
+      conversation: {
+        id: 'conversation-b',
+        messages: [],
+        modelConfigId: 'deepseek-config',
+        title: 'Conversation B',
+        updatedAt: timestamp,
+      },
+    },
+  }
+
+  return {
+    ...baseClient,
+    getConversation: (conversationId) =>
+      Promise.resolve(conversations[conversationId] ?? conversations['conversation-a']),
+    pageConversationWorktree: (request) =>
+      Promise.resolve(pageWithConversationTurn(request.conversationId)),
+  } satisfies CommandClient
+}
+
+function pageWithConversationTurn(conversationId: string): PageConversationWorktreeResponse {
+  const title = conversationId === 'conversation-b' ? 'Conversation B' : 'Conversation A'
+  return {
+    turns: [
+      {
+        ...turn('complete'),
+        id: `turn:${conversationId}`,
+        conversationId,
+        user: {
+          ...turn('complete').user,
+          body: title,
+        },
+      },
+    ],
+    pageCursor: { turnId: `turn:${conversationId}`, position: 0 },
+    eventCursor: cursor(1),
+    hasMoreBefore: false,
+    hasMoreAfter: false,
+    gap: false,
   }
 }
 

@@ -6,5 +6,9 @@ export function AssistantTextSegmentView({ segment }: { segment: TextSegment }) 
     return null
   }
 
-  return <MarkdownMessage className="text-foreground">{segment.body}</MarkdownMessage>
+  return (
+    <MarkdownMessage className="min-w-0 break-words text-foreground">
+      {segment.body}
+    </MarkdownMessage>
+  )
 }

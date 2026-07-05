@@ -444,6 +444,36 @@ describe('WorkbenchInspector', () => {
     expect(await screen.findByText('Selection unavailable')).toBeInTheDocument()
   })
 
+  it('renders rejected inspector queries as retryable errors', async () => {
+    const getConversationInspectorItem = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('IPC unavailable'))
+      .mockResolvedValueOnce({
+        item: { kind: 'empty' },
+      })
+    setupStore({
+      inspectorOpen: true,
+      workbenchSelection: {
+        kind: 'command',
+        conversationId: 'conversation-inspector',
+        fullOutputRef: 'missing-evidence-ref',
+      },
+    })
+    renderInspector(
+      createTestCommandClient({
+        conversationInspectorItem: getConversationInspectorItem,
+      }),
+    )
+
+    expect(await screen.findByText('Inspector data failed to load')).toBeInTheDocument()
+    expect(screen.getByText('IPC unavailable')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+
+    expect(await screen.findByText('Selection unavailable')).toBeInTheDocument()
+    expect(getConversationInspectorItem).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps selection when the inspector is closed', () => {
     const selection = {
       kind: 'diff' as const,

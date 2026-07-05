@@ -173,4 +173,50 @@ describe('DecisionPanel', () => {
 
     expect(screen.getByText('Medium')).toHaveClass('bg-warning/10', 'text-warning')
   })
+
+  it('renders contract operation fallback labels without leaking i18n keys', () => {
+    const decision = makeDecision({ operation: 'unknown' })
+    render(<DecisionPanel conversationId="conv-1" decision={decision} />)
+
+    expect(screen.getByText('Unknown')).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('timeline.operation.unknown')
+  })
+
+  it('renders redacted and blocked secret exposure labels without raw keys', () => {
+    render(
+      <>
+        <DecisionPanel
+          conversationId="conv-1"
+          decision={makeDecision({
+            id: 'perm-redacted',
+            requestId: 'req-redacted',
+            dataExposure: {
+              sendsWorkspaceData: false,
+              sendsNetworkData: false,
+              touchesPrivatePath: false,
+              secretRisk: 'redacted',
+            },
+          })}
+        />
+        <DecisionPanel
+          conversationId="conv-1"
+          decision={makeDecision({
+            id: 'perm-blocked',
+            requestId: 'req-blocked',
+            dataExposure: {
+              sendsWorkspaceData: false,
+              sendsNetworkData: false,
+              touchesPrivatePath: false,
+              secretRisk: 'blocked',
+            },
+          })}
+        />
+      </>,
+    )
+
+    expect(screen.getByText('secret redacted')).toBeInTheDocument()
+    expect(screen.getByText('secret blocked')).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('timeline.exposure.redacted')
+    expect(document.body.textContent).not.toContain('timeline.exposure.blocked')
+  })
 })

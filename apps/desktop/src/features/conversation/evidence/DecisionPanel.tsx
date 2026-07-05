@@ -1,3 +1,4 @@
+import type { TFunction } from 'i18next'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/shared/lib/utils'
@@ -25,7 +26,7 @@ export function DecisionPanel({
   const denyOption = decision.decisionOptions.find((option) => option.decision === 'deny')
 
   const riskLabel = t(`timeline.riskLevel.${decision.riskLevel}`)
-  const operationLabel = t(`timeline.operation.${decision.operation}`)
+  const operationLabel = operationLabelFor(decision.operation, t)
 
   return (
     <div
@@ -218,7 +219,7 @@ function DataExposureInfo({ exposure }: { exposure: DecisionRequestState['dataEx
   if (exposure.sendsWorkspaceData) flags.push(t('timeline.exposure.workspaceData'))
   if (exposure.sendsNetworkData) flags.push(t('timeline.exposure.networkData'))
   if (exposure.touchesPrivatePath) flags.push(t('timeline.exposure.privatePath'))
-  if (exposure.secretRisk !== 'none') flags.push(t(`timeline.exposure.${exposure.secretRisk}`))
+  if (exposure.secretRisk !== 'none') flags.push(secretRiskLabelFor(exposure.secretRisk, t))
 
   if (flags.length === 0) return null
 
@@ -234,4 +235,37 @@ function DataExposureInfo({ exposure }: { exposure: DecisionRequestState['dataEx
       ))}
     </div>
   )
+}
+
+function operationLabelFor(
+  operation: DecisionRequestState['operation'],
+  t: TFunction<'conversation'>,
+) {
+  const operationKeys: Record<DecisionRequestState['operation'], string> = {
+    artifact: 'timeline.operation.artifact',
+    execute: 'timeline.operation.execute',
+    git: 'timeline.operation.git',
+    mcp: 'timeline.operation.mcp',
+    network: 'timeline.operation.network',
+    read: 'timeline.operation.read',
+    unknown: 'timeline.operation.unknown',
+    write: 'timeline.operation.write',
+  }
+
+  return t(operationKeys[operation] ?? operationKeys.unknown)
+}
+
+function secretRiskLabelFor(
+  secretRisk: Exclude<DecisionRequestState['dataExposure']['secretRisk'], 'none'>,
+  t: TFunction<'conversation'>,
+) {
+  const secretRiskKeys: Record<
+    Exclude<DecisionRequestState['dataExposure']['secretRisk'], 'none'>,
+    string
+  > = {
+    blocked: 'timeline.exposure.blocked',
+    redacted: 'timeline.exposure.redacted',
+  }
+
+  return t(secretRiskKeys[secretRisk])
 }
