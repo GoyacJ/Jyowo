@@ -650,6 +650,9 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                     }),
                 ],
                 event_refs: vec![event_ref],
+                started_at: None,
+                ended_at: None,
+                duration_ms: None,
             }),
         }],
         page_cursor: Some(ConversationTurnCursor {
@@ -1070,4 +1073,123 @@ fn test_blob_ref(size: u64, content_type: &str) -> BlobRef {
         content_hash: [7; 32],
         content_type: Some(content_type.to_owned()),
     }
+}
+
+#[test]
+fn assistant_work_runtime_metadata_roundtrips_with_optional_timing() {
+    let now = chrono::Utc::now();
+    let work_with_timing = json!({
+        "id": "assistant:run-1",
+        "runId": "run-1",
+        "projectionVersion": 1,
+        "status": "complete",
+        "segments": [],
+        "startedAt": now.to_rfc3339(),
+        "endedAt": now.to_rfc3339(),
+        "durationMs": 1500
+    });
+
+    let parsed: AssistantWork =
+        serde_json::from_value(work_with_timing).expect("assistant work with timing parses");
+    assert!(parsed.started_at.is_some());
+    assert!(parsed.ended_at.is_some());
+    assert_eq!(parsed.duration_ms, Some(1500));
+
+    let work_without_timing = json!({
+        "id": "assistant:run-2",
+        "runId": "run-2",
+        "projectionVersion": 1,
+        "status": "running",
+        "segments": []
+    });
+
+    let parsed: AssistantWork =
+        serde_json::from_value(work_without_timing).expect("assistant work without timing parses");
+    assert!(parsed.started_at.is_none());
+    assert!(parsed.ended_at.is_none());
+    assert!(parsed.duration_ms.is_none());
+
+    let serialized = serde_json::to_value(parsed).unwrap();
+    assert!(serialized.get("startedAt").is_none());
+    assert!(serialized.get("endedAt").is_none());
+    assert!(serialized.get("durationMs").is_none());
+}
+
+#[test]
+fn activity_items_roundtrip_with_optional_items_and_use_ui_safe_text() {
+    let detail_with_items = json!({
+        "type": "activity",
+        "summary": "Searched 3 files",
+        "itemCount": 3,
+        "items": [
+            {"kind": "file", "label": "turn.rs"},
+            {"kind": "search", "label": "AssistantDelta", "detail": "Found in 5 files"},
+            {"kind": "command", "label": "cargo test", "detail": "exit 0"}
+        ]
+    });
+
+    let parsed: ProcessStepDetail =
+        serde_json::from_value(detail_with_items).expect("activity with items parses");
+    match parsed {
+        ProcessStepDetail::Activity {
+            summary,
+            item_count,
+            items,
+        } => {
+            assert_eq!(summary.as_str(), "Searched 3 files");
+            assert_eq!(item_count, Some(3));
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0].kind, ProcessActivityItemKind::File);
+            assert_eq!(items[0].label.as_str(), "turn.rs");
+            assert_eq!(items[1].kind, ProcessActivityItemKind::Search);
+            assert_eq!(
+                items[1].detail.as_ref().map(|d| d.as_str()),
+                Some("Found in 5 files")
+            );
+            assert_eq!(items[2].kind, ProcessActivityItemKind::Command);
+        }
+        _ => panic!("expected Activity variant"),
+    }
+
+    let detail_without_items = json!({
+        "type": "activity",
+        "summary": "Read 2 files"
+    });
+
+    let parsed: ProcessStepDetail =
+        serde_json::from_value(detail_without_items).expect("activity without items parses");
+    match parsed {
+        ProcessStepDetail::Activity { items, .. } => {
+            assert!(items.is_empty());
+        }
+        _ => panic!("expected Activity variant"),
+    }
+
+    let serialized = serde_json::to_value(ProcessStepDetail::Activity {
+        summary: UiSafeText::from_trusted_redacted("Read 1 file"),
+        item_count: Some(1),
+        items: vec![],
+    })
+    .unwrap();
+    assert!(serialized.get("items").is_none());
+}
+
+#[test]
+fn activity_items_reject_unsafe_labels_in_ui_safe_text() {
+    let redactor: &dyn Redactor = &NoopRedactor;
+
+    // Private path should be redacted
+    let label = UiSafeText::from_redacted_display("/Users/alice/project/file.rs", redactor);
+    assert_eq!(label.as_str(), "[REDACTED]");
+
+    // Secret-like string should be redacted
+    let label = UiSafeText::from_redacted_display("Authorization: Bearer abcdef123456", redactor);
+    assert_eq!(label.as_str(), "[REDACTED]");
+}
+
+#[test]
+fn schema_export_includes_activity_items() {
+    let schemas = export_all_schemas();
+    assert!(schemas.contains_key("process_activity_item"));
+    assert!(schemas.contains_key("process_activity_item_kind"));
 }

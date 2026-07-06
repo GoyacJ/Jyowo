@@ -233,6 +233,12 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "process_step_kind", ProcessStepKind);
     insert_schema!(schemas, "process_step_status", ProcessStepStatus);
     insert_schema!(schemas, "process_step_detail", ProcessStepDetail);
+    insert_schema!(schemas, "process_activity_item", ProcessActivityItem);
+    insert_schema!(
+        schemas,
+        "process_activity_item_kind",
+        ProcessActivityItemKind
+    );
     insert_schema!(schemas, "text_segment", TextSegment);
     insert_schema!(schemas, "tool_group_segment", ToolGroupSegment);
     insert_schema!(schemas, "tool_attempt", ToolAttempt);

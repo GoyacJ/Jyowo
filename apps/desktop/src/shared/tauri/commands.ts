@@ -714,18 +714,18 @@ const toolAttemptSchema = z
     id: z.string().min(1),
     order: z.number().int().nonnegative(),
     toolUseId: z.string().min(1),
-    toolName: z.string(),
+    toolName: conversationDisplayTextSchema,
     origin: toolAttemptOriginSchema.optional(),
     status: z.enum(['queued', 'waitingPermission', 'running', 'completed', 'failed', 'denied']),
-    argumentsPreview: z.string().optional(),
-    outputSummary: z.string().optional(),
-    affectedTargets: z.array(z.string()).optional(),
+    argumentsPreview: conversationDisplayTextSchema.optional(),
+    outputSummary: conversationDisplayTextSchema.optional(),
+    affectedTargets: z.array(conversationDisplayTextSchema).optional(),
     startedAt: z.string().optional(),
     endedAt: z.string().optional(),
     durationMs: z.number().int().nonnegative().optional(),
     retryOf: z.string().optional(),
     failurePhase: toolFailurePhaseSchema.optional(),
-    failureSummary: z.string().optional(),
+    failureSummary: conversationDisplayTextSchema.optional(),
     permission: decisionRequestStateSchema.optional(),
     eventRefs: z.array(conversationEventRefSchema).optional(),
   })
@@ -859,12 +859,21 @@ const commandExecutionSchema = z
   })
   .strict()
 
+const processActivityItemSchema = z
+  .object({
+    kind: z.enum(['file', 'search', 'tool', 'command']),
+    label: conversationDisplayTextSchema,
+    detail: conversationDisplayTextSchema.optional(),
+  })
+  .strict()
+
 const processStepDetailSchema = z.discriminatedUnion('type', [
   z
     .object({
       type: z.literal('activity'),
       summary: conversationDisplayTextSchema,
       itemCount: z.number().int().nonnegative().optional(),
+      items: z.array(processActivityItemSchema).optional(),
     })
     .strict(),
   z
@@ -1150,6 +1159,9 @@ const assistantWorkSchema = z
     status: z.enum(['running', 'complete', 'failed', 'cancelled']),
     segments: z.array(assistantSegmentSchema),
     eventRefs: z.array(conversationEventRefSchema).optional(),
+    startedAt: z.string().datetime({ offset: true }).optional(),
+    endedAt: z.string().datetime({ offset: true }).optional(),
+    durationMs: z.number().int().nonnegative().optional(),
   })
   .strict()
 

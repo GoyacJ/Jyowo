@@ -969,6 +969,7 @@ impl ProjectionState<'_> {
             detail: Some(ProcessStepDetail::Activity {
                 summary: ui_text(title),
                 item_count: Some(next_count),
+                items: vec![],
             }),
             visibility: UiVisibility::UserSafe,
             event_refs: vec![event_ref],
@@ -2299,6 +2300,9 @@ impl ProjectionState<'_> {
                 status: AssistantWorkStatus::Running,
                 segments: Vec::new(),
                 event_refs: Vec::new(),
+                started_at: None,
+                ended_at: None,
+                duration_ms: None,
             })
             .event_refs
             .push(event_ref);
@@ -3368,6 +3372,7 @@ fn merged_activity_detail(
     ProcessStepDetail::Activity {
         summary: ui_text(title),
         item_count: Some(previous.saturating_add(next_count)),
+        items: vec![],
     }
 }
 
@@ -3463,6 +3468,7 @@ fn process_step_detail_for_tool(
             Some(ProcessStepDetail::Activity {
                 summary: ui_text(title),
                 item_count: u32_field(&event.payload, "itemCount"),
+                items: vec![],
             })
         }
         ProcessStepKind::Tool => Some(ProcessStepDetail::Tool {

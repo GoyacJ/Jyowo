@@ -1957,6 +1957,295 @@ describe('CommandClient', () => {
     ).rejects.toThrow(TauriCommandPayloadError)
   })
 
+  describe('assistant work runtime metadata', () => {
+    it('parses startedAt, endedAt, and durationMs on AssistantWork', async () => {
+      const page = clone(validWorktreePage())
+      const assistant = page.turns[0].assistant!
+      assistant.startedAt = '2026-07-06T12:00:00.000Z'
+      assistant.endedAt = '2026-07-06T12:00:01.500Z'
+      assistant.durationMs = 1500
+
+      const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+      const result = await pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        client,
+      )
+      expect(result.turns[0].assistant?.startedAt).toBe('2026-07-06T12:00:00.000Z')
+      expect(result.turns[0].assistant?.endedAt).toBe('2026-07-06T12:00:01.500Z')
+      expect(result.turns[0].assistant?.durationMs).toBe(1500)
+    })
+
+    it('parses assistant work without timing metadata', async () => {
+      const page = clone(validWorktreePage())
+      const assistant = page.turns[0].assistant!
+      delete (assistant as Record<string, unknown>).startedAt
+      delete (assistant as Record<string, unknown>).endedAt
+      delete (assistant as Record<string, unknown>).durationMs
+
+      const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+      const result = await pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        client,
+      )
+      expect(result.turns[0].assistant?.startedAt).toBeUndefined()
+      expect(result.turns[0].assistant?.endedAt).toBeUndefined()
+      expect(result.turns[0].assistant?.durationMs).toBeUndefined()
+    })
+  })
+
+  describe('activity items', () => {
+    it('parses ProcessStepDetail activity with items', async () => {
+      const page = clone(validWorktreePage())
+      const assistant = page.turns[0].assistant!
+      assistant.segments.unshift({
+        kind: 'process',
+        id: 'segment:process:run-001-activity',
+        order: 0,
+        status: 'complete',
+        summary: 'Searched and read files',
+        steps: [
+          {
+            id: 'process-step:run-001:activity',
+            order: 0,
+            kind: 'activity',
+            status: 'complete',
+            title: 'Searched',
+            detail: {
+              type: 'activity',
+              summary: 'Searched 3 files',
+              itemCount: 3,
+              items: [
+                { kind: 'file', label: 'turn.rs' },
+                { kind: 'search', label: 'AssistantDelta', detail: 'Found in 5 files' },
+                { kind: 'command', label: 'cargo test', detail: 'exit 0' },
+              ],
+            },
+          },
+        ],
+      })
+
+      const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+      const result = await pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        client,
+      )
+      const steps = result.turns[0].assistant?.segments[0]
+      expect(steps?.kind).toBe('process')
+      if (steps?.kind === 'process') {
+        const detail = steps.steps?.[0]?.detail
+        expect(detail?.type).toBe('activity')
+        if (detail?.type === 'activity') {
+          expect(detail.items).toHaveLength(3)
+          expect(detail.items![0]?.kind).toBe('file')
+          expect(detail.items![0]?.label).toBe('turn.rs')
+          expect(detail.items![1]?.kind).toBe('search')
+          expect(detail.items![1]?.detail).toBe('Found in 5 files')
+        }
+      }
+    })
+
+    it('parses activity without items', async () => {
+      const page = clone(validWorktreePage())
+      const assistant = page.turns[0].assistant!
+      assistant.segments.unshift({
+        kind: 'process',
+        id: 'segment:process:run-001-activity',
+        order: 0,
+        status: 'complete',
+        summary: 'Read files',
+        steps: [
+          {
+            id: 'process-step:run-001:activity',
+            order: 0,
+            kind: 'activity',
+            status: 'complete',
+            title: 'Read files',
+            detail: {
+              type: 'activity',
+              summary: 'Read 2 files',
+              itemCount: 2,
+            },
+          },
+        ],
+      })
+
+      const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+      const result = await pageConversationWorktree(
+        { conversationId: 'conversation-001' },
+        client,
+      )
+      const steps = result.turns[0].assistant?.segments[0]
+      expect(steps?.kind).toBe('process')
+      if (steps?.kind === 'process') {
+        const detail = steps.steps?.[0]?.detail
+        expect(detail?.type).toBe('activity')
+        if (detail?.type === 'activity') {
+          expect(detail.items ?? []).toHaveLength(0)
+        }
+      }
+    })
+
+    it('rejects activity items with unknown extra fields', async () => {
+      const page = clone(validWorktreePage())
+      const assistant = page.turns[0].assistant!
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const step: any = {
+        id: 'process-step:run-001:activity',
+        order: 0,
+        kind: 'activity',
+        status: 'complete',
+        title: 'Searched',
+        detail: {
+          type: 'activity',
+          summary: 'Searched',
+          items: [
+            {
+              kind: 'file',
+              label: 'turn.rs',
+              unknownField: 'should-be-rejected',
+            },
+          ],
+        },
+      }
+      assistant.segments.unshift({
+        kind: 'process',
+        id: 'segment:process:run-001-activity',
+        order: 0,
+        status: 'complete',
+        summary: 'Searched',
+        steps: [step],
+      })
+
+      const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+      await expect(
+        pageConversationWorktree(
+          { conversationId: 'conversation-001' },
+          client,
+        ),
+      ).rejects.toThrow(TauriCommandPayloadError)
+    })
+
+    it('rejects activity item label with private absolute path', async () => {
+      const page = clone(validWorktreePage())
+      const assistant = page.turns[0].assistant!
+      assistant.segments.unshift({
+        kind: 'process',
+        id: 'segment:process:run-001-activity',
+        order: 0,
+        status: 'complete',
+        summary: 'Searched',
+        steps: [
+          {
+            id: 'process-step:run-001:activity',
+            order: 0,
+            kind: 'activity',
+            status: 'complete',
+            title: 'Searched',
+            detail: {
+              type: 'activity',
+              summary: 'Searched',
+              items: [{ kind: 'file', label: '/Users/goya/project/file.ts' }],
+            },
+          },
+        ],
+      })
+
+      const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+      await expect(
+        pageConversationWorktree(
+          { conversationId: 'conversation-001' },
+          client,
+        ),
+      ).rejects.toThrow(TauriCommandPayloadError)
+    })
+
+    it('rejects activity item label with obvious secret', async () => {
+      const page = clone(validWorktreePage())
+      const assistant = page.turns[0].assistant!
+      assistant.segments.unshift({
+        kind: 'process',
+        id: 'segment:process:run-001-activity',
+        order: 0,
+        status: 'complete',
+        summary: 'Searched',
+        steps: [
+          {
+            id: 'process-step:run-001:activity',
+            order: 0,
+            kind: 'activity',
+            status: 'complete',
+            title: 'Searched',
+            detail: {
+              type: 'activity',
+              summary: 'Searched',
+              items: [{ kind: 'file', label: 'sk-abcdefghijklmnop' }],
+            },
+          },
+        ],
+      })
+
+      const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+      await expect(
+        pageConversationWorktree(
+          { conversationId: 'conversation-001' },
+          client,
+        ),
+      ).rejects.toThrow(TauriCommandPayloadError)
+    })
+  })
+
+  describe('tool attempt display text tightening', () => {
+    it('rejects toolName with private absolute path', async () => {
+      const page = clone(validWorktreePage())
+      const assistant = page.turns[0].assistant!
+      if (assistant.segments[2]?.kind === 'toolGroup') {
+        assistant.segments[2].attempts[0].toolName = '/Users/goya/malicious'
+      }
+
+      const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+      await expect(
+        pageConversationWorktree(
+          { conversationId: 'conversation-001' },
+          client,
+        ),
+      ).rejects.toThrow(TauriCommandPayloadError)
+    })
+
+    it('rejects failureSummary with obvious secret', async () => {
+      const page = clone(validWorktreePage())
+      const assistant = page.turns[0].assistant!
+      if (assistant.segments[2]?.kind === 'toolGroup') {
+        assistant.segments[2].attempts[0].failureSummary = 'sk-abcdefghijklmnop'
+      }
+
+      const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+      await expect(
+        pageConversationWorktree(
+          { conversationId: 'conversation-001' },
+          client,
+        ),
+      ).rejects.toThrow(TauriCommandPayloadError)
+    })
+
+    it('rejects affectedTargets entry with unsafe URL', async () => {
+      const page = clone(validWorktreePage())
+      const assistant = page.turns[0].assistant!
+      if (assistant.segments[2]?.kind === 'toolGroup') {
+        assistant.segments[2].attempts[0].affectedTargets = [
+          'https://evil.example.com/exfil',
+        ]
+      }
+
+      const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+      await expect(
+        pageConversationWorktree(
+          { conversationId: 'conversation-001' },
+          client,
+        ),
+      ).rejects.toThrow(TauriCommandPayloadError)
+    })
+  })
+
   it('models artifact media preview command without exposing blob paths', async () => {
     const invoke = vi.fn().mockResolvedValue({
       dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
