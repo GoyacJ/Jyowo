@@ -1981,3 +1981,457 @@ pub(crate) fn model_from_provider_settings(
         protocol,
     )))
 }
+
+// ── Provider settings migration ──────────────────────────────────────────
+
+use harness_contracts::{
+    ModelProtocol, ProviderProfileDefinition, ProviderProfileModelDescriptor, ProviderSecretEntry,
+    ProviderSelectionRecord,
+};
+
+/// Migrate old workspace `<workspace>/.jyowo/runtime/provider-settings.json`
+/// into the split layout:
+/// - `~/.jyowo/config/provider-profiles.json`
+/// - `~/.jyowo/config/provider-secrets.json`
+/// - `<workspace>/.jyowo/config/provider-selection.json`
+///
+/// Rules:
+/// - Profile ids reuse old config ids when no collision.
+/// - Same id + identical non-secret fields + same secret fingerprint → reuse existing.
+/// - Same id + different fields or secret → mint `<oldId>-<workspaceHash8>`.
+/// - Project `provider-selection.json` remaps old `defaultConfigId`.
+/// - Secrets are written only to global secret storage.
+pub fn migrate_provider_settings_to_split_layout(
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
+    let workspace_root = state.workspace_root();
+    let old_path = workspace_root
+        .join(".jyowo")
+        .join("runtime")
+        .join("provider-settings.json");
+
+    // If old file doesn't exist, nothing to do.
+    if !old_path.exists() {
+        return Ok(());
+    }
+
+    let old_record: Option<ProviderSettingsRecord> =
+        read_secret_json_file_or_remove_invalid(&old_path, "provider settings migration")?;
+
+    let Some(old_record) = old_record else {
+        return Ok(());
+    };
+
+    let global_config = state.global_config_store.as_ref().ok_or_else(|| {
+        runtime_init_failed("global config store is unavailable for migration".to_owned())
+    })?;
+
+    let project_config = state.project_config_store.as_ref().ok_or_else(|| {
+        runtime_init_failed("project config store is unavailable for migration".to_owned())
+    })?;
+
+    let workspace_hash8 = workspace_hash_short(workspace_root);
+    let mut profiles = global_config.load_provider_profiles().unwrap_or_default();
+    let mut migrated_ids: Vec<String> = Vec::new();
+
+    for config in &old_record.configs {
+        let (profile_id, _) = resolve_migrated_profile_id(config, &profiles, &workspace_hash8);
+
+        // Build profile definition (without secrets).
+        let profile = ProviderProfileDefinition {
+            id: profile_id.clone(),
+            display_name: config.display_name.clone(),
+            provider_id: config.provider_id.clone(),
+            model_id: config.model_id.clone(),
+            protocol: config.protocol,
+            base_url: config.base_url.clone(),
+            model_descriptor: provider_profile_descriptor_from_config(config),
+        };
+
+        // Upsert profile: remove existing with same id, insert new.
+        profiles.retain(|p| p.id != profile_id);
+        profiles.push(profile);
+
+        // Save secret entry to global secret storage.
+        let secret_entry = ProviderSecretEntry {
+            config_id: profile_id.clone(),
+            api_key: config.api_key.clone(),
+            official_quota_api_key: config.official_quota_api_key.clone(),
+        };
+        global_config.save_provider_secret(&secret_entry)?;
+
+        migrated_ids.push(profile_id);
+    }
+
+    // Save profiles.
+    global_config.save_provider_profiles(&profiles)?;
+
+    // Save project selection (map old defaultConfigId if present).
+    let project_selection = ProviderSelectionRecord {
+        default_config_id: old_record.default_config_id.and_then(|old_default| {
+            // Find which migrated profile id corresponds to the old default.
+            old_record
+                .configs
+                .iter()
+                .position(|c| c.id == old_default)
+                .and_then(|idx| migrated_ids.get(idx))
+                .cloned()
+        }),
+    };
+    project_config.save_project_provider_selection(&project_selection)?;
+
+    // After successful migration, remove the old file so it's not authoritative.
+    let _ = std::fs::remove_file(&old_path);
+
+    Ok(())
+}
+
+/// Resolve the target global profile id for a migrated config.
+///
+/// Returns `(profile_id, is_new)`.
+fn resolve_migrated_profile_id(
+    config: &ProviderConfigRecord,
+    existing_profiles: &[ProviderProfileDefinition],
+    workspace_hash8: &str,
+) -> (String, bool) {
+    let candidate_id = &config.id;
+
+    // Check if an existing global profile with this id already exists.
+    if let Some(existing) = existing_profiles.iter().find(|p| &p.id == candidate_id) {
+        // Check if the non-secret fields match.
+        let profile = provider_profile_definition_from_config(config, candidate_id.clone());
+        if profiles_equivalent(existing, &profile) {
+            // Same id + identical profile → reuse.
+            return (candidate_id.clone(), false);
+        }
+        // Same id + different profile → mint new id.
+        let new_id = format!("{candidate_id}-{workspace_hash8}");
+        return (new_id, true);
+    }
+
+    // No existing profile with this id → use as-is.
+    (candidate_id.clone(), true)
+}
+
+fn provider_profile_definition_from_config(
+    config: &ProviderConfigRecord,
+    id: String,
+) -> ProviderProfileDefinition {
+    ProviderProfileDefinition {
+        id,
+        display_name: config.display_name.clone(),
+        provider_id: config.provider_id.clone(),
+        model_id: config.model_id.clone(),
+        protocol: config.protocol,
+        base_url: config.base_url.clone(),
+        model_descriptor: provider_profile_descriptor_from_config(config),
+    }
+}
+
+fn provider_profile_descriptor_from_config(
+    config: &ProviderConfigRecord,
+) -> ProviderProfileModelDescriptor {
+    ProviderProfileModelDescriptor {
+        protocol: config.protocol,
+        context_window: config.model_descriptor.context_window,
+        display_name: config.model_descriptor.display_name.clone(),
+        lifecycle: provider_profile_lifecycle_from_record(&config.model_descriptor.lifecycle),
+        max_output_tokens: config.model_descriptor.max_output_tokens,
+        model_id: config.model_descriptor.model_id.clone(),
+        provider_id: config.model_descriptor.provider_id.clone(),
+        conversation_capability: harness_contracts::ProviderProfileConversationCapability {
+            input_modalities: config
+                .model_descriptor
+                .conversation_capability
+                .input_modalities
+                .iter()
+                .map(modality_to_string)
+                .collect(),
+            output_modalities: config
+                .model_descriptor
+                .conversation_capability
+                .output_modalities
+                .iter()
+                .map(modality_to_string)
+                .collect(),
+            context_window: config
+                .model_descriptor
+                .conversation_capability
+                .context_window,
+            max_output_tokens: config
+                .model_descriptor
+                .conversation_capability
+                .max_output_tokens,
+            streaming: config.model_descriptor.conversation_capability.streaming,
+            tool_calling: config.model_descriptor.conversation_capability.tool_calling,
+            reasoning: config.model_descriptor.conversation_capability.reasoning,
+            prompt_cache: config.model_descriptor.conversation_capability.prompt_cache,
+            structured_output: config
+                .model_descriptor
+                .conversation_capability
+                .structured_output,
+        },
+    }
+}
+
+fn provider_profile_lifecycle_from_record(
+    lifecycle: &ProviderModelLifecycleRecord,
+) -> harness_contracts::ProviderProfileModelLifecycle {
+    match lifecycle {
+        ProviderModelLifecycleRecord::Stable => {
+            harness_contracts::ProviderProfileModelLifecycle::Stable
+        }
+        ProviderModelLifecycleRecord::Preview => {
+            harness_contracts::ProviderProfileModelLifecycle::Preview
+        }
+        ProviderModelLifecycleRecord::Deprecated { retirement_date } => {
+            harness_contracts::ProviderProfileModelLifecycle::Deprecated {
+                retirement_date: retirement_date.clone(),
+            }
+        }
+    }
+}
+
+fn profiles_equivalent(
+    existing: &ProviderProfileDefinition,
+    new: &ProviderProfileDefinition,
+) -> bool {
+    existing.provider_id == new.provider_id
+        && existing.model_id == new.model_id
+        && existing.protocol == new.protocol
+        && existing.base_url == new.base_url
+        && existing.display_name == new.display_name
+}
+
+fn workspace_hash_short(workspace_root: &Path) -> String {
+    let hash = blake3::hash(workspace_root.to_string_lossy().as_bytes());
+    // Use the first 4 bytes as an 8-character hex string.
+    let bytes = hash.as_bytes();
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3]
+    )
+}
+
+fn modality_to_string(modality: &ProviderModelModalityRecord) -> String {
+    match modality {
+        ProviderModelModalityRecord::Text => "text".to_owned(),
+        ProviderModelModalityRecord::Image => "image".to_owned(),
+        ProviderModelModalityRecord::Audio => "audio".to_owned(),
+        ProviderModelModalityRecord::Video => "video".to_owned(),
+        ProviderModelModalityRecord::File => "file".to_owned(),
+        ProviderModelModalityRecord::Embedding => "embedding".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use harness_contracts::{
+        ModelProtocol, ProviderProfileConversationCapability, ProviderProfileDefinition,
+        ProviderProfileModelDescriptor, ProviderProfileModelLifecycle,
+    };
+
+    use crate::commands::contracts::{
+        ConversationModelCapabilityRecord, ProviderConfigRecord, ProviderModelDescriptorRecord,
+        ProviderModelLifecycleRecord, ProviderModelModalityRecord, ProviderSettingsRecord,
+    };
+    use crate::commands::providers::resolve_migrated_profile_id;
+    use crate::commands::stores::GlobalConfigStore;
+    use crate::storage_layout::{JyowoHome, StorageLayout};
+
+    use super::migrate_provider_settings_to_split_layout;
+
+    fn make_descriptor() -> ProviderModelDescriptorRecord {
+        ProviderModelDescriptorRecord {
+            protocol: ModelProtocol::ChatCompletions,
+            context_window: 128000,
+            display_name: "GPT-5".to_owned(),
+            lifecycle: ProviderModelLifecycleRecord::Stable,
+            max_output_tokens: 16384,
+            model_id: "gpt-5".to_owned(),
+            provider_id: "openai".to_owned(),
+            conversation_capability: ConversationModelCapabilityRecord {
+                input_modalities: vec![ProviderModelModalityRecord::Text],
+                output_modalities: vec![ProviderModelModalityRecord::Text],
+                context_window: 128000,
+                max_output_tokens: 16384,
+                streaming: true,
+                tool_calling: true,
+                reasoning: true,
+                prompt_cache: false,
+                structured_output: true,
+            },
+        }
+    }
+
+    #[test]
+    fn resolve_migrated_profile_id_uses_existing_id_when_no_collision() {
+        let (id, is_new) = resolve_migrated_profile_id(
+            &ProviderConfigRecord {
+                api_key: "sk-test".to_owned(),
+                protocol: ModelProtocol::ChatCompletions,
+                base_url: None,
+                display_name: "GPT-5".to_owned(),
+                id: "openai".to_owned(),
+                model_id: "gpt-5".to_owned(),
+                official_quota_api_key: None,
+                provider_id: "openai".to_owned(),
+                model_descriptor: make_descriptor(),
+            },
+            &[],
+            "abc12345",
+        );
+        assert_eq!(id, "openai");
+        assert!(is_new);
+    }
+
+    #[test]
+    fn resolve_migrated_profile_id_mints_new_id_on_collision_with_different_provider() {
+        let existing = ProviderProfileDefinition {
+            id: "openai".to_owned(),
+            display_name: "GPT-4".to_owned(),
+            provider_id: "openai".to_owned(),
+            model_id: "gpt-4".to_owned(),
+            protocol: ModelProtocol::ChatCompletions,
+            base_url: None,
+            model_descriptor: ProviderProfileModelDescriptor {
+                protocol: ModelProtocol::ChatCompletions,
+                context_window: 8192,
+                display_name: "GPT-4".to_owned(),
+                lifecycle: ProviderProfileModelLifecycle::Stable,
+                max_output_tokens: 4096,
+                model_id: "gpt-4".to_owned(),
+                provider_id: "openai".to_owned(),
+                conversation_capability: ProviderProfileConversationCapability {
+                    input_modalities: vec!["text".to_owned()],
+                    output_modalities: vec!["text".to_owned()],
+                    context_window: 8192,
+                    max_output_tokens: 4096,
+                    streaming: true,
+                    tool_calling: true,
+                    reasoning: false,
+                    prompt_cache: false,
+                    structured_output: false,
+                },
+            },
+        };
+
+        let (id, is_new) = resolve_migrated_profile_id(
+            &ProviderConfigRecord {
+                api_key: "sk-test".to_owned(),
+                protocol: ModelProtocol::ChatCompletions,
+                base_url: None,
+                display_name: "GPT-5".to_owned(),
+                id: "openai".to_owned(),
+                model_id: "gpt-5".to_owned(),
+                official_quota_api_key: None,
+                provider_id: "openai".to_owned(),
+                model_descriptor: make_descriptor(),
+            },
+            &[existing],
+            "abc12345",
+        );
+        assert_eq!(id, "openai-abc12345");
+        assert!(is_new);
+    }
+
+    #[test]
+    fn migration_skips_when_old_file_missing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().canonicalize().expect("canonical");
+        let home_root = temp_root.join(".jyowo");
+        let layout = StorageLayout::new(JyowoHome::new(&home_root));
+        let workspace = temp_root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+
+        let mut state = crate::commands::stores::DesktopRuntimeState::with_workspace_for_test(
+            workspace.clone(),
+        )
+        .expect("create state");
+        state.global_config_store = Some(GlobalConfigStore::new(layout.clone()));
+        state.project_config_store = Some(crate::commands::stores::ProjectConfigStore::new(
+            layout, workspace,
+        ));
+
+        let result = migrate_provider_settings_to_split_layout(&state);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn migration_splits_old_provider_settings_record() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().canonicalize().expect("canonical");
+        let home_root = temp_root.join(".jyowo");
+        let layout = StorageLayout::new(JyowoHome::new(&home_root));
+        let workspace = temp_root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+
+        // Write old-style provider-settings.json
+        let runtime_dir = workspace.join(".jyowo").join("runtime");
+        std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+        let old_record = ProviderSettingsRecord {
+            default_config_id: Some("openai".to_owned()),
+            configs: vec![ProviderConfigRecord {
+                api_key: "sk-migrate-me".to_owned(),
+                protocol: ModelProtocol::ChatCompletions,
+                base_url: None,
+                display_name: "GPT-5".to_owned(),
+                id: "openai".to_owned(),
+                model_id: "gpt-5".to_owned(),
+                official_quota_api_key: None,
+                provider_id: "openai".to_owned(),
+                model_descriptor: make_descriptor(),
+            }],
+        };
+        let old_path = runtime_dir.join("provider-settings.json");
+        std::fs::write(
+            &old_path,
+            serde_json::to_vec_pretty(&old_record).expect("serialize"),
+        )
+        .expect("write old file");
+
+        let mut state = crate::commands::stores::DesktopRuntimeState::with_workspace_for_test(
+            workspace.clone(),
+        )
+        .expect("create state");
+        state.global_config_store = Some(GlobalConfigStore::new(layout.clone()));
+        state.project_config_store = Some(crate::commands::stores::ProjectConfigStore::new(
+            layout.clone(),
+            workspace.clone(),
+        ));
+
+        migrate_provider_settings_to_split_layout(&state).expect("migrate");
+
+        // Old file should be removed.
+        assert!(!old_path.exists());
+
+        // Global profiles should have the profile.
+        let profiles = state
+            .global_config_store
+            .as_ref()
+            .unwrap()
+            .load_provider_profiles()
+            .expect("load profiles");
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, "openai");
+
+        // Global secrets should have the key.
+        let secret = state
+            .global_config_store
+            .as_ref()
+            .unwrap()
+            .load_provider_secret("openai")
+            .expect("load secret")
+            .expect("secret present");
+        assert_eq!(secret.api_key, "sk-migrate-me");
+
+        // Project selection should map to migrated profile id.
+        let selection = state
+            .project_config_store
+            .as_ref()
+            .unwrap()
+            .load_project_provider_selection()
+            .expect("load selection");
+        assert_eq!(selection.default_config_id.as_deref(), Some("openai"));
+    }
+}

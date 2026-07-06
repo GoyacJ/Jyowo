@@ -227,6 +227,66 @@ pub(crate) fn conversation_model_config_id(
         .and_then(|record| record.default_model_config_id))
 }
 
+/// Resolve the effective model config id for a run.
+///
+/// Precedence:
+/// 1. Explicit `model_config_id` in the run request (non-empty) wins.
+/// 2. Project-level provider selection from `<workspace>/.jyowo/config/provider-selection.json`.
+/// 3. Global provider selection from `~/.jyowo/config/provider-selection.json`.
+/// 4. Provider settings store `defaultConfigId` (legacy fallback for unmigrated workspaces).
+///
+/// Fails closed if no effective selection can be resolved.
+pub(crate) fn resolve_effective_model_config_id(
+    model_config_id: Option<&str>,
+    state: &DesktopRuntimeState,
+) -> Result<String, CommandErrorPayload> {
+    // 1. Explicit request value wins.
+    if let Some(id) = model_config_id {
+        let id = id.trim();
+        if !id.is_empty() {
+            return Ok(id.to_owned());
+        }
+    }
+
+    // 2. Project-level provider selection.
+    if let Some(ref project_config) = state.project_config_store {
+        let selection = project_config.load_project_provider_selection()?;
+        if let Some(ref id) = selection.default_config_id {
+            let id = id.trim();
+            if !id.is_empty() {
+                return Ok(id.to_owned());
+            }
+        }
+    }
+
+    // 3. Global provider selection.
+    if let Some(ref global_config) = state.global_config_store {
+        let selection = global_config.load_global_provider_selection()?;
+        if let Some(ref id) = selection.default_config_id {
+            let id = id.trim();
+            if !id.is_empty() {
+                return Ok(id.to_owned());
+            }
+        }
+    }
+
+    // 4. Legacy fallback: provider settings store defaultConfigId (unmigrated workspaces).
+    if let Some(record) = state.provider_settings_store.load_record()? {
+        if let Some(ref id) = record.default_config_id {
+            let id = id.trim();
+            if !id.is_empty() {
+                let config = provider_config_by_id(&record, id)?;
+                ensure_provider_config_has_api_key(config)?;
+                return Ok(id.to_owned());
+            }
+        }
+    }
+
+    Err(invalid_payload(
+        "modelConfigId is required when no default provider is configured".to_owned(),
+    ))
+}
+
 pub(crate) fn default_model_config_id_for_conversation_or_provider(
     session_id: &SessionId,
     state: &DesktopRuntimeState,
@@ -234,19 +294,8 @@ pub(crate) fn default_model_config_id_for_conversation_or_provider(
     if let Some(model_config_id) = conversation_model_config_id(session_id, state)? {
         return Ok(model_config_id);
     }
-    let record = state
-        .provider_settings_store
-        .load_record()?
-        .ok_or_else(|| invalid_payload("provider config is required".to_owned()))?;
-    let config_id = record
-        .default_config_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| invalid_payload("provider config is required".to_owned()))?;
-    let config = provider_config_by_id(&record, config_id)?;
-    ensure_provider_config_has_api_key(config)?;
-    Ok(config.id.clone())
+    // Delegate to the effective resolution chain (project selection → global selection → fail).
+    resolve_effective_model_config_id(None, state)
 }
 
 fn provider_config_for_run(
@@ -407,7 +456,9 @@ pub fn start_run_payload(
 ) -> Result<StartRunResponse, CommandErrorPayload> {
     ensure_non_empty("conversationId", &request.conversation_id)?;
     let _session_id = parse_session_id(&request.conversation_id)?;
-    ensure_non_empty("modelConfigId", &request.model_config_id)?;
+    if let Some(ref model_config_id) = request.model_config_id {
+        ensure_non_empty("modelConfigId", model_config_id)?;
+    }
     ensure_non_empty("prompt", &request.prompt)?;
     if let Some(client_message_id) = request.client_message_id.as_deref() {
         validate_client_message_id(client_message_id)?;
@@ -429,7 +480,9 @@ pub async fn start_run_with_runtime_state(
 ) -> Result<StartRunResponse, CommandErrorPayload> {
     ensure_non_empty("conversationId", &request.conversation_id)?;
     let session_id = parse_session_id(&request.conversation_id)?;
-    ensure_non_empty("modelConfigId", &request.model_config_id)?;
+    if let Some(ref model_config_id) = request.model_config_id {
+        ensure_non_empty("modelConfigId", model_config_id)?;
+    }
     ensure_non_empty("prompt", &request.prompt)?;
     if let Some(client_message_id) = request.client_message_id.as_deref() {
         validate_client_message_id(client_message_id)?;
@@ -446,6 +499,11 @@ pub async fn start_run_with_runtime_state(
         )));
     }
 
+    // Resolve effective model config id before any run activation.
+    // Falls back to project selection → global selection → fail closed.
+    let model_config_id =
+        resolve_effective_model_config_id(request.model_config_id.as_deref(), state)?;
+
     let permission_mode = resolve_start_run_permission_mode(
         request.permission_mode,
         &state.execution_settings_store,
@@ -454,7 +512,7 @@ pub async fn start_run_with_runtime_state(
     let input = build_conversation_turn_input(&request, state).await?;
     let _start_run_guard = state.start_run_lock.lock().await;
     let (harness, options, model_id, protocol) =
-        runtime_for_model_config(session_id, &request.model_config_id, state).await?;
+        runtime_for_model_config(session_id, &model_config_id, state).await?;
     harness
         .open_or_create_conversation_session(options.clone())
         .await
@@ -464,7 +522,7 @@ pub async fn start_run_with_runtime_state(
     let run_session_options = options.clone();
     let run_agent_options = agent_policy.options;
     let mut run_options = ConversationRunOptions::from_session_options(&run_session_options)
-        .with_model_config_id(request.model_config_id.clone())
+        .with_model_config_id(model_config_id.clone())
         .with_model_id(model_id)
         .with_protocol(protocol)
         .with_permission_mode(permission_mode);
@@ -490,7 +548,7 @@ pub async fn start_run_with_runtime_state(
             }
         };
     drop(run_task);
-    mark_conversation_metadata_active(session_id, Some(request.model_config_id), state).await?;
+    mark_conversation_metadata_active(session_id, Some(model_config_id), state).await?;
 
     Ok(StartRunResponse {
         run_id: run_id.to_string(),

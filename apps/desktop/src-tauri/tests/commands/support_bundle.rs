@@ -67,7 +67,7 @@ async fn export_support_bundle_with_runtime_state_writes_redacted_files_under_wo
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Run a command".to_owned(),
         },

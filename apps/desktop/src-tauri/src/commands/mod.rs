@@ -1719,7 +1719,7 @@ pub async fn start_run(
     client_message_id: Option<String>,
     context_references: Option<Vec<ContextReferencePayload>>,
     conversation_id: String,
-    model_config_id: String,
+    model_config_id: Option<String>,
     permission_mode: Option<PermissionMode>,
     prompt: String,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,

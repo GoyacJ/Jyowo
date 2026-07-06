@@ -1607,7 +1607,8 @@ pub struct StartRunRequest {
     #[serde(default)]
     pub context_references: Option<Vec<ContextReferencePayload>>,
     pub conversation_id: String,
-    pub model_config_id: String,
+    #[serde(default)]
+    pub model_config_id: Option<String>,
     #[serde(default)]
     pub permission_mode: Option<PermissionMode>,
     pub prompt: String,

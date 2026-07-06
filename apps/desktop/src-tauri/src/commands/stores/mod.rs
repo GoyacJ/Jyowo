@@ -41,12 +41,14 @@ mod global_config;
 mod mcp;
 mod migration;
 mod plugin;
+mod project_config;
 mod skill;
 
 pub use automation::DesktopAutomationStore;
 pub use global_config::GlobalConfigStore;
 pub use mcp::DesktopMcpDiagnosticStore;
 pub(crate) use mcp::DesktopMcpServerStore;
+pub use project_config::ProjectConfigStore;
 // Task 4A: migration framework — consumed by domain tasks 5-13.
 #[allow(unused_imports)]
 pub use migration::{
@@ -2344,6 +2346,8 @@ pub struct DesktopRuntimeState {
     pub(crate) provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
     pub(crate) execution_settings_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) execution_settings_store: Arc<DesktopExecutionSettingsStore>,
+    pub(crate) global_config_store: Option<GlobalConfigStore>,
+    pub(crate) project_config_store: Option<ProjectConfigStore>,
     pub(crate) skill_catalog_install_tasks:
         Arc<RwLock<HashMap<SkillCatalogInstallTaskKey, SkillCatalogInstallTaskPayload>>>,
     pub(crate) skill_store: Arc<dyn SkillStore>,

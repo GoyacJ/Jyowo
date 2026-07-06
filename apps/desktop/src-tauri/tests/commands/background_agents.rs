@@ -308,7 +308,7 @@ async fn background_agent_tool_persists_record_without_copying_parent_context() 
                 label: "sk-contextlabel1234567890".to_owned(),
             }]),
             conversation_id: conversation_id.to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: Some(PermissionMode::BypassPermissions),
             prompt: "Run in background\nsk-12345678901234567890".to_owned(),
         },

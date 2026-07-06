@@ -269,6 +269,8 @@ impl DesktopRuntimeState {
             skill_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             start_run_lock: Arc::new(tokio::sync::Mutex::new(())),
             stream_permission_runtime: None,
+            global_config_store: None,
+            project_config_store: None,
             workspace_root,
         })
     }
@@ -416,6 +418,8 @@ impl DesktopRuntimeState {
             skill_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             start_run_lock: Arc::new(tokio::sync::Mutex::new(())),
             stream_permission_runtime: Some(stream_permission_runtime),
+            global_config_store: Some(global_config_store_for_home()),
+            project_config_store: Some(project_config_store_for_workspace(&workspace_root)),
             workspace_root,
         })
     }
@@ -659,6 +663,19 @@ pub(crate) fn project_runtime_layout(workspace_root: &Path) -> RuntimeLayout {
     let storage =
         crate::storage_layout::StorageLayout::new(crate::storage_layout::JyowoHome::new(home));
     storage.runtime_layout_for_project(workspace_root)
+}
+
+fn storage_layout_for_home() -> crate::storage_layout::StorageLayout {
+    let home = jyowo_home_dir();
+    crate::storage_layout::StorageLayout::new(crate::storage_layout::JyowoHome::new(home))
+}
+
+fn global_config_store_for_home() -> GlobalConfigStore {
+    GlobalConfigStore::new(storage_layout_for_home())
+}
+
+fn project_config_store_for_workspace(workspace_root: &Path) -> ProjectConfigStore {
+    ProjectConfigStore::new(storage_layout_for_home(), workspace_root.to_path_buf())
 }
 
 fn jyowo_home_dir() -> PathBuf {

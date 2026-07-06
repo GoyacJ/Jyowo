@@ -1793,7 +1793,7 @@ const startRunRequestSchema = z
     clientMessageId: z.uuid().regex(uuidV4Pattern).optional(),
     conversationId: z.string().min(1),
     contextReferences: z.array(contextReferenceSchema).optional(),
-    modelConfigId: z.string().min(1),
+    modelConfigId: z.string().min(1).optional(),
     permissionMode: permissionModeSchema.optional(),
     prompt: z.string().min(1),
   })
