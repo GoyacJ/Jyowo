@@ -75,6 +75,7 @@ pub fn run() {
             commands::get_skill_catalog_file,
             commands::get_replay_timeline,
             commands::harness_healthcheck,
+            commands::get_runtime_execution_status,
             commands::import_skill,
             commands::install_plugin_from_path,
             commands::install_skill_from_catalog,

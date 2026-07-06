@@ -761,6 +761,162 @@ impl Harness {
         HarnessBuilder::new()
     }
 
+    /// Returns the process sandbox backend in use.
+    #[must_use]
+    pub fn sandbox(&self) -> Arc<dyn SandboxBackend> {
+        Arc::clone(&self.inner.sandbox)
+    }
+
+    /// Returns the capability registry.
+    #[must_use]
+    pub fn capability_registry(&self) -> Arc<CapabilityRegistry> {
+        Arc::clone(&self.inner.cap_registry)
+    }
+
+    /// Computes a backend-authored runtime execution capability status.
+    ///
+    /// The returned payload describes which sandbox backend is active, whether
+    /// the HTTP broker is available, and per-tool availability with reasons.
+    /// The frontend must render this payload read-only; it must not infer
+    /// availability from local constants.
+    #[must_use]
+    pub fn runtime_execution_status(&self) -> RuntimeExecutionStatus {
+        let sandbox = &self.inner.sandbox;
+        let caps = sandbox.capabilities();
+
+        // Process sandbox
+        let backend_id = sandbox.backend_id().to_owned();
+        let candidate_ids: Vec<String> = if backend_id == "routing" {
+            // Routing backend — extract candidate ids from Debug output or capabilities.
+            vec![backend_id.clone()]
+        } else {
+            vec![backend_id.clone()]
+        };
+
+        let mut available_network_policies = Vec::new();
+        if caps.network.none {
+            available_network_policies.push("none".to_owned());
+        }
+        if caps.network.loopback_only {
+            available_network_policies.push("loopback_only".to_owned());
+        }
+        if caps.network.allowlist {
+            available_network_policies.push("allowlist".to_owned());
+        }
+        if caps.network.unrestricted {
+            available_network_policies.push("unrestricted".to_owned());
+        }
+
+        let mut available_workspace_policies = Vec::new();
+        if caps.workspace.read_write_all {
+            available_workspace_policies.push("read_write_all".to_owned());
+        }
+        if caps.workspace.read_only {
+            available_workspace_policies.push("read_only".to_owned());
+        }
+        if caps.workspace.writable_subpaths {
+            available_workspace_policies.push("writable_subpaths".to_owned());
+        }
+
+        let unavailable_reasons = Vec::new(); // Populated by the desktop runtime
+
+        // HTTP broker
+        let broker_available = self
+            .inner
+            .cap_registry
+            .contains(&ToolCapability::NetworkBroker);
+        let broker_denied_reasons: Vec<String> = if broker_available {
+            Vec::new()
+        } else {
+            vec!["network broker is not registered in the capability registry".to_owned()]
+        };
+
+        // Per-tool status — report key tools this runtime knows about.
+        let tools = vec![
+            ToolRuntimeStatus {
+                tool_name: "Bash".to_owned(),
+                available: caps.max_concurrent_execs > 0,
+                unavailable_reason: if caps.max_concurrent_execs > 0 {
+                    None
+                } else {
+                    Some("process sandbox does not support execution".to_owned())
+                },
+            },
+            ToolRuntimeStatus {
+                tool_name: "Diagnostics".to_owned(),
+                available: caps.max_concurrent_execs > 0,
+                unavailable_reason: if caps.max_concurrent_execs > 0 {
+                    None
+                } else {
+                    Some("process sandbox does not support execution".to_owned())
+                },
+            },
+            ToolRuntimeStatus {
+                tool_name: "WebFetch".to_owned(),
+                available: broker_available || caps.network.unrestricted,
+                unavailable_reason: if broker_available || caps.network.unrestricted {
+                    None
+                } else {
+                    Some("HTTP broker is not registered and sandbox does not support unrestricted network".to_owned())
+                },
+            },
+            ToolRuntimeStatus {
+                tool_name: "WebSearch".to_owned(),
+                available: broker_available,
+                unavailable_reason: if broker_available {
+                    None
+                } else {
+                    Some("HTTP broker is not registered".to_owned())
+                },
+            },
+            ToolRuntimeStatus {
+                tool_name: "MiniMaxTextToImage".to_owned(),
+                available: broker_available,
+                unavailable_reason: if broker_available {
+                    None
+                } else {
+                    Some("HTTP broker is not registered".to_owned())
+                },
+            },
+            ToolRuntimeStatus {
+                tool_name: "SeedanceTextToVideo".to_owned(),
+                available: broker_available,
+                unavailable_reason: if broker_available {
+                    None
+                } else {
+                    Some("HTTP broker is not registered".to_owned())
+                },
+            },
+            ToolRuntimeStatus {
+                tool_name: "SendMessage".to_owned(),
+                available: self
+                    .inner
+                    .cap_registry
+                    .contains(&ToolCapability::UserMessenger),
+                unavailable_reason: if self
+                    .inner
+                    .cap_registry
+                    .contains(&ToolCapability::UserMessenger)
+                {
+                    None
+                } else {
+                    Some("UserMessenger capability is not registered".to_owned())
+                },
+            },
+        ];
+
+        RuntimeExecutionStatus::compute(
+            &backend_id,
+            candidate_ids,
+            available_network_policies,
+            available_workspace_policies,
+            unavailable_reasons,
+            broker_available,
+            broker_denied_reasons,
+            tools,
+        )
+    }
+
     fn evidence_ref_store(&self) -> Result<Arc<harness_journal::EvidenceRefStore>, HarnessError> {
         self.inner.evidence_ref_store.clone().ok_or_else(|| {
             HarnessError::Journal(harness_contracts::JournalError::Message(
@@ -1068,9 +1224,14 @@ impl Harness {
         let authorization_service = if let Some(service) = authorization_service {
             service
         } else {
+            let registry = harness_execution::ExecutionPreflightRegistry::new(
+                Arc::clone(&builder.sandbox.0),
+                None,
+                Arc::new(CapabilityRegistry::default()),
+            );
             Arc::new(harness_execution::AuthorizationService::new(
                 Arc::clone(&permission_authority),
-                Arc::clone(&builder.sandbox.0),
+                registry,
                 Arc::new(SdkAuthorizationEventSink {
                     event_store: Arc::clone(&builder.store.0),
                     redactor: observer

@@ -224,6 +224,8 @@ mod replay;
 mod run_subscriptions;
 #[path = "commands/runs.rs"]
 mod runs;
+#[path = "commands/runtime_execution_status.rs"]
+mod runtime_execution_status;
 #[path = "commands/skills.rs"]
 mod skills;
 #[path = "commands/support.rs"]
