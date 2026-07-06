@@ -3442,6 +3442,7 @@ dependencies = [
  "futures",
  "globset",
  "jyowo-harness-contracts",
+ "jyowo-harness-execution",
  "jyowo-harness-model",
  "jyowo-harness-permission",
  "jyowo-harness-sandbox",
