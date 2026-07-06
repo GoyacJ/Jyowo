@@ -145,6 +145,12 @@ function validWorktreePage(): PageConversationWorktreeResponse {
   }
 }
 
+function firstAssistant(page: PageConversationWorktreeResponse): AssistantWork {
+  const assistant = page.turns[0]?.assistant
+  expect(assistant).toBeDefined()
+  return assistant as AssistantWork
+}
+
 const tauriListenSpy = vi.hoisted(() => vi.fn())
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -153,6 +159,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 import { createTestCommandClient } from '@/testing/command-client'
 import {
+  type AssistantWork,
   approveMemoryCandidate,
   archiveBackgroundAgent,
   cancelBackgroundAgent,
@@ -1960,16 +1967,13 @@ describe('CommandClient', () => {
   describe('assistant work runtime metadata', () => {
     it('parses startedAt, endedAt, and durationMs on AssistantWork', async () => {
       const page = clone(validWorktreePage())
-      const assistant = page.turns[0].assistant!
+      const assistant = firstAssistant(page)
       assistant.startedAt = '2026-07-06T12:00:00.000Z'
       assistant.endedAt = '2026-07-06T12:00:01.500Z'
       assistant.durationMs = 1500
 
       const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
-      const result = await pageConversationWorktree(
-        { conversationId: 'conversation-001' },
-        client,
-      )
+      const result = await pageConversationWorktree({ conversationId: 'conversation-001' }, client)
       expect(result.turns[0].assistant?.startedAt).toBe('2026-07-06T12:00:00.000Z')
       expect(result.turns[0].assistant?.endedAt).toBe('2026-07-06T12:00:01.500Z')
       expect(result.turns[0].assistant?.durationMs).toBe(1500)
@@ -1977,16 +1981,13 @@ describe('CommandClient', () => {
 
     it('parses assistant work without timing metadata', async () => {
       const page = clone(validWorktreePage())
-      const assistant = page.turns[0].assistant!
+      const assistant = firstAssistant(page)
       delete (assistant as Record<string, unknown>).startedAt
       delete (assistant as Record<string, unknown>).endedAt
       delete (assistant as Record<string, unknown>).durationMs
 
       const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
-      const result = await pageConversationWorktree(
-        { conversationId: 'conversation-001' },
-        client,
-      )
+      const result = await pageConversationWorktree({ conversationId: 'conversation-001' }, client)
       expect(result.turns[0].assistant?.startedAt).toBeUndefined()
       expect(result.turns[0].assistant?.endedAt).toBeUndefined()
       expect(result.turns[0].assistant?.durationMs).toBeUndefined()
@@ -1996,7 +1997,7 @@ describe('CommandClient', () => {
   describe('activity items', () => {
     it('parses ProcessStepDetail activity with items', async () => {
       const page = clone(validWorktreePage())
-      const assistant = page.turns[0].assistant!
+      const assistant = firstAssistant(page)
       assistant.segments.unshift({
         kind: 'process',
         id: 'segment:process:run-001-activity',
@@ -2025,10 +2026,7 @@ describe('CommandClient', () => {
       })
 
       const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
-      const result = await pageConversationWorktree(
-        { conversationId: 'conversation-001' },
-        client,
-      )
+      const result = await pageConversationWorktree({ conversationId: 'conversation-001' }, client)
       const steps = result.turns[0].assistant?.segments[0]
       expect(steps?.kind).toBe('process')
       if (steps?.kind === 'process') {
@@ -2036,17 +2034,17 @@ describe('CommandClient', () => {
         expect(detail?.type).toBe('activity')
         if (detail?.type === 'activity') {
           expect(detail.items).toHaveLength(3)
-          expect(detail.items![0]?.kind).toBe('file')
-          expect(detail.items![0]?.label).toBe('turn.rs')
-          expect(detail.items![1]?.kind).toBe('search')
-          expect(detail.items![1]?.detail).toBe('Found in 5 files')
+          expect(detail.items?.[0]?.kind).toBe('file')
+          expect(detail.items?.[0]?.label).toBe('turn.rs')
+          expect(detail.items?.[1]?.kind).toBe('search')
+          expect(detail.items?.[1]?.detail).toBe('Found in 5 files')
         }
       }
     })
 
     it('parses activity without items', async () => {
       const page = clone(validWorktreePage())
-      const assistant = page.turns[0].assistant!
+      const assistant = firstAssistant(page)
       assistant.segments.unshift({
         kind: 'process',
         id: 'segment:process:run-001-activity',
@@ -2070,10 +2068,7 @@ describe('CommandClient', () => {
       })
 
       const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
-      const result = await pageConversationWorktree(
-        { conversationId: 'conversation-001' },
-        client,
-      )
+      const result = await pageConversationWorktree({ conversationId: 'conversation-001' }, client)
       const steps = result.turns[0].assistant?.segments[0]
       expect(steps?.kind).toBe('process')
       if (steps?.kind === 'process') {
@@ -2087,9 +2082,10 @@ describe('CommandClient', () => {
 
     it('rejects activity items with unknown extra fields', async () => {
       const page = clone(validWorktreePage())
-      const assistant = page.turns[0].assistant!
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const step: any = {
+      const assistant = firstAssistant(page)
+      type ProcessSegment = Extract<AssistantWork['segments'][number], { kind: 'process' }>
+      type ProcessStep = NonNullable<ProcessSegment['steps']>[number]
+      const step = {
         id: 'process-step:run-001:activity',
         order: 0,
         kind: 'activity',
@@ -2106,7 +2102,7 @@ describe('CommandClient', () => {
             },
           ],
         },
-      }
+      } as unknown as ProcessStep
       assistant.segments.unshift({
         kind: 'process',
         id: 'segment:process:run-001-activity',
@@ -2118,16 +2114,13 @@ describe('CommandClient', () => {
 
       const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
       await expect(
-        pageConversationWorktree(
-          { conversationId: 'conversation-001' },
-          client,
-        ),
+        pageConversationWorktree({ conversationId: 'conversation-001' }, client),
       ).rejects.toThrow(TauriCommandPayloadError)
     })
 
     it('rejects activity item label with private absolute path', async () => {
       const page = clone(validWorktreePage())
-      const assistant = page.turns[0].assistant!
+      const assistant = firstAssistant(page)
       assistant.segments.unshift({
         kind: 'process',
         id: 'segment:process:run-001-activity',
@@ -2152,16 +2145,13 @@ describe('CommandClient', () => {
 
       const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
       await expect(
-        pageConversationWorktree(
-          { conversationId: 'conversation-001' },
-          client,
-        ),
+        pageConversationWorktree({ conversationId: 'conversation-001' }, client),
       ).rejects.toThrow(TauriCommandPayloadError)
     })
 
     it('rejects activity item label with obvious secret', async () => {
       const page = clone(validWorktreePage())
-      const assistant = page.turns[0].assistant!
+      const assistant = firstAssistant(page)
       assistant.segments.unshift({
         kind: 'process',
         id: 'segment:process:run-001-activity',
@@ -2186,10 +2176,7 @@ describe('CommandClient', () => {
 
       const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
       await expect(
-        pageConversationWorktree(
-          { conversationId: 'conversation-001' },
-          client,
-        ),
+        pageConversationWorktree({ conversationId: 'conversation-001' }, client),
       ).rejects.toThrow(TauriCommandPayloadError)
     })
   })
@@ -2197,51 +2184,40 @@ describe('CommandClient', () => {
   describe('tool attempt display text tightening', () => {
     it('rejects toolName with private absolute path', async () => {
       const page = clone(validWorktreePage())
-      const assistant = page.turns[0].assistant!
+      const assistant = firstAssistant(page)
       if (assistant.segments[2]?.kind === 'toolGroup') {
         assistant.segments[2].attempts[0].toolName = '/Users/goya/malicious'
       }
 
       const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
       await expect(
-        pageConversationWorktree(
-          { conversationId: 'conversation-001' },
-          client,
-        ),
+        pageConversationWorktree({ conversationId: 'conversation-001' }, client),
       ).rejects.toThrow(TauriCommandPayloadError)
     })
 
     it('rejects failureSummary with obvious secret', async () => {
       const page = clone(validWorktreePage())
-      const assistant = page.turns[0].assistant!
+      const assistant = firstAssistant(page)
       if (assistant.segments[2]?.kind === 'toolGroup') {
         assistant.segments[2].attempts[0].failureSummary = 'sk-abcdefghijklmnop'
       }
 
       const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
       await expect(
-        pageConversationWorktree(
-          { conversationId: 'conversation-001' },
-          client,
-        ),
+        pageConversationWorktree({ conversationId: 'conversation-001' }, client),
       ).rejects.toThrow(TauriCommandPayloadError)
     })
 
     it('rejects affectedTargets entry with unsafe URL', async () => {
       const page = clone(validWorktreePage())
-      const assistant = page.turns[0].assistant!
+      const assistant = firstAssistant(page)
       if (assistant.segments[2]?.kind === 'toolGroup') {
-        assistant.segments[2].attempts[0].affectedTargets = [
-          'https://evil.example.com/exfil',
-        ]
+        assistant.segments[2].attempts[0].affectedTargets = ['https://evil.example.com/exfil']
       }
 
       const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
       await expect(
-        pageConversationWorktree(
-          { conversationId: 'conversation-001' },
-          client,
-        ),
+        pageConversationWorktree({ conversationId: 'conversation-001' }, client),
       ).rejects.toThrow(TauriCommandPayloadError)
     })
   })
