@@ -393,6 +393,88 @@ impl ProviderMediaDownloader for ReqwestProviderMediaDownloader {
     }
 }
 
+/// Broker-backed provider media downloader.
+///
+/// Uses `ToolNetworkBrokerCap` and `AuthorizedNetworkPermit` instead of raw
+/// reqwest. The broker validates every download URL against the approved host
+/// rules before issuing the request.
+#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+pub struct BrokerProviderMediaDownloader {
+    broker: std::sync::Arc<dyn crate::ToolNetworkBrokerCap>,
+    permit: crate::AuthorizedNetworkPermit,
+}
+
+#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+impl BrokerProviderMediaDownloader {
+    pub fn new(
+        broker: std::sync::Arc<dyn crate::ToolNetworkBrokerCap>,
+        permit: crate::AuthorizedNetworkPermit,
+    ) -> Self {
+        Self { broker, permit }
+    }
+}
+
+#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+#[async_trait::async_trait]
+impl ProviderMediaDownloader for BrokerProviderMediaDownloader {
+    async fn download(
+        &self,
+        url: &Url,
+        max_bytes: u64,
+        modality: ModelModality,
+    ) -> Result<ProviderMediaBytes, ToolError> {
+        use std::collections::BTreeMap;
+
+        use crate::{HttpMethod, ToolHttpJsonRequest};
+
+        let url_str = url.to_string();
+        let req = ToolHttpJsonRequest {
+            method: HttpMethod::Get,
+            url: url_str,
+            headers: BTreeMap::new(),
+            body: None,
+            timeout: std::time::Duration::from_secs(30),
+            max_response_bytes: max_bytes,
+        };
+        let resp = self.broker.execute_json(&self.permit, req).await?;
+
+        if resp.status != 200 {
+            return Err(ToolError::Message(
+                "provider media download failed".to_owned(),
+            ));
+        }
+
+        let mime_type = resp
+            .headers
+            .get("content-type")
+            .and_then(|value| safe_mime_for_modality(value, modality))
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| {
+                ToolError::Message(
+                    "provider media download returned unsupported content type".to_owned(),
+                )
+            })?;
+
+        let body_len = resp.body.len() as u64;
+        if body_len == 0 {
+            return Err(ToolError::Message(
+                "provider media download returned empty body".to_owned(),
+            ));
+        }
+        if body_len > max_bytes {
+            return Err(ToolError::ResultTooLarge {
+                original: body_len,
+                limit: max_bytes,
+                metric: BudgetMetric::Bytes,
+            });
+        }
+
+        let bytes = resp.body.to_vec();
+        let mime_type = validate_media_bytes(&bytes, modality, Some(&mime_type))?;
+        Ok(ProviderMediaBytes { bytes, mime_type })
+    }
+}
+
 #[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
 pub async fn download_provider_https_media(
     request: ProviderMediaDownloadRequest<'_>,

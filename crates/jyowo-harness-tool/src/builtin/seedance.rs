@@ -1,6 +1,6 @@
 use crate::provider_media::{
-    download_provider_https_media, validate_media_bytes, ProviderMediaBytes,
-    ProviderMediaDownloadRequest, ProviderMediaDownloader, ReqwestProviderMediaDownloader,
+    download_provider_https_media, validate_media_bytes, BrokerProviderMediaDownloader,
+    ProviderMediaBytes, ProviderMediaDownloadRequest, ProviderMediaDownloader,
     MAX_MINIMAX_MEDIA_BYTES,
 };
 use async_trait::async_trait;
@@ -225,7 +225,7 @@ fn execute_query_request(
                 response,
                 &ctx,
                 media_operation_id,
-                &ReqwestProviderMediaDownloader,
+                &BrokerProviderMediaDownloader::new(Arc::clone(&broker), permit.clone()),
             )
             .await
         }

@@ -1,7 +1,7 @@
 use crate::provider_media::{
     download_provider_https_media, safe_mime_types_for_modality, validate_media_bytes,
-    ProviderMediaBytes, ProviderMediaDownloadRequest, ProviderMediaDownloader,
-    ReqwestProviderMediaDownloader, MAX_MINIMAX_MEDIA_BYTES,
+    BrokerProviderMediaDownloader, ProviderMediaBytes, ProviderMediaDownloadRequest,
+    ProviderMediaDownloader, MAX_MINIMAX_MEDIA_BYTES,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
@@ -1062,7 +1062,7 @@ where
                 media_operation_id,
                 artifact_kind,
                 title,
-                &ReqwestProviderMediaDownloader,
+                &BrokerProviderMediaDownloader::new(Arc::clone(&broker), permit.clone()),
             )
             .await
         }
@@ -1110,7 +1110,7 @@ where
                 media_operation_id,
                 artifact_kind,
                 title,
-                &ReqwestProviderMediaDownloader,
+                &BrokerProviderMediaDownloader::new(Arc::clone(&broker), permit.clone()),
             )
             .await
         }
@@ -1180,8 +1180,16 @@ fn execute_image_request(
                     "MiniMax media operation credential context is incomplete".to_owned(),
                 )
             })?;
-            image_tool_result_from_response(response, ctx, base_url.as_deref(), media_operation_id)
-                .await
+            let downloader =
+                BrokerProviderMediaDownloader::new(Arc::clone(&broker), permit.clone());
+            image_tool_result_from_response(
+                response,
+                ctx,
+                base_url.as_deref(),
+                media_operation_id,
+                &downloader,
+            )
+            .await
         }
         .await;
         match result {
@@ -1196,13 +1204,14 @@ async fn image_tool_result_from_response(
     ctx: &ToolContext,
     provider_base_url: Option<&str>,
     operation_id: &str,
+    downloader: &dyn ProviderMediaDownloader,
 ) -> Result<ToolResult, ToolError> {
     image_tool_result_from_response_with_downloader(
         response,
         ctx,
         provider_base_url,
         operation_id,
-        &ReqwestProviderMediaDownloader,
+        downloader,
     )
     .await
 }
@@ -1922,6 +1931,7 @@ mod tests {
             &ctx,
             None,
             "minimax.image_generation",
+            &ReqwestProviderMediaDownloader,
         )
         .await
         .expect("image result is extracted");
