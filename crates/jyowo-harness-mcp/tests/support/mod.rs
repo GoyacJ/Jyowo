@@ -2,11 +2,12 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use harness_contracts::{
-    Decision, Event, FallbackPolicy, InteractivityLevel, PermissionMode, RunId, SandboxError,
-    SessionId, TenantId,
+    CapabilityRegistry, Decision, Event, FallbackPolicy, InteractivityLevel, PermissionMode, RunId,
+    SandboxError, SessionId, TenantId,
 };
 use harness_execution::{
-    AuthorizationEventSink, AuthorizationService, ExecutionError, TicketLedger,
+    AuthorizationEventSink, AuthorizationService, ExecutionError, ExecutionPreflightRegistry,
+    TicketLedger,
 };
 use harness_mcp::{McpAuthorizationContext, McpConnectContext};
 use harness_permission::{
@@ -72,7 +73,11 @@ fn mcp_authorization_context_with_broker_and_sink(
     );
     let service = Arc::new(AuthorizationService::new(
         authority,
-        Arc::new(AllowTransportPreflightSandbox),
+        ExecutionPreflightRegistry::new(
+            Arc::new(AllowTransportPreflightSandbox),
+            None,
+            Arc::new(CapabilityRegistry::default()),
+        ),
         event_sink,
         Arc::new(TicketLedger::default()),
     ));

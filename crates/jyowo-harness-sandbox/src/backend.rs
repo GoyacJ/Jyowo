@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant};
@@ -240,8 +240,9 @@ pub trait ActivityHandle: Send + Sync + 'static {
 pub async fn execute_with_lifecycle(
     backend: Arc<dyn SandboxBackend>,
     spec: ExecSpec,
-    ctx: ExecContext,
+    mut ctx: ExecContext,
 ) -> Result<ProcessHandle, SandboxError> {
+    ctx.execution_id = NEXT_EXECUTION_ID.fetch_add(1, Ordering::Relaxed);
     let backend_id = backend.backend_id().to_owned();
     preflight_exec(backend.as_ref(), &spec, &ctx)?;
     if let Err(error) = backend.before_execute(&spec, &ctx).await {
@@ -472,7 +473,7 @@ fn emit_backend_failed(
         }));
 }
 
-fn validate_preflight_capabilities(
+pub fn validate_preflight_capabilities(
     backend_id: &str,
     capabilities: &SandboxCapabilities,
     spec: &ExecSpec,
@@ -761,6 +762,8 @@ impl WorkspacePolicySupport {
     }
 }
 
+static NEXT_EXECUTION_ID: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Clone)]
 pub struct ExecContext {
     pub session_id: SessionId,
@@ -772,6 +775,10 @@ pub struct ExecContext {
     pub event_sink: Arc<dyn EventSink>,
     pub redactor: Arc<dyn Redactor>,
     pub blob_store: Option<Arc<dyn BlobStore>>,
+    /// Internal per-execution id assigned by `execute_with_lifecycle` before preflight.
+    /// Not a public serde contract; must not be exposed to the frontend.
+    #[doc(hidden)]
+    pub execution_id: u64,
 }
 
 impl ExecContext {
@@ -786,6 +793,7 @@ impl ExecContext {
             event_sink,
             redactor: Arc::new(NoopRedactor),
             blob_store: None,
+            execution_id: NEXT_EXECUTION_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
 }

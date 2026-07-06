@@ -760,6 +760,7 @@ async fn run_extension_command_sandboxed(
         event_sink: Arc::new(NoopSandboxEventSink),
         redactor: Arc::new(NoopRedactor),
         blob_store: None,
+        execution_id: 0,
     };
     let mut handle = execute_with_lifecycle(sandbox, spec, ctx)
         .await

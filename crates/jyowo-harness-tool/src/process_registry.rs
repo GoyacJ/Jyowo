@@ -108,6 +108,7 @@ impl RunScopedProcessRegistryCap for DefaultRunScopedProcessRegistry {
                 event_sink: event_sink.clone(),
                 redactor,
                 blob_store: None,
+                execution_id: 0,
             };
             let mut handle = execute_with_lifecycle(Arc::clone(&self.sandbox), spec, exec_ctx)
                 .await

@@ -2,9 +2,12 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use harness_contracts::{Event, PermissionError, SandboxError, SessionId, TenantId};
+use harness_contracts::{
+    CapabilityRegistry, Event, PermissionError, SandboxError, SessionId, TenantId,
+};
 use harness_execution::{
-    AuthorizationEventSink, AuthorizationService, ExecutionError, TicketLedger,
+    AuthorizationEventSink, AuthorizationService, ExecutionError, ExecutionPreflightRegistry,
+    TicketLedger,
 };
 use harness_journal::EventStore;
 use harness_permission::{
@@ -29,9 +32,14 @@ pub fn test_authorization_service(
             .build()
             .expect("test permission authority should build"),
     );
+    let registry = ExecutionPreflightRegistry::new(
+        Arc::new(TestSandbox),
+        None,
+        Arc::new(CapabilityRegistry::default()),
+    );
     Arc::new(AuthorizationService::new(
         authority,
-        Arc::new(TestSandbox),
+        registry,
         Arc::new(JournalAuthorizationEventSink { event_store }),
         Arc::new(TicketLedger::default()),
     ))

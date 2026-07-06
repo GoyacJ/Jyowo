@@ -230,6 +230,7 @@ fn exec_context(ctx: &ToolContext, event_sink: Arc<dyn EventSink>) -> ExecContex
         event_sink,
         redactor: Arc::clone(&ctx.redactor) as Arc<dyn Redactor>,
         blob_store: None,
+        execution_id: 0,
     }
 }
 

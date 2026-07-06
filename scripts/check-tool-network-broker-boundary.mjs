@@ -63,8 +63,8 @@ function stripTestBlocks(lines) {
   for (let i = 0; i < result.length; i++) {
     const line = result[i];
 
-    // Track #[cfg(test)] attribute and mod tests blocks.
-    if (/^\s*#\[cfg\s*\(\s*test\s*\)\]/.test(line)) {
+    // Track #[cfg(test)], #[cfg(all(test, ...))], #[cfg(any(test, ...))] and mod tests blocks.
+    if (/^\s*#\[cfg\s*\(.*\btest\b.*\)\]/.test(line)) {
       inTest = true;
       depth = 1;
       result[i] = "";

@@ -8,8 +8,8 @@
 | Frontend Vitest test cases | 656 |
 | Storybook files | 19 |
 | Playwright spec files | 4 |
-| Rust test files | 332 |
-| Rust `#[test]` / `#[tokio::test]` count | 2470 |
+| Rust test files | 333 |
+| Rust `#[test]` / `#[tokio::test]` count | 2482 |
 | Script policy test files | 9 |
 
 ## Largest Test Files by Line Count
@@ -37,6 +37,7 @@
 | crates/jyowo-harness-tool/tests/builtin_exec.rs | 1162 | rust |
 | crates/jyowo-harness-sdk/tests/runtime_assembly_agents.rs | 1161 | rust |
 | crates/jyowo-harness-contracts/tests/memory_platform_contracts.rs | 1146 | rust |
+| crates/jyowo-harness-execution/tests/authorization_flow.rs | 1145 | rust |
 | crates/jyowo-harness-mcp/tests/http.rs | 1145 | rust |
 | apps/desktop/src-tauri/tests/agent_orchestration_e2e.rs | 1134 | rust |
 | apps/desktop/src/features/workbench/WorkbenchInspector.artifacts.test.tsx | 1126 | frontend |
@@ -45,7 +46,6 @@
 | apps/desktop/src-tauri/tests/commands/mcp.rs | 1078 | rust |
 | crates/jyowo-harness-contracts/tests/core_contracts.rs | 1074 | rust |
 | crates/jyowo-harness-sdk/tests/facade.rs | 1074 | rust |
-| crates/jyowo-harness-sdk/tests/runtime_assembly_context.rs | 1071 | rust |
 
 ## Files Over 1200 Lines (hard fail)
 
@@ -73,6 +73,7 @@
 - crates/jyowo-harness-tool/tests/builtin_exec.rs (1162 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_agents.rs (1161 lines)
 - crates/jyowo-harness-contracts/tests/memory_platform_contracts.rs (1146 lines)
+- crates/jyowo-harness-execution/tests/authorization_flow.rs (1145 lines)
 - crates/jyowo-harness-mcp/tests/http.rs (1145 lines)
 - apps/desktop/src-tauri/tests/agent_orchestration_e2e.rs (1134 lines)
 - apps/desktop/src/features/workbench/WorkbenchInspector.artifacts.test.tsx (1126 lines)
@@ -95,7 +96,6 @@
 - crates/jyowo-harness-tool/tests/registry_pool.rs (941 lines)
 - crates/jyowo-harness-sandbox/tests/local.rs (933 lines)
 - apps/desktop/src-tauri/tests/commands/activity_redaction.rs (930 lines)
-- crates/jyowo-harness-execution/tests/authorization_flow.rs (913 lines)
 - crates/jyowo-harness-tool/tests/orchestrator.rs (908 lines)
 - apps/desktop/src/features/conversation/timeline/conversation-timeline.stories.tsx (906 lines)
 - crates/jyowo-harness-memory/tests/extraction.rs (898 lines)

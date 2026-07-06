@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use harness_contracts::{
-    Event, Message, MessagePart, SandboxError, SessionId, StopReason, TenantId, ToolUseId,
-    UsageSnapshot,
+    CapabilityRegistry, Event, Message, MessagePart, SandboxError, SessionId, StopReason, TenantId,
+    ToolUseId, UsageSnapshot,
 };
 use harness_execution::{
-    AuthorizationEventSink, AuthorizationService, ExecutionError, TicketLedger,
+    AuthorizationEventSink, AuthorizationService, ExecutionError, ExecutionPreflightRegistry,
+    TicketLedger,
 };
 use harness_journal::{EventStore, InMemoryEventStore};
 use harness_model::{ContentDelta, ModelStreamEvent};
@@ -94,7 +95,11 @@ pub fn test_authorization_service(
         .unwrap();
     Arc::new(AuthorizationService::new(
         Arc::new(authority),
-        Arc::new(AllowPreflightSandbox),
+        ExecutionPreflightRegistry::new(
+            Arc::new(AllowPreflightSandbox),
+            None,
+            Arc::new(CapabilityRegistry::default()),
+        ),
         Arc::new(JournalAuthorizationEventSink { event_store }),
         Arc::new(TicketLedger::default()),
     ))

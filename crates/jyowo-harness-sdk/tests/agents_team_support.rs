@@ -4,11 +4,12 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use harness_contracts::{
-    Event, PermissionError, RedactPatternSet, RedactRules, RedactScope, Redactor, SessionId,
-    TenantId,
+    CapabilityRegistry, Event, PermissionError, RedactPatternSet, RedactRules, RedactScope,
+    Redactor, SessionId, TenantId,
 };
 use harness_execution::{
-    AuthorizationEventSink, AuthorizationService, ExecutionError, TicketLedger,
+    AuthorizationEventSink, AuthorizationService, ExecutionError, ExecutionPreflightRegistry,
+    TicketLedger,
 };
 use harness_journal::EventStore;
 use harness_permission::{
@@ -31,7 +32,11 @@ pub fn test_authorization_service(
     );
     Arc::new(AuthorizationService::new(
         authority,
-        Arc::new(NoopSandbox::new()),
+        ExecutionPreflightRegistry::new(
+            Arc::new(NoopSandbox::new()),
+            None,
+            Arc::new(CapabilityRegistry::default()),
+        ),
         Arc::new(JournalAuthorizationEventSink { event_store }),
         Arc::new(TicketLedger::default()),
     ))

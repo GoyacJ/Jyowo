@@ -9,7 +9,8 @@ use harness_contracts::{
     SessionId, SnapshotId, TenantId, ToolProfile, ToolSearchMode,
 };
 use harness_execution::{
-    AuthorizationEventSink, AuthorizationService, ExecutionError, TicketLedger,
+    AuthorizationEventSink, AuthorizationService, ExecutionError, ExecutionPreflightRegistry,
+    TicketLedger,
 };
 use harness_hook::{HookDispatcher, HookRegistry};
 use harness_journal::{
@@ -302,7 +303,11 @@ fn test_authorization_service(
         .unwrap();
     Arc::new(AuthorizationService::new(
         Arc::new(authority),
-        Arc::new(AllowPreflightSandbox),
+        ExecutionPreflightRegistry::new(
+            Arc::new(AllowPreflightSandbox),
+            None,
+            Arc::new(CapabilityRegistry::default()),
+        ),
         Arc::new(NoopAuthorizationEventSink),
         Arc::new(TicketLedger::default()),
     ))

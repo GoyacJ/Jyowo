@@ -308,10 +308,10 @@ pub trait ProviderMediaDownloader: Send + Sync {
     ) -> Result<ProviderMediaBytes, ToolError>;
 }
 
-#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+#[cfg(all(test, any(feature = "minimax-tools", feature = "seedance-tools")))]
 pub struct ReqwestProviderMediaDownloader;
 
-#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+#[cfg(all(test, any(feature = "minimax-tools", feature = "seedance-tools")))]
 #[async_trait::async_trait]
 impl ProviderMediaDownloader for ReqwestProviderMediaDownloader {
     async fn download(
