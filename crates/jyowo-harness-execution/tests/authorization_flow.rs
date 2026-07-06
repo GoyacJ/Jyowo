@@ -844,6 +844,155 @@ async fn external_capability_passes_without_calling_sandbox_preflight() {
     );
 }
 
+// ── Task 11: end-to-end regression tests ──
+
+#[tokio::test]
+async fn bypass_permissions_does_not_skip_sandbox_preflight() {
+    // BypassPermissions skips interactive permission prompts but must NOT skip
+    // process sandbox preflight. A plan with NetworkAccess::None routed through
+    // a sandbox that can't enforce it must fail before minting a ticket.
+    let sink = Arc::new(RecordingSink::default());
+    let ledger = Arc::new(TicketLedger::default());
+
+    // RejectingPreflightSandbox: capabilities pass, but preflight_execute always fails.
+    let service = AuthorizationService::new(
+        real_authority(
+            RuleSource::Session,
+            RuleAction::Allow,
+            DecisionScope::ToolName("Bash".to_owned()),
+        )
+        .await,
+        preflight_registry(Arc::new(RejectingPreflightSandbox {
+            backend_id: "rejecting",
+            reason: "sandbox unavailable".to_owned(),
+        })),
+        sink.clone(),
+        ledger.clone(),
+    );
+
+    let mut context = context();
+    context.permission_mode = PermissionMode::BypassPermissions;
+    let plan = process_sandbox_plan(); // ProcessSandbox channel with NetworkAccess::None
+
+    let error = service
+        .authorize_plan(context, plan.clone())
+        .await
+        .unwrap_err();
+
+    // Must be a sandbox preflight failure, NOT a permission denial.
+    assert!(
+        matches!(error, ExecutionError::SandboxPreflightFailed { .. }),
+        "bypass must not skip sandbox preflight: {error:?}"
+    );
+
+    // No ticket should have been minted.
+    assert!(matches!(
+        ledger.consume(
+            harness_contracts::AuthorizationTicketId::new(),
+            &harness_execution::AuthorizationTicketClaims {
+                tenant_id: TenantId::SINGLE,
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
+                tool_use_id: plan.tool_use_id,
+                tool_name: plan.tool_name,
+                action_plan_hash: plan.plan_hash,
+            },
+            Utc::now(),
+        ),
+        Err(ExecutionError::TicketUnknown { .. })
+    ));
+}
+
+#[tokio::test]
+async fn bypass_permissions_does_not_skip_broker_preflight() {
+    // BypassPermissions must not skip HTTP broker preflight. A plan with
+    // HttpBroker channel routed through a denying broker must fail before
+    // minting a ticket.
+    let sink = Arc::new(RecordingSink::default());
+    let ledger = Arc::new(TicketLedger::default());
+    let denying_broker = Arc::new(RecordingBroker { allow: false });
+
+    let service = AuthorizationService::new(
+        real_authority(
+            RuleSource::Session,
+            RuleAction::Allow,
+            DecisionScope::Category("network".to_owned()),
+        )
+        .await,
+        broker_registry(Arc::new(TestSandbox::default()), Some(denying_broker)),
+        sink.clone(),
+        ledger.clone(),
+    );
+
+    let mut context = context();
+    context.permission_mode = PermissionMode::BypassPermissions;
+    let plan = http_broker_plan();
+
+    let error = service
+        .authorize_plan(context, plan.clone())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, ExecutionError::SandboxPreflightFailed { .. }),
+        "bypass must not skip broker preflight: {error:?}"
+    );
+
+    // No ticket should have been minted.
+    assert!(matches!(
+        ledger.consume(
+            harness_contracts::AuthorizationTicketId::new(),
+            &harness_execution::AuthorizationTicketClaims {
+                tenant_id: TenantId::SINGLE,
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
+                tool_use_id: plan.tool_use_id,
+                tool_name: plan.tool_name,
+                action_plan_hash: plan.plan_hash,
+            },
+            Utc::now(),
+        ),
+        Err(ExecutionError::TicketUnknown { .. })
+    ));
+}
+
+#[tokio::test]
+async fn process_sandbox_network_none_fails_when_backend_cannot_enforce() {
+    // Regression: Bash with NetworkAccess::None must fail with a clear
+    // backend-authored reason when no candidate backend can enforce it.
+    let sink = Arc::new(RecordingSink::default());
+
+    // TestSandbox reports no network policy support → preflight must fail.
+    let service = AuthorizationService::new(
+        real_authority(
+            RuleSource::Session,
+            RuleAction::Allow,
+            DecisionScope::ToolName("Bash".to_owned()),
+        )
+        .await,
+        preflight_registry(Arc::new(TestSandbox::default())),
+        sink.clone(),
+        Arc::new(TicketLedger::default()),
+    );
+
+    let plan = process_sandbox_plan();
+
+    let error = service.authorize_plan(context(), plan).await.unwrap_err();
+
+    let msg = error.to_string();
+    assert!(
+        msg.contains("sandbox") || msg.contains("network") || msg.contains("capability"),
+        "error must identify the sandbox capability reason: {msg}"
+    );
+}
+
+fn process_sandbox_plan() -> ToolActionPlan {
+    let mut plan = action_plan("Bash", DecisionScope::ToolName("Bash".to_owned()));
+    plan.execution_channel = ToolExecutionChannel::ProcessSandbox;
+    plan.sandbox_policy.network = NetworkAccess::None;
+    plan
+}
+
 // ── Helpers ──
 
 fn preflight_registry(sandbox: Arc<dyn SandboxBackend>) -> ExecutionPreflightRegistry {
