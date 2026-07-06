@@ -425,6 +425,9 @@ impl DesktopRuntimeState {
         // Migrate old execution-settings.json to project config overrides.
         // Format handled by ExecutionDefaultsRecord serde aliases (snake_case → camelCase).
         let _ = crate::commands::providers::migrate_execution_settings(&state.workspace_root);
+        // Migrate old provider-capability-routes.json from runtime to project config.
+        let _ =
+            crate::commands::providers::migrate_provider_capability_routes(&state.workspace_root);
 
         Ok(state)
     }

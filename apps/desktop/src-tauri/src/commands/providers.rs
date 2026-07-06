@@ -274,7 +274,20 @@ impl DesktopProviderCapabilityRouteStore {
         Self { workspace_root }
     }
 
+    #[must_use]
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
     fn settings_path(&self) -> PathBuf {
+        let home = execution_settings_home_dir();
+        let layout =
+            crate::storage_layout::StorageLayout::new(crate::storage_layout::JyowoHome::new(home));
+        layout.project_provider_routes_file(&self.workspace_root)
+    }
+
+    /// Legacy path used for migration reads only — never for writes.
+    fn legacy_settings_path(&self) -> PathBuf {
         self.workspace_root
             .join(".jyowo")
             .join("runtime")
@@ -287,7 +300,25 @@ impl provider_capability_route_store_seal::Sealed for DesktopProviderCapabilityR
 impl ProviderCapabilityRouteStore for DesktopProviderCapabilityRouteStore {
     fn load_record(&self) -> Result<Option<ProviderCapabilityRouteSettings>, CommandErrorPayload> {
         let settings_path = self.settings_path();
-        read_secret_json_file_or_remove_invalid(&settings_path, "provider capability route")
+        let Some(record) =
+            read_secret_json_file_or_remove_invalid(&settings_path, "provider capability route")?
+        else {
+            // Fall back to legacy path during transition.
+            let legacy = self.legacy_settings_path();
+            if let Some(record) = read_secret_json_file_or_remove_invalid::<
+                ProviderCapabilityRouteSettings,
+            >(&legacy, "provider capability route")?
+            {
+                if ensure_provider_capability_route_settings_record(&record).is_err() {
+                    remove_invalid_json_file(&legacy, "provider capability route")?;
+                    return Ok(Some(empty_provider_capability_route_settings()));
+                }
+                // Auto-migrate to the new project config path on next save.
+                return Ok(Some(record));
+            }
+            return Ok(Some(empty_provider_capability_route_settings()));
+        };
+        Ok(Some(record))
     }
 
     fn save_record(
@@ -857,6 +888,32 @@ pub fn migrate_execution_settings(
     crate::commands::stores::migration::migrate_json_file::<
         harness_contracts::ExecutionDefaultsRecord,
     >(&old_path, &new_path, "execution settings", true)
+}
+
+/// Migrate old workspace `provider-capability-routes.json` (runtime path) to
+/// the new project config `provider-capability-routes.json`.
+///
+/// Provider routes are project-scoped config, not runtime diagnostics.
+/// Diagnostics and quota cache remain under `<workspace>/.jyowo/runtime/`.
+pub fn migrate_provider_capability_routes(
+    workspace_root: &Path,
+) -> Result<crate::commands::stores::migration::MigrationResult, CommandErrorPayload> {
+    let old_path = workspace_root
+        .join(".jyowo")
+        .join("runtime")
+        .join("provider-capability-routes.json");
+
+    let home = execution_settings_home_dir();
+    let layout =
+        crate::storage_layout::StorageLayout::new(crate::storage_layout::JyowoHome::new(home));
+    let new_path = layout.project_provider_routes_file(workspace_root);
+
+    crate::commands::stores::migration::migrate_secret_json_file::<ProviderCapabilityRouteSettings>(
+        &old_path,
+        &new_path,
+        "provider capability routes",
+        true,
+    )
 }
 
 /// Resolve effective execution settings by merging global defaults, project

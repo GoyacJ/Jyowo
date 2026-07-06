@@ -303,6 +303,16 @@ impl StorageLayout {
         self.runtime_root_for(scope).join("agent-worktrees")
     }
 
+    pub fn runtime_provider_diagnostics_file_for(&self, scope: &RuntimeScope) -> PathBuf {
+        self.runtime_root_for(scope)
+            .join("provider-diagnostics.json")
+    }
+
+    pub fn runtime_provider_quota_cache_file_for(&self, scope: &RuntimeScope) -> PathBuf {
+        self.runtime_root_for(scope)
+            .join("provider-quota-cache.json")
+    }
+
     pub fn runtime_layout_for_project(&self, workspace_root: impl AsRef<Path>) -> RuntimeLayout {
         let workspace_root = workspace_root.as_ref().to_path_buf();
         let scope = RuntimeScope::Project {
@@ -581,6 +591,22 @@ mod tests {
         assert_eq!(
             layout.runtime_agent_worktrees_dir_for(&global_scope),
             Path::new("/home/alice/.jyowo/runtime/global-conversations/agent-worktrees")
+        );
+        assert_eq!(
+            layout.runtime_provider_diagnostics_file_for(&project_scope),
+            Path::new("/workspaces/jyowo/.jyowo/runtime/provider-diagnostics.json")
+        );
+        assert_eq!(
+            layout.runtime_provider_diagnostics_file_for(&global_scope),
+            Path::new("/home/alice/.jyowo/runtime/global-conversations/provider-diagnostics.json")
+        );
+        assert_eq!(
+            layout.runtime_provider_quota_cache_file_for(&project_scope),
+            Path::new("/workspaces/jyowo/.jyowo/runtime/provider-quota-cache.json")
+        );
+        assert_eq!(
+            layout.runtime_provider_quota_cache_file_for(&global_scope),
+            Path::new("/home/alice/.jyowo/runtime/global-conversations/provider-quota-cache.json")
         );
     }
 

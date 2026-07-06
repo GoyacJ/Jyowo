@@ -47,7 +47,7 @@ async fn provider_capability_route_save_writes_runtime_file() {
 
     let route_path = workspace
         .join(".jyowo")
-        .join("runtime")
+        .join("config")
         .join("provider-capability-routes.json");
     let saved: Value = serde_json::from_slice(&std::fs::read(route_path).unwrap()).unwrap();
 
@@ -508,7 +508,7 @@ async fn provider_capability_route_saving_empty_routes_writes_empty_settings() {
 
     let route_path = workspace
         .join(".jyowo")
-        .join("runtime")
+        .join("config")
         .join("provider-capability-routes.json");
     let saved: Value = serde_json::from_slice(&std::fs::read(route_path).unwrap()).unwrap();
 
@@ -587,7 +587,7 @@ async fn desktop_provider_capability_route_store_writes_owner_only_file_permissi
 
     let route_path = workspace
         .join(".jyowo")
-        .join("runtime")
+        .join("config")
         .join("provider-capability-routes.json");
     let mode = std::fs::metadata(route_path).unwrap().permissions().mode() & 0o777;
 
@@ -599,7 +599,7 @@ async fn desktop_provider_capability_route_store_writes_owner_only_file_permissi
 async fn desktop_provider_capability_route_store_rejects_symlink_settings_file() {
     let workspace = canonical_unique_workspace("provider-capability-route-symlink-file");
     let external = canonical_unique_workspace("provider-capability-route-external-target");
-    let route_dir = workspace.join(".jyowo").join("runtime");
+    let route_dir = workspace.join(".jyowo").join("config");
     let route_path = route_dir.join("provider-capability-routes.json");
     std::fs::create_dir_all(&route_dir).unwrap();
     std::os::unix::fs::symlink(
@@ -626,6 +626,157 @@ async fn desktop_provider_capability_route_store_rejects_symlink_settings_file()
     .unwrap_err();
     assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
     assert!(route_path.is_symlink());
+}
+
+// ── Migration tests ──────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn provider_capability_routes_migration_moves_runtime_to_config() {
+    let workspace = canonical_unique_workspace("provider-route-migration-move");
+    let runtime_dir = workspace.join(".jyowo").join("runtime");
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+
+    let old_path = runtime_dir.join("provider-capability-routes.json");
+    let new_path = workspace
+        .join(".jyowo")
+        .join("config")
+        .join("provider-capability-routes.json");
+
+    // Write valid route settings to old runtime path.
+    let routes = harness_contracts::ProviderCapabilityRouteSettings {
+        version: 1,
+        routes: vec![ProviderCapabilityRoute {
+            kind: CapabilityRouteKind::ImageGeneration,
+            config_id: "test-config".to_owned(),
+            provider_id: "minimax".to_owned(),
+            operation_ids: vec!["minimax.image_generation".to_owned()],
+            enabled: true,
+        }],
+    };
+    std::fs::write(&old_path, serde_json::to_vec_pretty(&routes).unwrap()).unwrap();
+
+    let result = migrate_provider_capability_routes(&workspace).unwrap();
+    assert!(matches!(result, MigrationResult::Migrated));
+
+    // New file should exist with correct content.
+    assert!(
+        new_path.exists(),
+        "new config path should exist after migration"
+    );
+
+    // Content should match.
+    let migrated: harness_contracts::ProviderCapabilityRouteSettings =
+        serde_json::from_slice(&std::fs::read(&new_path).unwrap()).unwrap();
+    assert_eq!(migrated.version, 1);
+    assert_eq!(migrated.routes.len(), 1);
+    assert_eq!(migrated.routes[0].config_id, "test-config");
+}
+
+#[tokio::test]
+async fn provider_capability_routes_migration_not_needed_when_both_missing() {
+    let workspace = canonical_unique_workspace("provider-route-migration-not-needed");
+    let result = migrate_provider_capability_routes(&workspace).unwrap();
+    assert!(matches!(result, MigrationResult::NotNeeded));
+}
+
+#[tokio::test]
+async fn provider_capability_routes_migration_already_migrated_when_identical() {
+    let workspace = canonical_unique_workspace("provider-route-migration-already");
+    let config_dir = workspace.join(".jyowo").join("config");
+    let runtime_dir = workspace.join(".jyowo").join("runtime");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+
+    let routes = harness_contracts::ProviderCapabilityRouteSettings {
+        version: 1,
+        routes: Vec::new(),
+    };
+    let old_path = runtime_dir.join("provider-capability-routes.json");
+    let new_path = config_dir.join("provider-capability-routes.json");
+    std::fs::write(&old_path, serde_json::to_vec_pretty(&routes).unwrap()).unwrap();
+    std::fs::write(&new_path, serde_json::to_vec_pretty(&routes).unwrap()).unwrap();
+
+    let result = migrate_provider_capability_routes(&workspace).unwrap();
+    assert!(matches!(result, MigrationResult::AlreadyMigrated));
+}
+
+#[tokio::test]
+async fn provider_capability_routes_migration_quarantines_invalid_json() {
+    let workspace = canonical_unique_workspace("provider-route-migration-invalid");
+    let runtime_dir = workspace.join(".jyowo").join("runtime");
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+
+    let old_path = runtime_dir.join("provider-capability-routes.json");
+    std::fs::write(&old_path, b"{not-valid-json").unwrap();
+
+    let result = migrate_provider_capability_routes(&workspace).unwrap();
+    assert!(
+        matches!(result, MigrationResult::Conflict(ref c) if c.kind == MigrationConflictKind::InvalidSource),
+        "expected InvalidSource conflict, got {result:?}"
+    );
+    assert!(
+        !old_path.exists(),
+        "invalid old file should be quarantined/removed"
+    );
+
+    let new_path = workspace
+        .join(".jyowo")
+        .join("config")
+        .join("provider-capability-routes.json");
+    assert!(
+        !new_path.exists(),
+        "new file should not be written for invalid source"
+    );
+}
+
+#[tokio::test]
+async fn provider_capability_routes_save_after_migration_writes_only_new_path() {
+    let workspace = canonical_unique_workspace("provider-route-save-after-migration");
+    let runtime_dir = workspace.join(".jyowo").join("runtime");
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+
+    // Seed an old file and migrate it.
+    let old_path = runtime_dir.join("provider-capability-routes.json");
+    std::fs::write(
+        &old_path,
+        serde_json::to_vec_pretty(&harness_contracts::ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: Vec::new(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    migrate_provider_capability_routes(&workspace).unwrap();
+
+    // Now save through the store — it should write to config, not runtime.
+    let store = DesktopProviderCapabilityRouteStore::new(workspace.clone());
+    let provider_settings = provider_settings_record_with_minimax_config("minimax-image", true);
+    save_provider_capability_route_settings_with_store(
+        harness_contracts::ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: vec![minimax_image_route("minimax-image", true)],
+        },
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &minimax_image_adapter_availability(),
+    )
+    .await
+    .unwrap();
+
+    let config_path = workspace
+        .join(".jyowo")
+        .join("config")
+        .join("provider-capability-routes.json");
+    assert!(
+        config_path.exists(),
+        "should write to config after migration"
+    );
+
+    let saved: harness_contracts::ProviderCapabilityRouteSettings =
+        serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(saved.routes.len(), 1);
+    assert_eq!(saved.routes[0].config_id, "minimax-image");
 }
 
 mod capability_route_conversation {
