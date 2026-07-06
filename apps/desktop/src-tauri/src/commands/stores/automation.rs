@@ -1,28 +1,48 @@
 use super::*;
+use crate::storage_layout::{JyowoHome, StorageLayout};
 
 #[derive(Clone)]
 pub struct DesktopAutomationStore {
+    layout: StorageLayout,
     retention_limit: usize,
     workspace_root: PathBuf,
 }
 
 impl DesktopAutomationStore {
     pub fn new(workspace_root: PathBuf) -> Self {
-        Self::new_with_limit(workspace_root, AUTOMATION_RUN_RETENTION_LIMIT)
+        Self::new_with_layout_and_limit(
+            StorageLayout::new(JyowoHome::new(default_jyowo_home())),
+            workspace_root,
+            AUTOMATION_RUN_RETENTION_LIMIT,
+        )
+    }
+
+    pub fn new_with_layout(layout: StorageLayout, workspace_root: PathBuf) -> Self {
+        Self::new_with_layout_and_limit(layout, workspace_root, AUTOMATION_RUN_RETENTION_LIMIT)
+    }
+
+    pub fn new_with_layout_and_limit(
+        layout: StorageLayout,
+        workspace_root: PathBuf,
+        retention_limit: usize,
+    ) -> Self {
+        Self {
+            layout,
+            retention_limit,
+            workspace_root,
+        }
     }
 
     pub fn new_with_limit(workspace_root: PathBuf, retention_limit: usize) -> Self {
         Self {
+            layout: StorageLayout::new(JyowoHome::new(default_jyowo_home())),
             retention_limit,
             workspace_root,
         }
     }
 
     fn automations_path(&self) -> PathBuf {
-        self.workspace_root
-            .join(".jyowo")
-            .join("runtime")
-            .join("automations.json")
+        self.layout.project_automations_file(&self.workspace_root)
     }
 
     fn runs_path(&self) -> PathBuf {
@@ -31,6 +51,39 @@ impl DesktopAutomationStore {
             .join("runtime")
             .join("automation-runs.jsonl")
     }
+}
+
+fn default_jyowo_home() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".jyowo")
+}
+
+/// Migrate automations from the old runtime path to the new project config path.
+///
+/// Old path: `<workspace>/.jyowo/runtime/automations.json`
+/// New path: `<workspace>/.jyowo/config/automations.json`
+///
+/// Automation run logs stay under runtime and are not touched.
+pub(crate) fn migrate_automations_from_runtime(
+    layout: &StorageLayout,
+    workspace_root: &Path,
+) -> Result<MigrationResult, CommandErrorPayload> {
+    let old_path = workspace_root
+        .join(".jyowo")
+        .join("runtime")
+        .join("automations.json");
+    let new_path = layout.project_automations_file(workspace_root);
+
+    migrate_secret_json_file_with::<Vec<AutomationSpec>, _>(
+        &old_path,
+        &new_path,
+        "automation settings",
+        true,
+        |old, new| old == new,
+    )
 }
 
 impl AutomationStore for DesktopAutomationStore {

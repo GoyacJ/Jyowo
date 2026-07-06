@@ -1,7 +1,8 @@
 use std::path::Path;
 
 use harness_contracts::{
-    ExecutionDefaultsRecord, PluginSelectionRecord, ProviderSelectionRecord, SkillSelectionRecord,
+    AgentProfileSelectionRecord, ExecutionDefaultsRecord, PluginSelectionRecord,
+    ProviderSelectionRecord, SkillSelectionRecord,
 };
 
 use crate::commands::error::CommandErrorPayload;
@@ -128,6 +129,32 @@ impl ProjectConfigStore {
         let path = self.layout.project_plugins_file(&self.workspace_root);
         ensure_config_dir(&path, "project plugin selection")?;
         write_json_file_atomic(&path, "project plugin selection", record)
+    }
+
+    // ── Project agent profile selection ───────────────────────────────
+
+    pub fn load_project_agent_profile_selection(
+        &self,
+    ) -> Result<AgentProfileSelectionRecord, CommandErrorPayload> {
+        let path = self
+            .layout
+            .project_agent_profile_selection_file(&self.workspace_root);
+        ensure_config_dir(&path, "agent profile selection")?;
+        Ok(
+            read_json_file::<AgentProfileSelectionRecord>(&path, "agent profile selection")?
+                .unwrap_or_default(),
+        )
+    }
+
+    pub fn save_project_agent_profile_selection(
+        &self,
+        record: &AgentProfileSelectionRecord,
+    ) -> Result<(), CommandErrorPayload> {
+        let path = self
+            .layout
+            .project_agent_profile_selection_file(&self.workspace_root);
+        ensure_config_dir(&path, "agent profile selection")?;
+        write_json_file_atomic(&path, "agent profile selection", record)
     }
 }
 

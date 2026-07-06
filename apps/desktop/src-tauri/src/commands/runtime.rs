@@ -448,7 +448,6 @@ impl DesktopRuntimeState {
         {
             log::warn!("mcp server migration failed: {}", error.message);
         }
-
         Ok(state)
     }
 

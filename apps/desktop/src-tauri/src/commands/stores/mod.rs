@@ -36,7 +36,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 
-mod automation;
+pub(crate) mod automation;
 mod global_config;
 mod mcp;
 pub mod migration;
@@ -44,6 +44,7 @@ pub(crate) mod plugin;
 mod project_config;
 pub(crate) mod skill;
 
+pub(crate) use automation::migrate_automations_from_runtime;
 pub use automation::DesktopAutomationStore;
 pub use global_config::GlobalConfigStore;
 pub use mcp::DesktopMcpDiagnosticStore;

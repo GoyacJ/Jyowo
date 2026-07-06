@@ -200,6 +200,14 @@ pub struct PluginSelectionRecord {
     pub enabled: Vec<String>,
 }
 
+/// Project agent profile selection stored in `<workspace>/.jyowo/config/agent-profile-selection.json`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AgentProfileSelectionRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_profile_id: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
