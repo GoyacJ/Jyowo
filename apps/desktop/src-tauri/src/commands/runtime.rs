@@ -236,7 +236,10 @@ impl DesktopRuntimeState {
             mcp_diagnostic_store: Arc::new(DesktopMcpDiagnosticStore::new(workspace_root.clone())),
             mcp_diagnostic_subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             mcp_server_lock: Arc::new(tokio::sync::Mutex::new(())),
-            mcp_server_store: Arc::new(DesktopMcpServerStore::new(workspace_root.clone())),
+            mcp_server_store: Arc::new(DesktopMcpServerStore::new(
+                storage_layout_for_home(),
+                workspace_root.clone(),
+            )),
             permission_resolver: None,
             provider_api_key_reveal_tokens: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             plugin_store: Arc::new(DesktopPluginStore::new(workspace_root.clone())),
@@ -387,7 +390,10 @@ impl DesktopRuntimeState {
             mcp_diagnostic_store: Arc::new(DesktopMcpDiagnosticStore::new(workspace_root.clone())),
             mcp_diagnostic_subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             mcp_server_lock: Arc::new(tokio::sync::Mutex::new(())),
-            mcp_server_store: Arc::new(DesktopMcpServerStore::new(workspace_root.clone())),
+            mcp_server_store: Arc::new(DesktopMcpServerStore::new(
+                storage_layout_for_home(),
+                workspace_root.clone(),
+            )),
             permission_resolver: Some(permission_resolver),
             provider_api_key_reveal_tokens: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             plugin_store: Arc::new(DesktopPluginStore::new(workspace_root.clone())),
@@ -435,6 +441,12 @@ impl DesktopRuntimeState {
         // Migrate old runtime/plugins/ to new plugins/ location.
         if let Err(error) = migrate_plugins_on_startup(&state) {
             log::warn!("plugin migration failed: {}", error.message);
+        }
+        // Migrate old runtime/mcp-servers.json to project config.
+        if let Err(error) =
+            migrate_mcp_servers_from_runtime(&storage_layout_for_home(), &state.workspace_root)
+        {
+            log::warn!("mcp server migration failed: {}", error.message);
         }
 
         Ok(state)
@@ -751,7 +763,8 @@ pub(crate) async fn build_desktop_harness(
             runtime_init_failed(format!("event store initialization failed: {error}"))
         })?,
     );
-    let mcp_server_store = DesktopMcpServerStore::new(workspace_root.to_path_buf());
+    let mcp_server_store =
+        DesktopMcpServerStore::new(storage_layout_for_home(), workspace_root.to_path_buf());
     let mcp_diagnostic_store: Arc<dyn McpDiagnosticStore> =
         Arc::new(DesktopMcpDiagnosticStore::new(workspace_root.to_path_buf()));
     let provider_settings_store = DesktopProviderSettingsStore::new(workspace_root.to_path_buf());

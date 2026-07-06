@@ -50,6 +50,7 @@ pub use mcp::DesktopMcpDiagnosticStore;
 pub(crate) use mcp::DesktopMcpServerStore;
 pub use project_config::ProjectConfigStore;
 // Task 4A: migration framework — consumed by domain tasks 5-13.
+pub(crate) use mcp::migrate_mcp_servers_from_runtime;
 #[allow(unused_imports)]
 pub use migration::{
     migrate_json_file, migrate_json_file_with, migrate_secret_json_file,
