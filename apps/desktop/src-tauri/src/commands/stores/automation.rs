@@ -36,23 +36,8 @@ impl DesktopAutomationStore {
 impl AutomationStore for DesktopAutomationStore {
     fn load_automations(&self) -> Result<Vec<AutomationSpec>, CommandErrorPayload> {
         let automations_path = self.automations_path();
-        ensure_no_symlink_components(&automations_path, "automation settings file")?;
-        let bytes = match std::fs::read(&automations_path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => {
-                return Err(runtime_operation_failed(format!(
-                    "automation settings read failed: {error}"
-                )));
-            }
-        };
-        if bytes.iter().all(u8::is_ascii_whitespace) {
-            return Ok(Vec::new());
-        }
-        let mut records =
-            serde_json::from_slice::<Vec<AutomationSpec>>(&bytes).map_err(|error| {
-                invalid_payload(format!("automation settings parse failed: {error}"))
-            })?;
+        let mut records: Vec<AutomationSpec> =
+            read_secret_json_file_or_default_on_blank(&automations_path, "automation settings")?;
         for record in &records {
             ensure_automation_spec(record)?;
         }
@@ -71,39 +56,23 @@ impl AutomationStore for DesktopAutomationStore {
 
     fn load_run_records(&self) -> Result<Vec<AutomationRunRecord>, CommandErrorPayload> {
         let runs_path = self.runs_path();
-        ensure_no_symlink_components(&runs_path, "automation run ledger file")?;
-        let content = match std::fs::read_to_string(&runs_path) {
-            Ok(content) => content,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => {
-                return Err(runtime_operation_failed(format!(
-                    "automation run ledger read failed: {error}"
-                )));
-            }
-        };
-
-        content
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| {
-                let record =
-                    serde_json::from_str::<AutomationRunRecord>(line).map_err(|error| {
-                        invalid_payload(format!("automation run ledger parse failed: {error}"))
-                    })?;
-                ensure_automation_run_record(&record)?;
-                Ok(record)
-            })
-            .collect()
+        read_jsonl_records_locked(
+            &runs_path,
+            "automation run ledger",
+            |error| invalid_payload(format!("automation run ledger parse failed: {error}")),
+            ensure_automation_run_record,
+        )
     }
 
     fn append_run_record(&self, record: &AutomationRunRecord) -> Result<(), CommandErrorPayload> {
         ensure_automation_run_record(record)?;
-        let mut records = self.load_run_records()?;
-        records.push(record.clone());
-        let keep_from = records.len().saturating_sub(self.retention_limit);
-        if keep_from > 0 {
-            records.drain(0..keep_from);
-        }
-        write_automation_run_records(&self.runs_path(), &records)
+        append_jsonl_record_with_retention_locked(
+            &self.runs_path(),
+            "automation run ledger",
+            record,
+            self.retention_limit,
+            |error| invalid_payload(format!("automation run ledger parse failed: {error}")),
+            ensure_automation_run_record,
+        )
     }
 }

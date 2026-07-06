@@ -69,6 +69,26 @@ fn desktop_provider_settings_store_writes_owner_only_file_permissions() {
     assert_eq!(mode & 0o777, 0o600);
 }
 
+#[test]
+fn desktop_provider_settings_store_removes_malformed_json_and_returns_none() {
+    let workspace = unique_workspace("provider-settings-malformed-json");
+    let settings_dir = workspace.join(".jyowo").join("runtime");
+    std::fs::create_dir_all(&settings_dir).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    let settings_path = workspace
+        .join(".jyowo")
+        .join("runtime")
+        .join("provider-settings.json");
+    std::fs::write(&settings_path, b"{not-json").unwrap();
+
+    let loaded = DesktopProviderSettingsStore::new(workspace)
+        .load_record()
+        .unwrap();
+
+    assert_eq!(loaded, None);
+    assert!(!settings_path.exists());
+}
+
 #[cfg(unix)]
 #[test]
 fn desktop_provider_settings_store_rejects_symlink_settings_file() {

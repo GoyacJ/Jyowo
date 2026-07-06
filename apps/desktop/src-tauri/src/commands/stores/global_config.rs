@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 
 use harness_contracts::{
     AgentProfile, ExecutionDefaultsRecord, McpPresetRecord, ProviderProfileDefinition,
@@ -6,7 +6,7 @@ use harness_contracts::{
 };
 
 use crate::commands::error::CommandErrorPayload;
-use crate::storage_layout::{RuntimeScope, StorageLayout};
+use crate::storage_layout::StorageLayout;
 
 use super::{
     ensure_app_dir_no_symlink, read_json_file, read_secret_json_file, write_json_file_atomic,
@@ -212,7 +212,7 @@ impl GlobalConfigStore {
 }
 
 /// Ensure the parent config directory exists without following symlinks.
-fn ensure_config_dir(path: &PathBuf, label: &str) -> Result<(), CommandErrorPayload> {
+fn ensure_config_dir(path: &Path, label: &str) -> Result<(), CommandErrorPayload> {
     let parent = path.parent().ok_or_else(|| {
         crate::commands::error::runtime_operation_failed(format!(
             "{label} path has no parent directory"

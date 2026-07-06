@@ -504,7 +504,7 @@ describe('MCPManager', () => {
         transport: {
           args: ['mcp-server'],
           command: 'node',
-          env: [{ key: 'LOG_LEVEL', value: 'info' }],
+          env: [{ hasValue: true, key: 'LOG_LEVEL' }],
           inheritEnv: ['GITHUB_TOKEN'],
           kind: 'stdio',
           workingDir: '.',
@@ -528,7 +528,9 @@ describe('MCPManager', () => {
     await waitFor(() => expect(getMcpServerConfig).toHaveBeenCalledWith('github'))
     expect(await screen.findByDisplayValue('mcp-server')).toBeInTheDocument()
     expect(screen.getByDisplayValue('LOG_LEVEL')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('info')).not.toBeInTheDocument()
     expect(screen.getByDisplayValue('GITHUB_TOKEN')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Inline env value'), { target: { value: 'info' } })
 
     fireEvent.click(screen.getByRole('button', { name: 'Save MCP server' }))
 
@@ -544,6 +546,54 @@ describe('MCPManager', () => {
         }),
       ),
     )
+  })
+
+  it('preserves redacted inline env values when saving unchanged config details', async () => {
+    const getMcpServerConfig = vi.fn().mockResolvedValue({
+      server: {
+        displayName: 'Workspace GitHub',
+        enabled: true,
+        id: 'github',
+        scope: 'global',
+        transport: {
+          args: ['mcp-server'],
+          command: 'node',
+          env: [{ hasValue: true, key: 'LOG_LEVEL' }],
+          inheritEnv: [],
+          kind: 'stdio',
+        },
+      },
+    })
+    const saveMcpServer = vi.fn().mockResolvedValue({ server: mcpServer({ status: 'configured' }) })
+    const client = {
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [] },
+        mcpServers: { servers: [mcpServer()] },
+      }),
+      getMcpServerConfig,
+      saveMcpServer,
+    }
+
+    renderMCPManager(client)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Configure Workspace GitHub' }))
+    await waitFor(() => expect(getMcpServerConfig).toHaveBeenCalledWith('github'))
+    expect(screen.getByDisplayValue('LOG_LEVEL')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('info')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save MCP server' }))
+
+    await waitFor(() =>
+      expect(saveMcpServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'github',
+          transport: expect.objectContaining({
+            env: [{ key: 'LOG_LEVEL', preserveExisting: true }],
+          }),
+        }),
+      ),
+    )
+    expect(JSON.stringify(saveMcpServer.mock.calls)).not.toContain('info')
   })
 
   it('renders live diagnostics without leaking raw payload details', async () => {

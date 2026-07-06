@@ -217,7 +217,7 @@ async fn list_reference_candidates_includes_workspace_files() {
                 display_name: "Workspace Stdio".to_owned(),
                 id: "stdio".to_owned(),
                 scope: "global".to_owned(),
-                transport: McpServerTransportConfig::Stdio {
+                transport: SaveMcpServerTransportConfig::Stdio {
                     command: "/bin/sh".to_owned(),
                     args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
                     env: Vec::new(),

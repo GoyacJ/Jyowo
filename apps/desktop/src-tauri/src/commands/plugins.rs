@@ -141,18 +141,10 @@ pub async fn install_plugin_from_path_with_runtime_state(
     }
 
     let package_dir = plugin_package_dir_name(&summary.id);
-    let content_hash = hash_plugin_package(&source_path)?;
-    state
+    let installed_hash = state
         .plugin_store
         .write_plugin_package(&package_dir, &source_path)?;
     let installed_package = state.plugin_store.package_root().join(&package_dir);
-    let installed_hash = hash_plugin_package(&installed_package)?;
-    if installed_hash != content_hash {
-        let _ = state.plugin_store.delete_plugin_package(&package_dir);
-        return Err(runtime_operation_failed(
-            "plugin package changed while it was being installed".to_owned(),
-        ));
-    }
     let installed_report = validate_plugin_source_path(&installed_package).await?;
     let installed_summary = installed_report.summary.as_ref();
     let installed_matches_source = installed_report.valid
@@ -186,7 +178,7 @@ pub async fn install_plugin_from_path_with_runtime_state(
         enabled: false,
         package_dir: package_dir.clone(),
         source_path: source_path.display().to_string(),
-        content_hash,
+        content_hash: installed_hash,
         imported_at: now.clone(),
         updated_at: now,
         config: Value::Null,

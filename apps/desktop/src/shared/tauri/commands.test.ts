@@ -4009,7 +4009,7 @@ describe('CommandClient', () => {
             transport: {
               args: ['mcp-server'],
               command: 'node',
-              env: [{ key: 'LOG_LEVEL', value: 'info' }],
+              env: [{ hasValue: true, key: 'LOG_LEVEL' }],
               inheritEnv: ['GITHUB_TOKEN'],
               kind: 'stdio',
             },
@@ -4076,7 +4076,7 @@ describe('CommandClient', () => {
         transport: {
           args: ['mcp-server'],
           command: 'node',
-          env: [{ key: 'LOG_LEVEL', value: 'info' }],
+          env: [{ hasValue: true, key: 'LOG_LEVEL' }],
           inheritEnv: ['GITHUB_TOKEN'],
           kind: 'stdio',
         },
@@ -4279,6 +4279,54 @@ describe('CommandClient', () => {
       id: 'github',
     })
     expect(invoke).toHaveBeenCalledWith('restart_mcp_server', { id: 'github' })
+  })
+
+  it('accepts MCP save requests that preserve existing redacted inline values', async () => {
+    const invoke = vi.fn(async () => ({
+      server: {
+        displayName: 'Workspace GitHub',
+        enabled: true,
+        exposedToolCount: 0,
+        id: 'github',
+        manageable: true,
+        origin: 'workspace',
+        scope: 'global',
+        status: 'configured',
+        transport: 'stdio',
+      },
+    }))
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      saveMcpServer(
+        {
+          displayName: 'Workspace GitHub',
+          id: 'github',
+          scope: 'global',
+          transport: {
+            command: 'node',
+            env: [{ key: 'LOG_LEVEL', preserveExisting: true }],
+            kind: 'stdio',
+          },
+        },
+        client,
+      ),
+    ).resolves.toHaveProperty('server.status', 'configured')
+
+    expect(invoke).toHaveBeenCalledWith('save_mcp_server', {
+      displayName: 'Workspace GitHub',
+      enabled: true,
+      id: 'github',
+      scope: 'global',
+      transport: {
+        args: [],
+        command: 'node',
+        env: [{ key: 'LOG_LEVEL', preserveExisting: true }],
+        inheritEnv: [],
+        kind: 'stdio',
+      },
+    })
+    expect(JSON.stringify(invoke.mock.calls)).not.toContain('info')
   })
 
   it('rejects raw secret MCP headers and stdio env before invoking Tauri', async () => {

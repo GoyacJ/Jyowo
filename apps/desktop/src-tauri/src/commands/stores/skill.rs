@@ -50,17 +50,7 @@ impl SkillStore for DesktopSkillStore {
     }
 
     fn load_records(&self) -> Result<Vec<SkillStoreRecord>, CommandErrorPayload> {
-        let index_path = self.index_path();
-        ensure_no_symlink_components(&index_path, "skill index file")?;
-        match std::fs::read(&index_path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-                runtime_operation_failed(format!("skill index parse failed: {error}"))
-            }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(error) => Err(runtime_operation_failed(format!(
-                "skill index read failed: {error}"
-            ))),
-        }
+        Ok(read_json_file(&self.index_path(), "skill index")?.unwrap_or_default())
     }
 
     fn save_records(&self, records: &[SkillStoreRecord]) -> Result<(), CommandErrorPayload> {
@@ -72,17 +62,13 @@ impl SkillStore for DesktopSkillStore {
         id: &str,
         enabled: bool,
         source_path: &Path,
-    ) -> Result<(), CommandErrorPayload> {
+    ) -> Result<String, CommandErrorPayload> {
         ensure_skill_id(id)?;
         let path = self.skill_dir(id, enabled);
         let parent = path.parent().ok_or_else(|| {
             runtime_operation_failed("skill package path has no parent".to_owned())
         })?;
-        ensure_no_symlink_components(parent, "skill directory")?;
-        std::fs::create_dir_all(parent).map_err(|error| {
-            runtime_operation_failed(format!("skill directory unavailable: {error}"))
-        })?;
-        ensure_no_symlink_components(parent, "skill directory")?;
+        ensure_app_dir_no_symlink(parent, "skill directory")?;
         ensure_no_symlink_components(&path, "skill package")?;
         copy_skill_package(source_path, &path)
     }
@@ -96,16 +82,18 @@ impl SkillStore for DesktopSkillStore {
             .skill_dir(&record.id, record.enabled)
             .join(SKILL_PACKAGE_ENTRY_FILE);
         ensure_no_symlink_components(&path, "skill entry file")?;
-        if path.exists() {
-            return std::fs::read_to_string(&path).map_err(|error| {
-                runtime_operation_failed(format!("skill entry file read failed: {error}"))
-            });
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => return read_skill_entry_markdown_file(&path, "skill entry file"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(runtime_operation_failed(format!(
+                    "skill entry file metadata failed: {error}"
+                )));
+            }
         }
         let path = self.legacy_skill_file_path(&record.id, record.enabled);
         ensure_no_symlink_components(&path, "legacy skill file")?;
-        std::fs::read_to_string(&path).map_err(|error| {
-            runtime_operation_failed(format!("legacy skill file read failed: {error}"))
-        })
+        read_skill_entry_markdown_file(&path, "legacy skill file")
     }
 
     fn list_skill_package_files(
@@ -162,10 +150,7 @@ impl SkillStore for DesktopSkillStore {
         let parent = to.parent().ok_or_else(|| {
             runtime_operation_failed("skill package path has no parent".to_owned())
         })?;
-        ensure_no_symlink_components(parent, "skill directory")?;
-        std::fs::create_dir_all(parent).map_err(|error| {
-            runtime_operation_failed(format!("skill directory unavailable: {error}"))
-        })?;
+        ensure_app_dir_no_symlink(parent, "skill directory")?;
         ensure_no_symlink_components(&from, "skill package")?;
         ensure_no_symlink_components(&to, "skill package")?;
         if from.exists() {
@@ -214,4 +199,9 @@ impl SkillStore for DesktopSkillStore {
         }
         Ok(())
     }
+}
+
+fn read_skill_entry_markdown_file(path: &Path, label: &str) -> Result<String, CommandErrorPayload> {
+    let bytes = read_regular_file_no_follow(path, label, MAX_SKILL_MARKDOWN_BYTES)?;
+    String::from_utf8(bytes).map_err(|_| invalid_payload(format!("{label} must be valid UTF-8")))
 }

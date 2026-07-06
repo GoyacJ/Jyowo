@@ -250,74 +250,13 @@ impl DesktopProviderSettingsStore {
 impl ProviderSettingsStore for DesktopProviderSettingsStore {
     fn load_record(&self) -> Result<Option<ProviderSettingsRecord>, CommandErrorPayload> {
         let settings_path = self.settings_path();
-        ensure_no_symlink_components(&settings_path, "provider settings file")?;
-        match std::fs::read(&settings_path) {
-            Ok(bytes) => match serde_json::from_slice(&bytes) {
-                Ok(record) => Ok(Some(record)),
-                Err(_) => {
-                    remove_invalid_provider_settings_file(&settings_path)?;
-                    Ok(None)
-                }
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(runtime_operation_failed(format!(
-                "provider settings read failed: {error}"
-            ))),
-        }
+        read_secret_json_file_or_remove_invalid(&settings_path, "provider settings")
     }
 
     fn save_record(&self, record: &ProviderSettingsRecord) -> Result<(), CommandErrorPayload> {
         ensure_provider_settings_record(record)?;
         let settings_path = self.settings_path();
-        let parent = settings_path.parent().ok_or_else(|| {
-            runtime_operation_failed("provider settings path has no parent".to_owned())
-        })?;
-        ensure_no_symlink_components(parent, "provider settings directory")?;
-        std::fs::create_dir_all(parent).map_err(|error| {
-            runtime_operation_failed(format!("provider settings directory unavailable: {error}"))
-        })?;
-        ensure_no_symlink_components(parent, "provider settings directory")?;
-        let bytes = serde_json::to_vec_pretty(record).map_err(|error| {
-            runtime_operation_failed(format!("provider settings serialization failed: {error}"))
-        })?;
-        let temp_path = settings_path.with_file_name(format!(
-            "{}.{}.tmp",
-            settings_path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("provider-settings.json"),
-            RunId::new()
-        ));
-        ensure_no_symlink_components(&temp_path, "provider settings temp file")?;
-        let mut open_options = std::fs::OpenOptions::new();
-        open_options.create_new(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-
-            open_options.mode(0o600);
-        }
-        let mut temp_file = open_options.open(&temp_path).map_err(|error| {
-            runtime_operation_failed(format!("provider settings temp open failed: {error}"))
-        })?;
-        if let Err(error) = temp_file.write_all(&bytes) {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(runtime_operation_failed(format!(
-                "provider settings write failed: {error}"
-            )));
-        }
-        if let Err(error) = temp_file.sync_all() {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(runtime_operation_failed(format!(
-                "provider settings sync failed: {error}"
-            )));
-        }
-        drop(temp_file);
-        ensure_no_symlink_components(&settings_path, "provider settings file")?;
-        std::fs::rename(&temp_path, &settings_path).map_err(|error| {
-            let _ = std::fs::remove_file(&temp_path);
-            runtime_operation_failed(format!("provider settings commit failed: {error}"))
-        })
+        write_secret_json_file_atomic(&settings_path, "provider settings", record)
     }
 }
 
@@ -382,20 +321,7 @@ impl provider_capability_route_store_seal::Sealed for DesktopProviderCapabilityR
 impl ProviderCapabilityRouteStore for DesktopProviderCapabilityRouteStore {
     fn load_record(&self) -> Result<Option<ProviderCapabilityRouteSettings>, CommandErrorPayload> {
         let settings_path = self.settings_path();
-        ensure_no_symlink_components(&settings_path, "provider capability route file")?;
-        match std::fs::read(&settings_path) {
-            Ok(bytes) => match serde_json::from_slice::<ProviderCapabilityRouteSettings>(&bytes) {
-                Ok(record) => Ok(Some(record)),
-                Err(_) => {
-                    remove_invalid_provider_capability_route_file(&settings_path)?;
-                    Ok(None)
-                }
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(runtime_operation_failed(format!(
-                "provider capability route read failed: {error}"
-            ))),
-        }
+        read_secret_json_file_or_remove_invalid(&settings_path, "provider capability route")
     }
 
     fn save_record(
@@ -405,61 +331,7 @@ impl ProviderCapabilityRouteStore for DesktopProviderCapabilityRouteStore {
     ) -> Result<(), CommandErrorPayload> {
         ensure_provider_capability_route_settings_record(record)?;
         let settings_path = self.settings_path();
-        let parent = settings_path.parent().ok_or_else(|| {
-            runtime_operation_failed("provider capability route path has no parent".to_owned())
-        })?;
-        ensure_no_symlink_components(parent, "provider capability route directory")?;
-        std::fs::create_dir_all(parent).map_err(|error| {
-            runtime_operation_failed(format!(
-                "provider capability route directory unavailable: {error}"
-            ))
-        })?;
-        ensure_no_symlink_components(parent, "provider capability route directory")?;
-        let bytes = serde_json::to_vec_pretty(record).map_err(|error| {
-            runtime_operation_failed(format!(
-                "provider capability route serialization failed: {error}"
-            ))
-        })?;
-        let temp_path = settings_path.with_file_name(format!(
-            "{}.{}.tmp",
-            settings_path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("provider-capability-routes.json"),
-            RunId::new()
-        ));
-        ensure_no_symlink_components(&temp_path, "provider capability route temp file")?;
-        let mut open_options = std::fs::OpenOptions::new();
-        open_options.create_new(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-
-            open_options.mode(0o600);
-        }
-        let mut temp_file = open_options.open(&temp_path).map_err(|error| {
-            runtime_operation_failed(format!(
-                "provider capability route temp open failed: {error}"
-            ))
-        })?;
-        if let Err(error) = temp_file.write_all(&bytes) {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(runtime_operation_failed(format!(
-                "provider capability route write failed: {error}"
-            )));
-        }
-        if let Err(error) = temp_file.sync_all() {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(runtime_operation_failed(format!(
-                "provider capability route sync failed: {error}"
-            )));
-        }
-        drop(temp_file);
-        ensure_no_symlink_components(&settings_path, "provider capability route file")?;
-        std::fs::rename(&temp_path, &settings_path).map_err(|error| {
-            let _ = std::fs::remove_file(&temp_path);
-            runtime_operation_failed(format!("provider capability route commit failed: {error}"))
-        })
+        write_secret_json_file_atomic(&settings_path, "provider capability route", record)
     }
 }
 
@@ -487,29 +359,15 @@ impl DesktopExecutionSettingsStore {
 
     pub fn load_record(&self) -> Result<ExecutionSettingsRecord, CommandErrorPayload> {
         let settings_path = self.settings_path();
-        ensure_no_symlink_components(&settings_path, "execution settings file")?;
-        match std::fs::read(&settings_path) {
-            Ok(bytes) => match serde_json::from_slice(&bytes) {
-                Ok(record) => {
-                    if ensure_execution_settings_structure(&record).is_ok() {
-                        Ok(record)
-                    } else {
-                        remove_invalid_execution_settings_file(&settings_path)?;
-                        Ok(ExecutionSettingsRecord::default())
-                    }
-                }
-                Err(_) => {
-                    remove_invalid_execution_settings_file(&settings_path)?;
-                    Ok(ExecutionSettingsRecord::default())
-                }
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(ExecutionSettingsRecord::default())
-            }
-            Err(error) => Err(runtime_operation_failed(format!(
-                "execution settings read failed: {error}"
-            ))),
+        let Some(record) = read_json_file_or_remove_invalid(&settings_path, "execution settings")?
+        else {
+            return Ok(ExecutionSettingsRecord::default());
+        };
+        if ensure_execution_settings_structure(&record).is_err() {
+            remove_invalid_json_file(&settings_path, "execution settings")?;
+            return Ok(ExecutionSettingsRecord::default());
         }
+        Ok(record)
     }
 
     pub fn save_record(
@@ -519,63 +377,7 @@ impl DesktopExecutionSettingsStore {
     ) -> Result<(), CommandErrorPayload> {
         ensure_execution_settings_record(record, &self.workspace_root, context)?;
         let settings_path = self.settings_path();
-        let parent = settings_path.parent().ok_or_else(|| {
-            runtime_operation_failed("execution settings path has no parent".to_owned())
-        })?;
-        ensure_no_symlink_components(parent, "execution settings directory")?;
-        std::fs::create_dir_all(parent).map_err(|error| {
-            runtime_operation_failed(format!("execution settings directory unavailable: {error}"))
-        })?;
-        ensure_no_symlink_components(parent, "execution settings directory")?;
-        let bytes = serde_json::to_vec_pretty(record).map_err(|error| {
-            runtime_operation_failed(format!("execution settings serialization failed: {error}"))
-        })?;
-        let temp_path = settings_path.with_file_name(format!(
-            "{}.{}.tmp",
-            settings_path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("execution-settings.json"),
-            RunId::new()
-        ));
-        ensure_no_symlink_components(&temp_path, "execution settings temp file")?;
-        let mut temp_file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp_path)
-            .map_err(|error| {
-                runtime_operation_failed(format!("execution settings temp open failed: {error}"))
-            })?;
-        if let Err(error) = temp_file.write_all(&bytes) {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(runtime_operation_failed(format!(
-                "execution settings write failed: {error}"
-            )));
-        }
-        if let Err(error) = temp_file.sync_all() {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(runtime_operation_failed(format!(
-                "execution settings sync failed: {error}"
-            )));
-        }
-        drop(temp_file);
-        ensure_no_symlink_components(&settings_path, "execution settings file")?;
-        std::fs::rename(&temp_path, &settings_path).map_err(|error| {
-            let _ = std::fs::remove_file(&temp_path);
-            runtime_operation_failed(format!("execution settings commit failed: {error}"))
-        })
-    }
-}
-
-pub(crate) fn remove_invalid_execution_settings_file(
-    settings_path: &Path,
-) -> Result<(), CommandErrorPayload> {
-    match std::fs::remove_file(settings_path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(runtime_operation_failed(format!(
-            "execution settings cleanup failed: {error}"
-        ))),
+        write_json_file_atomic(&settings_path, "execution settings", record)
     }
 }
 
@@ -684,30 +486,6 @@ pub(crate) fn agent_capabilities_payload(
     }
 }
 
-pub(crate) fn remove_invalid_provider_settings_file(
-    settings_path: &Path,
-) -> Result<(), CommandErrorPayload> {
-    match std::fs::remove_file(settings_path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(runtime_operation_failed(format!(
-            "provider settings cleanup failed: {error}"
-        ))),
-    }
-}
-
-pub(crate) fn remove_invalid_provider_capability_route_file(
-    settings_path: &Path,
-) -> Result<(), CommandErrorPayload> {
-    match std::fs::remove_file(settings_path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(runtime_operation_failed(format!(
-            "provider capability route cleanup failed: {error}"
-        ))),
-    }
-}
-
 pub(crate) fn ensure_provider_settings_record(
     record: &ProviderSettingsRecord,
 ) -> Result<(), CommandErrorPayload> {
@@ -795,18 +573,7 @@ impl DesktopConversationMetadataStore {
 impl ConversationMetadataStore for DesktopConversationMetadataStore {
     fn load_record(&self) -> Result<ConversationMetadataFile, CommandErrorPayload> {
         let metadata_path = self.metadata_path();
-        ensure_no_symlink_components(&metadata_path, "conversation metadata file")?;
-        match std::fs::read(&metadata_path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-                runtime_operation_failed(format!("conversation metadata parse failed: {error}"))
-            }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(ConversationMetadataFile::default())
-            }
-            Err(error) => Err(runtime_operation_failed(format!(
-                "conversation metadata read failed: {error}"
-            ))),
-        }
+        Ok(read_json_file(&metadata_path, "conversation metadata")?.unwrap_or_default())
     }
 
     fn save_record(&self, record: &ConversationMetadataFile) -> Result<(), CommandErrorPayload> {
@@ -816,55 +583,7 @@ impl ConversationMetadataStore for DesktopConversationMetadataStore {
             ));
         }
         let metadata_path = self.metadata_path();
-        let parent = metadata_path.parent().ok_or_else(|| {
-            runtime_operation_failed("conversation metadata path has no parent".to_owned())
-        })?;
-        ensure_no_symlink_components(parent, "conversation metadata directory")?;
-        std::fs::create_dir_all(parent).map_err(|error| {
-            runtime_operation_failed(format!(
-                "conversation metadata directory unavailable: {error}"
-            ))
-        })?;
-        ensure_no_symlink_components(parent, "conversation metadata directory")?;
-        let bytes = serde_json::to_vec_pretty(record).map_err(|error| {
-            runtime_operation_failed(format!(
-                "conversation metadata serialization failed: {error}"
-            ))
-        })?;
-        let temp_path = metadata_path.with_file_name(format!(
-            "{}.{}.tmp",
-            metadata_path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("conversation-metadata.json"),
-            RunId::new()
-        ));
-        ensure_no_symlink_components(&temp_path, "conversation metadata temp file")?;
-        let mut temp_file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp_path)
-            .map_err(|error| {
-                runtime_operation_failed(format!("conversation metadata temp open failed: {error}"))
-            })?;
-        if let Err(error) = temp_file.write_all(&bytes) {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(runtime_operation_failed(format!(
-                "conversation metadata write failed: {error}"
-            )));
-        }
-        if let Err(error) = temp_file.sync_all() {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(runtime_operation_failed(format!(
-                "conversation metadata sync failed: {error}"
-            )));
-        }
-        drop(temp_file);
-        ensure_no_symlink_components(&metadata_path, "conversation metadata file")?;
-        std::fs::rename(&temp_path, &metadata_path).map_err(|error| {
-            let _ = std::fs::remove_file(&temp_path);
-            runtime_operation_failed(format!("conversation metadata save failed: {error}"))
-        })
+        write_json_file_atomic(&metadata_path, "conversation metadata", record)
     }
 }
 

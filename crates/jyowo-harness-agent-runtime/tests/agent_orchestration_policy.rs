@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::Write;
+use std::path::PathBuf;
 
 use chrono::Utc;
 use harness_agent_runtime::{
@@ -12,7 +13,7 @@ use harness_contracts::{
     AgentTeamRunConfig, AgentTeamSharedMemoryPolicy, AgentTeamTopology, AgentToolPolicy,
     AgentUsePolicy, AgentWorkspaceIsolationMode,
 };
-use tempfile::{tempdir, NamedTempFile};
+use tempfile::{tempdir, NamedTempFile, TempDir};
 
 fn compiled_environment(stream_permission_runtime_available: bool) -> AgentCapabilityEnvironment {
     AgentCapabilityEnvironment {
@@ -25,8 +26,9 @@ fn compiled_environment(stream_permission_runtime_available: bool) -> AgentCapab
 #[test]
 fn subagents_unavailable_when_not_compiled() {
     let workspace = tempdir().expect("tempdir");
+    let workspace_root = canonical_temp_root(&workspace);
     let policy = AgentCapabilityResolver::resolve(
-        workspace.path(),
+        &workspace_root,
         AgentCapabilityEnvironment {
             subagents_compiled: false,
             agent_teams_compiled: false,
@@ -46,9 +48,10 @@ fn subagents_unavailable_when_not_compiled() {
 #[test]
 fn agent_teams_unavailable_when_not_compiled() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
     let policy = AgentCapabilityResolver::resolve(
-        workspace.path(),
+        &workspace_root,
         AgentCapabilityEnvironment {
             subagents_compiled: true,
             agent_teams_compiled: false,
@@ -68,8 +71,9 @@ fn agent_teams_unavailable_when_not_compiled() {
 #[test]
 fn subagents_unavailable_without_stream_permission_runtime() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
-    let policy = AgentCapabilityResolver::resolve(workspace.path(), compiled_environment(false));
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let policy = AgentCapabilityResolver::resolve(&workspace_root, compiled_environment(false));
 
     assert!(!policy.subagents_available);
     assert!(policy.unavailable_reasons.iter().any(|reason| matches!(
@@ -83,10 +87,11 @@ fn subagents_unavailable_without_stream_permission_runtime() {
 #[test]
 fn invalid_agent_profiles_mark_subagents_unavailable() {
     let workspace = tempdir().expect("tempdir");
-    let store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
+    let workspace_root = canonical_temp_root(&workspace);
+    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
     fs::write(store.profiles_file_path(), b"{not-json").expect("invalid profiles should write");
 
-    let policy = AgentCapabilityResolver::resolve(workspace.path(), compiled_environment(true));
+    let policy = AgentCapabilityResolver::resolve(&workspace_root, compiled_environment(true));
 
     assert!(!policy.subagents_available);
     assert!(policy.unavailable_reasons.iter().any(|reason| matches!(
@@ -118,8 +123,9 @@ fn runtime_store_unavailable_marks_all_capabilities_unavailable() {
 #[test]
 fn background_agents_unavailable_when_supervisor_missing() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
-    let policy = AgentCapabilityResolver::resolve(workspace.path(), compiled_environment(true));
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let policy = AgentCapabilityResolver::resolve(&workspace_root, compiled_environment(true));
 
     assert!(!policy.background_agents_available);
     assert!(policy.unavailable_reasons.iter().any(|reason| matches!(
@@ -131,10 +137,11 @@ fn background_agents_unavailable_when_supervisor_missing() {
 #[test]
 fn background_agents_unavailable_when_fresh_supervisor_lock_has_no_live_control_channel() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
-    write_test_supervisor_token_and_lock(workspace.path());
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    write_test_supervisor_token_and_lock(&workspace_root);
 
-    let policy = AgentCapabilityResolver::resolve(workspace.path(), compiled_environment(true));
+    let policy = AgentCapabilityResolver::resolve(&workspace_root, compiled_environment(true));
 
     assert!(!policy.background_agents_available);
     assert!(policy.unavailable_reasons.iter().any(|reason| matches!(
@@ -146,15 +153,15 @@ fn background_agents_unavailable_when_fresh_supervisor_lock_has_no_live_control_
 #[test]
 fn write_isolation_unavailable_is_reported_without_hiding_read_only_agent_capabilities() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
-    let worktrees_dir = workspace
-        .path()
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let worktrees_dir = workspace_root
         .join(".jyowo")
         .join("runtime")
         .join("agent-worktrees");
     fs::write(&worktrees_dir, "not a directory").expect("block isolation worktrees dir");
 
-    let policy = AgentCapabilityResolver::resolve(workspace.path(), compiled_environment(true));
+    let policy = AgentCapabilityResolver::resolve(&workspace_root, compiled_environment(true));
 
     assert!(policy.subagents_available);
     #[cfg(feature = "agents-team")]
@@ -180,9 +187,9 @@ fn write_isolation_unavailable_is_reported_without_hiding_read_only_agent_capabi
 #[test]
 fn merge_rejects_write_capable_isolation_when_write_isolation_store_cannot_open() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
-    let worktrees_dir = workspace
-        .path()
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let worktrees_dir = workspace_root
         .join(".jyowo")
         .join("runtime")
         .join("agent-worktrees");
@@ -196,7 +203,7 @@ fn merge_rejects_write_capable_isolation_when_write_isolation_store_cannot_open(
         &all_available_capabilities(),
         &["reviewer".to_owned(), "worker".to_owned()],
         "conversation-1",
-        workspace.path(),
+        &workspace_root,
     )
     .unwrap_err();
 
@@ -209,8 +216,9 @@ fn merge_rejects_write_capable_isolation_when_write_isolation_store_cannot_open(
 #[test]
 fn subagents_and_teams_available_with_compiled_runtime_and_stream_permission() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
-    let policy = AgentCapabilityResolver::resolve(workspace.path(), compiled_environment(true));
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let policy = AgentCapabilityResolver::resolve(&workspace_root, compiled_environment(true));
 
     assert!(policy.subagents_available);
     #[cfg(feature = "agents-team")]
@@ -271,14 +279,15 @@ fn sample_team_options() -> AgentToolPolicy {
 #[test]
 fn merge_defaults_agent_capabilities_from_settings_when_agent_tool_policy_omitted() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
     let policy = AgentRuntimePolicyResolver::merge(
         &enabled_settings(),
         None,
         &all_available_capabilities(),
         &["reviewer".to_owned(), "worker".to_owned()],
         "conversation-1",
-        workspace.path(),
+        &workspace_root,
     )
     .expect("defaults should merge");
 
@@ -291,7 +300,8 @@ fn merge_defaults_agent_capabilities_from_settings_when_agent_tool_policy_omitte
 #[test]
 fn merge_rejects_subagents_allowed_when_settings_disabled() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
     let error = AgentRuntimePolicyResolver::merge(
         &ExecutionSettingsAgentInput {
             subagents_enabled: false,
@@ -302,7 +312,7 @@ fn merge_rejects_subagents_allowed_when_settings_disabled() {
         &all_available_capabilities(),
         &["reviewer".to_owned(), "worker".to_owned()],
         "conversation-1",
-        workspace.path(),
+        &workspace_root,
     )
     .unwrap_err();
 
@@ -315,7 +325,8 @@ fn merge_rejects_subagents_allowed_when_settings_disabled() {
 #[test]
 fn merge_rejects_subagents_allowed_when_runtime_unavailable() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
     let error = AgentRuntimePolicyResolver::merge(
         &enabled_settings(),
         Some(&sample_subagent_options()),
@@ -326,7 +337,7 @@ fn merge_rejects_subagents_allowed_when_runtime_unavailable() {
         },
         &["reviewer".to_owned(), "worker".to_owned()],
         "conversation-1",
-        workspace.path(),
+        &workspace_root,
     )
     .unwrap_err();
 
@@ -339,7 +350,8 @@ fn merge_rejects_subagents_allowed_when_runtime_unavailable() {
 #[test]
 fn merge_rejects_invalid_numeric_limits() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
     let mut options = sample_subagent_options();
     options.max_concurrent_subagents = 0;
 
@@ -349,7 +361,7 @@ fn merge_rejects_invalid_numeric_limits() {
         &all_available_capabilities(),
         &["reviewer".to_owned(), "worker".to_owned()],
         "conversation-1",
-        workspace.path(),
+        &workspace_root,
     )
     .unwrap_err();
 
@@ -364,7 +376,8 @@ fn merge_rejects_invalid_numeric_limits() {
 #[test]
 fn merge_allows_agent_team_without_team_config_for_model_visible_team_tool() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
     let mut options = sample_subagent_options();
     options.agent_team = AgentUsePolicy::Allowed;
 
@@ -374,7 +387,7 @@ fn merge_allows_agent_team_without_team_config_for_model_visible_team_tool() {
         &all_available_capabilities(),
         &["reviewer".to_owned(), "worker".to_owned()],
         "conversation-1",
-        workspace.path(),
+        &workspace_root,
     )
     .expect("team tool availability should not require eager team config");
 
@@ -385,7 +398,8 @@ fn merge_allows_agent_team_without_team_config_for_model_visible_team_tool() {
 #[test]
 fn merge_rejects_team_config_when_team_use_is_off() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
     let mut options = sample_team_options();
     options.agent_team = AgentUsePolicy::Off;
 
@@ -395,7 +409,7 @@ fn merge_rejects_team_config_when_team_use_is_off() {
         &all_available_capabilities(),
         &["reviewer".to_owned(), "worker".to_owned()],
         "conversation-1",
-        workspace.path(),
+        &workspace_root,
     )
     .unwrap_err();
 
@@ -410,7 +424,8 @@ fn merge_rejects_team_config_when_team_use_is_off() {
 #[test]
 fn merge_rejects_unknown_lead_profile_id() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
     let mut options = sample_team_options();
     options.team_config.as_mut().unwrap().lead_profile_id = "missing".to_owned();
 
@@ -420,7 +435,7 @@ fn merge_rejects_unknown_lead_profile_id() {
         &all_available_capabilities(),
         &["reviewer".to_owned(), "worker".to_owned()],
         "conversation-1",
-        workspace.path(),
+        &workspace_root,
     )
     .unwrap_err();
 
@@ -435,7 +450,8 @@ fn merge_rejects_unknown_lead_profile_id() {
 #[test]
 fn merge_rejects_empty_member_profile_list() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
     let mut options = sample_team_options();
     options
         .team_config
@@ -450,7 +466,7 @@ fn merge_rejects_empty_member_profile_list() {
         &all_available_capabilities(),
         &["reviewer".to_owned(), "worker".to_owned()],
         "conversation-1",
-        workspace.path(),
+        &workspace_root,
     )
     .unwrap_err();
 
@@ -463,8 +479,9 @@ fn merge_rejects_empty_member_profile_list() {
 #[test]
 fn merge_allows_background_agent_tool_when_requested() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
-    write_test_supervisor_token_and_lock(workspace.path());
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    write_test_supervisor_token_and_lock(&workspace_root);
 
     let mut options = sample_subagent_options();
     options.background_agents = AgentUsePolicy::Allowed;
@@ -475,7 +492,7 @@ fn merge_allows_background_agent_tool_when_requested() {
         &all_available_capabilities(),
         &["reviewer".to_owned(), "worker".to_owned()],
         "conversation-1",
-        workspace.path(),
+        &workspace_root,
     )
     .expect("background merge should succeed");
 
@@ -522,7 +539,8 @@ fn write_test_supervisor_token_and_lock(workspace: &std::path::Path) {
 #[test]
 fn merge_rejects_git_worktree_in_non_git_workspace() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
     let mut options = sample_subagent_options();
     options.workspace_isolation = AgentWorkspaceIsolationMode::GitWorktree;
 
@@ -532,7 +550,7 @@ fn merge_rejects_git_worktree_in_non_git_workspace() {
         &all_available_capabilities(),
         &["reviewer".to_owned(), "worker".to_owned()],
         "conversation-1",
-        workspace.path(),
+        &workspace_root,
     )
     .unwrap_err();
 
@@ -542,7 +560,8 @@ fn merge_rejects_git_worktree_in_non_git_workspace() {
 #[test]
 fn merge_allows_patch_only_without_git_repository() {
     let workspace = tempdir().expect("tempdir");
-    let _store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
     let mut options = sample_subagent_options();
     options.workspace_isolation = AgentWorkspaceIsolationMode::PatchOnly;
 
@@ -552,7 +571,11 @@ fn merge_allows_patch_only_without_git_repository() {
         &all_available_capabilities(),
         &["reviewer".to_owned(), "worker".to_owned()],
         "conversation-1",
-        workspace.path(),
+        &workspace_root,
     )
     .expect("patch-only isolation should not require git");
+}
+
+fn canonical_temp_root(temp: &TempDir) -> PathBuf {
+    temp.path().canonicalize().expect("canonical tempdir")
 }

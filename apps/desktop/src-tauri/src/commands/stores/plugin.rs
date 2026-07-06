@@ -40,23 +40,12 @@ impl PluginStore for DesktopPluginStore {
     }
 
     fn load_record(&self) -> Result<PluginSettingsRecord, CommandErrorPayload> {
-        let index_path = self.index_path();
-        ensure_no_symlink_components(&index_path, "plugin index file")?;
-        match std::fs::read(&index_path) {
-            Ok(bytes) => {
-                let record =
-                    serde_json::from_slice::<PluginSettingsRecord>(&bytes).map_err(|error| {
-                        runtime_operation_failed(format!("plugin index parse failed: {error}"))
-                    })?;
+        match read_json_file::<PluginSettingsRecord>(&self.index_path(), "plugin index")? {
+            Some(record) => {
                 ensure_plugin_settings_record(&record)?;
                 Ok(record)
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(PluginSettingsRecord::default())
-            }
-            Err(error) => Err(runtime_operation_failed(format!(
-                "plugin index read failed: {error}"
-            ))),
+            None => Ok(PluginSettingsRecord::default()),
         }
     }
 
@@ -69,17 +58,13 @@ impl PluginStore for DesktopPluginStore {
         &self,
         package_dir: &str,
         source_path: &Path,
-    ) -> Result<(), CommandErrorPayload> {
+    ) -> Result<String, CommandErrorPayload> {
         ensure_plugin_package_dir_name(package_dir)?;
         let destination = self.package_dir(package_dir);
         let parent = destination.parent().ok_or_else(|| {
             runtime_operation_failed("plugin package path has no parent".to_owned())
         })?;
-        ensure_no_symlink_components(parent, "plugin package directory")?;
-        std::fs::create_dir_all(parent).map_err(|error| {
-            runtime_operation_failed(format!("plugin package directory unavailable: {error}"))
-        })?;
-        ensure_no_symlink_components(parent, "plugin package directory")?;
+        ensure_app_dir_no_symlink(parent, "plugin package directory")?;
         copy_plugin_package(source_path, &destination)
     }
 

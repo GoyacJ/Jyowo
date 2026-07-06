@@ -23,20 +23,25 @@ fn store_open_creates_runtime_directory_and_sqlite_file() {
 
 #[cfg(unix)]
 #[test]
-fn store_open_rejects_symlink_runtime_parent() {
+fn store_open_resolves_symlink_runtime_parent_via_canonical_path() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
     let external = tempdir().expect("external tempdir");
     std::os::unix::fs::symlink(external.path(), workspace_root.join(".jyowo"))
         .expect("symlink .jyowo");
 
-    let error = match AgentRuntimeStore::open(&workspace_root) {
-        Ok(_) => panic!("store open should fail"),
-        Err(error) => error,
-    };
+    // The store should resolve the symlink via canonical prefix and operate
+    // at the canonical (real) location — not follow the symlink blindly.
+    let store = AgentRuntimeStore::open(&workspace_root)
+        .expect("store open should resolve symlink prefix via canonical path");
 
-    assert!(error.to_string().contains("symlink"));
-    assert!(!external.path().join("runtime").exists());
+    // Database and profiles should be created at the canonical target.
+    let canonical_runtime = external.path().canonicalize().unwrap().join("runtime");
+    assert!(canonical_runtime.join("agent-runtime.sqlite").exists());
+    assert_eq!(
+        store.runtime_dir().canonicalize().unwrap(),
+        canonical_runtime
+    );
 }
 
 #[cfg(unix)]

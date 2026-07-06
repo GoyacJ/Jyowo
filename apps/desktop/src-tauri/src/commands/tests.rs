@@ -1423,8 +1423,8 @@ exit 2
             &self,
             _package_dir: &str,
             _source_path: &Path,
-        ) -> Result<(), CommandErrorPayload> {
-            Ok(())
+        ) -> Result<String, CommandErrorPayload> {
+            Ok("test-hash".to_owned())
         }
 
         fn delete_plugin_package(&self, package_dir: &str) -> Result<(), CommandErrorPayload> {

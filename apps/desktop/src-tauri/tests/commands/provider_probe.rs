@@ -269,3 +269,19 @@ fn desktop_provider_diagnostics_store_rejects_symlink_file() {
         .unwrap_err();
     assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
 }
+
+#[test]
+fn provider_diagnostics_store_recovers_from_invalid_json() {
+    let workspace = prepare_workspace("provider-diagnostics-invalid-json");
+    let runtime_dir = workspace.join(".jyowo").join("runtime");
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+    let diagnostics_path = runtime_dir.join("provider-diagnostics.json");
+    std::fs::write(&diagnostics_path, b"{not-json").unwrap();
+
+    let record = DesktopProviderDiagnosticsStore::new(workspace)
+        .load_record()
+        .unwrap();
+
+    assert!(record.snapshots.is_empty());
+    assert!(!diagnostics_path.exists());
+}

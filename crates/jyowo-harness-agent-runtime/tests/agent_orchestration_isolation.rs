@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 
 use harness_agent_runtime::{
@@ -7,7 +8,7 @@ use harness_agent_runtime::{
     WorkspaceIsolationManager,
 };
 use harness_contracts::AgentWorkspaceIsolationMode;
-use tempfile::tempdir;
+use tempfile::{tempdir, TempDir};
 
 fn init_git_repo(path: &Path) {
     run_git(path, ["init"]);
@@ -50,9 +51,10 @@ fn sample_request(
 #[test]
 fn create_git_worktree_lease_persists_metadata() {
     let workspace = tempdir().expect("tempdir");
-    init_git_repo(workspace.path());
+    let workspace_root = canonical_temp_root(&workspace);
+    init_git_repo(&workspace_root);
 
-    let manager = WorkspaceIsolationManager::open(workspace.path()).expect("manager opens");
+    let manager = WorkspaceIsolationManager::open(&workspace_root).expect("manager opens");
     let lease = manager
         .create_lease(sample_request(
             "conversation-1",
@@ -74,7 +76,8 @@ fn create_git_worktree_lease_persists_metadata() {
 #[test]
 fn reject_non_git_workspace_for_git_worktree() {
     let workspace = tempdir().expect("tempdir");
-    let manager = WorkspaceIsolationManager::open(workspace.path()).expect("manager opens");
+    let workspace_root = canonical_temp_root(&workspace);
+    let manager = WorkspaceIsolationManager::open(&workspace_root).expect("manager opens");
 
     let error = manager
         .create_lease(sample_request(
@@ -91,9 +94,10 @@ fn reject_non_git_workspace_for_git_worktree() {
 #[test]
 fn reject_duplicate_branch_lease() {
     let workspace = tempdir().expect("tempdir");
-    init_git_repo(workspace.path());
+    let workspace_root = canonical_temp_root(&workspace);
+    init_git_repo(&workspace_root);
 
-    let manager = WorkspaceIsolationManager::open(workspace.path()).expect("manager opens");
+    let manager = WorkspaceIsolationManager::open(&workspace_root).expect("manager opens");
     manager
         .create_lease(sample_request(
             "conversation-1",
@@ -121,9 +125,10 @@ fn reject_duplicate_branch_lease() {
 #[test]
 fn detect_dirty_worktree_on_cleanup() {
     let workspace = tempdir().expect("tempdir");
-    init_git_repo(workspace.path());
+    let workspace_root = canonical_temp_root(&workspace);
+    init_git_repo(&workspace_root);
 
-    let manager = WorkspaceIsolationManager::open(workspace.path()).expect("manager opens");
+    let manager = WorkspaceIsolationManager::open(&workspace_root).expect("manager opens");
     let lease = manager
         .create_lease(sample_request(
             "conversation-1",
@@ -153,10 +158,11 @@ fn detect_dirty_worktree_on_cleanup() {
 #[test]
 fn resume_lease_metadata_after_reopening_store() {
     let workspace = tempdir().expect("tempdir");
-    init_git_repo(workspace.path());
+    let workspace_root = canonical_temp_root(&workspace);
+    init_git_repo(&workspace_root);
 
     let lease_id = {
-        let manager = WorkspaceIsolationManager::open(workspace.path()).expect("manager opens");
+        let manager = WorkspaceIsolationManager::open(&workspace_root).expect("manager opens");
         manager
             .create_lease(sample_request(
                 "conversation-1",
@@ -168,7 +174,7 @@ fn resume_lease_metadata_after_reopening_store() {
             .lease_id
     };
 
-    let reopened = WorkspaceIsolationManager::open(workspace.path()).expect("manager reopens");
+    let reopened = WorkspaceIsolationManager::open(&workspace_root).expect("manager reopens");
     let lease = reopened
         .get_lease(&lease_id)
         .expect("lease lookup")
@@ -176,4 +182,8 @@ fn resume_lease_metadata_after_reopening_store() {
     assert_eq!(lease.conversation_id, "conversation-1");
     assert_eq!(lease.agent_id, "agent-1");
     assert_eq!(lease.status, "active");
+}
+
+fn canonical_temp_root(temp: &TempDir) -> PathBuf {
+    temp.path().canonicalize().expect("canonical tempdir")
 }

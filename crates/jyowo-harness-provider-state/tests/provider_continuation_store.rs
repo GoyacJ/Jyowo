@@ -495,16 +495,21 @@ async fn prune_session_uses_atomic_replace_and_ignores_temp_files() {
 
 #[cfg(unix)]
 #[test]
-fn file_store_open_rejects_symlink_runtime_parent() {
+fn file_store_open_resolves_symlink_runtime_parent_via_canonical_path() {
     let temp = TempDir::new().unwrap();
     let temp_root = canonical_temp_root(&temp);
     let external = TempDir::new().unwrap();
     std::os::unix::fs::symlink(external.path(), temp_root.join(".jyowo")).unwrap();
 
-    let error = FileProviderContinuationStore::open(&temp_root).unwrap_err();
+    // The store should resolve the symlink via canonical prefix and operate
+    // at the canonical (real) location.
+    let _store = FileProviderContinuationStore::open(&temp_root)
+        .expect("store open should resolve symlink prefix via canonical path");
 
-    assert!(error.to_string().contains("I/O failed"));
-    assert!(!external.path().join("runtime").exists());
+    // The runtime directory should be created at the canonical target, not
+    // the symlink source. (The jsonl log is created lazily on first write.)
+    let canonical_runtime = external.path().canonicalize().unwrap().join("runtime");
+    assert!(canonical_runtime.exists());
 }
 
 #[cfg(unix)]

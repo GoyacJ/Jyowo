@@ -167,6 +167,9 @@ impl FileProviderContinuationStore {
         runtime_root: impl AsRef<Path>,
     ) -> Result<Self, ProviderContinuationStoreError> {
         let runtime_dir = runtime_root.as_ref().to_path_buf();
+        // Resolve any benign OS-level symlinks (e.g. /tmp on macOS) before
+        // running the strict no-symlink directory check.
+        let runtime_dir = harness_fs::resolve_canonical_prefix(&runtime_dir).map_err(fs_error)?;
         harness_fs::ensure_app_dir_no_symlink(&runtime_dir).map_err(fs_error)?;
         let path = runtime_dir.join(STORE_LABEL);
         Ok(Self {

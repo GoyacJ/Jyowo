@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -25,6 +26,62 @@ pub enum FsError {
     Symlink(String),
     #[error("{0}")]
     InvalidPath(String),
+}
+
+// ── Path canonicalization helpers ───────────────────────────────────
+
+/// Resolve the longest existing prefix of `path` to its canonical form.
+///
+/// Returns the canonical base and any remaining (non-existing) components.
+/// This avoids rejecting benign OS-level symlinks such as `/tmp` → `/private/tmp`
+/// on macOS while still catching user-created symlinks inside app directories.
+fn canonicalize_existing_prefix(path: &Path) -> Result<(PathBuf, Vec<OsString>), FsError> {
+    let mut remaining: Vec<OsString> = Vec::new();
+    let mut current = path.to_path_buf();
+    loop {
+        match current.canonicalize() {
+            Ok(canonical) => {
+                remaining.reverse();
+                return Ok((canonical, remaining));
+            }
+            Err(_) => {
+                let name = current
+                    .file_name()
+                    .map(ToOwned::to_owned)
+                    .ok_or_else(|| FsError::InvalidPath("path has no file name".to_owned()))?;
+                remaining.push(name);
+                let parent = current.parent().ok_or_else(|| {
+                    FsError::InvalidPath("path has no resolvable parent".to_owned())
+                })?;
+                if parent.as_os_str().is_empty() {
+                    return Err(FsError::InvalidPath(
+                        "path has no resolvable parent".to_owned(),
+                    ));
+                }
+                current = parent.to_path_buf();
+            }
+        }
+    }
+}
+
+/// Resolve `path`, returning either the fully-canonical path or the canonical
+/// prefix joined with any non-existing suffix components.
+///
+/// Useful for callers that construct paths from OS-provided directories (such
+/// as the system temp directory, which on macOS is a symlink `/tmp` →
+/// `/private/tmp`). Callers should canonicalize the resolved path with this
+/// function before passing it to symlink-sensitive file safety functions like
+/// `ensure_app_dir_no_symlink` or `ensure_no_symlink_components`.
+pub fn resolve_canonical_prefix(path: &Path) -> Result<PathBuf, FsError> {
+    let (base, remaining) = canonicalize_existing_prefix(path)?;
+    if remaining.is_empty() {
+        return Ok(base);
+    }
+    let mut resolved = base;
+    for component in remaining {
+        resolved.push(component);
+    }
+    Ok(resolved)
 }
 
 // ── Public API ──────────────────────────────────────────────────────
@@ -169,6 +226,10 @@ pub fn ensure_app_dir_no_symlink(path: &Path) -> Result<(), FsError> {
 }
 
 /// Verify that no component of `path` is a symlink.
+///
+/// Callers that construct paths from OS-provided directories (e.g. the system
+/// temp directory) should canonicalize the path prefix with
+/// `resolve_canonical_prefix` before calling this function.
 pub fn ensure_no_symlink_components(path: &Path) -> Result<(), FsError> {
     let mut current = PathBuf::new();
     for component in path.components() {
@@ -415,6 +476,9 @@ impl NoFollowParentDir {
 
 /// Open the parent directory of `path` for reading, rejecting symlink components.
 /// Returns `None` if the parent directory (or an intermediate directory) does not exist.
+///
+/// Callers that construct paths from OS-provided directories should canonicalize
+/// the path prefix with `resolve_canonical_prefix` before calling this function.
 #[cfg(unix)]
 pub fn open_parent_dir_no_symlink_for_read(
     path: &Path,
@@ -479,6 +543,9 @@ pub fn open_parent_dir_no_symlink_for_read(
 
 /// Open the parent directory of `path` for writing, creating intermediate directories.
 /// Creates missing directories with `0o700`. Rejects symlink components.
+///
+/// Callers that construct paths from OS-provided directories should canonicalize
+/// the path prefix with `resolve_canonical_prefix` before calling this function.
 #[cfg(unix)]
 pub fn open_parent_dir_no_symlink_for_write(path: &Path) -> Result<NoFollowParentDir, FsError> {
     let mut components = Vec::new();
@@ -1068,5 +1135,49 @@ mod tests {
             .expect_err("symlink parent should be rejected");
 
         assert!(matches!(error, FsError::Symlink(_)));
+    }
+
+    #[test]
+    fn canonicalize_existing_prefix_resolves_full_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = canonical_temp_root(&temp);
+        let existing = temp_root.join("real_dir");
+        std::fs::create_dir(&existing).expect("real dir");
+
+        let (base, remaining) = canonicalize_existing_prefix(&existing).expect("should resolve");
+        assert_eq!(base, existing);
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn canonicalize_existing_prefix_splits_non_existing_suffix() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = canonical_temp_root(&temp);
+        let path = temp_root.join("nonexistent").join("nested");
+
+        let (base, remaining) = canonicalize_existing_prefix(&path).expect("should resolve prefix");
+        assert_eq!(base, temp_root);
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining[0], "nonexistent");
+        assert_eq!(remaining[1], "nested");
+    }
+
+    #[test]
+    fn resolve_canonical_prefix_joins_full_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = canonical_temp_root(&temp);
+
+        let resolved = resolve_canonical_prefix(&temp_root).expect("should resolve");
+        assert_eq!(resolved, temp_root);
+    }
+
+    #[test]
+    fn resolve_canonical_prefix_appends_non_existing_components() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = canonical_temp_root(&temp);
+        let path = temp_root.join("new_dir").join("subdir");
+
+        let resolved = resolve_canonical_prefix(&path).expect("should resolve");
+        assert_eq!(resolved, temp_root.join("new_dir").join("subdir"));
     }
 }

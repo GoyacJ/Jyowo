@@ -58,8 +58,8 @@ type MCPServerFormValues = {
   bearerTokenEnvVar: string
   command: string
   displayName: string
-  env: Array<{ key: string; value: string }>
-  headers: Array<{ key: string; value: string }>
+  env: Array<{ key: string; preserveExisting?: boolean; value: string }>
+  headers: Array<{ key: string; preserveExisting?: boolean; value: string }>
   headersFromEnv: Array<{ envVar: string; key: string }>
   inheritEnv: Array<{ value: string }>
   scope: 'global' | 'session' | 'agent'
@@ -226,8 +226,20 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           bearerTokenEnvVar: z.string(),
           command: z.string(),
           displayName: z.string().trim().min(1, t('mcp.errors.serverNameRequired')),
-          env: z.array(z.object({ key: z.string(), value: z.string() })),
-          headers: z.array(z.object({ key: z.string(), value: z.string() })),
+          env: z.array(
+            z.object({
+              key: z.string(),
+              preserveExisting: z.boolean().optional(),
+              value: z.string(),
+            }),
+          ),
+          headers: z.array(
+            z.object({
+              key: z.string(),
+              preserveExisting: z.boolean().optional(),
+              value: z.string(),
+            }),
+          ),
           headersFromEnv: z.array(z.object({ envVar: z.string(), key: z.string() })),
           inheritEnv: z.array(z.object({ value: z.string() })),
           scope: z.enum(['global', 'session', 'agent']),
@@ -517,14 +529,18 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                             className={inputClassName}
                             disabled={isSubmitting || isConfigLoading}
                             placeholder="LOG_LEVEL"
-                            {...register(`env.${index}.key`)}
+                            {...register(`env.${index}.key`, {
+                              onChange: () => setValue(`env.${index}.preserveExisting`, false),
+                            })}
                           />
                           <input
                             aria-label={t('mcp.envValue')}
                             className={inputClassName}
                             disabled={isSubmitting || isConfigLoading}
                             placeholder="info"
-                            {...register(`env.${index}.value`)}
+                            {...register(`env.${index}.value`, {
+                              onChange: () => setValue(`env.${index}.preserveExisting`, false),
+                            })}
                           />
                           <IconButton
                             disabled={isSubmitting || isConfigLoading}
@@ -580,14 +596,18 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                           className={inputClassName}
                           disabled={isSubmitting || isConfigLoading}
                           placeholder="X-Workspace"
-                          {...register(`headers.${index}.key`)}
+                          {...register(`headers.${index}.key`, {
+                            onChange: () => setValue(`headers.${index}.preserveExisting`, false),
+                          })}
                         />
                         <input
                           aria-label={t('mcp.headerValue')}
                           className={inputClassName}
                           disabled={isSubmitting || isConfigLoading}
                           placeholder="jyowo"
-                          {...register(`headers.${index}.value`)}
+                          {...register(`headers.${index}.value`, {
+                            onChange: () => setValue(`headers.${index}.preserveExisting`, false),
+                          })}
                         />
                         <IconButton
                           disabled={isSubmitting || isConfigLoading}
@@ -1049,14 +1069,21 @@ function singleValueRows(rows: Array<{ value: string }>): string[] {
   return rows.map((row) => row.value.trim()).filter(Boolean)
 }
 
-function nameValueRows(
-  rows: Array<{ key: string; value: string }>,
-): { ok: true; values: Array<{ key: string; value: string }> } | { ok: false } {
-  const values: Array<{ key: string; value: string }> = []
+function nameValueRows(rows: Array<{ key: string; preserveExisting?: boolean; value: string }>):
+  | {
+      ok: true
+      values: Array<{ key: string; preserveExisting: true } | { key: string; value: string }>
+    }
+  | { ok: false } {
+  const values: Array<{ key: string; preserveExisting: true } | { key: string; value: string }> = []
   for (const row of rows) {
     const key = row.key.trim()
     const value = row.value.trim()
     if (!key && !value) {
+      continue
+    }
+    if (key && !value && row.preserveExisting) {
+      values.push({ key, preserveExisting: true })
       continue
     }
     if (!key || !value) {
@@ -1091,7 +1118,11 @@ function mcpFormValuesFromConfig(server: McpServerConfig): MCPServerFormValues {
       ...defaultFormValues,
       bearerTokenEnvVar: server.transport.bearerTokenEnvVar ?? '',
       displayName: server.displayName,
-      headers: server.transport.headers.map((header) => ({ ...header })),
+      headers: server.transport.headers.map((header) => ({
+        key: header.key,
+        preserveExisting: header.hasValue && header.value == null,
+        value: header.value ?? '',
+      })),
       headersFromEnv: server.transport.headersFromEnv.map((header) => ({ ...header })),
       scope: server.scope,
       transportKind: 'http',
@@ -1104,7 +1135,11 @@ function mcpFormValuesFromConfig(server: McpServerConfig): MCPServerFormValues {
     args: server.transport.args.map((value) => ({ value })),
     command: server.transport.command,
     displayName: server.displayName,
-    env: server.transport.env.map((item) => ({ ...item })),
+    env: server.transport.env.map((item) => ({
+      key: item.key,
+      preserveExisting: item.hasValue && item.value == null,
+      value: item.value ?? '',
+    })),
     inheritEnv: server.transport.inheritEnv.map((value) => ({ value })),
     scope: server.scope,
     transportKind: 'stdio',

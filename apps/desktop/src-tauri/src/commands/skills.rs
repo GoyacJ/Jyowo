@@ -458,14 +458,8 @@ pub(crate) async fn install_skill_package_with_progress(
         emit_skill_catalog_install_progress(emitter, request, "validating", 65, None);
     }
     let entry_path = source_path.join(SKILL_PACKAGE_ENTRY_FILE);
-    let entry_metadata = std::fs::metadata(&entry_path).map_err(|error| {
-        runtime_operation_failed(format!("skill entry metadata failed: {error}"))
-    })?;
-    if entry_metadata.len() > MAX_SKILL_MARKDOWN_BYTES {
-        return Err(invalid_payload("skill entry file is too large".to_owned()));
-    }
-    let bytes = std::fs::read(&entry_path)
-        .map_err(|error| runtime_operation_failed(format!("skill entry read failed: {error}")))?;
+    let bytes =
+        read_regular_file_no_follow(&entry_path, "skill entry file", MAX_SKILL_MARKDOWN_BYTES)?;
     let markdown = String::from_utf8(bytes)
         .map_err(|_| invalid_payload("skill entry file must be valid UTF-8".to_owned()))?;
     let validated = harness
@@ -475,8 +469,6 @@ pub(crate) async fn install_skill_package_with_progress(
     if let Some((emitter, request)) = progress_context {
         emit_skill_catalog_install_progress(emitter, request, "validating", 72, None);
     }
-    let content_hash = hash_skill_package(&source_path)?;
-
     let mut records = state.skill_store.load_records()?;
     let previous_records = records.clone();
     if records
@@ -495,27 +487,53 @@ pub(crate) async fn install_skill_package_with_progress(
 
     let id = skill_import_id();
     let now = now().to_rfc3339();
-    let record = SkillStoreRecord {
+    let mut record = SkillStoreRecord {
         id: id.clone(),
-        name: validated.summary.name,
-        description: validated.summary.description,
+        name: validated.summary.name.clone(),
+        description: validated.summary.description.clone(),
         enabled: true,
-        content_hash,
+        content_hash: String::new(),
         package_dir: id.clone(),
         file_name: String::new(),
         imported_at: now.clone(),
         updated_at: now,
-        tags: validated.summary.tags,
-        category: validated.summary.category,
+        tags: validated.summary.tags.clone(),
+        category: validated.summary.category.clone(),
         last_validation_error: None,
         origin,
     };
     if let Some((emitter, request)) = progress_context {
         emit_skill_catalog_install_progress(emitter, request, "copying", 82, None);
     }
-    state
+    record.content_hash = state
         .skill_store
         .write_skill_package(&record.id, true, &source_path)?;
+    let copied_markdown = state.skill_store.read_skill_entry_file(&record)?;
+    let copied_validation = harness
+        .validate_workspace_skill_markdown(&copied_markdown, None)
+        .await
+        .map_err(|error| {
+            let _ = state.skill_store.delete_skill_package(&record.id);
+            invalid_payload(error.to_string())
+        })?;
+    record.name = copied_validation.summary.name;
+    record.description = copied_validation.summary.description;
+    record.tags = copied_validation.summary.tags;
+    record.category = copied_validation.summary.category;
+    if records
+        .iter()
+        .any(|existing| existing.enabled && existing.name == record.name)
+        || harness
+            .list_runtime_skills()
+            .iter()
+            .any(|skill| skill.name == record.name)
+    {
+        let _ = state.skill_store.delete_skill_package(&record.id);
+        return Err(invalid_payload(format!(
+            "active skill name already exists: {}",
+            record.name
+        )));
+    }
     records.retain(|existing| existing.id != record.id);
     records.push(record.clone());
     records.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));

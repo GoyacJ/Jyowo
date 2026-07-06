@@ -19,6 +19,23 @@ async fn automation_store_missing_files_loads_empty_state() {
 }
 
 #[tokio::test]
+async fn automation_store_blank_config_loads_empty_state() {
+    let workspace = unique_workspace("automation-blank-state");
+    let runtime_dir = workspace.join(".jyowo").join("runtime");
+    std::fs::create_dir_all(&runtime_dir).expect("runtime directory should exist");
+    std::fs::write(runtime_dir.join("automations.json"), b"  \n\t")
+        .expect("blank automation file should be seeded");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+
+    let automations = list_automations_with_runtime_state(&state)
+        .await
+        .expect("blank automation file should load as empty");
+
+    assert!(automations.automations.is_empty());
+}
+
+#[tokio::test]
 async fn save_automation_writes_runtime_file_and_defaults_to_disabled() {
     let workspace = unique_workspace("automation-save-file");
     std::fs::create_dir_all(&workspace).expect("workspace directory should exist");

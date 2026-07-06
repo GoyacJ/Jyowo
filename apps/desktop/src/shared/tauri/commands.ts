@@ -2447,29 +2447,62 @@ function isSensitiveHeaderName(value: string): boolean {
   return /^(?:authorization|cookie|set-cookie|proxy-authorization)$/i.test(value.trim())
 }
 
-const mcpNameValueRecordSchema = z
+const mcpNameValueConfigSchema = z
   .object({
+    hasValue: z.boolean(),
     key: z.string().trim().min(1),
-    value: z.string(),
+    value: z.string().optional(),
   })
   .strict()
 
-const mcpStdioEnvRecordSchema = mcpNameValueRecordSchema
+const mcpNameValueSaveRecordSchema = z
+  .object({
+    key: z.string().trim().min(1),
+    preserveExisting: z.boolean().optional(),
+    value: z.string().optional(),
+  })
+  .strict()
+  .superRefine((record, context) => {
+    const hasValue = typeof record.value === 'string'
+    if (record.preserveExisting && hasValue) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'MCP preserveExisting records must not include a replacement value',
+        path: ['value'],
+      })
+    }
+    if (!record.preserveExisting && !hasValue) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'MCP records must include value or preserveExisting',
+        path: ['value'],
+      })
+    }
+    if (hasValue && record.value?.trim().length === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'MCP record value must not be empty',
+        path: ['value'],
+      })
+    }
+  })
+
+const mcpStdioEnvRecordSchema = mcpNameValueSaveRecordSchema
   .refine((record) => mcpEnvVarNameSchema.safeParse(record.key).success, {
     message: 'MCP stdio env key must be an environment variable name',
   })
   .refine((record) => !isSensitiveEnvName(record.key), {
     message: 'MCP stdio inline env must not contain secret-bearing keys',
   })
-  .refine((record) => !hasObviousUnredactedSecret(record.value), {
+  .refine((record) => record.value == null || !hasObviousUnredactedSecret(record.value), {
     message: 'MCP stdio inline env must not contain obvious unredacted secrets',
   })
 
-const mcpHttpHeaderRecordSchema = mcpNameValueRecordSchema
+const mcpHttpHeaderRecordSchema = mcpNameValueSaveRecordSchema
   .refine((record) => !isSensitiveHeaderName(record.key), {
     message: 'MCP static headers must not contain sensitive header names',
   })
-  .refine((record) => !hasObviousUnredactedSecret(record.value), {
+  .refine((record) => record.value == null || !hasObviousUnredactedSecret(record.value), {
     message: 'MCP static headers must not contain obvious unredacted secrets',
   })
 
@@ -2537,7 +2570,14 @@ const mcpServerConfigSchema = z
     enabled: z.boolean(),
     id: mcpServerIdSchema,
     scope: mcpServerScopeSchema,
-    transport: mcpServerTransportRequestSchema,
+    transport: z.discriminatedUnion('kind', [
+      mcpStdioTransportRequestSchema.extend({
+        env: z.array(mcpNameValueConfigSchema).max(64).default([]),
+      }),
+      mcpHttpTransportRequestSchema.extend({
+        headers: z.array(mcpNameValueConfigSchema).max(64).default([]),
+      }),
+    ]),
   })
   .strict()
 

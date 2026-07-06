@@ -100,6 +100,10 @@ impl AgentRuntimeStore {
         runtime_root: impl AsRef<Path>,
     ) -> Result<Self, AgentRuntimeStoreError> {
         let runtime_dir = runtime_root.as_ref().to_path_buf();
+        // Resolve any benign OS-level symlinks (e.g. /tmp on macOS) before
+        // running the strict no-symlink directory check.
+        let runtime_dir =
+            harness_fs::resolve_canonical_prefix(&runtime_dir).map_err(store_fs_error)?;
         ensure_app_dir_no_symlink(&runtime_dir)?;
         let db_path = runtime_dir.join(AGENT_RUNTIME_DB_FILENAME);
         ensure_sqlite_file_no_symlink(&db_path)?;
