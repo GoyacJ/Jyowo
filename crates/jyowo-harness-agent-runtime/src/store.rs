@@ -91,11 +91,20 @@ pub struct AgentRuntimeStore {
 }
 
 impl AgentRuntimeStore {
-    pub fn open(workspace_root: impl AsRef<Path>) -> Result<Self, AgentRuntimeStoreError> {
-        let runtime_dir = workspace_root.as_ref().join(RUNTIME_DIR);
-        std::fs::create_dir_all(&runtime_dir)?;
+    /// Open the agent runtime store at `runtime_root`, using the standard
+    /// `agent-runtime.sqlite` and `agent-profiles.json` under that directory.
+    ///
+    /// Prefer this over `open` when you already have a resolved runtime root
+    /// (e.g. from `RuntimeLayout`).
+    pub fn open_runtime_dir(
+        runtime_root: impl AsRef<Path>,
+    ) -> Result<Self, AgentRuntimeStoreError> {
+        let runtime_dir = runtime_root.as_ref().to_path_buf();
+        ensure_app_dir_no_symlink(&runtime_dir)?;
         let db_path = runtime_dir.join(AGENT_RUNTIME_DB_FILENAME);
+        ensure_sqlite_file_no_symlink(&db_path)?;
         let connection = Connection::open(&db_path)?;
+        enable_wal_journal_mode(&connection)?;
         migrations::migrate(&connection).map_err(|error| match error {
             rusqlite::Error::InvalidParameterName(message) => {
                 AgentRuntimeStoreError::UnsupportedSchema(message)
@@ -107,6 +116,16 @@ impl AgentRuntimeStore {
             db_path,
             connection: Mutex::new(connection),
         })
+    }
+
+    /// Open the agent runtime store from a workspace root, appending
+    /// `.jyowo/runtime` internally.
+    ///
+    /// This is a compatibility wrapper. Prefer `open_runtime_dir` when a
+    /// resolved runtime root is available from `RuntimeLayout`.
+    pub fn open(workspace_root: impl AsRef<Path>) -> Result<Self, AgentRuntimeStoreError> {
+        let runtime_dir = workspace_root.as_ref().join(RUNTIME_DIR);
+        Self::open_runtime_dir(runtime_dir)
     }
 
     #[must_use]
@@ -718,6 +737,84 @@ impl AgentRuntimeStore {
             }
             Ok(messages)
         })
+    }
+}
+
+fn ensure_sqlite_file_no_symlink(path: &Path) -> Result<(), AgentRuntimeStoreError> {
+    #[cfg(unix)]
+    {
+        let parent = path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("agent runtime sqlite path has no parent"))?;
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| std::io::Error::other("agent runtime sqlite path has no file name"))?;
+        let directory = std::fs::File::open(parent)?;
+        let fd = rustix::fs::openat(
+            &directory,
+            Path::new(file_name),
+            rustix::fs::OFlags::RDWR
+                | rustix::fs::OFlags::CREATE
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::from_raw_mode(0o600),
+        )
+        .map_err(|error| {
+            if error == rustix::io::Errno::LOOP || error == rustix::io::Errno::NOTDIR {
+                std::io::Error::other("agent runtime sqlite path must not use symlinks")
+            } else {
+                std::io::Error::other(format!("agent runtime sqlite open failed: {error}"))
+            }
+        })?;
+        let file = std::fs::File::from(fd);
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(std::io::Error::other("agent runtime sqlite path is not a file").into());
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(unix))]
+    {
+        if std::fs::symlink_metadata(path)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return Err(
+                std::io::Error::other("agent runtime sqlite path must not use symlinks").into(),
+            );
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true);
+        let file = options.open(path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(std::io::Error::other("agent runtime sqlite path is not a file").into());
+        }
+        Ok(())
+    }
+}
+
+fn enable_wal_journal_mode(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let journal_mode: String =
+        connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
+    if journal_mode.eq_ignore_ascii_case("wal") {
+        Ok(())
+    } else {
+        Err(rusqlite::Error::InvalidParameterName(format!(
+            "sqlite WAL journal mode unavailable: {journal_mode}"
+        )))
+    }
+}
+
+fn ensure_app_dir_no_symlink(path: &Path) -> Result<(), AgentRuntimeStoreError> {
+    harness_fs::ensure_app_dir_no_symlink(path).map_err(store_fs_error)
+}
+
+fn store_fs_error(error: harness_fs::FsError) -> AgentRuntimeStoreError {
+    match error {
+        harness_fs::FsError::Io(source) => AgentRuntimeStoreError::Io(source),
+        other => AgentRuntimeStoreError::Io(std::io::Error::other(other.to_string())),
     }
 }
 

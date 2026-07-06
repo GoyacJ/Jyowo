@@ -32,6 +32,7 @@ use super::stores::*;
 use super::validation::*;
 use super::*;
 use crate::agent_supervisor::BackgroundSupervisorSession;
+use crate::storage_layout::RuntimeLayout;
 use async_trait::async_trait;
 use harness_execution::{AuthorizationEventSink, AuthorizationService, TicketLedger};
 use harness_model::{default_account_usage_registry, ProviderAccountUsageRegistry};
@@ -633,8 +634,9 @@ pub(crate) async fn runtime_state_from_stream_permission_runtime(
     let workspace_root = canonical_workspace_root(workspace_root, "workspace root".to_owned())?;
     let route_store = DesktopProviderCapabilityRouteStore::new(workspace_root.clone());
     let provider_capability_routes = shared_provider_capability_routes_from_store(&route_store)?;
+    let layout = project_runtime_layout(&workspace_root);
     let (harness, model_id, protocol) = build_desktop_harness(
-        &workspace_root,
+        &layout,
         Arc::clone(&stream_permission_runtime),
         None,
         Arc::clone(&provider_capability_routes),
@@ -650,6 +652,20 @@ pub(crate) async fn runtime_state_from_stream_permission_runtime(
             protocol,
         )?;
     Ok(state)
+}
+
+pub(crate) fn project_runtime_layout(workspace_root: &Path) -> RuntimeLayout {
+    let home = jyowo_home_dir();
+    let storage =
+        crate::storage_layout::StorageLayout::new(crate::storage_layout::JyowoHome::new(home));
+    storage.runtime_layout_for_project(workspace_root)
+}
+
+fn jyowo_home_dir() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .unwrap_or_else(|| std::ffi::OsString::from("."));
+    PathBuf::from(home).join(".jyowo")
 }
 
 pub(crate) async fn ensure_agent_supervisor_sidecar_for_state<R: tauri::Runtime>(
@@ -675,14 +691,19 @@ pub fn agent_supervisor_sidecar_startup_result_for_project_command(
 }
 
 pub(crate) async fn build_desktop_harness(
-    workspace_root: &Path,
+    layout: &RuntimeLayout,
     stream_permission_runtime: Arc<StreamPermissionRuntime>,
     model_config_id: Option<&str>,
     provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
 ) -> Result<(Harness, String, ModelProtocol), CommandErrorPayload> {
+    let workspace_root = layout.workspace_root.as_deref().ok_or_else(|| {
+        runtime_init_failed("build_desktop_harness requires a project runtime layout".to_owned())
+    })?;
+    let runtime_root = &layout.runtime_root;
+
     reset_legacy_conversation_runtime_for_provider_continuations(workspace_root)?;
     let provider_continuation_store = Arc::new(
-        FileProviderContinuationStore::open(workspace_root).map_err(|error| {
+        FileProviderContinuationStore::open_runtime_dir(runtime_root).map_err(|error| {
             runtime_init_failed(format!(
                 "provider continuation store initialization failed: {error}"
             ))
@@ -690,7 +711,7 @@ pub(crate) async fn build_desktop_harness(
     );
     let event_store: Arc<dyn EventStore> = Arc::new(
         JsonlEventStore::open(
-            workspace_root.join(".jyowo").join("runtime").join("events"),
+            runtime_root.join("events"),
             Arc::new(DefaultRedactor::default()),
         )
         .await
@@ -720,16 +741,13 @@ pub(crate) async fn build_desktop_harness(
         source_kind: DirectorySourceKind::Workspace,
     });
     let blob_store: Arc<dyn harness_contracts::BlobStore> = Arc::new(
-        FileBlobStore::open(workspace_root.join(".jyowo").join("runtime").join("blobs")).map_err(
-            |error| runtime_init_failed(format!("blob store initialization failed: {error}")),
-        )?,
+        FileBlobStore::open(runtime_root.join("blobs")).map_err(|error| {
+            runtime_init_failed(format!("blob store initialization failed: {error}"))
+        })?,
     );
     let evidence_registry = Arc::new(
         jyowo_harness_sdk::SqliteEvidenceRefRegistry::open(
-            workspace_root
-                .join(".jyowo")
-                .join("runtime")
-                .join("conversation-read-model.sqlite"),
+            runtime_root.join("conversation-read-model.sqlite"),
         )
         .await
         .map_err(|error| {
@@ -755,10 +773,7 @@ pub(crate) async fn build_desktop_harness(
 
     // Build the production PermissionAuthority with signed file persistence.
     let signer = desktop_integrity_signer(workspace_root)?;
-    let decision_path = workspace_root
-        .join(".jyowo")
-        .join("runtime")
-        .join("permission-decisions.json");
+    let decision_path = runtime_root.join("permission-decisions.json");
     let file_persistence: Arc<dyn harness_permission::DecisionStore> = Arc::new(
         FileDecisionPersistence::new(TenantId::SINGLE, decision_path, signer),
     );
@@ -841,9 +856,7 @@ pub(crate) async fn build_desktop_harness(
         .with_plugin_registry(plugin_registry)
         .with_memory_provider(
             harness_memory::local::LocalMemoryProvider::open(
-                &workspace_root
-                    .join(".jyowo")
-                    .join("runtime")
+                &runtime_root
                     .join("memory")
                     .join("memory.sqlite3")
                     .to_string_lossy(),
@@ -890,36 +903,21 @@ pub fn reset_legacy_conversation_runtime_for_provider_continuations(
         remove_provider_continuation_dev_reset_target(&target)?;
     }
 
-    std::fs::create_dir_all(runtime_dir.join("events")).map_err(|error| {
-        runtime_init_failed(format!(
-            "provider continuation runtime events directory initialization failed: {error}"
-        ))
-    })?;
-    std::fs::create_dir_all(runtime_dir.join("sessions")).map_err(|error| {
-        runtime_init_failed(format!(
-            "provider continuation runtime sessions directory initialization failed: {error}"
-        ))
-    })?;
-
-    let temp_path = runtime_dir.join("provider-continuation-runtime.version.tmp");
-    super::stores::ensure_no_symlink_components(
-        &temp_path,
-        "provider continuation runtime marker temp file",
+    super::stores::ensure_app_dir_no_symlink(
+        &runtime_dir.join("events"),
+        "provider continuation runtime events directory",
     )?;
-    std::fs::write(
-        &temp_path,
-        format!("{PROVIDER_CONTINUATION_RUNTIME_VERSION}\n"),
-    )
-    .map_err(|error| {
-        runtime_init_failed(format!(
-            "provider continuation runtime marker write failed: {error}"
-        ))
-    })?;
-    std::fs::rename(&temp_path, &marker_path).map_err(|error| {
-        runtime_init_failed(format!(
-            "provider continuation runtime marker install failed: {error}"
-        ))
-    })?;
+    super::stores::ensure_app_dir_no_symlink(
+        &runtime_dir.join("sessions"),
+        "provider continuation runtime sessions directory",
+    )?;
+
+    super::stores::write_atomic_runtime_file(
+        &marker_path,
+        "provider-continuation-runtime.version",
+        "provider continuation runtime marker",
+        format!("{PROVIDER_CONTINUATION_RUNTIME_VERSION}\n").as_bytes(),
+    )?;
 
     Ok(())
 }
@@ -984,57 +982,152 @@ fn desktop_integrity_key(workspace_root: &Path) -> Result<Vec<u8>, CommandErrorP
         .join(".jyowo")
         .join("runtime")
         .join("permission-integrity.key");
-    if path.is_file() {
-        let raw = std::fs::read_to_string(&path)
-            .map_err(|error| runtime_init_failed(format!("integrity key read failed: {error}")))?;
-        let key = general_purpose::STANDARD
-            .decode(raw.trim())
-            .map_err(|error| {
-                runtime_init_failed(format!("integrity key decode failed: {error}"))
-            })?;
-        if key.len() == 32 {
-            return Ok(key);
+    ensure_no_symlink_components(&path, "integrity key file")?;
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_file() => {
+            let raw = read_owner_only_file(&path, "integrity key")?;
+            let key = general_purpose::STANDARD
+                .decode(raw.trim())
+                .map_err(|error| {
+                    runtime_init_failed(format!("integrity key decode failed: {error}"))
+                })?;
+            if key.len() == 32 {
+                return Ok(key);
+            }
+            return Err(runtime_init_failed(
+                "integrity key has invalid length".to_owned(),
+            ));
         }
-        return Err(runtime_init_failed(
-            "integrity key has invalid length".to_owned(),
-        ));
+        Ok(_) => {
+            return Err(runtime_init_failed(
+                "integrity key path is not a file".to_owned(),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(runtime_init_failed(format!(
+                "integrity key metadata failed: {error}"
+            )));
+        }
     }
 
     let mut key = Vec::with_capacity(32);
     key.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
     key.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            runtime_init_failed(format!("integrity key directory creation failed: {error}"))
-        })?;
-    }
-    write_owner_only_file(&path, general_purpose::STANDARD.encode(&key).as_bytes())?;
+    super::stores::write_atomic_runtime_file(
+        &path,
+        "permission-integrity.key",
+        "integrity key",
+        general_purpose::STANDARD.encode(&key).as_bytes(),
+    )?;
     Ok(key)
 }
 
 #[cfg(unix)]
-fn write_owner_only_file(path: &Path, bytes: &[u8]) -> Result<(), CommandErrorPayload> {
-    use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+fn set_owner_only_open_runtime_file(
+    file: &std::fs::File,
+    label: &str,
+) -> Result<(), CommandErrorPayload> {
+    use std::os::unix::fs::PermissionsExt;
 
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|error| runtime_init_failed(format!("integrity key write failed: {error}")))?;
-    file.write_all(bytes)
-        .map_err(|error| runtime_init_failed(format!("integrity key write failed: {error}")))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|error| {
-        runtime_init_failed(format!("integrity key permission update failed: {error}"))
-    })?;
-    Ok(())
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|error| runtime_init_failed(format!("{label} permission update failed: {error}")))
 }
 
 #[cfg(not(unix))]
-fn write_owner_only_file(path: &Path, bytes: &[u8]) -> Result<(), CommandErrorPayload> {
-    std::fs::write(path, bytes)
-        .map_err(|error| runtime_init_failed(format!("integrity key write failed: {error}")))
+fn set_owner_only_open_runtime_file(
+    _file: &std::fs::File,
+    _label: &str,
+) -> Result<(), CommandErrorPayload> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn open_runtime_file_no_follow(
+    path: &Path,
+    label: &str,
+) -> Result<std::fs::File, CommandErrorPayload> {
+    let mut components = Vec::new();
+    let mut absolute = false;
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(_) => {
+                return Err(runtime_init_failed(format!(
+                    "{label} has unsupported path prefix"
+                )));
+            }
+            std::path::Component::RootDir => absolute = true,
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                return Err(runtime_init_failed(format!(
+                    "{label} must not use parent directory components"
+                )));
+            }
+            std::path::Component::Normal(value) => components.push(value.to_os_string()),
+        }
+    }
+    let file_name = components
+        .pop()
+        .ok_or_else(|| runtime_init_failed(format!("{label} path has no file name")))?;
+    let mut directory = if absolute {
+        std::fs::File::open(Path::new("/"))
+            .map_err(|error| runtime_init_failed(format!("{label} root open failed: {error}")))?
+    } else {
+        std::fs::File::open(Path::new(".")).map_err(|error| {
+            runtime_init_failed(format!("{label} current directory open failed: {error}"))
+        })?
+    };
+
+    for component in components {
+        let fd = rustix::fs::openat(
+            &directory,
+            Path::new(&component),
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::from_raw_mode(0),
+        )
+        .map_err(|error| {
+            if error == rustix::io::Errno::LOOP || error == rustix::io::Errno::NOTDIR {
+                runtime_init_failed(format!("{label} must not use symlinks"))
+            } else {
+                runtime_init_failed(format!("{label} directory open failed: {error}"))
+            }
+        })?;
+        directory = std::fs::File::from(fd);
+    }
+
+    match rustix::fs::openat(
+        &directory,
+        Path::new(&file_name),
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::from_raw_mode(0),
+    ) {
+        Ok(fd) => Ok(std::fs::File::from(fd)),
+        Err(rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR) => Err(runtime_init_failed(
+            format!("{label} must not use symlinks"),
+        )),
+        Err(error) => Err(runtime_init_failed(format!("{label} open failed: {error}"))),
+    }
+}
+
+#[cfg(not(unix))]
+fn open_runtime_file_no_follow(
+    path: &Path,
+    label: &str,
+) -> Result<std::fs::File, CommandErrorPayload> {
+    std::fs::File::open(path)
+        .map_err(|error| runtime_init_failed(format!("{label} open failed: {error}")))
+}
+
+fn read_owner_only_file(path: &Path, label: &str) -> Result<String, CommandErrorPayload> {
+    let mut file = open_runtime_file_no_follow(path, label)?;
+    set_owner_only_open_runtime_file(&file, label)?;
+    let mut raw = String::new();
+    std::io::Read::read_to_string(&mut file, &mut raw)
+        .map_err(|error| runtime_init_failed(format!("{label} read failed: {error}")))?;
+    Ok(raw)
 }
 
 struct DesktopAuthorizationEventSink {
@@ -1310,8 +1403,9 @@ pub(crate) async fn reload_desktop_harness_after_plugin_change_locked(
     let Some(stream_permission_runtime) = state.stream_permission_runtime.as_ref() else {
         return Ok(());
     };
+    let layout = project_runtime_layout(&state.workspace_root);
     let (harness, model_id, protocol) = build_desktop_harness(
-        &state.workspace_root,
+        &layout,
         Arc::clone(stream_permission_runtime),
         None,
         Arc::clone(&state.provider_capability_routes),
@@ -1361,6 +1455,165 @@ mod tests {
         ToolSearchMode,
     };
     use jyowo_harness_sdk::testing::{InMemoryEventStore, NoopRedactor};
+
+    #[cfg(unix)]
+    #[test]
+    fn desktop_integrity_key_is_created_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let key = desktop_integrity_key(&workspace_root).expect("integrity key");
+
+        assert_eq!(key.len(), 32);
+        let key_path = workspace_root
+            .join(".jyowo")
+            .join("runtime")
+            .join("permission-integrity.key");
+        let mode = std::fs::metadata(key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn desktop_integrity_key_rejects_symlink_parent() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let external = tempfile::tempdir().expect("external tempdir");
+        std::os::unix::fs::symlink(external.path(), workspace_root.join(".jyowo"))
+            .expect("symlink");
+
+        let error = desktop_integrity_key(&workspace_root).expect_err("symlink should fail");
+
+        assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+        assert!(error.message.contains("symlink"));
+        assert!(!external.path().join("runtime").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn desktop_integrity_key_rejects_symlink_key_file() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let external = tempfile::NamedTempFile::new().expect("external file");
+        let runtime_dir = workspace_root.join(".jyowo").join("runtime");
+        std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
+        std::os::unix::fs::symlink(
+            external.path(),
+            runtime_dir.join("permission-integrity.key"),
+        )
+        .expect("symlink");
+
+        let error = desktop_integrity_key(&workspace_root).expect_err("symlink should fail");
+
+        assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+        assert!(error.message.contains("symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn desktop_integrity_key_tightens_existing_owner_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let runtime_dir = workspace_root.join(".jyowo").join("runtime");
+        std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
+        let key_path = runtime_dir.join("permission-integrity.key");
+        let key = [7_u8; 32];
+        std::fs::write(&key_path, general_purpose::STANDARD.encode(key)).expect("write key");
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644))
+            .expect("widen key mode");
+
+        let loaded = desktop_integrity_key(&workspace_root).expect("integrity key");
+
+        assert_eq!(loaded, key);
+        let mode = std::fs::metadata(key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_continuation_runtime_marker_is_created_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+
+        reset_legacy_conversation_runtime_for_provider_continuations(&workspace_root)
+            .expect("reset should succeed");
+
+        let marker_path = workspace_root
+            .join(".jyowo")
+            .join("runtime")
+            .join("provider-continuation-runtime.version");
+        assert_eq!(
+            std::fs::read_to_string(&marker_path).unwrap().trim(),
+            PROVIDER_CONTINUATION_RUNTIME_VERSION
+        );
+        let mode = std::fs::metadata(marker_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_continuation_runtime_rejects_symlink_runtime_parent() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let external = tempfile::tempdir().expect("external tempdir");
+        std::os::unix::fs::symlink(external.path(), workspace_root.join(".jyowo"))
+            .expect("symlink");
+
+        let error = reset_legacy_conversation_runtime_for_provider_continuations(&workspace_root)
+            .expect_err("symlink runtime parent should fail");
+
+        assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+        assert!(error.message.contains("symlink"));
+        assert!(!external.path().join("runtime").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_continuation_runtime_rejects_symlink_marker_file() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let external = tempfile::NamedTempFile::new().expect("external file");
+        let runtime_dir = workspace_root.join(".jyowo").join("runtime");
+        std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
+        std::os::unix::fs::symlink(
+            external.path(),
+            runtime_dir.join("provider-continuation-runtime.version"),
+        )
+        .expect("symlink");
+
+        let error = reset_legacy_conversation_runtime_for_provider_continuations(&workspace_root)
+            .expect_err("symlink marker should fail");
+
+        assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+        assert!(error.message.contains("symlink"));
+        assert!(external.path().exists());
+    }
 
     #[tokio::test]
     async fn background_agent_starter_rejects_when_settings_disable_capability() {

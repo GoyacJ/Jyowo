@@ -158,8 +158,15 @@ pub struct FileProviderContinuationStore {
 }
 
 impl FileProviderContinuationStore {
-    pub fn open(workspace_root: impl AsRef<Path>) -> Result<Self, ProviderContinuationStoreError> {
-        let runtime_dir = workspace_root.as_ref().join(RUNTIME_DIR);
+    /// Open the continuation store at `runtime_root`, using the standard
+    /// `provider-continuations.jsonl` under that directory.
+    ///
+    /// Prefer this over `open` when you already have a resolved runtime root
+    /// (e.g. from `RuntimeLayout`).
+    pub fn open_runtime_dir(
+        runtime_root: impl AsRef<Path>,
+    ) -> Result<Self, ProviderContinuationStoreError> {
+        let runtime_dir = runtime_root.as_ref().to_path_buf();
         harness_fs::ensure_app_dir_no_symlink(&runtime_dir).map_err(fs_error)?;
         let path = runtime_dir.join(STORE_LABEL);
         Ok(Self {
@@ -167,6 +174,16 @@ impl FileProviderContinuationStore {
             path,
             lock: Mutex::new(()),
         })
+    }
+
+    /// Open the continuation store from a workspace root, appending
+    /// `.jyowo/runtime` internally.
+    ///
+    /// This is a compatibility wrapper. Prefer `open_runtime_dir` when a
+    /// resolved runtime root is available from `RuntimeLayout`.
+    pub fn open(workspace_root: impl AsRef<Path>) -> Result<Self, ProviderContinuationStoreError> {
+        let runtime_dir = workspace_root.as_ref().join(RUNTIME_DIR);
+        Self::open_runtime_dir(runtime_dir)
     }
 
     #[cfg(not(unix))]

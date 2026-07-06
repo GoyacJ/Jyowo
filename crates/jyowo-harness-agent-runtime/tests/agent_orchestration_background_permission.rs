@@ -51,7 +51,8 @@ async fn events(event_store: &InMemoryEventStore, session_id: SessionId) -> Vec<
 async fn agent_orchestration_background_permission_recovery_allows_pending_decision_after_restart()
 {
     let workspace = tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let workspace_root = workspace.path().canonicalize().expect("canonical");
+    let store = Arc::new(AgentRuntimeStore::open(&workspace_root).expect("store opens"));
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let manager = manager(
@@ -115,7 +116,8 @@ async fn agent_orchestration_background_permission_recovery_allows_pending_decis
 #[tokio::test]
 async fn agent_orchestration_background_live_permission_resolves_and_denies() {
     let workspace = tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let workspace_root = workspace.path().canonicalize().expect("canonical");
+    let store = Arc::new(AgentRuntimeStore::open(&workspace_root).expect("store opens"));
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let manager = manager(

@@ -481,13 +481,14 @@ pub async fn mark_running_agents_interrupted(
     workspace_root: &Path,
     reason: &str,
 ) -> Result<(), AgentSupervisorError> {
+    let runtime_dir = workspace_root.join(".jyowo").join("runtime");
     let store = Arc::new(
-        AgentRuntimeStore::open(workspace_root)
+        AgentRuntimeStore::open_runtime_dir(&runtime_dir)
             .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?,
     );
     let event_store = Arc::new(
         JsonlEventStore::open(
-            workspace_root.join(".jyowo").join("runtime").join("events"),
+            runtime_dir.join("events"),
             Arc::new(DefaultRedactor::default()),
         )
         .await
@@ -526,8 +527,9 @@ pub async fn mark_running_agents_interrupted(
 async fn open_supervisor_backend(
     workspace_root: &Path,
 ) -> Result<SupervisorBackend, AgentSupervisorError> {
+    let runtime_dir = workspace_root.join(".jyowo").join("runtime");
     let store = Arc::new(
-        AgentRuntimeStore::open(workspace_root)
+        AgentRuntimeStore::open_runtime_dir(&runtime_dir)
             .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?,
     );
     let stream_permission_runtime = Arc::new(StreamPermissionRuntime::default());
@@ -541,7 +543,7 @@ async fn open_supervisor_backend(
         AgentSupervisorError::Runtime("agent supervisor SDK harness is unavailable".to_owned())
     })?;
     JsonlEventStore::open(
-        workspace_root.join(".jyowo").join("runtime").join("events"),
+        runtime_dir.join("events"),
         Arc::new(DefaultRedactor::default()),
     )
     .await
@@ -700,7 +702,8 @@ pub fn requeue_background_agent_supervisor_payload(
     workspace_root: &Path,
     background_agent_id: &str,
 ) -> Result<bool, AgentSupervisorError> {
-    let store = AgentRuntimeStore::open(workspace_root)
+    let runtime_dir = workspace_root.join(".jyowo").join("runtime");
+    let store = AgentRuntimeStore::open_runtime_dir(&runtime_dir)
         .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?;
     let Some(record) = store
         .get_background_agent(background_agent_id)
@@ -894,8 +897,9 @@ async fn run_claimed_background_record(
         .ok_or_else(|| {
             AgentSupervisorError::Runtime("agent supervisor runtime is unavailable".to_owned())
         })?;
+    let layout = crate::commands::project_runtime_layout(backend._runtime_state.workspace_root());
     let (harness, model_id, protocol) = crate::commands::build_desktop_harness(
-        backend._runtime_state.workspace_root(),
+        &layout,
         Arc::clone(stream_permission_runtime),
         Some(&execution.model_config_id),
         Arc::clone(&backend._runtime_state.provider_capability_routes),

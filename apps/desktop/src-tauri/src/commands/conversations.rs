@@ -280,8 +280,9 @@ pub(crate) async fn runtime_for_model_config(
         .stream_permission_runtime
         .as_ref()
         .ok_or_else(|| runtime_unavailable("Starting runs requires the desktop runtime."))?;
+    let layout = project_runtime_layout(&state.workspace_root);
     let (harness, model_id, protocol) = build_desktop_harness(
-        &state.workspace_root,
+        &layout,
         Arc::clone(stream_permission_runtime),
         Some(model_config_id),
         Arc::clone(&state.provider_capability_routes),

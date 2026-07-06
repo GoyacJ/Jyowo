@@ -141,7 +141,8 @@ fn agents_team_builds_topology_specific_routing() {
 #[test]
 fn agents_team_persists_task_and_mailbox_before_dispatch() {
     let workspace = tempdir().expect("tempdir");
-    let store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
+    let workspace_root = workspace.path().canonicalize().expect("canonical");
+    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
     let prepared = prepare_run_scoped_team(
         &options(AgentTeamTopology::CoordinatorWorker),
         &profiles(),
@@ -233,7 +234,8 @@ async fn agents_team_coordinator_owns_prepare_persist_build_start_register_dispa
     }
 
     let workspace = tempdir().expect("tempdir");
-    let store = AgentRuntimeStore::open(workspace.path()).expect("store opens");
+    let workspace_root = workspace.path().canonicalize().expect("canonical");
+    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
     let run_id = harness_contracts::RunId::new();
     let session_id = SessionId::new();
     let calls = Arc::new(Mutex::new(Vec::new()));
