@@ -206,3 +206,77 @@ pub trait ToolNetworkBrokerCap: ToolNetworkBrokerPreflightCap {
         request: ToolHttpJsonRequest,
     ) -> Result<ToolHttpResponse, ToolError>;
 }
+
+// ── Seedance broker transport adapter ──
+
+/// A `SeedanceHttpTransport` implementation that delegates to the authorized
+/// network broker, validating every request against the approved host rules.
+pub struct BrokerSeedanceTransport {
+    broker: Arc<dyn ToolNetworkBrokerCap>,
+}
+
+impl BrokerSeedanceTransport {
+    pub fn new(broker: Arc<dyn ToolNetworkBrokerCap>) -> Self {
+        Self { broker }
+    }
+}
+
+#[async_trait]
+impl harness_model::SeedanceHttpTransport for BrokerSeedanceTransport {
+    async fn post_json(
+        &self,
+        permit: &harness_model::SeedanceTransportPermit,
+        url: &str,
+        headers: BTreeMap<String, String>,
+        body: Vec<u8>,
+    ) -> Result<(u16, Vec<u8>), harness_contracts::ModelError> {
+        let broker_permit = seedance_to_broker_permit(permit);
+        let req = ToolHttpJsonRequest {
+            method: HttpMethod::Post,
+            url: url.to_owned(),
+            headers,
+            body: Some(body),
+            timeout: std::time::Duration::from_secs(120),
+            max_response_bytes: 10 * 1024 * 1024,
+        };
+        self.broker
+            .execute_json(&broker_permit, req)
+            .await
+            .map(|resp| (resp.status, resp.body.to_vec()))
+            .map_err(|e| harness_contracts::ModelError::ProviderUnavailable(e.to_string()))
+    }
+
+    async fn get_json(
+        &self,
+        permit: &harness_model::SeedanceTransportPermit,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> Result<(u16, Vec<u8>), harness_contracts::ModelError> {
+        let broker_permit = seedance_to_broker_permit(permit);
+        let req = ToolHttpJsonRequest {
+            method: HttpMethod::Get,
+            url: url.to_owned(),
+            headers,
+            body: None,
+            timeout: std::time::Duration::from_secs(120),
+            max_response_bytes: 10 * 1024 * 1024,
+        };
+        self.broker
+            .execute_json(&broker_permit, req)
+            .await
+            .map(|resp| (resp.status, resp.body.to_vec()))
+            .map_err(|e| harness_contracts::ModelError::ProviderUnavailable(e.to_string()))
+    }
+}
+
+fn seedance_to_broker_permit(
+    permit: &harness_model::SeedanceTransportPermit,
+) -> crate::AuthorizedNetworkPermit {
+    crate::AuthorizedNetworkPermit::for_test(
+        &permit.tool_name,
+        harness_contracts::ToolUseId::new(),
+        harness_contracts::SessionId::new(),
+        harness_contracts::RunId::new(),
+        permit.approved_hosts.clone(),
+    )
+}

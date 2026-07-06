@@ -1,18 +1,22 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
     ActionResource, DecisionScope, HostRule, NetworkAccess, PermissionSubject, ToolActionPlan,
-    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult, WorkspaceAccess,
+    ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
+    WorkspaceAccess,
 };
 use harness_permission::{DangerousPatternLibrary, PermissionCheck};
 use serde_json::{json, Value};
 use url::Url;
 
 use crate::{
-    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
-    ToolStream, ValidationError,
+    action_plan_from_permission_check, AuthorizedNetworkPermit, AuthorizedToolInput, HttpMethod,
+    Tool, ToolContext, ToolEvent, ToolHttpJsonRequest, ToolNetworkBrokerCap, ToolStream,
+    ValidationError,
 };
 
 #[derive(Clone)]
@@ -148,11 +152,22 @@ impl Tool for WebFetchTool {
     async fn execute_authorized(
         &self,
         authorized: AuthorizedToolInput,
-        _ctx: ToolContext,
+        ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
         let input = authorized.raw_input();
         let url = url(input).map_err(validation_error)?;
         let max_bytes = max_bytes(input).map_err(validation_error)?;
+
+        // Broker path: use ToolNetworkBrokerCap when the permit and broker are available.
+        if let Ok(permit) = authorized.network_permit() {
+            if let Ok(broker) =
+                ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)
+            {
+                return brokered_web_fetch(broker, permit, url, max_bytes).await;
+            }
+        }
+
+        // Fallback: registered backends.
         let backend = self.backends.first().ok_or_else(|| {
             ToolError::CapabilityMissing(harness_contracts::ToolCapability::Custom(
                 "web_fetch_backend".to_owned(),
@@ -178,6 +193,42 @@ impl Tool for WebFetchTool {
             })),
         )])))
     }
+}
+
+async fn brokered_web_fetch(
+    broker: Arc<dyn ToolNetworkBrokerCap>,
+    permit: AuthorizedNetworkPermit,
+    url: Url,
+    max_bytes: usize,
+) -> Result<ToolStream, ToolError> {
+    let url_str = url.to_string();
+    let max_bytes_u64 = max_bytes as u64;
+    let req = ToolHttpJsonRequest {
+        method: HttpMethod::Get,
+        url: url_str.clone(),
+        headers: BTreeMap::new(),
+        body: None,
+        timeout: Duration::from_secs(30),
+        max_response_bytes: max_bytes_u64.min(10 * 1024 * 1024),
+    };
+    let resp = broker.execute_json(&permit, req).await?;
+    let body_str = String::from_utf8_lossy(&resp.body).into_owned();
+    let truncated = body_str.len() > max_bytes;
+    let body = if truncated {
+        take_bytes_on_char_boundary(&body_str, max_bytes)
+    } else {
+        body_str
+    };
+
+    Ok(Box::pin(stream::iter([ToolEvent::Final(
+        ToolResult::Structured(json!({
+            "url": url_str,
+            "status": resp.status,
+            "content_type": resp.headers.get("content-type").cloned(),
+            "body": body,
+            "truncated": truncated
+        })),
+    )])))
 }
 
 fn validation_error(error: ValidationError) -> ToolError {

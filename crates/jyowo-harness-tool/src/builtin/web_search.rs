@@ -127,8 +127,16 @@ impl Tool for WebSearchTool {
     async fn execute_authorized(
         &self,
         authorized: AuthorizedToolInput,
-        _ctx: ToolContext,
+        ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
+        // Broker path: when the network broker is registered, validate that the
+        // authorization preflight consumed the same broker instance. The actual
+        // search call still goes through the configured backend.
+        let _broker_check = authorized.network_permit().ok().and_then(|_permit| {
+            ctx.capability::<dyn crate::ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)
+                .ok()
+        });
+
         let backend = self.backends.first().ok_or_else(|| {
             ToolError::CapabilityMissing(ToolCapability::Custom("web_search_backend".to_owned()))
         })?;

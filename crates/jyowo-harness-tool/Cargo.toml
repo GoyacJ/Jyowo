@@ -58,5 +58,6 @@ tokio = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+jyowo-harness-execution = { path = "../jyowo-harness-execution" }
 tempfile = { workspace = true }
 wiremock = "0.6.5"

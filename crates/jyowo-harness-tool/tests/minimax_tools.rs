@@ -9,13 +9,16 @@ use harness_contracts::{
     ProviderCredentialResolverCap, ToolActionPlan, ToolCapability, ToolError, ToolResult,
     ToolResultPart,
 };
+use harness_contracts::{HostRule, RunId, SessionId, ToolUseId};
+use harness_execution::ReqwestToolNetworkBroker;
 use harness_tool::provider_media::MAX_MINIMAX_MEDIA_BYTES;
 use harness_tool::{
-    AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset, InterruptToken,
-    MiniMaxImageToImageTool, MiniMaxMusicGenerationTool, MiniMaxResponsesTool,
+    AuthorizedNetworkPermit, AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset,
+    InterruptToken, MiniMaxImageToImageTool, MiniMaxMusicGenerationTool, MiniMaxResponsesTool,
     MiniMaxTextToImageTool, MiniMaxTextToSpeechAsyncQueryTool, MiniMaxTextToSpeechAsyncTool,
     MiniMaxTextToSpeechTool, MiniMaxTextToVideoTool, MiniMaxVideoGenerationQueryTool,
-    MiniMaxVideoTemplateQueryTool, Tool, ToolContext, ToolEvent, ToolRegistryBuilder,
+    MiniMaxVideoTemplateQueryTool, Tool, ToolContext, ToolEvent, ToolNetworkBrokerCap,
+    ToolRegistryBuilder,
 };
 use serde_json::json;
 use std::{
@@ -703,6 +706,116 @@ async fn mount_media_download(
         )
         .mount(server)
         .await;
+}
+
+// ── Broker integration tests (Task 7) ──
+
+#[tokio::test]
+async fn minimax_brokered_request_succeeds_against_approved_loopback() {
+    let server = MockServer::start().await;
+
+    // Mock the MiniMax image generation endpoint.
+    Mock::given(method("POST"))
+        .and(path("/v1/image_generation"))
+        .and(header("authorization", "Bearer provider-test-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {
+                "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let broker = broker_for_test();
+    let ctx = ctx_with_broker(broker, server.uri());
+
+    let tool = MiniMaxTextToImageTool::default();
+    let result = execute_result(&tool, json!({"request": {"prompt": "test"}}), ctx).await;
+    // Should succeed — the broker validates the host and dispatches the request.
+    assert!(
+        result.is_ok(),
+        "brokered minimax request should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+async fn minimax_brokered_request_fails_when_broker_is_missing() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/image_generation"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": { "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=" }
+        })))
+        .mount(&server)
+        .await;
+
+    // Context WITHOUT the broker registered — the tool must fail when trying
+    // to obtain `ToolNetworkBrokerCap` during execute_authorized.
+    let ctx = ctx_with_media(server.uri());
+
+    let tool = MiniMaxTextToImageTool::default();
+    let error = execute_error(&tool, json!({"request": {"prompt": "test"}}), ctx).await;
+    let msg = error.to_string();
+    assert!(
+        msg.contains("NetworkBroker") || msg.contains("capability"),
+        "error must identify missing NetworkBroker capability: {msg}"
+    );
+}
+
+fn broker_for_test() -> Arc<dyn ToolNetworkBrokerCap> {
+    Arc::new(
+        ReqwestToolNetworkBroker::new(
+            std::time::Duration::from_secs(10),
+            1_048_576,
+            std::sync::Arc::new(harness_contracts::NoopRedactor),
+        )
+        .expect("broker construction"),
+    )
+}
+
+fn permit_for_server(server: &MockServer) -> AuthorizedNetworkPermit {
+    let addr = server.address();
+    let host_rule = HostRule {
+        pattern: addr.ip().to_string(),
+        ports: Some(vec![addr.port()]),
+    };
+    AuthorizedNetworkPermit::for_test(
+        "MiniMaxTextToImage",
+        ToolUseId::new(),
+        SessionId::new(),
+        RunId::new(),
+        vec![host_rule],
+    )
+}
+
+fn ctx_with_broker(broker: Arc<dyn ToolNetworkBrokerCap>, base_url: String) -> ToolContext {
+    let mut cap_registry = CapabilityRegistry::default();
+    // Provider credential resolver
+    let resolver: Arc<dyn ProviderCredentialResolverCap> = Arc::new(MiniMaxResolver {
+        api_key: "provider-test-token".to_owned(),
+        base_url: Some(base_url),
+    });
+    cap_registry.install(ToolCapability::ProviderCredentialResolver, resolver);
+    // Blob writer
+    let writer: Arc<dyn BlobWriterCap> = Arc::new(CapturingBlobWriter);
+    cap_registry.install(ToolCapability::BlobWriter, writer);
+    // Network broker
+    cap_registry.install(ToolCapability::NetworkBroker, broker);
+    ctx_with_cap_registry(cap_registry)
+}
+
+async fn execute_result(
+    tool: &dyn Tool,
+    input: serde_json::Value,
+    ctx: ToolContext,
+) -> Result<Vec<ToolEvent>, ToolError> {
+    tool.validate(&input, &ctx).await.unwrap();
+    let plan = tool.plan(&input, &ctx).await?;
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+    let stream = tool.execute_authorized(authorized, ctx).await?;
+    Ok(stream.collect::<Vec<_>>().await)
 }
 
 fn ctx_with_media(base_url: String) -> ToolContext {

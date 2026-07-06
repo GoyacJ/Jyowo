@@ -15,14 +15,19 @@ use harness_contracts::{
     ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
     ToolResultPart, ToolServiceBinding, WorkspaceAccess,
 };
-use harness_model::{SeedanceApiClient, SEEDANCE_DEFAULT_BASE_URL, SEEDANCE_PROVIDER_ID};
+use std::sync::Arc;
+
+use harness_model::{
+    SeedanceApiClient, SeedanceTransportPermit, SEEDANCE_DEFAULT_BASE_URL, SEEDANCE_PROVIDER_ID,
+};
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 use url::Url;
 
 use crate::{
-    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
-    ToolStream, ValidationError,
+    action_plan_from_permission_check, AuthorizedNetworkPermit, AuthorizedToolInput,
+    BrokerSeedanceTransport, Tool, ToolContext, ToolEvent, ToolNetworkBrokerCap, ToolStream,
+    ValidationError,
 };
 
 const POLL_OPERATION_ID: &str = "seedance.video_generation.query";
@@ -72,11 +77,16 @@ macro_rules! seedance_create_tool {
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
                 let input = authorized.raw_input().clone();
+                let permit = authorized.network_permit()?;
+                let broker =
+                    ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
                 Ok(execute_create_request(
                     input,
                     ctx,
                     &self.descriptor,
                     $display_name,
+                    permit,
+                    broker,
                 ))
             }
         }
@@ -135,7 +145,15 @@ impl Tool for SeedanceVideoGenerationQueryTool {
         ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
         let input = authorized.raw_input().clone();
-        Ok(execute_query_request(input, ctx, &self.descriptor))
+        let permit = authorized.network_permit()?;
+        let broker = ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
+        Ok(execute_query_request(
+            input,
+            ctx,
+            &self.descriptor,
+            permit,
+            broker,
+        ))
     }
 }
 
@@ -144,13 +162,18 @@ fn execute_create_request(
     ctx: ToolContext,
     descriptor: &ToolDescriptor,
     title: &'static str,
+    permit: AuthorizedNetworkPermit,
+    broker: Arc<dyn ToolNetworkBrokerCap>,
 ) -> ToolStream {
     let (operation_id, route_kind) = service_credential_context(descriptor);
     Box::pin(stream::once(async move {
         let result = async {
             let credential = seedance_credential(&ctx, operation_id, route_kind).await?;
             let request = request(&input).map_err(validation_error)?;
-            let mut client = SeedanceApiClient::from_api_key(credential.api_key);
+            let transport = Arc::new(BrokerSeedanceTransport::new(broker));
+            let transport_permit = seedance_permit(&permit);
+            let mut client =
+                SeedanceApiClient::from_transport(transport, transport_permit, credential.api_key);
             if let Some(base_url) = credential.base_url {
                 client = client.with_base_url(base_url);
             }
@@ -172,6 +195,8 @@ fn execute_query_request(
     input: Value,
     ctx: ToolContext,
     descriptor: &ToolDescriptor,
+    permit: AuthorizedNetworkPermit,
+    broker: Arc<dyn ToolNetworkBrokerCap>,
 ) -> ToolStream {
     let (operation_id, route_kind) = service_credential_context(descriptor);
     let media_operation_id = operation_id.clone();
@@ -180,7 +205,10 @@ fn execute_query_request(
             let credential = seedance_credential(&ctx, operation_id, route_kind).await?;
             let request = request(&input).map_err(validation_error)?;
             let task_id = required_string(&request, "task_id").map_err(validation_error)?;
-            let mut client = SeedanceApiClient::from_api_key(credential.api_key);
+            let transport = Arc::new(BrokerSeedanceTransport::new(broker));
+            let transport_permit = seedance_permit(&permit);
+            let mut client =
+                SeedanceApiClient::from_transport(transport, transport_permit, credential.api_key);
             if let Some(base_url) = credential.base_url {
                 client = client.with_base_url(base_url);
             }
@@ -207,6 +235,13 @@ fn execute_query_request(
             Err(error) => ToolEvent::Error(error),
         }
     }))
+}
+
+fn seedance_permit(permit: &AuthorizedNetworkPermit) -> SeedanceTransportPermit {
+    SeedanceTransportPermit {
+        tool_name: permit.tool_name().to_owned(),
+        approved_hosts: permit.approved_hosts().to_vec(),
+    }
 }
 
 async fn query_tool_result_from_response(
