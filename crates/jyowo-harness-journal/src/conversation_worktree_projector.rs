@@ -20,10 +20,10 @@ use harness_contracts::{
     DecisionKind, DecisionLifetime, DecisionMatcherKind, DecisionMatcherSummary, DecisionOperation,
     DecisionOption, DecisionPolicy, DecisionRequestState, DecisionRequestStatus, DecisionTarget,
     DecisionTargetKind, ErrorSegment, EventId, EvidenceRedactionState, EvidenceRefId,
-    EvidenceRefKind, JournalError, NoticeSegment, ProcessSegment, ProcessSegmentStatus,
-    ProcessStep, ProcessStepDetail, ProcessStepKind, ProcessStepStatus, ReviewRequestSegment,
-    RiskLevel, TenantId, TextSegment, ToolAttempt, ToolAttemptOrigin, ToolAttemptStatus,
-    ToolGroupSegment, UiSafeText, UiVisibility,
+    EvidenceRefKind, JournalError, NoticeSegment, ProcessActivityItem, ProcessActivityItemKind,
+    ProcessSegment, ProcessSegmentStatus, ProcessStep, ProcessStepDetail, ProcessStepKind,
+    ProcessStepStatus, ReviewRequestSegment, RiskLevel, TenantId, TextSegment, ToolAttempt,
+    ToolAttemptOrigin, ToolAttemptStatus, ToolGroupSegment, UiSafeText, UiVisibility,
 };
 use serde_json::{Map, Value};
 
@@ -542,6 +542,7 @@ impl ProjectionState<'_> {
         self.run_models.insert(event.run_id.clone(), model.clone());
         let assistant = self.assistant_work(event, event_ref);
         assistant.model = Some(model);
+        assistant.started_at = Some(event.timestamp);
     }
 
     fn project_user_message(
@@ -941,6 +942,7 @@ impl ProjectionState<'_> {
     ) {
         let step_id = aggregate_process_step_id(&event.run_id, kind);
         let next_count = u32_field(&event.payload, "itemCount").unwrap_or(1);
+        let next_items = process_activity_items_from_payload(event, kind);
         let process = self.ensure_process_segment(
             event,
             event_ref.clone(),
@@ -954,6 +956,7 @@ impl ProjectionState<'_> {
                 &title,
                 step.detail.as_ref(),
                 next_count,
+                next_items,
             ));
             step.event_refs.push(event_ref);
             return;
@@ -969,7 +972,7 @@ impl ProjectionState<'_> {
             detail: Some(ProcessStepDetail::Activity {
                 summary: ui_text(title),
                 item_count: Some(next_count),
-                items: vec![],
+                items: next_items,
             }),
             visibility: UiVisibility::UserSafe,
             event_refs: vec![event_ref],
@@ -1474,6 +1477,11 @@ impl ProjectionState<'_> {
         event_ref: ConversationEventRef,
     ) {
         let assistant = self.assistant_work(event, event_ref);
+        assistant.ended_at = Some(event.timestamp);
+        assistant.duration_ms = assistant.started_at.and_then(|started_at| {
+            let duration = event.timestamp.signed_duration_since(started_at);
+            u64::try_from(duration.num_milliseconds()).ok()
+        });
         assistant.status = match string_field(&event.payload, "reason").as_deref() {
             Some("cancelled") => AssistantWorkStatus::Cancelled,
             Some("error" | "failed") => AssistantWorkStatus::Failed,
@@ -3154,6 +3162,83 @@ fn tool_affected_targets(payload: &Value) -> Vec<String> {
     targets
 }
 
+fn process_activity_items_from_payload(
+    event: &ConversationTimelineEvent,
+    kind: ProcessStepKind,
+) -> Vec<ProcessActivityItem> {
+    let item_kind = match kind {
+        ProcessStepKind::FileRead | ProcessStepKind::FileEdit => ProcessActivityItemKind::File,
+        ProcessStepKind::FileSearch => ProcessActivityItemKind::Search,
+        ProcessStepKind::Command => ProcessActivityItemKind::Command,
+        ProcessStepKind::Tool => ProcessActivityItemKind::Tool,
+        ProcessStepKind::Reasoning
+        | ProcessStepKind::Activity
+        | ProcessStepKind::Diff
+        | ProcessStepKind::Artifact
+        | ProcessStepKind::Synthesis
+        | ProcessStepKind::Withheld => return Vec::new(),
+    };
+
+    let mut items = Vec::new();
+    for target in tool_affected_targets(&event.payload) {
+        if let Some(label) = safe_activity_label(&target) {
+            push_unique_activity_item(&mut items, item_kind, label, None);
+        }
+    }
+
+    if items.is_empty() {
+        if let Some(label) = safe_summary_field(&event.payload)
+            .and_then(|summary| safe_activity_label(summary.as_str()))
+        {
+            push_unique_activity_item(&mut items, item_kind, label, None);
+        }
+    }
+
+    items
+}
+
+fn safe_activity_label(value: &str) -> Option<UiSafeText> {
+    let bounded = bounded_ui_preview(value, 240);
+    let text = ui_text(bounded);
+    let display = text.as_str();
+    let trimmed = display.trim();
+    if trimmed.is_empty()
+        || trimmed.contains("[REDACTED]")
+        || trimmed.starts_with('/')
+        || trimmed.starts_with('~')
+        || trimmed == ".jyowo"
+        || trimmed.starts_with(".jyowo/")
+        || trimmed.starts_with(".jyowo\\")
+        || trimmed.contains("/.jyowo/")
+        || trimmed.contains("\\.jyowo\\")
+        || trimmed.contains("://")
+        || unsafe_url_starts_at(trimmed, 0)
+        || is_windows_absolute_path(trimmed)
+    {
+        return None;
+    }
+    Some(text)
+}
+
+fn push_unique_activity_item(
+    items: &mut Vec<ProcessActivityItem>,
+    kind: ProcessActivityItemKind,
+    label: UiSafeText,
+    detail: Option<UiSafeText>,
+) {
+    if items
+        .iter()
+        .any(|item| item.kind == kind && item.label.as_str() == label.as_str())
+    {
+        return;
+    }
+    items.push(ProcessActivityItem {
+        kind,
+        label,
+        detail,
+    });
+}
+
 fn push_unique(values: &mut Vec<String>, value: String) {
     if !values.iter().any(|existing| existing == &value) {
         values.push(value);
@@ -3364,15 +3449,21 @@ fn merged_activity_detail(
     title: &str,
     existing: Option<&ProcessStepDetail>,
     next_count: u32,
+    next_items: Vec<ProcessActivityItem>,
 ) -> ProcessStepDetail {
-    let previous = match existing {
-        Some(ProcessStepDetail::Activity { item_count, .. }) => item_count.unwrap_or(0),
-        _ => 0,
+    let (previous, mut items) = match existing {
+        Some(ProcessStepDetail::Activity {
+            item_count, items, ..
+        }) => (item_count.unwrap_or(0), items.clone()),
+        _ => (0, Vec::new()),
     };
+    for item in next_items {
+        push_unique_activity_item(&mut items, item.kind, item.label, item.detail);
+    }
     ProcessStepDetail::Activity {
         summary: ui_text(title),
         item_count: Some(previous.saturating_add(next_count)),
-        items: vec![],
+        items,
     }
 }
 
@@ -3468,7 +3559,7 @@ fn process_step_detail_for_tool(
             Some(ProcessStepDetail::Activity {
                 summary: ui_text(title),
                 item_count: u32_field(&event.payload, "itemCount"),
-                items: vec![],
+                items: process_activity_items_from_payload(event, kind),
             })
         }
         ProcessStepKind::Tool => Some(ProcessStepDetail::Tool {

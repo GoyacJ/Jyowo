@@ -89,6 +89,197 @@ fn run_started(
     )
 }
 
+#[test]
+fn assistant_runtime_metadata_projects_run_started_and_ended_timing() {
+    let events = vec![
+        user_event(1, "event-user", "run-1", "user-1", "time the run"),
+        run_started(
+            2,
+            "event-run-started",
+            "run-1",
+            "config-openai",
+            "openai",
+            "gpt-5.5",
+        ),
+        event(
+            5,
+            "event-run-ended",
+            "run-1",
+            "run.ended",
+            json!({ "reason": "completed" }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let assistant = projection.turns[0].assistant.as_ref().unwrap();
+
+    assert_eq!(
+        assistant.started_at.map(|timestamp| timestamp.to_rfc3339()),
+        Some("1970-01-01T00:00:02+00:00".to_owned())
+    );
+    assert_eq!(
+        assistant.ended_at.map(|timestamp| timestamp.to_rfc3339()),
+        Some("1970-01-01T00:00:05+00:00".to_owned())
+    );
+    assert_eq!(assistant.duration_ms, Some(3000));
+}
+
+#[test]
+fn activity_items_project_safe_file_read_and_search_labels() {
+    let events = vec![
+        user_event(1, "event-user", "run-1", "user-1", "inspect files"),
+        event(
+            2,
+            "event-read-requested",
+            "run-1",
+            "tool.requested",
+            json!({
+                "toolUseId": "tool-read",
+                "toolName": "read_file",
+                "targetPath": "src/lib.rs",
+            }),
+        ),
+        event(
+            3,
+            "event-read-completed",
+            "run-1",
+            "tool.completed",
+            json!({
+                "toolUseId": "tool-read",
+                "toolName": "read_file",
+                "itemCount": 1,
+                "targetPath": "src/lib.rs",
+            }),
+        ),
+        event(
+            4,
+            "event-search-requested",
+            "run-1",
+            "tool.requested",
+            json!({
+                "toolUseId": "tool-search",
+                "toolName": "grep",
+                "affectedTargets": ["crates/jyowo-harness-journal/src/conversation_worktree_projector.rs"],
+            }),
+        ),
+        event(
+            5,
+            "event-search-completed",
+            "run-1",
+            "tool.completed",
+            json!({
+                "toolUseId": "tool-search",
+                "toolName": "grep",
+                "itemCount": 1,
+                "affectedTargets": ["crates/jyowo-harness-journal/src/conversation_worktree_projector.rs"],
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let process = projection.turns[0]
+        .assistant
+        .as_ref()
+        .unwrap()
+        .segments
+        .iter()
+        .find_map(process_segment)
+        .expect("process exists");
+
+    let read_items = process
+        .steps
+        .iter()
+        .find(|step| step.kind == ProcessStepKind::FileRead)
+        .and_then(|step| step.detail.as_ref())
+        .and_then(|detail| match detail {
+            ProcessStepDetail::Activity { items, .. } => Some(items),
+            _ => None,
+        })
+        .expect("read activity detail exists");
+    assert_eq!(read_items.len(), 1);
+    assert_eq!(read_items[0].kind, ProcessActivityItemKind::File);
+    assert_eq!(read_items[0].label.as_str(), "src/lib.rs");
+
+    let search_items = process
+        .steps
+        .iter()
+        .find(|step| step.kind == ProcessStepKind::FileSearch)
+        .and_then(|step| step.detail.as_ref())
+        .and_then(|detail| match detail {
+            ProcessStepDetail::Activity { items, .. } => Some(items),
+            _ => None,
+        })
+        .expect("search activity detail exists");
+    assert_eq!(search_items.len(), 1);
+    assert_eq!(search_items[0].kind, ProcessActivityItemKind::Search);
+    assert_eq!(
+        search_items[0].label.as_str(),
+        "crates/jyowo-harness-journal/src/conversation_worktree_projector.rs"
+    );
+}
+
+#[test]
+fn activity_items_ignore_unsafe_raw_payload_labels() {
+    let events = vec![
+        user_event(1, "event-user", "run-1", "user-1", "inspect files"),
+        event(
+            2,
+            "event-read-requested",
+            "run-1",
+            "tool.requested",
+            json!({
+                "toolUseId": "tool-read",
+                "toolName": "read_file",
+                "target": "/Users/goya/private/secret.txt",
+                "query": "token=secret-value",
+                "input": { "path": "/Users/goya/private/secret.txt" },
+            }),
+        ),
+        event(
+            3,
+            "event-read-completed",
+            "run-1",
+            "tool.completed",
+            json!({
+                "toolUseId": "tool-read",
+                "toolName": "read_file",
+                "itemCount": 1,
+                "target": "/Users/goya/private/secret.txt",
+                "query": "token=secret-value",
+                "input": { "path": "/Users/goya/private/secret.txt" },
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let process = projection.turns[0]
+        .assistant
+        .as_ref()
+        .unwrap()
+        .segments
+        .iter()
+        .find_map(process_segment)
+        .expect("process exists");
+    let read_step = process
+        .steps
+        .iter()
+        .find(|step| step.kind == ProcessStepKind::FileRead)
+        .expect("file read step exists");
+    let serialized = serde_json::to_string(read_step).unwrap();
+
+    match read_step.detail.as_ref().expect("activity detail exists") {
+        ProcessStepDetail::Activity {
+            item_count, items, ..
+        } => {
+            assert_eq!(*item_count, Some(1));
+            assert!(items.is_empty());
+        }
+        _ => panic!("expected activity detail"),
+    }
+    assert!(!serialized.contains("/Users/goya/private"));
+    assert!(!serialized.contains("token=secret-value"));
+}
+
 fn user_event_with_attachment(
     sequence: u64,
     id: &str,
