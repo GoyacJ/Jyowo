@@ -818,7 +818,27 @@ impl Harness {
             available_workspace_policies.push("writable_subpaths".to_owned());
         }
 
-        let unavailable_reasons = Vec::new(); // Populated by the desktop runtime
+        let mut unavailable_reasons = Vec::new();
+        if !caps.network.none {
+            unavailable_reasons
+                .push("network policy `none` is not supported by the current sandbox".to_owned());
+        }
+        if !caps.network.allowlist {
+            unavailable_reasons.push(
+                "network policy `allowlist` is not supported by the current sandbox".to_owned(),
+            );
+        }
+        if !caps.workspace.read_only {
+            unavailable_reasons.push(
+                "workspace policy `read_only` is not supported by the current sandbox".to_owned(),
+            );
+        }
+        if !caps.workspace.writable_subpaths {
+            unavailable_reasons.push(
+                "workspace policy `writable_subpaths` is not supported by the current sandbox"
+                    .to_owned(),
+            );
+        }
 
         // HTTP broker
         let broker_available = self
