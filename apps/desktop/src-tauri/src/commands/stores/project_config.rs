@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use harness_contracts::{ExecutionDefaultsRecord, ProviderSelectionRecord, SkillSelectionRecord};
+use harness_contracts::{
+    ExecutionDefaultsRecord, PluginSelectionRecord, ProviderSelectionRecord, SkillSelectionRecord,
+};
 
 use crate::commands::error::CommandErrorPayload;
 use crate::storage_layout::StorageLayout;
@@ -104,6 +106,28 @@ impl ProjectConfigStore {
         let path = self.layout.project_skills_file(&self.workspace_root);
         ensure_config_dir(&path, "project skill selection")?;
         write_json_file_atomic(&path, "project skill selection", record)
+    }
+
+    // ── Project plugin selection ───────────────────────────────────────
+
+    pub fn load_project_plugin_selection(
+        &self,
+    ) -> Result<PluginSelectionRecord, CommandErrorPayload> {
+        let path = self.layout.project_plugins_file(&self.workspace_root);
+        ensure_config_dir(&path, "project plugin selection")?;
+        Ok(
+            read_json_file::<PluginSelectionRecord>(&path, "project plugin selection")?
+                .unwrap_or_default(),
+        )
+    }
+
+    pub fn save_project_plugin_selection(
+        &self,
+        record: &PluginSelectionRecord,
+    ) -> Result<(), CommandErrorPayload> {
+        let path = self.layout.project_plugins_file(&self.workspace_root);
+        ensure_config_dir(&path, "project plugin selection")?;
+        write_json_file_atomic(&path, "project plugin selection", record)
     }
 }
 

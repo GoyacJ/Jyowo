@@ -432,6 +432,10 @@ impl DesktopRuntimeState {
         if let Err(error) = migrate_skills_on_startup(&state) {
             log::warn!("skill migration failed: {}", error.message);
         }
+        // Migrate old runtime/plugins/ to new plugins/ location.
+        if let Err(error) = migrate_plugins_on_startup(&state) {
+            log::warn!("plugin migration failed: {}", error.message);
+        }
 
         Ok(state)
     }
@@ -802,7 +806,12 @@ pub(crate) async fn build_desktop_harness(
         ));
     let plugin_store: Arc<dyn PluginStore> =
         Arc::new(DesktopPluginStore::new(workspace_root.to_path_buf()));
-    let plugin_registry = build_plugin_registry(workspace_root, plugin_store.as_ref())?;
+    let global_plugin_store = DesktopPluginStore::global(storage_layout_for_home());
+    let plugin_registry = build_plugin_registry(
+        workspace_root,
+        plugin_store.as_ref(),
+        Some(&global_plugin_store),
+    )?;
 
     let sandbox = Arc::new(LocalSandbox::new(workspace_root)) as Arc<dyn SandboxBackend>;
 
@@ -1325,6 +1334,7 @@ impl EventSink for RecordingSandboxEventSink {
 pub(crate) fn build_plugin_registry(
     workspace_root: &Path,
     plugin_store: &dyn PluginStore,
+    global_plugin_store: Option<&DesktopPluginStore>,
 ) -> Result<PluginRegistry, CommandErrorPayload> {
     let settings = plugin_store.load_record()?;
     let (sidecar_sandbox, sidecar_sandbox_mode) = desktop_plugin_sidecar_sandbox(workspace_root);
@@ -1351,7 +1361,13 @@ pub(crate) fn build_plugin_registry(
         .with_source(DiscoverySource::User(plugin_store.package_root()))
         .with_source(DiscoverySource::Workspace(
             plugin_store.workspace_plugin_root(),
-        ))
+        ));
+
+    if let Some(global_store) = global_plugin_store {
+        builder = builder.with_source(DiscoverySource::User(global_store.package_root()));
+    }
+
+    let mut builder = builder
         .with_source(DiscoverySource::CargoExtension)
         .with_manifest_loader(Arc::new(FileManifestLoader))
         .with_manifest_loader(Arc::new(

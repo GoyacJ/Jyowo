@@ -40,7 +40,7 @@ mod automation;
 mod global_config;
 mod mcp;
 pub mod migration;
-mod plugin;
+pub(crate) mod plugin;
 mod project_config;
 pub(crate) mod skill;
 
@@ -55,6 +55,7 @@ pub use migration::{
     migrate_json_file, migrate_json_file_with, migrate_secret_json_file,
     migrate_secret_json_file_with, MigrationConflict, MigrationConflictKind, MigrationResult,
 };
+pub(crate) use plugin::migrate_plugins_from_runtime;
 pub use plugin::DesktopPluginStore;
 pub(crate) use skill::migrate_skills_from_runtime;
 pub use skill::DesktopSkillStore;

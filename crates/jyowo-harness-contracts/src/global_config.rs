@@ -192,6 +192,14 @@ pub struct SkillSelectionRecord {
     pub enabled: Vec<String>,
 }
 
+/// Project plugin enabled selection stored in `<workspace>/.jyowo/config/plugins.json`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PluginSelectionRecord {
+    #[serde(default)]
+    pub enabled: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
