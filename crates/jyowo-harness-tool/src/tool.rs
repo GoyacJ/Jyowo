@@ -7,7 +7,7 @@ use harness_contracts::{
     ActionPlanHash, ActionPlanId, ActionResource, AuthorizationTicketId, DecisionScope, Event,
     MessagePart, NetworkAccess, PermissionReview, PermissionSubject, ResourceLimits, RunId,
     SandboxMode, SandboxPolicy, SandboxScope, SessionId, Severity, TenantId, ToolActionPlan,
-    ToolDescriptor, ToolError, ToolResult, ToolUseId, WorkspaceAccess,
+    ToolDescriptor, ToolError, ToolExecutionChannel, ToolResult, ToolUseId, WorkspaceAccess,
 };
 use harness_permission::{canonical_permission_fingerprint, PermissionCheck, PermissionRequest};
 use serde_json::Value;
@@ -124,6 +124,7 @@ pub fn action_plan_from_permission_check(
     resources: Vec<ActionResource>,
     workspace_access: WorkspaceAccess,
     network_access: NetworkAccess,
+    execution_channel: ToolExecutionChannel,
 ) -> Result<ToolActionPlan, ToolError> {
     let (subject, severity, scope) = match check {
         PermissionCheck::Allowed => (
@@ -171,7 +172,13 @@ pub fn action_plan_from_permission_check(
         confirmation_expected: None,
         created_at: Utc::now(),
     };
-    let plan_hash = ActionPlanHash::from_bytes(canonical_permission_fingerprint(&request).0);
+    let plan_hash = {
+        let request_fingerprint = canonical_permission_fingerprint(&request).0;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&request_fingerprint);
+        hasher.update(format!("{:?}", execution_channel).as_bytes());
+        ActionPlanHash::from_bytes(*hasher.finalize().as_bytes())
+    };
 
     Ok(ToolActionPlan {
         plan_id: ActionPlanId::new(),
@@ -185,6 +192,7 @@ pub fn action_plan_from_permission_check(
         sandbox_policy: default_sandbox_policy(network_access.clone()),
         workspace_access,
         network_access,
+        execution_channel,
         review: PermissionReview::default(),
         plan_hash,
         created_at: Utc::now(),

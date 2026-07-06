@@ -17,8 +17,8 @@ use harness_contracts::{
     McpServerSource, NetworkAccess, NoopRedactor, PermissionSubject, PluginRuntimeRpcError,
     PluginRuntimeRpcRequest, PluginRuntimeRpcResponse, ProviderRestriction, RedactRules,
     ResourceLimits, RunId, SandboxError, SandboxExitStatus, SandboxMode, SandboxPolicy,
-    SandboxScope, SessionId, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup,
-    ToolOrigin, ToolProperties, ToolResult, WorkspaceAccess,
+    SandboxScope, SessionId, TenantId, ToolActionPlan, ToolDescriptor, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult, WorkspaceAccess,
 };
 use harness_hook::{
     ContextPatch, ContextPatchRole, HookContext, HookEvent, HookHandler, HookOutcome,
@@ -28,8 +28,8 @@ use harness_mcp::{
     McpConnection, McpError, McpServerSpec, McpToolDescriptor, McpToolResult, TransportChoice,
 };
 use harness_sandbox::{
-    execute_with_lifecycle, EventSink as SandboxEventSink, ExecContext, ExecSpec, SandboxBackend,
-    StdioSpec,
+    execute_with_lifecycle, EventSink as SandboxEventSink, ExecContext, ExecSpec,
+    NetworkPolicySupport, SandboxBackend, StdioSpec,
 };
 use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
 use harness_tool::{
@@ -524,6 +524,7 @@ impl Tool for CargoExtensionToolProxy {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 
@@ -1609,7 +1610,12 @@ mod tests {
 
         fn capabilities(&self) -> SandboxCapabilities {
             SandboxCapabilities {
-                supports_network: true,
+                network: NetworkPolicySupport {
+                    none: true,
+                    loopback_only: false,
+                    allowlist: false,
+                    unrestricted: true,
+                },
                 max_concurrent_execs: 1,
                 resource_limit_support: ResourceLimitSupport {
                     wall_clock: true,

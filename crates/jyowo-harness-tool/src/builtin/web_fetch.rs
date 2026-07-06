@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
     ActionResource, DecisionScope, HostRule, NetworkAccess, PermissionSubject, ToolActionPlan,
-    ToolDescriptor, ToolError, ToolGroup, ToolResult, WorkspaceAccess,
+    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult, WorkspaceAccess,
 };
 use harness_permission::{DangerousPatternLibrary, PermissionCheck};
 use serde_json::{json, Value};
@@ -114,6 +114,7 @@ impl Tool for WebFetchTool {
                     }],
                     WorkspaceAccess::None,
                     network_allow_list(host, port),
+                    ToolExecutionChannel::HttpBroker,
                 );
             }
         }
@@ -140,6 +141,7 @@ impl Tool for WebFetchTool {
             }],
             WorkspaceAccess::None,
             network_allow_list(host, port),
+            ToolExecutionChannel::HttpBroker,
         )
     }
 

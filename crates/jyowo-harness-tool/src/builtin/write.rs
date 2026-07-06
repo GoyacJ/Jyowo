@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
     ActionResource, DecisionScope, NetworkAccess, PermissionSubject, ToolActionPlan,
-    ToolDescriptor, ToolError, ToolGroup, ToolResult, WorkspaceAccess,
+    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -82,6 +82,7 @@ impl Tool for FileWriteTool {
                     allowed_writable_subpaths: Vec::new(),
                 },
                 NetworkAccess::None,
+                ToolExecutionChannel::DirectAuthorizedRust,
             );
         }
         action_plan_from_permission_check(
@@ -103,6 +104,7 @@ impl Tool for FileWriteTool {
                 allowed_writable_subpaths: Vec::new(),
             },
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

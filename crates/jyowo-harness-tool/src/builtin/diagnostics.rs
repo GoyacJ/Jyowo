@@ -7,7 +7,7 @@ use harness_contracts::{
     DecisionScope, DiagnosticItem, DiagnosticLanguage, DiagnosticSeverity, DiagnosticsRawOutput,
     DiagnosticsRequest, DiagnosticsResult, DiagnosticsRunRequest, DiagnosticsRunnerCap,
     DiagnosticsRunnerKind, PermissionSubject, RedactRules, Redactor, ToolActionPlan,
-    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult,
+    ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
 };
 use harness_permission::PermissionCheck;
 use regex::Regex;
@@ -72,6 +72,7 @@ impl Tool for DiagnosticsTool {
                 },
                 scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
+            ToolExecutionChannel::ProcessSandbox,
         )
     }
 

@@ -3,7 +3,8 @@ use futures::stream;
 use harness_contracts::{
     ContextPatchLifecycle, ContextPatchRequest, ContextPatchSinkCap, ContextPatchSource,
     DeferPolicy, SkillFilter, SkillInjectionId, SkillInvocationReceipt, SkillRegistryCap,
-    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult,
+    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
+    ToolResult,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -48,7 +49,13 @@ impl Tool for SkillsListTool {
     }
 
     async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
-        super::generic_action_plan(&self.descriptor, input, ctx, PermissionCheck::Allowed)
+        super::generic_action_plan(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            ToolExecutionChannel::DirectAuthorizedRust,
+        )
     }
 
     async fn execute_authorized(
@@ -101,7 +108,13 @@ impl Tool for SkillsViewTool {
     }
 
     async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
-        super::generic_action_plan(&self.descriptor, input, ctx, PermissionCheck::Allowed)
+        super::generic_action_plan(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            ToolExecutionChannel::DirectAuthorizedRust,
+        )
     }
 
     async fn execute_authorized(
@@ -161,7 +174,13 @@ impl Tool for SkillsInvokeTool {
     }
 
     async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
-        super::generic_action_plan(&self.descriptor, input, ctx, PermissionCheck::Allowed)
+        super::generic_action_plan(
+            &self.descriptor,
+            input,
+            ctx,
+            PermissionCheck::Allowed,
+            ToolExecutionChannel::DirectAuthorizedRust,
+        )
     }
 
     async fn execute_authorized(

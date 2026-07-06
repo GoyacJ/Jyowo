@@ -12,8 +12,8 @@ use harness_contracts::{
     ActionResource, BlobMeta, BlobRetention, BlobWriterCap, BudgetMetric, CapabilityRouteKind,
     DecisionScope, HostRule, ModelModality, NetworkAccess, PermissionSubject, ProviderCredential,
     ProviderCredentialResolveContext, ProviderCredentialResolverCap, ToolActionPlan,
-    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult, ToolResultPart,
-    ToolServiceBinding, WorkspaceAccess,
+    ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
+    ToolResultPart, ToolServiceBinding, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -1511,6 +1511,7 @@ async fn minimax_network_action_plan(
                 Vec::new(),
                 WorkspaceAccess::None,
                 NetworkAccess::None,
+                ToolExecutionChannel::HttpBroker,
             );
         }
     };
@@ -1536,6 +1537,7 @@ async fn minimax_network_action_plan(
                 pattern: host,
                 ports: port.map(|port| vec![port]),
             }]),
+            ToolExecutionChannel::HttpBroker,
         ),
         Err(reason) => action_plan_from_permission_check(
             descriptor,
@@ -1545,6 +1547,7 @@ async fn minimax_network_action_plan(
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::HttpBroker,
         ),
     }
 }

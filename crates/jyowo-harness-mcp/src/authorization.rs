@@ -6,7 +6,7 @@ use harness_contracts::{
     InteractivityLevel, ManifestOriginRef, McpPromptOperation, McpResourceOperation,
     McpServerScope, McpTransportTarget, NetworkAccess, PermissionActorSource, PermissionMode,
     PermissionReview, PermissionSubject, ResourceLimits, SandboxMode, SandboxPolicy, SandboxScope,
-    Severity, TenantId, ToolActionPlan, ToolUseId, WorkspaceAccess,
+    Severity, TenantId, ToolActionPlan, ToolExecutionChannel, ToolUseId, WorkspaceAccess,
 };
 use harness_execution::{AuthorizationContext, AuthorizationService, ExecutionError};
 use harness_permission::{canonical_permission_fingerprint, PermissionRequest};
@@ -328,6 +328,7 @@ fn mcp_action_plan(
         workspace_access: WorkspaceAccess::None,
         network_access,
         review,
+        execution_channel: ToolExecutionChannel::DirectAuthorizedRust,
         plan_hash: ActionPlanHash::from_bytes(canonical_permission_fingerprint(&request).0),
         created_at: Utc::now(),
     }

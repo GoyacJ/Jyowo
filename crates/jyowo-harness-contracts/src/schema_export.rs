@@ -39,6 +39,7 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "permission_review", PermissionReview);
     insert_schema!(schemas, "permission_confirmation", PermissionConfirmation);
     insert_schema!(schemas, "action_resource", ActionResource);
+    insert_schema!(schemas, "tool_execution_channel", ToolExecutionChannel);
     insert_schema!(schemas, "tool_action_plan", ToolActionPlan);
     insert_schema!(schemas, "mcp_resource_operation", McpResourceOperation);
     insert_schema!(schemas, "mcp_prompt_operation", McpPromptOperation);

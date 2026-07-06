@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
     ActionResource, DecisionScope, HostRule, NetworkAccess, PermissionSubject, ToolActionPlan,
-    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult, WorkspaceAccess,
+    ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
+    WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde::{Deserialize, Serialize};
@@ -119,6 +120,7 @@ impl Tool for WebSearchTool {
                 pattern: "web-search".to_owned(),
                 ports: None,
             }]),
+            ToolExecutionChannel::HttpBroker,
         )
     }
 

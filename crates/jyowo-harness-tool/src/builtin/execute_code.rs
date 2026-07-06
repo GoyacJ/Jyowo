@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
     CodeLanguage, CodeRunRequest, DecisionScope, PermissionSubject, ToolActionPlan, ToolCapability,
-    ToolDescriptor, ToolError, ToolGroup, ToolResult,
+    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -63,6 +63,7 @@ impl Tool for ExecuteCodeTool {
                 PermissionCheck::Denied {
                     reason: "execute_code is not available from subagents".to_owned(),
                 },
+                ToolExecutionChannel::ProcessSandbox,
             );
         }
         let script_hash = blake3::hash(source(input).unwrap_or_default().as_bytes());
@@ -79,6 +80,7 @@ impl Tool for ExecuteCodeTool {
                     script_hash: *script_hash.as_bytes(),
                 },
             },
+            ToolExecutionChannel::ProcessSandbox,
         )
     }
 

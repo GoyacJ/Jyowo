@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
     DecisionScope, PermissionSubject, RunCancellerCap, ToolActionPlan, ToolCapability,
-    ToolDescriptor, ToolError, ToolGroup, ToolResult,
+    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -61,6 +61,7 @@ impl Tool for TaskStopTool {
                 },
                 scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

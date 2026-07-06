@@ -13,7 +13,7 @@ use harness_contracts::{
     MemoryPolicyDenyReason, MemoryProviderSelectionPolicy, MemoryRedactionSummary,
     MemoryTakesEffect, MemoryThreadSettings, MemoryToolArgs, MemoryToolDenial, MemoryToolResponse,
     MemoryToolState, PermissionSubject, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError,
-    ToolGroup, ToolResult,
+    ToolExecutionChannel, ToolGroup, ToolResult,
 };
 use harness_permission::PermissionCheck;
 use schemars::JsonSchema;
@@ -187,7 +187,13 @@ impl Tool for MemoryTool {
             }
         };
 
-        super::generic_action_plan(&self.descriptor, input, ctx, permission)
+        super::generic_action_plan(
+            &self.descriptor,
+            input,
+            ctx,
+            permission,
+            ToolExecutionChannel::DirectAuthorizedRust,
+        )
     }
 
     async fn execute_authorized(

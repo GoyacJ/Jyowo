@@ -102,8 +102,8 @@ pub use write::FileWriteTool;
 
 use harness_contracts::{
     BudgetMetric, DeferPolicy, NetworkAccess, OverflowAction, ProviderRestriction, ResultBudget,
-    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
-    ToolProperties, ToolServiceBinding, TrustLevel, WorkspaceAccess,
+    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
+    ToolOrigin, ToolProperties, ToolServiceBinding, TrustLevel, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -196,6 +196,7 @@ fn generic_action_plan(
     input: &Value,
     ctx: &ToolContext,
     check: PermissionCheck,
+    channel: ToolExecutionChannel,
 ) -> Result<ToolActionPlan, ToolError> {
     action_plan_from_permission_check(
         descriptor,
@@ -205,5 +206,6 @@ fn generic_action_plan(
         Vec::new(),
         WorkspaceAccess::None,
         NetworkAccess::None,
+        channel,
     )
 }

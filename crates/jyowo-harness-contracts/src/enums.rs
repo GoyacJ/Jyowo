@@ -265,6 +265,16 @@ impl fmt::Display for ToolCapability {
 }
 
 #[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum ToolExecutionChannel {
+    DirectAuthorizedRust,
+    ProcessSandbox,
+    HttpBroker,
+    ExternalCapability { capability: ToolCapability },
+}
+
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolOrigin {

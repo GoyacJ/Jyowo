@@ -7,8 +7,8 @@ use futures::{future::BoxFuture, stream, stream::BoxStream, StreamExt};
 use harness_contracts::{
     BlobReaderCap, BlobRef, BudgetMetric, CapabilityRegistry, DeferPolicy, OverflowAction,
     ProviderRestriction, ResultBudget, SessionId, TenantId, ToolActionPlan, ToolCapability,
-    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId,
-    TrustLevel,
+    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties,
+    ToolResult, ToolUseId, TrustLevel,
 };
 use harness_permission::PermissionCheck;
 use harness_tool::{
@@ -53,6 +53,7 @@ impl Tool for EchoTool {
             Vec::new(),
             harness_contracts::WorkspaceAccess::None,
             harness_contracts::NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 
@@ -301,6 +302,7 @@ async fn action_plan_propagates_actor_source_from_context() {
         Vec::new(),
         WorkspaceAccess::None,
         NetworkAccess::None,
+        ToolExecutionChannel::DirectAuthorizedRust,
     )
     .expect("plan created");
 

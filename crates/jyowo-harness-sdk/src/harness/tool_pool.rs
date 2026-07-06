@@ -383,6 +383,7 @@ impl Tool for BackgroundAgentTool {
             Vec::new(),
             harness_contracts::WorkspaceAccess::None,
             harness_contracts::NetworkAccess::None,
+            harness_contracts::ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 
@@ -538,6 +539,7 @@ impl Tool for AgentTeamTool {
             Vec::new(),
             harness_contracts::WorkspaceAccess::None,
             harness_contracts::NetworkAccess::None,
+            harness_contracts::ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 
