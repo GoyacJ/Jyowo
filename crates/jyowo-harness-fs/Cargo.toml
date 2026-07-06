@@ -1,0 +1,25 @@
+[package]
+name = "jyowo-harness-fs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lib]
+name = "harness_fs"
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+libc = { workspace = true }
+rustix = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

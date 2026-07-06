@@ -99,7 +99,9 @@ fn map_profile_registry_error(error: AgentProfileRegistryError) -> CommandErrorP
         AgentProfileRegistryError::Json(_) => {
             invalid_payload("agent profiles file is invalid and was quarantined".to_owned())
         }
-        AgentProfileRegistryError::Io(_) | AgentProfileRegistryError::Sqlite(_) => {
+        AgentProfileRegistryError::Io(_)
+        | AgentProfileRegistryError::Sqlite(_)
+        | AgentProfileRegistryError::Fs(_) => {
             runtime_operation_failed("agent profile registry operation failed".to_owned())
         }
         AgentProfileRegistryError::Store(store_error) => map_runtime_store_error(store_error),
