@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use harness_contracts::{ExecutionDefaultsRecord, ProviderSelectionRecord};
+use harness_contracts::{ExecutionDefaultsRecord, ProviderSelectionRecord, SkillSelectionRecord};
 
 use crate::commands::error::CommandErrorPayload;
 use crate::storage_layout::StorageLayout;
@@ -83,6 +83,28 @@ impl ProjectConfigStore {
         ensure_config_dir(&path, "execution overrides")?;
         write_json_file_atomic(&path, "execution overrides", record)
     }
+
+    // ── Project skill selection ────────────────────────────────────────
+
+    pub fn load_project_skill_selection(
+        &self,
+    ) -> Result<SkillSelectionRecord, CommandErrorPayload> {
+        let path = self.layout.project_skills_file(&self.workspace_root);
+        ensure_config_dir(&path, "project skill selection")?;
+        Ok(
+            read_json_file::<SkillSelectionRecord>(&path, "project skill selection")?
+                .unwrap_or_default(),
+        )
+    }
+
+    pub fn save_project_skill_selection(
+        &self,
+        record: &SkillSelectionRecord,
+    ) -> Result<(), CommandErrorPayload> {
+        let path = self.layout.project_skills_file(&self.workspace_root);
+        ensure_config_dir(&path, "project skill selection")?;
+        write_json_file_atomic(&path, "project skill selection", record)
+    }
 }
 
 fn ensure_config_dir(path: &Path, label: &str) -> Result<(), CommandErrorPayload> {
@@ -98,7 +120,7 @@ fn ensure_config_dir(path: &Path, label: &str) -> Result<(), CommandErrorPayload
 mod tests {
     use std::path::Path;
 
-    use harness_contracts::ProviderSelectionRecord;
+    use harness_contracts::{ProviderSelectionRecord, SkillSelectionRecord};
 
     use crate::storage_layout::{JyowoHome, StorageLayout};
 
@@ -171,5 +193,50 @@ mod tests {
 
         assert_eq!(loaded_a.default_config_id.as_deref(), Some("config-a"));
         assert_eq!(loaded_b.default_config_id.as_deref(), Some("config-b"));
+    }
+
+    // ── Project skill selection ─────────────────────────────────────
+
+    #[test]
+    fn saves_and_loads_project_skill_selection() {
+        let (store, _temp) = store("project-skills");
+        let record = SkillSelectionRecord {
+            enabled: vec!["skill-a".to_owned(), "skill-b".to_owned()],
+        };
+        store.save_project_skill_selection(&record).expect("save");
+        let loaded = store.load_project_skill_selection().expect("load");
+        assert_eq!(loaded.enabled.len(), 2);
+        assert!(loaded.enabled.contains(&"skill-a".to_owned()));
+    }
+
+    #[test]
+    fn load_project_skill_selection_returns_default_when_missing() {
+        let (store, _temp) = store("project-skills-empty");
+        let loaded = store.load_project_skill_selection().expect("load");
+        assert!(loaded.enabled.is_empty());
+    }
+
+    #[test]
+    fn project_skill_selection_is_not_global() {
+        let (store_a, _temp_a) = store("project-c");
+        let (store_b, _temp_b) = store("project-d");
+
+        store_a
+            .save_project_skill_selection(&SkillSelectionRecord {
+                enabled: vec!["skill-c".to_owned()],
+            })
+            .expect("save c");
+
+        store_b
+            .save_project_skill_selection(&SkillSelectionRecord {
+                enabled: vec!["skill-d".to_owned()],
+            })
+            .expect("save d");
+
+        let loaded_a = store_a.load_project_skill_selection().expect("load c");
+        let loaded_b = store_b.load_project_skill_selection().expect("load d");
+
+        assert_eq!(loaded_a.enabled, vec!["skill-c"]);
+        assert_eq!(loaded_b.enabled, vec!["skill-d"]);
     }
 }

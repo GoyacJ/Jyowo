@@ -150,6 +150,27 @@ impl Harness {
         self.replace_workspace_managed_skills(source, report.loaded)
     }
 
+    /// Reload user-managed (global) skills from the given directory.
+    ///
+    /// Skills are loaded with [`DirectorySourceKind::User`] and stored under
+    /// [`SkillSource::User`] so they coexist with workspace-managed skills.
+    pub async fn reload_user_managed_skills(
+        &self,
+        enabled_dir: impl AsRef<Path>,
+    ) -> Result<(), HarnessError> {
+        let enabled_dir = enabled_dir.as_ref().to_path_buf();
+        let source = SkillSource::User(enabled_dir.clone());
+        let loader = SkillLoader::default().with_source(SkillSourceConfig::DirectoryPackages {
+            path: enabled_dir,
+            source_kind: DirectorySourceKind::User,
+        });
+        let report = loader
+            .load_all()
+            .await
+            .map_err(|error| HarnessError::Other(format!("load user skills failed: {error}")))?;
+        self.replace_workspace_managed_skills(source, report.loaded)
+    }
+
     pub fn list_runtime_skills(&self) -> Vec<RuntimeSkillSummary> {
         let snapshot = self.inner.skill_registry.snapshot();
         snapshot

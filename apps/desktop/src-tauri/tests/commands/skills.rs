@@ -32,12 +32,12 @@ async fn import_skill_persists_enabled_skill_without_exposing_source_path() {
     assert_eq!(imported.skill.source_kind, "workspace");
     assert!(!serialized.contains(&source_dir.to_string_lossy().to_string()));
     assert!(workspace
-        .join(".jyowo/runtime/skills/enabled")
+        .join(".jyowo/skills/packages/enabled")
         .join(&imported.skill.id)
         .join("SKILL.md")
         .exists());
     assert!(workspace
-        .join(".jyowo/runtime/skills/enabled")
+        .join(".jyowo/skills/packages/enabled")
         .join(&imported.skill.id)
         .join("references/style.md")
         .exists());
@@ -137,7 +137,7 @@ async fn disabling_skill_moves_file_and_removes_it_from_runtime_list() {
     assert!(!disabled.skill.enabled);
     assert_eq!(disabled.skill.status, "disabled");
     assert!(workspace
-        .join(".jyowo/runtime/skills/disabled")
+        .join(".jyowo/skills/packages/disabled")
         .join(&imported.skill.id)
         .join("SKILL.md")
         .exists());
@@ -164,7 +164,7 @@ async fn disabling_skill_moves_file_and_removes_it_from_runtime_list() {
     assert!(enabled.skill.enabled);
     assert_eq!(enabled.skill.status, "ready");
     assert!(workspace
-        .join(".jyowo/runtime/skills/enabled")
+        .join(".jyowo/skills/packages/enabled")
         .join(&imported.skill.id)
         .join("SKILL.md")
         .exists());
@@ -180,7 +180,7 @@ async fn enabling_skill_rejects_runtime_duplicate_name() {
     std::fs::create_dir_all(&workspace).unwrap();
     let disabled_id = "managed-disabled";
     let disabled_dir = workspace
-        .join(".jyowo/runtime/skills/disabled")
+        .join(".jyowo/skills/packages/disabled")
         .join(disabled_id);
     std::fs::create_dir_all(&disabled_dir).unwrap();
     std::fs::write(
@@ -203,7 +203,7 @@ async fn enabling_skill_rejects_runtime_duplicate_name() {
         last_validation_error: None,
         origin: None,
     };
-    let index_path = workspace.join(".jyowo/runtime/skills/index.json");
+    let index_path = workspace.join(".jyowo/skills/index.json");
     std::fs::write(
         &index_path,
         serde_json::to_vec_pretty(&vec![record]).unwrap(),
@@ -227,12 +227,12 @@ async fn enabling_skill_rejects_runtime_duplicate_name() {
         .message
         .contains("active skill name already exists: shared-name"));
     assert!(workspace
-        .join(".jyowo/runtime/skills/disabled")
+        .join(".jyowo/skills/packages/disabled")
         .join(disabled_id)
         .join("SKILL.md")
         .exists());
     assert!(!workspace
-        .join(".jyowo/runtime/skills/enabled")
+        .join(".jyowo/skills/packages/enabled")
         .join(disabled_id)
         .exists());
 }
@@ -274,7 +274,7 @@ async fn delete_skill_removes_managed_record_and_file() {
     assert_eq!(deleted.id, imported.skill.id);
     assert_eq!(deleted.status, "deleted");
     assert!(!workspace
-        .join(".jyowo/runtime/skills/enabled")
+        .join(".jyowo/skills/packages/enabled")
         .join(&imported.skill.id)
         .exists());
     assert!(listed
@@ -329,7 +329,7 @@ async fn delete_skill_removes_disabled_managed_record_and_file() {
     assert_eq!(deleted.id, imported.skill.id);
     assert_eq!(deleted.status, "deleted");
     assert!(!workspace
-        .join(".jyowo/runtime/skills/disabled")
+        .join(".jyowo/skills/packages/disabled")
         .join(&imported.skill.id)
         .exists());
     assert!(listed
@@ -420,7 +420,7 @@ async fn get_skill_detail_and_file_return_managed_skill_metadata_lazily() {
 fn desktop_skill_store_rejects_symlink_index_file() {
     let workspace = unique_workspace("skill-store-symlink-index");
     let external = unique_workspace("skill-store-external-target");
-    let index_dir = workspace.join(".jyowo").join("runtime").join("skills");
+    let index_dir = workspace.join(".jyowo").join("skills");
     let index_path = index_dir.join("index.json");
     std::fs::create_dir_all(&index_dir).unwrap();
     std::fs::create_dir_all(&external).unwrap();

@@ -42,7 +42,7 @@ mod mcp;
 pub mod migration;
 mod plugin;
 mod project_config;
-mod skill;
+pub(crate) mod skill;
 
 pub use automation::DesktopAutomationStore;
 pub use global_config::GlobalConfigStore;
@@ -56,6 +56,7 @@ pub use migration::{
     migrate_secret_json_file_with, MigrationConflict, MigrationConflictKind, MigrationResult,
 };
 pub use plugin::DesktopPluginStore;
+pub(crate) use skill::migrate_skills_from_runtime;
 pub use skill::DesktopSkillStore;
 
 pub(crate) fn read_json_file<T: DeserializeOwned>(

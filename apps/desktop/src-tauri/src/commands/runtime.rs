@@ -428,6 +428,10 @@ impl DesktopRuntimeState {
         // Migrate old provider-capability-routes.json from runtime to project config.
         let _ =
             crate::commands::providers::migrate_provider_capability_routes(&state.workspace_root);
+        // Migrate old runtime/skills/ to new skills/ location.
+        if let Err(error) = migrate_skills_on_startup(&state) {
+            log::warn!("skill migration failed: {}", error.message);
+        }
 
         Ok(state)
     }
@@ -760,10 +764,17 @@ pub(crate) async fn build_desktop_harness(
             },
         );
     let skill_store = DesktopSkillStore::new(workspace_root.to_path_buf());
-    let skill_loader = SkillLoader::default().with_source(SkillSourceConfig::DirectoryPackages {
-        path: skill_store.enabled_dir(),
-        source_kind: DirectorySourceKind::Workspace,
-    });
+    let storage_layout = storage_layout_for_home();
+    let global_skill_store = DesktopSkillStore::global(storage_layout);
+    let skill_loader = SkillLoader::default()
+        .with_source(SkillSourceConfig::DirectoryPackages {
+            path: global_skill_store.enabled_dir(),
+            source_kind: DirectorySourceKind::User,
+        })
+        .with_source(SkillSourceConfig::DirectoryPackages {
+            path: skill_store.enabled_dir(),
+            source_kind: DirectorySourceKind::Workspace,
+        });
     let blob_store: Arc<dyn harness_contracts::BlobStore> = Arc::new(
         FileBlobStore::open(runtime_root.join("blobs")).map_err(|error| {
             runtime_init_failed(format!("blob store initialization failed: {error}"))

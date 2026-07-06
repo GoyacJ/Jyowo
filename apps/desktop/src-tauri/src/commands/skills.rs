@@ -29,6 +29,7 @@ use super::stores::*;
 #[allow(unused_imports)]
 use super::validation::*;
 use super::*;
+use harness_contracts::SkillSelectionRecord;
 
 pub async fn list_skills_with_runtime_state(
     state: &DesktopRuntimeState,
@@ -704,8 +705,46 @@ pub(crate) async fn reload_managed_skills(
     state: &DesktopRuntimeState,
     harness: &Harness,
 ) -> Result<(), CommandErrorPayload> {
+    // Reload project-managed (workspace) skills.
     harness
         .reload_workspace_managed_skills(state.skill_store.enabled_dir())
         .await
-        .map_err(|error| runtime_operation_failed(format!("skill reload failed: {error}")))
+        .map_err(|error| runtime_operation_failed(format!("skill reload failed: {error}")))?;
+
+    // Reload global user-managed skills if a global config store is available.
+    if let Some(global_config) = &state.global_config_store {
+        let global_skill_store = DesktopSkillStore::global(global_config.layout().clone());
+        harness
+            .reload_user_managed_skills(global_skill_store.enabled_dir())
+            .await
+            .map_err(|error| {
+                runtime_operation_failed(format!("global skill reload failed: {error}"))
+            })?;
+    }
+
+    Ok(())
+}
+
+/// Run skill migration on startup: move old `<workspace>/.jyowo/runtime/skills/`
+/// to `<workspace>/.jyowo/skills/` and persist enabled selection as project config.
+pub(crate) fn migrate_skills_on_startup(
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
+    let (result, enabled_ids) = migrate_skills_from_runtime(&state.workspace_root)?;
+
+    if matches!(result, MigrationResult::Migrated) && !enabled_ids.is_empty() {
+        if let Some(project_config) = &state.project_config_store {
+            let selection = SkillSelectionRecord {
+                enabled: enabled_ids,
+            };
+            if let Err(error) = project_config.save_project_skill_selection(&selection) {
+                log::warn!(
+                    "skill migration: failed to persist enabled selection: {}",
+                    error.message
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
