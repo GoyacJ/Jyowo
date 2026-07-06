@@ -7,11 +7,15 @@
 pub mod audit;
 pub mod error;
 pub mod event_sink;
+pub mod http_broker;
+pub mod preflight_registry;
 pub mod service;
 pub mod ticket;
 
 pub use audit::*;
 pub use error::*;
 pub use event_sink::*;
+pub use http_broker::*;
+pub use preflight_registry::*;
 pub use service::*;
 pub use ticket::*;

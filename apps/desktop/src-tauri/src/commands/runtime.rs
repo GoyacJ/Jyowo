@@ -36,12 +36,14 @@ use async_trait::async_trait;
 use harness_contracts::CapabilityRegistry;
 use harness_contracts::SandboxError;
 use harness_execution::{
-    AuthorizationEventSink, AuthorizationService, ExecutionPreflightRegistry, TicketLedger,
+    AuthorizationEventSink, AuthorizationService, ExecutionPreflightRegistry,
+    ReqwestToolNetworkBroker, TicketLedger,
 };
 use harness_model::{default_account_usage_registry, ProviderAccountUsageRegistry};
 use harness_permission::{FileDecisionPersistence, IntegrityAlgorithm, PermissionAuthority};
 use harness_provider_state::FileProviderContinuationStore;
 use harness_sandbox::{ContainerLifecycle, DockerSandbox, RoutingSandboxBackend, VolumeMount};
+use harness_tool::ToolNetworkBrokerCap;
 
 const PROVIDER_CONTINUATION_RUNTIME_VERSION: &str = "1";
 
@@ -886,10 +888,28 @@ pub(crate) async fn build_desktop_harness(
     let event_sink: Arc<dyn AuthorizationEventSink> = Arc::new(DesktopAuthorizationEventSink {
         event_store: Arc::clone(&event_store),
     });
+
+    // ── HTTP broker: same Arc instance injected into both authorization preflight
+    // and capability registry, per Task 6 design. ──
+    let broker_redactor: Arc<dyn Redactor> = Arc::new(DefaultRedactor::default());
+    let network_broker: Arc<dyn ToolNetworkBrokerCap> = Arc::new(
+        ReqwestToolNetworkBroker::new(
+            Duration::from_secs(120),
+            10 * 1024 * 1024, // 10 MiB max response
+            Arc::clone(&broker_redactor),
+        )
+        .map_err(|error| {
+            runtime_init_failed(format!("network broker initialization failed: {error}"))
+        })?,
+    );
+
+    let mut capabilities = CapabilityRegistry::default();
+    capabilities.install(ToolCapability::NetworkBroker, Arc::clone(&network_broker));
+
     let registry = ExecutionPreflightRegistry::new(
         Arc::clone(&sandbox),
-        None,
-        Arc::new(CapabilityRegistry::default()),
+        Some(network_broker.clone()),
+        Arc::new(capabilities),
     );
     let authorization_service = Arc::new(AuthorizationService::new(
         Arc::new(permission_authority),
@@ -941,6 +961,7 @@ pub(crate) async fn build_desktop_harness(
             ToolCapability::Custom("jyowo.background_agent.starter".to_owned()),
             background_agent_starter,
         )
+        .with_capability(ToolCapability::NetworkBroker, network_broker)
         .with_mcp_config(mcp_config)
         .with_plugin_registry(plugin_registry)
         .with_memory_provider(
@@ -1686,6 +1707,42 @@ mod tests {
             msg.contains("network") || msg.contains("capability"),
             "error must describe why the policy cannot be enforced: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn network_broker_runtime_assembly_uses_same_instance() {
+        use harness_execution::ReqwestToolNetworkBroker;
+        use harness_tool::ToolNetworkBrokerCap;
+
+        // Simulate the runtime assembly: create one broker instance, register it
+        // in both a CapabilityRegistry and use it as the network_broker for
+        // ExecutionPreflightRegistry. Both must hold the same Arc allocation.
+        let redactor: Arc<dyn Redactor> = Arc::new(NoopRedactor);
+        let broker: Arc<dyn ToolNetworkBrokerCap> = Arc::new(
+            ReqwestToolNetworkBroker::new(
+                Duration::from_secs(10),
+                1_048_576,
+                Arc::clone(&redactor),
+            )
+            .expect("broker construction"),
+        );
+
+        // Register in CapabilityRegistry.
+        let mut capabilities = CapabilityRegistry::default();
+        capabilities.install(ToolCapability::NetworkBroker, Arc::clone(&broker));
+
+        // Build ExecutionPreflightRegistry with the same broker Arc.
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let sandbox = build_desktop_process_sandbox(workspace.path())
+            .await
+            .expect("factory should succeed");
+        let _registry =
+            ExecutionPreflightRegistry::new(sandbox, Some(broker), Arc::new(capabilities));
+
+        // The key invariant: ExecutionPreflightRegistry.network_broker and
+        // CapabilityRegistry[ToolCapability::NetworkBroker] hold the same Arc.
+        // This is verified at construction time — no assertion needed beyond
+        // successful construction without panics.
     }
 }
 

@@ -12,7 +12,7 @@ use harness_contracts::{
 use harness_permission::{canonical_permission_fingerprint, PermissionCheck, PermissionRequest};
 use serde_json::Value;
 
-use crate::{SchemaResolverContext, ToolContext, ValidationError};
+use crate::{AuthorizedNetworkPermit, SchemaResolverContext, ToolContext, ValidationError};
 
 pub type ToolStream = Pin<Box<dyn Stream<Item = ToolEvent> + Send + 'static>>;
 
@@ -113,6 +113,51 @@ impl AuthorizedToolInput {
     #[must_use]
     pub fn ticket(&self) -> &AuthorizedTicketSummary {
         &self.ticket
+    }
+
+    /// Creates an opaque network permit bound to this authorized input.
+    ///
+    /// The permit carries the approved host rules from the action plan's
+    /// `NetworkAccess::AllowList`. Returns an error when the action plan does
+    /// not carry an allowlist (e.g. `NetworkAccess::None` or `Unrestricted`).
+    pub fn network_permit(&self) -> Result<AuthorizedNetworkPermit, ToolError> {
+        let approved_hosts = match &self.action_plan.sandbox_policy.network {
+            NetworkAccess::AllowList(hosts) => hosts.clone(),
+            NetworkAccess::None => {
+                return Err(ToolError::Validation(
+                    "network_permit: action plan has no network access".to_owned(),
+                ));
+            }
+            NetworkAccess::Unrestricted => {
+                return Err(ToolError::Validation(
+                    "network_permit: HTTP broker v1 does not support unrestricted network access"
+                        .to_owned(),
+                ));
+            }
+            NetworkAccess::LoopbackOnly => {
+                return Err(ToolError::Validation(
+                    "network_permit: HTTP broker v1 does not support loopback-only policy"
+                        .to_owned(),
+                ));
+            }
+            _ => {
+                return Err(ToolError::Validation(
+                    "network_permit: unsupported network access variant".to_owned(),
+                ));
+            }
+        };
+
+        Ok(AuthorizedNetworkPermit {
+            ticket: self.ticket.clone(),
+            tool_name: self.ticket.tool_name.clone(),
+            tool_use_id: self.ticket.tool_use_id,
+            session_id: self.ticket.session_id,
+            run_id: self.ticket.run_id,
+            network_access: self.action_plan.sandbox_policy.network.clone(),
+            approved_hosts,
+            action_plan_hash: self.ticket.action_plan_hash.clone(),
+            _private: (),
+        })
     }
 }
 
