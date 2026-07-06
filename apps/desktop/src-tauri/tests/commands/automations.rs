@@ -57,7 +57,7 @@ async fn save_automation_writes_runtime_file_and_defaults_to_disabled() {
     let automations_path = state
         .workspace_root()
         .join(".jyowo")
-        .join("runtime")
+        .join("config")
         .join("automations.json");
     let saved = std::fs::read_to_string(&automations_path).expect("automation file should exist");
     assert!(saved.contains("\"id\": \"checks\""));
@@ -262,12 +262,12 @@ async fn automation_missed_policy_skip_or_run_once_is_enforced() {
 #[tokio::test]
 async fn automation_rejects_missing_permission_or_profile_snapshot() {
     let workspace = unique_workspace("automation-missing-snapshot");
-    std::fs::create_dir_all(workspace.join(".jyowo").join("runtime"))
-        .expect("runtime directory should exist");
+    std::fs::create_dir_all(workspace.join(".jyowo").join("config"))
+        .expect("config directory should exist");
     std::fs::write(
         workspace
             .join(".jyowo")
-            .join("runtime")
+            .join("config")
             .join("automations.json"),
         r#"[{
           "id":"legacy",

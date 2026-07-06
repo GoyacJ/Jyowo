@@ -96,31 +96,37 @@ impl<'store> AgentProfileRegistry<'store> {
         Ok(())
     }
 
-    fn load_user_profiles(&self) -> Result<Vec<AgentProfile>, AgentProfileRegistryError> {
-        let path = self.store.profiles_file_path();
-        harness_fs::ensure_no_symlink_components(&path)?;
+    /// Load user profiles from an explicit file path.
+    ///
+    /// This is used after migration to read profiles from the global config
+    /// location (`~/.jyowo/config/agent-profiles.json`) instead of the
+    /// legacy runtime directory.
+    pub fn load_user_profiles_from_path(
+        path: &Path,
+    ) -> Result<Vec<AgentProfile>, AgentProfileRegistryError> {
+        harness_fs::ensure_no_symlink_components(path)?;
         if !path.exists() {
             return Ok(Vec::new());
         }
 
-        let Some(bytes) = harness_fs::read_file_no_follow(&path)? else {
+        let Some(bytes) = harness_fs::read_file_no_follow(path)? else {
             return Ok(Vec::new());
         };
         harness_fs::set_owner_only_file_if_unix(
-            &std::fs::OpenOptions::new().read(true).open(&path)?,
+            &std::fs::OpenOptions::new().read(true).open(path)?,
         )?;
 
         let parsed = match serde_json::from_slice::<AgentProfilesFile>(&bytes) {
             Ok(file) => file,
             Err(error) => {
-                quarantine_invalid_profile_file(&path)?;
+                quarantine_invalid_profile_file(path)?;
                 return Err(AgentProfileRegistryError::Json(error));
             }
         };
 
         for profile in &parsed.profiles {
             if let Err(validation) = validate_agent_profile(profile) {
-                quarantine_invalid_profile_file(&path)?;
+                quarantine_invalid_profile_file(path)?;
                 return Err(AgentProfileRegistryError::Validation(
                     validation.to_string(),
                 ));
@@ -130,16 +136,29 @@ impl<'store> AgentProfileRegistry<'store> {
         Ok(parsed.profiles)
     }
 
+    /// Save user profiles to an explicit file path.
+    ///
+    /// Writes atomically with owner-only permissions on Unix.
+    pub fn save_user_profiles_to_path(
+        path: &Path,
+        profiles: &[AgentProfile],
+    ) -> Result<(), AgentProfileRegistryError> {
+        let payload = AgentProfilesFile {
+            profiles: profiles.to_vec(),
+        };
+        harness_fs::write_json_file_atomic(path, &payload, true)?;
+        Ok(())
+    }
+
+    fn load_user_profiles(&self) -> Result<Vec<AgentProfile>, AgentProfileRegistryError> {
+        Self::load_user_profiles_from_path(&self.store.profiles_file_path())
+    }
+
     fn save_user_profiles(
         &self,
         profiles: &[AgentProfile],
     ) -> Result<(), AgentProfileRegistryError> {
-        let path = self.store.profiles_file_path();
-        let payload = AgentProfilesFile {
-            profiles: profiles.to_vec(),
-        };
-        harness_fs::write_json_file_atomic(&path, &payload, true)?;
-        Ok(())
+        Self::save_user_profiles_to_path(&self.store.profiles_file_path(), profiles)
     }
 
     fn sync_profile_cache(

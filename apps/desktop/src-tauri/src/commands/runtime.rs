@@ -34,6 +34,7 @@ use super::*;
 use crate::agent_supervisor::BackgroundSupervisorSession;
 use crate::storage_layout::RuntimeLayout;
 use async_trait::async_trait;
+use harness_contracts::global_config::AgentProfileSelectionRecord;
 use harness_execution::{AuthorizationEventSink, AuthorizationService, TicketLedger};
 use harness_model::{default_account_usage_registry, ProviderAccountUsageRegistry};
 use harness_permission::{FileDecisionPersistence, IntegrityAlgorithm, PermissionAuthority};
@@ -447,6 +448,20 @@ impl DesktopRuntimeState {
             migrate_mcp_servers_from_runtime(&storage_layout_for_home(), &state.workspace_root)
         {
             log::warn!("mcp server migration failed: {}", error.message);
+        }
+        // Migrate old runtime/automations.json to project config.
+        if let Err(error) =
+            migrate_automations_from_runtime(&storage_layout_for_home(), &state.workspace_root)
+        {
+            log::warn!("automation migration failed: {}", error.message);
+        }
+        // Migrate old runtime/agent-profiles.json to global config.
+        if let Err(error) = migrate_agent_profiles_from_runtime(
+            &state.workspace_root,
+            state.global_config_store.as_ref(),
+            state.project_config_store.as_ref(),
+        ) {
+            log::warn!("agent profile migration failed: {}", error.message);
         }
         Ok(state)
     }
@@ -1508,6 +1523,123 @@ pub(crate) fn current_process_workspace_root() -> Result<PathBuf, CommandErrorPa
     let current_dir = std::env::current_dir()
         .map_err(|error| runtime_init_failed(format!("workspace root unavailable: {error}")))?;
     canonical_workspace_root(current_dir, "current workspace root".to_owned())
+}
+
+/// Migrate agent profiles from the old runtime path to global config.
+///
+/// Old path: `<workspace>/.jyowo/runtime/agent-profiles.json`
+/// New global path: `~/.jyowo/config/agent-profiles.json`
+/// New project selection: `<workspace>/.jyowo/config/agent-profile-selection.json`
+///
+/// Migration rules:
+/// - Builtin profiles are skipped (never written to global).
+/// - User profiles migrate to global with their original id and `scope: User`.
+/// - Project profiles migrate to global with normalized `scope: User`.
+/// - If the old file had a default profile, the project selection records it.
+/// - Id collisions with different profile content produce a warning and skip.
+pub(crate) fn migrate_agent_profiles_from_runtime(
+    workspace_root: &Path,
+    global_config: Option<&GlobalConfigStore>,
+    project_config: Option<&ProjectConfigStore>,
+) -> Result<(), CommandErrorPayload> {
+    let old_path = workspace_root
+        .join(".jyowo")
+        .join("runtime")
+        .join("agent-profiles.json");
+
+    if !old_path.exists() {
+        return Ok(());
+    }
+
+    let Some(global_config) = global_config else {
+        return Ok(());
+    };
+
+    // Read old profiles.
+    let old_bytes = match std::fs::read(&old_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(runtime_operation_failed(format!(
+                "agent profiles read failed: {error}"
+            )));
+        }
+    };
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct OldProfilesFile {
+        profiles: Vec<AgentProfile>,
+    }
+
+    let old_file: OldProfilesFile = serde_json::from_slice(&old_bytes).map_err(|error| {
+        runtime_operation_failed(format!("agent profiles parse failed: {error}"))
+    })?;
+
+    // Collect user/project profiles (skip builtin).
+    let mut migrated: Vec<AgentProfile> = Vec::new();
+    let mut default_profile_id: Option<String> = None;
+
+    for mut profile in old_file.profiles {
+        if profile.scope == AgentProfileScope::Builtin {
+            continue;
+        }
+
+        // Normalize scope to User for global storage.
+        profile.scope = AgentProfileScope::User;
+
+        // Check for id collision in already-migrated set.
+        if let Some(existing) = migrated.iter().find(|p| p.id == profile.id) {
+            if *existing != profile {
+                log::warn!(
+                    "agent profile migration: duplicate id {} with different content, skipping",
+                    profile.id
+                );
+            }
+            continue;
+        }
+
+        // Use the first non-builtin profile as default if none set.
+        if default_profile_id.is_none() {
+            default_profile_id = Some(profile.id.clone());
+        }
+
+        migrated.push(profile);
+    }
+
+    if migrated.is_empty() {
+        let _ = std::fs::remove_file(&old_path);
+        return Ok(());
+    }
+
+    // Load existing global profiles and merge.
+    let mut global_profiles = global_config.load_global_agent_profiles()?;
+    for profile in &migrated {
+        // Check for collision with existing global profiles.
+        if let Some(existing) = global_profiles.iter().find(|p| p.id == profile.id) {
+            if existing != profile {
+                log::warn!(
+                    "agent profile migration: id {} exists in global config with different content, skipping",
+                    profile.id
+                );
+            }
+            continue;
+        }
+        global_profiles.push(profile.clone());
+    }
+    global_config.save_global_agent_profiles(&global_profiles)?;
+
+    // Persist project selection if we have a default.
+    if let (Some(project_config), Some(default_id)) = (project_config, default_profile_id) {
+        let _ = project_config.save_project_agent_profile_selection(&AgentProfileSelectionRecord {
+            default_profile_id: Some(default_id),
+        });
+    }
+
+    // Remove old file after successful migration.
+    let _ = std::fs::remove_file(&old_path);
+
+    Ok(())
 }
 
 #[cfg(test)]
