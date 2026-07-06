@@ -9,8 +9,8 @@ use futures::stream;
 use harness_contracts::{
     DeferPolicy, McpOrigin, McpServerId, McpServerSource, ModelProvider, PluginId,
     ProviderRestriction, ShadowReason, SkillId, SkillOrigin, SkillSourceKind, ToolActionPlan,
-    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProfile, ToolProperties, ToolResult,
-    TrustLevel,
+    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProfile,
+    ToolProperties, ToolResult, TrustLevel,
 };
 use harness_permission::PermissionCheck;
 use harness_tool::{
@@ -55,6 +55,7 @@ impl Tool for TestTool {
             Vec::new(),
             harness_contracts::WorkspaceAccess::None,
             harness_contracts::NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

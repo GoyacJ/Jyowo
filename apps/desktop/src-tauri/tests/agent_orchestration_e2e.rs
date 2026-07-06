@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_contracts::{
     AgentUsePolicy, AgentWorkspaceIsolationMode, BackgroundAgentState, NetworkAccess,
-    PermissionActorSource, Redactor, ToolActionPlan, WorkspaceAccess,
+    PermissionActorSource, Redactor, ToolActionPlan, ToolExecutionChannel, WorkspaceAccess,
 };
 use harness_tool::{action_plan_from_permission_check, AuthorizedToolInput};
 use jyowo_desktop_shell::commands::{
@@ -913,6 +913,7 @@ impl Tool for NeedsPermissionTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

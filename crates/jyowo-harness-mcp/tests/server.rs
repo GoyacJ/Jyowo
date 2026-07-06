@@ -7,8 +7,8 @@ use futures::stream;
 use harness_contracts::{
     BudgetMetric, CapabilityRegistry, DecisionScope, DeferPolicy, NetworkAccess, OverflowAction,
     PermissionSubject, ProviderRestriction, ResultBudget, SemverString, SessionId, TenantId,
-    ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-    ToolResultPart, ToolUseId, TrustLevel, WorkspaceAccess,
+    ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin,
+    ToolProperties, ToolResult, ToolResultPart, ToolUseId, TrustLevel, WorkspaceAccess,
 };
 use harness_mcp::{
     JsonRpcRequest, JsonRpcResponse, McpServerAdapter, McpToolResult, StaticToolContextFactory,
@@ -328,6 +328,7 @@ impl Tool for TestTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

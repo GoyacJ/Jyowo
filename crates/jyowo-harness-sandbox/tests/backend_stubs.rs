@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use harness_contracts::{Event, SandboxError};
+use harness_contracts::{Event, NetworkAccess, SandboxError, SandboxPolicy};
 use harness_sandbox::{EventSink, ExecContext, ExecSpec, SandboxBackend};
 
 #[derive(Default)]
@@ -20,11 +20,15 @@ async fn assert_feature_backend_detects_unavailable_host(
 ) {
     assert_eq!(backend.backend_id(), backend_id);
     assert!(backend.capabilities().supports_streaming);
+    let spec = ExecSpec {
+        policy: SandboxPolicy {
+            network: NetworkAccess::Unrestricted,
+            ..ExecSpec::default().policy
+        },
+        ..ExecSpec::default()
+    };
     let error = match backend
-        .execute(
-            ExecSpec::default(),
-            ExecContext::for_test(Arc::new(RecordingSink)),
-        )
+        .execute(spec, ExecContext::for_test(Arc::new(RecordingSink)))
         .await
     {
         Ok(_) => panic!("{backend_id} execute should reject"),

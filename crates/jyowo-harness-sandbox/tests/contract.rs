@@ -92,13 +92,13 @@ async fn contract_backends_expose_sane_identity_and_capabilities() {
     assert!(local_caps.supports_streaming);
     assert!(local_caps.supports_stdin);
     assert!(local_caps.supports_activity_heartbeat);
-    assert!(local_caps.supports_filesystem_write);
+    assert!(local_caps.workspace.read_write_all);
     assert!(!local_caps.supports_gpu);
     assert!(!local_caps.supports_pty);
     assert!(!local_caps.supports_detach);
     assert!(local_caps.supports_session_snapshot);
     assert!(local_caps.max_concurrent_execs > 0);
-    assert!(!local_caps.supports_network);
+    assert!(!local_caps.network.none);
     assert_eq!(
         local_caps.cwd_marker_support,
         CwdMarkerSupport::FinalShellCwd
@@ -110,8 +110,8 @@ async fn contract_backends_expose_sane_identity_and_capabilities() {
     assert!(!noop_caps.supports_stdin);
     assert!(!noop_caps.supports_activity_heartbeat);
     assert!(!noop_caps.supports_interactive_shell);
-    assert!(!noop_caps.supports_network);
-    assert!(!noop_caps.supports_filesystem_write);
+    assert!(!noop_caps.network.none);
+    assert!(!noop_caps.workspace.read_write_all);
     assert!(!noop_caps.supports_workspace_sync);
     assert!(!noop_caps.supports_session_snapshot);
     assert_eq!(noop_caps.cwd_marker_support, CwdMarkerSupport::Disabled);

@@ -18,9 +18,9 @@ pub use harness_contracts::{
     PermissionMode, PermissionSubject, PluginId, ProviderRestriction, RedactRules, Redactor,
     RequestId, RuleSource, SessionCreatedEvent, SessionSummaryView, Severity, SnapshotId,
     SteeringBody, SteeringKind, SteeringSource, TeamId, TenantId, ToolActionPlan,
-    ToolDeferredPoolChangedEvent, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
-    ToolPoolChangeSource, ToolProfile, ToolProperties, ToolResult, ToolSearchMode, ToolUseId,
-    TrustLevel, UsageSnapshot, WorkspaceAccess,
+    ToolDeferredPoolChangedEvent, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
+    ToolOrigin, ToolPoolChangeSource, ToolProfile, ToolProperties, ToolResult, ToolSearchMode,
+    ToolUseId, TrustLevel, UsageSnapshot, WorkspaceAccess,
 };
 pub use harness_hook::HookRegistry;
 pub use harness_journal::{EventStore, ReplayCursor};
@@ -921,6 +921,7 @@ impl Tool for SdkPluginTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 
@@ -966,6 +967,7 @@ impl Tool for DeferredDeltaEmitterTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

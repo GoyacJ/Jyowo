@@ -10,8 +10,8 @@ use harness_contracts::{
     DeferPolicy, Event, HookFailureMode, ManifestOriginRef, McpServerId, McpServerSource,
     MemoryError, MemoryId, NetworkAccess, PluginId, PluginRecentEvent, ProviderRestriction,
     RejectionReason, SteeringBody, SteeringId, SteeringKind, SteeringPriority, SteeringRequest,
-    SteeringSource, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
-    ToolProperties, TrustLevel, WorkspaceAccess,
+    SteeringSource, ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
+    ToolOrigin, ToolProperties, TrustLevel, WorkspaceAccess,
 };
 use harness_hook::{
     HookContext, HookEvent, HookHandler, HookOrigin, HookOutcome, HookRegistrationKind,
@@ -2863,6 +2863,7 @@ impl Tool for FakeTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

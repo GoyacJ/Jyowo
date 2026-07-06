@@ -22,9 +22,9 @@ use crate::{
         apply_wall_clock_resource_limit, has_non_wall_clock_resource_limits,
         unsupported_resource_limits,
     },
-    ActivityHandle, CwdMarkerSupport, ExecContext, ExecOutcome, ExecSpec, ProcessHandle,
-    ResourceLimitSupport, SandboxBackend, SandboxBaseConfig, SandboxCapabilities,
-    SessionSnapshotFile, Signal, SnapshotMetadata, SnapshotSpec,
+    ActivityHandle, CwdMarkerSupport, ExecContext, ExecOutcome, ExecSpec, NetworkPolicySupport,
+    ProcessHandle, ResourceLimitSupport, SandboxBackend, SandboxBaseConfig, SandboxCapabilities,
+    SessionSnapshotFile, Signal, SnapshotMetadata, SnapshotSpec, WorkspacePolicySupport,
 };
 
 const BACKEND_ID: &str = "docker";
@@ -437,8 +437,17 @@ impl SandboxBackend for DockerSandbox {
             cwd_marker_support: CwdMarkerSupport::Disabled,
             supports_activity_heartbeat: true,
             supports_interactive_shell: false,
-            supports_network: true,
-            supports_filesystem_write: self.volumes.iter().any(|volume| !volume.read_only),
+            network: NetworkPolicySupport {
+                none: true,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
+            workspace: WorkspacePolicySupport {
+                read_write_all: self.volumes.iter().any(|volume| !volume.read_only),
+                read_only: false,
+                writable_subpaths: false,
+            },
             supports_gpu: false,
             supports_pty: false,
             supports_detach: false,

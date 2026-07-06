@@ -34,10 +34,10 @@ use super::LocalSandbox;
 use crate::cwd::CwdMarkerLine;
 use crate::{
     backend::{apply_wall_clock_resource_limit, lexical_normalize_path},
-    ActivityHandle, CwdMarkerSupport, ExecContext, ExecOutcome, ExecSpec, OutputOverflow,
-    OutputOverflowPolicy, OutputStream, ProcessHandle, ResourceLimitSupport, SandboxBackend,
-    SandboxBaseConfig, SandboxCapabilities, SessionSnapshotFile, Signal, SnapshotMetadata,
-    SnapshotSpec, StdioSpec, WrappedCommand,
+    ActivityHandle, CwdMarkerSupport, ExecContext, ExecOutcome, ExecSpec, NetworkPolicySupport,
+    OutputOverflow, OutputOverflowPolicy, OutputStream, ProcessHandle, ResourceLimitSupport,
+    SandboxBackend, SandboxBaseConfig, SandboxCapabilities, SessionSnapshotFile, Signal,
+    SnapshotMetadata, SnapshotSpec, StdioSpec, WorkspacePolicySupport, WrappedCommand,
 };
 
 const BACKEND_ID: &str = "local";
@@ -61,8 +61,12 @@ impl SandboxBackend for LocalSandbox {
             },
             supports_activity_heartbeat: true,
             supports_interactive_shell: cfg!(unix),
-            supports_network: self.isolation.is_os_level(),
-            supports_filesystem_write: true,
+            network: network_policy_support_for_isolation(self.isolation),
+            workspace: WorkspacePolicySupport {
+                read_write_all: true,
+                read_only: false,
+                writable_subpaths: false,
+            },
             supports_gpu: false,
             supports_pty: false,
             supports_detach: false,
@@ -1757,6 +1761,29 @@ fn normalize_policy_path(root: &Path, path: &Path) -> PathBuf {
 
 fn sandbox_error(error: std::io::Error) -> SandboxError {
     SandboxError::Message(error.to_string())
+}
+
+fn network_policy_support_for_isolation(isolation: LocalIsolation) -> NetworkPolicySupport {
+    match isolation {
+        LocalIsolation::None => NetworkPolicySupport {
+            none: false,
+            loopback_only: false,
+            allowlist: false,
+            unrestricted: true,
+        },
+        LocalIsolation::Bubblewrap | LocalIsolation::Seatbelt => NetworkPolicySupport {
+            none: true,
+            loopback_only: false,
+            allowlist: false,
+            unrestricted: true,
+        },
+        LocalIsolation::JobObject => NetworkPolicySupport {
+            none: false,
+            loopback_only: false,
+            allowlist: false,
+            unrestricted: true,
+        },
+    }
 }
 
 #[cfg(test)]

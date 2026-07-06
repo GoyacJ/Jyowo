@@ -12,8 +12,8 @@ use harness_journal::{EventStore, InMemoryEventStore};
 use harness_model::{ContentDelta, ModelStreamEvent};
 use harness_permission::{NoopDecisionPersistence, PermissionAuthority, PermissionBroker};
 use harness_sandbox::{
-    ExecContext, ExecSpec, ProcessHandle, SandboxBackend, SandboxCapabilities, SessionSnapshotFile,
-    SnapshotSpec,
+    ExecContext, ExecSpec, NetworkPolicySupport, ProcessHandle, SandboxBackend,
+    SandboxCapabilities, SessionSnapshotFile, SnapshotSpec, WorkspacePolicySupport,
 };
 use serde_json::Value;
 
@@ -132,8 +132,17 @@ impl SandboxBackend for AllowPreflightSandbox {
 
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
-            supports_network: true,
-            supports_filesystem_write: true,
+            network: NetworkPolicySupport {
+                none: true,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
+            workspace: WorkspacePolicySupport {
+                read_write_all: true,
+                read_only: false,
+                writable_subpaths: false,
+            },
             resource_limit_support: harness_sandbox::ResourceLimitSupport {
                 memory: true,
                 cpu: true,

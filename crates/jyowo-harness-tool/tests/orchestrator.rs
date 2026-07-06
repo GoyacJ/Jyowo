@@ -16,8 +16,9 @@ use harness_contracts::{
     PermissionReview, PermissionSubject, ProviderRestriction, RedactRules, Redactor, RequestId,
     ResourceLimits, SandboxExecutionStartedEvent, SandboxMode, SandboxPolicy, SandboxPolicySummary,
     SandboxScope, Severity, TenantId, ToolActionPlan, ToolCapability, ToolDeferredPoolChangedEvent,
-    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolPoolChangeSource, ToolProperties,
-    ToolResult, ToolUseHeartbeatEvent, ToolUseId, TrustLevel, UiSafeText, WorkspaceAccess,
+    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin, ToolPoolChangeSource,
+    ToolProperties, ToolResult, ToolUseHeartbeatEvent, ToolUseId, TrustLevel, UiSafeText,
+    WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use harness_tool::{
@@ -575,6 +576,7 @@ impl Tool for TestTool {
             Vec::new(),
             harness_contracts::WorkspaceAccess::None,
             harness_contracts::NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 
@@ -867,6 +869,7 @@ fn call_with_input(name: &str, raw_input: Value) -> AuthorizedToolCall {
         },
         workspace_access: WorkspaceAccess::None,
         network_access: NetworkAccess::None,
+        execution_channel: ToolExecutionChannel::DirectAuthorizedRust,
         review: PermissionReview::default(),
         plan_hash: ActionPlanHash::from_bytes([1; 32]),
         created_at: Utc::now(),

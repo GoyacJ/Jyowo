@@ -7,8 +7,8 @@ use futures::stream;
 use harness_contracts::{
     BlobError, BlobMeta, BlobRef, BlobStore, BudgetMetric, CapabilityRegistry, Event,
     OverflowAction, ProviderRestriction, ResultBudget, TenantId, ToolActionPlan, ToolDescriptor,
-    ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolResultPart, ToolUseId,
-    TrustLevel,
+    ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
+    ToolResultPart, ToolUseId, TrustLevel,
 };
 use harness_permission::PermissionCheck;
 use harness_tool::{
@@ -577,6 +577,7 @@ impl Tool for BudgetTool {
             Vec::new(),
             harness_contracts::WorkspaceAccess::None,
             harness_contracts::NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

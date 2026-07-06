@@ -9,8 +9,8 @@ use harness_contracts::{
     DeferPolicy, Event, Message, MessageId, MessagePart, MessageRole, ModelError, NetworkAccess,
     NoopRedactor, OverflowAction, PermissionError, PermissionSubject, ProviderRestriction,
     ResultBudget, RunId, SessionId, TenantId, ToolActionPlan, ToolCapability, ToolDescriptor,
-    ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolSearchMode, ToolUseId,
-    TrustLevel, TurnInput, UsageSnapshot, WorkspaceAccess,
+    ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
+    ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{HookDispatcher, HookRegistry};
@@ -375,6 +375,7 @@ impl Tool for CustomCapTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

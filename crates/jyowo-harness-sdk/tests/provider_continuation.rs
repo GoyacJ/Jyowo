@@ -8,8 +8,8 @@ use futures::{stream, StreamExt};
 use harness_contracts::{
     ConversationModelCapability, ConversationTurnInput, DeferPolicy, ModelError, ModelProtocol,
     NetworkAccess, NoopRedactor, ProviderRestriction, SessionId, TenantId, ToolActionPlan,
-    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, TrustLevel, UsageSnapshot,
-    WorkspaceAccess,
+    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties,
+    TrustLevel, UsageSnapshot, WorkspaceAccess,
 };
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_model::{
@@ -434,6 +434,7 @@ impl Tool for TestTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

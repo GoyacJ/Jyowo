@@ -10,7 +10,7 @@ use harness_contracts::{
     HostRule, InteractivityLevel, NetworkAccess, PermissionActorSource, PermissionConfirmation,
     PermissionMode, PermissionSubject, ResourceLimits, RuleSource, RunId, SandboxMode,
     SandboxPolicy, SandboxPreflightStatus, SandboxScope, SessionId, Severity, TenantId,
-    ToolActionPlan, ToolUseId, WorkspaceAccess,
+    ToolActionPlan, ToolExecutionChannel, ToolUseId, WorkspaceAccess,
 };
 use harness_execution::{
     AuthorizationContext, AuthorizationEventSink, AuthorizationService, ExecutionError,
@@ -22,8 +22,9 @@ use harness_permission::{
     RuleEngineBroker, StreamBasedBroker, StreamBrokerConfig,
 };
 use harness_sandbox::{
-    ExecContext, ExecSpec, LocalSandbox, ProcessHandle, SandboxBackend, SandboxBaseConfig,
-    SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
+    ExecContext, ExecSpec, LocalSandbox, NetworkPolicySupport, ProcessHandle, SandboxBackend,
+    SandboxBaseConfig, SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
+    WorkspacePolicySupport,
 };
 use parking_lot::Mutex;
 use std::time::Duration;
@@ -209,7 +210,7 @@ async fn authorization_service_uses_sandbox_authority_for_exec_preflight() {
         Event::SandboxPreflightFailed(failed)
             if failed.status == SandboxPreflightStatus::Failed
                 && failed.backend_id == "local"
-                && failed.reason.contains("no-network")
+                && failed.reason.contains("cannot enforce network policy")
     ));
 }
 
@@ -250,7 +251,7 @@ async fn authorization_service_uses_sandbox_authority_for_network_only_preflight
                 && failed.backend_id == "network-capable"
                 && matches!(failed.policy.network, NetworkAccess::AllowList(_))
                 && failed.policy_hash != Default::default()
-                && failed.reason.contains("fine-grained network policy")
+                && failed.reason.contains("cannot enforce network policy")
     ));
 }
 
@@ -324,7 +325,7 @@ async fn authorization_service_declared_network_resource_requires_effective_netw
         Event::SandboxPreflightFailed(failed)
             if failed.status == SandboxPreflightStatus::Failed
                 && failed.backend_id == "network-capable"
-                && failed.reason.contains("fine-grained network policy")
+                && failed.reason.contains("cannot enforce network policy")
     ));
 }
 
@@ -562,6 +563,7 @@ fn action_plan(tool_name: &str, scope: DecisionScope) -> ToolActionPlan {
         },
         workspace_access: WorkspaceAccess::None,
         network_access: NetworkAccess::None,
+        execution_channel: ToolExecutionChannel::ProcessSandbox,
         review: Default::default(),
         plan_hash: ActionPlanHash::from_bytes([2; 32]),
         created_at: Utc::now(),
@@ -805,7 +807,12 @@ impl SandboxBackend for NetworkCapablePreflightSandbox {
 
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
-            supports_network: true,
+            network: NetworkPolicySupport {
+                none: true,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
             max_concurrent_execs: 1,
             ..SandboxCapabilities::default()
         }
@@ -855,7 +862,12 @@ impl SandboxBackend for RejectingPreflightSandbox {
 
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
-            supports_network: true,
+            network: NetworkPolicySupport {
+                none: true,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
             max_concurrent_execs: 1,
             ..SandboxCapabilities::default()
         }

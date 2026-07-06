@@ -10,8 +10,8 @@ use futures::stream;
 use harness_contracts::{
     BudgetMetric, CapabilityRegistry, DeferPolicy, NetworkAccess, OverflowAction,
     ProviderRestriction, ResultBudget, SemverString, SessionId, TenantId, ToolActionPlan,
-    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId,
-    TrustLevel, WorkspaceAccess,
+    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties,
+    ToolResult, ToolUseId, TrustLevel, WorkspaceAccess,
 };
 use harness_mcp::{
     IsolationMode, JsonRpcRequest, McpServerAdapter, McpServerAuditEvent, McpServerAuditSink,
@@ -219,6 +219,7 @@ impl Tool for TenantTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

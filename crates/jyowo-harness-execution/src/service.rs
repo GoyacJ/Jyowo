@@ -8,6 +8,7 @@ use harness_contracts::{
     PermissionRequestedEvent, PermissionResolvedEvent, ResourceLimits, RunId, SandboxPolicy,
     SandboxPolicyHash, SandboxPolicySummary, SandboxPreflightFailedEvent,
     SandboxPreflightPassedEvent, SandboxPreflightStatus, SessionId, TenantId, ToolActionPlan,
+    WorkspaceAccess,
 };
 use harness_permission::{
     canonical_permission_fingerprint, default_permission_decision_options, PermissionAuthority,
@@ -414,20 +415,26 @@ fn sandbox_preflight_failure(
         }
     }
 
-    if !matches!(plan.network_access, NetworkAccess::None)
-        || !matches!(plan.sandbox_policy.network, NetworkAccess::None)
-    {
-        if !capabilities.supports_network {
-            return Some("sandbox backend does not support requested network access".to_owned());
-        }
+    // Network capability check: only when the plan actually needs network enforcement.
+    // When both plan.network_access and sandbox_policy.network are None, the plan has
+    // no network requirement and we skip the check — same as the coarse-capability era.
+    let plan_requires_network = !matches!(plan.network_access, NetworkAccess::None)
+        || !matches!(plan.sandbox_policy.network, NetworkAccess::None);
+    if plan_requires_network && !capabilities.network.supports(&plan.sandbox_policy.network) {
+        return Some(format!(
+            "sandbox backend cannot enforce network policy: {:?}",
+            plan.sandbox_policy.network
+        ));
     }
 
-    if matches!(
-        plan.workspace_access,
-        harness_contracts::WorkspaceAccess::ReadWrite { .. }
-    ) && !capabilities.supports_filesystem_write
-    {
-        return Some("sandbox backend does not support filesystem writes".to_owned());
+    // Workspace capability check: only when the plan requires write access.
+    // ReadOnly and None do not need sandbox enforcement.
+    let plan_requires_write = matches!(plan.workspace_access, WorkspaceAccess::ReadWrite { .. });
+    if plan_requires_write && !capabilities.workspace.supports(&plan.workspace_access) {
+        return Some(format!(
+            "sandbox backend cannot enforce workspace access policy: {:?}",
+            plan.workspace_access
+        ));
     }
 
     unsupported_resource_limit(&plan.sandbox_policy.resource_limits, capabilities)

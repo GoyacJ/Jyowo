@@ -17,9 +17,9 @@ use harness_contracts::{
     ResultBudget, RunId, SandboxError, SandboxExecutionCompletedEvent,
     SandboxExecutionStartedEvent, SandboxExitStatus, SandboxMode, SandboxPolicySummary,
     SandboxScope, SessionId, SteeringId, SteeringKind, SteeringMessageAppliedEvent, StopReason,
-    TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties,
-    ToolResult, ToolResultPart, ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
-    WorkspaceAccess,
+    TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
+    ToolOrigin, ToolProperties, ToolResult, ToolResultPart, ToolSearchMode, ToolUseId, TrustLevel,
+    TurnInput, UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{
     Engine, EngineError, EngineId, EngineRunner, RunContext, SessionHandle, SteeringDrain,
@@ -41,8 +41,9 @@ use harness_model::{
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_sandbox::{
-    ActivityHandle, ExecContext, ExecOutcome, ExecSpec, ProcessHandle, SandboxBackend,
-    SandboxBaseConfig, SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
+    ActivityHandle, ExecContext, ExecOutcome, ExecSpec, NetworkPolicySupport, ProcessHandle,
+    SandboxBackend, SandboxBaseConfig, SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
+    WorkspacePolicySupport,
 };
 #[cfg(feature = "recall-memory")]
 use harness_tool::default_result_budget;
@@ -1016,6 +1017,7 @@ impl Tool for TextTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 
@@ -1099,6 +1101,7 @@ impl Tool for TypedImageArtifactTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 
@@ -1198,6 +1201,7 @@ impl Tool for ImageBlobTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 
@@ -1232,8 +1236,17 @@ impl SandboxBackend for EventfulSandbox {
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
             supports_streaming: true,
-            supports_network: true,
-            supports_filesystem_write: true,
+            network: NetworkPolicySupport {
+                none: true,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
+            workspace: WorkspacePolicySupport {
+                read_write_all: true,
+                read_only: false,
+                writable_subpaths: false,
+            },
             max_concurrent_execs: 1,
             ..SandboxCapabilities::default()
         }
@@ -1594,6 +1607,7 @@ impl Tool for TestListDirTool {
             vec![ActionResource::FileRead { path }],
             WorkspaceAccess::ReadOnly,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

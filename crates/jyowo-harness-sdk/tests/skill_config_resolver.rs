@@ -8,8 +8,8 @@ use futures::{executor::block_on, stream, StreamExt};
 use harness_contracts::{
     BudgetMetric, Decision, DeferPolicy, Event, ModelError, NetworkAccess, OverflowAction,
     ProviderRestriction, ResultBudget, SkillInjectionId, SkillInvocationReceipt, SkillRegistryCap,
-    TenantId, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
-    ToolProperties, ToolResult, ToolUseId, TrustLevel, WorkspaceAccess,
+    TenantId, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel,
+    ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId, TrustLevel, WorkspaceAccess,
 };
 use harness_journal::EventStore;
 use harness_model::{
@@ -304,6 +304,7 @@ impl Tool for InvokeConfiguredSkillTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

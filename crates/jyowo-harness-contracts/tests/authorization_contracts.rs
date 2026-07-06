@@ -73,6 +73,7 @@ fn tool_action_plan_serializes_authorization_contract_shape() {
             allowed_writable_subpaths: vec!["/workspace/src".into()],
         },
         network_access: NetworkAccess::None,
+        execution_channel: ToolExecutionChannel::DirectAuthorizedRust,
         review: permission_review(),
         plan_hash: ActionPlanHash::from_hex(
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

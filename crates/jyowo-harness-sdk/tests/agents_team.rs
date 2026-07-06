@@ -16,9 +16,9 @@ use harness_contracts::{
     EventId, ForkReason, InteractivityLevel, JournalError, JournalOffset, Message, MessageId,
     MessagePart, MessageRole, ModelError, ModelRef, NetworkAccess, PermissionActorSource,
     PermissionError, PermissionMode, PermissionSubject, ProviderRestriction, Recipient, RunId,
-    SessionId, StopReason, TeamId, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup,
-    ToolOrigin, ToolProperties, ToolResult, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
-    WorkspaceAccess,
+    SessionId, StopReason, TeamId, TenantId, ToolActionPlan, ToolDescriptor, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId, TrustLevel,
+    TurnInput, UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineId};
 use harness_hook::{HookDispatcher, HookRegistry};
@@ -959,6 +959,7 @@ impl Tool for TestTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

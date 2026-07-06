@@ -12,8 +12,8 @@ use harness_permission::{
     PersistedDecision,
 };
 use harness_sandbox::{
-    ExecContext, ExecSpec, ProcessHandle, ResourceLimitSupport, SandboxBackend,
-    SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
+    ExecContext, ExecSpec, NetworkPolicySupport, ProcessHandle, ResourceLimitSupport,
+    SandboxBackend, SandboxCapabilities, SessionSnapshotFile, SnapshotSpec, WorkspacePolicySupport,
 };
 use parking_lot::Mutex;
 
@@ -92,8 +92,17 @@ impl SandboxBackend for TestSandbox {
 
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
-            supports_network: true,
-            supports_filesystem_write: true,
+            network: NetworkPolicySupport {
+                none: true,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
+            workspace: WorkspacePolicySupport {
+                read_write_all: true,
+                read_only: false,
+                writable_subpaths: false,
+            },
             max_concurrent_execs: 1,
             snapshot_kinds: BTreeSet::new(),
             resource_limit_support: ResourceLimitSupport {

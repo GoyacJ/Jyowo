@@ -20,8 +20,9 @@ use harness_contracts::{
     ToolUseId, WorkspaceAccess, RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
 };
 use harness_sandbox::{
-    ActivityHandle, ExecContext, ExecOutcome, ExecSpec, KillScope, ProcessHandle, SandboxBackend,
-    SandboxCapabilities, SessionSnapshotFile,
+    ActivityHandle, ExecContext, ExecOutcome, ExecSpec, KillScope, NetworkPolicySupport,
+    ProcessHandle, SandboxBackend, SandboxCapabilities, SessionSnapshotFile,
+    WorkspacePolicySupport,
 };
 use harness_tool::{
     builtin::{ProcessReadTool, ProcessStartTool, ProcessStopTool},
@@ -547,8 +548,17 @@ impl SandboxBackend for FakeSandbox {
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
             supports_streaming: true,
-            supports_network: true,
-            supports_filesystem_write: true,
+            network: NetworkPolicySupport {
+                none: true,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
+            workspace: WorkspacePolicySupport {
+                read_write_all: true,
+                read_only: false,
+                writable_subpaths: false,
+            },
             max_concurrent_execs: 1,
             ..SandboxCapabilities::default()
         }

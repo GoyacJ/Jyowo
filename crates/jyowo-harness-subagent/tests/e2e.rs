@@ -6,8 +6,8 @@ use futures::StreamExt;
 use harness_contracts::{
     AuthorizationTicketId, BudgetMetric, CapabilityRegistry, DeferPolicy, NetworkAccess,
     OverflowAction, ProviderRestriction, ResultBudget, RunId, SessionId, SubagentRunnerCap,
-    TenantId, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
-    ToolProperties, ToolResult, TrustLevel, UsageSnapshot, WorkspaceAccess,
+    TenantId, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel,
+    ToolGroup, ToolOrigin, ToolProperties, ToolResult, TrustLevel, UsageSnapshot, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use harness_subagent::{
@@ -176,6 +176,7 @@ impl Tool for ChildTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

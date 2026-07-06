@@ -10,8 +10,9 @@ mod capability_route_filter {
     use harness_contracts::{
         CapabilityRouteKind, ConversationModelCapability, DeferPolicy, ModelModality,
         NetworkAccess, ProviderCapabilityRoute, ProviderCapabilityRouteSettings,
-        ProviderRestriction, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
-        ToolProperties, ToolResult, ToolServiceBinding, TrustLevel, WorkspaceAccess,
+        ProviderRestriction, ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel,
+        ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolServiceBinding, TrustLevel,
+        WorkspaceAccess,
     };
     use harness_tool::{
         action_plan_from_permission_check, default_result_budget, AuthorizedToolInput,
@@ -127,6 +128,7 @@ mod capability_route_filter {
                 Vec::new(),
                 WorkspaceAccess::None,
                 NetworkAccess::None,
+                ToolExecutionChannel::DirectAuthorizedRust,
             )
         }
 

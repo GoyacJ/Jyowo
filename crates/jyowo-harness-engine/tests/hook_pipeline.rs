@@ -10,9 +10,9 @@ use harness_contracts::{
     HookEventKind, HookFailureMode, InteractivityLevel, Message, MessageId, MessagePart,
     MessageRole, ModelError, NetworkAccess, NoopRedactor, OverflowAction, PermissionError,
     PermissionMode, PermissionSubject, ProviderRestriction, RedactRules, Redactor, ResultBudget,
-    RunId, SessionId, StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup,
-    ToolOrigin, ToolProperties, ToolResult, ToolSearchMode, ToolUseId, TrustLevel, TurnInput,
-    UsageSnapshot, WorkspaceAccess,
+    RunId, SessionId, StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolSearchMode,
+    ToolUseId, TrustLevel, TurnInput, UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{
@@ -893,6 +893,7 @@ impl Tool for EchoTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 
@@ -953,6 +954,7 @@ impl Tool for FailingTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

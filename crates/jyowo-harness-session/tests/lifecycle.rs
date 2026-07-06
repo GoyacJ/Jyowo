@@ -25,8 +25,8 @@ use harness_permission::{
     PermissionRequest,
 };
 use harness_sandbox::{
-    ExecContext, ExecSpec, ProcessHandle, SandboxBackend, SandboxCapabilities, SessionSnapshotFile,
-    SnapshotSpec,
+    ExecContext, ExecSpec, NetworkPolicySupport, ProcessHandle, SandboxBackend,
+    SandboxCapabilities, SessionSnapshotFile, SnapshotSpec, WorkspacePolicySupport,
 };
 use harness_session::SessionProjection;
 use harness_session::{Session, SessionOptions, SessionTurnRuntime};
@@ -332,8 +332,17 @@ impl SandboxBackend for AllowPreflightSandbox {
 
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
-            supports_network: true,
-            supports_filesystem_write: true,
+            network: NetworkPolicySupport {
+                none: true,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
+            workspace: WorkspacePolicySupport {
+                read_write_all: true,
+                read_only: false,
+                writable_subpaths: false,
+            },
             resource_limit_support: harness_sandbox::ResourceLimitSupport {
                 memory: true,
                 cpu: true,
