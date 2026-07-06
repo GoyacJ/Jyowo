@@ -4,17 +4,18 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use harness_contracts::SandboxError;
 use harness_contracts::{
     ActionPlanHash, ActionPlanId, ActionResource, Decision, DecisionScope, Event, FallbackPolicy,
     HostRule, InteractivityLevel, NetworkAccess, PermissionActorSource, PermissionConfirmation,
     PermissionMode, PermissionSubject, ResourceLimits, RuleSource, RunId, SandboxMode,
     SandboxPolicy, SandboxPreflightStatus, SandboxScope, SessionId, Severity, TenantId,
-    ToolActionPlan, ToolExecutionChannel, ToolUseId, WorkspaceAccess,
+    ToolActionPlan, ToolCapability, ToolError, ToolExecutionChannel, ToolUseId, UserMessage,
+    UserMessageDelivery, UserMessengerCap, WorkspaceAccess,
 };
+use harness_contracts::{CapabilityRegistry, SandboxError};
 use harness_execution::{
     AuthorizationContext, AuthorizationEventSink, AuthorizationService, ExecutionError,
-    TicketLedger,
+    ExecutionPreflightRegistry, TicketLedger,
 };
 use harness_permission::{
     DangerousPatternLibrary, NoopDecisionPersistence, PermissionAuthority, PermissionBroker,
@@ -34,7 +35,7 @@ async fn authorization_service_denies_hard_policy_without_minting_ticket() {
     let sink = Arc::new(RecordingSink::default());
     let service = AuthorizationService::new(
         real_authority(RuleSource::Policy, RuleAction::Deny, DecisionScope::Any).await,
-        Arc::new(TestSandbox::default()),
+        preflight_registry(Arc::new(TestSandbox::default())),
         sink.clone(),
         Arc::new(TicketLedger::default()),
     );
@@ -60,7 +61,7 @@ async fn authorization_service_denies_hard_policy_under_bypass_mode_without_mint
     let ledger = Arc::new(TicketLedger::default());
     let service = AuthorizationService::new(
         real_authority(RuleSource::Policy, RuleAction::Deny, DecisionScope::Any).await,
-        Arc::new(TestSandbox::default()),
+        preflight_registry(Arc::new(TestSandbox::default())),
         sink.clone(),
         ledger.clone(),
     );
@@ -103,7 +104,7 @@ async fn authorization_service_denies_dangerous_command_under_bypass_without_min
     let ledger = Arc::new(TicketLedger::default());
     let service = AuthorizationService::new(
         dangerous_command_authority().await,
-        Arc::new(TestSandbox::default()),
+        preflight_registry(Arc::new(TestSandbox::default())),
         sink.clone(),
         ledger.clone(),
     );
@@ -145,7 +146,7 @@ async fn authorization_service_emits_permission_then_preflight_events_without_jo
     let sink = Arc::new(RecordingSink::default());
     let service = AuthorizationService::new(
         real_authority(RuleSource::Session, RuleAction::Allow, DecisionScope::Any).await,
-        Arc::new(TestSandbox::default()),
+        preflight_registry(Arc::new(TestSandbox::default())),
         sink.clone(),
         Arc::new(TicketLedger::default()),
     );
@@ -185,7 +186,7 @@ async fn authorization_service_uses_sandbox_authority_for_exec_preflight() {
             DecisionScope::ToolName("Bash".to_owned()),
         )
         .await,
-        Arc::new(LocalSandbox::new(workspace.path())),
+        preflight_registry(Arc::new(LocalSandbox::new(workspace.path()))),
         sink.clone(),
         Arc::new(TicketLedger::default()),
     );
@@ -224,7 +225,7 @@ async fn authorization_service_uses_sandbox_authority_for_network_only_preflight
             DecisionScope::ToolName("mcp_transport".to_owned()),
         )
         .await,
-        Arc::new(NetworkCapablePreflightSandbox),
+        preflight_registry(Arc::new(NetworkCapablePreflightSandbox)),
         sink.clone(),
         Arc::new(TicketLedger::default()),
     );
@@ -265,7 +266,7 @@ async fn authorization_service_mints_ticket_after_sandbox_preflight() {
             DecisionScope::ToolName("Bash".to_owned()),
         )
         .await,
-        Arc::new(SlowPassingPreflightSandbox),
+        preflight_registry(Arc::new(SlowPassingPreflightSandbox)),
         sink.clone(),
         Arc::new(TicketLedger::new(Duration::from_millis(5))),
     );
@@ -300,7 +301,7 @@ async fn authorization_service_declared_network_resource_requires_effective_netw
             DecisionScope::ToolName("custom_network_tool".to_owned()),
         )
         .await,
-        Arc::new(NetworkCapablePreflightSandbox),
+        preflight_registry(Arc::new(NetworkCapablePreflightSandbox)),
         sink.clone(),
         Arc::new(TicketLedger::default()),
     );
@@ -339,10 +340,10 @@ async fn authorization_service_preflights_declared_network_resource_even_without
             DecisionScope::ToolName("custom_network_tool".to_owned()),
         )
         .await,
-        Arc::new(RejectingPreflightSandbox {
+        preflight_registry(Arc::new(RejectingPreflightSandbox {
             backend_id: "network-resource-preflight",
             reason: "declared network resource preflight".to_owned(),
-        }),
+        })),
         sink.clone(),
         Arc::new(TicketLedger::default()),
     );
@@ -386,7 +387,7 @@ async fn authorization_service_carries_type_to_confirm_into_pending_permission()
     });
     let service = AuthorizationService::new(
         interactive_authority(Arc::new(stream_broker)).await,
-        Arc::new(TestSandbox::default()),
+        preflight_registry(Arc::new(TestSandbox::default())),
         sink,
         Arc::new(TicketLedger::default()),
     );
@@ -518,6 +519,335 @@ async fn wait_for_pending_confirmation(
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     None
+}
+
+// ── Execution channel preflight tests (Task 3) ──
+
+struct RecordingBroker {
+    allow: bool,
+}
+
+#[async_trait]
+impl harness_tool::ToolNetworkBrokerPreflightCap for RecordingBroker {
+    async fn preflight_network_request(
+        &self,
+        _request: &harness_tool::NetworkBrokerPreflightRequest,
+    ) -> Result<(), ToolError> {
+        if self.allow {
+            Ok(())
+        } else {
+            Err(ToolError::Message("broker denied".to_owned()))
+        }
+    }
+}
+
+fn broker_registry(
+    sandbox: Arc<dyn SandboxBackend>,
+    broker: Option<Arc<dyn harness_tool::ToolNetworkBrokerPreflightCap>>,
+) -> ExecutionPreflightRegistry {
+    ExecutionPreflightRegistry::new(sandbox, broker, Arc::new(CapabilityRegistry::default()))
+}
+
+fn http_broker_plan() -> ToolActionPlan {
+    let mut plan = action_plan(
+        "minimax_image_generation",
+        DecisionScope::Category("network".to_owned()),
+    );
+    plan.execution_channel = ToolExecutionChannel::HttpBroker;
+    plan.network_access = NetworkAccess::AllowList(vec![HostRule {
+        pattern: "api.minimaxi.com".to_owned(),
+        ports: Some(vec![443]),
+    }]);
+    plan.sandbox_policy.network = plan.network_access.clone();
+    plan.resources = vec![ActionResource::Network {
+        host: "api.minimaxi.com".to_owned(),
+        port: Some(443),
+    }];
+    plan
+}
+
+fn http_broker_none_plan() -> ToolActionPlan {
+    let mut plan = http_broker_plan();
+    plan.network_access = NetworkAccess::None;
+    plan.sandbox_policy.network = NetworkAccess::None;
+    plan
+}
+
+fn external_capability_plan() -> ToolActionPlan {
+    let mut plan = action_plan(
+        "send_message",
+        DecisionScope::ToolName("send_message".to_owned()),
+    );
+    plan.execution_channel = ToolExecutionChannel::ExternalCapability {
+        capability: ToolCapability::UserMessenger,
+    };
+    plan
+}
+
+#[tokio::test]
+async fn http_broker_allowlist_passes_without_sandbox_preflight() {
+    let sink = Arc::new(RecordingSink::default());
+    let broker = Arc::new(RecordingBroker { allow: true });
+    let service = AuthorizationService::new(
+        real_authority(
+            RuleSource::Session,
+            RuleAction::Allow,
+            DecisionScope::Category("network".to_owned()),
+        )
+        .await,
+        broker_registry(Arc::new(TestSandbox::default()), Some(broker)),
+        sink.clone(),
+        Arc::new(TicketLedger::default()),
+    );
+
+    let outcome = service
+        .authorize_plan(context(), http_broker_plan())
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.decision, Decision::AllowOnce);
+    let events = sink.events();
+    assert!(matches!(events[0], Event::PermissionRequested(_)));
+    assert!(matches!(
+        &events[1],
+        Event::PermissionResolved(resolved) if resolved.decision == Decision::AllowOnce
+    ));
+    assert!(matches!(
+        &events[2],
+        Event::SandboxPreflightPassed(passed)
+            if passed.backend_id == "http_broker"
+    ));
+}
+
+#[tokio::test]
+async fn process_sandbox_with_none_still_invokes_sandbox_preflight() {
+    let sink = Arc::new(RecordingSink::default());
+    let broker = Arc::new(RecordingBroker { allow: true });
+    // Even with a broker registered, ProcessSandbox channel uses sandbox preflight.
+    let service = AuthorizationService::new(
+        real_authority(RuleSource::Session, RuleAction::Allow, DecisionScope::Any).await,
+        broker_registry(Arc::new(TestSandbox::default()), Some(broker)),
+        sink.clone(),
+        Arc::new(TicketLedger::default()),
+    );
+
+    let outcome = service
+        .authorize_plan(context(), action_plan("safe", DecisionScope::Any))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.decision, Decision::AllowOnce);
+    let events = sink.events();
+    assert!(matches!(
+        &events[2],
+        Event::SandboxPreflightPassed(passed)
+            if passed.backend_id == "test-sandbox"
+    ));
+}
+
+#[tokio::test]
+async fn http_broker_with_none_fails_because_http_requires_network() {
+    let sink = Arc::new(RecordingSink::default());
+    let broker = Arc::new(RecordingBroker { allow: true });
+    let service = AuthorizationService::new(
+        real_authority(
+            RuleSource::Session,
+            RuleAction::Allow,
+            DecisionScope::Category("network".to_owned()),
+        )
+        .await,
+        broker_registry(Arc::new(TestSandbox::default()), Some(broker)),
+        sink.clone(),
+        Arc::new(TicketLedger::default()),
+    );
+
+    let error = service
+        .authorize_plan(context(), http_broker_none_plan())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, ExecutionError::SandboxPreflightFailed { ref backend_id, .. } if backend_id == "http_broker"),
+        "unexpected error: {error:?}"
+    );
+    let events = sink.events();
+    assert!(matches!(
+        &events[2],
+        Event::SandboxPreflightFailed(failed)
+            if failed.backend_id == "http_broker"
+                && failed.reason.contains("[http_broker]")
+                && failed.reason.contains("NetworkAccess::None")
+    ));
+}
+
+#[tokio::test]
+async fn http_broker_with_missing_broker_fails_before_ticket_mint() {
+    let sink = Arc::new(RecordingSink::default());
+    let service = AuthorizationService::new(
+        real_authority(
+            RuleSource::Session,
+            RuleAction::Allow,
+            DecisionScope::Category("network".to_owned()),
+        )
+        .await,
+        // No broker registered
+        preflight_registry(Arc::new(TestSandbox::default())),
+        sink.clone(),
+        Arc::new(TicketLedger::default()),
+    );
+
+    let error = service
+        .authorize_plan(context(), http_broker_plan())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, ExecutionError::SandboxPreflightFailed { ref backend_id, .. } if backend_id == "http_broker"),
+        "unexpected error: {error:?}"
+    );
+    let events = sink.events();
+    assert!(matches!(
+        &events[2],
+        Event::SandboxPreflightFailed(failed)
+            if failed.backend_id == "http_broker"
+                && failed.reason.contains("not registered")
+    ));
+}
+
+#[tokio::test]
+async fn external_capability_missing_capability_fails_before_ticket_mint() {
+    let sink = Arc::new(RecordingSink::default());
+    let service = AuthorizationService::new(
+        real_authority(
+            RuleSource::Session,
+            RuleAction::Allow,
+            DecisionScope::ToolName("send_message".to_owned()),
+        )
+        .await,
+        preflight_registry(Arc::new(TestSandbox::default())),
+        sink.clone(),
+        Arc::new(TicketLedger::default()),
+    );
+
+    let error = service
+        .authorize_plan(context(), external_capability_plan())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, ExecutionError::SandboxPreflightFailed { ref backend_id, .. } if backend_id.contains("external_capability")),
+        "unexpected error: {error:?}"
+    );
+    let events = sink.events();
+    assert!(matches!(
+        &events[2],
+        Event::SandboxPreflightFailed(failed)
+            if failed.backend_id.contains("external_capability")
+                && failed.reason.contains("not registered")
+    ));
+}
+
+// ── Task 8: external capability audit tests ──
+
+struct StubUserMessenger;
+
+#[async_trait]
+impl harness_contracts::UserMessengerCap for StubUserMessenger {
+    async fn send(
+        &self,
+        _message: harness_contracts::UserMessage,
+    ) -> Result<harness_contracts::UserMessageDelivery, ToolError> {
+        Ok(harness_contracts::UserMessageDelivery {
+            message_id: "msg-1".to_owned(),
+            delivered: true,
+        })
+    }
+}
+
+#[tokio::test]
+async fn external_capability_present_usermessenger_passes_without_sandbox_preflight() {
+    let sink = Arc::new(RecordingSink::default());
+    let mut caps = CapabilityRegistry::default();
+    caps.install(
+        ToolCapability::UserMessenger,
+        Arc::new(StubUserMessenger) as Arc<dyn harness_contracts::UserMessengerCap>,
+    );
+
+    let service = AuthorizationService::new(
+        real_authority(
+            RuleSource::Session,
+            RuleAction::Allow,
+            DecisionScope::ToolName("send_message".to_owned()),
+        )
+        .await,
+        ExecutionPreflightRegistry::new(Arc::new(TestSandbox::default()), None, Arc::new(caps)),
+        sink.clone(),
+        Arc::new(TicketLedger::default()),
+    );
+
+    let outcome = service
+        .authorize_plan(context(), external_capability_plan())
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.decision, Decision::AllowOnce);
+    let events = sink.events();
+    // Permission event order: requested → resolved → preflight passed
+    assert!(matches!(&events[2], Event::SandboxPreflightPassed(passed)
+        if passed.backend_id.contains("external_capability")
+    ));
+    // Verify NO SandboxPreflightFailed events were emitted for process sandbox.
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, Event::SandboxPreflightFailed(failed)
+            if failed.backend_id == "test_sandbox"
+        )));
+}
+
+#[tokio::test]
+async fn external_capability_passes_without_calling_sandbox_preflight() {
+    // Verify the authorization service only checks ExternalCapability
+    // against the capability registry, never against the process sandbox.
+    let sink = Arc::new(RecordingSink::default());
+    let mut caps = CapabilityRegistry::default();
+    caps.install(
+        ToolCapability::UserMessenger,
+        Arc::new(StubUserMessenger) as Arc<dyn harness_contracts::UserMessengerCap>,
+    );
+
+    // ExternalCapability channels must never consult the process sandbox.
+    // Even with a sandbox present in the registry, the authorization preflight
+    // should route through external_capability check only.
+    let service = AuthorizationService::new(
+        real_authority(
+            RuleSource::Session,
+            RuleAction::Allow,
+            DecisionScope::ToolName("send_message".to_owned()),
+        )
+        .await,
+        ExecutionPreflightRegistry::new(Arc::new(TestSandbox::default()), None, Arc::new(caps)),
+        sink.clone(),
+        Arc::new(TicketLedger::default()),
+    );
+
+    let outcome = service
+        .authorize_plan(context(), external_capability_plan())
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.decision, Decision::AllowOnce);
+    // The sandbox_backend_id must be external_capability, not test_sandbox.
+    assert!(
+        outcome.sandbox_backend_id.contains("external_capability"),
+        "backend id should indicate external capability, got: {}",
+        outcome.sandbox_backend_id
+    );
+}
+
+// ── Helpers ──
+
+fn preflight_registry(sandbox: Arc<dyn SandboxBackend>) -> ExecutionPreflightRegistry {
+    ExecutionPreflightRegistry::new(sandbox, None, Arc::new(CapabilityRegistry::default()))
 }
 
 fn context() -> AuthorizationContext {
