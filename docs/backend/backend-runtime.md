@@ -69,6 +69,21 @@ Ownership rules:
   before execution.
 - Local no-isolation mode (`LocalIsolation::None`) is not OS sandbox enforcement.
   It must not claim OS isolation capability.
+- Tool execution plans declare an execution channel. Process tools are enforced
+  by process sandbox preflight. HTTP and provider tools are enforced by the
+  authorized HTTP broker. External backend capabilities are checked against
+  registered runtime capabilities. Direct authorized Rust paths still require a
+  valid authorization ticket.
+- Sandbox capability reporting is policy-specific. A backend must not report
+  restricted network or workspace policy support unless it can enforce that
+  exact policy.
+- Desktop process sandbox routing, Docker fallback, HTTP broker permits, and
+  frontend display-only status are defined in
+  [harness-sandbox](../architecture/harness/crates/harness-sandbox.md).
+- `BypassPermissions` and `DontAsk` skip interactive permission prompts only.
+  They do not bypass tenant scope, workspace scope, hard policy, sandbox
+  preflight, HTTP broker validation, authorization ticket validation, Redactor,
+  event ordering, or capability presence.
 - `PermissionBroker` owns policy checks, request deduplication, persistence, and decision scope.
 - The permission authority stack owns hard policy, dedup, history, persistence,
   and interactive resolution as one pipeline. `PermissionContext` does not carry

@@ -197,6 +197,8 @@ Update backend docs when changing:
 - Memory visibility or persistence
 - model provider boundaries
 - provider capability route validation, credential scope, and typed service artifacts
+- sandbox execution channels, routing sandbox behavior, HTTP broker enforcement,
+  Docker fallback workspace mount contract, and runtime capability status
 - Journal, Replay, Audit, or Redactor behavior
 - Tauri command surface
 - Rust quality gates
