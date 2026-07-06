@@ -39,6 +39,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 mod automation;
 mod global_config;
 mod mcp;
+mod migration;
 mod plugin;
 mod skill;
 
@@ -46,6 +47,12 @@ pub use automation::DesktopAutomationStore;
 pub use global_config::GlobalConfigStore;
 pub use mcp::DesktopMcpDiagnosticStore;
 pub(crate) use mcp::DesktopMcpServerStore;
+// Task 4A: migration framework — consumed by domain tasks 5-13.
+#[allow(unused_imports)]
+pub use migration::{
+    migrate_json_file, migrate_json_file_with, migrate_secret_json_file,
+    migrate_secret_json_file_with, MigrationConflict, MigrationConflictKind, MigrationResult,
+};
 pub use plugin::DesktopPluginStore;
 pub use skill::DesktopSkillStore;
 
