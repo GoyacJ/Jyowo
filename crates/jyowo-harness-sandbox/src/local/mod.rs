@@ -101,7 +101,8 @@ impl LocalIsolation {
         }
     }
 
-    pub(crate) fn is_os_level(self) -> bool {
+    /// Returns `true` when this isolation mode uses an OS-level sandbox primitive.
+    pub fn is_os_level(self) -> bool {
         !matches!(self, Self::None)
     }
 }

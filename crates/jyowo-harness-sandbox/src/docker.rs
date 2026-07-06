@@ -52,7 +52,9 @@ impl DockerSandbox {
         DockerSandboxBuilder::default()
     }
 
-    async fn ensure_available(&self) -> Result<(), SandboxError> {
+    /// Checks whether the Docker daemon is reachable. Public so desktop runtime
+    /// assembly can verify Docker availability before registering it as a router candidate.
+    pub async fn ensure_available(&self) -> Result<(), SandboxError> {
         let result = Command::new(&self.docker_binary)
             .arg("version")
             .arg("--format")
@@ -374,6 +376,36 @@ impl DockerSandbox {
         }
     }
 
+    /// Resolves the container-side workdir for an ephemeral container execution.
+    ///
+    /// When a volume mount maps the host workspace root to `/workspace`, host cwd
+    /// paths under that root are rewritten to container-relative paths. When no cwd
+    /// is specified, defaults to `/workspace`.
+    fn resolve_container_workdir(&self, spec_cwd: Option<&Path>) -> Option<PathBuf> {
+        let workspace_mount = self
+            .volumes
+            .iter()
+            .find(|v| v.container_path == Path::new("/workspace"))?;
+
+        match spec_cwd {
+            Some(cwd) => {
+                // If the host cwd is under the workspace root, rewrite to container path.
+                match cwd.strip_prefix(&workspace_mount.host_path) {
+                    Ok(relative) => {
+                        let container_path = workspace_mount.container_path.join(relative);
+                        Some(container_path)
+                    }
+                    Err(_) => {
+                        // cwd outside the workspace mount — keep the host path as-is;
+                        // the container may not have this path.
+                        Some(cwd.to_path_buf())
+                    }
+                }
+            }
+            None => Some(workspace_mount.container_path.clone()),
+        }
+    }
+
     fn command_for_execute(&self, spec: &ExecSpec, container_id: Option<&str>) -> Command {
         let mut command = Command::new(&self.docker_binary);
         if let Some(container_id) = container_id {
@@ -390,6 +422,10 @@ impl DockerSandbox {
                 &effective_resource_limits(spec, &self.base),
                 &network,
             );
+            // Set the container workdir for ephemeral containers.
+            if let Some(workdir) = self.resolve_container_workdir(spec.cwd.as_deref()) {
+                command.arg("-w").arg(workdir);
+            }
             command.arg(&self.image);
         }
         command.arg(&spec.command).args(&spec.args);

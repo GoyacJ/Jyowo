@@ -33,10 +33,15 @@ use super::validation::*;
 use super::*;
 use crate::agent_supervisor::BackgroundSupervisorSession;
 use async_trait::async_trait;
-use harness_execution::{AuthorizationEventSink, AuthorizationService, TicketLedger};
+use harness_contracts::CapabilityRegistry;
+use harness_contracts::SandboxError;
+use harness_execution::{
+    AuthorizationEventSink, AuthorizationService, ExecutionPreflightRegistry, TicketLedger,
+};
 use harness_model::{default_account_usage_registry, ProviderAccountUsageRegistry};
 use harness_permission::{FileDecisionPersistence, IntegrityAlgorithm, PermissionAuthority};
 use harness_provider_state::FileProviderContinuationStore;
+use harness_sandbox::{ContainerLifecycle, DockerSandbox, RoutingSandboxBackend, VolumeMount};
 
 const PROVIDER_CONTINUATION_RUNTIME_VERSION: &str = "1";
 
@@ -674,6 +679,100 @@ pub fn agent_supervisor_sidecar_startup_result_for_project_command(
     Ok(())
 }
 
+/// Builds the desktop process sandbox as a routing backend.
+///
+/// Selection order (first backend whose preflight and before_execute succeed wins):
+/// 1. OS-level isolation (`Seatbelt` on macOS, `Bubblewrap` on Linux) when the
+///    platform binary is present.
+/// 2. Docker ephemeral per-exec with the workspace mounted at `/workspace`.
+/// 3. `LocalIsolation::None` — only selected by the router for unrestricted
+///    network and read_write_all workspace policies.
+///
+/// Docker fallback is only registered for `read_write_all` workspace policy
+/// because `VolumeMount::workspace` is a read-write mount. The router will skip
+/// Docker for read-only or writable-subpath policies until those mounts are
+/// implemented and tested.
+pub(crate) async fn build_desktop_process_sandbox(
+    workspace_root: &Path,
+) -> Result<Arc<dyn SandboxBackend>, CommandErrorPayload> {
+    let mut backends: Vec<Arc<dyn SandboxBackend>> = Vec::new();
+
+    // 1. OS-level isolation.
+    let platform_isolation = LocalIsolation::for_current_platform();
+    if platform_isolation.is_os_level() && isolation_binary_available(platform_isolation) {
+        let local = LocalSandbox::new(workspace_root).with_isolation(platform_isolation);
+        backends.push(Arc::new(local));
+    }
+
+    // 2. Docker ephemeral fallback.
+    match build_docker_fallback(workspace_root).await {
+        Ok(docker) => backends.push(docker),
+        Err(reason) => {
+            log::info!("desktop sandbox: docker fallback unavailable: {reason}");
+        }
+    }
+
+    // 3. LocalIsolation::None as last resort.
+    // Only supports unrestricted network and read_write_all workspace, so the
+    // router will not select it for restricted policies.
+    let no_isolation = LocalSandbox::new(workspace_root);
+    backends.push(Arc::new(no_isolation));
+
+    let router = RoutingSandboxBackend::new(backends).map_err(|error| {
+        runtime_init_failed(format!("sandbox routing initialization failed: {error}"))
+    })?;
+    Ok(Arc::new(router))
+}
+
+/// Returns `true` when the platform isolation binary is present on the host.
+fn isolation_binary_available(isolation: LocalIsolation) -> bool {
+    match isolation {
+        LocalIsolation::Bubblewrap => binary_in_path("bwrap"),
+        LocalIsolation::Seatbelt => binary_in_path("sandbox-exec"),
+        LocalIsolation::JobObject => {
+            // JobObject on Windows is not yet verified per plan — do not claim support.
+            false
+        }
+        LocalIsolation::None => false,
+    }
+}
+
+fn binary_in_path(name: &str) -> bool {
+    std::env::var_os("PATH").map_or(false, |path| {
+        std::env::split_paths(&path).any(|dir| dir.join(name).is_file())
+    })
+}
+
+/// Builds a Docker ephemeral sandbox with the workspace mounted at `/workspace`.
+///
+/// Fails with a backend-authored reason when Docker is unreachable or the
+/// image cannot be verified. The availability check is bounded to avoid
+/// blocking startup when the Docker daemon is not running.
+async fn build_docker_fallback(workspace_root: &Path) -> Result<Arc<DockerSandbox>, SandboxError> {
+    // Fast-fail when the docker binary is not on PATH.
+    if !binary_in_path("docker") {
+        return Err(SandboxError::Unavailable {
+            backend: "docker".to_owned(),
+            detail: "docker binary not found".to_owned(),
+        });
+    }
+
+    let docker = DockerSandbox::builder()
+        .mount(VolumeMount::workspace(workspace_root, "/workspace"))
+        .lifecycle(ContainerLifecycle::EphemeralPerExec)
+        .build()?;
+
+    // Bound the daemon check so a non-responsive daemon doesn't block startup.
+    tokio::time::timeout(Duration::from_secs(5), docker.ensure_available())
+        .await
+        .map_err(|_| SandboxError::Unavailable {
+            backend: "docker".to_owned(),
+            detail: "docker daemon check timed out".to_owned(),
+        })??;
+
+    Ok(Arc::new(docker))
+}
+
 pub(crate) async fn build_desktop_harness(
     workspace_root: &Path,
     stream_permission_runtime: Arc<StreamPermissionRuntime>,
@@ -751,7 +850,7 @@ pub(crate) async fn build_desktop_harness(
         Arc::new(DesktopPluginStore::new(workspace_root.to_path_buf()));
     let plugin_registry = build_plugin_registry(workspace_root, plugin_store.as_ref())?;
 
-    let sandbox = Arc::new(LocalSandbox::new(workspace_root)) as Arc<dyn SandboxBackend>;
+    let sandbox = build_desktop_process_sandbox(workspace_root).await?;
 
     // Build the production PermissionAuthority with signed file persistence.
     let signer = desktop_integrity_signer(workspace_root)?;
@@ -787,9 +886,14 @@ pub(crate) async fn build_desktop_harness(
     let event_sink: Arc<dyn AuthorizationEventSink> = Arc::new(DesktopAuthorizationEventSink {
         event_store: Arc::clone(&event_store),
     });
+    let registry = ExecutionPreflightRegistry::new(
+        Arc::clone(&sandbox),
+        None,
+        Arc::new(CapabilityRegistry::default()),
+    );
     let authorization_service = Arc::new(AuthorizationService::new(
         Arc::new(permission_authority),
-        Arc::clone(&sandbox),
+        registry,
         event_sink,
         Arc::new(TicketLedger::default()),
     ));
@@ -1088,6 +1192,7 @@ impl DiagnosticsRunnerCap for DesktopDiagnosticsRunner {
                 event_sink: event_sink.clone(),
                 redactor: Arc::new(DefaultRedactor::default()),
                 blob_store: None,
+                execution_id: 0,
             };
             let mut handle = execute_with_lifecycle(Arc::clone(&self.sandbox), spec, ctx)
                 .await
@@ -1358,7 +1463,8 @@ mod tests {
     use super::*;
     use harness_contracts::{
         AgentToolPolicy, AgentWorkspaceIsolationMode, BackgroundAgentToolSessionSnapshot,
-        ToolSearchMode,
+        DiagnosticsRunRequest, DiagnosticsRunnerKind, NetworkAccess, ResourceLimits, SandboxPolicy,
+        SandboxScope, ToolSearchMode, WorkspaceAccess,
     };
     use jyowo_harness_sdk::testing::{InMemoryEventStore, NoopRedactor};
 
@@ -1421,6 +1527,164 @@ mod tests {
                 .expect("background records list")
                 .is_empty(),
             "policy rejection must happen before creating a background record"
+        );
+    }
+
+    // ── Task 5: routing sandbox tests ──
+
+    #[tokio::test]
+    async fn runtime_uses_routing_sandbox() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let sandbox = build_desktop_process_sandbox(workspace.path())
+            .await
+            .expect("factory should succeed");
+        assert_eq!(
+            sandbox.backend_id(),
+            "routing",
+            "desktop sandbox must be a routing backend, not a bare LocalSandbox"
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostics_runner_uses_routing_sandbox() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+
+        // Set up a minimal Rust project so cargo check can run.
+        std::fs::write(
+            workspace.path().join("Cargo.toml"),
+            "[package]\nname = \"test-crate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("write Cargo.toml");
+        std::fs::create_dir_all(workspace.path().join("src")).expect("create src");
+        std::fs::write(workspace.path().join("src").join("lib.rs"), "").expect("write lib.rs");
+
+        let sandbox = build_desktop_process_sandbox(workspace.path())
+            .await
+            .expect("factory should succeed");
+
+        let runner = DesktopDiagnosticsRunner::new(Arc::clone(&sandbox));
+
+        let request = DiagnosticsRunRequest {
+            runner: DiagnosticsRunnerKind::Rust,
+            workspace_root: workspace.path().to_path_buf(),
+            session_id: SessionId::new(),
+            run_id: RunId::new(),
+            tenant_id: TenantId::SINGLE,
+        };
+        let output = runner.run_diagnostics(request).await;
+        // Diagnostics should succeed (or return a structured error, not panic).
+        // cargo check on an empty crate will succeed.
+        match output {
+            Ok(_raw) => {} // diagnostics succeeded through the routing sandbox
+            Err(ref err) => {
+                // If cargo isn't installed, this is an expected runtime failure, not
+                // a sandbox wiring failure.
+                let msg = format!("{err}");
+                assert!(
+                    !msg.contains("routing") && !msg.contains("sandbox"),
+                    "diagnostics failure must not be a sandbox wiring error: {msg}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn docker_fallback_mounts_workspace() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace.path().canonicalize().expect("canonicalize");
+
+        // build_docker_fallback creates a DockerSandbox with the workspace mounted
+        // at /workspace. The test skips when Docker is unavailable.
+        let docker = match build_docker_fallback(&workspace_root).await {
+            Ok(docker) => docker,
+            Err(_) => {
+                eprintln!("docker unavailable — skipping docker_fallback_mounts_workspace");
+                return;
+            }
+        };
+
+        // The workspace mount is internal to DockerSandbox. We verify indirectly
+        // through capabilities: a DockerSandbox with a read-write mount reports
+        // read_write_all workspace support.
+        let caps = docker.capabilities();
+        assert!(
+            caps.workspace.read_write_all,
+            "docker fallback with workspace mount must support read_write_all"
+        );
+        assert!(
+            !caps.workspace.read_only,
+            "docker fallback must not report read_only support"
+        );
+        assert!(
+            !caps.workspace.writable_subpaths,
+            "docker fallback must not report writable_subpaths support"
+        );
+    }
+
+    #[tokio::test]
+    async fn docker_fallback_rejects_restricted_workspace_mounts() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace.path().canonicalize().expect("canonicalize");
+
+        let docker = match build_docker_fallback(&workspace_root).await {
+            Ok(docker) => docker,
+            Err(_) => {
+                eprintln!("docker unavailable — skipping docker_fallback_rejects_restricted_workspace_mounts");
+                return;
+            }
+        };
+
+        // A read_only workspace policy must fail preflight because the Docker
+        // fallback only has a read-write workspace mount.
+        let spec = ExecSpec {
+            workspace_access: WorkspaceAccess::ReadOnly,
+            ..ExecSpec::default()
+        };
+        let err = docker
+            .preflight_execute(&spec)
+            .expect_err("read_only workspace must fail preflight for docker fallback");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("workspace_access") || msg.contains("workspace"),
+            "error must identify workspace policy as the reason: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unsupported_restricted_policy_reports_reason() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let sandbox = build_desktop_process_sandbox(workspace.path())
+            .await
+            .expect("factory should succeed");
+
+        // Request a restricted network policy (AllowList) + read_only workspace.
+        // No child backend supports this combination, so the router must fail with
+        // a capability reason naming the candidate backends.
+        let spec = ExecSpec {
+            policy: SandboxPolicy {
+                network: NetworkAccess::AllowList(vec![]),
+                mode: SandboxMode::None,
+                scope: SandboxScope::WorkspaceOnly,
+                resource_limits: ResourceLimits {
+                    max_memory_bytes: None,
+                    max_cpu_cores: None,
+                    max_pids: None,
+                    max_wall_clock_ms: None,
+                    max_open_files: None,
+                },
+                denied_host_paths: Vec::new(),
+            },
+            workspace_access: WorkspaceAccess::ReadOnly,
+            ..ExecSpec::default()
+        };
+
+        let err = sandbox
+            .preflight_execute(&spec)
+            .expect_err("restricted policy must fail preflight");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("network") || msg.contains("capability"),
+            "error must describe why the policy cannot be enforced: {msg}"
         );
     }
 }
