@@ -1,12 +1,12 @@
 import { Copy } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/shared/lib/utils'
 import type { CommandExecution } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 
 export function CommandExecutionView({
-  allowFullOutputFetch = true,
+  allowFullOutputFetch = false,
   command,
   conversationId,
   density = 'inspector',
@@ -21,10 +21,28 @@ export function CommandExecutionView({
     hasMore: boolean
     nextCursor?: string
     output: string
+    refId: string
     truncated: boolean
   } | null>(null)
   const [copyFailed, setCopyFailed] = useState(false)
   const [fetchFailed, setFetchFailed] = useState(false)
+  const currentOutputRef = useRef({
+    fullOutputRef: command.fullOutputRef,
+    redactionState: command.redactionState,
+  })
+
+  currentOutputRef.current = {
+    fullOutputRef: command.fullOutputRef,
+    redactionState: command.redactionState,
+  }
+
+  const isCurrentFetch = (requestedFullOutputRef: string) =>
+    currentOutputRef.current.fullOutputRef === requestedFullOutputRef &&
+    currentOutputRef.current.redactionState !== 'withheld'
+
+  useEffect(() => {
+    setFetchedOutput(null)
+  }, [command.fullOutputRef, command.redactionState])
 
   const handleCopyCommand = async () => {
     try {
@@ -36,8 +54,18 @@ export function CommandExecutionView({
     }
   }
 
-  const previewOutput = [command.stdoutPreview, command.stderrPreview].filter(Boolean).join('\n')
-  const visibleOutput = fetchedOutput?.output ?? (previewOutput.length > 0 ? previewOutput : null)
+  const previewOutput =
+    command.redactionState === 'withheld'
+      ? ''
+      : [command.stdoutPreview, command.stderrPreview].filter(Boolean).join('\n')
+  const activeFetchedOutput =
+    fetchedOutput?.refId === command.fullOutputRef && command.redactionState !== 'withheld'
+      ? fetchedOutput
+      : null
+  const visibleOutput =
+    command.redactionState === 'withheld'
+      ? null
+      : (activeFetchedOutput?.output ?? (previewOutput.length > 0 ? previewOutput : null))
   const canFetchFullOutput =
     allowFullOutputFetch && command.fullOutputRef && command.redactionState !== 'withheld'
 
@@ -84,12 +112,14 @@ export function CommandExecutionView({
             <FullOutputFetchButton
               command={command}
               conversationId={conversationId}
-              loaded={fetchedOutput !== null}
-              onError={() => {
+              loaded={activeFetchedOutput !== null}
+              onError={(requestedFullOutputRef) => {
+                if (!isCurrentFetch(requestedFullOutputRef)) return
                 setFetchedOutput(null)
                 setFetchFailed(true)
               }}
-              onLoad={(response) => {
+              onLoad={(response, requestedFullOutputRef) => {
+                if (!isCurrentFetch(requestedFullOutputRef)) return
                 setFetchFailed(false)
                 setFetchedOutput(response)
               }}
@@ -131,7 +161,7 @@ export function CommandExecutionView({
         {command.truncated ? (
           <span className="text-yellow-400/80">{t('timeline.commandEvidence.truncated')}</span>
         ) : null}
-        {fetchedOutput?.truncated ? (
+        {activeFetchedOutput?.truncated ? (
           <span className="text-yellow-400/80">
             {t('timeline.commandEvidence.pageTruncated', 'Output page truncated')}
           </span>
@@ -169,13 +199,17 @@ function FullOutputFetchButton({
   command: CommandExecution
   conversationId: string
   loaded: boolean
-  onError: () => void
-  onLoad: (response: {
-    hasMore: boolean
-    nextCursor?: string
-    output: string
-    truncated: boolean
-  }) => void
+  onError: (requestedFullOutputRef: string) => void
+  onLoad: (
+    response: {
+      hasMore: boolean
+      nextCursor?: string
+      output: string
+      refId: string
+      truncated: boolean
+    },
+    requestedFullOutputRef: string,
+  ) => void
   onStart: () => void
 }) {
   const { t } = useTranslation('conversation')
@@ -183,22 +217,30 @@ function FullOutputFetchButton({
   const [fetchingPage, setFetchingPage] = useState(false)
 
   const handleFetchPage = async () => {
-    if (!command.fullOutputRef) return
+    const requestedFullOutputRef = command.fullOutputRef
+    if (!requestedFullOutputRef) return
     setFetchingPage(true)
     onStart()
     try {
       const response = await commandClient.getConversationCommandOutput({
         conversationId,
-        fullOutputRef: command.fullOutputRef,
+        fullOutputRef: requestedFullOutputRef,
       })
-      onLoad({
-        hasMore: response.hasMore,
-        nextCursor: response.nextCursor,
-        output: response.output,
-        truncated: response.truncated,
-      })
+      if (response.refId !== requestedFullOutputRef || response.redactionState === 'withheld') {
+        throw new Error('Command output withheld')
+      }
+      onLoad(
+        {
+          hasMore: response.hasMore,
+          nextCursor: response.nextCursor,
+          output: response.output,
+          refId: response.refId,
+          truncated: response.truncated,
+        },
+        requestedFullOutputRef,
+      )
     } catch {
-      onError()
+      onError(requestedFullOutputRef)
     } finally {
       setFetchingPage(false)
     }

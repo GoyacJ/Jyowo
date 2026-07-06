@@ -10,10 +10,17 @@ import { DiffPane } from './DiffPane'
 const originalClipboard = navigator.clipboard
 const validEvidenceContentHash = 'd'.repeat(64)
 
-function renderDiffPane(client = createTestCommandClient()) {
+function renderDiffPane({
+  allowFullPatchFetch,
+  client = createTestCommandClient(),
+}: {
+  allowFullPatchFetch?: boolean
+  client?: ReturnType<typeof createTestCommandClient>
+} = {}) {
   return render(
     <CommandClientProvider client={client}>
       <DiffPane
+        allowFullPatchFetch={allowFullPatchFetch}
         conversationId="conversation-1"
         files={[
           changeSetFile({
@@ -35,6 +42,29 @@ describe('DiffPane', () => {
       configurable: true,
       value: originalClipboard,
     })
+  })
+
+  it('keeps full patch fetch unavailable unless explicitly allowed', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const getConversationDiffPatch = vi.fn()
+
+    renderDiffPane({
+      client: createTestCommandClient({
+        conversationDiffPatch: getConversationDiffPatch,
+      }),
+    })
+
+    expect(screen.queryByRole('button', { name: 'Load patch page' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Copy full patch' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy diff preview' }))
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('+preview line'))
+    expect(getConversationDiffPatch).not.toHaveBeenCalled()
   })
 
   it('copies full patch bytes through the diff patch command', async () => {
@@ -64,10 +94,13 @@ describe('DiffPane', () => {
     const exportConversationEvidence = vi.fn()
 
     renderDiffPane({
-      ...createTestCommandClient({
-        conversationDiffPatch: getConversationDiffPatch,
-      }),
-      exportConversationEvidence,
+      allowFullPatchFetch: true,
+      client: {
+        ...createTestCommandClient({
+          conversationDiffPatch: getConversationDiffPatch,
+        }),
+        exportConversationEvidence,
+      },
     })
 
     const copyButton = screen.getByRole('button', { name: 'Copy full patch' })
@@ -91,7 +124,8 @@ describe('DiffPane', () => {
     const getConversationDiffPatch = vi.fn().mockRejectedValue(new Error('fetch failed'))
 
     renderDiffPane({
-      ...createTestCommandClient({
+      allowFullPatchFetch: true,
+      client: createTestCommandClient({
         conversationDiffPatch: getConversationDiffPatch,
       }),
     })
@@ -105,6 +139,80 @@ describe('DiffPane', () => {
       }),
     )
     expect(await screen.findByText('Failed to load patch page')).toBeInTheDocument()
+  })
+
+  it('does not copy withheld full patch responses', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const getConversationDiffPatch = vi.fn().mockResolvedValue({
+      refId: 'diff-ref-1',
+      kind: 'diff-patch',
+      patch: 'SECRET_PATCH',
+      contentType: 'text/x-diff; charset=utf-8',
+      byteLength: 12,
+      contentBytes: 12,
+      offsetBytes: 0,
+      limitBytes: 65_536,
+      totalBytes: 12,
+      returnedBytes: 12,
+      maxBytes: 65_536,
+      truncated: false,
+      hasMore: false,
+      contentHash: validEvidenceContentHash,
+      hashAlgorithm: 'blake3',
+      redactionState: 'withheld',
+    })
+
+    renderDiffPane({
+      allowFullPatchFetch: true,
+      client: createTestCommandClient({
+        conversationDiffPatch: getConversationDiffPatch,
+      }),
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy full patch' }))
+
+    await waitFor(() => expect(getConversationDiffPatch).toHaveBeenCalled())
+    expect(writeText).not.toHaveBeenCalled()
+    expect(await screen.findByText('Copy failed')).toBeInTheDocument()
+    expect(screen.queryByText('SECRET_PATCH')).not.toBeInTheDocument()
+  })
+
+  it('does not store or render withheld full patch pages', async () => {
+    const getConversationDiffPatch = vi.fn().mockResolvedValue({
+      refId: 'diff-ref-1',
+      kind: 'diff-patch',
+      patch: 'SECRET_PATCH_PAGE',
+      contentType: 'text/x-diff; charset=utf-8',
+      byteLength: 17,
+      contentBytes: 17,
+      offsetBytes: 0,
+      limitBytes: 65_536,
+      totalBytes: 17,
+      returnedBytes: 17,
+      maxBytes: 65_536,
+      truncated: false,
+      hasMore: false,
+      contentHash: validEvidenceContentHash,
+      hashAlgorithm: 'blake3',
+      redactionState: 'withheld',
+    })
+
+    renderDiffPane({
+      allowFullPatchFetch: true,
+      client: createTestCommandClient({
+        conversationDiffPatch: getConversationDiffPatch,
+      }),
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load patch page' }))
+
+    await waitFor(() => expect(getConversationDiffPatch).toHaveBeenCalled())
+    expect(await screen.findByText('Failed to load patch page')).toBeInTheDocument()
+    expect(screen.queryByText('SECRET_PATCH_PAGE')).not.toBeInTheDocument()
   })
 
   it('uses semantic file status token classes instead of hardcoded product colors', () => {

@@ -3,6 +3,7 @@ import '@testing-library/jest-dom/vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { appI18n } from '@/shared/i18n/i18n'
+import { uiStore } from '@/shared/state/ui-store'
 import { createTestCommandClient } from '@/testing/command-client'
 import {
   codexLargeDiffTurns,
@@ -389,6 +390,13 @@ describe('TimelineBlockRenderer', () => {
     expect(screen.getByText('$ pnpm -C apps/desktop test')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '加载输出分页' })).not.toBeInTheDocument()
     expect(getConversationCommandOutput).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '在检查器中打开命令' }))
+    expect(uiStore.getState().workbenchSelection).toEqual({
+      kind: 'command',
+      conversationId: 'conversation-1',
+      fullOutputRef: 'full-output-ref-1',
+    })
   })
 
   it('defaults failed and non-zero command groups open', async () => {

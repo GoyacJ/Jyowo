@@ -5,7 +5,7 @@
 | Layer | Count |
 |---|---|
 | Frontend Vitest files | 74 |
-| Frontend Vitest test cases | 689 |
+| Frontend Vitest test cases | 698 |
 | Storybook files | 19 |
 | Playwright spec files | 4 |
 | Rust test files | 332 |
@@ -134,6 +134,8 @@ None.
 - apps/desktop/src/features/conversation/timeline/conversation-timeline.artifacts.test.tsx (9)
 - apps/desktop/src/features/conversation/timeline/conversation-timeline.large-output.test.tsx (9)
 - apps/desktop/src/features/background-agents/BackgroundAgentsPanel.test.tsx (8)
+- apps/desktop/src/features/conversation/evidence/CommandExecutionView.test.tsx (8)
+- apps/desktop/src/features/conversation/evidence/DiffPane.test.tsx (8)
 - apps/desktop/src/features/memory/MemoryBrowser.test.tsx (8)
 - apps/desktop/src/features/settings/AutomationSettings.test.tsx (8)
 - apps/desktop/src/app/App.test.tsx (7)
@@ -145,9 +147,7 @@ None.
 - apps/desktop/src/features/settings/models/ModelSettingsPage.stories.tsx (5)
 - apps/desktop/src/features/settings/models/model-settings-view-model.test.ts (5)
 - apps/desktop/src/features/context/use-context-snapshot.test.tsx (4)
-- apps/desktop/src/features/conversation/evidence/DiffPane.test.tsx (4)
 - apps/desktop/src/features/evals/EvalLabPage.test.tsx (4)
-- apps/desktop/src/features/conversation/evidence/CommandExecutionView.test.tsx (3)
 - apps/desktop/src/features/conversation/timeline/use-conversation-timeline.test.tsx (3)
 - apps/desktop/src/features/settings/models/ModelSettingsPage.test.tsx (3)
 - apps/desktop/src/features/system-status/SystemStatusPage.test.tsx (3)
