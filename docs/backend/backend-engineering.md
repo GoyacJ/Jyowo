@@ -238,6 +238,15 @@ Rules:
 - Field renames require migration or compatibility handling.
 - Error enums exposed across crate or IPC boundaries are contract surface.
 - Tests must cover serialization shape, deserialization, and representative error variants.
+- Public conversation display data belongs in typed contracts such as
+  `AssistantWork`, `AssistantSegment`, `ProcessStep`, and `ProcessStepDetail`.
+  Adding a new timeline display type requires a stable serde shape, JsonSchema
+  export, frontend Zod schema update, Rust projection tests, frontend renderer
+  tests, and redaction coverage.
+- Raw event JSON, command stdout/stderr, full command output, full diff patches,
+  provider payloads, tool input JSON, and chain-of-thought must not be exposed as
+  conversation canvas display contracts. Use UI-safe summaries, typed metadata,
+  withheld states, and opaque evidence refs instead.
 
 Forbidden:
 
@@ -904,6 +913,16 @@ tool, artifact, and synthesis states. Raw chain-of-thought remains private and
 must not enter `ProcessSegment`, `TextSegment`, artifact metadata, or command
 payloads. Legacy `ThinkingSegment` may be deserialized for compatibility, but
 new conversation projection should use `ProcessSegment`.
+`AssistantWork` runtime metadata and `ProcessStepDetail` activity metadata are
+Rust-owned projection data. The projector may derive safe typed activity items
+only from existing redacted and bounded helper paths. If a safe display label
+cannot be derived, the projection must keep count-only UI metadata instead of
+passing through raw paths, queries, tool inputs, or payload JSON.
+Evidence references such as command `fullOutputRef`, diff `fullPatchRef`,
+artifact preview refs, and event refs are opaque UI-safe ids. Full command
+output and full patch bytes remain behind explicit evidence commands and
+inspector/evidence fetch boundaries; they are not embedded in
+`ConversationTurn[]`.
 `page_conversation_timeline` remains a raw execution surface for Activity,
 Replay, and details views. `get_conversation.messages` must not drive
 `ConversationCanvas`.

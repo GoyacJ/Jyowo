@@ -23,6 +23,14 @@ Must test:
   review, clarification, withheld, and error states
 - timeline render blocks for safe activity, command, file edit, tool, artifact,
   withheld, and failed evidence states
+- `buildTimelineRenderBlocks` adapter behavior for stable ids, disclosure
+  defaults, grouped file edit/diff steps, grouped read/search activity, command
+  groups, artifact dedupe, and no raw event fallback
+- `EvidenceDisclosure` controlled open/close behavior, forced-open behavior,
+  action slot behavior, keyboard-accessible button semantics, and stable body
+  rendering
+- file edit, read/search activity, and command render blocks in both collapsed
+  and expanded states, including large previews and withheld evidence
 - Codex-style evidence test conversation, dark-theme evidence screenshot target,
   large diff, failed command, historical attachments, and collapsed completed history
 - worktree projection store behavior, `clientMessageId` optimistic confirmation,
@@ -94,6 +102,7 @@ Component acceptance matrix:
 |---|---|
 | `shared/ui` primitives | variants, keyboard behavior, focus state, disabled state, accessible name |
 | Conversation components | loading, empty, streaming, completed, permission, artifact, review, withheld, error, retry, continue |
+| Timeline render blocks | adapter grouping, stable ids, collapsed and expanded file edit/read-search/command blocks, evidence disclosure state, withheld evidence, no raw event renderer |
 | Context components | no context, selected context, long lists, missing files, stale references |
 | Activity components | queued, running, success, failed, blocked, redacted, drill-down |
 | Execution components | permission pending, approved, denied, high risk, large output, Raw JSON |
@@ -383,6 +392,7 @@ UI:
 [ ] Activity and execution details stay tertiary
 [ ] product components follow the documented component hierarchy
 [ ] ConversationCanvas renders ConversationTurn[] from page_conversation_worktree
+[ ] AssistantWork is converted only to frontend-local TimelineRenderBlock[] before display
 [ ] primitive UI comes from shared/ui
 [ ] Markdown rendering rejects unsafe raw HTML
 [ ] code highlighting is cached or lazy loaded
@@ -409,6 +419,9 @@ Conversation and execution:
 [ ] Composer submit payload omits run-level agent mode fields
 [ ] every event type has a renderer
 [ ] raw RunEvent data is not used as the conversation canvas product model
+[ ] no renderer parses stdout, Markdown, full patches, tool input JSON, or raw event payloads to infer product UI
+[ ] file edit, read/search, command, and evidence disclosure collapsed/expanded states are tested
+[ ] full output and full patch access stays behind opaque evidence refs and inspector-owned fetches
 [ ] get_conversation.messages does not drive ConversationCanvas
 [ ] permissions render nested under tool attempts
 [ ] thinking text is status-derived, explicitly safe, or withheld

@@ -1117,9 +1117,21 @@ Conversation timeline:
 
 - `ConversationTurn[]` from `page_conversation_worktree` is the only render
   source for the conversation canvas.
+- `AssistantWork` may be converted by React into frontend-only
+  `TimelineRenderBlock[]` before rendering. This adapter is display composition
+  only; it must not enter Tauri contracts, storage, Replay, or Journal.
+- `TimelineBlockRenderer` is the extension point for conversation work block
+  rendering. New display types require a typed Rust projection, a public serde
+  contract when data crosses IPC, a Zod schema update, a render block adapter
+  case, a renderer, focused tests, and Storybook coverage.
+- The render block registry must not add a catch-all raw event renderer. Unknown
+  projected data is ignored or rendered through an explicit safe typed segment.
 - Raw `RunEvent` data and `page_conversation_timeline` are execution surfaces
   for Activity, Replay, details, and Raw JSON. They must not become product
   render models.
+- Raw chain-of-thought, provider payload JSON, tool input JSON, command stdout,
+  full command output, and full diff patches must not drive main canvas
+  rendering.
 - Live `conversation_event_batch` events are invalidation signals for worktree
   refresh. They must not be reduced directly into render segments.
 - `get_conversation.messages`, artifact snapshots, command results, and local
@@ -1148,6 +1160,15 @@ Conversation timeline:
   canvas renders the latest Rust-owned `AssistantWork` tree, including
   process, text, tool attempts, permissions, artifacts, review requests,
   clarification requests, notices, and errors.
+- File edit, read/search activity, command execution, and tool evidence blocks
+  render from typed projected `ProcessStep` / `ProcessStepDetail` data. The
+  frontend may group adjacent projected steps into stable render blocks, but it
+  must not infer product state by parsing stdout, Markdown, raw event payloads,
+  or tool output.
+- Evidence refs such as `fullOutputRef`, `fullPatchRef`, artifact preview refs,
+  and event refs are opaque UI-safe ids. Timeline blocks may select the inspector
+  with those refs, but full output, full patch, and artifact bytes stay behind
+  explicit evidence commands and inspector-owned fetch boundaries.
 - New assistant work should use `ProcessSegment` for UI-safe work process
   steps. `ThinkingSegment` is a compatibility shape only; the canvas must not
   read raw thought events or raw thought text.
