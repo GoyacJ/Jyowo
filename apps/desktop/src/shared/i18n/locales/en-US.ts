@@ -175,6 +175,15 @@ export const enUS = {
         commandHistory: 'Ran {{count}} historical commands',
         history: 'Collapsed {{count}} history steps',
       },
+      renderBlocks: {
+        activitySummary: 'Read/searched {{count}} items',
+        activityFallback: 'No item details',
+        commandSummary: 'Ran {{count}} commands',
+        editedFiles: 'Edited files',
+        fileEditSummary: 'Edited {{count}} files',
+        openDiff: 'Open diff in inspector',
+        status: 'Status',
+      },
       processWithheld: 'Process details are withheld',
       commandEvidence: {
         shell: 'Shell',

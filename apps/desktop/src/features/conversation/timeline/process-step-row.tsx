@@ -13,8 +13,8 @@ import { useTranslation } from 'react-i18next'
 import { useUiStore } from '@/shared/state/ui-store'
 import type { WorkbenchSelection } from '@/shared/state/workbench-selection'
 import type { ProcessStep } from '@/shared/tauri/commands'
+import { CommandExecutionView } from '../evidence/CommandExecutionView'
 import { ArtifactImagePreview } from './artifact-segment-view'
-import { CommandEvidenceBlock } from './command-evidence-block'
 import { DiffEvidenceBlock, parseDiffEvidenceLines } from './diff-evidence-block'
 import { ProcessStatusRow } from './process-status-row'
 
@@ -130,7 +130,14 @@ function ProcessStepDetailView({
         </p>
       )
     case 'command':
-      return <CommandEvidenceBlock execution={detail} />
+      return (
+        <CommandExecutionView
+          allowFullOutputFetch={false}
+          command={detail}
+          conversationId={conversationId}
+          density="timeline"
+        />
+      )
     case 'diff':
       return (
         <div className="grid gap-2">

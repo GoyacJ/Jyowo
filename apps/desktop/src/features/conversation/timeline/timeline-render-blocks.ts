@@ -13,7 +13,7 @@ import type {
   ToolGroupSegment,
 } from '@/shared/tauri/commands'
 
-export type FileEditRenderFile = {
+type FileEditRenderFile = {
   changeSetId: string
   path: string
   oldPath?: string
@@ -25,14 +25,14 @@ export type FileEditRenderFile = {
   riskFlags: ChangeSetFile['riskFlags']
 }
 
-export type ActivityRenderItem = {
+type ActivityRenderItem = {
   id: string
   kind: 'file' | 'search' | 'tool' | 'command'
   label: string
   detail?: string
 }
 
-export type CommandRenderItem = {
+type CommandRenderItem = {
   id: string
   stepId: string
   status: ProcessStep['status']

@@ -11,9 +11,11 @@ import { CommandExecutionView } from './CommandExecutionView'
 const originalClipboard = navigator.clipboard
 
 function renderCommandExecutionView({
+  allowFullOutputFetch,
   client = createTestCommandClient(),
   fullOutputRef,
 }: {
+  allowFullOutputFetch?: boolean
   client?: CommandClient
   fullOutputRef?: string
 } = {}) {
@@ -28,6 +30,7 @@ function renderCommandExecutionView({
           durationMs: 42,
           fullOutputRef,
         })}
+        allowFullOutputFetch={allowFullOutputFetch}
         conversationId="conversation-1"
       />
     </CommandClientProvider>,
@@ -87,5 +90,16 @@ describe('CommandExecutionView', () => {
 
     await waitFor(() => expect(getConversationCommandOutput).toHaveBeenCalled())
     expect(await screen.findByText('Failed to load output page')).toBeInTheDocument()
+  })
+
+  it('keeps the full output fetch path unavailable in timeline density', () => {
+    renderCommandExecutionView({
+      allowFullOutputFetch: false,
+      fullOutputRef: 'output-ref-1',
+    })
+
+    expect(screen.queryByRole('button', { name: 'Load output page' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy command' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy output' })).toBeInTheDocument()
   })
 })

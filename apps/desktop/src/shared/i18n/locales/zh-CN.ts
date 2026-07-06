@@ -175,6 +175,15 @@ export const zhCN = {
         commandHistory: '已运行 {{count}} 条历史命令',
         history: '已折叠 {{count}} 条历史步骤',
       },
+      renderBlocks: {
+        activitySummary: '已读取/搜索 {{count}} 项',
+        activityFallback: '暂无明细',
+        commandSummary: '已运行 {{count}} 条命令',
+        editedFiles: '已编辑的文件',
+        fileEditSummary: '已编辑 {{count}} 个文件',
+        openDiff: '在检查器中打开 diff',
+        status: '状态',
+      },
       processWithheld: '过程详情已隐藏',
       commandEvidence: {
         shell: 'Shell',

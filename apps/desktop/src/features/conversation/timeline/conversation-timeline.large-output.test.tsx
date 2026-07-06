@@ -8,6 +8,7 @@ import {
   codexLargeDiffTurns,
   codexStyleEvidenceTurns,
 } from '@/testing/conversation-evidence-fixtures'
+import { commandDetail } from '@/testing/conversation-worktree-builders'
 import { ConversationTimeline } from './conversation-timeline'
 import {
   processHistoryTurn,
@@ -17,6 +18,8 @@ import {
   turn,
 } from './conversation-timeline-test-utils'
 import { parseDiffEvidenceLines } from './diff-evidence-block'
+import { TimelineBlockRenderer } from './timeline-block-renderer'
+import type { TimelineRenderBlock } from './timeline-render-blocks'
 
 describe('ConversationTimeline', () => {
   const originalClipboard = navigator.clipboard
@@ -214,5 +217,205 @@ describe('ConversationTimeline', () => {
 
     const scrollContent = screen.getByTestId('conversation-timeline-scroll-content')
     expect(scrollContent).toHaveStyle({ height: '4432px' })
+  })
+})
+
+describe('TimelineBlockRenderer', () => {
+  afterEach(async () => {
+    resetTimelineTestState()
+    await appI18n.changeLanguage('en-US')
+  })
+
+  it('renders collapsed and expanded file edit evidence blocks', async () => {
+    await appI18n.changeLanguage('zh-CN')
+    const block: TimelineRenderBlock = {
+      kind: 'fileEdit',
+      id: 'process:process-1:file-edit:edit-1',
+      order: 0,
+      processSegmentId: 'process-1',
+      defaultOpen: false,
+      forcedOpen: false,
+      steps: [],
+      files: [
+        {
+          changeSetId: 'changeset-1',
+          path: 'src/worker_service_test.go',
+          status: 'modified',
+          addedLines: 67,
+          removedLines: 0,
+          preview: '@@ -1,1 +1,2 @@\n package worker\n+func TestWorker() {}',
+          fullPatchRef: 'patch-ref-1',
+          riskFlags: [],
+        },
+      ],
+    }
+
+    renderTimelineWithClient(
+      <TimelineBlockRenderer
+        block={block}
+        conversationId="conversation-1"
+        runId="run-1"
+        turnId="turn-1"
+      />,
+      createTestCommandClient(),
+    )
+
+    const summary = screen.getByRole('button', { name: /已编辑 1 个文件/ })
+    expect(summary).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('worker_service_test.go +67 -0')).toBeInTheDocument()
+    expect(screen.queryByText('已编辑的文件')).not.toBeInTheDocument()
+
+    fireEvent.click(summary)
+
+    expect(summary).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('已编辑的文件')).toBeInTheDocument()
+    expect(screen.getByTestId('diff-scroll-region')).toBeInTheDocument()
+  })
+
+  it('renders read/search activity collapsed counts and expanded item labels', async () => {
+    await appI18n.changeLanguage('zh-CN')
+    const block: TimelineRenderBlock = {
+      kind: 'activity',
+      id: 'process:process-1:activity:read-1',
+      order: 0,
+      processSegmentId: 'process-1',
+      defaultOpen: false,
+      forcedOpen: false,
+      steps: [],
+      title: 'Read files',
+      itemCount: 3,
+      items: [
+        { id: 'read-1:file:src%2Fmain.ts:', kind: 'file', label: 'src/main.ts' },
+        {
+          id: 'search-1:search:TimelineBlockRenderer:src',
+          kind: 'search',
+          label: 'TimelineBlockRenderer',
+          detail: 'src',
+        },
+      ],
+    }
+
+    renderTimelineWithClient(
+      <TimelineBlockRenderer
+        block={block}
+        conversationId="conversation-1"
+        runId="run-1"
+        turnId="turn-1"
+      />,
+      createTestCommandClient(),
+    )
+
+    const summary = screen.getByRole('button', { name: /已读取\/搜索 3 项/ })
+    expect(summary).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('src/main.ts')).not.toBeInTheDocument()
+
+    fireEvent.click(summary)
+
+    expect(screen.getByText('src/main.ts')).toBeInTheDocument()
+    expect(screen.getByText('TimelineBlockRenderer')).toBeInTheDocument()
+    expect(screen.getByText('src')).toBeInTheDocument()
+  })
+
+  it('renders command groups without fetching full output from the main timeline', async () => {
+    await appI18n.changeLanguage('zh-CN')
+    const getConversationCommandOutput = vi.fn()
+    const block: TimelineRenderBlock = {
+      kind: 'commandGroup',
+      id: 'process:process-1:commands:command-1',
+      order: 0,
+      processSegmentId: 'process-1',
+      defaultOpen: false,
+      forcedOpen: false,
+      steps: [],
+      commands: [
+        {
+          id: 'command-1',
+          stepId: 'command-1',
+          status: 'complete',
+          command: commandDetail({
+            command: 'git status --short',
+            exitCode: 0,
+            stdoutPreview: 'M file.ts',
+            fullOutputRef: 'full-output-ref-1',
+          }),
+        },
+        {
+          id: 'command-2',
+          stepId: 'command-2',
+          status: 'complete',
+          command: commandDetail({
+            command: 'pnpm -C apps/desktop test',
+            exitCode: 0,
+            stdoutPreview: 'passed',
+          }),
+        },
+      ],
+    }
+
+    renderTimelineWithClient(
+      <TimelineBlockRenderer
+        block={block}
+        conversationId="conversation-1"
+        runId="run-1"
+        turnId="turn-1"
+      />,
+      {
+        ...createTestCommandClient(),
+        getConversationCommandOutput,
+      },
+    )
+
+    const summary = screen.getByRole('button', { name: /已运行 2 条命令/ })
+    expect(summary).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('git status --short')).toBeInTheDocument()
+    expect(screen.getByText('pnpm -C apps/desktop test')).toBeInTheDocument()
+    expect(screen.queryByText('$ git status --short')).not.toBeInTheDocument()
+
+    fireEvent.click(summary)
+
+    expect(screen.getByText('$ git status --short')).toBeInTheDocument()
+    expect(screen.getByText('$ pnpm -C apps/desktop test')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '加载输出分页' })).not.toBeInTheDocument()
+    expect(getConversationCommandOutput).not.toHaveBeenCalled()
+  })
+
+  it('defaults failed and non-zero command groups open', async () => {
+    await appI18n.changeLanguage('zh-CN')
+    const block: TimelineRenderBlock = {
+      kind: 'commandGroup',
+      id: 'process:process-1:commands:command-1',
+      order: 0,
+      processSegmentId: 'process-1',
+      defaultOpen: true,
+      forcedOpen: true,
+      steps: [],
+      commands: [
+        {
+          id: 'command-1',
+          stepId: 'command-1',
+          status: 'complete',
+          command: commandDetail({
+            command: 'cargo test',
+            exitCode: 101,
+            stderrPreview: 'failed',
+          }),
+        },
+      ],
+    }
+
+    renderTimelineWithClient(
+      <TimelineBlockRenderer
+        block={block}
+        conversationId="conversation-1"
+        runId="run-1"
+        turnId="turn-1"
+      />,
+      createTestCommandClient(),
+    )
+
+    const summary = screen.getByRole('button', { name: /已运行 1 条命令/ })
+    expect(summary).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('$ cargo test')).toBeInTheDocument()
+    expect(screen.getByText('退出码 101')).toBeVisible()
   })
 })
