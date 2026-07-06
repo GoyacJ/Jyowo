@@ -5,7 +5,7 @@
 | Layer | Count |
 |---|---|
 | Frontend Vitest files | 74 |
-| Frontend Vitest test cases | 698 |
+| Frontend Vitest test cases | 700 |
 | Storybook files | 19 |
 | Playwright spec files | 4 |
 | Rust test files | 332 |
@@ -82,13 +82,13 @@
 - apps/desktop/src-tauri/tests/commands/mcp.rs (1078 lines)
 - crates/jyowo-harness-sdk/tests/facade.rs (1074 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_context.rs (1071 lines)
+- apps/desktop/src/features/conversation/timeline/conversation-timeline.stories.tsx (1071 lines)
 - crates/jyowo-harness-agent-runtime/tests/agent_orchestration_background.rs (1062 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_tools.rs (1059 lines)
 - crates/jyowo-harness-subagent/tests/permission_bridge.rs (1059 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_contract.rs (1055 lines)
 - apps/desktop/src-tauri/tests/commands/support.rs (1044 lines)
 - crates/jyowo-harness-memory/tests/local_provider.rs (1041 lines)
-- apps/desktop/src/features/conversation/timeline/conversation-timeline.stories.tsx (1021 lines)
 - apps/desktop/src-tauri/tests/commands/conversations.rs (1016 lines)
 - crates/jyowo-harness-journal/tests/conversation_workbench_projection.rs (977 lines)
 - crates/jyowo-harness-team/tests/routing.rs (977 lines)
@@ -129,10 +129,10 @@ None.
 - apps/desktop/src/features/workbench/WorkbenchInspector.artifacts.test.tsx (14)
 - apps/desktop/src/features/settings/PluginsManager.test.tsx (13)
 - apps/desktop/src/features/workbench/WorkbenchInspector.test.tsx (13)
+- apps/desktop/src/features/conversation/timeline/conversation-timeline.large-output.test.tsx (11)
 - apps/desktop/src/features/workspace/SidebarNav.test.tsx (10)
 - apps/desktop/src/features/artifacts/ArtifactsPage.test.tsx (9)
 - apps/desktop/src/features/conversation/timeline/conversation-timeline.artifacts.test.tsx (9)
-- apps/desktop/src/features/conversation/timeline/conversation-timeline.large-output.test.tsx (9)
 - apps/desktop/src/features/background-agents/BackgroundAgentsPanel.test.tsx (8)
 - apps/desktop/src/features/conversation/evidence/CommandExecutionView.test.tsx (8)
 - apps/desktop/src/features/conversation/evidence/DiffPane.test.tsx (8)

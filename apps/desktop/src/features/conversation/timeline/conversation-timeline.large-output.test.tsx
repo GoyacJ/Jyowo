@@ -285,6 +285,58 @@ describe('TimelineBlockRenderer', () => {
     expect(screen.getByTestId('diff-scroll-region')).toBeInTheDocument()
   })
 
+  it('renders multiple file edit rows in one expanded evidence block', () => {
+    const block: TimelineRenderBlock = {
+      kind: 'fileEdit',
+      id: 'process:process-1:file-edit:edit-1',
+      order: 0,
+      processSegmentId: 'process-1',
+      defaultOpen: false,
+      forcedOpen: false,
+      steps: [],
+      files: [
+        {
+          changeSetId: 'changeset-1',
+          path: 'src/timeline-render-blocks.ts',
+          status: 'modified',
+          addedLines: 41,
+          removedLines: 3,
+          preview: '@@ -1,1 +1,2 @@\n export const oldValue = 1\n+export const newValue = 2',
+          riskFlags: [],
+        },
+        {
+          changeSetId: 'changeset-1',
+          path: 'src/timeline-render-blocks.test.ts',
+          status: 'added',
+          addedLines: 27,
+          removedLines: 0,
+          preview: '@@ -0,0 +1,2 @@\n+describe("timeline blocks", () => {})',
+          riskFlags: [],
+        },
+      ],
+    }
+
+    renderTimelineWithClient(
+      <TimelineBlockRenderer
+        block={block}
+        conversationId="conversation-1"
+        runId="run-1"
+        turnId="turn-1"
+      />,
+      createTestCommandClient(),
+    )
+
+    const summary = screen.getByRole('button', { name: /Edited 2 files/ })
+    expect(summary).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('timeline-render-blocks.ts +41 -3')).toBeInTheDocument()
+
+    fireEvent.click(summary)
+
+    expect(screen.getAllByText('timeline-render-blocks.ts').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('timeline-render-blocks.test.ts').length).toBeGreaterThan(0)
+    expect(screen.getAllByTestId('diff-scroll-region')).toHaveLength(2)
+  })
+
   it('renders read/search activity collapsed counts and expanded item labels', async () => {
     await appI18n.changeLanguage('zh-CN')
     const block: TimelineRenderBlock = {
@@ -438,4 +490,74 @@ describe('TimelineBlockRenderer', () => {
     expect(screen.getByText('$ cargo test')).toBeInTheDocument()
     expect(screen.getByText('退出码 101')).toBeVisible()
   })
+
+  it('renders running, large-preview, and withheld command output states without full fetches', () => {
+    const getConversationCommandOutput = vi.fn()
+    const block: TimelineRenderBlock = {
+      kind: 'commandGroup',
+      id: 'process:process-1:commands:command-running',
+      order: 0,
+      processSegmentId: 'process-1',
+      defaultOpen: true,
+      forcedOpen: true,
+      steps: [],
+      commands: [
+        {
+          id: 'command-running',
+          stepId: 'command-running',
+          status: 'running',
+          command: commandDetail({
+            command: 'pnpm -C apps/desktop test --watch',
+            stdoutPreview: largeCommandPreview(),
+            durationMs: 5100,
+            fullOutputRef: 'large-output-ref',
+          }),
+        },
+        {
+          id: 'command-withheld',
+          stepId: 'command-withheld',
+          status: 'failed',
+          command: commandDetail({
+            command: 'cat .env',
+            stdoutPreview: 'Output withheld from conversation timeline.',
+            redactionState: 'withheld',
+            fullOutputRef: 'withheld-output-ref',
+          }),
+        },
+      ],
+    }
+
+    renderTimelineWithClient(
+      <TimelineBlockRenderer
+        block={block}
+        conversationId="conversation-1"
+        runId="run-1"
+        turnId="turn-1"
+      />,
+      {
+        ...createTestCommandClient(),
+        getConversationCommandOutput,
+      },
+    )
+
+    expect(screen.getByRole('button', { name: /Ran 2 commands/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    expect(screen.getByText('$ pnpm -C apps/desktop test --watch')).toBeInTheDocument()
+    expect(screen.getAllByTestId('command-output-scroll-region')[0]).toHaveTextContent(
+      'large output line 119',
+    )
+    expect(screen.getAllByTestId('command-output-scroll-region')[0]).toHaveClass('max-h-[260px]')
+    expect(screen.getByText('Output withheld')).toBeInTheDocument()
+    expect(
+      screen.queryByText('Output withheld from conversation timeline.'),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Load output page' })).not.toBeInTheDocument()
+    expect(getConversationCommandOutput).not.toHaveBeenCalled()
+  })
 })
+
+function largeCommandPreview() {
+  return Array.from({ length: 120 }, (_, index) => `large output line ${index}`).join('\n')
+}

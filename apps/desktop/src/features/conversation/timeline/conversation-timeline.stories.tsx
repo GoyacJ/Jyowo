@@ -9,6 +9,7 @@ import { createTestCommandClient } from '@/testing/command-client'
 import {
   codexAttachmentStressTurns,
   codexLargeDiffTurns,
+  codexRenderBlockMatrixTurns,
   codexStyleEvidenceTurns,
 } from '@/testing/conversation-evidence-fixtures'
 import {
@@ -254,6 +255,17 @@ export const CodexEvidenceLargeDiff: Story = {
   },
 }
 
+export const CodexEvidenceRenderBlockMatrix: Story = {
+  args: {
+    title: 'Codex-style render block matrix',
+    turns: codexRenderBlockMatrixTurns,
+  },
+  parameters: {
+    backgrounds: { default: 'dark' },
+    themeMode: 'dark',
+  },
+}
+
 export const CodexEvidenceFileEditExpanded: Story = {
   args: {
     title: 'Codex-style expanded file edit',
@@ -266,6 +278,24 @@ export const CodexEvidenceFileEditExpanded: Story = {
         runId: 'run-codex-evidence',
         kind: 'fileEdit',
         blockId: 'process:segment:process:codex-evidence:file-edit:process-step:file-edit',
+      })]: true,
+    },
+  },
+}
+
+export const CodexEvidenceMultipleFileEditsExpanded: Story = {
+  args: {
+    title: 'Codex-style multiple file edits',
+    turns: codexRenderBlockMatrixTurns,
+  },
+  parameters: {
+    evidenceDisclosureOpen: {
+      [timelineBlockDisclosureId({
+        conversationId: 'conversation-render-block-matrix',
+        runId: 'run-render-block-matrix',
+        kind: 'fileEdit',
+        blockId:
+          'process:segment:process:render-block-matrix:file-edit:process-step:matrix-file-edit',
       })]: true,
     },
   },
@@ -333,6 +363,26 @@ export const CodexEvidenceSuccessfulCommandExpanded: Story = {
           'process:segment:process:successful-command:commands:process-step:successful-command',
       })]: true,
     },
+  },
+}
+
+export const CodexEvidenceRunningAndWithheldCommands: Story = {
+  args: {
+    title: 'Codex-style running and withheld commands',
+    turns: codexRenderBlockMatrixTurns,
+  },
+  parameters: {
+    backgrounds: { default: 'dark' },
+    evidenceDisclosureOpen: {
+      [timelineBlockDisclosureId({
+        conversationId: 'conversation-render-block-matrix',
+        runId: 'run-render-block-matrix',
+        kind: 'commandGroup',
+        blockId:
+          'process:segment:process:render-block-matrix:commands:process-step:matrix-command-running',
+      })]: true,
+    },
+    themeMode: 'dark',
   },
 }
 
