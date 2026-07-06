@@ -121,6 +121,7 @@ export const enUS = {
       emptyTitle: 'Start a conversation',
       emptyDescription: 'Ask Jyowo to work in this project.',
       executionStatus: 'Execution: {{status}}',
+      assistantDuration: 'Duration {{duration}} ms',
       assistantStatus: {
         running: 'Processing',
         failed: 'Failed',
@@ -181,6 +182,7 @@ export const enUS = {
         commandSummary: 'Ran {{count}} commands',
         editedFiles: 'Edited files',
         fileEditSummary: 'Edited {{count}} files',
+        openCommand: 'Open command in inspector',
         openDiff: 'Open diff in inspector',
         status: 'Status',
       },

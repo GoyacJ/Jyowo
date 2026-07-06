@@ -192,7 +192,7 @@ describe('ConversationWorkspace', () => {
     )
 
     expect(await screen.findByText('帮我生成一张海报图')).toBeInTheDocument()
-    expect(screen.getByText('正在检查可用的图像工具')).toBeInTheDocument()
+    expect(screen.queryByText('正在检查可用的图像工具')).not.toBeInTheDocument()
     expect(screen.getByText('MiniMaxTextToImage')).toBeInTheDocument()
     expect(screen.getByText('工具执行失败。可在详情中查看。')).toBeInTheDocument()
     expect(screen.getByText('海报生成提示词')).toBeInTheDocument()

@@ -241,8 +241,11 @@ features/conversation
   composer/SlashCommandMenu
   PlanBlock
   ProgressBlock
-  ProcessStatusRow
-  CommandEvidenceBlock
+  TimelineBlockRenderer
+  EvidenceDisclosure
+  FileEditRenderBlock
+  ActivityRenderBlock
+  CommandRenderBlock
   DiffEvidenceBlock
   ToolEvidenceSummary
   UserAttachmentStrip
@@ -277,7 +280,8 @@ Component ownership:
 - `shared/ui` owns reusable interaction primitives and visual variants.
 - `features/conversation` owns the natural chat surface and embedded work blocks.
 - `features/conversation/timeline` owns conversation evidence blocks:
-  `CommandEvidenceBlock`, `DiffEvidenceBlock`, `ProcessStatusRow`,
+  `TimelineBlockRenderer`, `EvidenceDisclosure`, `FileEditRenderBlock`,
+  `ActivityRenderBlock`, `CommandRenderBlock`, `DiffEvidenceBlock`,
   `ToolEvidenceSummary`, `UserAttachmentStrip`, and `ContextCompactionNotice`.
 - `features/workspace` owns project and conversation navigation.
 - `features/context` owns secondary project context and references.

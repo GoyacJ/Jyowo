@@ -121,6 +121,7 @@ export const zhCN = {
       emptyTitle: '开始对话',
       emptyDescription: '让 Jyowo 在这个项目里帮你工作。',
       executionStatus: '执行：{{status}}',
+      assistantDuration: '用时 {{duration}} ms',
       assistantStatus: {
         running: '处理中',
         failed: '失败',
@@ -181,6 +182,7 @@ export const zhCN = {
         commandSummary: '已运行 {{count}} 条命令',
         editedFiles: '已编辑的文件',
         fileEditSummary: '已编辑 {{count}} 个文件',
+        openCommand: '在检查器中打开命令',
         openDiff: '在检查器中打开 diff',
         status: '状态',
       },

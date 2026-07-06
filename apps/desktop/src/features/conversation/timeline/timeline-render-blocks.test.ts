@@ -138,6 +138,66 @@ describe('buildTimelineRenderBlocks', () => {
     ])
   })
 
+  it('suppresses duplicate image artifacts even when the artifact segment is ordered before process', () => {
+    const blocks = buildTimelineRenderBlocks(
+      assistantWork([
+        artifactSegment('artifact-before-process', 1, {
+          artifactId: 'artifact-image',
+          revisionId: 'revision-latest',
+          mediaKind: 'image',
+        }),
+        processSegment('process-image', 10, [
+          artifactStep('artifact-step', 20, {
+            artifactId: 'artifact-image',
+            revisionId: 'revision-process',
+          }),
+        ]),
+      ]),
+    )
+
+    expect(blocks.filter((block) => block.kind === 'artifact')).toHaveLength(1)
+    expect(blocks[0]).toMatchObject({
+      kind: 'artifact',
+      id: 'process:process-image:artifact:artifact-step',
+      segment: {
+        artifactId: 'artifact-image',
+        revision: {
+          revisionId: 'revision-process',
+          media: { kind: 'image' },
+        },
+      },
+    })
+  })
+
+  it('creates process image artifact blocks when the artifact segment is not projected yet', () => {
+    const blocks = buildTimelineRenderBlocks(
+      assistantWork([
+        processSegment('process-image', 10, [
+          artifactStep('artifact-step', 20, {
+            artifactId: 'artifact-image',
+            revisionId: 'revision-process',
+          }),
+        ]),
+      ]),
+    )
+
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0]).toMatchObject({
+      kind: 'artifact',
+      id: 'process:process-image:artifact:artifact-step',
+      segment: {
+        artifactId: 'artifact-image',
+        title: 'Generated image',
+        revision: {
+          artifactId: 'artifact-image',
+          revisionId: 'revision-process',
+          kind: 'image',
+          media: { kind: 'image' },
+        },
+      },
+    })
+  })
+
   it('does not create raw event blocks for unknown data', () => {
     const assistant = assistantWork([
       textSegment('text-1', 10, 'safe text'),
@@ -339,21 +399,72 @@ function commandStep(
   }
 }
 
-function artifactSegment(id: string, order: number): AssistantSegment {
+function artifactStep(
+  id: string,
+  order: number,
+  {
+    artifactId,
+    revisionId,
+  }: {
+    artifactId: string
+    revisionId?: string
+  },
+): ProcessStep {
+  return {
+    id,
+    order,
+    kind: 'artifact',
+    status: 'complete',
+    title: 'Generated image',
+    detail: {
+      type: 'artifact',
+      artifactId,
+      revisionId,
+      media: {
+        kind: 'image',
+        mimeType: 'image/png',
+        sizeBytes: 68,
+      },
+    },
+  }
+}
+
+function artifactSegment(
+  id: string,
+  order: number,
+  {
+    artifactId = 'artifact-1',
+    mediaKind,
+    revisionId = 'revision-1',
+  }: {
+    artifactId?: string
+    mediaKind?: 'image'
+    revisionId?: string
+  } = {},
+): AssistantSegment {
   return {
     kind: 'artifact',
     id,
     order,
-    artifactId: 'artifact-1',
+    artifactId,
     status: 'ready',
     title: 'Artifact',
     revision: {
-      artifactId: 'artifact-1',
-      revisionId: 'revision-1',
-      kind: 'code',
+      artifactId,
+      revisionId,
+      kind: mediaKind ?? 'code',
       status: 'ready',
       sourceRunId: 'run-1',
       title: 'Artifact',
+      ...(mediaKind === 'image'
+        ? {
+            media: {
+              kind: 'image',
+              mimeType: 'image/png',
+              sizeBytes: 68,
+            },
+          }
+        : {}),
     },
   }
 }

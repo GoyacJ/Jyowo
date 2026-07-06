@@ -24,7 +24,6 @@ export function ActivityRenderBlock({
       forcedOpen={block.forcedOpen}
       icon={Search}
       id={block.id}
-      meta={block.title}
       onOpenChange={setOpen}
       open={open}
       title={t('timeline.renderBlocks.activitySummary', { count })}

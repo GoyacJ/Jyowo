@@ -4,15 +4,8 @@ import type {
   ConversationEventRef,
   ResolvePermissionRequest,
 } from '@/shared/tauri/commands'
-import { AgentActivitySegmentView } from '../AgentActivitySegment'
-import { ArtifactSegmentView } from './artifact-segment-view'
-import { AssistantTextSegmentView } from './assistant-text-segment-view'
-import { ClarificationRequestSegmentView } from './clarification-request-segment-view'
-import { ErrorSegmentView } from './error-segment-view'
-import { NoticeSegmentView } from './notice-segment-view'
-import { ProcessPanel } from './process-panel'
-import { ReviewRequestSegmentView } from './review-request-segment-view'
-import { ToolGroupSegmentView } from './tool-group-segment-view'
+import { TimelineBlockRenderer } from './timeline-block-renderer'
+import { buildTimelineRenderBlocks } from './timeline-render-blocks'
 
 export function AssistantWorkView({
   assistant,
@@ -30,10 +23,8 @@ export function AssistantWorkView({
   turnId: string
 }) {
   const { t } = useTranslation('conversation')
-  const processImageArtifactIds = getProcessImageArtifactIds(assistant)
-  const artifactRevisionIdsByArtifactId = getArtifactRevisionIdsByArtifactId(assistant)
-  const toolGroupToolNames = getToolGroupToolNames(assistant)
   const modelLabel = assistant.model?.displayName
+  const blocks = buildTimelineRenderBlocks(assistant)
 
   return (
     <section className="min-w-0 max-w-[1040px]">
@@ -47,6 +38,11 @@ export function AssistantWorkView({
             {modelLabel}
           </span>
         ) : null}
+        {assistant.durationMs !== undefined ? (
+          <span className="text-muted-foreground/80">
+            {t('timeline.assistantDuration', { duration: assistant.durationMs })}
+          </span>
+        ) : null}
       </div>
       {assistant.status === 'running' || assistant.status === 'failed' ? (
         <div className="mb-3 border-border border-b pb-2 text-muted-foreground text-xs">
@@ -56,127 +52,19 @@ export function AssistantWorkView({
         </div>
       ) : null}
       <div className="grid gap-3">
-        {assistant.segments.map((segment) => {
-          switch (segment.kind) {
-            case 'process':
-              return (
-                <ProcessPanel
-                  artifactRevisionIdsByArtifactId={artifactRevisionIdsByArtifactId}
-                  conversationId={conversationId}
-                  key={segment.id}
-                  runId={assistant.runId}
-                  segment={segment}
-                  toolGroupToolNames={toolGroupToolNames}
-                />
-              )
-            case 'text':
-              return <AssistantTextSegmentView key={segment.id} segment={segment} />
-            case 'toolGroup':
-              return (
-                <ToolGroupSegmentView
-                  conversationId={conversationId}
-                  key={segment.id}
-                  onOpenDetails={onOpenDetails}
-                  onPermissionResolve={onPermissionResolve}
-                  runId={assistant.runId}
-                  segment={segment}
-                  turnId={turnId}
-                />
-              )
-            case 'artifact':
-              if (
-                segment.status === 'ready' &&
-                segment.revision.media?.kind === 'image' &&
-                processImageArtifactIds.has(segment.artifactId)
-              ) {
-                return null
-              }
-              return (
-                <ArtifactSegmentView
-                  conversationId={conversationId}
-                  key={segment.id}
-                  segment={segment}
-                />
-              )
-            case 'reviewRequest':
-              return (
-                <ReviewRequestSegmentView
-                  key={segment.id}
-                  onContinue={onReviewContinue}
-                  segment={segment}
-                />
-              )
-            case 'clarificationRequest':
-              return <ClarificationRequestSegmentView key={segment.id} segment={segment} />
-            case 'notice':
-              return <NoticeSegmentView key={segment.id} segment={segment} />
-            case 'error':
-              return <ErrorSegmentView key={segment.id} segment={segment} />
-            case 'agentActivity':
-              return (
-                <AgentActivitySegmentView
-                  conversationId={conversationId}
-                  key={segment.id}
-                  onPermissionResolve={onPermissionResolve}
-                  parentRunId={assistant.runId}
-                  segment={segment}
-                  turnId={turnId}
-                />
-              )
-          }
-          return null
-        })}
+        {blocks.map((block) => (
+          <TimelineBlockRenderer
+            block={block}
+            conversationId={conversationId}
+            key={block.id}
+            onOpenDetails={onOpenDetails}
+            onPermissionResolve={onPermissionResolve}
+            onReviewContinue={onReviewContinue}
+            runId={assistant.runId}
+            turnId={turnId}
+          />
+        ))}
       </div>
     </section>
   )
-}
-
-function getToolGroupToolNames(assistant: AssistantWork) {
-  const toolNames = new Set<string>()
-
-  for (const segment of assistant.segments) {
-    if (segment.kind !== 'toolGroup') {
-      continue
-    }
-
-    for (const attempt of segment.attempts) {
-      toolNames.add(attempt.toolName)
-    }
-  }
-
-  return toolNames
-}
-
-function getProcessImageArtifactIds(assistant: AssistantWork) {
-  const artifactIds = new Set<string>()
-
-  for (const segment of assistant.segments) {
-    if (segment.kind !== 'process') {
-      continue
-    }
-
-    for (const step of segment.steps ?? []) {
-      if (
-        step.detail?.type === 'artifact' &&
-        step.detail.media.kind === 'image' &&
-        step.detail.artifactId
-      ) {
-        artifactIds.add(step.detail.artifactId)
-      }
-    }
-  }
-
-  return artifactIds
-}
-
-function getArtifactRevisionIdsByArtifactId(assistant: AssistantWork) {
-  const revisionIds: Record<string, string> = {}
-
-  for (const segment of assistant.segments) {
-    if (segment.kind === 'artifact') {
-      revisionIds[segment.artifactId] = segment.revision.revisionId
-    }
-  }
-
-  return revisionIds
 }

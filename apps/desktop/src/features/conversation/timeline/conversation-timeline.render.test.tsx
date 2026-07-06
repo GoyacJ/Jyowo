@@ -264,6 +264,59 @@ describe('ConversationTimeline', () => {
     expect(screen.getByText('Which style should I use?')).toBeInTheDocument()
   })
 
+  it('routes process evidence through timeline render blocks without leaking the raw process row', () => {
+    renderTimelineWithClient(
+      <ConversationTimeline title="Image flow" turns={[imageProcessTurn()]} />,
+      createTestCommandClient(),
+    )
+
+    expect(screen.queryByText('已完成工作过程')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Read\/searched 1 items/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    expect(screen.getByRole('button', { name: /Ran 1 commands/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    expect(screen.getByRole('button', { name: /Edited 1 files/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    expect(screen.getByText('图片已生成。')).toBeInTheDocument()
+  })
+
+  it('shows assistant duration only when projected duration metadata exists', () => {
+    const timedTurn = {
+      ...turn('Timed final', 'timed'),
+      assistant: assistantWork({
+        id: 'assistant:run-timed',
+        runId: 'run-timed',
+        status: 'complete',
+        durationMs: 1234,
+        segments: [
+          {
+            kind: 'text',
+            id: 'segment:text:timed',
+            order: 0,
+            messageId: 'assistant-message-timed',
+            body: 'Timed final',
+          },
+        ],
+      }),
+    } satisfies ConversationTurn
+
+    render(
+      <ConversationTimeline
+        title="Assistant duration"
+        turns={[turn('No duration', 'without-duration'), timedTurn]}
+      />,
+    )
+
+    expect(screen.getByText('Duration 1234 ms')).toBeInTheDocument()
+    expect(screen.getAllByText('Jyowo')).toHaveLength(2)
+  })
+
   it('opens command and diff process cards in the inspector without clearing selection', () => {
     renderTimelineWithClient(
       <ConversationTimeline title="Process cards" turns={[imageProcessTurn()]} />,

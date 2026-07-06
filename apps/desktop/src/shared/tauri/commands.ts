@@ -4010,7 +4010,6 @@ export type CommandExecution = z.infer<typeof commandExecutionSchema>
 export type ToolAttempt = z.infer<typeof toolAttemptSchema>
 export type ToolGroupSegment = z.infer<typeof toolGroupSegmentSchema>
 export type AgentActivitySegment = z.infer<typeof agentActivitySegmentSchema>
-export type ProcessSegment = z.infer<typeof processSegmentSchema>
 export type ProcessStep = z.infer<typeof processStepSchema>
 export type ArtifactRevisionSummary = z.infer<typeof artifactRevisionSummarySchema>
 export type ArtifactSegment = z.infer<typeof artifactSegmentSchema>

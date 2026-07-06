@@ -13,17 +13,14 @@ import type { TimelineRenderBlock } from './timeline-render-blocks'
 import { ToolGroupSegmentView } from './tool-group-segment-view'
 
 export function TimelineBlockRenderer({
-  artifactRevisionIdsByArtifactId: _artifactRevisionIdsByArtifactId,
   block,
   conversationId,
   onOpenDetails,
   onPermissionResolve,
   onReviewContinue,
-  processImageArtifactIds,
   runId,
   turnId,
 }: {
-  artifactRevisionIdsByArtifactId?: Record<string, string>
   block: TimelineRenderBlock
   conversationId: string
   runId: string
@@ -31,7 +28,6 @@ export function TimelineBlockRenderer({
   onOpenDetails?: (eventRef: ConversationEventRef) => void
   onPermissionResolve?: (request: ResolvePermissionRequest) => void
   onReviewContinue?: (prompt: string) => void
-  processImageArtifactIds?: Set<string>
 }) {
   switch (block.kind) {
     case 'assistantText':
@@ -54,14 +50,13 @@ export function TimelineBlockRenderer({
         />
       )
     case 'artifact':
-      if (
-        block.segment.status === 'ready' &&
-        block.segment.revision.media?.kind === 'image' &&
-        processImageArtifactIds?.has(block.segment.artifactId)
-      ) {
-        return null
-      }
-      return <ArtifactSegmentView conversationId={conversationId} segment={block.segment} />
+      return (
+        <ArtifactSegmentView
+          conversationId={conversationId}
+          revisionIdOverride={block.revisionIdOverride}
+          segment={block.segment}
+        />
+      )
     case 'reviewRequest':
       return <ReviewRequestSegmentView onContinue={onReviewContinue} segment={block.segment} />
     case 'clarificationRequest':

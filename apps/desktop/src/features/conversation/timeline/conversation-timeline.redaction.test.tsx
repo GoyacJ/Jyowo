@@ -19,7 +19,7 @@ describe('ConversationTimeline', () => {
 
     expect(screen.getByText('帮我生成一张海报图')).toBeInTheDocument()
     expect(screen.getByText('MiniMax M3')).toBeInTheDocument()
-    expect(screen.getByText('正在检查可用的图像工具')).toBeInTheDocument()
+    expect(screen.queryByText('正在检查可用的图像工具')).not.toBeInTheDocument()
     expect(screen.getByText('MiniMaxTextToImage')).toBeInTheDocument()
     expect(screen.getByText('Execution: failed')).toBeInTheDocument()
     expect(screen.getByText('Permission: approved')).toBeInTheDocument()
@@ -42,14 +42,15 @@ describe('ConversationTimeline', () => {
     }
   })
 
-  it('renders safe reasoning process steps when thinking is expanded', () => {
+  it('does not render raw reasoning process rows after projection', () => {
     render(<ConversationTimeline title="Reasoning flow" turns={[reasoningTurn()]} />)
 
-    expect(screen.getByText('已完成推理过程')).toBeInTheDocument()
-    expect(screen.getByText('推理过程')).toBeInTheDocument()
-    expect(screen.getByText('Checked project context.')).toBeInTheDocument()
-    expect(screen.getByText('准备使用 read_file')).toBeInTheDocument()
-    expect(screen.getByText('read_file 已完成')).toBeInTheDocument()
+    expect(screen.queryByText('已完成推理过程')).not.toBeInTheDocument()
+    expect(screen.queryByText('推理过程')).not.toBeInTheDocument()
+    expect(screen.queryByText('Checked project context.')).not.toBeInTheDocument()
+    expect(screen.queryByText('准备使用 read_file')).not.toBeInTheDocument()
+    expect(screen.queryByText('read_file 已完成')).not.toBeInTheDocument()
+    expect(screen.getByText('Final answer')).toBeInTheDocument()
     expect(document.body.textContent ?? '').not.toContain('raw private chain')
   })
 })

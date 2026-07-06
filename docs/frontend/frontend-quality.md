@@ -21,8 +21,8 @@ Must test:
 - conversation list, conversation page, and natural composer behavior
 - `ConversationTimeline` loading, empty, running, completed, permission, artifact,
   review, clarification, withheld, and error states
-- `ProcessPanel` reasoning, activity, command, diff, tool, artifact, withheld,
-  and failed steps
+- timeline render blocks for safe activity, command, file edit, tool, artifact,
+  withheld, and failed evidence states
 - Codex-style evidence test conversation, dark-theme evidence screenshot target,
   large diff, failed command, historical attachments, and collapsed completed history
 - worktree projection store behavior, `clientMessageId` optimistic confirmation,
@@ -67,9 +67,13 @@ ActivityRail
 PlanTimelineBlock
 ConversationTurnView
 AssistantWorkView
+TimelineBlockRenderer
+EvidenceDisclosure
+FileEditRenderBlock
+ActivityRenderBlock
+CommandRenderBlock
 ToolGroupSegmentView
 ArtifactSegmentView
-ProcessPanel
 ReviewRequestSegmentView
 ClarificationRequestSegmentView
 PermissionInlinePanel

@@ -1,5 +1,6 @@
-import { Terminal } from 'lucide-react'
+import { ExternalLink, Terminal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { useUiStore } from '@/shared/state/ui-store'
 import { CommandExecutionView } from '../evidence/CommandExecutionView'
 import { EvidenceDisclosure } from './evidence-disclosure'
 import { useTimelineBlockDisclosure } from './timeline-disclosure-state'
@@ -18,10 +19,41 @@ export function CommandRenderBlock({
 }) {
   const { t } = useTranslation('conversation')
   const { open, setOpen } = useTimelineBlockDisclosure({ block, conversationId, runId })
+  const setSelection = useUiStore((state) => state.setWorkbenchSelection)
+  const setInspectorOpen = useUiStore((state) => state.setInspectorOpen)
+  const firstCommand = block.commands[0]
+  const firstCommandStep = firstCommand
+    ? block.steps.find((step) => step.id === firstCommand.stepId)
+    : undefined
+  const firstEventRef = firstCommandStep?.eventRefs?.[0]
 
   return (
     <div className="grid gap-1.5">
       <EvidenceDisclosure
+        actions={
+          firstCommand ? (
+            <button
+              aria-label={t('timeline.renderBlocks.openCommand')}
+              className="inline-flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => {
+                setSelection({
+                  kind: 'command',
+                  conversationId,
+                  ...(firstCommand.command.fullOutputRef
+                    ? { fullOutputRef: firstCommand.command.fullOutputRef }
+                    : {}),
+                  ...(!firstCommand.command.fullOutputRef && firstEventRef
+                    ? { eventRef: firstEventRef }
+                    : {}),
+                })
+                setInspectorOpen(true)
+              }}
+              type="button"
+            >
+              <ExternalLink className="size-3.5" />
+            </button>
+          ) : null
+        }
         forcedOpen={block.forcedOpen}
         icon={Terminal}
         id={block.id}

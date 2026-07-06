@@ -81,7 +81,13 @@ export type TimelineRenderBlock =
       defaultOpen: boolean
       forcedOpen: boolean
     }
-  | { kind: 'artifact'; id: string; order: number; segment: ArtifactSegment }
+  | {
+      kind: 'artifact'
+      id: string
+      order: number
+      revisionIdOverride?: string | null
+      segment: ArtifactSegment
+    }
   | { kind: 'reviewRequest'; id: string; order: number; segment: ReviewRequestSegment }
   | {
       kind: 'clarificationRequest'
@@ -97,9 +103,19 @@ type ProcessRenderGroupKind = 'activity' | 'commandGroup' | 'fileEdit'
 type CommandStepDetail = Extract<NonNullable<ProcessStep['detail']>, { type: 'command' }>
 type DiffStepDetail = Extract<NonNullable<ProcessStep['detail']>, { type: 'diff' }>
 type ActivityStepDetail = Extract<NonNullable<ProcessStep['detail']>, { type: 'activity' }>
+type ArtifactStepDetail = Extract<NonNullable<ProcessStep['detail']>, { type: 'artifact' }>
+type ArtifactRenderBlock = Extract<TimelineRenderBlock, { kind: 'artifact' }>
 
 export function buildTimelineRenderBlocks(assistant: AssistantWork): TimelineRenderBlock[] {
   const blocks: TimelineRenderBlock[] = []
+  const artifactSegmentsByArtifactId = new Map<string, ArtifactSegment>()
+  const processArtifactIds = getProcessArtifactIds(assistant)
+
+  for (const segment of assistant.segments) {
+    if (segment.kind === 'artifact') {
+      artifactSegmentsByArtifactId.set(segment.artifactId, segment)
+    }
+  }
 
   for (const segment of sortByOrder(assistant.segments)) {
     switch (segment.kind) {
@@ -112,12 +128,22 @@ export function buildTimelineRenderBlocks(assistant: AssistantWork): TimelineRen
         })
         break
       case 'process':
-        blocks.push(...buildProcessBlocks(segment.id, segment.order, segment.steps ?? []))
+        blocks.push(
+          ...buildProcessBlocks(
+            segment.id,
+            segment.order,
+            segment.steps ?? [],
+            artifactSegmentsByArtifactId,
+          ),
+        )
         break
       case 'toolGroup':
         blocks.push(toolGroupBlock(segment))
         break
       case 'artifact':
+        if (processArtifactIds.has(segment.artifactId)) {
+          break
+        }
         blocks.push({ kind: 'artifact', id: segment.id, order: segment.order, segment })
         break
       case 'reviewRequest':
@@ -165,6 +191,7 @@ function buildProcessBlocks(
   processSegmentId: string,
   processOrder: number,
   steps: ProcessStep[],
+  artifactSegmentsByArtifactId: Map<string, ArtifactSegment>,
 ): TimelineRenderBlock[] {
   const blocks: TimelineRenderBlock[] = []
   let pendingGroup: { kind: ProcessRenderGroupKind; steps: ProcessStep[] } | undefined
@@ -184,6 +211,15 @@ function buildProcessBlocks(
     const groupKind = getProcessGroupKind(step)
     if (!groupKind) {
       flushPendingGroup()
+      const artifactBlock = buildProcessArtifactBlock(
+        processSegmentId,
+        processOrder,
+        step,
+        artifactSegmentsByArtifactId,
+      )
+      if (artifactBlock) {
+        blocks.push(artifactBlock)
+      }
       continue
     }
     if (!pendingGroup || pendingGroup.kind !== groupKind) {
@@ -196,6 +232,88 @@ function buildProcessBlocks(
 
   flushPendingGroup()
   return blocks
+}
+
+function buildProcessArtifactBlock(
+  processSegmentId: string,
+  processOrder: number,
+  step: ProcessStep,
+  artifactSegmentsByArtifactId: Map<string, ArtifactSegment>,
+): ArtifactRenderBlock | undefined {
+  const detail = artifactDetail(step)
+  if (!detail) {
+    return undefined
+  }
+
+  const segment = artifactSegmentsByArtifactId.get(detail.artifactId)
+  const revisionId = detail.revisionId ?? segment?.revision.revisionId
+  const syntheticRevisionId = revisionId ?? `process-artifact:${detail.artifactId}`
+
+  return {
+    kind: 'artifact',
+    id: `process:${processSegmentId}:artifact:${step.id}`,
+    order: processOrder,
+    revisionIdOverride: revisionId ?? null,
+    segment: segment
+      ? {
+          ...segment,
+          revision: {
+            ...segment.revision,
+            media: detail.media,
+            ...(revisionId ? { revisionId } : {}),
+          },
+        }
+      : {
+          kind: 'artifact',
+          id: `process:${processSegmentId}:artifact-segment:${step.id}`,
+          order: processOrder,
+          artifactId: detail.artifactId,
+          artifactKind: detail.media.kind,
+          status: 'ready',
+          source: 'tool',
+          title: step.title,
+          revision: {
+            artifactId: detail.artifactId,
+            revisionId: syntheticRevisionId,
+            kind: artifactRevisionKindForMedia(detail.media.kind),
+            status: 'ready',
+            sourceRunId: processSegmentId,
+            title: step.title,
+            media: detail.media,
+          },
+        },
+  }
+}
+
+function artifactRevisionKindForMedia(
+  mediaKind: ArtifactStepDetail['media']['kind'],
+): ArtifactSegment['revision']['kind'] {
+  switch (mediaKind) {
+    case 'image':
+    case 'file':
+      return mediaKind
+    case 'audio':
+    case 'video':
+      return 'media'
+  }
+}
+
+function getProcessArtifactIds(assistant: AssistantWork) {
+  const artifactIds = new Set<string>()
+
+  for (const segment of assistant.segments) {
+    if (segment.kind !== 'process') {
+      continue
+    }
+    for (const step of segment.steps ?? []) {
+      const detail = artifactDetail(step)
+      if (detail) {
+        artifactIds.add(detail.artifactId)
+      }
+    }
+  }
+
+  return artifactIds
 }
 
 function buildProcessGroupBlock(
@@ -321,13 +439,35 @@ function activityItemCount(steps: ProcessStep[]): number | undefined {
 function activityItems(steps: ProcessStep[]): ActivityRenderItem[] {
   return steps.flatMap((step) => {
     const items = activityDetail(step)?.items ?? []
-    return items.map((item) => ({
-      id: activityItemId(step.id, item.kind, item.label, item.detail),
-      kind: item.kind,
-      label: item.label,
-      detail: item.detail,
-    }))
+    if (items.length > 0) {
+      return items.map((item) => ({
+        id: activityItemId(step.id, item.kind, item.label, item.detail),
+        kind: item.kind,
+        label: item.label,
+        detail: item.detail,
+      }))
+    }
+    return [
+      {
+        id: activityItemId(step.id, activityItemKind(step), step.title, undefined),
+        kind: activityItemKind(step),
+        label: step.title,
+      },
+    ]
   })
+}
+
+function activityItemKind(step: ProcessStep): ActivityRenderItem['kind'] {
+  switch (step.kind) {
+    case 'fileRead':
+      return 'file'
+    case 'fileSearch':
+      return 'search'
+    case 'command':
+      return 'command'
+    default:
+      return 'tool'
+  }
 }
 
 function activityItemId(
@@ -397,6 +537,10 @@ function commandDetail(step: ProcessStep): CommandStepDetail | undefined {
 
 function diffDetail(step: ProcessStep): DiffStepDetail | undefined {
   return step.detail?.type === 'diff' ? step.detail : undefined
+}
+
+function artifactDetail(step: ProcessStep): ArtifactStepDetail | undefined {
+  return step.detail?.type === 'artifact' ? step.detail : undefined
 }
 
 function sortByOrder<T extends { order: number }>(items: T[]): T[] {

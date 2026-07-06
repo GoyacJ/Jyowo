@@ -43,15 +43,17 @@ describe('ConversationTimeline', () => {
       commandClient,
     )
 
-    expect(screen.getByText('确认需要生成图片并展示结果。')).toBeInTheDocument()
+    expect(screen.queryByText('确认需要生成图片并展示结果。')).not.toBeInTheDocument()
     expect(screen.queryByText('已搜索图片工具')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /Collapsed 1 history steps/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Read\/searched 1 item/ }))
     expect(screen.getByText('已搜索图片工具')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Ran 1 command/ }))
     expect(screen.getByText('$ pnpm check:desktop')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Edited 1 file/ }))
     expect(screen.getByText(/render process preview/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Copy diff' })).not.toBeInTheDocument()
-    expect(screen.getByText('Generated image')).toBeInTheDocument()
-    expect(screen.queryByText('Image artifact ready')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Generated image')).toHaveLength(1)
+    expect(screen.getByText('Image artifact ready')).toBeInTheDocument()
     expect(screen.getByText('图片已生成。')).toBeInTheDocument()
 
     const image = await screen.findByRole('img', { name: 'Generated image' })
@@ -93,6 +95,37 @@ describe('ConversationTimeline', () => {
       conversationId: 'conversation-image',
       artifactId: 'artifact-image-001',
       revisionId: 'revision-image-process-old',
+    })
+  })
+
+  it('omits artifact preview revision id when only the process artifact id is projected', async () => {
+    const turn = imageProcessTurn()
+    const process = turn.assistant?.segments.find((segment) => segment.kind === 'process')
+    const artifactStep = process?.steps?.find((step) => step.kind === 'artifact')
+    if (artifactStep?.detail?.type === 'artifact') {
+      delete artifactStep.detail.revisionId
+    }
+    if (turn.assistant) {
+      turn.assistant.segments = turn.assistant.segments.filter(
+        (segment) => segment.kind !== 'artifact',
+      )
+    }
+    const getArtifactMediaPreview = vi.fn<CommandClient['getArtifactMediaPreview']>(async () => ({
+      dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+      mimeType: 'image/png',
+      sizeBytes: 68,
+    }))
+
+    renderTimelineWithClient(<ConversationTimeline title="Image flow" turns={[turn]} />, {
+      ...createTestCommandClient(),
+      getArtifactMediaPreview,
+    })
+
+    await screen.findByRole('img', { name: 'Generated image' })
+    expect(getArtifactMediaPreview).toHaveBeenCalledWith({
+      conversationId: 'conversation-image',
+      artifactId: 'artifact-image-001',
+      revisionId: undefined,
     })
   })
 

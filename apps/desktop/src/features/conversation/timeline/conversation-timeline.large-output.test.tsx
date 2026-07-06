@@ -45,9 +45,12 @@ describe('ConversationTimeline', () => {
       expect(screen.getByText('notes.txt')).toBeInTheDocument()
       expect(screen.getByText('2 KB')).toBeInTheDocument()
       expect(screen.getByText('128 B')).toBeInTheDocument()
-      expect(screen.getByText('SkillsPage.test.tsx')).toBeInTheDocument()
-      expect(screen.getByText('+61')).toBeInTheDocument()
-      expect(screen.getByText('-2')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /已编辑 1 个文件/ }))
+
+      expect(screen.getAllByText('SkillsPage.test.tsx').length).toBeGreaterThan(0)
+      expect(screen.getAllByText('+61').length).toBeGreaterThan(0)
+      expect(screen.getAllByText('-2').length).toBeGreaterThan(0)
       expect(screen.getByText('$ pnpm -C apps/desktop test -- SkillsPage')).toBeInTheDocument()
       expect(screen.getByText('退出码 1')).toBeInTheDocument()
       expect(screen.getByText('上下文已自动压缩')).toBeInTheDocument()
@@ -63,6 +66,8 @@ describe('ConversationTimeline', () => {
       createTestCommandClient(),
     )
 
+    fireEvent.click(screen.getByRole('button', { name: /Edited 1 file/ }))
+
     const diffScrollRegion = screen.getByTestId('diff-scroll-region')
     expect(diffScrollRegion).toHaveClass('overflow-auto')
     expect(diffScrollRegion).toHaveClass('bg-code-background')
@@ -75,12 +80,13 @@ describe('ConversationTimeline', () => {
       .getByText('$ pnpm -C apps/desktop test -- SkillsPage')
       .closest('section')
     expect(commandBlock).toHaveClass('bg-terminal-background')
-    expect(screen.getByTestId('command-output-scroll-region')).toHaveClass('overflow-auto')
+    expect(screen.getByRole('button', { name: /Ran 2 commands/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    expect(screen.getAllByTestId('command-output-scroll-region')[0]).toHaveClass('overflow-auto')
     expect(screen.getByText('exit 1')).toBeInTheDocument()
     expect(screen.getByText('$ pnpm -C apps/desktop test -- SkillsPage')).toBeVisible()
-
-    expect(screen.queryByText('$ rg "SkillsPage" apps/desktop/src')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /Ran 1 historical commands/ }))
     expect(screen.getByText('$ rg "SkillsPage" apps/desktop/src')).toBeInTheDocument()
 
     const compaction = screen.getByText('上下文已自动压缩').closest('div')
@@ -106,10 +112,10 @@ describe('ConversationTimeline', () => {
 
     expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Copy command' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy command' })[0])
     expect(writeText).toHaveBeenCalledWith('pnpm -C apps/desktop test -- SkillsPage')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Copy output' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy output' })[0])
     expect(writeText).toHaveBeenCalledWith(expect.not.stringContaining('$ pnpm'))
     expect(writeText).toHaveBeenCalledWith(expect.not.stringContaining('exit 1'))
   })
@@ -120,7 +126,9 @@ describe('ConversationTimeline', () => {
       createTestCommandClient(),
     )
 
-    expect(screen.getByText('ConversationTimeline.test.tsx')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Edited 1 file/ }))
+
+    expect(screen.getAllByText('ConversationTimeline.test.tsx').length).toBeGreaterThan(0)
     const diffScrollRegion = screen.getByTestId('diff-scroll-region')
 
     expect(diffScrollRegion).toHaveClass('max-h-[360px]')
@@ -183,12 +191,16 @@ describe('ConversationTimeline', () => {
     try {
       render(<ConversationTimeline title="Process history" turns={[processHistoryTurn()]} />)
 
-      const collapsedGroup = screen.getByRole('button', { name: /已折叠 3 条历史步骤/ })
+      expect(screen.queryByText('已结束但存在失败步骤')).not.toBeInTheDocument()
+
+      const collapsedGroup = screen.getByRole('button', { name: /已读取\/搜索 3 项/ })
       expect(collapsedGroup).toHaveAttribute('aria-expanded', 'false')
       expect(screen.queryByText('已读取 package.json')).not.toBeInTheDocument()
       expect(screen.queryByText('已搜索 timeline')).not.toBeInTheDocument()
-      expect(screen.queryByText('$ rg "timeline" apps/desktop/src')).not.toBeInTheDocument()
 
+      const commandGroup = screen.getByRole('button', { name: /已运行 3 条命令/ })
+      expect(commandGroup).toHaveAttribute('aria-expanded', 'true')
+      expect(screen.getByText('$ rg "timeline" apps/desktop/src')).toBeVisible()
       expect(screen.getByText('$ pnpm -C apps/desktop test')).toBeVisible()
       expect(screen.getByText('退出码 1')).toBeVisible()
       expect(screen.getByText('$ pnpm -C apps/desktop lint')).toBeVisible()
