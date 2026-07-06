@@ -364,7 +364,7 @@ impl DesktopRuntimeState {
         let provider_capability_routes = harness.provider_capability_routes();
         let active_runtime_binding =
             active_runtime_provider_binding(&workspace_root, &default_model_id, default_protocol)?;
-        Ok(Self {
+        let state = Self {
             active_runtime: Arc::new(RwLock::new(DesktopActiveRuntime {
                 default_model_config_id: active_runtime_binding
                     .as_ref()
@@ -421,7 +421,12 @@ impl DesktopRuntimeState {
             global_config_store: Some(global_config_store_for_home()),
             project_config_store: Some(project_config_store_for_workspace(&workspace_root)),
             workspace_root,
-        })
+        };
+        // Migrate old execution-settings.json to project config overrides.
+        // Format handled by ExecutionDefaultsRecord serde aliases (snake_case → camelCase).
+        let _ = crate::commands::providers::migrate_execution_settings(&state.workspace_root);
+
+        Ok(state)
     }
 
     #[must_use]
@@ -531,17 +536,16 @@ impl DesktopRuntimeState {
         model_id: String,
         protocol: ModelProtocol,
     ) -> SessionOptions {
-        let execution_settings =
-            self.execution_settings_store
-                .load_record()
-                .unwrap_or(ExecutionSettingsRecord {
-                    permission_mode: PermissionMode::Default,
-                    tool_profile: ToolProfile::Full,
-                    context_compression_trigger_ratio: default_context_compression_trigger_ratio(),
-                    subagents_enabled: false,
-                    agent_teams_enabled: false,
-                    background_agents_enabled: false,
-                });
+        let execution_settings = self.execution_settings_store.load_record().unwrap_or(
+            harness_contracts::ExecutionDefaultsRecord {
+                permission_mode: PermissionMode::Default,
+                tool_profile: ToolProfile::Full,
+                context_compression_trigger_ratio: default_context_compression_trigger_ratio(),
+                subagents_enabled: false,
+                agent_teams_enabled: false,
+                background_agents_enabled: false,
+            },
+        );
         SessionOptions::new(&self.workspace_root)
             .with_tenant_id(TenantId::SINGLE)
             .with_session_id(session_id)

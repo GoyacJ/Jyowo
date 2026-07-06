@@ -260,42 +260,8 @@ impl ProviderSettingsStore for DesktopProviderSettingsStore {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct ExecutionSettingsRecord {
-    #[serde(default = "default_permission_mode")]
-    pub permission_mode: PermissionMode,
-    #[serde(default)]
-    pub tool_profile: ToolProfile,
-    #[serde(default = "default_context_compression_trigger_ratio")]
-    pub context_compression_trigger_ratio: f32,
-    #[serde(default)]
-    pub subagents_enabled: bool,
-    #[serde(default)]
-    pub agent_teams_enabled: bool,
-    #[serde(default)]
-    pub background_agents_enabled: bool,
-}
-
-pub(crate) fn default_permission_mode() -> PermissionMode {
-    PermissionMode::Default
-}
-
 pub(crate) fn default_context_compression_trigger_ratio() -> f32 {
     0.8
-}
-
-impl Default for ExecutionSettingsRecord {
-    fn default() -> Self {
-        Self {
-            permission_mode: PermissionMode::Default,
-            tool_profile: ToolProfile::Full,
-            context_compression_trigger_ratio: default_context_compression_trigger_ratio(),
-            subagents_enabled: false,
-            agent_teams_enabled: false,
-            background_agents_enabled: false,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -351,38 +317,71 @@ impl DesktopExecutionSettingsStore {
     }
 
     fn settings_path(&self) -> PathBuf {
+        let home = execution_settings_home_dir();
+        let layout =
+            crate::storage_layout::StorageLayout::new(crate::storage_layout::JyowoHome::new(home));
+        layout.project_execution_overrides_file(&self.workspace_root)
+    }
+
+    /// Legacy path used for migration reads only — never for writes.
+    fn legacy_settings_path(&self) -> PathBuf {
         self.workspace_root
             .join(".jyowo")
             .join("runtime")
             .join("execution-settings.json")
     }
 
-    pub fn load_record(&self) -> Result<ExecutionSettingsRecord, CommandErrorPayload> {
+    pub fn load_record(
+        &self,
+    ) -> Result<harness_contracts::ExecutionDefaultsRecord, CommandErrorPayload> {
         let settings_path = self.settings_path();
-        let Some(record) = read_json_file_or_remove_invalid(&settings_path, "execution settings")?
+        let Some(record) = read_json_file::<harness_contracts::ExecutionDefaultsRecord>(
+            &settings_path,
+            "execution settings",
+        )?
         else {
-            return Ok(ExecutionSettingsRecord::default());
+            // Fall back to legacy path during transition.
+            let legacy = self.legacy_settings_path();
+            if let Some(record) = read_json_file_or_remove_invalid::<
+                harness_contracts::ExecutionDefaultsRecord,
+            >(&legacy, "execution settings")?
+            {
+                if ensure_execution_defaults_structure(&record).is_err() {
+                    remove_invalid_json_file(&legacy, "execution settings")?;
+                    return Ok(harness_contracts::ExecutionDefaultsRecord::default());
+                }
+                // Auto-migrate to the new project config path on next save.
+                return Ok(record);
+            }
+            return Ok(harness_contracts::ExecutionDefaultsRecord::default());
         };
-        if ensure_execution_settings_structure(&record).is_err() {
+        if ensure_execution_defaults_structure(&record).is_err() {
             remove_invalid_json_file(&settings_path, "execution settings")?;
-            return Ok(ExecutionSettingsRecord::default());
+            return Ok(harness_contracts::ExecutionDefaultsRecord::default());
         }
         Ok(record)
     }
 
     pub fn save_record(
         &self,
-        record: &ExecutionSettingsRecord,
+        record: &harness_contracts::ExecutionDefaultsRecord,
         context: Option<&AgentCapabilityResolutionContext>,
     ) -> Result<(), CommandErrorPayload> {
-        ensure_execution_settings_record(record, &self.workspace_root, context)?;
+        ensure_execution_defaults_record(record, &self.workspace_root, context)?;
         let settings_path = self.settings_path();
         write_json_file_atomic(&settings_path, "execution settings", record)
     }
 }
 
-pub(crate) fn ensure_execution_settings_structure(
-    record: &ExecutionSettingsRecord,
+fn execution_settings_home_dir() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .unwrap_or_else(|| std::ffi::OsString::from("."));
+    PathBuf::from(home).join(".jyowo")
+}
+
+pub(crate) fn ensure_execution_defaults_structure(
+    record: &harness_contracts::ExecutionDefaultsRecord,
 ) -> Result<(), CommandErrorPayload> {
     match record.permission_mode {
         PermissionMode::Default | PermissionMode::Auto | PermissionMode::BypassPermissions => {
@@ -403,12 +402,12 @@ pub(crate) fn ensure_execution_settings_structure(
     Ok(())
 }
 
-pub(crate) fn ensure_execution_settings_record(
-    record: &ExecutionSettingsRecord,
+pub(crate) fn ensure_execution_defaults_record(
+    record: &harness_contracts::ExecutionDefaultsRecord,
     workspace_root: &Path,
     context: Option<&AgentCapabilityResolutionContext>,
 ) -> Result<(), CommandErrorPayload> {
-    ensure_execution_settings_structure(record)?;
+    ensure_execution_defaults_structure(record)?;
 
     let policy = resolve_agent_capability_policy(workspace_root, context);
     ensure_agent_capability_setting_available(
@@ -470,7 +469,7 @@ pub(crate) fn resolve_agent_capability_policy(
 }
 
 pub(crate) fn agent_capabilities_payload(
-    record: &ExecutionSettingsRecord,
+    record: &harness_contracts::ExecutionDefaultsRecord,
     workspace_root: &Path,
     context: Option<&AgentCapabilityResolutionContext>,
 ) -> AgentCapabilitiesPayload {
@@ -802,8 +801,8 @@ pub fn set_execution_settings_with_store(
     store: &DesktopExecutionSettingsStore,
     context: Option<&AgentCapabilityResolutionContext>,
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload> {
-    ensure_execution_settings_record(
-        &ExecutionSettingsRecord {
+    ensure_execution_defaults_record(
+        &harness_contracts::ExecutionDefaultsRecord {
             permission_mode: request.permission_mode,
             tool_profile: request.tool_profile.clone(),
             context_compression_trigger_ratio: request.context_compression_trigger_ratio,
@@ -819,7 +818,7 @@ pub fn set_execution_settings_with_store(
             "auto permission mode is unavailable in this desktop build".to_owned(),
         ));
     }
-    let record = ExecutionSettingsRecord {
+    let record = harness_contracts::ExecutionDefaultsRecord {
         permission_mode: request.permission_mode,
         tool_profile: request.tool_profile,
         context_compression_trigger_ratio: request.context_compression_trigger_ratio,
@@ -835,6 +834,89 @@ pub fn set_execution_settings_with_store(
         auto_mode_available: auto_mode_available(),
         agent_capabilities: agent_capabilities_payload(&record, store.workspace_root(), context),
     })
+}
+
+/// Migrate old workspace `execution-settings.json` (runtime path) to the new
+/// project config `execution-overrides.json`.
+///
+/// Old files use snake_case field names; `ExecutionDefaultsRecord` accepts
+/// them via `#[serde(alias)]` annotations and always writes camelCase.
+pub fn migrate_execution_settings(
+    workspace_root: &Path,
+) -> Result<crate::commands::stores::migration::MigrationResult, CommandErrorPayload> {
+    let old_path = workspace_root
+        .join(".jyowo")
+        .join("runtime")
+        .join("execution-settings.json");
+
+    let home = execution_settings_home_dir();
+    let layout =
+        crate::storage_layout::StorageLayout::new(crate::storage_layout::JyowoHome::new(home));
+    let new_path = layout.project_execution_overrides_file(workspace_root);
+
+    crate::commands::stores::migration::migrate_json_file::<
+        harness_contracts::ExecutionDefaultsRecord,
+    >(&old_path, &new_path, "execution settings", true)
+}
+
+/// Resolve effective execution settings by merging global defaults, project
+/// overrides, and optional run-level overrides.
+///
+/// Precedence (highest wins):
+/// 1. Run explicit params (`run_permission_mode`, `run_tool_profile`)
+/// 2. Project execution overrides
+/// 3. Global execution defaults
+/// 4. Contract defaults in [`harness_contracts::ExecutionDefaultsRecord::default`]
+///
+/// This is the single source of truth for effective execution settings.
+/// Frontend code must not reimplement this overlay.
+pub fn resolve_effective_execution_settings(
+    global_config: Option<&crate::commands::stores::GlobalConfigStore>,
+    project_config: Option<&crate::commands::stores::ProjectConfigStore>,
+    run_permission_mode: Option<PermissionMode>,
+    run_tool_profile: Option<ToolProfile>,
+) -> Result<harness_contracts::ExecutionDefaultsRecord, CommandErrorPayload> {
+    // 1. Start with contract defaults.
+    let mut effective = harness_contracts::ExecutionDefaultsRecord::default();
+
+    // 2. Apply global defaults (overwrite contract defaults where set).
+    if let Some(global) = global_config {
+        let global_defaults = global.load_execution_defaults()?;
+        effective.permission_mode = global_defaults.permission_mode;
+        effective.tool_profile = global_defaults.tool_profile;
+        effective.context_compression_trigger_ratio =
+            global_defaults.context_compression_trigger_ratio;
+        effective.subagents_enabled = global_defaults.subagents_enabled;
+        effective.agent_teams_enabled = global_defaults.agent_teams_enabled;
+        effective.background_agents_enabled = global_defaults.background_agents_enabled;
+    }
+
+    // 3. Apply project overrides (overwrite global defaults where project has
+    //    explicit non-default values).
+    if let Some(project) = project_config {
+        let overrides = project.load_execution_overrides()?;
+        // A project override file that serializes as the contract default
+        // should not overwrite more-specific global defaults.
+        if overrides != harness_contracts::ExecutionDefaultsRecord::default() {
+            effective.permission_mode = overrides.permission_mode;
+            effective.tool_profile = overrides.tool_profile;
+            effective.context_compression_trigger_ratio =
+                overrides.context_compression_trigger_ratio;
+            effective.subagents_enabled = overrides.subagents_enabled;
+            effective.agent_teams_enabled = overrides.agent_teams_enabled;
+            effective.background_agents_enabled = overrides.background_agents_enabled;
+        }
+    }
+
+    // 4. Apply run explicit params.
+    if let Some(permission_mode) = run_permission_mode {
+        effective.permission_mode = permission_mode;
+    }
+    if let Some(tool_profile) = run_tool_profile {
+        effective.tool_profile = tool_profile;
+    }
+
+    Ok(effective)
 }
 
 pub async fn list_provider_settings_with_store(

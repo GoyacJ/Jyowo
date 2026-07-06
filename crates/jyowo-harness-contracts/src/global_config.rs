@@ -99,20 +99,27 @@ pub struct ProviderSelectionRecord {
 }
 
 /// Global execution defaults. Stored in `~/.jyowo/config/execution-defaults.json`.
+///
+/// Also used for project execution overrides at `<workspace>/.jyowo/config/execution-overrides.json`.
+/// Fields carry `#[serde(alias)]` annotations so old workspace `execution-settings.json` files
+/// (previously snake_case) are accepted during migration reads without a separate intermediate type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ExecutionDefaultsRecord {
-    #[serde(default = "default_permission_mode")]
+    #[serde(default = "default_permission_mode", alias = "permission_mode")]
     pub permission_mode: crate::PermissionMode,
-    #[serde(default)]
+    #[serde(default, alias = "tool_profile")]
     pub tool_profile: crate::ToolProfile,
-    #[serde(default = "default_context_compression_trigger_ratio")]
+    #[serde(
+        default = "default_context_compression_trigger_ratio",
+        alias = "context_compression_trigger_ratio"
+    )]
     pub context_compression_trigger_ratio: f32,
-    #[serde(default)]
+    #[serde(default, alias = "subagents_enabled")]
     pub subagents_enabled: bool,
-    #[serde(default)]
+    #[serde(default, alias = "agent_teams_enabled")]
     pub agent_teams_enabled: bool,
-    #[serde(default)]
+    #[serde(default, alias = "background_agents_enabled")]
     pub background_agents_enabled: bool,
 }
 

@@ -617,19 +617,19 @@ fn set_execution_settings_serializes_agent_capability_fields() {
     assert!(!response.agent_capabilities.subagents_enabled);
     let settings_path = workspace
         .join(".jyowo")
-        .join("runtime")
-        .join("execution-settings.json");
+        .join("config")
+        .join("execution-overrides.json");
     let saved = std::fs::read_to_string(settings_path).expect("settings file should exist");
     let saved: Value = serde_json::from_str(&saved).expect("settings file should be json");
     assert_eq!(
         saved,
         json!({
-            "permission_mode": "default",
-            "tool_profile": "coding",
-            "context_compression_trigger_ratio": 0.8,
-            "subagents_enabled": false,
-            "agent_teams_enabled": false,
-            "background_agents_enabled": false
+            "permissionMode": "default",
+            "toolProfile": "coding",
+            "contextCompressionTriggerRatio": 0.8,
+            "subagentsEnabled": false,
+            "agentTeamsEnabled": false,
+            "backgroundAgentsEnabled": false
         })
     );
 }

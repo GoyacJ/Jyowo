@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use harness_contracts::ProviderSelectionRecord;
+use harness_contracts::{ExecutionDefaultsRecord, ProviderSelectionRecord};
 
 use crate::commands::error::CommandErrorPayload;
 use crate::storage_layout::StorageLayout;
@@ -58,6 +58,30 @@ impl ProjectConfigStore {
             .project_provider_selection_file(&self.workspace_root);
         ensure_config_dir(&path, "project provider selection")?;
         write_json_file_atomic(&path, "project provider selection", record)
+    }
+
+    // ── Execution overrides (project) ───────────────────────────────────
+
+    pub fn load_execution_overrides(&self) -> Result<ExecutionDefaultsRecord, CommandErrorPayload> {
+        let path = self
+            .layout
+            .project_execution_overrides_file(&self.workspace_root);
+        ensure_config_dir(&path, "execution overrides")?;
+        Ok(
+            read_json_file::<ExecutionDefaultsRecord>(&path, "execution overrides")?
+                .unwrap_or_default(),
+        )
+    }
+
+    pub fn save_execution_overrides(
+        &self,
+        record: &ExecutionDefaultsRecord,
+    ) -> Result<(), CommandErrorPayload> {
+        let path = self
+            .layout
+            .project_execution_overrides_file(&self.workspace_root);
+        ensure_config_dir(&path, "execution overrides")?;
+        write_json_file_atomic(&path, "execution overrides", record)
     }
 }
 

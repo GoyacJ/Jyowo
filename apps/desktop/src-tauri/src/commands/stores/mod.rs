@@ -39,7 +39,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 mod automation;
 mod global_config;
 mod mcp;
-mod migration;
+pub mod migration;
 mod plugin;
 mod project_config;
 mod skill;

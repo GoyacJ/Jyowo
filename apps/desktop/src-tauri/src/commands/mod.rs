@@ -118,7 +118,7 @@ mod projects;
 mod providers;
 mod runtime;
 mod skills;
-mod stores;
+pub mod stores;
 #[cfg(test)]
 mod tests;
 mod validation;
@@ -315,13 +315,14 @@ pub use providers::{
     get_provider_config_api_key_with_runtime_state, get_provider_config_api_key_with_store,
     list_model_provider_catalog_payload, list_model_provider_catalog_payload_with_remote,
     list_provider_capability_route_options_from_inputs, list_provider_capability_routes_with_store,
-    list_provider_settings_with_store, request_provider_config_api_key_reveal_with_runtime_state,
-    request_provider_config_api_key_reveal_with_store,
+    list_provider_settings_with_store, migrate_execution_settings,
+    request_provider_config_api_key_reveal_with_runtime_state,
+    request_provider_config_api_key_reveal_with_store, resolve_effective_execution_settings,
     save_provider_capability_route_settings_with_store, save_provider_capability_route_with_store,
     save_provider_settings_with_runtime_state, save_provider_settings_with_store,
     set_execution_settings_with_store, validate_provider_settings_payload,
     AgentCapabilitiesPayload, DesktopConversationMetadataStore, DesktopExecutionSettingsStore,
-    DesktopProviderCapabilityRouteStore, DesktopProviderSettingsStore, ExecutionSettingsRecord,
+    DesktopProviderCapabilityRouteStore, DesktopProviderSettingsStore,
 };
 pub use runtime::{
     agent_supervisor_sidecar_startup_result_for_project_command, managed_runtime_state,
