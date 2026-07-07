@@ -84,7 +84,7 @@ Required test groups:
 | Journal | append/read order, snapshots, migrations, version handling, audit query behavior, conversation worktree projection |
 | Redaction | Redactor before every durable store path |
 | Replay | cursor behavior, redacted output, snapshot reads, conversation event ordering |
-| Conversation worktree | complete turn paging, event cursor reporting, stable node ids, nested tool permissions, safe process steps, artifact media metadata, and tool failure summaries |
+| Conversation worktree | complete turn paging, event cursor reporting, stable node ids, nested tool permissions, safe process steps, assistant runtime metadata, activity metadata/items, opaque evidence refs, artifact media metadata, tool failure summaries, and no raw chain-of-thought projection |
 | Tauri command | command payload identity, shell metadata, SDK availability, replay-before-live conversation subscription, artifact media preview ownership checks, window-scoped event batches, unsubscribe cleanup, provider capability route validation, route option runtime support reporting, routed credential fail-closed behavior, provider probe single-flight behavior, model usage summary period behavior, official quota refresh/cache behavior |
 | SDK | builder requirements, runtime assembly, test adapters, capability route filtering during ToolPool assembly |
 | Agent orchestration | capability resolution, agent tool policy, subagent tool exposure, run-scoped team task/mailbox persistence, background registry lifecycle, supervisor wake/recovery, worktree lease conflicts, and actor-source permission attribution |
@@ -256,6 +256,7 @@ Contracts:
 [ ] Event tags are tested
 [ ] error variants crossing boundaries are tested
 [ ] frontend schema changes are coordinated
+[ ] conversation display contract changes include Rust serde/schema tests, frontend Zod tests, projector tests, renderer tests, and Storybook coverage when visible
 ```
 
 Security:
@@ -278,6 +279,10 @@ Persistence:
 [ ] Journal append order is preserved
 [ ] redaction runs before durable writes
 [ ] Replay does not reveal withheld data
+[ ] conversation projection emits UI-safe typed data, not raw event JSON,
+    command output, full patches, tool input JSON, or chain-of-thought
+[ ] full command output and full diff patch access stays behind opaque evidence
+    refs and explicit evidence fetch commands
 [ ] artifact projection does not reveal blob paths, private paths, remote URLs, or provider-native payloads
 [ ] Audit records can be derived from events and permission decisions
 [ ] restart-stable guarantees are backed by persistence

@@ -121,6 +121,7 @@ export const zhCN = {
       emptyTitle: '开始对话',
       emptyDescription: '让 Jyowo 在这个项目里帮你工作。',
       executionStatus: '执行：{{status}}',
+      assistantDuration: '用时 {{duration}} ms',
       assistantStatus: {
         running: '处理中',
         failed: '失败',
@@ -174,6 +175,16 @@ export const zhCN = {
       processGroup: {
         commandHistory: '已运行 {{count}} 条历史命令',
         history: '已折叠 {{count}} 条历史步骤',
+      },
+      renderBlocks: {
+        activitySummary: '已读取/搜索 {{count}} 项',
+        activityFallback: '暂无明细',
+        commandSummary: '已运行 {{count}} 条命令',
+        editedFiles: '已编辑的文件',
+        fileEditSummary: '已编辑 {{count}} 个文件',
+        openCommand: '在检查器中打开命令',
+        openDiff: '在检查器中打开 diff',
+        status: '状态',
       },
       processWithheld: '过程详情已隐藏',
       commandEvidence: {

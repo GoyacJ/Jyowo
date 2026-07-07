@@ -69,6 +69,9 @@ typed decision requests, artifact revision summaries, review requests,
 clarification requests, notices, errors, and agent activity. Raw thinking is
 projected as `ProcessStep` with `UiVisibility` (user-safe or withheld); it never
 enters the frontend as raw chain-of-thought.
+React may compose `AssistantWork` into frontend-only `TimelineRenderBlock[]` for
+display. Those blocks are not contract data and must stay derived from the
+Rust-projected turn tree.
 
 Raw `RunEvent` data belongs to Activity, Details, Replay, and Raw JSON. It must
 not become the product model for the main conversation canvas.
@@ -430,16 +433,19 @@ AppShell
     ConversationTurn
       UserMessage
       AssistantWork
-        ThinkingSummary
-        AssistantText
-        ToolGroup
-          ToolAttempt
-            PermissionState
-        ArtifactPreview
-        ReviewRequest
-        ClarificationRequest
-        Notice
-        Error
+        TimelineRenderBlock
+          AssistantText
+          FileEditRenderBlock
+          ActivityRenderBlock
+          CommandRenderBlock
+          ToolGroup
+            ToolAttempt
+              PermissionState
+          ArtifactPreview
+          ReviewRequest
+          ClarificationRequest
+          Notice
+          Error
     Composer
   ContextPanel
     ContextSection
@@ -456,6 +462,10 @@ Hierarchy rules:
 - `ConversationCanvas` is the primary reading and work surface.
 - `ConversationCanvas` reads the Rust-owned worktree projection, not
   `get_conversation.messages`.
+- Timeline work blocks are built from `AssistantWork`, not from raw
+  `RunEvent`, stdout, full patches, or provider payload JSON.
+- Full command output and full diff patches open through inspector/evidence
+  refs. They are not embedded in the main canvas.
 - `ContextPanel` is secondary and supports the current conversation.
 - `ActivityRail` is tertiary and shows execution status without taking over the
   product.

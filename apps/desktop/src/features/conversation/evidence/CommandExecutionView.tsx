@@ -1,29 +1,48 @@
 import { Copy } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/shared/lib/utils'
 import type { CommandExecution } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 
 export function CommandExecutionView({
+  allowFullOutputFetch = false,
   command,
   conversationId,
+  density = 'inspector',
 }: {
+  allowFullOutputFetch?: boolean
   command: CommandExecution
   conversationId: string
-  onOpenInspector?: () => void
+  density?: 'timeline' | 'inspector'
 }) {
   const { t } = useTranslation('conversation')
-  const commandClient = useCommandClient()
-  const [fetchingPage, setFetchingPage] = useState(false)
   const [fetchedOutput, setFetchedOutput] = useState<{
     hasMore: boolean
     nextCursor?: string
     output: string
+    refId: string
     truncated: boolean
   } | null>(null)
   const [copyFailed, setCopyFailed] = useState(false)
   const [fetchFailed, setFetchFailed] = useState(false)
+  const currentOutputRef = useRef({
+    fullOutputRef: command.fullOutputRef,
+    redactionState: command.redactionState,
+  })
+
+  currentOutputRef.current = {
+    fullOutputRef: command.fullOutputRef,
+    redactionState: command.redactionState,
+  }
+
+  const isCurrentFetch = (requestedFullOutputRef: string) =>
+    currentOutputRef.current.fullOutputRef === requestedFullOutputRef &&
+    currentOutputRef.current.redactionState !== 'withheld'
+
+  useEffect(() => {
+    setFetchedOutput(null)
+  }, [command.fullOutputRef, command.redactionState])
 
   const handleCopyCommand = async () => {
     try {
@@ -35,8 +54,20 @@ export function CommandExecutionView({
     }
   }
 
-  const previewOutput = [command.stdoutPreview, command.stderrPreview].filter(Boolean).join('\n')
-  const visibleOutput = fetchedOutput?.output ?? (previewOutput.length > 0 ? previewOutput : null)
+  const previewOutput =
+    command.redactionState === 'withheld'
+      ? ''
+      : [command.stdoutPreview, command.stderrPreview].filter(Boolean).join('\n')
+  const activeFetchedOutput =
+    fetchedOutput?.refId === command.fullOutputRef && command.redactionState !== 'withheld'
+      ? fetchedOutput
+      : null
+  const visibleOutput =
+    command.redactionState === 'withheld'
+      ? null
+      : (activeFetchedOutput?.output ?? (previewOutput.length > 0 ? previewOutput : null))
+  const canFetchFullOutput =
+    allowFullOutputFetch && command.fullOutputRef && command.redactionState !== 'withheld'
 
   const handleCopyVisible = async () => {
     if (!visibleOutput) return
@@ -46,29 +77,6 @@ export function CommandExecutionView({
       await navigator.clipboard.writeText(visibleOutput)
     } catch {
       setCopyFailed(true)
-    }
-  }
-
-  const handleFetchPage = async () => {
-    if (!command.fullOutputRef) return
-    setFetchingPage(true)
-    setFetchFailed(false)
-    try {
-      const response = await commandClient.getConversationCommandOutput({
-        conversationId,
-        fullOutputRef: command.fullOutputRef,
-      })
-      setFetchedOutput({
-        hasMore: response.hasMore,
-        nextCursor: response.nextCursor,
-        output: response.output,
-        truncated: response.truncated,
-      })
-    } catch {
-      setFetchedOutput(null)
-      setFetchFailed(true)
-    } finally {
-      setFetchingPage(false)
     }
   }
 
@@ -100,19 +108,23 @@ export function CommandExecutionView({
               onClick={() => void handleCopyVisible()}
             />
           ) : null}
-          {command.fullOutputRef && command.redactionState !== 'withheld' ? (
-            <button
-              className="rounded px-2 py-0.5 text-white/60 text-xs hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-ring"
-              disabled={fetchingPage}
-              onClick={handleFetchPage}
-              type="button"
-            >
-              {fetchingPage
-                ? t('timeline.commandEvidence.fetching')
-                : fetchedOutput
-                  ? t('timeline.commandEvidence.pageLoaded')
-                  : t('timeline.commandEvidence.fetchPage')}
-            </button>
+          {canFetchFullOutput ? (
+            <FullOutputFetchButton
+              command={command}
+              conversationId={conversationId}
+              loaded={activeFetchedOutput !== null}
+              onError={(requestedFullOutputRef) => {
+                if (!isCurrentFetch(requestedFullOutputRef)) return
+                setFetchedOutput(null)
+                setFetchFailed(true)
+              }}
+              onLoad={(response, requestedFullOutputRef) => {
+                if (!isCurrentFetch(requestedFullOutputRef)) return
+                setFetchFailed(false)
+                setFetchedOutput(response)
+              }}
+              onStart={() => setFetchFailed(false)}
+            />
           ) : null}
         </div>
       </div>
@@ -143,13 +155,13 @@ export function CommandExecutionView({
         ) : null}
         {command.exitCode !== undefined ? (
           <span className={cn(command.exitCode === 0 ? 'text-white/65' : 'text-red-400')}>
-            exit {command.exitCode}
+            {t('timeline.commandEvidence.exitCode', { code: command.exitCode })}
           </span>
         ) : null}
         {command.truncated ? (
           <span className="text-yellow-400/80">{t('timeline.commandEvidence.truncated')}</span>
         ) : null}
-        {fetchedOutput?.truncated ? (
+        {activeFetchedOutput?.truncated ? (
           <span className="text-yellow-400/80">
             {t('timeline.commandEvidence.pageTruncated', 'Output page truncated')}
           </span>
@@ -159,7 +171,10 @@ export function CommandExecutionView({
       {/* Output */}
       {visibleOutput ? (
         <pre
-          className="max-h-[360px] overflow-auto px-3 py-2 font-mono text-xs leading-5"
+          className={cn(
+            'overflow-auto px-3 py-2 font-mono text-xs leading-5',
+            density === 'timeline' ? 'max-h-[260px]' : 'max-h-[360px]',
+          )}
           data-testid="command-output-scroll-region"
         >
           <code>{visibleOutput}</code>
@@ -170,6 +185,80 @@ export function CommandExecutionView({
         </div>
       ) : null}
     </section>
+  )
+}
+
+function FullOutputFetchButton({
+  command,
+  conversationId,
+  loaded,
+  onError,
+  onLoad,
+  onStart,
+}: {
+  command: CommandExecution
+  conversationId: string
+  loaded: boolean
+  onError: (requestedFullOutputRef: string) => void
+  onLoad: (
+    response: {
+      hasMore: boolean
+      nextCursor?: string
+      output: string
+      refId: string
+      truncated: boolean
+    },
+    requestedFullOutputRef: string,
+  ) => void
+  onStart: () => void
+}) {
+  const { t } = useTranslation('conversation')
+  const commandClient = useCommandClient()
+  const [fetchingPage, setFetchingPage] = useState(false)
+
+  const handleFetchPage = async () => {
+    const requestedFullOutputRef = command.fullOutputRef
+    if (!requestedFullOutputRef) return
+    setFetchingPage(true)
+    onStart()
+    try {
+      const response = await commandClient.getConversationCommandOutput({
+        conversationId,
+        fullOutputRef: requestedFullOutputRef,
+      })
+      if (response.refId !== requestedFullOutputRef || response.redactionState === 'withheld') {
+        throw new Error('Command output withheld')
+      }
+      onLoad(
+        {
+          hasMore: response.hasMore,
+          nextCursor: response.nextCursor,
+          output: response.output,
+          refId: response.refId,
+          truncated: response.truncated,
+        },
+        requestedFullOutputRef,
+      )
+    } catch {
+      onError(requestedFullOutputRef)
+    } finally {
+      setFetchingPage(false)
+    }
+  }
+
+  return (
+    <button
+      className="rounded px-2 py-0.5 text-white/60 text-xs hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-ring"
+      disabled={fetchingPage}
+      onClick={handleFetchPage}
+      type="button"
+    >
+      {fetchingPage
+        ? t('timeline.commandEvidence.fetching')
+        : loaded
+          ? t('timeline.commandEvidence.pageLoaded')
+          : t('timeline.commandEvidence.fetchPage')}
+    </button>
   )
 }
 

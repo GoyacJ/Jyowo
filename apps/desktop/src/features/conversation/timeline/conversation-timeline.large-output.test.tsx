@@ -3,11 +3,13 @@ import '@testing-library/jest-dom/vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { appI18n } from '@/shared/i18n/i18n'
+import { uiStore } from '@/shared/state/ui-store'
 import { createTestCommandClient } from '@/testing/command-client'
 import {
   codexLargeDiffTurns,
   codexStyleEvidenceTurns,
 } from '@/testing/conversation-evidence-fixtures'
+import { commandDetail } from '@/testing/conversation-worktree-builders'
 import { ConversationTimeline } from './conversation-timeline'
 import {
   processHistoryTurn,
@@ -17,6 +19,8 @@ import {
   turn,
 } from './conversation-timeline-test-utils'
 import { parseDiffEvidenceLines } from './diff-evidence-block'
+import { TimelineBlockRenderer } from './timeline-block-renderer'
+import type { TimelineRenderBlock } from './timeline-render-blocks'
 
 describe('ConversationTimeline', () => {
   const originalClipboard = navigator.clipboard
@@ -42,9 +46,12 @@ describe('ConversationTimeline', () => {
       expect(screen.getByText('notes.txt')).toBeInTheDocument()
       expect(screen.getByText('2 KB')).toBeInTheDocument()
       expect(screen.getByText('128 B')).toBeInTheDocument()
-      expect(screen.getByText('SkillsPage.test.tsx')).toBeInTheDocument()
-      expect(screen.getByText('+61')).toBeInTheDocument()
-      expect(screen.getByText('-2')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /已编辑 1 个文件/ }))
+
+      expect(screen.getAllByText('SkillsPage.test.tsx').length).toBeGreaterThan(0)
+      expect(screen.getAllByText('+61').length).toBeGreaterThan(0)
+      expect(screen.getAllByText('-2').length).toBeGreaterThan(0)
       expect(screen.getByText('$ pnpm -C apps/desktop test -- SkillsPage')).toBeInTheDocument()
       expect(screen.getByText('退出码 1')).toBeInTheDocument()
       expect(screen.getByText('上下文已自动压缩')).toBeInTheDocument()
@@ -60,6 +67,8 @@ describe('ConversationTimeline', () => {
       createTestCommandClient(),
     )
 
+    fireEvent.click(screen.getByRole('button', { name: /Edited 1 file/ }))
+
     const diffScrollRegion = screen.getByTestId('diff-scroll-region')
     expect(diffScrollRegion).toHaveClass('overflow-auto')
     expect(diffScrollRegion).toHaveClass('bg-code-background')
@@ -72,12 +81,13 @@ describe('ConversationTimeline', () => {
       .getByText('$ pnpm -C apps/desktop test -- SkillsPage')
       .closest('section')
     expect(commandBlock).toHaveClass('bg-terminal-background')
-    expect(screen.getByTestId('command-output-scroll-region')).toHaveClass('overflow-auto')
+    expect(screen.getByRole('button', { name: /Ran 2 commands/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    expect(screen.getAllByTestId('command-output-scroll-region')[0]).toHaveClass('overflow-auto')
     expect(screen.getByText('exit 1')).toBeInTheDocument()
     expect(screen.getByText('$ pnpm -C apps/desktop test -- SkillsPage')).toBeVisible()
-
-    expect(screen.queryByText('$ rg "SkillsPage" apps/desktop/src')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /Ran 1 historical commands/ }))
     expect(screen.getByText('$ rg "SkillsPage" apps/desktop/src')).toBeInTheDocument()
 
     const compaction = screen.getByText('上下文已自动压缩').closest('div')
@@ -103,10 +113,10 @@ describe('ConversationTimeline', () => {
 
     expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Copy command' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy command' })[0])
     expect(writeText).toHaveBeenCalledWith('pnpm -C apps/desktop test -- SkillsPage')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Copy output' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy output' })[0])
     expect(writeText).toHaveBeenCalledWith(expect.not.stringContaining('$ pnpm'))
     expect(writeText).toHaveBeenCalledWith(expect.not.stringContaining('exit 1'))
   })
@@ -117,7 +127,9 @@ describe('ConversationTimeline', () => {
       createTestCommandClient(),
     )
 
-    expect(screen.getByText('ConversationTimeline.test.tsx')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Edited 1 file/ }))
+
+    expect(screen.getAllByText('ConversationTimeline.test.tsx').length).toBeGreaterThan(0)
     const diffScrollRegion = screen.getByTestId('diff-scroll-region')
 
     expect(diffScrollRegion).toHaveClass('max-h-[360px]')
@@ -180,12 +192,16 @@ describe('ConversationTimeline', () => {
     try {
       render(<ConversationTimeline title="Process history" turns={[processHistoryTurn()]} />)
 
-      const collapsedGroup = screen.getByRole('button', { name: /已折叠 3 条历史步骤/ })
+      expect(screen.queryByText('已结束但存在失败步骤')).not.toBeInTheDocument()
+
+      const collapsedGroup = screen.getByRole('button', { name: /已读取\/搜索 3 项/ })
       expect(collapsedGroup).toHaveAttribute('aria-expanded', 'false')
       expect(screen.queryByText('已读取 package.json')).not.toBeInTheDocument()
       expect(screen.queryByText('已搜索 timeline')).not.toBeInTheDocument()
-      expect(screen.queryByText('$ rg "timeline" apps/desktop/src')).not.toBeInTheDocument()
 
+      const commandGroup = screen.getByRole('button', { name: /已运行 3 条命令/ })
+      expect(commandGroup).toHaveAttribute('aria-expanded', 'true')
+      expect(screen.getByText('$ rg "timeline" apps/desktop/src')).toBeVisible()
       expect(screen.getByText('$ pnpm -C apps/desktop test')).toBeVisible()
       expect(screen.getByText('退出码 1')).toBeVisible()
       expect(screen.getByText('$ pnpm -C apps/desktop lint')).toBeVisible()
@@ -194,8 +210,9 @@ describe('ConversationTimeline', () => {
       fireEvent.click(collapsedGroup)
 
       expect(collapsedGroup).toHaveAttribute('aria-expanded', 'true')
-      expect(screen.getByText('已读取 package.json')).toBeInTheDocument()
-      expect(screen.getByText('已搜索 timeline')).toBeInTheDocument()
+      expect(screen.getByText('读取 package.json')).toBeInTheDocument()
+      expect(screen.queryByText('已读取 package.json')).not.toBeInTheDocument()
+      expect(screen.queryByText('已搜索 timeline')).not.toBeInTheDocument()
       expect(screen.getByText('$ rg "timeline" apps/desktop/src')).toBeInTheDocument()
     } finally {
       await appI18n.changeLanguage('en-US')
@@ -216,3 +233,332 @@ describe('ConversationTimeline', () => {
     expect(scrollContent).toHaveStyle({ height: '4432px' })
   })
 })
+
+describe('TimelineBlockRenderer', () => {
+  afterEach(async () => {
+    resetTimelineTestState()
+    await appI18n.changeLanguage('en-US')
+  })
+
+  it('renders collapsed and expanded file edit evidence blocks', async () => {
+    await appI18n.changeLanguage('zh-CN')
+    const block: TimelineRenderBlock = {
+      kind: 'fileEdit',
+      id: 'process:process-1:file-edit:edit-1',
+      order: 0,
+      processSegmentId: 'process-1',
+      defaultOpen: false,
+      forcedOpen: false,
+      steps: [],
+      files: [
+        {
+          changeSetId: 'changeset-1',
+          path: 'src/worker_service_test.go',
+          status: 'modified',
+          addedLines: 67,
+          removedLines: 0,
+          preview: '@@ -1,1 +1,2 @@\n package worker\n+func TestWorker() {}',
+          fullPatchRef: 'patch-ref-1',
+          riskFlags: [],
+        },
+      ],
+    }
+
+    renderTimelineWithClient(
+      <TimelineBlockRenderer
+        block={block}
+        conversationId="conversation-1"
+        runId="run-1"
+        turnId="turn-1"
+      />,
+      createTestCommandClient(),
+    )
+
+    const summary = screen.getByRole('button', { name: /已编辑 1 个文件/ })
+    expect(summary).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('worker_service_test.go +67 -0')).toBeInTheDocument()
+    expect(screen.queryByText('已编辑的文件')).not.toBeInTheDocument()
+
+    fireEvent.click(summary)
+
+    expect(summary).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('已编辑的文件')).toBeInTheDocument()
+    expect(screen.getByTestId('diff-scroll-region')).toBeInTheDocument()
+  })
+
+  it('renders multiple file edit rows in one expanded evidence block', () => {
+    const block: TimelineRenderBlock = {
+      kind: 'fileEdit',
+      id: 'process:process-1:file-edit:edit-1',
+      order: 0,
+      processSegmentId: 'process-1',
+      defaultOpen: false,
+      forcedOpen: false,
+      steps: [],
+      files: [
+        {
+          changeSetId: 'changeset-1',
+          path: 'src/timeline-render-blocks.ts',
+          status: 'modified',
+          addedLines: 41,
+          removedLines: 3,
+          preview: '@@ -1,1 +1,2 @@\n export const oldValue = 1\n+export const newValue = 2',
+          riskFlags: [],
+        },
+        {
+          changeSetId: 'changeset-1',
+          path: 'src/timeline-render-blocks.test.ts',
+          status: 'added',
+          addedLines: 27,
+          removedLines: 0,
+          preview: '@@ -0,0 +1,2 @@\n+describe("timeline blocks", () => {})',
+          riskFlags: [],
+        },
+      ],
+    }
+
+    renderTimelineWithClient(
+      <TimelineBlockRenderer
+        block={block}
+        conversationId="conversation-1"
+        runId="run-1"
+        turnId="turn-1"
+      />,
+      createTestCommandClient(),
+    )
+
+    const summary = screen.getByRole('button', { name: /Edited 2 files/ })
+    expect(summary).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('timeline-render-blocks.ts +41 -3')).toBeInTheDocument()
+
+    fireEvent.click(summary)
+
+    expect(screen.getAllByText('timeline-render-blocks.ts').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('timeline-render-blocks.test.ts').length).toBeGreaterThan(0)
+    expect(screen.getAllByTestId('diff-scroll-region')).toHaveLength(2)
+  })
+
+  it('renders read/search activity collapsed counts and expanded item labels', async () => {
+    await appI18n.changeLanguage('zh-CN')
+    const block: TimelineRenderBlock = {
+      kind: 'activity',
+      id: 'process:process-1:activity:read-1',
+      order: 0,
+      processSegmentId: 'process-1',
+      defaultOpen: false,
+      forcedOpen: false,
+      steps: [],
+      title: 'Read files',
+      itemCount: 3,
+      items: [
+        { id: 'read-1:file:src%2Fmain.ts:', kind: 'file', label: 'src/main.ts' },
+        {
+          id: 'search-1:search:TimelineBlockRenderer:src',
+          kind: 'search',
+          label: 'TimelineBlockRenderer',
+          detail: 'src',
+        },
+      ],
+    }
+
+    renderTimelineWithClient(
+      <TimelineBlockRenderer
+        block={block}
+        conversationId="conversation-1"
+        runId="run-1"
+        turnId="turn-1"
+      />,
+      createTestCommandClient(),
+    )
+
+    const summary = screen.getByRole('button', { name: /已读取\/搜索 3 项/ })
+    expect(summary).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('src/main.ts')).not.toBeInTheDocument()
+
+    fireEvent.click(summary)
+
+    expect(screen.getByText('src/main.ts')).toBeInTheDocument()
+    expect(screen.getByText('TimelineBlockRenderer')).toBeInTheDocument()
+    expect(screen.getByText('src')).toBeInTheDocument()
+  })
+
+  it('renders command groups without fetching full output from the main timeline', async () => {
+    await appI18n.changeLanguage('zh-CN')
+    const getConversationCommandOutput = vi.fn()
+    const block: TimelineRenderBlock = {
+      kind: 'commandGroup',
+      id: 'process:process-1:commands:command-1',
+      order: 0,
+      processSegmentId: 'process-1',
+      defaultOpen: false,
+      forcedOpen: false,
+      steps: [],
+      commands: [
+        {
+          id: 'command-1',
+          stepId: 'command-1',
+          status: 'complete',
+          command: commandDetail({
+            command: 'git status --short',
+            exitCode: 0,
+            stdoutPreview: 'M file.ts',
+            fullOutputRef: 'full-output-ref-1',
+          }),
+        },
+        {
+          id: 'command-2',
+          stepId: 'command-2',
+          status: 'complete',
+          command: commandDetail({
+            command: 'pnpm -C apps/desktop test',
+            exitCode: 0,
+            stdoutPreview: 'passed',
+          }),
+        },
+      ],
+    }
+
+    renderTimelineWithClient(
+      <TimelineBlockRenderer
+        block={block}
+        conversationId="conversation-1"
+        runId="run-1"
+        turnId="turn-1"
+      />,
+      {
+        ...createTestCommandClient(),
+        getConversationCommandOutput,
+      },
+    )
+
+    const summary = screen.getByRole('button', { name: /已运行 2 条命令/ })
+    expect(summary).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('git status --short')).toBeInTheDocument()
+    expect(screen.getByText('pnpm -C apps/desktop test')).toBeInTheDocument()
+    expect(screen.queryByText('$ git status --short')).not.toBeInTheDocument()
+
+    fireEvent.click(summary)
+
+    expect(screen.getByText('$ git status --short')).toBeInTheDocument()
+    expect(screen.getByText('$ pnpm -C apps/desktop test')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '加载输出分页' })).not.toBeInTheDocument()
+    expect(getConversationCommandOutput).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '在检查器中打开命令' }))
+    expect(uiStore.getState().workbenchSelection).toEqual({
+      kind: 'command',
+      conversationId: 'conversation-1',
+      fullOutputRef: 'full-output-ref-1',
+    })
+  })
+
+  it('defaults failed and non-zero command groups open', async () => {
+    await appI18n.changeLanguage('zh-CN')
+    const block: TimelineRenderBlock = {
+      kind: 'commandGroup',
+      id: 'process:process-1:commands:command-1',
+      order: 0,
+      processSegmentId: 'process-1',
+      defaultOpen: true,
+      forcedOpen: true,
+      steps: [],
+      commands: [
+        {
+          id: 'command-1',
+          stepId: 'command-1',
+          status: 'complete',
+          command: commandDetail({
+            command: 'cargo test',
+            exitCode: 101,
+            stderrPreview: 'failed',
+          }),
+        },
+      ],
+    }
+
+    renderTimelineWithClient(
+      <TimelineBlockRenderer
+        block={block}
+        conversationId="conversation-1"
+        runId="run-1"
+        turnId="turn-1"
+      />,
+      createTestCommandClient(),
+    )
+
+    const summary = screen.getByRole('button', { name: /已运行 1 条命令/ })
+    expect(summary).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('$ cargo test')).toBeInTheDocument()
+    expect(screen.getByText('退出码 101')).toBeVisible()
+  })
+
+  it('renders running, large-preview, and withheld command output states without full fetches', () => {
+    const getConversationCommandOutput = vi.fn()
+    const block: TimelineRenderBlock = {
+      kind: 'commandGroup',
+      id: 'process:process-1:commands:command-running',
+      order: 0,
+      processSegmentId: 'process-1',
+      defaultOpen: true,
+      forcedOpen: true,
+      steps: [],
+      commands: [
+        {
+          id: 'command-running',
+          stepId: 'command-running',
+          status: 'running',
+          command: commandDetail({
+            command: 'pnpm -C apps/desktop test --watch',
+            stdoutPreview: largeCommandPreview(),
+            durationMs: 5100,
+            fullOutputRef: 'large-output-ref',
+          }),
+        },
+        {
+          id: 'command-withheld',
+          stepId: 'command-withheld',
+          status: 'failed',
+          command: commandDetail({
+            command: 'cat .env',
+            stdoutPreview: 'Output withheld from conversation timeline.',
+            redactionState: 'withheld',
+            fullOutputRef: 'withheld-output-ref',
+          }),
+        },
+      ],
+    }
+
+    renderTimelineWithClient(
+      <TimelineBlockRenderer
+        block={block}
+        conversationId="conversation-1"
+        runId="run-1"
+        turnId="turn-1"
+      />,
+      {
+        ...createTestCommandClient(),
+        getConversationCommandOutput,
+      },
+    )
+
+    expect(screen.getByRole('button', { name: /Ran 2 commands/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    expect(screen.getByText('$ pnpm -C apps/desktop test --watch')).toBeInTheDocument()
+    expect(screen.getAllByTestId('command-output-scroll-region')[0]).toHaveTextContent(
+      'large output line 119',
+    )
+    expect(screen.getAllByTestId('command-output-scroll-region')[0]).toHaveClass('max-h-[260px]')
+    expect(screen.getByText('Output withheld')).toBeInTheDocument()
+    expect(
+      screen.queryByText('Output withheld from conversation timeline.'),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Load output page' })).not.toBeInTheDocument()
+    expect(getConversationCommandOutput).not.toHaveBeenCalled()
+  })
+})
+
+function largeCommandPreview() {
+  return Array.from({ length: 120 }, (_, index) => `large output line ${index}`).join('\n')
+}

@@ -178,7 +178,11 @@ function InspectorItemView({
     case 'command':
       return (
         <div className="p-3">
-          <CommandExecutionView command={item.command} conversationId={conversationId} />
+          <CommandExecutionView
+            allowFullOutputFetch={true}
+            command={item.command}
+            conversationId={conversationId}
+          />
         </div>
       )
     case 'diff':
@@ -186,7 +190,11 @@ function InspectorItemView({
         <div className="flex h-full min-h-0 flex-col gap-3 p-3">
           <ChangeSetSummary changeSet={item.changeSet} />
           <div className="min-h-[320px] flex-1 overflow-hidden rounded-md border border-border">
-            <DiffPane conversationId={conversationId} files={item.changeSet.files} />
+            <DiffPane
+              allowFullPatchFetch={true}
+              conversationId={conversationId}
+              files={item.changeSet.files}
+            />
           </div>
         </div>
       )

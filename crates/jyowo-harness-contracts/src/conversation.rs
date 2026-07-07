@@ -248,6 +248,12 @@ pub struct AssistantWork {
     pub segments: Vec<AssistantSegment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_refs: Vec<ConversationEventRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -469,6 +475,8 @@ pub enum ProcessStepDetail {
         summary: UiSafeText,
         #[serde(rename = "itemCount", default, skip_serializing_if = "Option::is_none")]
         item_count: Option<u32>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        items: Vec<ProcessActivityItem>,
     },
     Command(CommandExecution),
     Diff(ChangeSet),
@@ -499,6 +507,24 @@ pub enum ProcessStepDetail {
         revision_id: Option<String>,
         media: ArtifactMediaPreview,
     },
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ProcessActivityItemKind {
+    File,
+    Search,
+    Tool,
+    Command,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessActivityItem {
+    pub kind: ProcessActivityItemKind,
+    pub label: UiSafeText,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<UiSafeText>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

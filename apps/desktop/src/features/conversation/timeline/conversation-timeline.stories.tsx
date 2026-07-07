@@ -2,12 +2,14 @@ import type { Decorator, Meta, StoryObj } from '@storybook/react-vite'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 
+import { uiStore } from '@/shared/state/ui-store'
 import type { ConversationTurn } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
 import { createTestCommandClient } from '@/testing/command-client'
 import {
   codexAttachmentStressTurns,
   codexLargeDiffTurns,
+  codexRenderBlockMatrixTurns,
   codexStyleEvidenceTurns,
 } from '@/testing/conversation-evidence-fixtures'
 import {
@@ -36,6 +38,14 @@ const meta = {
         },
       })
       const theme = context.parameters.themeMode === 'dark' ? 'dark' : 'light'
+      const evidenceDisclosureOpen = context.parameters.evidenceDisclosureOpen as
+        | Record<string, boolean>
+        | undefined
+
+      uiStore.getState().resetEvidenceDisclosure()
+      for (const [id, open] of Object.entries(evidenceDisclosureOpen ?? {})) {
+        uiStore.getState().setEvidenceDisclosureOpen(id, open)
+      }
 
       return (
         <CommandClientProvider client={createTestCommandClient()}>
@@ -71,6 +81,20 @@ function storyTurn(
     },
     assistant: assistantWork(assistant),
   }
+}
+
+function timelineBlockDisclosureId({
+  blockId,
+  conversationId = 'conversation-001',
+  kind,
+  runId,
+}: {
+  blockId: string
+  conversationId?: string
+  kind: 'activity' | 'commandGroup' | 'fileEdit'
+  runId: string
+}) {
+  return `conversation:${conversationId}:run:${runId}:block:${kind}:${blockId}`
 }
 
 const baseTurn: ConversationTurn = {
@@ -231,6 +255,52 @@ export const CodexEvidenceLargeDiff: Story = {
   },
 }
 
+export const CodexEvidenceRenderBlockMatrix: Story = {
+  args: {
+    title: 'Codex-style render block matrix',
+    turns: codexRenderBlockMatrixTurns,
+  },
+  parameters: {
+    backgrounds: { default: 'dark' },
+    themeMode: 'dark',
+  },
+}
+
+export const CodexEvidenceFileEditExpanded: Story = {
+  args: {
+    title: 'Codex-style expanded file edit',
+    turns: codexStyleEvidenceTurns,
+  },
+  parameters: {
+    evidenceDisclosureOpen: {
+      [timelineBlockDisclosureId({
+        conversationId: 'conversation-codex-evidence',
+        runId: 'run-codex-evidence',
+        kind: 'fileEdit',
+        blockId: 'process:segment:process:codex-evidence:file-edit:process-step:file-edit',
+      })]: true,
+    },
+  },
+}
+
+export const CodexEvidenceMultipleFileEditsExpanded: Story = {
+  args: {
+    title: 'Codex-style multiple file edits',
+    turns: codexRenderBlockMatrixTurns,
+  },
+  parameters: {
+    evidenceDisclosureOpen: {
+      [timelineBlockDisclosureId({
+        conversationId: 'conversation-render-block-matrix',
+        runId: 'run-render-block-matrix',
+        kind: 'fileEdit',
+        blockId:
+          'process:segment:process:render-block-matrix:file-edit:process-step:matrix-file-edit',
+      })]: true,
+    },
+  },
+}
+
 export const CodexEvidencePermissionPending: Story = {
   args: {
     title: 'Codex-style permission pending',
@@ -249,6 +319,69 @@ export const CodexEvidenceCollapsedHistory: Story = {
   },
   parameters: {
     backgrounds: { default: 'dark' },
+    themeMode: 'dark',
+  },
+}
+
+export const CodexEvidenceActivityExpanded: Story = {
+  args: {
+    title: 'Codex-style expanded read/search',
+    turns: [collapsedHistoryTurn()],
+  },
+  parameters: {
+    backgrounds: { default: 'dark' },
+    evidenceDisclosureOpen: {
+      [timelineBlockDisclosureId({
+        runId: 'run-codex-collapsed-history',
+        kind: 'activity',
+        blockId:
+          'process:segment:process:codex-collapsed-history:activity:process-step:collapsed-read',
+      })]: true,
+    },
+    themeMode: 'dark',
+  },
+}
+
+export const CodexEvidenceSuccessfulCommandCollapsed: Story = {
+  args: {
+    title: 'Codex-style collapsed successful command',
+    turns: [successfulCommandHistoryTurn()],
+  },
+}
+
+export const CodexEvidenceSuccessfulCommandExpanded: Story = {
+  args: {
+    title: 'Codex-style expanded successful command',
+    turns: [successfulCommandHistoryTurn()],
+  },
+  parameters: {
+    evidenceDisclosureOpen: {
+      [timelineBlockDisclosureId({
+        runId: 'run-codex-successful-command',
+        kind: 'commandGroup',
+        blockId:
+          'process:segment:process:successful-command:commands:process-step:successful-command',
+      })]: true,
+    },
+  },
+}
+
+export const CodexEvidenceRunningAndWithheldCommands: Story = {
+  args: {
+    title: 'Codex-style running and withheld commands',
+    turns: codexRenderBlockMatrixTurns,
+  },
+  parameters: {
+    backgrounds: { default: 'dark' },
+    evidenceDisclosureOpen: {
+      [timelineBlockDisclosureId({
+        conversationId: 'conversation-render-block-matrix',
+        runId: 'run-render-block-matrix',
+        kind: 'commandGroup',
+        blockId:
+          'process:segment:process:render-block-matrix:commands:process-step:matrix-command-running',
+      })]: true,
+    },
     themeMode: 'dark',
   },
 }
@@ -726,6 +859,38 @@ function collapsedHistoryTurn(): ConversationTurn {
               stdoutPreview: '1 failed',
               exitCode: 1,
               durationMs: 2100,
+            }),
+          },
+        ],
+      },
+    ],
+  })
+}
+
+function successfulCommandHistoryTurn(): ConversationTurn {
+  return storyTurn('codex-successful-command', '运行一次成功检查。', {
+    id: 'assistant:run-codex-successful-command',
+    runId: 'run-codex-successful-command',
+    status: 'complete',
+    segments: [
+      {
+        kind: 'process',
+        id: 'segment:process:successful-command',
+        order: 0,
+        status: 'complete',
+        summary: '检查已完成',
+        steps: [
+          {
+            id: 'process-step:successful-command',
+            order: 0,
+            kind: 'command',
+            status: 'complete',
+            title: '检查通过',
+            detail: commandDetail({
+              command: 'pnpm -C apps/desktop typecheck',
+              stdoutPreview: 'typecheck passed',
+              exitCode: 0,
+              durationMs: 1400,
             }),
           },
         ],

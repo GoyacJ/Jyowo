@@ -6,12 +6,13 @@ import type { ChangeSetFile } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 
 export function DiffPane({
+  allowFullPatchFetch = false,
   conversationId,
   files,
 }: {
+  allowFullPatchFetch?: boolean
   conversationId: string
   files: ChangeSetFile[]
-  onChangeSetClick?: () => void
 }) {
   const { t } = useTranslation('conversation')
   const commandClient = useCommandClient()
@@ -32,7 +33,7 @@ export function DiffPane({
     if (!selectedFile) {
       return
     }
-    if (selectedFile.fullPatchRef) {
+    if (allowFullPatchFetch && selectedFile.fullPatchRef) {
       setCopyingPatchRef(selectedFile.fullPatchRef)
       setCopyError(false)
       try {
@@ -40,6 +41,9 @@ export function DiffPane({
           conversationId,
           fullPatchRef: selectedFile.fullPatchRef,
         })
+        if (response.redactionState === 'withheld') {
+          throw new Error('Diff patch withheld')
+        }
         if (!navigator.clipboard) throw new Error('Clipboard unavailable')
         await navigator.clipboard.writeText(response.patch)
       } catch {
@@ -91,7 +95,7 @@ export function DiffPane({
               <span className="text-destructive">-{selectedFile.removedLines}</span>
             </div>
             <div className="flex gap-1">
-              {selectedFile.fullPatchRef ? (
+              {allowFullPatchFetch && selectedFile.fullPatchRef ? (
                 <FetchPatchPageButton
                   conversationId={conversationId}
                   fullPatchRef={selectedFile.fullPatchRef}
@@ -105,7 +109,7 @@ export function DiffPane({
               ) : null}
               <CopyButton
                 label={
-                  selectedFile.fullPatchRef
+                  allowFullPatchFetch && selectedFile.fullPatchRef
                     ? t('diff.copyFullPatch', 'Copy full patch')
                     : t('diff.copyPreview', 'Copy diff preview')
                 }
@@ -148,7 +152,7 @@ export function DiffPane({
               <pre className="bg-code-background p-3 font-mono text-[12px] leading-5">
                 <code>{selectedFile.preview}</code>
               </pre>
-            ) : selectedFile.fullPatchRef ? (
+            ) : allowFullPatchFetch && selectedFile.fullPatchRef ? (
               <div className="flex h-full items-center justify-center p-6 text-center text-muted-foreground text-sm">
                 {t('diff.fetchPatchPageHint')}
               </div>
@@ -194,6 +198,9 @@ function FetchPatchPageButton({
         conversationId,
         fullPatchRef,
       })
+      if (response.redactionState === 'withheld') {
+        throw new Error('Diff patch withheld')
+      }
       onPageFetched({ patch: response.patch, truncated: response.truncated })
       setPatchState({
         loaded: Boolean(response.patch),

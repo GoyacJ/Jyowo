@@ -39,6 +39,13 @@ stress
 - Storybook owns complex visual state matrices.
 - Playwright remains smoke/workflow coverage and must not become a fixture command runtime.
 - Frontend does not make final policy decisions. Policy tests belong in Rust.
+- Conversation timeline render block coverage is split by ownership:
+  Rust projector tests prove UI-safe `AssistantWork`, `ProcessStepDetail`,
+  evidence refs, activity metadata, redaction, and no raw chain-of-thought
+  projection; Zod tests prove IPC schema shape; React tests prove
+  `buildTimelineRenderBlocks`, `EvidenceDisclosure`, renderer collapsed and
+  expanded states, and inspector fetch boundaries. React tests must not parse
+  raw `RunEvent`, stdout, full patches, or tool payload JSON to infer product UI.
 
 ## File Naming Rules
 

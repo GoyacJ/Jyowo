@@ -93,18 +93,34 @@ function hasUnsafeDisplayReference(value: string): boolean {
 const maxConversationDisplayTextChars = 70_000
 const maxEvidencePreviewChars = 70_000
 
-const conversationDisplayTextSchema = z
-  .string()
-  .max(maxConversationDisplayTextChars)
-  .refine((value) => !hasObviousUnredactedSecret(value), {
-    message: 'conversation message body must not contain obvious unredacted secrets',
-  })
-  .refine((value) => !hasPrivateAbsolutePath(value), {
-    message: 'conversation message body must not contain private absolute paths',
-  })
-  .refine((value) => !hasUnsafeDisplayReference(value), {
-    message: 'conversation display text must not contain unsafe display references',
-  })
+const conversationDisplayTextSchema = z.string().superRefine((value, ctx) => {
+  if (value.length > maxConversationDisplayTextChars) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `conversation display text must be at most ${maxConversationDisplayTextChars} characters`,
+      fatal: true,
+    })
+    return z.NEVER
+  }
+  if (hasObviousUnredactedSecret(value)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'conversation message body must not contain obvious unredacted secrets',
+    })
+  }
+  if (hasPrivateAbsolutePath(value)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'conversation message body must not contain private absolute paths',
+    })
+  }
+  if (hasUnsafeDisplayReference(value)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'conversation display text must not contain unsafe display references',
+    })
+  }
+})
 
 const mimeTypeMetadataSchema = z
   .string()
@@ -714,18 +730,18 @@ const toolAttemptSchema = z
     id: z.string().min(1),
     order: z.number().int().nonnegative(),
     toolUseId: z.string().min(1),
-    toolName: z.string(),
+    toolName: conversationDisplayTextSchema,
     origin: toolAttemptOriginSchema.optional(),
     status: z.enum(['queued', 'waitingPermission', 'running', 'completed', 'failed', 'denied']),
-    argumentsPreview: z.string().optional(),
-    outputSummary: z.string().optional(),
-    affectedTargets: z.array(z.string()).optional(),
+    argumentsPreview: conversationDisplayTextSchema.optional(),
+    outputSummary: conversationDisplayTextSchema.optional(),
+    affectedTargets: z.array(conversationDisplayTextSchema).optional(),
     startedAt: z.string().optional(),
     endedAt: z.string().optional(),
     durationMs: z.number().int().nonnegative().optional(),
     retryOf: z.string().optional(),
     failurePhase: toolFailurePhaseSchema.optional(),
-    failureSummary: z.string().optional(),
+    failureSummary: conversationDisplayTextSchema.optional(),
     permission: decisionRequestStateSchema.optional(),
     eventRefs: z.array(conversationEventRefSchema).optional(),
   })
@@ -813,8 +829,37 @@ const artifactMediaPreviewSchema = z
     }
   })
 
-const evidenceRefIdSchema = z.string().min(1)
-const evidencePreviewTextSchema = z.string().max(maxEvidencePreviewChars)
+const evidenceRefIdSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[A-Za-z0-9._:-]+$/, {
+    message: 'evidence ref id must be opaque',
+  })
+  .refine(
+    (value) =>
+      value === value.trim() && !value.startsWith('.') && !hasUnsafeDisplayReference(value),
+    {
+      message: 'evidence ref id must not look like a path or URL',
+    },
+  )
+const evidencePreviewTextSchema = conversationDisplayTextSchema.max(maxEvidencePreviewChars)
+
+const workspaceRelativePathSchema = conversationDisplayTextSchema
+  .min(1)
+  .refine(
+    (value) =>
+      value === value.trim() &&
+      !value.startsWith('~') &&
+      !value.startsWith('/') &&
+      !value.includes('\\') &&
+      !value
+        .split('/')
+        .some((part) => part === '' || part === '.' || part === '..' || part === '.jyowo'),
+    {
+      message: 'workspace path must be a normalized relative path',
+    },
+  )
 
 const changeSetFileStatusSchema = z.enum(['added', 'modified', 'deleted', 'renamed'])
 
@@ -822,8 +867,8 @@ const changeSetRiskFlagSchema = z.enum(['delete', 'chmod', 'binary', 'large', 'g
 
 const changeSetFileSchema = z
   .object({
-    path: z.string(),
-    oldPath: z.string().optional(),
+    path: workspaceRelativePathSchema,
+    oldPath: workspaceRelativePathSchema.optional(),
     status: changeSetFileStatusSchema,
     addedLines: z.number().int().nonnegative(),
     removedLines: z.number().int().nonnegative(),
@@ -836,18 +881,18 @@ const changeSetFileSchema = z
 const changeSetSchema = z
   .object({
     id: z.string().min(1),
-    summary: z.string(),
+    summary: conversationDisplayTextSchema,
     files: z.array(changeSetFileSchema),
   })
   .strict()
 
 const commandExecutionSchema = z
   .object({
-    command: z.string(),
-    cwd: z.string().optional(),
-    shell: z.string().optional(),
-    sandbox: z.string().optional(),
-    approvalRequestId: z.string().optional(),
+    command: conversationDisplayTextSchema,
+    cwd: conversationDisplayTextSchema.optional(),
+    shell: conversationDisplayTextSchema.optional(),
+    sandbox: conversationDisplayTextSchema.optional(),
+    approvalRequestId: evidenceRefIdSchema.optional(),
     exitCode: z.number().int().optional(),
     durationMs: z.number().int().nonnegative().optional(),
     stdoutPreview: evidencePreviewTextSchema.optional(),
@@ -859,37 +904,34 @@ const commandExecutionSchema = z
   })
   .strict()
 
+const processActivityItemSchema = z
+  .object({
+    kind: z.enum(['file', 'search', 'tool', 'command']),
+    label: conversationDisplayTextSchema,
+    detail: conversationDisplayTextSchema.optional(),
+  })
+  .strict()
+
 const processStepDetailSchema = z.discriminatedUnion('type', [
   z
     .object({
       type: z.literal('activity'),
       summary: conversationDisplayTextSchema,
       itemCount: z.number().int().nonnegative().optional(),
+      items: z.array(processActivityItemSchema).optional(),
     })
     .strict(),
   z
     .object({
       type: z.literal('command'),
-      command: z.string(),
-      cwd: z.string().optional(),
-      shell: z.string().optional(),
-      sandbox: z.string().optional(),
-      approvalRequestId: z.string().optional(),
-      exitCode: z.number().int().optional(),
-      durationMs: z.number().int().nonnegative().optional(),
-      stdoutPreview: evidencePreviewTextSchema.optional(),
-      stderrPreview: evidencePreviewTextSchema.optional(),
-      fullOutputRef: evidenceRefIdSchema.optional(),
-      truncated: z.boolean(),
-      redactionState: evidenceRedactionStateSchema,
-      riskLevel: riskLevelSchema,
+      ...commandExecutionSchema.shape,
     })
     .strict(),
   z
     .object({
       type: z.literal('diff'),
       id: z.string().min(1),
-      summary: z.string(),
+      summary: conversationDisplayTextSchema,
       files: z.array(changeSetFileSchema),
     })
     .strict(),
@@ -1150,6 +1192,9 @@ const assistantWorkSchema = z
     status: z.enum(['running', 'complete', 'failed', 'cancelled']),
     segments: z.array(assistantSegmentSchema),
     eventRefs: z.array(conversationEventRefSchema).optional(),
+    startedAt: z.string().datetime({ offset: true }).optional(),
+    endedAt: z.string().datetime({ offset: true }).optional(),
+    durationMs: z.number().int().nonnegative().optional(),
   })
   .strict()
 
@@ -3998,7 +4043,6 @@ export type CommandExecution = z.infer<typeof commandExecutionSchema>
 export type ToolAttempt = z.infer<typeof toolAttemptSchema>
 export type ToolGroupSegment = z.infer<typeof toolGroupSegmentSchema>
 export type AgentActivitySegment = z.infer<typeof agentActivitySegmentSchema>
-export type ProcessSegment = z.infer<typeof processSegmentSchema>
 export type ProcessStep = z.infer<typeof processStepSchema>
 export type ArtifactRevisionSummary = z.infer<typeof artifactRevisionSummarySchema>
 export type ArtifactSegment = z.infer<typeof artifactSegmentSchema>

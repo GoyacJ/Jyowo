@@ -243,6 +243,141 @@ export const codexLargeDiffTurns: ConversationTurn[] = [
   },
 ]
 
+export const codexRenderBlockMatrixTurns: ConversationTurn[] = [
+  {
+    id: 'turn:codex-render-block-matrix',
+    conversationId: 'conversation-render-block-matrix',
+    position: 0,
+    user: {
+      id: 'user:codex-render-block-matrix',
+      messageId: 'user-message-codex-render-block-matrix',
+      body: 'Show every timeline render block regression state in one projected turn.',
+      timestamp: '2026-06-28T00:00:00.000Z',
+    },
+    assistant: assistantWork({
+      id: 'assistant:run-render-block-matrix',
+      runId: 'run-render-block-matrix',
+      status: 'running',
+      durationMs: 2345,
+      segments: [
+        {
+          kind: 'text',
+          id: 'segment:text:render-block-matrix',
+          order: 0,
+          messageId: 'assistant-message-render-block-matrix',
+          body: 'Rendering file edits, activity, commands, and withheld output from safe projection data.',
+        },
+        {
+          kind: 'process',
+          id: 'segment:process:render-block-matrix',
+          order: 1,
+          status: 'running',
+          summary: 'Rendering regression matrix',
+          steps: [
+            {
+              id: 'process-step:matrix-file-edit',
+              order: 0,
+              kind: 'fileEdit',
+              status: 'complete',
+              title: 'Edited 2 files',
+              detail: {
+                type: 'activity',
+                summary: 'Edited files',
+                itemCount: 2,
+              },
+            },
+            {
+              id: 'process-step:matrix-diff',
+              order: 1,
+              kind: 'diff',
+              status: 'complete',
+              title: 'timeline render blocks +68 -3',
+              detail: diffDetail({
+                id: 'change-set-render-block-matrix',
+                summary: 'timeline render blocks +68 -3',
+                files: [
+                  changeSetFile({
+                    path: 'apps/desktop/src/features/conversation/timeline/timeline-render-blocks.ts',
+                    addedLines: 41,
+                    removedLines: 3,
+                    preview:
+                      '@@ -1,1 +1,2 @@\n export const oldValue = 1\n+export const newValue = 2',
+                  }),
+                  changeSetFile({
+                    path: 'apps/desktop/src/features/conversation/timeline/timeline-render-blocks.test.ts',
+                    status: 'added',
+                    addedLines: 27,
+                    removedLines: 0,
+                    preview: '@@ -0,0 +1,2 @@\n+describe("timeline blocks", () => {})',
+                  }),
+                ],
+              }),
+            },
+            {
+              id: 'process-step:matrix-read',
+              order: 2,
+              kind: 'fileRead',
+              status: 'complete',
+              title: 'Read timeline files',
+              detail: {
+                type: 'activity',
+                summary: 'Read timeline files',
+                itemCount: 1,
+                items: [
+                  {
+                    kind: 'file',
+                    label:
+                      'apps/desktop/src/features/conversation/timeline/timeline-render-blocks.ts',
+                    detail: 'read',
+                  },
+                ],
+              },
+            },
+            {
+              id: 'process-step:matrix-search',
+              order: 3,
+              kind: 'fileSearch',
+              status: 'complete',
+              title: 'Searched render blocks',
+              detail: {
+                type: 'activity',
+                summary: 'Searched render blocks',
+                itemCount: 3,
+              },
+            },
+            {
+              id: 'process-step:matrix-command-running',
+              order: 4,
+              kind: 'command',
+              status: 'running',
+              title: 'Running desktop tests',
+              detail: commandDetail({
+                command: 'pnpm -C apps/desktop test --watch',
+                stdoutPreview: largeCommandPreview(),
+                durationMs: 5100,
+                fullOutputRef: 'render-matrix-large-output-ref',
+              }),
+            },
+            {
+              id: 'process-step:matrix-command-withheld',
+              order: 5,
+              kind: 'command',
+              status: 'failed',
+              title: 'Read sensitive env',
+              detail: commandDetail({
+                command: 'cat .env',
+                stdoutPreview: 'Output withheld from conversation timeline.',
+                redactionState: 'withheld',
+                fullOutputRef: 'render-matrix-withheld-output-ref',
+              }),
+            },
+          ],
+        },
+      ],
+    }),
+  },
+]
+
 function largeDiffPreview() {
   const lines = ['@@ -10,6 +10,120 @@', ' describe("evidence timeline", () => {']
 
@@ -256,4 +391,8 @@ function largeDiffPreview() {
   lines.push(' })')
 
   return lines.join('\n')
+}
+
+function largeCommandPreview() {
+  return Array.from({ length: 120 }, (_, index) => `large output line ${index}`).join('\n')
 }

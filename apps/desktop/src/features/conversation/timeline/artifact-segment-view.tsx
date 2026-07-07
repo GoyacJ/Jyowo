@@ -7,14 +7,18 @@ import { useCommandClient } from '@/shared/tauri/react'
 
 export function ArtifactSegmentView({
   conversationId,
+  revisionIdOverride,
   segment,
 }: {
   conversationId: string
+  revisionIdOverride?: string | null
   segment: ArtifactSegment
 }) {
   const { t } = useTranslation('conversation')
   const media = segment.revision.media
   const shouldLoadImagePreview = segment.status === 'ready' && media?.kind === 'image'
+  const revisionId =
+    revisionIdOverride === null ? undefined : (revisionIdOverride ?? segment.revision.revisionId)
   const setSelection = useUiStore((state) => state.setWorkbenchSelection)
   const setInspectorOpen = useUiStore((state) => state.setInspectorOpen)
 
@@ -30,7 +34,7 @@ export function ArtifactSegmentView({
               kind: 'artifact',
               conversationId,
               artifactId: segment.artifactId,
-              revisionId: segment.revision.revisionId,
+              ...(revisionId ? { revisionId } : {}),
             })
             setInspectorOpen(true)
           }}
@@ -43,14 +47,16 @@ export function ArtifactSegmentView({
       {segment.summary ? (
         <p className="mt-1 text-muted-foreground text-sm">{segment.summary}</p>
       ) : null}
-      <p className="mt-0.5 text-muted-foreground text-xs">
-        {t('timeline.artifactRevision', { revisionId: segment.revision.revisionId })}
-      </p>
+      {revisionId ? (
+        <p className="mt-0.5 text-muted-foreground text-xs">
+          {t('timeline.artifactRevision', { revisionId })}
+        </p>
+      ) : null}
       {shouldLoadImagePreview ? (
         <ArtifactImagePreview
           artifactId={segment.artifactId}
           conversationId={conversationId}
-          revisionId={segment.revision.revisionId}
+          revisionId={revisionId}
           title={segment.title}
         />
       ) : null}
@@ -58,7 +64,7 @@ export function ArtifactSegmentView({
   )
 }
 
-export function ArtifactImagePreview({
+function ArtifactImagePreview({
   artifactId,
   conversationId,
   revisionId,

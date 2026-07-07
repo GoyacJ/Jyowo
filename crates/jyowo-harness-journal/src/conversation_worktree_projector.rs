@@ -20,10 +20,10 @@ use harness_contracts::{
     DecisionKind, DecisionLifetime, DecisionMatcherKind, DecisionMatcherSummary, DecisionOperation,
     DecisionOption, DecisionPolicy, DecisionRequestState, DecisionRequestStatus, DecisionTarget,
     DecisionTargetKind, ErrorSegment, EventId, EvidenceRedactionState, EvidenceRefId,
-    EvidenceRefKind, JournalError, NoticeSegment, ProcessSegment, ProcessSegmentStatus,
-    ProcessStep, ProcessStepDetail, ProcessStepKind, ProcessStepStatus, ReviewRequestSegment,
-    RiskLevel, TenantId, TextSegment, ToolAttempt, ToolAttemptOrigin, ToolAttemptStatus,
-    ToolGroupSegment, UiSafeText, UiVisibility,
+    EvidenceRefKind, JournalError, NoticeSegment, ProcessActivityItem, ProcessActivityItemKind,
+    ProcessSegment, ProcessSegmentStatus, ProcessStep, ProcessStepDetail, ProcessStepKind,
+    ProcessStepStatus, ReviewRequestSegment, RiskLevel, TenantId, TextSegment, ToolAttempt,
+    ToolAttemptOrigin, ToolAttemptStatus, ToolGroupSegment, UiSafeText, UiVisibility,
 };
 use serde_json::{Map, Value};
 
@@ -542,6 +542,7 @@ impl ProjectionState<'_> {
         self.run_models.insert(event.run_id.clone(), model.clone());
         let assistant = self.assistant_work(event, event_ref);
         assistant.model = Some(model);
+        assistant.started_at = Some(event.timestamp);
     }
 
     fn project_user_message(
@@ -941,6 +942,7 @@ impl ProjectionState<'_> {
     ) {
         let step_id = aggregate_process_step_id(&event.run_id, kind);
         let next_count = u32_field(&event.payload, "itemCount").unwrap_or(1);
+        let next_items = process_activity_items_from_payload(event, kind);
         let process = self.ensure_process_segment(
             event,
             event_ref.clone(),
@@ -954,6 +956,7 @@ impl ProjectionState<'_> {
                 &title,
                 step.detail.as_ref(),
                 next_count,
+                next_items,
             ));
             step.event_refs.push(event_ref);
             return;
@@ -969,6 +972,7 @@ impl ProjectionState<'_> {
             detail: Some(ProcessStepDetail::Activity {
                 summary: ui_text(title),
                 item_count: Some(next_count),
+                items: next_items,
             }),
             visibility: UiVisibility::UserSafe,
             event_refs: vec![event_ref],
@@ -1197,7 +1201,7 @@ impl ProjectionState<'_> {
         let Some(revision_id) = string_field(&event.payload, "revisionId") else {
             return;
         };
-        let content_ref = string_field(&event.payload, "contentRef").map(EvidenceRefId::new);
+        let content_ref = evidence_ref_from_field(&event.payload, "contentRef");
         let existing_snapshot = self.artifact_segment_snapshot(&event.run_id, &artifact_id);
         let existing_process_snapshot =
             self.artifact_process_step_snapshot(&event.run_id, &artifact_id);
@@ -1473,6 +1477,11 @@ impl ProjectionState<'_> {
         event_ref: ConversationEventRef,
     ) {
         let assistant = self.assistant_work(event, event_ref);
+        assistant.ended_at = Some(event.timestamp);
+        assistant.duration_ms = assistant.started_at.and_then(|started_at| {
+            let duration = event.timestamp.signed_duration_since(started_at);
+            u64::try_from(duration.num_milliseconds()).ok()
+        });
         assistant.status = match string_field(&event.payload, "reason").as_deref() {
             Some("cancelled") => AssistantWorkStatus::Cancelled,
             Some("error" | "failed") => AssistantWorkStatus::Failed,
@@ -2299,6 +2308,9 @@ impl ProjectionState<'_> {
                 status: AssistantWorkStatus::Running,
                 segments: Vec::new(),
                 event_refs: Vec::new(),
+                started_at: None,
+                ended_at: None,
+                duration_ms: None,
             })
             .event_refs
             .push(event_ref);
@@ -3020,11 +3032,13 @@ fn risk_rank(value: RiskLevel) -> u8 {
 }
 
 fn command_text_from_payload(payload: &Value) -> Option<String> {
-    string_field(payload, "command").or_else(|| {
-        payload
-            .get("subject")
-            .and_then(|subject| command_text_from_payload(subject_body(subject)))
-    })
+    string_field(payload, "command")
+        .or_else(|| {
+            payload
+                .get("subject")
+                .and_then(|subject| command_text_from_payload(subject_body(subject)))
+        })
+        .and_then(|command| safe_projected_display_text(&command, 1_000))
 }
 
 fn command_cwd_from_payload(payload: &Value) -> Option<String> {
@@ -3040,11 +3054,13 @@ fn command_cwd_from_payload(payload: &Value) -> Option<String> {
 }
 
 fn command_shell_from_payload(payload: &Value) -> Option<String> {
-    string_field(payload, "shell").or_else(|| {
-        payload
-            .get("input")
-            .and_then(|input| string_field(input, "shell"))
-    })
+    string_field(payload, "shell")
+        .or_else(|| {
+            payload
+                .get("input")
+                .and_then(|input| string_field(input, "shell"))
+        })
+        .and_then(|shell| safe_projected_display_text(&shell, 200))
 }
 
 fn tool_attempt_origin(payload: &Value, tool_name: &str) -> ToolAttemptOrigin {
@@ -3094,14 +3110,13 @@ fn tool_arguments_preview(payload: &Value) -> Option<String> {
     .into_iter()
     .find_map(|field| string_field(payload, field))
     .or_else(|| command_text_from_payload(payload).map(|command| format!("command: {command}")))
-    .map(|value| bounded_ui_preview(&value, 500))
-    .filter(|value| !value.trim().is_empty())
+    .and_then(|value| safe_projected_display_text_allowing_redaction(&value, 500))
 }
 
 fn tool_output_summary(payload: &Value) -> Option<String> {
     string_field(payload, "outputSummary")
         .or_else(|| string_field(payload, "output_summary"))
-        .map(|summary| bounded_ui_preview(&summary, 500))
+        .and_then(|summary| safe_projected_display_text_allowing_redaction(&summary, 500))
         .filter(|summary| {
             !summary.trim().is_empty() && summary != "Output withheld from conversation timeline."
         })
@@ -3150,6 +3165,154 @@ fn tool_affected_targets(payload: &Value) -> Vec<String> {
     targets
 }
 
+fn process_activity_items_from_payload(
+    event: &ConversationTimelineEvent,
+    kind: ProcessStepKind,
+) -> Vec<ProcessActivityItem> {
+    let item_kind = match kind {
+        ProcessStepKind::FileRead | ProcessStepKind::FileEdit => ProcessActivityItemKind::File,
+        ProcessStepKind::FileSearch => ProcessActivityItemKind::Search,
+        ProcessStepKind::Command => ProcessActivityItemKind::Command,
+        ProcessStepKind::Tool => ProcessActivityItemKind::Tool,
+        ProcessStepKind::Reasoning
+        | ProcessStepKind::Activity
+        | ProcessStepKind::Diff
+        | ProcessStepKind::Artifact
+        | ProcessStepKind::Synthesis
+        | ProcessStepKind::Withheld => return Vec::new(),
+    };
+
+    let mut items = Vec::new();
+    for target in tool_affected_targets(&event.payload) {
+        if let Some(label) = safe_activity_label(&target) {
+            push_unique_activity_item(&mut items, item_kind, label, None);
+        }
+    }
+
+    if items.is_empty() {
+        if let Some(label) = safe_summary_field(&event.payload)
+            .and_then(|summary| safe_activity_label(summary.as_str()))
+        {
+            push_unique_activity_item(&mut items, item_kind, label, None);
+        }
+    }
+
+    items
+}
+
+fn safe_activity_label(value: &str) -> Option<UiSafeText> {
+    let bounded = bounded_ui_preview(value, 240);
+    let text = ui_text(bounded);
+    let display = text.as_str();
+    let trimmed = display.trim();
+    if trimmed.is_empty()
+        || trimmed.contains("[REDACTED]")
+        || trimmed.starts_with('/')
+        || trimmed.starts_with('~')
+        || trimmed == ".jyowo"
+        || trimmed.starts_with(".jyowo/")
+        || trimmed.starts_with(".jyowo\\")
+        || trimmed.contains("/.jyowo/")
+        || trimmed.contains("\\.jyowo\\")
+        || trimmed.contains("://")
+        || unsafe_url_starts_at(trimmed, 0)
+        || is_windows_absolute_path(trimmed)
+    {
+        return None;
+    }
+    Some(text)
+}
+
+fn safe_projected_display_text(value: &str, max_chars: usize) -> Option<String> {
+    let bounded = bounded_ui_preview(value, max_chars);
+    let text = ui_text(bounded);
+    let display = text.as_str();
+    let trimmed = display.trim();
+    if trimmed.is_empty()
+        || trimmed.contains("[REDACTED]")
+        || trimmed == ".jyowo"
+        || trimmed.starts_with(".jyowo/")
+        || trimmed.starts_with(".jyowo\\")
+        || trimmed.contains("/.jyowo/")
+        || trimmed.contains("\\.jyowo\\")
+        || trimmed.contains("://")
+        || unsafe_url_starts_at(trimmed, 0)
+        || is_windows_absolute_path(trimmed)
+    {
+        return None;
+    }
+    Some(display.to_owned())
+}
+
+fn safe_projected_display_text_allowing_redaction(value: &str, max_chars: usize) -> Option<String> {
+    let bounded = bounded_ui_preview(value, max_chars);
+    let text = ui_text(bounded);
+    let display = text.as_str();
+    let trimmed = display.trim();
+    if trimmed.is_empty()
+        || trimmed == ".jyowo"
+        || trimmed.starts_with(".jyowo/")
+        || trimmed.starts_with(".jyowo\\")
+        || trimmed.contains("/.jyowo/")
+        || trimmed.contains("\\.jyowo\\")
+        || trimmed.contains("://")
+        || unsafe_url_starts_at(trimmed, 0)
+        || is_windows_absolute_path(trimmed)
+    {
+        return None;
+    }
+    Some(display.to_owned())
+}
+
+fn evidence_ref_from_field(value: &Value, field: &str) -> Option<EvidenceRefId> {
+    string_field(value, field).and_then(|id| safe_evidence_ref_id(&id))
+}
+
+fn safe_evidence_ref_id(value: &str) -> Option<EvidenceRefId> {
+    let trimmed = value.trim();
+    if value != trimmed
+        || trimmed.is_empty()
+        || trimmed.len() > 200
+        || trimmed.starts_with('.')
+        || trimmed.starts_with('~')
+        || trimmed.starts_with('/')
+        || trimmed.contains('\\')
+        || trimmed.contains('/')
+        || trimmed.chars().any(char::is_whitespace)
+        || trimmed.contains("://")
+        || unsafe_url_starts_at(trimmed, 0)
+        || is_windows_absolute_path(trimmed)
+    {
+        return None;
+    }
+    if !trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ':' | '.'))
+    {
+        return None;
+    }
+    Some(EvidenceRefId::new(trimmed.to_owned()))
+}
+
+fn push_unique_activity_item(
+    items: &mut Vec<ProcessActivityItem>,
+    kind: ProcessActivityItemKind,
+    label: UiSafeText,
+    detail: Option<UiSafeText>,
+) {
+    if items
+        .iter()
+        .any(|item| item.kind == kind && item.label.as_str() == label.as_str())
+    {
+        return;
+    }
+    items.push(ProcessActivityItem {
+        kind,
+        label,
+        detail,
+    });
+}
+
 fn push_unique(values: &mut Vec<String>, value: String) {
     if !values.iter().any(|existing| existing == &value) {
         values.push(value);
@@ -3193,6 +3356,9 @@ fn safe_relative_path(value: &str) -> Option<String> {
     if trimmed.is_empty()
         || trimmed.starts_with('~')
         || trimmed.starts_with('/')
+        || trimmed == ".jyowo"
+        || trimmed.starts_with(".jyowo/")
+        || trimmed.contains("/.jyowo/")
         || trimmed.contains("://")
         || unsafe_url_starts_at(&trimmed, 0)
         || is_windows_absolute_path(&trimmed)
@@ -3205,6 +3371,9 @@ fn safe_relative_path(value: &str) -> Option<String> {
             continue;
         }
         if part == ".." || unsafe_url_starts_at(part, 0) {
+            return None;
+        }
+        if part == ".jyowo" {
             return None;
         }
         let safe = ui_text(part).into_string();
@@ -3228,8 +3397,8 @@ fn command_output_is_truncated(payload: &Value) -> bool {
     {
         return true;
     }
-    if string_field(payload, "fullOutputRef")
-        .or_else(|| string_field(payload, "full_output_ref"))
+    if evidence_ref_from_field(payload, "fullOutputRef")
+        .or_else(|| evidence_ref_from_field(payload, "full_output_ref"))
         .is_some()
     {
         return true;
@@ -3247,7 +3416,7 @@ fn command_output_is_truncated(payload: &Value) -> bool {
 
 fn sandbox_policy_summary(payload: &Value) -> Option<String> {
     if let Some(sandbox) = string_field(payload, "sandbox") {
-        return Some(sandbox);
+        return safe_projected_display_text(&sandbox, 200);
     }
     let policy = payload
         .get("sandboxPolicy")
@@ -3261,7 +3430,7 @@ fn sandbox_policy_summary(payload: &Value) -> Option<String> {
         .get("network")
         .and_then(value_label)
         .unwrap_or_else(|| "unknown".to_owned());
-    Some(format!("{mode} / {scope} / network:{network}"))
+    safe_projected_display_text(&format!("{mode}, {scope}, network:{network}"), 200)
 }
 
 fn value_label(value: &Value) -> Option<String> {
@@ -3360,14 +3529,21 @@ fn merged_activity_detail(
     title: &str,
     existing: Option<&ProcessStepDetail>,
     next_count: u32,
+    next_items: Vec<ProcessActivityItem>,
 ) -> ProcessStepDetail {
-    let previous = match existing {
-        Some(ProcessStepDetail::Activity { item_count, .. }) => item_count.unwrap_or(0),
-        _ => 0,
+    let (previous, mut items) = match existing {
+        Some(ProcessStepDetail::Activity {
+            item_count, items, ..
+        }) => (item_count.unwrap_or(0), items.clone()),
+        _ => (0, Vec::new()),
     };
+    for item in next_items {
+        push_unique_activity_item(&mut items, item.kind, item.label, item.detail);
+    }
     ProcessStepDetail::Activity {
         summary: ui_text(title),
         item_count: Some(previous.saturating_add(next_count)),
+        items,
     }
 }
 
@@ -3397,11 +3573,12 @@ fn diff_process_detail_from_payload(payload: &Value) -> Option<ProcessStepDetail
 }
 
 fn change_set_file_from_payload(value: &Value) -> Option<ChangeSetFile> {
-    let path = string_field(value, "path")?;
+    let path = string_field(value, "path").and_then(|value| safe_relative_path(&value))?;
     let added_lines = u32_field(value, "addedLines").or_else(|| u32_field(value, "added_lines"))?;
     let removed_lines =
         u32_field(value, "removedLines").or_else(|| u32_field(value, "removed_lines"))?;
-    let preview = string_field(value, "preview");
+    let preview = string_field(value, "preview")
+        .and_then(|preview| safe_projected_display_text(&preview, 70_000));
     Some(ChangeSetFile {
         path,
         old_path: None,
@@ -3409,7 +3586,7 @@ fn change_set_file_from_payload(value: &Value) -> Option<ChangeSetFile> {
         added_lines,
         removed_lines,
         preview,
-        full_patch_ref: string_field(value, "fullPatchRef").map(EvidenceRefId::new),
+        full_patch_ref: evidence_ref_from_field(value, "fullPatchRef"),
         risk_flags: vec![],
     })
 }
@@ -3447,14 +3624,17 @@ fn process_step_detail_for_tool(
             cwd: command_cwd_from_payload(&event.payload),
             shell: command_shell_from_payload(&event.payload),
             sandbox: sandbox_policy_summary(&event.payload),
-            approval_request_id: string_field(&event.payload, "approvalRequestId")
-                .or_else(|| string_field(&event.payload, "approval_request_id")),
+            approval_request_id: evidence_ref_from_field(&event.payload, "approvalRequestId")
+                .or_else(|| evidence_ref_from_field(&event.payload, "approval_request_id"))
+                .map(|id| id.as_str().to_owned()),
             exit_code: i32_field(&event.payload, "exitCode"),
             duration_ms: u64_field(&event.payload, "durationMs"),
             stdout_preview: string_field(&event.payload, "stdoutPreview")
-                .or_else(|| string_field(&event.payload, "outputSummary")),
-            stderr_preview: string_field(&event.payload, "stderrPreview"),
-            full_output_ref: string_field(&event.payload, "fullOutputRef").map(EvidenceRefId::new),
+                .or_else(|| string_field(&event.payload, "outputSummary"))
+                .and_then(|preview| safe_projected_display_text(&preview, 70_000)),
+            stderr_preview: string_field(&event.payload, "stderrPreview")
+                .and_then(|preview| safe_projected_display_text(&preview, 70_000)),
+            full_output_ref: evidence_ref_from_field(&event.payload, "fullOutputRef"),
             truncated: command_output_is_truncated(&event.payload),
             redaction_state: redaction_state_from_event(event),
             risk_level: risk_level_from_payload(&event.payload),
@@ -3463,6 +3643,7 @@ fn process_step_detail_for_tool(
             Some(ProcessStepDetail::Activity {
                 summary: ui_text(title),
                 item_count: u32_field(&event.payload, "itemCount"),
+                items: process_activity_items_from_payload(event, kind),
             })
         }
         ProcessStepKind::Tool => Some(ProcessStepDetail::Tool {
