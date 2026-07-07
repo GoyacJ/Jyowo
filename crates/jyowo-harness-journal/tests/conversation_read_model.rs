@@ -592,6 +592,10 @@ async fn safe_tool_process_extracts_only_allowlisted_projection_fields() {
     assert!(grep_requested.get("targetPath").is_none());
     assert_eq!(grep_requested["query"], "needle");
     assert_eq!(grep_completed["itemCount"], 1);
+    assert_eq!(
+        grep_completed["affectedTargets"],
+        serde_json::json!(["crates/jyowo-harness-journal/src/lib.rs"])
+    );
     assert_eq!(bash_completed["exitCode"], 0);
     assert_eq!(
         bash_completed["outputSummary"],
@@ -631,6 +635,32 @@ async fn safe_tool_process_extracts_only_allowlisted_projection_fields() {
         )
         .await
         .expect("worktree loads");
+    let process = worktree.turns[0]
+        .assistant
+        .as_ref()
+        .expect("assistant projects")
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            AssistantSegment::Process(process) => Some(process),
+            _ => None,
+        })
+        .expect("process projects");
+    let search_items = process
+        .steps
+        .iter()
+        .find(|step| step.kind == ProcessStepKind::FileSearch)
+        .and_then(|step| step.detail.as_ref())
+        .and_then(|detail| match detail {
+            ProcessStepDetail::Activity { items, .. } => Some(items),
+            _ => None,
+        })
+        .expect("search activity items project");
+    assert_eq!(search_items.len(), 1);
+    assert_eq!(
+        search_items[0].label.as_str(),
+        "crates/jyowo-harness-journal/src/lib.rs"
+    );
     let command = worktree.turns[0]
         .assistant
         .as_ref()
@@ -799,6 +829,10 @@ async fn safe_tool_process_rejects_opaque_url_and_runtime_paths() {
 
     assert!(read_requested.get("targetPath").is_none());
     assert_eq!(read_completed["itemCount"], 1);
+    assert_eq!(
+        read_completed["affectedTargets"],
+        serde_json::json!(["src/lib.rs"])
+    );
     assert!(edit_requested.get("targetPath").is_none());
     assert_eq!(edit_completed["diff"]["files"].as_array().unwrap().len(), 1);
     assert_eq!(edit_completed["diff"]["files"][0]["path"], "src/lib.rs");

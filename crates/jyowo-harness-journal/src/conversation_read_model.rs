@@ -2327,6 +2327,10 @@ fn project_safe_tool_result_fields(
         if let Some(item_count) = safe_tool_result_item_count(tool_name, result) {
             payload["itemCount"] = json!(item_count);
         }
+        let affected_targets = safe_tool_result_affected_targets(tool_name, result);
+        if !affected_targets.is_empty() {
+            payload["affectedTargets"] = json!(affected_targets);
+        }
         if is_file_edit_tool_name(tool_name) {
             if let Some((diff, redacted)) = safe_tool_result_diff(result) {
                 payload["diff"] = diff;
@@ -2363,7 +2367,63 @@ fn safe_tool_result_items_count(tool_name: &str, items: &[Value]) -> Option<u32>
 }
 
 fn safe_tool_result_item_is_countable(tool_name: &str, item: &Value) -> bool {
-    let path_fields = [
+    if safe_tool_result_item_path(tool_name, item).is_some() {
+        return true;
+    }
+    if item_path_field(item).is_some() {
+        return false;
+    }
+    if is_file_read_tool_name(tool_name) && item.as_str().is_some() {
+        return false;
+    }
+    true
+}
+
+fn safe_tool_result_affected_targets(tool_name: &str, result: &ToolResult) -> Vec<String> {
+    match result {
+        ToolResult::Structured(Value::Array(items)) => {
+            safe_tool_result_items_targets(tool_name, items)
+        }
+        ToolResult::Mixed(parts) => parts
+            .iter()
+            .find_map(|part| match part {
+                ToolResultPart::Structured {
+                    value: Value::Array(items),
+                    ..
+                } => Some(safe_tool_result_items_targets(tool_name, items)),
+                _ => None,
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+fn safe_tool_result_items_targets(tool_name: &str, items: &[Value]) -> Vec<String> {
+    let mut targets = Vec::new();
+    for item in items {
+        if let Some(path) = safe_tool_result_item_path(tool_name, item) {
+            if !targets.iter().any(|target| target == &path) {
+                targets.push(path);
+            }
+        }
+    }
+    targets
+}
+
+fn safe_tool_result_item_path(tool_name: &str, item: &Value) -> Option<String> {
+    if let Some(path) = item_path_field(item) {
+        return safe_relative_path(path);
+    }
+    if is_file_read_tool_name(tool_name) {
+        if let Some(path) = item.as_str() {
+            return safe_relative_path(path);
+        }
+    }
+    None
+}
+
+fn item_path_field(item: &Value) -> Option<&str> {
+    [
         "path",
         "file",
         "filePath",
@@ -2372,19 +2432,9 @@ fn safe_tool_result_item_is_countable(tool_name: &str, item: &Value) -> bool {
         "file_name",
         "targetPath",
         "target_path",
-    ];
-    if let Some(path) = path_fields
-        .into_iter()
-        .find_map(|field| item.get(field).and_then(Value::as_str))
-    {
-        return safe_relative_path(path).is_some();
-    }
-    if is_file_read_tool_name(tool_name) {
-        if let Some(path) = item.as_str() {
-            return safe_relative_path(path).is_some();
-        }
-    }
-    true
+    ]
+    .into_iter()
+    .find_map(|field| item.get(field).and_then(Value::as_str))
 }
 
 fn safe_tool_result_exit_code(result: &ToolResult) -> Option<i32> {
