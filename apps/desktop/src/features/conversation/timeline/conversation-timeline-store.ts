@@ -5,7 +5,6 @@ import type {
 } from '@/shared/tauri/commands'
 import type { ConversationTimelineAction } from './conversation-timeline-actions'
 
-const redactedOptimisticBody = '[REDACTED]'
 const optimisticSecretPatterns = [
   /\bAuthorization:?\s*Bearer\s+\S+/i,
   /\bAuthorization:?\s*Basic\s+[A-Za-z0-9+/=]{12,}/i,
@@ -185,7 +184,8 @@ function conversationTimelineReducer(
         eventCursor: action.eventCursor ?? state.eventCursor,
       }
     }
-    case 'localSubmit':
+    case 'localSubmit': {
+      const safe = sanitizeOptimisticText(action.draft.prompt)
       return {
         ...state,
         optimisticTurnsByClientMessageId: {
@@ -198,12 +198,16 @@ function conversationTimelineReducer(
               id: `user:local:${action.clientMessageId}`,
               messageId: `local:${action.clientMessageId}`,
               clientMessageId: action.clientMessageId,
-              body: uiSafeCanvasText(action.draft.prompt),
+              body: safe.body,
               timestamp: action.at,
+              ...(safe.redactedOriginalBody
+                ? { redactedOriginalBody: safe.redactedOriginalBody }
+                : {}),
             },
           },
         },
       }
+    }
     case 'commandAccepted':
       return {
         ...state,
@@ -240,7 +244,17 @@ function conversationTimelineReducer(
         })),
         activeRunIds: addUnique(state.activeRunIds, action.runId),
       }
-    case 'commandFailed':
+    case 'commandFailed': {
+      const safe = sanitizeOptimisticText(action.errorMessage)
+      const errorSegment = {
+        kind: 'error' as const,
+        id: `segment:error:local:${action.clientMessageId}`,
+        order: 0,
+        body: safe.body,
+        ...(safe.redactedOriginalBody
+          ? { redactedOriginalBody: safe.redactedOriginalBody }
+          : {}),
+      }
       return {
         ...state,
         optimisticTurnsByClientMessageId: mapOptimisticTurn(
@@ -253,14 +267,7 @@ function conversationTimelineReducer(
               runId: `local-failed:${action.clientMessageId}`,
               projectionVersion: 1,
               status: 'failed' as const,
-              segments: [
-                {
-                  kind: 'error' as const,
-                  id: `segment:error:local:${action.clientMessageId}`,
-                  order: 0,
-                  body: uiSafeCanvasText(action.errorMessage),
-                },
-              ],
+              segments: [errorSegment],
             },
           }),
         ),
@@ -275,27 +282,24 @@ function conversationTimelineReducer(
                     runId: `local-failed:${action.clientMessageId}`,
                     projectionVersion: 1,
                     status: 'failed' as const,
-                    segments: [
-                      {
-                        kind: 'error' as const,
-                        id: `segment:error:local:${action.clientMessageId}`,
-                        order: 0,
-                        body: uiSafeCanvasText(action.errorMessage),
-                      },
-                    ],
+                    segments: [errorSegment],
                   },
                 }
               : turn,
           ),
         })),
       }
+    }
     case 'permissionSubmitting':
       return patchPermission(state, action.requestId, { status: 'submitting' })
-    case 'permissionSubmitFailed':
+    case 'permissionSubmitFailed': {
+      const safe = sanitizeOptimisticText(action.errorMessage)
       return patchPermission(state, action.requestId, {
         status: 'failed',
-        reason: uiSafeCanvasText(action.errorMessage),
+        reason: safe.body,
+        redactedOriginalReason: safe.redactedOriginalBody,
       })
+    }
     case 'markGap':
       return {
         ...state,
@@ -322,11 +326,13 @@ function conversationTimelineReducer(
 
 // ── Helpers ──
 
-function uiSafeCanvasText(value: string) {
+type SanitizedText = { body: string; redactedOriginalBody?: string }
+
+function sanitizeOptimisticText(value: string): SanitizedText {
   if (containsOptimisticSecret(value) || containsPrivateAbsolutePath(value)) {
-    return redactedOptimisticBody
+    return { body: '[REDACTED]', redactedOriginalBody: value }
   }
-  return value
+  return { body: value }
 }
 
 function containsOptimisticSecret(value: string) {
@@ -420,7 +426,11 @@ function addUnique(values: string[], value: string) {
 function patchPermission(
   state: ConversationTimelineState,
   requestId: string,
-  patch: { status: 'submitting' | 'failed'; reason?: string },
+  patch: {
+    status: 'submitting' | 'failed'
+    reason?: string
+    redactedOriginalReason?: string
+  },
 ): ConversationTimelineState {
   const patchPage = (page: TimelinePage): TimelinePage => ({
     ...page,

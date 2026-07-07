@@ -144,12 +144,15 @@ describe('conversationTimelineStore', () => {
       action: localSubmit('client-b', 'Inspect C:/Users/goya/.ssh/config'),
     })
 
-    expect(selectTurns(getConversationTimelineState(root, 'conversation-a'))[0].user.body).toBe(
-      '[REDACTED]',
+    const turnA = selectTurns(getConversationTimelineState(root, 'conversation-a'))[0]
+    expect(turnA.user.body).toBe('[REDACTED]')
+    expect(turnA.user.redactedOriginalBody).toBe(
+      'Use token: abcdefghijklmnop from /Users/goya/.ssh/config',
     )
-    expect(selectTurns(getConversationTimelineState(root, 'conversation-b'))[0].user.body).toBe(
-      '[REDACTED]',
-    )
+
+    const turnB = selectTurns(getConversationTimelineState(root, 'conversation-b'))[0]
+    expect(turnB.user.body).toBe('[REDACTED]')
+    expect(turnB.user.redactedOriginalBody).toBe('Inspect C:/Users/goya/.ssh/config')
   })
 
   it('redacts bare auth secrets in optimistic user turns', () => {
@@ -168,15 +171,17 @@ describe('conversationTimelineStore', () => {
       action: localSubmit('client-c', 'OPENAI_API_KEY sk-abcdefghijklmnop'),
     })
 
-    expect(selectTurns(getConversationTimelineState(root, 'conversation-a'))[0].user.body).toBe(
-      '[REDACTED]',
-    )
-    expect(selectTurns(getConversationTimelineState(root, 'conversation-b'))[0].user.body).toBe(
-      '[REDACTED]',
-    )
-    expect(selectTurns(getConversationTimelineState(root, 'conversation-c'))[0].user.body).toBe(
-      '[REDACTED]',
-    )
+    const turnA = selectTurns(getConversationTimelineState(root, 'conversation-a'))[0]
+    expect(turnA.user.body).toBe('[REDACTED]')
+    expect(turnA.user.redactedOriginalBody).toBe('Bearer abcdefghijklmnop')
+
+    const turnB = selectTurns(getConversationTimelineState(root, 'conversation-b'))[0]
+    expect(turnB.user.body).toBe('[REDACTED]')
+    expect(turnB.user.redactedOriginalBody).toBe('client_secret: abcdefghijklmnop')
+
+    const turnC = selectTurns(getConversationTimelineState(root, 'conversation-c'))[0]
+    expect(turnC.user.body).toBe('[REDACTED]')
+    expect(turnC.user.redactedOriginalBody).toBe('OPENAI_API_KEY sk-abcdefghijklmnop')
   })
 
   it('redacts failed command messages before storing error segments', () => {
@@ -203,6 +208,7 @@ describe('conversationTimelineStore', () => {
     }
 
     expect(segment.body).toBe('[REDACTED]')
+    expect(segment.redactedOriginalBody).toBe('runtime failed with Bearer abcdefghijklmnop')
   })
 
   it('redacts failed permission summaries before storing tool attempts', () => {
@@ -279,6 +285,9 @@ describe('conversationTimelineStore', () => {
 
     expect(segment.attempts[0].permission?.status).toBe('failed')
     expect(segment.attempts[0].permission?.reason).toBe('[REDACTED]')
+    expect(segment.attempts[0].permission?.redactedOriginalReason).toBe(
+      'failed with client_secret abcdefghijklmnop',
+    )
   })
 
   it('tracks raw event stream refresh requests without storing raw events', () => {

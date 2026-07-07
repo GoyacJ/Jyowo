@@ -6,6 +6,7 @@ import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { appI18n } from '@/shared/i18n/i18n'
+import { I18nextProvider } from 'react-i18next'
 import { uiStore } from '@/shared/state/ui-store'
 import type {
   CommandClient,
@@ -64,7 +65,9 @@ function renderConversationWorkspace(
   function Wrapper({ children }: { children: ReactNode }) {
     return (
       <CommandClientProvider client={commandClient}>
-        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        <QueryClientProvider client={queryClient}>
+            <I18nextProvider i18n={appI18n}>{children}</I18nextProvider>
+          </QueryClientProvider>
       </CommandClientProvider>
     )
   }
@@ -698,15 +701,18 @@ describe('ConversationWorkspace', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
-    await screen.findByText('[REDACTED]')
+    // RedactedBody renders with i18n text "内容已隐藏" (zh-CN fallback: "timeline.redactedBody")
+    const redactedLabel = appI18n.t('timeline.redactedBody', { ns: 'conversation' })
+    await screen.findByText(redactedLabel)
     const optimisticTurn = screen
       .getAllByRole('article', { name: 'Conversation turn' })
-      .find((turn) => within(turn).queryByText('[REDACTED]'))
+      .find((turn) => within(turn).queryByText(redactedLabel))
     expect(optimisticTurn).toBeDefined()
     if (!optimisticTurn) {
       throw new Error('missing optimistic redacted turn')
     }
-    expect(within(optimisticTurn).getByText('[REDACTED]')).toBeInTheDocument()
+    expect(within(optimisticTurn).getByText(redactedLabel)).toBeInTheDocument()
+    expect(within(optimisticTurn).getByText(appI18n.t('timeline.redactedBodyShow', { ns: 'conversation' }))).toBeInTheDocument()
     expect(within(optimisticTurn).queryByText(prompt)).not.toBeInTheDocument()
     await waitFor(() => {
       expect(startRunCalls).toEqual([

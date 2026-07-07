@@ -221,6 +221,9 @@ export const enUS = {
         running: '{{count}} running',
         waitingPermission: '{{count}} waiting for permission',
       },
+      redactedBody: 'Content hidden',
+      redactedBodyShow: 'Show',
+      redactedBodyHide: 'Hide',
       tools: 'Tools',
       agentActivity: {
         openBackgroundAgent: 'Open background agent',

@@ -740,6 +740,7 @@ const decisionRequestStateSchema = z
     target: decisionTargetSchema,
     riskLevel: riskLevelSchema,
     reason: z.string(),
+    redactedOriginalReason: z.string().optional(),
     policy: decisionPolicySchema,
     decisionOptions: z.array(decisionOptionSchema),
     evidenceRefs: z.array(conversationEventRefSchema).optional(),
@@ -1108,6 +1109,7 @@ const errorSegmentSchema = z
     order: z.number().int().nonnegative(),
     body: conversationDisplayTextSchema,
     eventRefs: z.array(conversationEventRefSchema).optional(),
+    redactedOriginalBody: z.string().optional(),
   })
   .strict()
 
@@ -1240,6 +1242,7 @@ const conversationTurnUserMessageSchema = z
     attachments: z.array(attachmentReferenceSchema).optional(),
     timestamp: z.string().datetime({ offset: true }),
     eventRefs: z.array(conversationEventRefSchema).optional(),
+    redactedOriginalBody: z.string().optional(),
   })
   .strict()
 

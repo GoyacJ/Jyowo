@@ -7,6 +7,7 @@ import type {
   DecisionRequestState,
   ResolvePermissionRequest,
 } from '@/shared/tauri/commands'
+import { RedactedBody } from '../timeline/redacted-body'
 
 export function DecisionPanel({
   conversationId,
@@ -49,7 +50,14 @@ export function DecisionPanel({
 
       {/* Reason */}
       {canResolve && decision.reason ? (
-        <p className="text-muted-foreground text-xs">{decision.reason}</p>
+        decision.redactedOriginalReason ? (
+          <RedactedBody
+            className="text-muted-foreground text-xs"
+            originalBody={decision.redactedOriginalReason}
+          />
+        ) : (
+          <p className="text-muted-foreground text-xs">{decision.reason}</p>
+        )
       ) : null}
 
       {/* Data exposure */}

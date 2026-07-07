@@ -221,6 +221,9 @@ export const zhCN = {
         running: '运行中 {{count}} 条',
         waitingPermission: '等待权限 {{count}} 条',
       },
+      redactedBody: '内容已隐藏',
+      redactedBodyShow: '查看',
+      redactedBodyHide: '隐藏',
       tools: '工具',
       agentActivity: {
         openBackgroundAgent: '打开后台 Agent',

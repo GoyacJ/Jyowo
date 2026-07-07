@@ -7,6 +7,7 @@ import type {
 } from '@/shared/tauri/commands'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/shared/ui/tooltip'
 import { AssistantWorkView } from './assistant-work-view'
+import { RedactedBody } from './redacted-body'
 import { UserAttachmentStrip } from './user-attachment-strip'
 
 export function ConversationTurnView({
@@ -33,7 +34,14 @@ export function ConversationTurnView({
           />
           <div className="w-full min-w-0 rounded-md border border-border bg-muted px-4 py-3 text-foreground">
             <div className="mb-1 text-muted-foreground text-xs">{t('userAuthor')}</div>
-            <p className="whitespace-pre-wrap break-words text-sm leading-6">{turn.user.body}</p>
+            {turn.user.redactedOriginalBody ? (
+              <RedactedBody
+                className="whitespace-pre-wrap break-words text-sm leading-6"
+                originalBody={turn.user.redactedOriginalBody}
+              />
+            ) : (
+              <p className="whitespace-pre-wrap break-words text-sm leading-6">{turn.user.body}</p>
+            )}
           </div>
           <div className="flex w-full items-center justify-end gap-2 px-1 text-[11px] text-muted-foreground/70">
             <time dateTime={turn.user.timestamp} title={t('userMessage.timestampLabel')}>
