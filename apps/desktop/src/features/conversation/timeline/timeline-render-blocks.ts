@@ -161,8 +161,11 @@ export function buildTimelineRenderBlocks(assistant: AssistantWork): TimelineRen
       case 'agentActivity':
         blocks.push({ kind: 'agentActivity', id: segment.id, order: segment.order, segment })
         break
-      default:
+      default: {
+        const _exhaustive: never = segment
+        void _exhaustive
         break
+      }
     }
   }
 
@@ -439,35 +442,13 @@ function activityItemCount(steps: ProcessStep[]): number | undefined {
 function activityItems(steps: ProcessStep[]): ActivityRenderItem[] {
   return steps.flatMap((step) => {
     const items = activityDetail(step)?.items ?? []
-    if (items.length > 0) {
-      return items.map((item) => ({
-        id: activityItemId(step.id, item.kind, item.label, item.detail),
-        kind: item.kind,
-        label: item.label,
-        detail: item.detail,
-      }))
-    }
-    return [
-      {
-        id: activityItemId(step.id, activityItemKind(step), step.title, undefined),
-        kind: activityItemKind(step),
-        label: step.title,
-      },
-    ]
+    return items.map((item) => ({
+      id: activityItemId(step.id, item.kind, item.label, item.detail),
+      kind: item.kind,
+      label: item.label,
+      detail: item.detail,
+    }))
   })
-}
-
-function activityItemKind(step: ProcessStep): ActivityRenderItem['kind'] {
-  switch (step.kind) {
-    case 'fileRead':
-      return 'file'
-    case 'fileSearch':
-      return 'search'
-    case 'command':
-      return 'command'
-    default:
-      return 'tool'
-  }
 }
 
 function activityItemId(

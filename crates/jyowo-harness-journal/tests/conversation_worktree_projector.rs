@@ -280,6 +280,55 @@ fn activity_items_ignore_unsafe_raw_payload_labels() {
     assert!(!serialized.contains("token=secret-value"));
 }
 
+#[test]
+fn tool_attempt_targets_reject_workspace_private_paths() {
+    let events = vec![
+        user_event(
+            1,
+            "event-user",
+            "run-1",
+            "user-1",
+            "inspect private runtime path",
+        ),
+        event(
+            2,
+            "event-tool-requested",
+            "run-1",
+            "tool.requested",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "read_file",
+                "targetPath": ".jyowo/runtime/secrets/session.json",
+            }),
+        ),
+        event(
+            3,
+            "event-tool-completed",
+            "run-1",
+            "tool.completed",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "read_file",
+                "affectedTargets": [".jyowo/runtime/secrets/session.json", "src/lib.rs"],
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let assistant = projection.turns[0].assistant.as_ref().unwrap();
+    let group = assistant
+        .segments
+        .iter()
+        .find_map(tool_group)
+        .expect("tool group exists");
+    let attempt = group.attempts.first().expect("tool attempt exists");
+
+    assert_eq!(attempt.affected_targets, vec!["src/lib.rs"]);
+    assert!(!serde_json::to_string(&projection.turns)
+        .unwrap()
+        .contains(".jyowo/runtime/secrets/session.json"));
+}
+
 fn user_event_with_attachment(
     sequence: u64,
     id: &str,
@@ -618,7 +667,7 @@ fn pending_permission_preserves_request_summary() {
     assert_eq!(permission.policy.rule.as_deref(), Some("写入前端文件"));
     assert_eq!(
         permission.policy.sandbox.as_deref(),
-        Some("workspace_write / workspace_only / network:none")
+        Some("workspace_write, workspace_only, network:none")
     );
     assert!(permission.data_exposure.sends_workspace_data);
     assert!(permission.data_exposure.touches_private_path);
@@ -2032,7 +2081,7 @@ fn command_tool_projects_command_process_detail() {
     assert_eq!(cmd.shell.as_deref(), Some("zsh"));
     assert_eq!(
         cmd.sandbox.as_deref(),
-        Some("workspace_write / workspace_only / network:none")
+        Some("workspace_write, workspace_only, network:none")
     );
     assert_eq!(cmd.stdout_preview.as_deref(), Some("desktop checks passed"));
     assert_eq!(cmd.exit_code, Some(0));
@@ -2161,6 +2210,57 @@ fn command_projection_does_not_expose_private_absolute_cwd() {
 }
 
 #[test]
+fn command_projection_does_not_expose_unsafe_command_or_output_preview() {
+    let events = vec![
+        user_event(1, "event-user", "run-1", "user-1", "run command"),
+        event(
+            2,
+            "event-tool-requested",
+            "run-1",
+            "tool.requested",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "Bash",
+                "command": "cat /Users/goya/.ssh/id_rsa",
+                "shell": "/Users/goya/bin/private-shell",
+                "sandbox": "file:///Users/goya/private/sandbox",
+                "approvalRequestId": "../approval-ticket",
+                "stdoutPreview": "token=secret-value",
+                "stderrPreview": "/Users/goya/private/error.log",
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let serialized = serde_json::to_string(&projection.turns).unwrap();
+
+    assert!(!serialized.contains("/Users/goya/.ssh/id_rsa"));
+    assert!(!serialized.contains("/Users/goya/bin/private-shell"));
+    assert!(!serialized.contains("file:///Users/goya/private/sandbox"));
+    assert!(!serialized.contains("../approval-ticket"));
+    assert!(!serialized.contains("token=secret-value"));
+    assert!(!serialized.contains("/Users/goya/private/error.log"));
+
+    let assistant = projection.turns[0].assistant.as_ref().unwrap();
+    let process = assistant
+        .segments
+        .iter()
+        .find_map(process_segment)
+        .expect("process exists");
+    let step = process.steps.first().expect("process step exists");
+    let Some(ProcessStepDetail::Command(command)) = &step.detail else {
+        panic!("command detail should be projected");
+    };
+
+    assert_eq!(command.command.as_str(), "命令内容已隐藏");
+    assert_eq!(command.shell, None);
+    assert_eq!(command.sandbox, None);
+    assert_eq!(command.approval_request_id, None);
+    assert_eq!(command.stdout_preview, None);
+    assert_eq!(command.stderr_preview, None);
+}
+
+#[test]
 fn command_tool_carries_permission_metadata_and_truncation_state() {
     let events = vec![
         user_event(1, "event-user", "run-1", "user-1", "run tests"),
@@ -2249,7 +2349,7 @@ fn command_tool_carries_permission_metadata_and_truncation_state() {
     assert_eq!(cmd.risk_level, RiskLevel::High);
     assert_eq!(
         cmd.sandbox.as_deref(),
-        Some("workspace_write / workspace_only / network:none")
+        Some("workspace_write, workspace_only, network:none")
     );
     assert!(cmd.truncated);
 }
@@ -2392,6 +2492,92 @@ fn file_edit_with_safe_diff_projects_diff_step() {
     );
     assert_eq!(change_set.files[0].added_lines, 2);
     assert_eq!(change_set.files[0].removed_lines, 1);
+}
+
+#[test]
+fn file_edit_diff_rejects_unsafe_file_paths_and_patch_refs() {
+    let events = vec![
+        user_event(1, "event-user", "run-1", "user-1", "edit"),
+        event(
+            2,
+            "event-tool-requested",
+            "run-1",
+            "tool.requested",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "apply_patch",
+                "argumentsSummary": "Input withheld from conversation timeline."
+            }),
+        ),
+        event(
+            3,
+            "event-tool-completed",
+            "run-1",
+            "tool.completed",
+            json!({
+                "toolUseId": "tool-1",
+                "toolName": "apply_patch",
+                "outputSummary": "Updated 2 files",
+                "diff": {
+                    "files": [
+                        {
+                            "path": "/Users/goya/private/secret.rs",
+                            "addedLines": 1,
+                            "removedLines": 0,
+                            "preview": "@@\\n+ secret",
+                            "fullPatchRef": "../secret"
+                        },
+                        {
+                            "path": "src/lib.rs",
+                            "addedLines": 2,
+                            "removedLines": 1,
+                            "preview": "@@\\n- old\\n+ new",
+                            "fullPatchRef": "evidence-ref-1"
+                        },
+                        {
+                            "path": "src/other.rs",
+                            "addedLines": 1,
+                            "removedLines": 1,
+                            "preview": "@@\\n- old\\n+ new",
+                            "fullPatchRef": " evidence-ref-2 "
+                        }
+                    ]
+                }
+            }),
+        ),
+    ];
+
+    let projection = project_conversation_worktree_snapshot("conversation-1", events);
+    let serialized = serde_json::to_string(&projection.turns).unwrap();
+    assert!(!serialized.contains("/Users/goya/private/secret.rs"));
+    assert!(!serialized.contains("../secret"));
+
+    let assistant = projection.turns[0].assistant.as_ref().unwrap();
+    let process = assistant
+        .segments
+        .iter()
+        .find_map(process_segment)
+        .expect("process exists");
+    let diff = process
+        .steps
+        .iter()
+        .find(|step| step.kind == ProcessStepKind::Diff)
+        .expect("diff step exists");
+    let Some(ProcessStepDetail::Diff(change_set)) = &diff.detail else {
+        panic!("diff step should include diff detail");
+    };
+
+    assert_eq!(change_set.files.len(), 2);
+    assert_eq!(change_set.files[0].path.as_str(), "src/lib.rs");
+    assert_eq!(
+        change_set.files[0]
+            .full_patch_ref
+            .as_ref()
+            .map(EvidenceRefId::as_str),
+        Some("evidence-ref-1")
+    );
+    assert_eq!(change_set.files[1].path.as_str(), "src/other.rs");
+    assert!(change_set.files[1].full_patch_ref.is_none());
 }
 
 #[test]

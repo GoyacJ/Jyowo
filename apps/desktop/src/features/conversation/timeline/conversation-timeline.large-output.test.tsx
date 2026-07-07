@@ -210,8 +210,9 @@ describe('ConversationTimeline', () => {
       fireEvent.click(collapsedGroup)
 
       expect(collapsedGroup).toHaveAttribute('aria-expanded', 'true')
-      expect(screen.getByText('已读取 package.json')).toBeInTheDocument()
-      expect(screen.getByText('已搜索 timeline')).toBeInTheDocument()
+      expect(screen.getByText('读取 package.json')).toBeInTheDocument()
+      expect(screen.queryByText('已读取 package.json')).not.toBeInTheDocument()
+      expect(screen.queryByText('已搜索 timeline')).not.toBeInTheDocument()
       expect(screen.getByText('$ rg "timeline" apps/desktop/src')).toBeInTheDocument()
     } finally {
       await appI18n.changeLanguage('en-US')

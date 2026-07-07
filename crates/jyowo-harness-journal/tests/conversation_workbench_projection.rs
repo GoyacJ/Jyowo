@@ -155,7 +155,7 @@ fn permission_requested_projects_to_decision_request_state() {
     assert_eq!(decision.target.label, "Bash");
     assert_eq!(
         decision.policy.sandbox.as_deref(),
-        Some("osLevel:none / workspace_only / network:none")
+        Some("osLevel:none, workspace_only, network:none")
     );
 }
 

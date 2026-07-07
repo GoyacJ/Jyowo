@@ -151,6 +151,82 @@ function firstAssistant(page: PageConversationWorktreeResponse): AssistantWork {
   return assistant as AssistantWork
 }
 
+function commandProcessSegment(
+  overrides: Partial<{
+    command: string
+    stdoutPreview: string
+    stderrPreview: string
+    fullOutputRef: string
+  }>,
+): Extract<AssistantWork['segments'][number], { kind: 'process' }> {
+  return {
+    kind: 'process',
+    id: 'segment:process:run-001-command',
+    order: 0,
+    status: 'complete',
+    summary: 'Ran command',
+    steps: [
+      {
+        id: 'process-step:run-001:command',
+        order: 0,
+        kind: 'command',
+        status: 'complete',
+        title: 'Ran command',
+        detail: {
+          type: 'command',
+          command: overrides.command ?? 'pnpm check:desktop',
+          stdoutPreview: overrides.stdoutPreview,
+          stderrPreview: overrides.stderrPreview,
+          fullOutputRef: overrides.fullOutputRef,
+          truncated: false,
+          redactionState: 'clean',
+          riskLevel: 'low',
+        },
+      },
+    ],
+  }
+}
+
+function diffProcessSegment(
+  overrides: Partial<{
+    path: string
+    preview: string
+    fullPatchRef: string
+  }>,
+): Extract<AssistantWork['segments'][number], { kind: 'process' }> {
+  return {
+    kind: 'process',
+    id: 'segment:process:run-001-diff',
+    order: 0,
+    status: 'complete',
+    summary: 'Edited files',
+    steps: [
+      {
+        id: 'process-step:run-001:diff',
+        order: 0,
+        kind: 'diff',
+        status: 'complete',
+        title: 'Diff ready',
+        detail: {
+          type: 'diff',
+          id: 'changeset:tool-1',
+          summary: 'Edited 1 file',
+          files: [
+            {
+              path: overrides.path ?? 'src/lib.rs',
+              status: 'modified',
+              addedLines: 1,
+              removedLines: 0,
+              preview: overrides.preview,
+              fullPatchRef: overrides.fullPatchRef,
+            },
+          ],
+        },
+      },
+    ],
+  }
+}
+
 const tauriListenSpy = vi.hoisted(() => vi.fn())
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -2214,6 +2290,58 @@ describe('CommandClient', () => {
       if (assistant.segments[2]?.kind === 'toolGroup') {
         assistant.segments[2].attempts[0].affectedTargets = ['https://evil.example.com/exfil']
       }
+
+      const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+      await expect(
+        pageConversationWorktree({ conversationId: 'conversation-001' }, client),
+      ).rejects.toThrow(TauriCommandPayloadError)
+    })
+  })
+
+  describe('command and diff display text tightening', () => {
+    it('rejects command detail with private absolute command text', async () => {
+      const page = clone(validWorktreePage())
+      const assistant = firstAssistant(page)
+      assistant.segments.unshift(commandProcessSegment({ command: 'cat /Users/goya/.ssh/id_rsa' }))
+
+      const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+      await expect(
+        pageConversationWorktree({ conversationId: 'conversation-001' }, client),
+      ).rejects.toThrow(TauriCommandPayloadError)
+    })
+
+    it('rejects command detail with unsafe output preview', async () => {
+      const page = clone(validWorktreePage())
+      const assistant = firstAssistant(page)
+      assistant.segments.unshift(commandProcessSegment({ stdoutPreview: 'token=secret-value' }))
+
+      const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+      await expect(
+        pageConversationWorktree({ conversationId: 'conversation-001' }, client),
+      ).rejects.toThrow(TauriCommandPayloadError)
+    })
+
+    it.each([
+      '/Users/goya/private/secret.rs',
+      '../secret.rs',
+    ])('rejects unsafe diff file path %s', async (path) => {
+      const page = clone(validWorktreePage())
+      const assistant = firstAssistant(page)
+      assistant.segments.unshift(diffProcessSegment({ path }))
+
+      const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+      await expect(
+        pageConversationWorktree({ conversationId: 'conversation-001' }, client),
+      ).rejects.toThrow(TauriCommandPayloadError)
+    })
+
+    it.each([
+      '../secret',
+      ' evidence-diff-patch-001 ',
+    ])('rejects unsafe evidence ref %s', async (fullPatchRef) => {
+      const page = clone(validWorktreePage())
+      const assistant = firstAssistant(page)
+      assistant.segments.unshift(diffProcessSegment({ fullPatchRef }))
 
       const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
       await expect(

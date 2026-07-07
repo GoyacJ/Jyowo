@@ -5,20 +5,20 @@
 | Layer | Count |
 |---|---|
 | Frontend Vitest files | 74 |
-| Frontend Vitest test cases | 700 |
+| Frontend Vitest test cases | 703 |
 | Storybook files | 19 |
 | Playwright spec files | 4 |
 | Rust test files | 332 |
-| Rust `#[test]` / `#[tokio::test]` count | 2476 |
+| Rust `#[test]` / `#[tokio::test]` count | 2479 |
 | Script policy test files | 9 |
 
 ## Largest Test Files by Line Count
 
 | File | Lines | Kind |
 |---|---|---|
-| apps/desktop/src/shared/tauri/commands.test.ts | 6463 | frontend |
+| apps/desktop/src/shared/tauri/commands.test.ts | 6591 | frontend |
 | crates/jyowo-harness-journal/tests/conversation_read_model.rs | 3683 | rust |
-| crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs | 3317 | rust |
+| crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs | 3503 | rust |
 | crates/jyowo-harness-plugin/tests/registry.rs | 3168 | rust |
 | crates/jyowo-harness-engine/tests/subagent_tool_feature.rs | 2373 | rust |
 | crates/jyowo-harness-engine/tests/main_loop.rs | 1895 | rust |
@@ -49,9 +49,9 @@
 
 ## Files Over 1200 Lines (hard fail)
 
-- apps/desktop/src/shared/tauri/commands.test.ts (6463 lines)
+- apps/desktop/src/shared/tauri/commands.test.ts (6591 lines)
 - crates/jyowo-harness-journal/tests/conversation_read_model.rs (3683 lines)
-- crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs (3317 lines)
+- crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs (3503 lines)
 - crates/jyowo-harness-plugin/tests/registry.rs (3168 lines)
 - crates/jyowo-harness-engine/tests/subagent_tool_feature.rs (2373 lines)
 - crates/jyowo-harness-engine/tests/main_loop.rs (1895 lines)

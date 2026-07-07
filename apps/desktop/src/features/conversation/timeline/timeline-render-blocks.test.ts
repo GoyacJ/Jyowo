@@ -95,6 +95,25 @@ describe('buildTimelineRenderBlocks', () => {
     ])
   })
 
+  it('keeps activity count-only when projected items are empty', () => {
+    const assistant = assistantWork([
+      processSegment('process-activity', 10, [
+        activityStep('read-1', 20, 'fileRead', 'Read files', 2),
+        activityStep('search-1', 30, 'fileSearch', 'Searched code', 3),
+      ]),
+    ])
+
+    const blocks = buildTimelineRenderBlocks(assistant)
+
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0]).toMatchObject({
+      kind: 'activity',
+      id: 'process:process-activity:activity:read-1',
+      itemCount: 5,
+    })
+    expect(blocks[0].kind === 'activity' ? blocks[0].items : []).toEqual([])
+  })
+
   it('groups adjacent command steps and forces failed or non-zero commands open', () => {
     const assistant = assistantWork([
       processSegment('process-command', 10, [
