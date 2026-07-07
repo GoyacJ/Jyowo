@@ -81,7 +81,7 @@ function hasUnsafeDisplayReference(value: string): boolean {
     hasUnsafeUrl(value) ||
     /(?:~[\\/]|\.jyowo[\\/])/i.test(value) ||
     /(?:^|[^A-Za-z0-9_])(?:[A-Za-z]:[\\/])/.test(value) ||
-    /(?:\/Applications|\/Library|\/System|\/Users|\/Volumes|\/dev|\/etc|\/home|\/media|\/mnt|\/opt|\/private|\/root|\/run|\/tmp|\/usr|\/var)(?:[\\/]|$)/.test(
+    /(?:^|[^A-Za-z0-9_.-])\/(?:Applications|Library|System|Users|Volumes|dev|etc|home|media|mnt|opt|private|root|run|tmp|usr|var)(?:[\\/]|$)/.test(
       value,
     )
   )

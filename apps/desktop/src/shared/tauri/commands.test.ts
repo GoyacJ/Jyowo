@@ -2296,6 +2296,49 @@ describe('CommandClient', () => {
         pageConversationWorktree({ conversationId: 'conversation-001' }, client),
       ).rejects.toThrow(TauriCommandPayloadError)
     })
+
+    it('accepts affectedTargets entry with dev as a relative path segment', async () => {
+      const page = clone(validWorktreePage())
+      const assistant = firstAssistant(page)
+      if (assistant.segments[2]?.kind === 'toolGroup') {
+        assistant.segments[2].attempts[0].affectedTargets = ['scripts/dev']
+      }
+
+      const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+      await expect(
+        pageConversationWorktree({ conversationId: 'conversation-001' }, client),
+      ).resolves.toMatchObject({
+        turns: [
+          {
+            assistant: {
+              segments: expect.arrayContaining([
+                expect.objectContaining({
+                  kind: 'toolGroup',
+                  attempts: [
+                    expect.objectContaining({
+                      affectedTargets: ['scripts/dev'],
+                    }),
+                  ],
+                }),
+              ]),
+            },
+          },
+        ],
+      })
+    })
+
+    it('rejects affectedTargets entry with absolute dev path', async () => {
+      const page = clone(validWorktreePage())
+      const assistant = firstAssistant(page)
+      if (assistant.segments[2]?.kind === 'toolGroup') {
+        assistant.segments[2].attempts[0].affectedTargets = ['/dev/null']
+      }
+
+      const client = createInvokeCommandClient(vi.fn().mockResolvedValue(page))
+      await expect(
+        pageConversationWorktree({ conversationId: 'conversation-001' }, client),
+      ).rejects.toThrow(TauriCommandPayloadError)
+    })
   })
 
   describe('command and diff display text tightening', () => {

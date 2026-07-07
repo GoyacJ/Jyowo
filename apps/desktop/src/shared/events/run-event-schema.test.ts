@@ -915,9 +915,9 @@ describe('RunEvent schema', () => {
       'Contact mailto:admin@example.test',
       '路径：.jyowo/runtime/blobs/blob-001',
       '路径：.JYOWO/runtime/blobs/blob-001',
-      'log/tmp/provider-output',
       'home~/secret',
       'path=C:/Users/goya/private.txt',
+      '/dev/null',
       'cache /var/tmp/provider-output',
     ]) {
       expect(() =>
@@ -936,6 +936,27 @@ describe('RunEvent schema', () => {
           },
         }),
       ).toThrow()
+    }
+  })
+
+  it('accepts relative path segments that share names with system directories', () => {
+    for (const body of ['scripts/dev', 'log/tmp/provider-output']) {
+      expect(() =>
+        runEventSchema.parse({
+          id: 'evt-relative-system-directory-name',
+          conversationSequence: 12,
+          runId: 'run-001',
+          sequence: 12,
+          timestamp: '2026-06-17T00:00:00.000Z',
+          type: 'assistant.notice',
+          source: 'assistant',
+          visibility: 'public',
+          payload: {
+            noticeId: '01HZ0000000000000000000001',
+            body,
+          },
+        }),
+      ).not.toThrow()
     }
   })
 
