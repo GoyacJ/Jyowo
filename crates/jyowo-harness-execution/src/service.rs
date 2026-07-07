@@ -257,19 +257,8 @@ impl AuthorizationService {
         &self,
         ticket: AuthorizationTicket,
     ) -> Result<AuthorizedTicketSummary, ExecutionError> {
-        let consumed = self
-            .ticket_ledger
-            .consume(ticket.id, &ticket.claims, Utc::now())?;
-        Ok(AuthorizedTicketSummary {
-            ticket_id: consumed.id,
-            tenant_id: consumed.claims.tenant_id,
-            session_id: consumed.claims.session_id,
-            run_id: consumed.claims.run_id,
-            tool_use_id: consumed.claims.tool_use_id,
-            tool_name: consumed.claims.tool_name,
-            action_plan_hash: consumed.claims.action_plan_hash,
-            consumed_at: Utc::now(),
-        })
+        self.ticket_ledger
+            .consume(ticket.id, &ticket.claims, Utc::now())
     }
 }
 

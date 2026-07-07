@@ -307,6 +307,7 @@ get_mcp_server_config
 get_plugin_detail
 get_provider_config_api_key
 get_replay_timeline
+get_runtime_execution_status
 get_thread_memory_settings
 get_skill_catalog_entry
 get_skill_catalog_file

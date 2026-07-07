@@ -10,9 +10,9 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::{future::BoxFuture, stream};
 use harness_contracts::{
-    ActionPlanHash, ActionPlanId, AssistantClarificationRequestedEvent, CapabilityRegistry,
-    ClarifyAnswer, ClarifyChannelCap, ClarifyPrompt, Decision, DecisionScope, DeferredToolHint,
-    Event, ExecFingerprint, ExecuteCodeStepInvokedEvent, NetworkAccess, PermissionActorSource,
+    ActionPlanId, AssistantClarificationRequestedEvent, CapabilityRegistry, ClarifyAnswer,
+    ClarifyChannelCap, ClarifyPrompt, Decision, DecisionScope, DeferredToolHint, Event,
+    ExecFingerprint, ExecuteCodeStepInvokedEvent, NetworkAccess, PermissionActorSource,
     PermissionReview, PermissionSubject, ProviderRestriction, RedactRules, Redactor, RequestId,
     ResourceLimits, SandboxExecutionStartedEvent, SandboxMode, SandboxPolicy, SandboxPolicySummary,
     SandboxScope, Severity, TenantId, ToolActionPlan, ToolCapability, ToolDeferredPoolChangedEvent,
@@ -22,10 +22,10 @@ use harness_contracts::{
 };
 use harness_permission::PermissionCheck;
 use harness_tool::{
-    default_result_budget, AuthorizedTicketSummary, AuthorizedToolCall, AuthorizedToolInput,
-    BuiltinToolset, InterruptToken, NoopToolEventEmitter, OrchestratorContext, Tool, ToolContext,
-    ToolEvent, ToolEventEmitter, ToolOrchestrator, ToolPool, ToolPoolFilter, ToolPoolModelProfile,
-    ToolRegistry, ToolSearchMode, ValidationError,
+    canonical_action_plan_hash, default_result_budget, AuthorizedTicketSummary, AuthorizedToolCall,
+    AuthorizedToolInput, BuiltinToolset, InterruptToken, NoopToolEventEmitter, OrchestratorContext,
+    Tool, ToolContext, ToolEvent, ToolEventEmitter, ToolOrchestrator, ToolPool, ToolPoolFilter,
+    ToolPoolModelProfile, ToolRegistry, ToolSearchMode, ValidationError,
 };
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -842,7 +842,7 @@ fn call(name: &str) -> AuthorizedToolCall {
 
 fn call_with_input(name: &str, raw_input: Value) -> AuthorizedToolCall {
     let tool_use_id = ToolUseId::new();
-    let plan = ToolActionPlan {
+    let mut plan = ToolActionPlan {
         plan_id: ActionPlanId::new(),
         tool_use_id,
         tool_name: name.to_owned(),
@@ -871,9 +871,10 @@ fn call_with_input(name: &str, raw_input: Value) -> AuthorizedToolCall {
         network_access: NetworkAccess::None,
         execution_channel: ToolExecutionChannel::DirectAuthorizedRust,
         review: PermissionReview::default(),
-        plan_hash: ActionPlanHash::from_bytes([1; 32]),
+        plan_hash: Default::default(),
         created_at: Utc::now(),
     };
+    plan.plan_hash = canonical_action_plan_hash(&plan);
     let authorized = AuthorizedToolInput::new(raw_input, plan.clone(), ticket_for(&plan)).unwrap();
     AuthorizedToolCall {
         tool_use_id,
@@ -883,15 +884,22 @@ fn call_with_input(name: &str, raw_input: Value) -> AuthorizedToolCall {
 }
 
 fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
-    AuthorizedTicketSummary {
-        ticket_id: harness_contracts::AuthorizationTicketId::new(),
-        tenant_id: TenantId::SINGLE,
-        session_id: harness_contracts::SessionId::new(),
-        run_id: harness_contracts::RunId::new(),
-        tool_use_id: plan.tool_use_id,
-        tool_name: plan.tool_name.clone(),
-        action_plan_hash: plan.plan_hash.clone(),
-        consumed_at: Utc::now(),
+    {
+        let ledger = harness_tool::TicketLedger::default();
+        let claims = harness_tool::AuthorizationTicketClaims {
+            tenant_id: harness_contracts::TenantId::SINGLE,
+            session_id: harness_contracts::SessionId::new(),
+            run_id: harness_contracts::RunId::new(),
+            tool_use_id: plan.tool_use_id,
+            tool_name: plan.tool_name.clone(),
+            action_plan_hash: plan.plan_hash.clone(),
+        };
+        let ticket = ledger
+            .mint(claims.clone(), chrono::Utc::now())
+            .expect("test ticket should mint");
+        ledger
+            .consume(ticket.id, &claims, chrono::Utc::now())
+            .expect("test ticket should consume")
     }
 }
 

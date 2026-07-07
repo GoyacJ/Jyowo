@@ -62,11 +62,7 @@ impl SandboxBackend for LocalSandbox {
             supports_activity_heartbeat: true,
             supports_interactive_shell: cfg!(unix),
             network: network_policy_support_for_isolation(self.isolation),
-            workspace: WorkspacePolicySupport {
-                read_write_all: true,
-                read_only: false,
-                writable_subpaths: false,
-            },
+            workspace: workspace_policy_support_for_isolation(self.isolation),
             supports_gpu: false,
             supports_pty: false,
             supports_detach: false,
@@ -1782,6 +1778,20 @@ fn network_policy_support_for_isolation(isolation: LocalIsolation) -> NetworkPol
             loopback_only: false,
             allowlist: false,
             unrestricted: true,
+        },
+    }
+}
+
+fn workspace_policy_support_for_isolation(isolation: LocalIsolation) -> WorkspacePolicySupport {
+    match isolation {
+        LocalIsolation::Bubblewrap | LocalIsolation::Seatbelt => WorkspacePolicySupport {
+            read_write_all: true,
+            read_only: true,
+            writable_subpaths: true,
+        },
+        LocalIsolation::None | LocalIsolation::JobObject => WorkspacePolicySupport {
+            read_write_all: true,
+            ..WorkspacePolicySupport::default()
         },
     }
 }

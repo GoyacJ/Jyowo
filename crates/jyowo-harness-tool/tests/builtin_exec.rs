@@ -1,5 +1,6 @@
 #![cfg(feature = "builtin-toolset")]
 
+use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
@@ -8,14 +9,13 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::Utc;
 use futures::{future::BoxFuture, stream, StreamExt};
 use harness_contracts::{
     ActionResource, BlobError, BlobMeta, BlobRef, BlobStore, CapabilityRegistry, ClarifyAnswer,
     ClarifyPrompt, Event, OutboundUserMessage, PermissionSubject, SandboxError,
     SandboxExecutionStartedEvent, SandboxExitStatus, SandboxPolicySummary, Severity, TenantId,
-    ToolActionPlan, ToolCapability, ToolError, ToolResult, ToolUseId, UserMessageDelivery,
-    WorkspaceAccess,
+    ToolActionPlan, ToolCapability, ToolError, ToolExecutionChannel, ToolResult, ToolUseId,
+    UserMessageDelivery, WorkspaceAccess,
 };
 use harness_contracts::{RedactRules, Redactor};
 use harness_sandbox::{
@@ -25,12 +25,14 @@ use harness_sandbox::{
 };
 use harness_tool::{
     builtin::{
-        BashTool, ClarifyTool, SendMessageTool, WebFetchBackend, WebFetchRequest, WebFetchResponse,
-        WebFetchTool, WebSearchBackend, WebSearchRequest, WebSearchResult, WebSearchTool,
+        BashTool, ClarifyTool, SendMessageTool, WebFetchTool, WebSearchBackend, WebSearchRequest,
+        WebSearchResult, WebSearchTool, WEB_SEARCH_BACKEND_CAPABILITY,
     },
-    AuthorizedTicketSummary, AuthorizedToolCall, AuthorizedToolInput, BuiltinToolset,
-    InterruptToken, OrchestratorContext, Tool, ToolContext, ToolOrchestrator, ToolPool,
-    ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolSearchMode,
+    canonical_action_plan_hash, AuthorizedNetworkPermit, AuthorizedTicketSummary,
+    AuthorizedToolCall, AuthorizedToolInput, BuiltinToolset, HttpMethod, InterruptToken,
+    NetworkBrokerPreflightRequest, OrchestratorContext, Tool, ToolContext, ToolHttpJsonRequest,
+    ToolHttpResponse, ToolNetworkBrokerCap, ToolNetworkBrokerPreflightCap, ToolOrchestrator,
+    ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolSearchMode,
 };
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -160,6 +162,7 @@ async fn bash_rejects_authorized_command_when_fingerprint_no_longer_matches_exec
         panic!("expected command resource");
     };
     *command = "rm -rf /".to_owned();
+    plan.plan_hash = canonical_action_plan_hash(&plan);
     let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
 
     let error = match tool.execute_authorized(authorized, ctx).await {
@@ -351,7 +354,7 @@ async fn bash_budget_overflow_stops_before_later_stdout_chunks_are_consumed() {
 
 #[tokio::test]
 async fn web_search_uses_network_permission_and_backend() {
-    let tool = WebSearchTool::new(vec![Arc::new(FakeWebSearchBackend)]);
+    let tool = WebSearchTool::default();
     let input = json!({
         "query": "jyowo harness",
         "max_results": 1,
@@ -362,12 +365,24 @@ async fn web_search_uses_network_permission_and_backend() {
         .plan(&input, &tool_ctx(CapabilityRegistry::default(), None))
         .await;
 
+    let plan = plan.unwrap();
     assert!(matches!(
-        plan.unwrap().subject,
+        plan.subject,
         PermissionSubject::NetworkAccess { ref host, .. } if host == "web-search"
     ));
+    assert!(matches!(
+        plan.execution_channel,
+        ToolExecutionChannel::ExternalCapability { ref capability }
+            if capability == &ToolCapability::Custom(WEB_SEARCH_BACKEND_CAPABILITY.to_owned())
+    ));
 
-    let result = execute_final(&tool, input, tool_ctx(CapabilityRegistry::default(), None)).await;
+    let mut caps = CapabilityRegistry::default();
+    let backend: Arc<dyn WebSearchBackend> = Arc::new(FakeWebSearchBackend);
+    caps.install(
+        ToolCapability::Custom(WEB_SEARCH_BACKEND_CAPABILITY.to_owned()),
+        backend,
+    );
+    let result = execute_final(&tool, input, tool_ctx(caps, None)).await;
     assert_eq!(
         result,
         ToolResult::Structured(json!([{
@@ -446,9 +461,9 @@ async fn web_search_rejects_invalid_region_and_recency() {
 
 #[tokio::test]
 async fn web_fetch_fails_closed_by_default_and_uses_injected_backend() {
-    let default_tool = WebFetchTool::default();
+    let tool = WebFetchTool::default();
 
-    let dangerous_plan = default_tool
+    let dangerous_plan = tool
         .plan(
             &json!({ "url": "http://169.254.169.254/latest/meta-data" }),
             &tool_ctx(CapabilityRegistry::default(), None),
@@ -460,39 +475,44 @@ async fn web_fetch_fails_closed_by_default_and_uses_injected_backend() {
     ));
 
     let error = execute_error(
-        &default_tool,
+        &tool,
         json!({ "url": "https://example.test/page" }),
         tool_ctx(CapabilityRegistry::default(), None),
     )
     .await;
     assert!(matches!(
         error,
-        ToolError::CapabilityMissing(ToolCapability::Custom(ref cap)) if cap == "web_fetch_backend"
+        ToolError::CapabilityMissing(ToolCapability::NetworkBroker)
     ));
 
-    let injected_tool = WebFetchTool::new(vec![Arc::new(FakeWebFetchBackend)]);
-    let result = execute_final(
-        &injected_tool,
+    let mut caps = CapabilityRegistry::default();
+    let broker: Arc<dyn ToolNetworkBrokerCap> = Arc::new(FakeNetworkBroker {
+        expected_url: "https://example.test/page",
+        body: Bytes::from_static(b"hello world"),
+    });
+    caps.install(ToolCapability::NetworkBroker, broker);
+    let error = execute_error(
+        &tool,
         json!({ "url": "https://example.test/page", "max_bytes": 5 }),
-        tool_ctx(CapabilityRegistry::default(), None),
+        tool_ctx(caps, None),
     )
     .await;
-    assert_eq!(
-        result,
-        ToolResult::Structured(json!({
-            "url": "https://example.test/page",
-            "status": 200,
-            "content_type": "text/plain",
-            "body": "hello",
-            "truncated": true
-        }))
+    assert!(
+        matches!(error, ToolError::ResultTooLarge { .. }),
+        "oversized web fetch response must fail closed, got {error:?}"
     );
 }
 
 #[tokio::test]
-async fn web_fetch_rejects_invalid_max_bytes_and_truncates_on_utf8_boundary() {
-    let tool = WebFetchTool::new(vec![Arc::new(Utf8WebFetchBackend)]);
-    let ctx = tool_ctx(CapabilityRegistry::default(), None);
+async fn web_fetch_rejects_invalid_max_bytes_and_oversized_responses() {
+    let tool = WebFetchTool::default();
+    let mut caps = CapabilityRegistry::default();
+    let broker: Arc<dyn ToolNetworkBrokerCap> = Arc::new(FakeNetworkBroker {
+        expected_url: "https://example.test/utf8",
+        body: Bytes::from_static("éé".as_bytes()),
+    });
+    caps.install(ToolCapability::NetworkBroker, broker);
+    let ctx = tool_ctx(caps, None);
 
     let zero = validate_error_message(
         &tool,
@@ -510,21 +530,15 @@ async fn web_fetch_rejects_invalid_max_bytes_and_truncates_on_utf8_boundary() {
     .await;
     assert_eq!(negative, "max_bytes must be a positive integer");
 
-    let result = execute_final(
+    let error = execute_error(
         &tool,
         json!({ "url": "https://example.test/utf8", "max_bytes": 3 }),
         ctx,
     )
     .await;
-    assert_eq!(
-        result,
-        ToolResult::Structured(json!({
-            "url": "https://example.test/utf8",
-            "status": 200,
-            "content_type": "text/plain",
-            "body": "é",
-            "truncated": true
-        }))
+    assert!(
+        matches!(error, ToolError::ResultTooLarge { .. }),
+        "oversized UTF-8 response must fail closed, got {error:?}"
     );
 }
 
@@ -802,15 +816,22 @@ async fn authorized_call(
 }
 
 fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
-    AuthorizedTicketSummary {
-        ticket_id: harness_contracts::AuthorizationTicketId::new(),
-        tenant_id: TenantId::SINGLE,
-        session_id: harness_contracts::SessionId::new(),
-        run_id: harness_contracts::RunId::new(),
-        tool_use_id: plan.tool_use_id,
-        tool_name: plan.tool_name.clone(),
-        action_plan_hash: plan.plan_hash.clone(),
-        consumed_at: Utc::now(),
+    {
+        let ledger = harness_tool::TicketLedger::default();
+        let claims = harness_tool::AuthorizationTicketClaims {
+            tenant_id: harness_contracts::TenantId::SINGLE,
+            session_id: harness_contracts::SessionId::new(),
+            run_id: harness_contracts::RunId::new(),
+            tool_use_id: plan.tool_use_id,
+            tool_name: plan.tool_name.clone(),
+            action_plan_hash: plan.plan_hash.clone(),
+        };
+        let ticket = ledger
+            .mint(claims.clone(), chrono::Utc::now())
+            .expect("test ticket should mint");
+        ledger
+            .consume(ticket.id, &claims, chrono::Utc::now())
+            .expect("test ticket should consume")
     }
 }
 
@@ -1097,33 +1118,34 @@ impl WebSearchBackend for FakeWebSearchBackend {
     }
 }
 
-struct FakeWebFetchBackend;
-
 #[async_trait]
-impl WebFetchBackend for FakeWebFetchBackend {
-    async fn fetch(&self, request: WebFetchRequest) -> Result<WebFetchResponse, ToolError> {
-        assert_eq!(request.url.as_str(), "https://example.test/page");
-        Ok(WebFetchResponse {
-            url: request.url,
-            status: 200,
-            content_type: Some("text/plain".to_owned()),
-            body: "hello world".to_owned(),
-        })
+impl ToolNetworkBrokerPreflightCap for FakeNetworkBroker {
+    async fn preflight_network_request(
+        &self,
+        _request: &NetworkBrokerPreflightRequest,
+    ) -> Result<(), ToolError> {
+        Ok(())
     }
 }
 
-struct Utf8WebFetchBackend;
+struct FakeNetworkBroker {
+    expected_url: &'static str,
+    body: Bytes,
+}
 
 #[async_trait]
-impl WebFetchBackend for Utf8WebFetchBackend {
-    async fn fetch(&self, request: WebFetchRequest) -> Result<WebFetchResponse, ToolError> {
-        assert_eq!(request.url.as_str(), "https://example.test/utf8");
-        assert_eq!(request.max_bytes, 3);
-        Ok(WebFetchResponse {
-            url: request.url,
+impl ToolNetworkBrokerCap for FakeNetworkBroker {
+    async fn execute_json(
+        &self,
+        _permit: &AuthorizedNetworkPermit,
+        request: ToolHttpJsonRequest,
+    ) -> Result<ToolHttpResponse, ToolError> {
+        assert_eq!(request.method, HttpMethod::Get);
+        assert_eq!(request.url, self.expected_url);
+        Ok(ToolHttpResponse {
             status: 200,
-            content_type: Some("text/plain".to_owned()),
-            body: "éé".to_owned(),
+            headers: BTreeMap::from([("content-type".to_owned(), "text/plain".to_owned())]),
+            body: self.body.clone(),
         })
     }
 }

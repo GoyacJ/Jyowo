@@ -34,7 +34,7 @@ use super::*;
 use crate::agent_supervisor::BackgroundSupervisorSession;
 use async_trait::async_trait;
 use harness_contracts::CapabilityRegistry;
-use harness_contracts::SandboxError;
+use harness_contracts::{KillScope, SandboxError, SandboxExitStatus};
 use harness_execution::{
     AuthorizationEventSink, AuthorizationService, ExecutionPreflightRegistry,
     ReqwestToolNetworkBroker, TicketLedger,
@@ -759,7 +759,15 @@ async fn build_docker_fallback(workspace_root: &Path) -> Result<Arc<DockerSandbo
         });
     }
 
+    build_docker_fallback_with_binary(workspace_root, PathBuf::from("docker")).await
+}
+
+async fn build_docker_fallback_with_binary(
+    workspace_root: &Path,
+    docker_binary: PathBuf,
+) -> Result<Arc<DockerSandbox>, SandboxError> {
     let docker = DockerSandbox::builder()
+        .docker_binary(docker_binary)
         .mount(VolumeMount::workspace(workspace_root, "/workspace"))
         .lifecycle(ContainerLifecycle::EphemeralPerExec)
         .build()?;
@@ -772,7 +780,73 @@ async fn build_docker_fallback(workspace_root: &Path) -> Result<Arc<DockerSandbo
             detail: "docker daemon check timed out".to_owned(),
         })??;
 
+    verify_docker_workspace_mount(&docker, workspace_root).await?;
+
     Ok(Arc::new(docker))
+}
+
+async fn verify_docker_workspace_mount(
+    docker: &DockerSandbox,
+    workspace_root: &Path,
+) -> Result<(), SandboxError> {
+    let probe = ExecSpec {
+        command: "sh".to_owned(),
+        args: vec![
+            "-c".to_owned(),
+            r#"test "$(pwd)" = "/workspace" && test -d /workspace"#.to_owned(),
+        ],
+        cwd: Some(workspace_root.to_path_buf()),
+        stdin: StdioSpec::Null,
+        stdout: StdioSpec::Null,
+        stderr: StdioSpec::Null,
+        timeout: Some(Duration::from_secs(5)),
+        workspace_access: WorkspaceAccess::ReadWrite {
+            allowed_writable_subpaths: Vec::new(),
+        },
+        ..ExecSpec::default()
+    };
+    let mut ctx = ExecContext::new(Arc::new(RecordingSandboxEventSink::default()));
+    ctx.workspace_root = workspace_root.to_path_buf();
+
+    let handle = tokio::time::timeout(Duration::from_secs(5), docker.execute(probe, ctx))
+        .await
+        .map_err(|_| SandboxError::Unavailable {
+            backend: "docker".to_owned(),
+            detail: "docker workspace probe timed out before spawn".to_owned(),
+        })?
+        .map_err(|error| SandboxError::Unavailable {
+            backend: "docker".to_owned(),
+            detail: format!("docker workspace probe failed to start: {error}"),
+        })?;
+
+    let outcome = match tokio::time::timeout(Duration::from_secs(5), handle.activity.wait()).await {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(error)) => {
+            return Err(SandboxError::Unavailable {
+                backend: "docker".to_owned(),
+                detail: format!("docker workspace probe failed: {error}"),
+            });
+        }
+        Err(_) => {
+            let _ = handle.activity.kill(9, KillScope::Process).await;
+            return Err(SandboxError::Unavailable {
+                backend: "docker".to_owned(),
+                detail: "docker workspace probe timed out".to_owned(),
+            });
+        }
+    };
+
+    if outcome.exit_status == SandboxExitStatus::Code(0) {
+        return Ok(());
+    }
+
+    Err(SandboxError::Unavailable {
+        backend: "docker".to_owned(),
+        detail: format!(
+            "docker workspace probe exited with {:?}",
+            outcome.exit_status
+        ),
+    })
 }
 
 pub(crate) async fn build_desktop_harness(
@@ -891,31 +965,54 @@ pub(crate) async fn build_desktop_harness(
 
     // ── HTTP broker: same Arc instance injected into both authorization preflight
     // and capability registry, per Task 6 design. ──
+    let ticket_ledger = Arc::new(TicketLedger::default());
     let broker_redactor: Arc<dyn Redactor> = Arc::new(DefaultRedactor::default());
     let network_broker: Arc<dyn ToolNetworkBrokerCap> = Arc::new(
-        ReqwestToolNetworkBroker::new(
+        ReqwestToolNetworkBroker::new_with_ticket_authority(
             Duration::from_secs(120),
             10 * 1024 * 1024, // 10 MiB max response
             Arc::clone(&broker_redactor),
+            ticket_ledger.authority_key(),
         )
         .map_err(|error| {
             runtime_init_failed(format!("network broker initialization failed: {error}"))
         })?,
     );
 
+    let diagnostics_runner: Arc<dyn DiagnosticsRunnerCap> =
+        Arc::new(DesktopDiagnosticsRunner::new(Arc::clone(&sandbox)));
+    let background_agent_starter: Arc<dyn BackgroundAgentStarterCap> =
+        Arc::new(DesktopBackgroundAgentStarter {
+            workspace_root: workspace_root.to_path_buf(),
+            event_store: Arc::clone(&event_store),
+        });
+
     let mut capabilities = CapabilityRegistry::default();
     capabilities.install(ToolCapability::NetworkBroker, Arc::clone(&network_broker));
+    capabilities.install(
+        ToolCapability::ProviderCredentialResolver,
+        Arc::clone(&provider_credential_resolver),
+    );
+    capabilities.install(
+        ToolCapability::Custom("diagnostics_runner".to_owned()),
+        Arc::clone(&diagnostics_runner),
+    );
+    capabilities.install(
+        ToolCapability::Custom("jyowo.background_agent.starter".to_owned()),
+        Arc::clone(&background_agent_starter),
+    );
+    let preflight_capabilities = Arc::new(capabilities);
 
     let registry = ExecutionPreflightRegistry::new(
         Arc::clone(&sandbox),
         Some(network_broker.clone()),
-        Arc::new(capabilities),
+        preflight_capabilities,
     );
     let authorization_service = Arc::new(AuthorizationService::new(
         Arc::new(permission_authority),
         registry,
         event_sink,
-        Arc::new(TicketLedger::default()),
+        ticket_ledger,
     ));
     let mcp_config = mcp_config_from_records(
         mcp_server_store.load_records()?,
@@ -927,13 +1024,6 @@ pub(crate) async fn build_desktop_harness(
     )
     .await?;
 
-    let diagnostics_runner: Arc<dyn DiagnosticsRunnerCap> =
-        Arc::new(DesktopDiagnosticsRunner::new(Arc::clone(&sandbox)));
-    let background_agent_starter: Arc<dyn BackgroundAgentStarterCap> =
-        Arc::new(DesktopBackgroundAgentStarter {
-            workspace_root: workspace_root.to_path_buf(),
-            event_store: Arc::clone(&event_store),
-        });
     let harness = Harness::builder()
         .with_workspace_root(workspace_root)
         .with_model_arc(model_provider)
@@ -1642,6 +1732,72 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn docker_fallback_verifies_workspace_mount_before_registration() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace.path().canonicalize().expect("canonicalize");
+        let log = workspace.path().join("docker.log");
+        let docker = stub_desktop_docker(workspace.path(), &log, false);
+
+        build_docker_fallback_with_binary(&workspace_root, docker)
+            .await
+            .expect("docker fallback should register after live workspace probe");
+
+        let log_text = std::fs::read_to_string(log).expect("docker log should be written");
+        assert!(
+            log_text.contains("version --format {{.Server.Version}}"),
+            "fallback must verify daemon availability before registration: {log_text}"
+        );
+        assert!(
+            log_text.contains("run --rm -i"),
+            "fallback must run a live container probe before registration: {log_text}"
+        );
+        assert!(
+            log_text.contains(&format!(
+                "-v {}:/workspace:rw,rprivate",
+                workspace_root.display()
+            )),
+            "probe must use the desktop workspace mount contract: {log_text}"
+        );
+        assert!(
+            log_text.contains("-w /workspace"),
+            "probe must execute from /workspace: {log_text}"
+        );
+        assert!(
+            log_text.contains("jyowo-workspace:latest sh -c"),
+            "probe must use the default workspace image and shell command: {log_text}"
+        );
+        assert!(
+            log_text.contains("test -d /workspace"),
+            "probe must verify /workspace is mounted: {log_text}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn docker_fallback_rejects_failed_workspace_mount_probe() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace.path().canonicalize().expect("canonicalize");
+        let log = workspace.path().join("docker.log");
+        let docker = stub_desktop_docker(workspace.path(), &log, true);
+
+        let err = build_docker_fallback_with_binary(&workspace_root, docker)
+            .await
+            .expect_err("docker fallback must not register when live workspace probe fails");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("workspace probe"),
+            "error must explain the failed workspace probe: {msg}"
+        );
+
+        let log_text = std::fs::read_to_string(log).expect("docker log should be written");
+        assert!(
+            log_text.contains("run --rm -i"),
+            "failing probe should still be the registration gate: {log_text}"
+        );
+    }
+
     #[tokio::test]
     async fn docker_fallback_rejects_restricted_workspace_mounts() {
         let workspace = tempfile::tempdir().expect("temp workspace");
@@ -1669,6 +1825,40 @@ mod tests {
             msg.contains("workspace_access") || msg.contains("workspace"),
             "error must identify workspace policy as the reason: {msg}"
         );
+    }
+
+    #[cfg(unix)]
+    fn stub_desktop_docker(root: &Path, log: &Path, fail_run: bool) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bin = root.join("docker");
+        let fail_run = if fail_run { "1" } else { "0" };
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case "$1" in
+  version) exit 0 ;;
+  run)
+    if [ "{}" = "1" ]; then
+      printf 'workspace probe failed' >&2
+      exit 42
+    fi
+    printf 'workspace probe ok'
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+"#,
+            log.display(),
+            fail_run
+        );
+        std::fs::write(&bin, script).expect("stub docker should be written");
+        let mut permissions = std::fs::metadata(&bin)
+            .expect("stub docker metadata should exist")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&bin, permissions).expect("stub docker should be executable");
+        bin
     }
 
     #[tokio::test]

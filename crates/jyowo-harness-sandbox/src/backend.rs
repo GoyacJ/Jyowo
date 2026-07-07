@@ -34,6 +34,10 @@ pub type BoxStdin = Pin<Box<dyn tokio::io::AsyncWrite + Send + 'static>>;
 pub trait SandboxBackend: Send + Sync + 'static {
     fn backend_id(&self) -> &str;
 
+    fn candidate_backend_ids(&self) -> Vec<String> {
+        vec![self.backend_id().to_owned()]
+    }
+
     fn capabilities(&self) -> SandboxCapabilities;
 
     fn base_config(&self) -> SandboxBaseConfig {
@@ -782,7 +786,7 @@ pub struct ExecContext {
 }
 
 impl ExecContext {
-    pub fn for_test(event_sink: Arc<dyn EventSink>) -> Self {
+    pub fn new(event_sink: Arc<dyn EventSink>) -> Self {
         Self {
             session_id: SessionId::new(),
             run_id: RunId::new(),
@@ -795,6 +799,10 @@ impl ExecContext {
             blob_store: None,
             execution_id: NEXT_EXECUTION_ID.fetch_add(1, Ordering::Relaxed),
         }
+    }
+
+    pub fn for_test(event_sink: Arc<dyn EventSink>) -> Self {
+        Self::new(event_sink)
     }
 }
 

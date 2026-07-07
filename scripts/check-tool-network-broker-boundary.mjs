@@ -1,28 +1,34 @@
 #!/usr/bin/env node
 // check-tool-network-broker-boundary.mjs
 //
-// Scans production Rust source under crates/jyowo-harness-tool/src/ for
-// direct reqwest::Client or reqwest::ClientBuilder construction outside the
-// authorized HTTP broker module (network_broker.rs). Ignores #[cfg(test)]
-// blocks and test directories.
+// Scans production Rust source under crates/jyowo-harness-tool/src/ for raw
+// network paths outside the authorized HTTP broker module (network_broker.rs).
+// Ignores #[cfg(test)] items/blocks and test directories.
 //
 // Exit 0 when boundary is clean, 1 when violations are found.
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const ROOT =
+  process.env.JYOWO_TOOL_NETWORK_BROKER_BOUNDARY_ROOT ??
+  fileURLToPath(new URL("..", import.meta.url));
 const TOOL_SRC = join(ROOT, "crates", "jyowo-harness-tool", "src");
 const BROKER_FILE = "network_broker.rs";
 
 const REQWEST_PATTERNS = [
+  { pattern: /\bDirect\s*\(\s*reqwest::Client\s*\)/g, label: "direct reqwest transport" },
+  { pattern: /\.\s*send\s*\(\s*\)/g, label: "raw HTTP send" },
+  { pattern: /\bAuthorizedNetworkPermit::for_test\s*\(/g, label: "test network permit" },
   // Direct construction
   { pattern: /\breqwest::Client::(builder|new)\s*\(/g, label: "reqwest::Client construction" },
   // ClientBuilder construction
   { pattern: /\breqwest::ClientBuilder::new\s*\(/g, label: "reqwest::ClientBuilder construction" },
   // Import of reqwest::Client or ClientBuilder (catches aliases via `use reqwest::Client as Foo`)
   { pattern: /^\s*use\s+reqwest::(Client|ClientBuilder)\b/gm, label: "reqwest::Client / ClientBuilder import" },
+  // Other raw reqwest entry points outside the broker.
+  { pattern: /\breqwest::(get|post|RequestBuilder)\b/g, label: "raw reqwest usage" },
 ];
 
 const violations = [];
@@ -59,26 +65,60 @@ function stripTestBlocks(lines) {
   const result = [...lines];
   let depth = 0;
   let inTest = false;
+  let pendingTestItem = false;
+  let skippingTestItem = false;
 
   for (let i = 0; i < result.length; i++) {
     const line = result[i];
 
-    // Track #[cfg(test)], #[cfg(all(test, ...))], #[cfg(any(test, ...))] and mod tests blocks.
-    if (/^\s*#\[cfg\s*\(.*\btest\b.*\)\]/.test(line)) {
-      inTest = true;
-      depth = 1;
-      result[i] = "";
-      continue;
-    }
-
     if (inTest) {
-      // Count braces to find end of test block
       const openBraces = (line.match(/\{/g) || []).length;
       const closeBraces = (line.match(/\}/g) || []).length;
       depth += openBraces - closeBraces;
       result[i] = "";
       if (depth <= 0) {
         inTest = false;
+        depth = 0;
+      }
+      continue;
+    }
+
+    if (skippingTestItem) {
+      const openBraces = (line.match(/\{/g) || []).length;
+      const closeBraces = (line.match(/\}/g) || []).length;
+      depth += openBraces - closeBraces;
+      result[i] = "";
+      if (depth > 0) {
+        continue;
+      }
+      if (openBraces > 0 || /[;,]\s*$/.test(line)) {
+        skippingTestItem = false;
+        depth = 0;
+      }
+      continue;
+    }
+
+    // Track #[cfg(test)], #[cfg(all(test, ...))], #[cfg(any(test, ...))] items.
+    if (isTestCfg(line)) {
+      pendingTestItem = true;
+      result[i] = "";
+      continue;
+    }
+
+    if (pendingTestItem) {
+      result[i] = "";
+      if (/^\s*$/.test(line) || /^\s*#\[/.test(line)) {
+        continue;
+      }
+
+      const openBraces = (line.match(/\{/g) || []).length;
+      const closeBraces = (line.match(/\}/g) || []).length;
+      pendingTestItem = false;
+      if (openBraces > closeBraces) {
+        skippingTestItem = true;
+        depth = openBraces - closeBraces;
+      } else if (!/[;,]\s*$/.test(line)) {
+        skippingTestItem = true;
         depth = 0;
       }
       continue;
@@ -94,6 +134,14 @@ function stripTestBlocks(lines) {
   }
 
   return result;
+}
+
+function isTestCfg(line) {
+  return (
+    /^\s*#\[cfg\s*\(/.test(line) &&
+    /\btest\b/.test(line) &&
+    !/cfg\s*\(\s*not\s*\(\s*test\s*\)\s*\)/.test(line)
+  );
 }
 
 function walkDir(dir) {
@@ -125,7 +173,7 @@ if (violations.length > 0) {
   }
   console.error(`\n${violations.length} violation(s) found.`);
   console.error(
-    "Production code outside network_broker.rs must not construct or import reqwest::Client."
+    "Production code outside network_broker.rs must not use raw reqwest, raw .send(), or test-only network permits."
   );
   console.error(
     "Use ToolNetworkBrokerCap::execute_json() for authorized HTTP dispatch."

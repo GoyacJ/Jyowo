@@ -1,16 +1,82 @@
 #![cfg(feature = "doubao")]
 
-use harness_model::SeedanceApiClient;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use harness_contracts::ModelError;
+use harness_model::{SeedanceApiClient, SeedanceHttpTransport};
 use serde_json::{json, Value};
 use wiremock::{
     matchers::{body_json, header, method, path},
     Mock, MockServer, ResponseTemplate,
 };
 
+struct ReqwestSeedanceTransport {
+    client: reqwest::Client,
+}
+
+impl ReqwestSeedanceTransport {
+    fn new() -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .no_proxy()
+                .pool_max_idle_per_host(0)
+                .build()
+                .expect("test reqwest client should build"),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl SeedanceHttpTransport for ReqwestSeedanceTransport {
+    async fn post_json(
+        &self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+        body: Vec<u8>,
+    ) -> Result<(u16, Vec<u8>), ModelError> {
+        let mut request = self.client.post(url).body(body);
+        for (key, value) in headers {
+            request = request.header(key.as_str(), value.as_str());
+        }
+        response_parts(request.send().await).await
+    }
+
+    async fn get_json(
+        &self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> Result<(u16, Vec<u8>), ModelError> {
+        let mut request = self.client.get(url);
+        for (key, value) in headers {
+            request = request.header(key.as_str(), value.as_str());
+        }
+        response_parts(request.send().await).await
+    }
+}
+
+async fn response_parts(
+    response: Result<reqwest::Response, reqwest::Error>,
+) -> Result<(u16, Vec<u8>), ModelError> {
+    let response = response.map_err(|error| ModelError::ProviderUnavailable(error.to_string()))?;
+    let status = response.status().as_u16();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| ModelError::ProviderUnavailable(error.to_string()))?
+        .to_vec();
+    Ok((status, body))
+}
+
+fn seedance_client(api_key: &str, server: &MockServer) -> SeedanceApiClient {
+    SeedanceApiClient::from_transport(Arc::new(ReqwestSeedanceTransport::new()), api_key)
+        .with_base_url(server.uri())
+}
+
 #[tokio::test]
 async fn seedance_create_video_task_uses_official_endpoint_and_auth() {
     let server = MockServer::start().await;
-    let client = SeedanceApiClient::from_api_key("provider-key").with_base_url(server.uri());
+    let client = seedance_client("provider-key", &server);
 
     let request = json!({
         "model": "doubao-seedance-2-0-260128",
@@ -43,7 +109,7 @@ async fn seedance_create_video_task_uses_official_endpoint_and_auth() {
 #[tokio::test]
 async fn seedance_query_running_task_returns_status() {
     let server = MockServer::start().await;
-    let client = SeedanceApiClient::from_api_key("provider-key").with_base_url(server.uri());
+    let client = seedance_client("provider-key", &server);
 
     Mock::given(method("GET"))
         .and(path("/contents/generations/tasks/cgt-task-1"))
@@ -63,7 +129,7 @@ async fn seedance_query_running_task_returns_status() {
 #[tokio::test]
 async fn seedance_query_task_percent_encodes_task_id_path_segment() {
     let server = MockServer::start().await;
-    let client = SeedanceApiClient::from_api_key("provider-key").with_base_url(server.uri());
+    let client = seedance_client("provider-key", &server);
 
     Mock::given(method("GET"))
         .and(path(
@@ -85,7 +151,7 @@ async fn seedance_query_task_percent_encodes_task_id_path_segment() {
 #[tokio::test]
 async fn seedance_query_completed_task_returns_video_url() {
     let server = MockServer::start().await;
-    let client = SeedanceApiClient::from_api_key("provider-key").with_base_url(server.uri());
+    let client = seedance_client("provider-key", &server);
 
     Mock::given(method("GET"))
         .and(path("/contents/generations/tasks/cgt-task-2"))
@@ -114,7 +180,7 @@ async fn seedance_query_completed_task_returns_video_url() {
 #[tokio::test]
 async fn seedance_provider_error_does_not_leak_api_key() {
     let server = MockServer::start().await;
-    let client = SeedanceApiClient::from_api_key("super-secret-key").with_base_url(server.uri());
+    let client = seedance_client("super-secret-key", &server);
 
     Mock::given(method("POST"))
         .and(path("/contents/generations/tasks"))
@@ -138,7 +204,7 @@ async fn seedance_provider_error_does_not_leak_api_key() {
 #[tokio::test]
 async fn seedance_auth_header_uses_bearer_shape() {
     let server = MockServer::start().await;
-    let client = SeedanceApiClient::from_api_key("provider-key").with_base_url(server.uri());
+    let client = seedance_client("provider-key", &server);
 
     Mock::given(method("GET"))
         .and(path("/contents/generations/tasks/cgt-task-3"))

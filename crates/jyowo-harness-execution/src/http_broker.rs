@@ -11,10 +11,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use harness_contracts::{HostRule, NetworkAccess, RedactRules, Redactor, ToolError};
+use harness_contracts::{BudgetMetric, HostRule, NetworkAccess, RedactRules, Redactor, ToolError};
 use harness_tool::{
-    AuthorizedNetworkPermit, HttpMethod, NetworkBrokerPreflightRequest, ToolHttpJsonRequest,
-    ToolHttpResponse, ToolNetworkBrokerCap, ToolNetworkBrokerPreflightCap,
+    AuthorizationTicketKey, AuthorizedNetworkPermit, HttpMethod, NetworkBrokerPreflightRequest,
+    ToolHttpJsonRequest, ToolHttpResponse, ToolNetworkBrokerCap, ToolNetworkBrokerPreflightCap,
 };
 use url::Url;
 
@@ -26,6 +26,7 @@ pub struct ReqwestToolNetworkBroker {
     client: reqwest::Client,
     max_response_bytes: u64,
     redactor: Arc<dyn Redactor>,
+    ticket_authority_key: AuthorizationTicketKey,
 }
 
 impl std::fmt::Debug for ReqwestToolNetworkBroker {
@@ -43,9 +44,26 @@ impl ReqwestToolNetworkBroker {
         max_response_bytes: u64,
         redactor: Arc<dyn Redactor>,
     ) -> Result<Self, ToolError> {
+        Self::new_with_ticket_authority(
+            timeout,
+            max_response_bytes,
+            redactor,
+            AuthorizationTicketKey::generate(),
+        )
+    }
+
+    /// Creates a broker bound to the same ticket authority as the runtime
+    /// `TicketLedger`.
+    pub fn new_with_ticket_authority(
+        timeout: Duration,
+        max_response_bytes: u64,
+        redactor: Arc<dyn Redactor>,
+        ticket_authority_key: AuthorizationTicketKey,
+    ) -> Result<Self, ToolError> {
         let client = reqwest::Client::builder()
             .timeout(timeout)
-            // No auto redirect following — every redirect target must be validated.
+            .no_proxy()
+            // No auto redirect following. Tools receive 3xx responses as-is.
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| ToolError::Internal(format!("broker client init failed: {error}")))?;
@@ -54,6 +72,7 @@ impl ReqwestToolNetworkBroker {
             client,
             max_response_bytes,
             redactor,
+            ticket_authority_key,
         })
     }
 
@@ -62,6 +81,7 @@ impl ReqwestToolNetworkBroker {
         permit: &AuthorizedNetworkPermit,
         request: &ToolHttpJsonRequest,
     ) -> Result<ValidatedUrl, ToolError> {
+        let approved_hosts = permit_approved_hosts(permit)?;
         let parsed = Url::parse(&request.url).map_err(|error| {
             ToolError::Validation(redact(format!("invalid request URL: {error}")))
         })?;
@@ -72,6 +92,11 @@ impl ReqwestToolNetworkBroker {
             return Err(ToolError::Validation(format!(
                 "broker: scheme `{scheme}` is not allowed; only http and https are supported"
             )));
+        }
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            return Err(ToolError::PermissionDenied(
+                "broker: URL userinfo credentials are not allowed".to_owned(),
+            ));
         }
 
         let host = parsed
@@ -86,9 +111,12 @@ impl ReqwestToolNetworkBroker {
             if ip.is_loopback() {
                 // Loopback IP is allowed only when the exact host:port is
                 // explicitly approved in the permit.
-                let host_port_str = format!("{host}:{port}");
-                let explicitly_approved = permit.approved_hosts().iter().any(|rule| {
-                    host_matches_rule(&host_port_str, rule) || host_matches_rule(&host, rule)
+                let explicitly_approved = approved_hosts.iter().any(|rule| {
+                    rule.pattern == host
+                        && rule
+                            .ports
+                            .as_ref()
+                            .is_some_and(|ports| ports.contains(&port))
                 });
                 if !explicitly_approved {
                     return Err(ToolError::PermissionDenied(format!(
@@ -103,8 +131,7 @@ impl ReqwestToolNetworkBroker {
         }
 
         // Validate the host against the approved allowlist.
-        let approved = permit
-            .approved_hosts()
+        let approved = approved_hosts
             .iter()
             .any(|rule| host_matches_rule(&host, rule) && port_matches_rule(port, rule));
 
@@ -119,38 +146,6 @@ impl ReqwestToolNetworkBroker {
             host,
             port,
         })
-    }
-
-    /// Validate a redirect target URL against the same permit.
-    fn validate_redirect(
-        permit: &AuthorizedNetworkPermit,
-        redirect_url: &Url,
-    ) -> Result<(), ToolError> {
-        let host = redirect_url
-            .host_str()
-            .ok_or_else(|| ToolError::Validation("broker: redirect URL has no host".to_owned()))?;
-
-        // Deny redirect to raw IP.
-        if let Ok(ip) = host.parse::<IpAddr>() {
-            if !ip.is_loopback() {
-                return Err(ToolError::PermissionDenied(format!(
-                    "broker: redirect to raw IP `{host}` is denied"
-                )));
-            }
-        }
-
-        let approved = permit
-            .approved_hosts()
-            .iter()
-            .any(|rule| host_matches_rule(host, rule));
-
-        if !approved {
-            return Err(ToolError::PermissionDenied(format!(
-                "broker: redirect to `{host}` is not in the approved allowlist"
-            )));
-        }
-
-        Ok(())
     }
 }
 
@@ -170,20 +165,35 @@ fn host_matches_rule(host: &str, rule: &HostRule) -> bool {
     if rule.pattern == host {
         return true;
     }
-    // Wildcard suffix match: "*.example.com" matches "api.example.com".
+    // Wildcard suffix match: "*.example.com" matches "api.example.com",
+    // but not "badexample.com" or the bare "example.com".
     if let Some(suffix) = rule.pattern.strip_prefix("*.") {
-        return host.ends_with(suffix) && host.len() > suffix.len();
+        return host
+            .strip_suffix(suffix)
+            .is_some_and(|prefix| prefix.ends_with('.') && prefix.len() > 1);
     }
     false
 }
 
 /// Checks whether a port matches a `HostRule` port list.
 ///
-/// When the rule has no port restriction, any port matches.
+/// HTTP broker v1 requires an explicit effective port in every allowlist rule.
 fn port_matches_rule(port: u16, rule: &HostRule) -> bool {
     match &rule.ports {
-        Some(ports) => ports.is_empty() || ports.contains(&port),
-        None => true,
+        Some(ports) => !ports.is_empty() && ports.contains(&port),
+        None => false,
+    }
+}
+
+fn permit_approved_hosts(permit: &AuthorizedNetworkPermit) -> Result<&[HostRule], ToolError> {
+    match permit.network_access() {
+        NetworkAccess::AllowList(hosts) if !hosts.is_empty() => Ok(hosts.as_slice()),
+        NetworkAccess::AllowList(_) => Err(ToolError::PermissionDenied(
+            "broker: authorized network permit has an empty allowlist".to_owned(),
+        )),
+        _ => Err(ToolError::PermissionDenied(
+            "broker: authorized network permit is not an allowlist permit".to_owned(),
+        )),
     }
 }
 
@@ -207,6 +217,15 @@ impl ToolNetworkBrokerPreflightCap for ReqwestToolNetworkBroker {
                 if hosts.is_empty() {
                     return Err(ToolError::Validation(
                         "broker preflight: allowlist is empty".to_owned(),
+                    ));
+                }
+                if hosts.iter().any(|rule| match &rule.ports {
+                    Some(ports) => ports.is_empty(),
+                    None => true,
+                }) {
+                    return Err(ToolError::Validation(
+                        "broker preflight: every allowlist rule must include at least one explicit port"
+                            .to_owned(),
                     ));
                 }
                 Ok(())
@@ -235,6 +254,11 @@ impl ToolNetworkBrokerCap for ReqwestToolNetworkBroker {
         permit: &AuthorizedNetworkPermit,
         request: ToolHttpJsonRequest,
     ) -> Result<ToolHttpResponse, ToolError> {
+        if !permit.verify_ticket_authority(&self.ticket_authority_key) {
+            return Err(ToolError::PermissionDenied(
+                "broker: authorization ticket proof is invalid".to_owned(),
+            ));
+        }
         let validated = Self::validate_request(permit, &request)?;
 
         // Build the reqwest request.
@@ -246,7 +270,10 @@ impl ToolNetworkBrokerCap for ReqwestToolNetworkBroker {
             HttpMethod::Patch => reqwest::Method::PATCH,
         };
 
-        let mut req = self.client.request(method, validated.url.clone());
+        let mut req = self
+            .client
+            .request(method, validated.url.clone())
+            .timeout(request.timeout);
 
         for (key, value) in &request.headers {
             req = req.header(key.as_str(), value.as_str());
@@ -273,7 +300,8 @@ impl ToolNetworkBrokerCap for ReqwestToolNetworkBroker {
         }
 
         // Read body with size cap.
-        let body = read_response_body(response, self.max_response_bytes).await?;
+        let response_cap = self.max_response_bytes.min(request.max_response_bytes);
+        let body = read_response_body(response, response_cap).await?;
 
         Ok(ToolHttpResponse {
             status,
@@ -284,29 +312,31 @@ impl ToolNetworkBrokerCap for ReqwestToolNetworkBroker {
 }
 
 async fn read_response_body(
-    response: reqwest::Response,
+    mut response: reqwest::Response,
     max_bytes: u64,
 ) -> Result<Bytes, ToolError> {
     let content_length = response.content_length().unwrap_or(0);
     if content_length > max_bytes {
-        return Err(ToolError::Validation(format!(
-            "broker: response Content-Length {content_length} exceeds {max_bytes} byte limit"
-        )));
+        return Err(ToolError::ResultTooLarge {
+            original: content_length,
+            limit: max_bytes,
+            metric: BudgetMetric::Bytes,
+        });
     }
 
-    match response.bytes().await {
-        Ok(bytes) => {
-            if bytes.len() as u64 > max_bytes {
-                Err(ToolError::Validation(format!(
-                    "broker: response body {} bytes exceeds {max_bytes} byte limit",
-                    bytes.len()
-                )))
-            } else {
-                Ok(bytes)
-            }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        ToolError::Internal(format!("broker: failed to read response body: {error}"))
+    })? {
+        let next_len = body.len() as u64 + chunk.len() as u64;
+        if next_len > max_bytes {
+            return Err(ToolError::ResultTooLarge {
+                original: next_len,
+                limit: max_bytes,
+                metric: BudgetMetric::Bytes,
+            });
         }
-        Err(error) => Err(ToolError::Internal(format!(
-            "broker: failed to read response body: {error}"
-        ))),
+        body.extend_from_slice(&chunk);
     }
+    Ok(Bytes::from(body))
 }

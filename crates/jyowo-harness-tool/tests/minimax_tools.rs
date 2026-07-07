@@ -4,26 +4,25 @@ use base64::{engine::general_purpose, Engine as _};
 use chrono::Utc;
 use futures::{future::BoxFuture, StreamExt};
 use harness_contracts::{
-    BlobMeta, BlobRef, BlobWriterCap, CapabilityRegistry, CapabilityRouteKind, ModelModality,
-    PermissionSubject, ProviderCredential, ProviderCredentialResolveContext,
-    ProviderCredentialResolverCap, ToolActionPlan, ToolCapability, ToolError, ToolResult,
-    ToolResultPart,
+    ActionResource, BlobMeta, BlobRef, BlobWriterCap, CapabilityRegistry, CapabilityRouteKind,
+    ModelModality, NetworkAccess, PermissionSubject, ProviderCredential,
+    ProviderCredentialResolveContext, ProviderCredentialResolverCap, ToolActionPlan,
+    ToolCapability, ToolError, ToolResult, ToolResultPart,
 };
-use harness_contracts::{HostRule, RunId, SessionId, ToolUseId};
 use harness_execution::ReqwestToolNetworkBroker;
 use harness_tool::provider_media::MAX_MINIMAX_MEDIA_BYTES;
 use harness_tool::{
-    AuthorizedNetworkPermit, AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset,
-    InterruptToken, MiniMaxImageToImageTool, MiniMaxMusicGenerationTool, MiniMaxResponsesTool,
-    MiniMaxTextToImageTool, MiniMaxTextToSpeechAsyncQueryTool, MiniMaxTextToSpeechAsyncTool,
-    MiniMaxTextToSpeechTool, MiniMaxTextToVideoTool, MiniMaxVideoGenerationQueryTool,
-    MiniMaxVideoTemplateQueryTool, Tool, ToolContext, ToolEvent, ToolNetworkBrokerCap,
-    ToolRegistryBuilder,
+    AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset, InterruptToken,
+    MiniMaxImageToImageTool, MiniMaxModelsListTool, MiniMaxMusicGenerationTool,
+    MiniMaxResponsesTool, MiniMaxTextToImageTool, MiniMaxTextToSpeechAsyncQueryTool,
+    MiniMaxTextToSpeechAsyncTool, MiniMaxTextToSpeechTool, MiniMaxTextToVideoTool,
+    MiniMaxVideoGenerationQueryTool, MiniMaxVideoTemplateQueryTool, Tool, ToolContext, ToolEvent,
+    ToolNetworkBrokerCap, ToolRegistryBuilder,
 };
 use serde_json::json;
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 use wiremock::{
     matchers::{header, method, path, query_param},
@@ -101,10 +100,49 @@ async fn minimax_permission_uses_configured_credential_base_url_host() {
     match plan.unwrap().subject {
         PermissionSubject::NetworkAccess { host, port } => {
             assert_eq!(host, "api.minimax.io");
-            assert_eq!(port, None);
+            assert_eq!(port, Some(443));
         }
         other => panic!("expected network permission request, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn minimax_media_plan_declares_provider_media_hosts() {
+    let tool = MiniMaxVideoGenerationQueryTool::default();
+    let plan = tool
+        .plan(
+            &json!({"request": {"task_id": "task-1"}}),
+            &ctx_with_resolver(Arc::new(MiniMaxResolver {
+                api_key: "sk-redacted-test-key".to_owned(),
+                base_url: Some("https://api.minimax.io".to_owned()),
+            })),
+        )
+        .await
+        .expect("media query plan should build");
+
+    assert_plan_allows_network(&plan, "api.minimax.io", 443);
+    assert_plan_allows_network(&plan, "*.minimaxi.com", 443);
+    assert_plan_allows_network(&plan, "*.minimax.io", 443);
+    assert_plan_allows_network(&plan, "*.minimax.chat", 443);
+}
+
+#[tokio::test]
+async fn minimax_non_media_plan_does_not_declare_provider_media_hosts() {
+    let tool = MiniMaxModelsListTool::default();
+    let plan = tool
+        .plan(
+            &json!({"request": {}}),
+            &ctx_with_resolver(Arc::new(MiniMaxResolver {
+                api_key: "sk-redacted-test-key".to_owned(),
+                base_url: Some("https://api.minimax.io".to_owned()),
+            })),
+        )
+        .await
+        .expect("model list plan should build");
+
+    assert_plan_allows_network(&plan, "api.minimax.io", 443);
+    assert_plan_does_not_allow_network(&plan, "*.minimaxi.com");
+    assert_plan_does_not_allow_network(&plan, "*.minimax.chat");
 }
 
 #[tokio::test]
@@ -753,7 +791,7 @@ async fn minimax_brokered_request_fails_when_broker_is_missing() {
 
     // Context WITHOUT the broker registered — the tool must fail when trying
     // to obtain `ToolNetworkBrokerCap` during execute_authorized.
-    let ctx = ctx_with_media(server.uri());
+    let ctx = ctx_with_media_without_broker(server.uri());
 
     let tool = MiniMaxTextToImageTool::default();
     let error = execute_error(&tool, json!({"request": {"prompt": "test"}}), ctx).await;
@@ -766,27 +804,13 @@ async fn minimax_brokered_request_fails_when_broker_is_missing() {
 
 fn broker_for_test() -> Arc<dyn ToolNetworkBrokerCap> {
     Arc::new(
-        ReqwestToolNetworkBroker::new(
+        ReqwestToolNetworkBroker::new_with_ticket_authority(
             std::time::Duration::from_secs(10),
             1_048_576,
             std::sync::Arc::new(harness_contracts::NoopRedactor),
+            test_ticket_authority(),
         )
         .expect("broker construction"),
-    )
-}
-
-fn permit_for_server(server: &MockServer) -> AuthorizedNetworkPermit {
-    let addr = server.address();
-    let host_rule = HostRule {
-        pattern: addr.ip().to_string(),
-        ports: Some(vec![addr.port()]),
-    };
-    AuthorizedNetworkPermit::for_test(
-        "MiniMaxTextToImage",
-        ToolUseId::new(),
-        SessionId::new(),
-        RunId::new(),
-        vec![host_rule],
     )
 }
 
@@ -819,6 +843,10 @@ async fn execute_result(
 }
 
 fn ctx_with_media(base_url: String) -> ToolContext {
+    ctx_with_broker(broker_for_test(), base_url)
+}
+
+fn ctx_with_media_without_broker(base_url: String) -> ToolContext {
     let mut cap_registry = CapabilityRegistry::default();
     let resolver: Arc<dyn ProviderCredentialResolverCap> = Arc::new(MiniMaxResolver {
         api_key: "provider-test-token".to_owned(),
@@ -858,7 +886,10 @@ async fn execute_error(tool: &dyn Tool, input: serde_json::Value, ctx: ToolConte
         Err(error) => return error,
     };
     let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
-    let stream = tool.execute_authorized(authorized, ctx).await.unwrap();
+    let stream = match tool.execute_authorized(authorized, ctx).await {
+        Ok(stream) => stream,
+        Err(error) => return error,
+    };
     let events = stream.collect::<Vec<_>>().await;
     events
         .into_iter()
@@ -901,17 +932,76 @@ fn ctx_with_cap_registry(cap_registry: CapabilityRegistry) -> ToolContext {
     }
 }
 
-fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
-    AuthorizedTicketSummary {
-        ticket_id: harness_contracts::AuthorizationTicketId::new(),
-        tenant_id: harness_contracts::TenantId::SINGLE,
-        session_id: harness_contracts::SessionId::new(),
-        run_id: harness_contracts::RunId::new(),
-        tool_use_id: plan.tool_use_id,
-        tool_name: plan.tool_name.clone(),
-        action_plan_hash: plan.plan_hash.clone(),
-        consumed_at: Utc::now(),
+fn assert_plan_allows_network(plan: &ToolActionPlan, pattern: &str, port: u16) {
+    let NetworkAccess::AllowList(hosts) = &plan.sandbox_policy.network else {
+        panic!(
+            "expected allowlist network policy, got {:?}",
+            plan.sandbox_policy.network
+        );
+    };
+    assert!(
+        hosts.iter().any(|rule| rule.pattern == pattern
+            && rule
+                .ports
+                .as_ref()
+                .is_some_and(|ports| ports.as_slice() == [port])),
+        "expected network allowlist to contain {pattern}:{port}, got {hosts:?}"
+    );
+    assert!(
+        plan.resources.iter().any(|resource| matches!(
+            resource,
+            ActionResource::Network { host, port: resource_port }
+                if host == pattern && *resource_port == Some(port)
+        )),
+        "expected action resources to contain {pattern}:{port}, got {:?}",
+        plan.resources
+    );
+}
+
+fn assert_plan_does_not_allow_network(plan: &ToolActionPlan, pattern: &str) {
+    if let NetworkAccess::AllowList(hosts) = &plan.sandbox_policy.network {
+        assert!(
+            hosts.iter().all(|rule| rule.pattern != pattern),
+            "expected network allowlist not to contain {pattern}, got {hosts:?}"
+        );
     }
+    assert!(
+        plan.resources.iter().all(|resource| !matches!(
+            resource,
+            ActionResource::Network { host, .. } if host == pattern
+        )),
+        "expected action resources not to contain {pattern}, got {:?}",
+        plan.resources
+    );
+}
+
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    {
+        let ledger = harness_tool::TicketLedger::with_authority_key(
+            std::time::Duration::from_secs(300),
+            test_ticket_authority(),
+        );
+        let claims = harness_tool::AuthorizationTicketClaims {
+            tenant_id: harness_contracts::TenantId::SINGLE,
+            session_id: harness_contracts::SessionId::new(),
+            run_id: harness_contracts::RunId::new(),
+            tool_use_id: plan.tool_use_id,
+            tool_name: plan.tool_name.clone(),
+            action_plan_hash: plan.plan_hash.clone(),
+        };
+        let ticket = ledger
+            .mint(claims.clone(), Utc::now())
+            .expect("test ticket should mint");
+        ledger
+            .consume(ticket.id, &claims, Utc::now())
+            .expect("test ticket should consume")
+    }
+}
+
+fn test_ticket_authority() -> harness_tool::AuthorizationTicketKey {
+    static KEY: OnceLock<harness_tool::AuthorizationTicketKey> = OnceLock::new();
+    KEY.get_or_init(harness_tool::AuthorizationTicketKey::generate)
+        .clone()
 }
 
 struct WrongProviderResolver;

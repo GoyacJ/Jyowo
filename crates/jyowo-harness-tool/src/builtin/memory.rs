@@ -315,7 +315,7 @@ async fn execute_runtime(
                 explicit_user_instruction: false,
                 include_raw_content: false,
                 action_plan_id: Some(authorized.action_plan().plan_id),
-                authorization_ticket_id: Some(authorized.ticket().ticket_id),
+                authorization_ticket_id: Some(authorized.ticket().ticket_id()),
                 non_interactive_policy_grant: false,
             },
             provider_policy: MemoryProviderSelectionPolicy::PolicySelected,

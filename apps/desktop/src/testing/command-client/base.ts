@@ -54,6 +54,7 @@ import type {
   ReplayTimelineResponse,
   RequestProviderConfigApiKeyRevealResponse,
   RunAutomationNowResponse,
+  RuntimeExecutionStatus,
   SaveAutomationResponse,
   SaveBrowserMcpPresetResponse,
   SaveMcpServerResponse,
@@ -81,6 +82,32 @@ export const fixtureAppInfo: AppInfo = {
 export const fixtureHarnessHealthcheck: HarnessHealthcheck = {
   status: 'available',
   sdkCrate: 'jyowo_harness_sdk',
+}
+
+export const fixtureRuntimeExecutionStatus: RuntimeExecutionStatus = {
+  processSandbox: {
+    backendId: 'routing',
+    candidateIds: ['local-process'],
+    availableNetworkPolicies: ['none'],
+    availableWorkspacePolicies: ['read_only'],
+    unavailableReasons: [],
+  },
+  httpBroker: {
+    available: false,
+    deniedReasons: ['network broker is not registered in the capability registry'],
+  },
+  tools: [
+    {
+      toolName: 'Bash',
+      available: true,
+      unavailableReason: null,
+    },
+    {
+      toolName: 'WebFetch',
+      available: false,
+      unavailableReason: 'HTTP broker is not registered',
+    },
+  ],
 }
 
 export function cloneResponse<T>(value: T): T {
@@ -179,6 +206,7 @@ export interface TestCommandClientOptions {
   setProjectPluginsEnabled?: SetProjectPluginsEnabledResponse
   referenceCandidates?: ListReferenceCandidatesResponse
   replayTimeline?: ReplayTimelineResponse
+  runtimeExecutionStatus?: RuntimeExecutionStatus
   conversationTimelinePage?: PageConversationTimelineResponse
   conversationInspectorItem?: TestCommandResponseOverride<
     CommandClient['getConversationInspectorItem']

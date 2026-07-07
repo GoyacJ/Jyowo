@@ -40,6 +40,7 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     getPluginDetail: () => Promise.reject(error),
     getProviderConfigApiKey: () => Promise.reject(error),
     getReplayTimeline: () => Promise.reject(error),
+    getRuntimeExecutionStatus: () => Promise.reject(error),
     getSkillCatalogEntry: () => Promise.reject(error),
     getSkillCatalogFile: () => Promise.reject(error),
     pageConversationTimeline: () => Promise.reject(error),

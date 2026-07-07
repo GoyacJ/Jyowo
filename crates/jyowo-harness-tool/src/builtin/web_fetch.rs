@@ -5,9 +5,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    ActionResource, DecisionScope, HostRule, NetworkAccess, PermissionSubject, ToolActionPlan,
-    ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
-    WorkspaceAccess,
+    ActionResource, BudgetMetric, DecisionScope, HostRule, NetworkAccess, PermissionSubject,
+    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
+    ToolResult, WorkspaceAccess,
 };
 use harness_permission::{DangerousPatternLibrary, PermissionCheck};
 use serde_json::{json, Value};
@@ -22,26 +22,6 @@ use crate::{
 #[derive(Clone)]
 pub struct WebFetchTool {
     descriptor: ToolDescriptor,
-    backends: Vec<Arc<dyn WebFetchBackend>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WebFetchRequest {
-    pub url: Url,
-    pub max_bytes: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WebFetchResponse {
-    pub url: Url,
-    pub status: u16,
-    pub content_type: Option<String>,
-    pub body: String,
-}
-
-#[async_trait]
-pub trait WebFetchBackend: Send + Sync + 'static {
-    async fn fetch(&self, request: WebFetchRequest) -> Result<WebFetchResponse, ToolError>;
 }
 
 impl Default for WebFetchTool {
@@ -65,17 +45,14 @@ impl Default for WebFetchTool {
                     }),
                 ),
             ),
-            backends: Vec::new(),
         }
     }
 }
 
 impl WebFetchTool {
-    pub fn new(backends: Vec<Arc<dyn WebFetchBackend>>) -> Self {
-        Self {
-            descriptor: Self::default().descriptor,
-            backends,
-        }
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -97,7 +74,7 @@ impl Tool for WebFetchTool {
             let library = DangerousPatternLibrary::default_all();
             if let Some(rule) = library.detect_url(parsed.as_str()) {
                 let host = parsed.host_str().unwrap_or_default().to_owned();
-                let port = parsed.port();
+                let port = parsed.port_or_known_default();
                 return action_plan_from_permission_check(
                     &self.descriptor,
                     input,
@@ -114,7 +91,7 @@ impl Tool for WebFetchTool {
                     },
                     vec![ActionResource::Network {
                         host: host.clone(),
-                        port: parsed.port(),
+                        port,
                     }],
                     WorkspaceAccess::None,
                     network_allow_list(host, port),
@@ -127,7 +104,7 @@ impl Tool for WebFetchTool {
             .and_then(Url::host_str)
             .unwrap_or_default()
             .to_owned();
-        let port = parsed.as_ref().and_then(Url::port);
+        let port = parsed.as_ref().and_then(Url::port_or_known_default);
         action_plan_from_permission_check(
             &self.descriptor,
             input,
@@ -158,40 +135,9 @@ impl Tool for WebFetchTool {
         let url = url(input).map_err(validation_error)?;
         let max_bytes = max_bytes(input).map_err(validation_error)?;
 
-        // Broker path: use ToolNetworkBrokerCap when the permit and broker are available.
-        if let Ok(permit) = authorized.network_permit() {
-            if let Ok(broker) =
-                ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)
-            {
-                return brokered_web_fetch(broker, permit, url, max_bytes).await;
-            }
-        }
-
-        // Fallback: registered backends.
-        let backend = self.backends.first().ok_or_else(|| {
-            ToolError::CapabilityMissing(harness_contracts::ToolCapability::Custom(
-                "web_fetch_backend".to_owned(),
-            ))
-        })?;
-        let response = backend.fetch(WebFetchRequest { url, max_bytes }).await?;
-        let status = response.status;
-        let final_url = response.url.to_string();
-        let content_type = response.content_type;
-        let mut body = response.body;
-        let truncated = body.len() > max_bytes;
-        if truncated {
-            body = take_bytes_on_char_boundary(&body, max_bytes);
-        }
-
-        Ok(Box::pin(stream::iter([ToolEvent::Final(
-            ToolResult::Structured(json!({
-                "url": final_url,
-                "status": status,
-                "content_type": content_type,
-                "body": body,
-                "truncated": truncated
-            })),
-        )])))
+        let permit = authorized.network_permit()?;
+        let broker = ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
+        brokered_web_fetch(broker, permit, url, max_bytes).await
     }
 }
 
@@ -212,21 +158,22 @@ async fn brokered_web_fetch(
         max_response_bytes: max_bytes_u64.min(10 * 1024 * 1024),
     };
     let resp = broker.execute_json(&permit, req).await?;
+    if resp.body.len() > max_bytes {
+        return Err(ToolError::ResultTooLarge {
+            original: resp.body.len() as u64,
+            limit: max_bytes_u64,
+            metric: BudgetMetric::Bytes,
+        });
+    }
     let body_str = String::from_utf8_lossy(&resp.body).into_owned();
-    let truncated = body_str.len() > max_bytes;
-    let body = if truncated {
-        take_bytes_on_char_boundary(&body_str, max_bytes)
-    } else {
-        body_str
-    };
 
     Ok(Box::pin(stream::iter([ToolEvent::Final(
         ToolResult::Structured(json!({
             "url": url_str,
             "status": resp.status,
             "content_type": resp.headers.get("content-type").cloned(),
-            "body": body,
-            "truncated": truncated
+            "body": body_str,
+            "truncated": false
         })),
     )])))
 }
@@ -265,15 +212,4 @@ fn network_allow_list(host: String, port: Option<u16>) -> NetworkAccess {
         pattern: host,
         ports: port.map(|port| vec![port]),
     }])
-}
-
-fn take_bytes_on_char_boundary(text: &str, max_bytes: usize) -> String {
-    if text.len() <= max_bytes {
-        return text.to_owned();
-    }
-    let mut end = max_bytes;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text[..end].to_owned()
 }

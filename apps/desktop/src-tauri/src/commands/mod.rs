@@ -31,7 +31,7 @@ use harness_contracts::{
     PluginOperationStatus, PluginSummary, ProviderCapabilityRoute, ProviderCapabilityRouteOption,
     ProviderCapabilityRouteSettings, ProviderProbeSnapshot, ProviderServiceAdapterAvailability,
     RejectMemoryCandidateRequest, RejectMemoryCandidateResponse, RejectionReason,
-    RuntimeExecutionStatus, SandboxError, SandboxMode, ToolGroup, TrustLevel, UiSafeText,
+    RuntimeExecutionStatus, SandboxMode, ToolGroup, TrustLevel, UiSafeText,
     UpdateMemorySettingsRequest, UpdateMemorySettingsResponse, UpdateThreadMemorySettingsRequest,
     UpdateThreadMemorySettingsResponse, WorkspaceAccess,
 };

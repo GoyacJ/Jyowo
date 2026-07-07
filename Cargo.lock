@@ -3449,6 +3449,7 @@ dependencies = [
  "parking_lot",
  "regex",
  "reqwest 0.13.4",
+ "ring",
  "schemars 1.2.1",
  "secrecy",
  "serde",

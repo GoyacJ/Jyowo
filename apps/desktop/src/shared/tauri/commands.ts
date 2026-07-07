@@ -3966,8 +3966,6 @@ const deleteProjectResponseSchema = z
 export type AppInfo = z.infer<typeof appInfoSchema>
 export type HarnessHealthcheck = z.infer<typeof harnessHealthcheckSchema>
 export type RuntimeExecutionStatus = z.infer<typeof runtimeExecutionStatusSchema>
-export type ProcessSandboxStatus = z.infer<typeof processSandboxStatusSchema>
-export type BrokerStatus = z.infer<typeof brokerStatusSchema>
 export type ToolRuntimeStatus = z.infer<typeof toolRuntimeStatusSchema>
 export type ListConversationsResponse = z.infer<typeof listConversationsResponseSchema>
 export type ListProjectsResponse = z.infer<typeof listProjectsResponseSchema>
@@ -5427,6 +5425,12 @@ export function getHarnessHealthcheck(
   client: CommandClient = tauriCommandClient,
 ): Promise<HarnessHealthcheck> {
   return client.getHarnessHealthcheck()
+}
+
+export function getRuntimeExecutionStatus(
+  client: CommandClient = tauriCommandClient,
+): Promise<RuntimeExecutionStatus> {
+  return client.getRuntimeExecutionStatus()
 }
 
 export function listConversations(

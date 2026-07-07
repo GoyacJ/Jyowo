@@ -14,7 +14,7 @@ use harness_sandbox::{
     execute_with_lifecycle, preflight_exec, restore_with_lifecycle, shutdown_with_lifecycle,
     snapshot_with_lifecycle, ActivityHandle, EventSink, ExecContext, ExecOutcome, ExecSpec,
     NetworkPolicySupport, ProcessHandle, SandboxBackend, SandboxCapabilities, SessionSnapshotFile,
-    SnapshotSpec, WorkspacePolicySupport,
+    SnapshotSpec,
 };
 
 #[derive(Default)]

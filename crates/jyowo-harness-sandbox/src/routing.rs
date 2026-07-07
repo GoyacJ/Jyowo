@@ -94,6 +94,10 @@ impl SandboxBackend for RoutingSandboxBackend {
         "routing"
     }
 
+    fn candidate_backend_ids(&self) -> Vec<String> {
+        self.candidate_ids()
+    }
+
     fn capabilities(&self) -> SandboxCapabilities {
         // The router reports the union of its children's capabilities. A policy is
         // supported when at least one child backend can enforce it.
@@ -213,7 +217,13 @@ impl SandboxBackend for RoutingSandboxBackend {
                 });
                 Ok(handle)
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                let _ = lease
+                    .selected_backend
+                    .after_execute(&ExecOutcome::default(), &ctx)
+                    .await;
+                Err(error)
+            }
         }
     }
 
@@ -282,21 +292,40 @@ struct RoutingActivityHandle {
     after_execute_started: AtomicBool,
 }
 
+impl RoutingActivityHandle {
+    fn mark_after_execute_started(&self) -> bool {
+        !self.after_execute_started.swap(true, Ordering::SeqCst)
+    }
+
+    async fn run_after_execute_once(&self, outcome: &ExecOutcome) {
+        if self.mark_after_execute_started() {
+            let _ = self
+                .selected_backend
+                .after_execute(outcome, &self.ctx)
+                .await;
+        }
+    }
+}
+
 #[async_trait]
 impl ActivityHandle for RoutingActivityHandle {
     async fn wait(&self) -> Result<ExecOutcome, SandboxError> {
-        let outcome = self.inner.wait().await?;
-        if !self.after_execute_started.swap(true, Ordering::SeqCst) {
-            let _ = self
-                .selected_backend
-                .after_execute(&outcome, &self.ctx)
-                .await;
+        match self.inner.wait().await {
+            Ok(outcome) => {
+                self.run_after_execute_once(&outcome).await;
+                Ok(outcome)
+            }
+            Err(error) => {
+                self.run_after_execute_once(&ExecOutcome::default()).await;
+                Err(error)
+            }
         }
-        Ok(outcome)
     }
 
     async fn kill(&self, signal: Signal, scope: KillScope) -> Result<(), SandboxError> {
-        self.inner.kill(signal, scope).await
+        let result = self.inner.kill(signal, scope).await;
+        self.run_after_execute_once(&ExecOutcome::default()).await;
+        result
     }
 
     fn touch(&self) {
@@ -305,6 +334,23 @@ impl ActivityHandle for RoutingActivityHandle {
 
     fn last_activity(&self) -> Instant {
         self.inner.last_activity()
+    }
+}
+
+impl Drop for RoutingActivityHandle {
+    fn drop(&mut self) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        if self.mark_after_execute_started() {
+            let selected_backend = Arc::clone(&self.selected_backend);
+            let ctx = self.ctx.clone();
+            handle.spawn(async move {
+                let _ = selected_backend
+                    .after_execute(&ExecOutcome::default(), &ctx)
+                    .await;
+            });
+        }
     }
 }
 
@@ -328,6 +374,7 @@ mod tests {
         execute_count: AtomicU64,
         /// When `Some`, execute returns this error instead of a successful handle.
         execute_err: Mutex<Option<SandboxError>>,
+        activity_wait_result: Mutex<Result<ExecOutcome, SandboxError>>,
         after_execute_count: AtomicU64,
     }
 
@@ -341,16 +388,17 @@ mod tests {
                 before_execute_result: Mutex::new(Ok(())),
                 execute_count: AtomicU64::new(0),
                 execute_err: Mutex::new(None),
+                activity_wait_result: Mutex::new(Ok(ExecOutcome::default())),
                 after_execute_count: AtomicU64::new(0),
             })
         }
 
-        fn set_preflight_override(&self, result: Result<(), SandboxError>) {
-            *self.preflight_override.lock().unwrap() = Some(result);
-        }
-
         fn set_before_execute_result(&self, result: Result<(), SandboxError>) {
             *self.before_execute_result.lock().unwrap() = result;
+        }
+
+        fn set_activity_wait_result(&self, result: Result<ExecOutcome, SandboxError>) {
+            *self.activity_wait_result.lock().unwrap() = result;
         }
 
         fn set_execute_err(&self, err: SandboxError) {
@@ -371,7 +419,7 @@ mod tests {
     }
 
     struct RecordingActivityHandle {
-        outcome: ExecOutcome,
+        wait_result: Result<ExecOutcome, SandboxError>,
         wait_count: AtomicU64,
         kill_count: AtomicU64,
     }
@@ -380,7 +428,7 @@ mod tests {
     impl ActivityHandle for RecordingActivityHandle {
         async fn wait(&self) -> Result<ExecOutcome, SandboxError> {
             self.wait_count.fetch_add(1, Ordering::SeqCst);
-            Ok(self.outcome.clone())
+            self.wait_result.clone()
         }
 
         async fn kill(&self, _signal: Signal, _scope: KillScope) -> Result<(), SandboxError> {
@@ -431,7 +479,9 @@ mod tests {
             if let Some(err) = self.execute_err.lock().unwrap().clone() {
                 return Err(err);
             }
-            Ok(stub_handle(ExecOutcome::default()))
+            Ok(stub_handle_with_wait_result(
+                self.activity_wait_result.lock().unwrap().clone(),
+            ))
         }
 
         async fn after_execute(
@@ -488,7 +538,9 @@ mod tests {
         }
     }
 
-    fn stub_handle(outcome: ExecOutcome) -> ProcessHandle {
+    fn stub_handle_with_wait_result(
+        wait_result: Result<ExecOutcome, SandboxError>,
+    ) -> ProcessHandle {
         ProcessHandle {
             pid: None,
             stdout: None,
@@ -496,7 +548,7 @@ mod tests {
             stdin: None,
             cwd_marker: None,
             activity: Arc::new(RecordingActivityHandle {
-                outcome,
+                wait_result,
                 wait_count: AtomicU64::new(0),
                 kill_count: AtomicU64::new(0),
             }),
@@ -618,6 +670,159 @@ mod tests {
             "after_execute must be called exactly once"
         );
         drop(outcome);
+    }
+
+    #[tokio::test]
+    async fn wait_error_still_calls_selected_child_after_execute_once() {
+        let caps = SandboxCapabilities {
+            network: NetworkPolicySupport {
+                unrestricted: true,
+                ..NetworkPolicySupport::default()
+            },
+            max_concurrent_execs: 1,
+            ..SandboxCapabilities::default()
+        };
+        let stub = StubBackend::new("selected", caps);
+        stub.set_activity_wait_result(Err(SandboxError::Unavailable {
+            backend: "selected".to_owned(),
+            detail: "wait failed".to_owned(),
+        }));
+
+        let router = RoutingSandboxBackend::new(vec![stub.clone()]).unwrap();
+        let spec = spec_with_network(NetworkAccess::Unrestricted);
+        let mut ctx = test_ctx();
+        ctx.execution_id = 142;
+
+        router.before_execute(&spec, &ctx).await.unwrap();
+        let handle = router.execute(spec, ctx).await.unwrap();
+
+        handle
+            .activity
+            .wait()
+            .await
+            .expect_err("inner wait failure should propagate");
+        assert_eq!(
+            stub.after_execute_count(),
+            1,
+            "selected child cleanup should run even when wait fails"
+        );
+
+        let _ = handle.activity.wait().await;
+        assert_eq!(
+            stub.after_execute_count(),
+            1,
+            "selected child cleanup must still be exactly once"
+        );
+    }
+
+    #[tokio::test]
+    async fn kill_calls_selected_child_after_execute_once() {
+        let caps = SandboxCapabilities {
+            network: NetworkPolicySupport {
+                unrestricted: true,
+                ..NetworkPolicySupport::default()
+            },
+            max_concurrent_execs: 1,
+            ..SandboxCapabilities::default()
+        };
+        let stub = StubBackend::new("selected", caps);
+
+        let router = RoutingSandboxBackend::new(vec![stub.clone()]).unwrap();
+        let spec = spec_with_network(NetworkAccess::Unrestricted);
+        let mut ctx = test_ctx();
+        ctx.execution_id = 143;
+
+        router.before_execute(&spec, &ctx).await.unwrap();
+        let handle = router.execute(spec, ctx).await.unwrap();
+
+        handle
+            .activity
+            .kill(15, KillScope::Process)
+            .await
+            .expect("kill should delegate to selected child");
+        assert_eq!(
+            stub.after_execute_count(),
+            1,
+            "selected child cleanup should run after kill"
+        );
+
+        let _ = handle.activity.wait().await;
+        assert_eq!(
+            stub.after_execute_count(),
+            1,
+            "wait after kill must not duplicate selected child cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_activity_handle_calls_selected_child_after_execute_once() {
+        let caps = SandboxCapabilities {
+            network: NetworkPolicySupport {
+                unrestricted: true,
+                ..NetworkPolicySupport::default()
+            },
+            max_concurrent_execs: 1,
+            ..SandboxCapabilities::default()
+        };
+        let stub = StubBackend::new("selected", caps);
+
+        let router = RoutingSandboxBackend::new(vec![stub.clone()]).unwrap();
+        let spec = spec_with_network(NetworkAccess::Unrestricted);
+        let mut ctx = test_ctx();
+        ctx.execution_id = 144;
+
+        router.before_execute(&spec, &ctx).await.unwrap();
+        let handle = router.execute(spec, ctx).await.unwrap();
+        drop(handle);
+
+        for _ in 0..20 {
+            if stub.after_execute_count() == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            stub.after_execute_count(),
+            1,
+            "selected child cleanup should run when the routed handle is dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_error_calls_selected_child_after_execute_once() {
+        let caps = SandboxCapabilities {
+            network: NetworkPolicySupport {
+                unrestricted: true,
+                ..NetworkPolicySupport::default()
+            },
+            max_concurrent_execs: 1,
+            ..SandboxCapabilities::default()
+        };
+        let stub = StubBackend::new("selected", caps);
+        stub.set_execute_err(SandboxError::Unavailable {
+            backend: "selected".to_owned(),
+            detail: "spawn failed".to_owned(),
+        });
+
+        let router = RoutingSandboxBackend::new(vec![stub.clone()]).unwrap();
+        let spec = spec_with_network(NetworkAccess::Unrestricted);
+        let mut ctx = test_ctx();
+        ctx.execution_id = 145;
+
+        router.before_execute(&spec, &ctx).await.unwrap();
+        match router.execute(spec, ctx).await {
+            Ok(_) => panic!("child execute failure should propagate"),
+            Err(error) => assert!(
+                error.to_string().contains("spawn failed"),
+                "original child execute error should propagate: {error}"
+            ),
+        }
+
+        assert_eq!(
+            stub.after_execute_count(),
+            1,
+            "selected child cleanup should run when child execute fails"
+        );
     }
 
     #[tokio::test]

@@ -94,9 +94,12 @@ pub use task_stop::TaskStopTool;
 #[cfg(feature = "builtin-toolset")]
 pub use todo::TodoTool;
 #[cfg(feature = "builtin-toolset")]
-pub use web_fetch::{WebFetchBackend, WebFetchRequest, WebFetchResponse, WebFetchTool};
+pub use web_fetch::WebFetchTool;
 #[cfg(feature = "builtin-toolset")]
-pub use web_search::{WebSearchBackend, WebSearchRequest, WebSearchResult, WebSearchTool};
+pub use web_search::{
+    WebSearchBackend, WebSearchRequest, WebSearchResult, WebSearchTool,
+    WEB_SEARCH_BACKEND_CAPABILITY,
+};
 #[cfg(feature = "builtin-toolset")]
 pub use write::FileWriteTool;
 

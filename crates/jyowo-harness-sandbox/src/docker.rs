@@ -376,6 +376,16 @@ impl DockerSandbox {
         }
     }
 
+    fn validate_execute_policy(&self, spec: &mut ExecSpec) -> Result<(), SandboxError> {
+        self.validate_network_policy(spec)?;
+        self.validate_resource_policy(spec)?;
+        crate::backend::validate_preflight_capabilities(
+            self.backend_id(),
+            &self.capabilities(),
+            spec,
+        )
+    }
+
     /// Resolves the container-side workdir for an ephemeral container execution.
     ///
     /// When a volume mount maps the host workspace root to `/workspace`, host cwd
@@ -518,9 +528,8 @@ impl SandboxBackend for DockerSandbox {
     }
 
     fn preflight_execute(&self, spec: &ExecSpec) -> Result<(), SandboxError> {
-        self.validate_network_policy(spec)?;
         let mut spec = spec.clone();
-        self.validate_resource_policy(&mut spec)
+        self.validate_execute_policy(&mut spec)
     }
 
     async fn before_execute(
@@ -528,9 +537,8 @@ impl SandboxBackend for DockerSandbox {
         spec: &ExecSpec,
         _ctx: &ExecContext,
     ) -> Result<(), SandboxError> {
-        self.validate_network_policy(spec)?;
         let mut spec = spec.clone();
-        self.validate_resource_policy(&mut spec)
+        self.validate_execute_policy(&mut spec)
     }
 
     async fn execute(
@@ -538,8 +546,7 @@ impl SandboxBackend for DockerSandbox {
         mut spec: ExecSpec,
         ctx: ExecContext,
     ) -> Result<ProcessHandle, SandboxError> {
-        self.validate_network_policy(&spec)?;
-        self.validate_resource_policy(&mut spec)?;
+        self.validate_execute_policy(&mut spec)?;
         self.ensure_available().await?;
         let lease = match self.lifecycle {
             ContainerLifecycle::CreatePerSession { .. }

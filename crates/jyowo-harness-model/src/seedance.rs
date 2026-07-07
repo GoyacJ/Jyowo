@@ -17,9 +17,9 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
+#[cfg(test)]
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
@@ -29,15 +29,6 @@ use harness_contracts::ModelError;
 pub const SEEDANCE_DEFAULT_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/v3";
 pub const SEEDANCE_PROVIDER_ID: &str = "doubao";
 
-/// Authorization permit claims carried through the Seedance transport layer.
-/// Mirrors `AuthorizedNetworkPermit` in jyowo-harness-tool without creating
-/// a dependency on that crate.
-#[derive(Debug, Clone)]
-pub struct SeedanceTransportPermit {
-    pub tool_name: String,
-    pub approved_hosts: Vec<harness_contracts::HostRule>,
-}
-
 /// Transport trait for Seedance HTTP calls.
 ///
 /// Implementation in `jyowo-harness-tool` wraps `ToolNetworkBrokerCap`.
@@ -45,7 +36,6 @@ pub struct SeedanceTransportPermit {
 pub trait SeedanceHttpTransport: Send + Sync + 'static {
     async fn post_json(
         &self,
-        permit: &SeedanceTransportPermit,
         url: &str,
         headers: BTreeMap<String, String>,
         body: Vec<u8>,
@@ -53,17 +43,18 @@ pub trait SeedanceHttpTransport: Send + Sync + 'static {
 
     async fn get_json(
         &self,
-        permit: &SeedanceTransportPermit,
         url: &str,
         headers: BTreeMap<String, String>,
     ) -> Result<(u16, Vec<u8>), ModelError>;
 }
 
 /// Internal transport for Seedance API calls.
+#[derive(Clone)]
 enum SeedanceTransport {
     /// Production: authorized broker transport.
-    Transport(Arc<dyn SeedanceHttpTransport>, SeedanceTransportPermit),
+    Transport(Arc<dyn SeedanceHttpTransport>),
     /// Direct reqwest (test / legacy credential path).
+    #[cfg(test)]
     Direct(reqwest::Client),
 }
 
@@ -78,11 +69,10 @@ impl SeedanceApiClient {
     /// Production constructor using the authorized transport.
     pub fn from_transport(
         transport: Arc<dyn SeedanceHttpTransport>,
-        permit: SeedanceTransportPermit,
         api_key: impl Into<String>,
     ) -> Self {
         Self {
-            transport: SeedanceTransport::Transport(transport, permit),
+            transport: SeedanceTransport::Transport(transport),
             api_key: SecretString::new(api_key.into().into_boxed_str()),
             base_url: SEEDANCE_DEFAULT_BASE_URL.to_owned(),
         }
@@ -128,10 +118,11 @@ impl SeedanceApiClient {
         let url = self.url(path);
 
         match &self.transport {
-            SeedanceTransport::Transport(transport, permit) => {
-                let (status, resp_body) = transport.post_json(permit, &url, headers, body).await?;
+            SeedanceTransport::Transport(transport) => {
+                let (status, resp_body) = transport.post_json(&url, headers, body).await?;
                 transport_response_json(status, &resp_body, self.api_key.expose_secret())
             }
+            #[cfg(test)]
             SeedanceTransport::Direct(http) => {
                 let response = http
                     .post(url)
@@ -150,10 +141,11 @@ impl SeedanceApiClient {
         let headers = self.transport_headers();
 
         match &self.transport {
-            SeedanceTransport::Transport(transport, permit) => {
-                let (status, resp_body) = transport.get_json(permit, &url, headers).await?;
+            SeedanceTransport::Transport(transport) => {
+                let (status, resp_body) = transport.get_json(&url, headers).await?;
                 transport_response_json(status, &resp_body, self.api_key.expose_secret())
             }
+            #[cfg(test)]
             SeedanceTransport::Direct(http) => {
                 let response = http
                     .get(url)
@@ -176,6 +168,7 @@ impl SeedanceApiClient {
         headers
     }
 
+    #[cfg(test)]
     fn reqwest_headers(&self) -> Result<HeaderMap, ModelError> {
         let mut headers = HeaderMap::new();
         let value = format!("Bearer {}", self.api_key.expose_secret());
@@ -224,6 +217,7 @@ fn transport_response_json(status: u16, body: &[u8], secret: &str) -> Result<Val
     })
 }
 
+#[cfg(test)]
 async fn direct_response_json(
     response: reqwest::Response,
     secret: &str,
@@ -241,6 +235,7 @@ async fn direct_response_json(
     })
 }
 
+#[cfg(test)]
 fn transport_error(error: reqwest::Error) -> ModelError {
     ModelError::ProviderUnavailable(error.to_string())
 }

@@ -1,14 +1,13 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[cfg(test)]
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
+use url::Url;
 
-use crate::{
-    AuthorizedNetworkPermit, HttpMethod, ToolHttpJsonRequest, ToolHttpResponse,
-    ToolNetworkBrokerCap,
-};
+use crate::{AuthorizedNetworkPermit, HttpMethod, ToolHttpJsonRequest, ToolNetworkBrokerCap};
 
 const DEFAULT_BASE_URL: &str = "https://api.minimaxi.com";
 const MULTIPART_BOUNDARY: &str = "jyowo-minimax-boundary";
@@ -20,6 +19,7 @@ pub(crate) enum MinimaxProviderClientError {
     #[error("invalid MiniMax API request: {0}")]
     InvalidRequest(String),
     #[error("MiniMax API authentication header is invalid: {0}")]
+    #[cfg(test)]
     AuthExpired(String),
     #[error("MiniMax API request failed: {0}")]
     ProviderUnavailable(String),
@@ -32,6 +32,7 @@ enum MinimaxTransport {
     /// Production: authorized broker.
     Broker(Arc<dyn ToolNetworkBrokerCap>, AuthorizedNetworkPermit),
     /// Direct reqwest (test / legacy credential path).
+    #[cfg(test)]
     Direct(reqwest::Client),
 }
 
@@ -52,6 +53,18 @@ impl MinimaxApiClient {
             transport: MinimaxTransport::Broker(transport, permit),
             api_key: SecretString::new(api_key.into().into_boxed_str()),
             base_url: DEFAULT_BASE_URL.to_owned(),
+        }
+    }
+
+    pub(crate) fn broker_permit(
+        &self,
+    ) -> Result<&AuthorizedNetworkPermit, MinimaxProviderClientError> {
+        match &self.transport {
+            MinimaxTransport::Broker(_, permit) => Ok(permit),
+            #[cfg(test)]
+            MinimaxTransport::Direct(_) => Err(MinimaxProviderClientError::InvalidRequest(
+                "MiniMax direct test client does not carry an authorized network permit".to_owned(),
+            )),
         }
     }
 
@@ -277,6 +290,7 @@ impl MinimaxApiClient {
                     .map_err(|e| MinimaxProviderClientError::ProviderUnavailable(e.to_string()))?;
                 self.broker_response_json(resp.status, &resp.body).await
             }
+            #[cfg(test)]
             MinimaxTransport::Direct(http) => {
                 let response = http
                     .post(url)
@@ -341,7 +355,7 @@ impl MinimaxApiClient {
                 headers.insert("content-type".to_owned(), "application/json".to_owned());
                 let req = ToolHttpJsonRequest {
                     method: HttpMethod::Get,
-                    url,
+                    url: url.to_string(),
                     headers,
                     body: None,
                     timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS),
@@ -353,6 +367,7 @@ impl MinimaxApiClient {
                     .map_err(|e| MinimaxProviderClientError::ProviderUnavailable(e.to_string()))?;
                 self.broker_response_json(resp.status, &resp.body).await
             }
+            #[cfg(test)]
             MinimaxTransport::Direct(http) => {
                 let response = http
                     .get(url)
@@ -393,6 +408,7 @@ impl MinimaxApiClient {
                     .map_err(|e| MinimaxProviderClientError::ProviderUnavailable(e.to_string()))?;
                 self.broker_response_json(resp.status, &resp.body).await
             }
+            #[cfg(test)]
             MinimaxTransport::Direct(http) => {
                 let response = http
                     .get(url)
@@ -419,7 +435,7 @@ impl MinimaxApiClient {
             MinimaxTransport::Broker(transport, permit) => {
                 let req = ToolHttpJsonRequest {
                     method: HttpMethod::Post,
-                    url,
+                    url: url.to_string(),
                     headers,
                     body: Some(body),
                     timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS),
@@ -431,6 +447,7 @@ impl MinimaxApiClient {
                     .map_err(|e| MinimaxProviderClientError::ProviderUnavailable(e.to_string()))?;
                 self.broker_response_json(resp.status, &resp.body).await
             }
+            #[cfg(test)]
             MinimaxTransport::Direct(http) => {
                 let response = http
                     .post(url)
@@ -468,6 +485,7 @@ impl MinimaxApiClient {
                     .map_err(|e| MinimaxProviderClientError::ProviderUnavailable(e.to_string()))?;
                 self.broker_response_json(resp.status, &resp.body).await
             }
+            #[cfg(test)]
             MinimaxTransport::Direct(http) => {
                 let response = http
                     .get(url)
@@ -496,6 +514,7 @@ impl MinimaxApiClient {
             .map_err(|error| MinimaxProviderClientError::UnexpectedResponse(error.to_string()))
     }
 
+    #[cfg(test)]
     async fn direct_response_json(
         &self,
         response: reqwest::Response,
@@ -522,10 +541,12 @@ impl MinimaxApiClient {
         Ok(headers)
     }
 
+    #[cfg(test)]
     fn reqwest_headers(&self) -> Result<HeaderMap, MinimaxProviderClientError> {
         self.reqwest_headers_with_content_type("application/json")
     }
 
+    #[cfg(test)]
     fn reqwest_headers_with_content_type(
         &self,
         content_type: &str,
@@ -543,6 +564,7 @@ impl MinimaxApiClient {
         Ok(headers)
     }
 
+    #[cfg(test)]
     fn x_api_key_headers(&self) -> Result<HeaderMap, MinimaxProviderClientError> {
         let mut headers = HeaderMap::new();
         let auth = HeaderValue::from_str(self.api_key.expose_secret())
@@ -568,8 +590,8 @@ impl MinimaxApiClient {
         &self,
         path: &str,
         query: &[(&str, String)],
-    ) -> Result<reqwest::Url, MinimaxProviderClientError> {
-        let mut url = reqwest::Url::parse(&self.url(path))
+    ) -> Result<String, MinimaxProviderClientError> {
+        let mut url = Url::parse(&self.url(path))
             .map_err(|error| MinimaxProviderClientError::InvalidRequest(error.to_string()))?;
         {
             let mut pairs = url.query_pairs_mut();
@@ -577,10 +599,11 @@ impl MinimaxApiClient {
                 pairs.append_pair(key, value);
             }
         }
-        Ok(url)
+        Ok(url.to_string())
     }
 }
 
+#[cfg(test)]
 fn transport_error(error: reqwest::Error) -> MinimaxProviderClientError {
     MinimaxProviderClientError::ProviderUnavailable(error.to_string())
 }

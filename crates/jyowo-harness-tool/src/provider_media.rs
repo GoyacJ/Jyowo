@@ -399,16 +399,16 @@ impl ProviderMediaDownloader for ReqwestProviderMediaDownloader {
 /// reqwest. The broker validates every download URL against the approved host
 /// rules before issuing the request.
 #[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
-pub struct BrokerProviderMediaDownloader {
+pub struct BrokerProviderMediaDownloader<'a> {
     broker: std::sync::Arc<dyn crate::ToolNetworkBrokerCap>,
-    permit: crate::AuthorizedNetworkPermit,
+    permit: &'a crate::AuthorizedNetworkPermit,
 }
 
 #[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
-impl BrokerProviderMediaDownloader {
+impl<'a> BrokerProviderMediaDownloader<'a> {
     pub fn new(
         broker: std::sync::Arc<dyn crate::ToolNetworkBrokerCap>,
-        permit: crate::AuthorizedNetworkPermit,
+        permit: &'a crate::AuthorizedNetworkPermit,
     ) -> Self {
         Self { broker, permit }
     }
@@ -416,7 +416,7 @@ impl BrokerProviderMediaDownloader {
 
 #[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
 #[async_trait::async_trait]
-impl ProviderMediaDownloader for BrokerProviderMediaDownloader {
+impl ProviderMediaDownloader for BrokerProviderMediaDownloader<'_> {
     async fn download(
         &self,
         url: &Url,

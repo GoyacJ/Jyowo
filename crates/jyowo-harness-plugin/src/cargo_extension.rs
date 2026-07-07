@@ -28,8 +28,8 @@ use harness_mcp::{
     McpConnection, McpError, McpServerSpec, McpToolDescriptor, McpToolResult, TransportChoice,
 };
 use harness_sandbox::{
-    execute_with_lifecycle, EventSink as SandboxEventSink, ExecContext, ExecSpec,
-    NetworkPolicySupport, SandboxBackend, StdioSpec,
+    execute_with_lifecycle, EventSink as SandboxEventSink, ExecContext, ExecSpec, SandboxBackend,
+    StdioSpec,
 };
 use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
 use harness_tool::{
@@ -1422,8 +1422,8 @@ mod tests {
     use bytes::Bytes;
     use harness_contracts::{KillScope, LocalIsolationTag};
     use harness_sandbox::{
-        ActivityHandle, ExecOutcome, ProcessHandle, ResourceLimitSupport, SandboxCapabilities,
-        SessionSnapshotFile, SnapshotSpec,
+        ActivityHandle, ExecOutcome, NetworkPolicySupport, ProcessHandle, ResourceLimitSupport,
+        SandboxCapabilities, SessionSnapshotFile, SnapshotSpec, WorkspacePolicySupport,
     };
 
     #[test]
@@ -1621,6 +1621,10 @@ mod tests {
                 resource_limit_support: ResourceLimitSupport {
                     wall_clock: true,
                     ..ResourceLimitSupport::default()
+                },
+                workspace: WorkspacePolicySupport {
+                    read_only: true,
+                    ..WorkspacePolicySupport::default()
                 },
                 ..SandboxCapabilities::default()
             }

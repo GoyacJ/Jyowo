@@ -1,5 +1,8 @@
 use super::*;
 
+use harness_contracts::CapabilityRegistry;
+use harness_execution::ExecutionPreflightRegistry;
+
 pub fn test_authorization_service(
     broker: Arc<dyn harness_permission::PermissionBroker>,
     event_store: Arc<dyn EventStore>,

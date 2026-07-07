@@ -1,7 +1,13 @@
-import { fixtureAppInfo, fixtureHarnessHealthcheck, wait } from './base'
+import {
+  cloneResponse,
+  fixtureAppInfo,
+  fixtureHarnessHealthcheck,
+  fixtureRuntimeExecutionStatus,
+  wait,
+} from './base'
 import type { TestCommandClientState, TestCommandHandlers } from './state'
 
-type BaseCommandKeys = 'getAppInfo' | 'getHarnessHealthcheck'
+type BaseCommandKeys = 'getAppInfo' | 'getHarnessHealthcheck' | 'getRuntimeExecutionStatus'
 
 export function createBaseCommandHandlers(
   state: TestCommandClientState,
@@ -14,6 +20,10 @@ export function createBaseCommandHandlers(
     async getHarnessHealthcheck() {
       await wait(state.options.delayMs)
       return state.options.healthcheck ?? fixtureHarnessHealthcheck
+    },
+    async getRuntimeExecutionStatus() {
+      await wait(state.options.delayMs)
+      return cloneResponse(state.options.runtimeExecutionStatus ?? fixtureRuntimeExecutionStatus)
     },
   }
 }

@@ -6,17 +6,17 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+#[cfg(feature = "seedance-tools")]
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::Utc;
 use harness_contracts::{
-    ActionPlanHash, AuthorizationTicketId, HostRule, NetworkAccess, RunId, SessionId, TenantId,
-    ToolError, ToolUseId,
+    ActionPlanHash, HostRule, NetworkAccess, RunId, SessionId, ToolError, ToolUseId,
 };
 
-use crate::AuthorizedTicketSummary;
+use crate::{AuthorizationTicketKey, AuthorizedTicketSummary, AuthorizedToolInput};
 
 /// Opaque preflight request carrying the approved network access shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,15 +51,15 @@ pub trait ToolNetworkBrokerPreflightCap: Send + Sync + 'static {
 /// Does not implement `Clone`. Fields are private. No public constructor exists
 /// outside `AuthorizedToolInput::network_permit()`.
 pub struct AuthorizedNetworkPermit {
-    pub(crate) ticket: AuthorizedTicketSummary,
-    pub(crate) tool_name: String,
-    pub(crate) tool_use_id: ToolUseId,
-    pub(crate) session_id: SessionId,
-    pub(crate) run_id: RunId,
-    pub(crate) network_access: NetworkAccess,
-    pub(crate) approved_hosts: Vec<HostRule>,
-    pub(crate) action_plan_hash: ActionPlanHash,
-    pub(crate) _private: (),
+    ticket: AuthorizedTicketSummary,
+    tool_name: String,
+    tool_use_id: ToolUseId,
+    session_id: SessionId,
+    run_id: RunId,
+    network_access: NetworkAccess,
+    approved_hosts: Vec<HostRule>,
+    action_plan_hash: ActionPlanHash,
+    _private: (),
 }
 
 impl fmt::Debug for AuthorizedNetworkPermit {
@@ -76,42 +76,14 @@ impl fmt::Debug for AuthorizedNetworkPermit {
 }
 
 impl AuthorizedNetworkPermit {
-    /// Test-only constructor. Not part of the public API; production code must
-    /// obtain permits through `AuthorizedToolInput::network_permit()`.
-    #[doc(hidden)]
-    pub fn for_test(
-        tool_name: impl Into<String>,
-        tool_use_id: ToolUseId,
-        session_id: SessionId,
-        run_id: RunId,
-        approved_hosts: Vec<HostRule>,
-    ) -> Self {
-        let name: String = tool_name.into();
-        Self {
-            ticket: AuthorizedTicketSummary {
-                ticket_id: AuthorizationTicketId::new(),
-                tenant_id: TenantId::SINGLE,
-                session_id,
-                run_id,
-                tool_use_id,
-                tool_name: name.clone(),
-                action_plan_hash: ActionPlanHash::default(),
-                consumed_at: Utc::now(),
-            },
-            tool_name: name,
-            tool_use_id,
-            session_id,
-            run_id,
-            network_access: NetworkAccess::AllowList(approved_hosts.clone()),
-            approved_hosts,
-            action_plan_hash: ActionPlanHash::default(),
-            _private: (),
-        }
-    }
-
     /// Returns the approved host rules that this permit authorizes.
     pub fn approved_hosts(&self) -> &[HostRule] {
         &self.approved_hosts
+    }
+
+    /// Returns the immutable network access policy bound to this permit.
+    pub fn network_access(&self) -> &NetworkAccess {
+        &self.network_access
     }
 
     /// Returns the tool name bound to this permit.
@@ -122,6 +94,76 @@ impl AuthorizedNetworkPermit {
     /// Returns the tool use id bound to this permit.
     pub fn tool_use_id(&self) -> ToolUseId {
         self.tool_use_id
+    }
+
+    /// Returns the consumed authorization ticket bound to this permit.
+    pub fn ticket(&self) -> &AuthorizedTicketSummary {
+        &self.ticket
+    }
+
+    /// Returns the action plan hash bound to this permit.
+    pub fn action_plan_hash(&self) -> &ActionPlanHash {
+        &self.action_plan_hash
+    }
+
+    /// Verifies that this permit was derived from a ticket summary signed by
+    /// the same authorization ticket authority as the runtime broker.
+    pub fn verify_ticket_authority(&self, key: &AuthorizationTicketKey) -> bool {
+        self.ticket.verify_authority(key)
+            && self.tool_name == self.ticket.tool_name()
+            && self.tool_use_id == self.ticket.tool_use_id()
+            && self.session_id == self.ticket.session_id()
+            && self.run_id == self.ticket.run_id()
+            && self.action_plan_hash == *self.ticket.action_plan_hash()
+    }
+}
+
+impl AuthorizedToolInput {
+    /// Creates an opaque network permit bound to this authorized input.
+    ///
+    /// The permit carries the approved host rules from the action plan's
+    /// `NetworkAccess::AllowList`. Returns an error when the action plan does
+    /// not carry an allowlist (e.g. `NetworkAccess::None` or `Unrestricted`).
+    pub fn network_permit(&self) -> Result<AuthorizedNetworkPermit, ToolError> {
+        let action_plan = self.action_plan();
+        let approved_hosts = match &action_plan.sandbox_policy.network {
+            NetworkAccess::AllowList(hosts) => hosts.clone(),
+            NetworkAccess::None => {
+                return Err(ToolError::Validation(
+                    "network_permit: action plan has no network access".to_owned(),
+                ));
+            }
+            NetworkAccess::Unrestricted => {
+                return Err(ToolError::Validation(
+                    "network_permit: HTTP broker v1 does not support unrestricted network access"
+                        .to_owned(),
+                ));
+            }
+            NetworkAccess::LoopbackOnly => {
+                return Err(ToolError::Validation(
+                    "network_permit: HTTP broker v1 does not support loopback-only policy"
+                        .to_owned(),
+                ));
+            }
+            _ => {
+                return Err(ToolError::Validation(
+                    "network_permit: unsupported network access variant".to_owned(),
+                ));
+            }
+        };
+
+        let ticket = self.ticket();
+        Ok(AuthorizedNetworkPermit {
+            ticket: ticket.clone(),
+            tool_name: ticket.tool_name().to_owned(),
+            tool_use_id: ticket.tool_use_id(),
+            session_id: ticket.session_id(),
+            run_id: ticket.run_id(),
+            network_access: action_plan.sandbox_policy.network.clone(),
+            approved_hosts,
+            action_plan_hash: ticket.action_plan_hash().clone(),
+            _private: (),
+        })
     }
 }
 
@@ -197,7 +239,7 @@ pub trait ToolNetworkBrokerCap: ToolNetworkBrokerPreflightCap {
     /// - public raw IP literals are denied
     /// - loopback IP literals are allowed only when the exact host:port pair is
     ///   explicitly approved
-    /// - redirects denied unless each target is validated against the same allowlist
+    /// - automatic redirects are not followed
     /// - response body capped to `request.max_response_bytes`
     /// - error strings redacted before returning
     async fn execute_json(
@@ -211,26 +253,32 @@ pub trait ToolNetworkBrokerCap: ToolNetworkBrokerPreflightCap {
 
 /// A `SeedanceHttpTransport` implementation that delegates to the authorized
 /// network broker, validating every request against the approved host rules.
+#[cfg(feature = "seedance-tools")]
 pub struct BrokerSeedanceTransport {
     broker: Arc<dyn ToolNetworkBrokerCap>,
+    permit: AuthorizedNetworkPermit,
 }
 
+#[cfg(feature = "seedance-tools")]
 impl BrokerSeedanceTransport {
-    pub fn new(broker: Arc<dyn ToolNetworkBrokerCap>) -> Self {
-        Self { broker }
+    pub fn new(broker: Arc<dyn ToolNetworkBrokerCap>, permit: AuthorizedNetworkPermit) -> Self {
+        Self { broker, permit }
+    }
+
+    pub fn permit(&self) -> &AuthorizedNetworkPermit {
+        &self.permit
     }
 }
 
+#[cfg(feature = "seedance-tools")]
 #[async_trait]
 impl harness_model::SeedanceHttpTransport for BrokerSeedanceTransport {
     async fn post_json(
         &self,
-        permit: &harness_model::SeedanceTransportPermit,
         url: &str,
         headers: BTreeMap<String, String>,
         body: Vec<u8>,
     ) -> Result<(u16, Vec<u8>), harness_contracts::ModelError> {
-        let broker_permit = seedance_to_broker_permit(permit);
         let req = ToolHttpJsonRequest {
             method: HttpMethod::Post,
             url: url.to_owned(),
@@ -240,7 +288,7 @@ impl harness_model::SeedanceHttpTransport for BrokerSeedanceTransport {
             max_response_bytes: 10 * 1024 * 1024,
         };
         self.broker
-            .execute_json(&broker_permit, req)
+            .execute_json(&self.permit, req)
             .await
             .map(|resp| (resp.status, resp.body.to_vec()))
             .map_err(|e| harness_contracts::ModelError::ProviderUnavailable(e.to_string()))
@@ -248,11 +296,9 @@ impl harness_model::SeedanceHttpTransport for BrokerSeedanceTransport {
 
     async fn get_json(
         &self,
-        permit: &harness_model::SeedanceTransportPermit,
         url: &str,
         headers: BTreeMap<String, String>,
     ) -> Result<(u16, Vec<u8>), harness_contracts::ModelError> {
-        let broker_permit = seedance_to_broker_permit(permit);
         let req = ToolHttpJsonRequest {
             method: HttpMethod::Get,
             url: url.to_owned(),
@@ -262,21 +308,9 @@ impl harness_model::SeedanceHttpTransport for BrokerSeedanceTransport {
             max_response_bytes: 10 * 1024 * 1024,
         };
         self.broker
-            .execute_json(&broker_permit, req)
+            .execute_json(&self.permit, req)
             .await
             .map(|resp| (resp.status, resp.body.to_vec()))
             .map_err(|e| harness_contracts::ModelError::ProviderUnavailable(e.to_string()))
     }
-}
-
-fn seedance_to_broker_permit(
-    permit: &harness_model::SeedanceTransportPermit,
-) -> crate::AuthorizedNetworkPermit {
-    crate::AuthorizedNetworkPermit::for_test(
-        &permit.tool_name,
-        harness_contracts::ToolUseId::new(),
-        harness_contracts::SessionId::new(),
-        harness_contracts::RunId::new(),
-        permit.approved_hosts.clone(),
-    )
 }

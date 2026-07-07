@@ -4,12 +4,11 @@ use std::{
 };
 
 use async_trait::async_trait;
-use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
-    canonical_mcp_tool_name, AuthorizationTicketId, CapabilityRegistry, DeferPolicy, Event,
-    McpServerId, McpServerSource, PluginId, SessionId, TenantId, ToolActionPlan, ToolError,
-    ToolResult, ToolUseHeartbeatEvent, ToolUseId, TrustLevel,
+    canonical_mcp_tool_name, CapabilityRegistry, DeferPolicy, Event, McpServerId, McpServerSource,
+    PluginId, SessionId, TenantId, ToolActionPlan, ToolError, ToolResult, ToolUseHeartbeatEvent,
+    ToolUseId, TrustLevel,
 };
 use harness_mcp::{
     collapse_reserved_separator, trust_level_for_source, FilterConflict, FilterDecision,
@@ -679,15 +678,22 @@ async fn run_authorized(
 }
 
 fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
-    AuthorizedTicketSummary {
-        ticket_id: AuthorizationTicketId::new(),
-        tenant_id: TenantId::SINGLE,
-        session_id: SessionId::new(),
-        run_id: harness_contracts::RunId::new(),
-        tool_use_id: plan.tool_use_id,
-        tool_name: plan.tool_name.clone(),
-        action_plan_hash: plan.plan_hash.clone(),
-        consumed_at: Utc::now(),
+    {
+        let ledger = harness_tool::TicketLedger::default();
+        let claims = harness_tool::AuthorizationTicketClaims {
+            tenant_id: harness_contracts::TenantId::SINGLE,
+            session_id: harness_contracts::SessionId::new(),
+            run_id: harness_contracts::RunId::new(),
+            tool_use_id: plan.tool_use_id,
+            tool_name: plan.tool_name.clone(),
+            action_plan_hash: plan.plan_hash.clone(),
+        };
+        let ticket = ledger
+            .mint(claims.clone(), chrono::Utc::now())
+            .expect("test ticket should mint");
+        ledger
+            .consume(ticket.id, &claims, chrono::Utc::now())
+            .expect("test ticket should consume")
     }
 }
 

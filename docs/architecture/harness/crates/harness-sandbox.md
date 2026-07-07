@@ -89,14 +89,14 @@ Missing Docker binary, daemon, image, or mount support produces a backend-author
 
 HTTP and provider tools use an authorized HTTP broker, not process sandbox network preflight.
 
-The broker accepts an opaque permit derived from `AuthorizedToolInput`. Permit claims include session, run, tool use, tool name, approved host rules, and action plan hash. The permit is immutable and cannot be constructed by frontend state or tool-supplied strings.
+The broker accepts an opaque permit derived from `AuthorizedToolInput`. Permit claims include session, run, tool use, tool name, approved host rules, and action plan hash. The permit is immutable and cannot be constructed by frontend state or tool-supplied strings. Before dispatch, the broker verifies the permit ticket proof against the same `TicketLedger` authority key used by the runtime authorization service.
 
 Broker v1 supports allowlist-only HTTP(S) requests. It must:
 
 - reject missing broker registration before ticket mint.
 - reject non-HTTP schemes, invalid hosts, username/password URL authority, public raw IP literals, and host or port outside the approved rules.
 - allow loopback IP literals only when the exact loopback host and port are explicitly approved.
-- block redirects unless every redirect target is validated against the same allowlist.
+- disable automatic redirects so 3xx responses return to the tool without following unreviewed targets.
 - enforce timeout and response byte limits.
 - redact secrets from errors before returning tool errors.
 - avoid raw request and response body events unless a redacted event shape is explicitly required.

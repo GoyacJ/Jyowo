@@ -11,6 +11,7 @@ import { ExecutionSettings } from './ExecutionSettings'
 import { MCPManager } from './MCPManager'
 import { ModelSettingsPage } from './models/ModelSettingsPage'
 import { type PluginOpenRequest, PluginsManager } from './PluginsManager'
+import { RuntimeExecutionStatusPanel } from './RuntimeExecutionStatusPanel'
 import { BuiltinToolsList, SkillsManager } from './SkillSettings'
 
 type SettingsTab =
@@ -63,6 +64,7 @@ export function SettingsPage() {
             <SkillsManager onOpenPlugin={openPlugin} />
           </TabsContent>
           <TabsContent className="space-y-5 pt-3" value="tools">
+            <RuntimeExecutionStatusPanel />
             <BuiltinToolsList />
           </TabsContent>
           <TabsContent className="space-y-5 pt-3" value="automations">

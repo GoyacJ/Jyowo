@@ -5,7 +5,11 @@ use super::*;
 
 #[tokio::test]
 async fn runtime_execution_status_command_returns_backend_payload() {
-    let state = runtime_state_with_harness().await;
+    let workspace = unique_workspace("runtime-status");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state = runtime_state_for_workspace(workspace)
+        .await
+        .expect("runtime state should initialize");
     let harness = state.harness().expect("harness should be initialized");
 
     let status = harness.runtime_execution_status();

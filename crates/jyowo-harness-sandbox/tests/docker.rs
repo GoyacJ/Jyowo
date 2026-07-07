@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures::StreamExt;
 use harness_contracts::{
     ContainerLifecycleReason, ContainerLifecycleState, Event, NetworkAccess, ResourceLimits,
-    SandboxError, SandboxExitStatus, SessionSnapshotKind,
+    SandboxError, SandboxExitStatus, SessionSnapshotKind, WorkspaceAccess,
 };
 use harness_sandbox::{
     preflight_exec, ContainerLifecycle, DockerSandbox, EventSink, ExecContext, ExecSpec,
@@ -338,6 +338,58 @@ async fn docker_preflight_allows_ephemeral_per_exec_network_none() {
         .expect("ephemeral docker can enforce no-network per exec");
 
     assert_eq!(report.backend_id, "docker");
+}
+
+#[tokio::test]
+async fn docker_preflight_rejects_read_only_workspace_policy() {
+    let root = temp_root("readonly-workspace-preflight");
+    let sandbox = DockerSandbox::builder()
+        .docker_binary(fake_docker(&root, &root.join("docker.log")))
+        .image("jyowo-test:latest")
+        .mount(VolumeMount::workspace(&root, "/workspace"))
+        .lifecycle(ContainerLifecycle::EphemeralPerExec)
+        .build()
+        .expect("docker sandbox should build");
+    let mut spec = shell_spec();
+    spec.workspace_access = WorkspaceAccess::ReadOnly;
+
+    let error = preflight_exec(&sandbox, &spec, &ExecContext::for_test(Arc::new(NullSink)))
+        .expect_err("docker cannot enforce read-only workspace policy");
+
+    assert!(matches!(
+        error,
+        SandboxError::CapabilityMismatch {
+            ref capability,
+            ..
+        } if capability == "workspace_access"
+    ));
+}
+
+#[tokio::test]
+async fn docker_preflight_rejects_writable_subpath_workspace_policy() {
+    let root = temp_root("subpath-workspace-preflight");
+    let sandbox = DockerSandbox::builder()
+        .docker_binary(fake_docker(&root, &root.join("docker.log")))
+        .image("jyowo-test:latest")
+        .mount(VolumeMount::workspace(&root, "/workspace"))
+        .lifecycle(ContainerLifecycle::EphemeralPerExec)
+        .build()
+        .expect("docker sandbox should build");
+    let mut spec = shell_spec();
+    spec.workspace_access = WorkspaceAccess::ReadWrite {
+        allowed_writable_subpaths: vec![PathBuf::from("tmp")],
+    };
+
+    let error = preflight_exec(&sandbox, &spec, &ExecContext::for_test(Arc::new(NullSink)))
+        .expect_err("docker cannot enforce writable-subpath workspace policy");
+
+    assert!(matches!(
+        error,
+        SandboxError::CapabilityMismatch {
+            ref capability,
+            ..
+        } if capability == "workspace_access"
+    ));
 }
 
 #[tokio::test]
