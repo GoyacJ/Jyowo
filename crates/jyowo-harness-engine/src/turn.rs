@@ -825,6 +825,7 @@ pub(crate) async fn run_turn(
                         agent_id: harness_contracts::AgentId::from_u128(1),
                         subagent_depth: ctx.subagent_depth,
                         workspace_root: engine.workspace_root.clone(),
+                        project_workspace_root: engine.project_workspace_root.clone(),
                         sandbox: engine.sandbox.clone(),
                         cap_registry: engine.cap_registry.clone(),
                         redactor: engine
@@ -1378,6 +1379,7 @@ async fn authorize_tool_calls(
                 agent_id: harness_contracts::AgentId::from_u128(1),
                 subagent_depth: ctx.subagent_depth,
                 workspace_root: engine.workspace_root.clone(),
+                project_workspace_root: engine.project_workspace_root.clone(),
                 sandbox: engine.sandbox.clone(),
                 cap_registry: engine.cap_registry.clone(),
                 redactor: engine
@@ -2167,7 +2169,7 @@ impl ContextSessionView for TurnContextView {
 }
 
 struct TurnHookView {
-    workspace_root: PathBuf,
+    workspace_root: Option<PathBuf>,
     messages: Vec<Message>,
     permission_mode: PermissionMode,
     redactor: Arc<dyn Redactor>,
@@ -2175,7 +2177,7 @@ struct TurnHookView {
 
 impl HookSessionView for TurnHookView {
     fn workspace_root(&self) -> Option<&Path> {
-        Some(&self.workspace_root)
+        self.workspace_root.as_deref()
     }
 
     fn recent_messages(&self, limit: usize) -> Vec<HookMessageView> {
@@ -2225,7 +2227,7 @@ fn hook_context(
         interactivity: ctx.interactivity,
         at: harness_contracts::now(),
         view: Arc::new(TurnHookView {
-            workspace_root: engine.workspace_root.clone(),
+            workspace_root: engine.project_workspace_root.clone(),
             messages: messages.to_vec(),
             permission_mode: ctx.permission_mode,
             redactor,

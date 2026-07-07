@@ -62,6 +62,7 @@ async fn create_attachment_from_path_writes_workspace_file_to_blob_store() {
 
     let payload = create_attachment_from_path_with_runtime_state(
         CreateAttachmentFromPathRequest {
+            conversation_id: None,
             path: attachment_path.to_string_lossy().to_string(),
         },
         &state,
@@ -104,6 +105,7 @@ async fn create_attachment_from_path_rejects_external_file_before_read() {
 
     let error = create_attachment_from_path_with_runtime_state(
         CreateAttachmentFromPathRequest {
+            conversation_id: None,
             path: attachment_path.to_string_lossy().to_string(),
         },
         &state,
@@ -127,6 +129,7 @@ async fn create_attachment_from_path_does_not_reveal_external_path_existence() {
 
     let existing_error = create_attachment_from_path_with_runtime_state(
         CreateAttachmentFromPathRequest {
+            conversation_id: None,
             path: existing_path.to_string_lossy().to_string(),
         },
         &state,
@@ -135,6 +138,7 @@ async fn create_attachment_from_path_does_not_reveal_external_path_existence() {
     .unwrap_err();
     let missing_error = create_attachment_from_path_with_runtime_state(
         CreateAttachmentFromPathRequest {
+            conversation_id: None,
             path: missing_path.to_string_lossy().to_string(),
         },
         &state,
@@ -158,6 +162,7 @@ async fn create_attachment_from_path_rejects_files_larger_than_five_mb() {
 
     let error = create_attachment_from_path_with_runtime_state(
         CreateAttachmentFromPathRequest {
+            conversation_id: None,
             path: attachment_path.to_string_lossy().to_string(),
         },
         &state,
@@ -167,6 +172,84 @@ async fn create_attachment_from_path_rejects_files_larger_than_five_mb() {
 
     assert_eq!(error.code, "INVALID_PAYLOAD");
     assert!(error.message.contains("5 MB"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn create_attachment_from_path_rejects_symlink_attachment_store_parent() {
+    let workspace = unique_workspace("attachment-store-symlink-parent");
+    let attachment_path = workspace.join("notes.txt");
+    std::fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
+    std::fs::write(&attachment_path, "local notes").unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
+    let external = tempfile::tempdir().expect("external attachment dir");
+    std::os::unix::fs::symlink(external.path(), state.runtime_root().join("attachments"))
+        .expect("symlink");
+
+    let error = create_attachment_from_path_with_runtime_state(
+        CreateAttachmentFromPathRequest {
+            conversation_id: None,
+            path: attachment_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("symlink attachment store parent should fail");
+
+    assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+    assert!(error.message.contains("symlink"));
+    assert!(!external.path().join("records").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn start_run_with_runtime_state_rejects_symlink_attachment_record() {
+    let workspace = unique_workspace("attachment-record-symlink");
+    let attachment_path = workspace.join("notes.txt");
+    std::fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
+    std::fs::write(&attachment_path, "local notes").unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
+    let attachment = create_attachment_from_path_with_runtime_state(
+        CreateAttachmentFromPathRequest {
+            conversation_id: None,
+            path: attachment_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("attachment should be stored")
+    .attachment;
+    let record_path = state
+        .runtime_root()
+        .join("attachments")
+        .join("records")
+        .join(format!("{}.json", attachment.id));
+    let external = tempfile::NamedTempFile::new().expect("external record");
+    std::fs::write(
+        external.path(),
+        std::fs::read(&record_path).expect("record bytes"),
+    )
+    .expect("external record");
+    std::fs::remove_file(&record_path).expect("remove record");
+    std::os::unix::fs::symlink(external.path(), &record_path).expect("symlink");
+
+    let error = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: Some(vec![attachment]),
+            context_references: None,
+            conversation_id: SessionId::new().to_string(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
+            permission_mode: None,
+            prompt: "Use this attachment".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("symlink attachment record should fail");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("symlink"));
 }
 
 #[tokio::test]
@@ -294,6 +377,7 @@ async fn start_run_with_runtime_state_accepts_structured_context_and_attachments
     let state = runtime_state_with_harness_for_workspace(workspace).await;
     let attachment = create_attachment_from_path_with_runtime_state(
         CreateAttachmentFromPathRequest {
+            conversation_id: None,
             path: workspace_file.to_string_lossy().to_string(),
         },
         &state,
@@ -393,7 +477,9 @@ async fn start_run_with_runtime_state_returns_real_run_id_for_conversation() {
 
     let page = harness
         .page_conversation_events(ConversationEventsPageRequest {
-            options: state.conversation_session_options(session_id),
+            options: state
+                .conversation_session_options(session_id)
+                .expect("session options"),
             after_event_id: None,
             limit: 20,
         })
@@ -484,7 +570,9 @@ async fn runtime_state_async_uses_explicit_workspace_root() {
     let state = runtime_state_async()
         .await
         .expect("runtime state should initialize with explicit workspace root");
-    let options = state.conversation_session_options(SessionId::new());
+    let options = state
+        .conversation_session_options(SessionId::new())
+        .expect("session options");
 
     assert_eq!(
         options.workspace_root,

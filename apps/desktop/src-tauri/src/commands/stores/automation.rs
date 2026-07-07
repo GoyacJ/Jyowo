@@ -129,3 +129,28 @@ impl AutomationStore for DesktopAutomationStore {
         )
     }
 }
+
+#[derive(Clone, Default)]
+pub struct NoWorkspaceAutomationStore;
+
+impl AutomationStore for NoWorkspaceAutomationStore {
+    fn load_automations(&self) -> Result<Vec<AutomationSpec>, CommandErrorPayload> {
+        Ok(Vec::new())
+    }
+
+    fn save_automations(&self, _records: &[AutomationSpec]) -> Result<(), CommandErrorPayload> {
+        Err(invalid_payload(
+            "project-scoped automations require an active project workspace".to_owned(),
+        ))
+    }
+
+    fn load_run_records(&self) -> Result<Vec<AutomationRunRecord>, CommandErrorPayload> {
+        Ok(Vec::new())
+    }
+
+    fn append_run_record(&self, _record: &AutomationRunRecord) -> Result<(), CommandErrorPayload> {
+        Err(invalid_payload(
+            "project-scoped automation runs require an active project workspace".to_owned(),
+        ))
+    }
+}

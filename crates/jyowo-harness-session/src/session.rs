@@ -31,6 +31,7 @@ pub struct SessionTurnContext {
     pub user_id: Option<String>,
     pub team_id: Option<TeamId>,
     pub workspace_root: PathBuf,
+    pub project_workspace_root: Option<PathBuf>,
     pub snapshot_id: SnapshotId,
     pub config_snapshot_id: SnapshotId,
     pub effective_config_hash: ConfigHash,
@@ -91,6 +92,10 @@ pub struct SessionOptions {
     pub workspace_ref: Option<WorkspaceId>,
     #[serde(default = "default_workspace_root")]
     pub workspace_root: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_workspace_root: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_runtime_root: Option<PathBuf>,
     #[serde(default)]
     pub workspace_bootstrap: Option<WorkspaceBootstrap>,
     #[serde(default = "default_tenant_id")]
@@ -130,6 +135,8 @@ impl SessionOptions {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             workspace_root: root.into(),
+            project_workspace_root: None,
+            agent_runtime_root: None,
             workspace_ref: None,
             workspace_bootstrap: None,
             tenant_id: TenantId::SINGLE,
@@ -154,6 +161,18 @@ impl SessionOptions {
     #[must_use]
     pub fn with_workspace(mut self, workspace: WorkspaceId) -> Self {
         self.workspace_ref = Some(workspace);
+        self
+    }
+
+    #[must_use]
+    pub fn with_project_workspace_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.project_workspace_root = Some(root.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_agent_runtime_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.agent_runtime_root = Some(root.into());
         self
     }
 
@@ -524,6 +543,7 @@ impl Session {
                 tenant_id: self.options.tenant_id,
                 session_id: self.options.session_id,
                 workspace_root: self.options.workspace_root.clone(),
+                project_workspace_root: self.options.project_workspace_root.clone(),
                 snapshot_id: projection.snapshot_id,
                 config_snapshot_id: self.config_snapshot_id(),
                 effective_config_hash: self.effective_config_hash(),
@@ -748,6 +768,7 @@ pub fn session_options_hash(options: &SessionOptions) -> [u8; 32] {
     hash_json(&json!({
         "workspace_ref": options.workspace_ref,
         "workspace_root": options.workspace_root,
+        "project_workspace_root": options.project_workspace_root,
         "workspace_bootstrap": options.workspace_bootstrap,
         "tenant_id": options.tenant_id,
         "session_id": options.session_id,

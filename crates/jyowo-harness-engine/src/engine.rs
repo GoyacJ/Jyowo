@@ -30,8 +30,8 @@ use harness_contracts::{
 use harness_contracts::{
     CodeLanguage, CodeRunRequest, CodeRunResult, CodeRunStats, EmbeddedRefusedReason,
     EmbeddedToolDispatchRequest, EmbeddedToolDispatchResponse, ExecuteCodeStepInvokedEvent,
-    FallbackPolicy, InteractivityLevel, PermissionMode, Redactor, SessionId, TenantId, ToolError,
-    ToolResult, ToolUseId,
+    FallbackPolicy, InteractivityLevel, PermissionMode, SessionId, TenantId, ToolError, ToolResult,
+    ToolUseId,
 };
 #[cfg(feature = "subagent-tool")]
 use harness_contracts::{NetworkAccess, SandboxPolicy, SandboxScope};
@@ -107,6 +107,7 @@ pub struct Engine {
     pub(crate) pricing_snapshot_resolver: Option<Arc<dyn PricingSnapshotResolver>>,
     pub(crate) tools: ToolPool,
     pub(crate) workspace_root: PathBuf,
+    pub(crate) project_workspace_root: Option<PathBuf>,
     pub(crate) model_id: String,
     pub(crate) model_extra: Value,
     pub(crate) protocol: ModelProtocol,
@@ -140,6 +141,7 @@ pub struct EngineBuilder {
     tools: Option<ToolPool>,
     authorization_service: Option<Arc<AuthorizationService>>,
     workspace_root: Option<PathBuf>,
+    project_workspace_root: Option<PathBuf>,
     model_id: Option<String>,
     model_extra: Value,
     protocol: ModelProtocol,
@@ -189,6 +191,7 @@ impl Engine {
             tools: Some(self.tools),
             authorization_service: Some(self.authorization_service),
             workspace_root: Some(self.workspace_root),
+            project_workspace_root: self.project_workspace_root,
             model_id: Some(self.model_id),
             model_extra: self.model_extra,
             protocol: self.protocol,
@@ -229,6 +232,7 @@ impl Default for EngineBuilder {
             tools: None,
             authorization_service: None,
             workspace_root: None,
+            project_workspace_root: None,
             model_id: None,
             model_extra: Value::Null,
             protocol: ModelProtocol::Messages,
@@ -339,6 +343,12 @@ impl EngineBuilder {
     #[must_use]
     pub fn with_workspace_root(mut self, workspace_root: impl AsRef<Path>) -> Self {
         self.workspace_root = Some(workspace_root.as_ref().to_path_buf());
+        self
+    }
+
+    #[must_use]
+    pub fn with_project_workspace_root(mut self, project_workspace_root: impl AsRef<Path>) -> Self {
+        self.project_workspace_root = Some(project_workspace_root.as_ref().to_path_buf());
         self
     }
 
@@ -518,6 +528,7 @@ impl EngineBuilder {
                     Arc::new(EngineEmbeddedToolDispatcher {
                         tools: tools.clone(),
                         workspace_root: workspace_root.clone(),
+                        project_workspace_root: self.project_workspace_root.clone(),
                         sandbox: self.sandbox.clone(),
                         authorization_service: Arc::clone(&authorization_service),
                         cap_registry: Arc::new(cap_registry_value.clone()),
@@ -577,6 +588,7 @@ impl EngineBuilder {
             pricing_snapshot_resolver: self.pricing_snapshot_resolver,
             tools,
             workspace_root,
+            project_workspace_root: self.project_workspace_root,
             model_id,
             model_extra: self.model_extra,
             protocol: self.protocol,
@@ -860,6 +872,7 @@ impl harness_sandbox::EventSink for EngineCodeEventSink {
 struct EngineEmbeddedToolDispatcher {
     tools: ToolPool,
     workspace_root: PathBuf,
+    project_workspace_root: Option<PathBuf>,
     sandbox: Option<Arc<dyn SandboxBackend>>,
     authorization_service: Arc<AuthorizationService>,
     cap_registry: Arc<CapabilityRegistry>,
@@ -884,6 +897,7 @@ impl EngineEmbeddedToolDispatcher {
         Self {
             tools: self.tools.clone(),
             workspace_root: self.workspace_root.clone(),
+            project_workspace_root: self.project_workspace_root.clone(),
             sandbox: self.sandbox.clone(),
             authorization_service: Arc::clone(&self.authorization_service),
             cap_registry: Arc::clone(&self.cap_registry),
@@ -906,6 +920,7 @@ impl EngineEmbeddedToolDispatcher {
             agent_id: harness_contracts::AgentId::from_u128(1),
             subagent_depth: 0,
             workspace_root: self.workspace_root.clone(),
+            project_workspace_root: self.project_workspace_root.clone(),
             sandbox: self.sandbox.clone(),
             cap_registry: Arc::clone(&self.cap_registry),
             redactor: Arc::clone(&self.redactor),

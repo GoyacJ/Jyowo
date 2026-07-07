@@ -74,6 +74,26 @@ describe('Composer', () => {
     )
   })
 
+  it('submits typed text without a selected model config', async () => {
+    const onSubmit = vi.fn()
+
+    render(<Composer onSubmit={onSubmit} />)
+
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+      target: { value: 'Start without a project model override' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith({
+        attachments: [],
+        contextReferences: [],
+        permissionMode: 'default',
+        prompt: 'Start without a project model override',
+      }),
+    )
+  })
+
   it('submits with Enter and keeps Shift Enter as newline', async () => {
     const onSubmit = vi.fn()
 

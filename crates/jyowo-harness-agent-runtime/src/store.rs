@@ -511,6 +511,28 @@ impl AgentRuntimeStore {
         })
     }
 
+    pub fn delete_background_agents_for_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<(), AgentRuntimeStoreError> {
+        self.with_connection(|connection| {
+            connection.execute(
+                "DELETE FROM background_agent_attempts
+                 WHERE background_agent_id IN (
+                   SELECT background_agent_id
+                   FROM background_agent_registry
+                   WHERE conversation_id = ?1
+                 )",
+                [conversation_id],
+            )?;
+            connection.execute(
+                "DELETE FROM background_agent_registry WHERE conversation_id = ?1",
+                [conversation_id],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn insert_background_agent_attempt(
         &self,
         attempt: &BackgroundAgentAttemptRecord,

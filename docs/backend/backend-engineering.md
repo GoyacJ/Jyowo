@@ -66,8 +66,10 @@ Secrets:
 
 - `secrecy` owns in-memory secret handling.
 - `zeroize` owns explicit memory clearing where needed.
-- Provider API keys are stored directly in the workspace provider settings file
-  because the product supports explicit user reveal.
+- Provider API keys are stored in the global provider secret store
+  (`~/.jyowo/config/provider-secrets.json`). Provider profile metadata lives in
+  `~/.jyowo/config/provider-profiles.json`; project workspaces store only
+  selection and route overrides under `<workspace>/.jyowo/config/`.
 - List/save IPC payloads do not return raw provider API keys.
 - `get_provider_config_api_key` is the only provider key reveal command.
 - Prompt, Journal, Replay, logs, traces, screenshots, and support bundles must
@@ -124,6 +126,7 @@ Lower layers MUST NOT depend on higher layers.
 | `jyowo-desktop-shell` | `apps/desktop/src-tauri` | Tauri shell | Exposes desktop IPC and starts the in-process harness facade. |
 | `jyowo-harness-contracts` | `crates/jyowo-harness-contracts` | L0 | Owns public IDs, messages, events, errors, serde shape, and JsonSchema exports. |
 | `jyowo-harness-budget` | `crates/jyowo-harness-budget` | L1 | Owns shared quota and token budget carriers. |
+| `jyowo-harness-fs` | `crates/jyowo-harness-fs` | L1 | Owns filesystem primitives, atomic persistence helpers, path checks, and platform-specific file safety. |
 | `jyowo-harness-journal` | `crates/jyowo-harness-journal` | L1 | Owns event stores, snapshots, audit projections, blobs, and Replay cursors. |
 | `jyowo-harness-memory` | `crates/jyowo-harness-memory` | L1 | Owns Memory primitives, recall, consolidation, and visibility rules. |
 | `jyowo-harness-model` | `crates/jyowo-harness-model` | L1 | Owns provider abstractions, model errors, and usage reporting. |
@@ -660,7 +663,7 @@ start_run(
   attachments: Option<Vec<AttachmentReferencePayload>>,
   context_references: Option<Vec<ContextReferencePayload>>,
   conversation_id: String,
-  model_config_id: String,
+  model_config_id: Option<String>,
   permission_mode: Option<PermissionMode>,
   prompt: String
 ) -> Result<StartRunResponse, CommandErrorPayload>
@@ -750,16 +753,24 @@ Model settings command behavior:
 | `list_provider_capability_route_options` | Route policy metadata read; backend-owned runtime eligibility. |
 | `save_provider_capability_route` / `delete_provider_capability_route` | Route policy mutation validated by backend. |
 
-`save_provider_settings` stores provider credentials in the workspace provider
-settings record. `api_key` is required for new provider configs and optional
-when saving an existing config without changing provider or base URL. The save
-and list payloads must not return the raw key. `request_provider_config_api_key_reveal`
-issues a short-lived one-use reveal token; `get_provider_config_api_key` requires
-that token and is the explicit reveal path.
+`save_provider_settings` stores provider profile metadata in the global provider
+profile store and credentials in the global provider secret store. Project
+workspaces store only the selected default profile id in
+`<workspace>/.jyowo/config/provider-selection.json`; no-workspace sessions use
+the global default selection and must not create a scratch project config.
+`api_key` is required for new provider configs and optional when saving an
+existing config without changing provider or base URL. The save and list
+payloads must not return the raw key. `request_provider_config_api_key_reveal`
+issues a short-lived one-use reveal token; `get_provider_config_api_key`
+requires that token and is the explicit reveal path.
 
 `list_provider_capability_routes`, `list_provider_capability_route_options`,
 `save_provider_capability_route`, and `delete_provider_capability_route` manage
-workspace capability routes stored in `.jyowo/runtime/provider-capability-routes.json`.
+workspace capability routes stored in
+`<workspace>/.jyowo/config/provider-capability-routes.json`. In no-workspace
+sessions, list commands return empty route state and route mutation commands
+fail closed with a typed unavailable error instead of writing under the scratch
+cwd.
 These commands must not return API keys, signed URLs, or provider-native payloads.
 `list_provider_capability_route_options` is UX metadata only. It reports
 `runtimeSupported` from descriptor-derived `ProviderServiceAdapterAvailability`,
@@ -772,7 +783,10 @@ conversation harnesses. `start_run` must not carry route decisions.
 `list_mcp_servers`, `get_mcp_server_config`, `save_mcp_server`,
 `set_mcp_server_enabled`, `restart_mcp_server`, and `delete_mcp_server` expose
 only sanitized MCP server management payloads. Workspace-managed config
-supports `stdio` and `http`. `get_mcp_server_config` only returns
+persists in `<workspace>/.jyowo/config/mcp-servers.json` and supports `stdio`
+and `http`. No-workspace sessions return empty managed server lists and reject
+managed server mutations; runtime/plugin MCP servers must still be reported
+from runtime state when available. `get_mcp_server_config` only returns
 workspace-managed persisted records and must not expose plugin, policy, managed,
 or runtime-only server internals.
 `stdio` may persist non-sensitive inline env values and inherited env var
@@ -820,15 +834,17 @@ use `DREAMS.md` as runtime memory, or use frontend `as any` in Memory UI.
 
 `list_agent_profiles`, `save_agent_profile`, and `delete_agent_profile` must go
 through the SDK agent-runtime facade and `jyowo-harness-agent-runtime` profile
-registry. User and project profiles persist in
-`.jyowo/runtime/agent-profiles.json`; profile metadata cache and validation state
-persist in `.jyowo/runtime/agent-runtime.sqlite`. Builtin profiles are read-only.
+registry. User profiles persist in `~/.jyowo/config/agent-profiles.json`;
+project workspaces store profile selection under `<workspace>/.jyowo/config/`.
+Profile metadata cache and validation state persist in the runtime root
+(`.jyowo/runtime/agent-runtime.sqlite` for project workspaces, global
+conversation runtime for no-workspace sessions). Builtin profiles are read-only.
 Invalid profile files are quarantined before any list or save succeeds.
 
 `list_skills`, `get_skill_detail`, `get_skill_file`, `import_skill`,
 `set_skill_enabled`, and `delete_skill` must go through the SDK skill facade.
 Tauri commands may manage the workspace skill store under
-`.jyowo/runtime/skills`, but runtime registry reload, validation, and hook
+`<workspace>/.jyowo/skills/packages`, but runtime registry reload, validation, and hook
 replacement stay behind the SDK boundary. `list_skills` must return only
 summaries. `get_skill_detail` may return manifest metadata and a relative file
 index, but must not read file bodies. `get_skill_file` is the only command that
@@ -836,10 +852,11 @@ reads a selected package file. Imported source paths must not be returned over
 IPC. `import_skill(source_path)` accepts only a local skill package directory
 containing `SKILL.md`; single Markdown files are rejected. Workspace packages
 are persisted as
-`.jyowo/runtime/skills/enabled/<id>/SKILL.md` or
-`.jyowo/runtime/skills/disabled/<id>/SKILL.md`, with package resources copied
-under the same `<id>` directory. Disabled workspace skills remain in the store
-index but must not be loaded into the runtime registry.
+`<workspace>/.jyowo/skills/packages/enabled/<id>/SKILL.md` or
+`<workspace>/.jyowo/skills/packages/disabled/<id>/SKILL.md`, with package
+resources copied under the same `<id>` directory. Workspace skill selection is
+stored in `<workspace>/.jyowo/config/skills.json`. Disabled workspace skills
+remain in the store index but must not be loaded into the runtime registry.
 Skill catalog commands expose only the fixed official source set. Remote catalog
 content must be fetched, scanned, materialized into a temporary package, and
 then installed through the same managed skill store pipeline as local imports.
@@ -859,14 +876,16 @@ detail.
 `resolve_permission` must go through `PermissionBroker`. These shell commands
 return `RUNTIME_UNAVAILABLE` when those runtime paths are not available.
 
-`set_execution_settings` stores the workspace default permission mode only.
-It must not change conversation identity, session option hashes, or authorize
-later runs by itself.
+`set_execution_settings` stores global execution defaults and project execution
+overrides when an active workspace exists. In no-workspace sessions it must not
+create project-scoped config under the scratch cwd. It must not change
+conversation identity, session option hashes, or authorize later runs by itself.
 
-`start_run` requires `model_config_id`. That id is the model truth for the run:
-Rust resolves the provider config, descriptor, provider, protocol, and API key
-from the request value. Missing configs, missing API keys, or invalid provider
-bindings fail closed before the conversation metadata is marked active.
+`start_run` accepts optional `model_config_id`. When present, that id is the
+model truth for the run. When omitted, Rust resolves the effective default from
+project selection, then global selection, then runtime provider policy. Missing
+configs, missing API keys, or invalid provider bindings fail closed before the
+conversation metadata is marked active.
 
 `start_run` also accepts an optional `client_message_id` generated by the
 frontend and an optional per-run `permission_mode`. The request permission mode
@@ -1019,8 +1038,12 @@ ProviderCredentialResolveContext.route_kind
 Persistence:
 
 ```text
-.jyowo/runtime/provider-capability-routes.json
+<workspace>/.jyowo/config/provider-capability-routes.json
 ```
+
+No-workspace sessions have no project capability route store. Reads normalize to
+empty route settings; writes fail closed and must not create `.jyowo/config`
+under the scratch cwd.
 
 Route validation rules:
 

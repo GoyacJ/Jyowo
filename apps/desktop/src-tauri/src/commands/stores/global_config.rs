@@ -9,8 +9,8 @@ use crate::commands::error::CommandErrorPayload;
 use crate::storage_layout::StorageLayout;
 
 use super::{
-    ensure_app_dir_no_symlink, read_json_file, read_secret_json_file, write_json_file_atomic,
-    write_secret_json_file_atomic,
+    ensure_app_dir_no_symlink, read_json_file, read_json_file_invalid_payload,
+    read_secret_json_file, write_json_file_atomic, write_secret_json_file_atomic,
 };
 
 /// Typed store for global configuration under `~/.jyowo/config/`.
@@ -181,7 +181,10 @@ impl GlobalConfigStore {
     pub fn load_global_agent_profiles(&self) -> Result<Vec<AgentProfile>, CommandErrorPayload> {
         let path = self.layout.global_agent_profiles_file();
         ensure_config_dir(&path, "agent profiles")?;
-        Ok(read_json_file::<Vec<AgentProfile>>(&path, "agent profiles")?.unwrap_or_default())
+        Ok(
+            read_json_file_invalid_payload::<Vec<AgentProfile>>(&path, "agent profiles")?
+                .unwrap_or_default(),
+        )
     }
 
     pub fn save_global_agent_profiles(

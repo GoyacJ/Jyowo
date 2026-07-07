@@ -1,11 +1,11 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Sparkles } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { conversationQueryKeys } from '@/features/conversation/use-conversation'
 import { ProjectSelectorActions } from '@/features/workspace/ProjectSelector'
 import { onProjectWorkspaceChanged } from '@/features/workspace/reset-workspace-scope'
-import { addProject, createConversation, listProjects } from '@/shared/tauri/commands'
+import { addProject, createConversation } from '@/shared/tauri/commands'
 import { pickProjectDirectory } from '@/shared/tauri/file-dialog'
 import { useCommandClient } from '@/shared/tauri/react'
 import appIconUrl from '../../../src-tauri/icons/32x32.png'
@@ -19,10 +19,6 @@ export function WelcomeWorkspace({ onConversationCreated }: WelcomeWorkspaceProp
   const commandClient = useCommandClient()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const projectsQuery = useQuery({
-    queryKey: ['projects', 'list'],
-    queryFn: () => listProjects(commandClient),
-  })
   const addProjectMutation = useMutation({
     mutationFn: (path: string) => addProject(path, commandClient),
     onSuccess: async () => {
@@ -36,8 +32,6 @@ export function WelcomeWorkspace({ onConversationCreated }: WelcomeWorkspaceProp
       onConversationCreated(response.conversation.id)
     },
   })
-
-  const hasActiveProject = Boolean(projectsQuery.data?.activePath)
 
   async function openProject() {
     const selectedPath = await pickProjectDirectory()
@@ -69,14 +63,9 @@ export function WelcomeWorkspace({ onConversationCreated }: WelcomeWorkspaceProp
         <ProjectSelectorActions
           onNewConversation={createNewConversation}
           onOpenProject={() => void openProject()}
-          showNewConversation={hasActiveProject}
+          showNewConversation
         />
       </div>
-      {!hasActiveProject ? (
-        <p className="mt-4 max-w-md text-muted-foreground text-xs">
-          {t('shell:welcome.projectRequired')}
-        </p>
-      ) : null}
     </section>
   )
 }

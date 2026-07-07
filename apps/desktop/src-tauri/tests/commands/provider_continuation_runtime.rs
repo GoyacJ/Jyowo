@@ -24,7 +24,7 @@ async fn provider_continuation_dev_reset_clears_legacy_conversation_runtime_once
         write_sentinel(path);
     }
 
-    reset_legacy_conversation_runtime_for_provider_continuations(&workspace)
+    reset_legacy_conversation_runtime_for_provider_continuations(&runtime_dir)
         .expect("first reset should succeed");
 
     assert_eq!(
@@ -44,7 +44,7 @@ async fn provider_continuation_dev_reset_clears_legacy_conversation_runtime_once
     write_sentinel(&new_event);
     write_sentinel(&new_session);
 
-    reset_legacy_conversation_runtime_for_provider_continuations(&workspace)
+    reset_legacy_conversation_runtime_for_provider_continuations(&runtime_dir)
         .expect("second reset should no-op when marker is current");
 
     assert!(new_event.exists());
@@ -76,7 +76,7 @@ async fn provider_continuation_dev_reset_preserves_user_configuration_and_non_co
     write_sentinel(&forbidden_skill);
     write_sentinel(&forbidden_plugin);
 
-    reset_legacy_conversation_runtime_for_provider_continuations(&workspace)
+    reset_legacy_conversation_runtime_for_provider_continuations(&runtime_dir)
         .expect("reset should succeed");
 
     assert!(!allowed.exists());

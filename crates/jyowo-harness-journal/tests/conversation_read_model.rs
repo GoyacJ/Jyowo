@@ -1217,7 +1217,9 @@ async fn sqlite_conversation_read_model_redacts_urls_and_blob_paths_from_public_
             Event::AssistantReviewRequested(AssistantReviewRequestedEvent {
                 run_id,
                 request_id: review_request_id,
-                title: UiSafeText::from_trusted_redacted("Review https://provider.example/review"),
+                title: UiSafeText::from_trusted_redacted(
+                    "Review https://provider.example/review",
+                ),
                 body: Some(UiSafeText::from_trusted_redacted(
                     "Confirm blob:.jyowo/runtime/blobs/blob-001",
                 )),
@@ -1231,7 +1233,9 @@ async fn sqlite_conversation_read_model_redacts_urls_and_blob_paths_from_public_
             Event::AssistantClarificationRequested(AssistantClarificationRequestedEvent {
                 run_id,
                 request_id: clarification_request_id,
-                prompt: UiSafeText::from_trusted_redacted("Use链接https://provider.example/prompt"),
+                prompt: UiSafeText::from_trusted_redacted(
+                    "Use链接https://provider.example/prompt",
+                ),
                 at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(4),
             }),
         ),
@@ -1242,7 +1246,9 @@ async fn sqlite_conversation_read_model_redacts_urls_and_blob_paths_from_public_
             Event::AssistantNotice(AssistantNoticeEvent {
                 run_id,
                 notice_id,
-                body: UiSafeText::from_trusted_redacted("Read 路径：.jyowo/runtime/blobs/blob-001"),
+                body: UiSafeText::from_trusted_redacted(
+                    "Read 路径：.jyowo/runtime/blobs/blob-001",
+                ),
                 code: None,
                 at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::Duration::seconds(5),
             }),

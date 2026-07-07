@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_contracts::{
-    AgentUsePolicy, AgentWorkspaceIsolationMode, BackgroundAgentState, NetworkAccess,
+    AgentUsePolicy, AgentWorkspaceIsolationMode, BackgroundAgentState, NetworkAccess, NoopRedactor,
     PermissionActorSource, Redactor, ToolActionPlan, WorkspaceAccess,
 };
 use harness_tool::{action_plan_from_permission_check, AuthorizedToolInput};
@@ -28,7 +28,7 @@ use jyowo_harness_sdk::ext::{
     TrustLevel, ValidationError,
 };
 use jyowo_harness_sdk::testing::{
-    InMemoryEventStore, NoopRedactor, NoopSandbox, ScriptedProvider, ScriptedResponse,
+    InMemoryEventStore, NoopSandbox, ScriptedProvider, ScriptedResponse,
 };
 use jyowo_harness_sdk::{
     AgentCapabilityResolutionContext, EvidenceRefStore, Harness, HarnessOptions,
@@ -586,7 +586,7 @@ async fn runtime_state_with_scripted_model_for_workspace(
     responses: Vec<ScriptedResponse>,
 ) -> DesktopRuntimeState {
     std::fs::create_dir_all(&workspace).expect("workspace dir");
-    write_test_provider_settings(&workspace);
+    let provider_settings_store = write_test_provider_settings(&workspace);
     let event_store =
         Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))) as Arc<dyn EventStore>;
     let background_agent_starter: Arc<dyn harness_contracts::BackgroundAgentStarterCap> =
@@ -627,19 +627,22 @@ async fn runtime_state_with_scripted_model_for_workspace(
             .expect("harness builds"),
     );
 
-    DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
+    let mut state = DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
         workspace,
         harness,
         stream_permission_runtime,
     )
-    .expect("state uses harness broker")
+    .expect("state uses harness broker");
+    use_test_provider_settings_store(&mut state, provider_settings_store);
+    state
 }
 
-fn write_test_provider_settings(workspace: &Path) {
+fn write_test_provider_settings(workspace: &Path) -> DesktopProviderSettingsStore {
     let workspace = workspace
         .canonicalize()
         .expect("test workspace should canonicalize");
-    DesktopProviderSettingsStore::new(workspace)
+    let store = provider_settings_store_for_workspace(&workspace);
+    store
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             configs: vec![ProviderConfigRecord {
@@ -674,6 +677,7 @@ fn write_test_provider_settings(workspace: &Path) {
             }],
         })
         .expect("test provider settings save");
+    store
 }
 
 async fn runtime_state_with_session_routed_model(
@@ -681,7 +685,7 @@ async fn runtime_state_with_session_routed_model(
 ) -> DesktopRuntimeState {
     let workspace = unique_workspace("session-routed");
     std::fs::create_dir_all(&workspace).expect("workspace dir");
-    write_test_provider_settings(&workspace);
+    let provider_settings_store = write_test_provider_settings(&workspace);
     let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
         default_timeout: Some(Duration::from_secs(5)),
         heartbeat_interval: None,
@@ -711,12 +715,38 @@ async fn runtime_state_with_session_routed_model(
             .expect("harness builds"),
     );
 
-    DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
+    let mut state = DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
         workspace,
         harness,
         stream_permission_runtime,
     )
-    .expect("state uses harness broker")
+    .expect("state uses harness broker");
+    use_test_provider_settings_store(&mut state, provider_settings_store);
+    state
+}
+
+fn use_test_provider_settings_store(
+    state: &mut DesktopRuntimeState,
+    store: DesktopProviderSettingsStore,
+) {
+    let record = store
+        .load_record()
+        .expect("test provider settings should load")
+        .expect("test provider settings should exist");
+    let config_id = record
+        .default_config_id
+        .as_deref()
+        .expect("test provider settings should have default config");
+    let config = record
+        .configs
+        .iter()
+        .find(|config| config.id == config_id)
+        .expect("test provider settings default config should exist")
+        .clone();
+    state
+        .set_active_runtime_provider_config_for_test(&config)
+        .expect("test active runtime provider binding should update");
+    state.set_provider_settings_store_for_test(Arc::new(store));
 }
 
 async fn test_blob_and_evidence_ref_store(
@@ -1129,4 +1159,13 @@ fn unique_workspace(label: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).expect("workspace dir");
     path
+}
+
+fn provider_settings_store_for_workspace(workspace: &Path) -> DesktopProviderSettingsStore {
+    let layout = jyowo_desktop_shell::storage_layout::StorageLayout::new(
+        jyowo_desktop_shell::storage_layout::JyowoHome::new(
+            workspace.join(".jyowo-test-home").join(".jyowo"),
+        ),
+    );
+    DesktopProviderSettingsStore::new_with_layout(layout, workspace.to_path_buf())
 }

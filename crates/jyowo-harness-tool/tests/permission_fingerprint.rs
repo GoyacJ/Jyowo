@@ -134,6 +134,7 @@ fn tool_ctx(workspace_root: &Path) -> ToolContext {
         agent_id: AgentId::from_u128(1),
         subagent_depth: 0,
         workspace_root: workspace_root.to_path_buf(),
+        project_workspace_root: None,
         sandbox: None,
         cap_registry: Arc::new(CapabilityRegistry::default()),
         redactor: Arc::new(harness_contracts::NoopRedactor),

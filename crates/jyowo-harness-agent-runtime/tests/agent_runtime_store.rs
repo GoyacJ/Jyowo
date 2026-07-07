@@ -1,6 +1,6 @@
 use harness_agent_runtime::{
-    AgentRuntimeStore, BackgroundAgentStoreRecord, AGENT_RUNTIME_DB_FILENAME,
-    CURRENT_SCHEMA_VERSION,
+    AgentRuntimeStore, BackgroundAgentAttemptRecord, BackgroundAgentStoreRecord,
+    AGENT_RUNTIME_DB_FILENAME, CURRENT_SCHEMA_VERSION,
 };
 use harness_contracts::BackgroundAgentState;
 use rusqlite::Connection;
@@ -289,6 +289,67 @@ fn background_agent_payload_claim_is_atomic_by_prior_payload() {
         .expect("background exists");
     assert_eq!(loaded.payload_json, running_payload);
     assert_eq!(loaded.updated_at, "2026-06-30T00:00:01Z");
+}
+
+#[test]
+fn delete_background_agents_for_conversation_removes_registry_and_attempts_only_for_session() {
+    let workspace = tempdir().expect("tempdir");
+    let workspace_root = canonical_temp_root(&workspace);
+    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+
+    for (background_agent_id, conversation_id) in [
+        ("background-delete", "conversation-delete"),
+        ("background-keep", "conversation-keep"),
+    ] {
+        store
+            .insert_background_agent(&BackgroundAgentStoreRecord {
+                background_agent_id: background_agent_id.to_owned(),
+                conversation_id: conversation_id.to_owned(),
+                run_id: Some(format!("{background_agent_id}-run")),
+                state: BackgroundAgentState::Running,
+                title: background_agent_id.to_owned(),
+                created_at: "2026-06-30T00:00:00Z".to_owned(),
+                updated_at: "2026-06-30T00:00:00Z".to_owned(),
+                payload_json: "{}".to_owned(),
+            })
+            .expect("background insert");
+        store
+            .insert_background_agent_attempt(&BackgroundAgentAttemptRecord {
+                attempt_id: format!("{background_agent_id}-attempt"),
+                background_agent_id: background_agent_id.to_owned(),
+                prior_attempt_id: None,
+                attempt_number: 1,
+                state: BackgroundAgentState::Running,
+                started_at: "2026-06-30T00:00:00Z".to_owned(),
+                ended_at: None,
+                payload_json: "{}".to_owned(),
+            })
+            .expect("attempt insert");
+    }
+
+    store
+        .delete_background_agents_for_conversation("conversation-delete")
+        .expect("delete conversation background agents");
+
+    assert!(store
+        .get_background_agent("background-delete")
+        .expect("deleted background lookup")
+        .is_none());
+    assert!(store
+        .list_background_agent_attempts("background-delete")
+        .expect("deleted attempts lookup")
+        .is_empty());
+    assert!(store
+        .get_background_agent("background-keep")
+        .expect("kept background lookup")
+        .is_some());
+    assert_eq!(
+        store
+            .list_background_agent_attempts("background-keep")
+            .expect("kept attempts lookup")
+            .len(),
+        1
+    );
 }
 
 #[test]

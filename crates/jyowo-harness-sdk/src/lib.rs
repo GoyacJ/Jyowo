@@ -30,10 +30,11 @@ pub mod team;
 pub mod testing;
 
 pub use agent_runtime::{
-    delete_agent_profile, list_agent_profiles, resolve_agent_capabilities,
-    resolve_agent_capabilities_with_context, resolve_agent_runtime_policy, save_agent_profile,
-    AgentCapabilitiesInput, AgentCapabilityResolutionContext, AgentRuntimeFacadeError,
-    AgentRuntimePolicyError, ExecutionSettingsAgentInput, ResolvedAgentToolPolicy,
+    delete_agent_profile, list_agent_profiles, list_agent_profiles_from_runtime_dir,
+    resolve_agent_capabilities, resolve_agent_capabilities_with_context,
+    resolve_agent_runtime_policy, save_agent_profile, AgentCapabilitiesInput,
+    AgentCapabilityResolutionContext, AgentRuntimeFacadeError, AgentRuntimePolicyError,
+    ExecutionSettingsAgentInput, ResolvedAgentToolPolicy,
 };
 pub use builder::{HarnessBuilder, Set, Unset};
 pub use error::HarnessError;
@@ -47,8 +48,8 @@ pub use harness::{
     RuntimeSkillView, TenantPolicy, WorkspaceCreateRequest,
 };
 pub use harness_agent_runtime::{
-    default_agent_capability_environment, AgentCapabilityEnvironment, AgentCapabilityResolver,
-    ResolvedAgentCapabilityPolicy,
+    builtin_agent_profiles, default_agent_capability_environment, AgentCapabilityEnvironment,
+    AgentCapabilityResolver, ResolvedAgentCapabilityPolicy,
 };
 pub use harness_agent_runtime::{
     AgentProfileRegistryError, AgentProfilesFile, AgentRuntimeStore, AgentRuntimeStoreError,

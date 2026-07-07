@@ -32,15 +32,10 @@ use super::stores::*;
 use super::validation::*;
 use super::*;
 
-use jyowo_harness_sdk::{
-    delete_agent_profile, list_agent_profiles, save_agent_profile, AgentProfileRegistryError,
-    AgentRuntimeFacadeError, AgentRuntimeStoreError,
-};
-
 pub async fn list_agent_profiles_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<ListAgentProfilesResponse, CommandErrorPayload> {
-    let profiles = list_agent_profiles(state.workspace_root()).map_err(map_agent_runtime_error)?;
+    let profiles = list_global_agent_profiles_with_builtin(state)?;
     Ok(ListAgentProfilesResponse { profiles })
 }
 
@@ -55,8 +50,7 @@ pub async fn save_agent_profile_with_runtime_state(
         ));
     }
 
-    let saved =
-        save_agent_profile(state.workspace_root(), profile).map_err(map_agent_runtime_error)?;
+    let saved = save_global_agent_profile(state, profile)?;
 
     Ok(SaveAgentProfileResponse {
         profile: saved,
@@ -69,8 +63,7 @@ pub async fn delete_agent_profile_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<DeleteAgentProfileResponse, CommandErrorPayload> {
     ensure_non_empty("id", &request.id)?;
-    delete_agent_profile(state.workspace_root(), request.id.trim())
-        .map_err(map_agent_runtime_error)?;
+    delete_global_agent_profile(state, request.id.trim())?;
 
     Ok(DeleteAgentProfileResponse {
         id: request.id,
@@ -78,44 +71,56 @@ pub async fn delete_agent_profile_with_runtime_state(
     })
 }
 
-pub(crate) fn map_agent_runtime_error(error: AgentRuntimeFacadeError) -> CommandErrorPayload {
-    match error {
-        AgentRuntimeFacadeError::Profiles(profile_error) => {
-            map_profile_registry_error(profile_error)
-        }
-        AgentRuntimeFacadeError::Store(store_error) => map_runtime_store_error(store_error),
-    }
+pub(crate) fn list_global_agent_profiles_with_builtin(
+    state: &DesktopRuntimeState,
+) -> Result<Vec<AgentProfile>, CommandErrorPayload> {
+    let mut profiles = jyowo_harness_sdk::builtin_agent_profiles();
+    profiles.extend(global_config_store(state)?.load_global_agent_profiles()?);
+    Ok(profiles)
 }
 
-fn map_profile_registry_error(error: AgentProfileRegistryError) -> CommandErrorPayload {
-    match error {
-        AgentProfileRegistryError::Validation(message) => invalid_payload(message),
-        AgentProfileRegistryError::BuiltinReadOnly => {
-            invalid_payload("builtin agent profiles are read-only".to_owned())
-        }
-        AgentProfileRegistryError::NotFound(id) => {
-            not_found(format!("agent profile not found: {id}"))
-        }
-        AgentProfileRegistryError::Json(_) => {
-            invalid_payload("agent profiles file is invalid and was quarantined".to_owned())
-        }
-        AgentProfileRegistryError::Io(_)
-        | AgentProfileRegistryError::Sqlite(_)
-        | AgentProfileRegistryError::Fs(_) => {
-            runtime_operation_failed("agent profile registry operation failed".to_owned())
-        }
-        AgentProfileRegistryError::Store(store_error) => map_runtime_store_error(store_error),
+fn save_global_agent_profile(
+    state: &DesktopRuntimeState,
+    profile: AgentProfile,
+) -> Result<AgentProfile, CommandErrorPayload> {
+    let store = global_config_store(state)?;
+    let mut profiles = store.load_global_agent_profiles()?;
+    if let Some(existing) = profiles.iter_mut().find(|entry| entry.id == profile.id) {
+        *existing = profile.clone();
+    } else {
+        profiles.push(profile.clone());
     }
+    store.save_global_agent_profiles(&profiles)?;
+    Ok(profile)
 }
 
-fn map_runtime_store_error(error: AgentRuntimeStoreError) -> CommandErrorPayload {
-    match error {
-        AgentRuntimeStoreError::UnsupportedSchema(message) => runtime_init_failed(message),
-        AgentRuntimeStoreError::LockPoisoned => {
-            runtime_operation_failed("agent runtime store lock poisoned".to_owned())
-        }
-        AgentRuntimeStoreError::Io(_) | AgentRuntimeStoreError::Sqlite(_) => {
-            runtime_operation_failed("agent runtime store operation failed".to_owned())
-        }
+fn delete_global_agent_profile(
+    state: &DesktopRuntimeState,
+    profile_id: &str,
+) -> Result<(), CommandErrorPayload> {
+    if jyowo_harness_sdk::builtin_agent_profiles()
+        .iter()
+        .any(|profile| profile.id == profile_id)
+    {
+        return Err(invalid_payload(
+            "builtin agent profiles are read-only".to_owned(),
+        ));
     }
+    let store = global_config_store(state)?;
+    let mut profiles = store.load_global_agent_profiles()?;
+    let original_len = profiles.len();
+    profiles.retain(|profile| profile.id != profile_id);
+    if profiles.len() == original_len {
+        return Err(not_found(format!("agent profile not found: {profile_id}")));
+    }
+    store.save_global_agent_profiles(&profiles)
+}
+
+fn global_config_store(
+    state: &DesktopRuntimeState,
+) -> Result<&GlobalConfigStore, CommandErrorPayload> {
+    state
+        .global_config_store
+        .as_ref()
+        .ok_or_else(|| runtime_unavailable("global configuration store is unavailable"))
 }

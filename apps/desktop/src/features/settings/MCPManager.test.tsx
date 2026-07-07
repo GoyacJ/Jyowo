@@ -88,6 +88,21 @@ describe('MCPManager', () => {
     expect(screen.queryByRole('navigation', { name: /mcp/i })).not.toBeInTheDocument()
   })
 
+  it('renders runtime diagnostics without project write controls when no project is active', async () => {
+    renderMCPManager(
+      createTestCommandClient({
+        browserMcpPresets: { presets: [] },
+        mcpDiagnostics: { events: [] },
+        mcpServers: { servers: [] },
+        projects: { activePath: null, projects: [] },
+      }),
+    )
+
+    expect(await screen.findAllByText('Runtime diagnostics')).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: 'Add server' })).not.toBeInTheDocument()
+    expect(await screen.findByText('No MCP servers configured.')).toBeInTheDocument()
+  })
+
   it('shows server status, origin, tool count, scope, and transport', async () => {
     renderMCPManager(
       createTestCommandClient({
@@ -267,7 +282,7 @@ describe('MCPManager', () => {
 
     renderMCPManager(client)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add server' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add server' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Save MCP server' }))
 
     expect(await screen.findByText('Server name is required.')).toBeInTheDocument()
@@ -286,7 +301,7 @@ describe('MCPManager', () => {
 
     renderMCPManager(client)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add server' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add server' }))
     fireEvent.change(await screen.findByLabelText('Server name'), {
       target: { value: 'Workspace GitHub' },
     })
@@ -318,7 +333,7 @@ describe('MCPManager', () => {
 
     renderMCPManager(client)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add server' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add server' }))
     fireEvent.change(await screen.findByLabelText('Server name'), {
       target: { value: 'Workspace GitHub' },
     })
@@ -402,7 +417,7 @@ describe('MCPManager', () => {
 
     renderMCPManager(client)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add server' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add server' }))
     fireEvent.change(await screen.findByLabelText('Server name'), {
       target: { value: 'Workspace GitHub' },
     })
@@ -455,7 +470,7 @@ describe('MCPManager', () => {
 
     renderMCPManager(client)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add server' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add server' }))
     fireEvent.change(await screen.findByLabelText('Server name'), {
       target: { value: 'Remote Context' },
     })

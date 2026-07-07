@@ -253,6 +253,7 @@ async fn agents_team_coordinator_owns_prepare_persist_build_start_register_dispa
                 conversation_session_id: session_id,
                 goal: "inspect the repository".to_owned(),
                 workspace_root: workspace.path().to_path_buf(),
+                project_workspace_root: None,
             },
         )
         .await

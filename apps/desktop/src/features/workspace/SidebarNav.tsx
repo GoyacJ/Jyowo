@@ -33,9 +33,8 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
   const activeProjectPathQuery = useActiveProjectPath()
   const workspacePath = activeProjectPathQuery.data ?? null
   const workspaceKey = workspacePath ?? 'none'
-  const hasActiveProject = Boolean(workspacePath)
   const conversationsQuery = useQuery({
-    enabled: hasActiveProject,
+    enabled: !activeProjectPathQuery.isLoading,
     queryKey: conversationQueryKeys.list(workspaceKey),
     queryFn: () => listConversations(commandClient),
   })
@@ -109,10 +108,6 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
   }
 
   function focusComposerForNewConversation() {
-    if (!hasActiveProject) {
-      return
-    }
-
     createConversationMutation.mutate()
   }
 
@@ -180,9 +175,9 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
       <ConversationList
         activeConversationId={selectedConversationId}
         conversations={conversationsQuery.data?.conversations ?? []}
-        disabled={!hasActiveProject}
+        disabled={false}
         errorMessage={conversationListErrorMessage}
-        isLoading={hasActiveProject && conversationsQuery.isLoading}
+        isLoading={activeProjectPathQuery.isLoading || conversationsQuery.isLoading}
         onDeleteConversation={deleteConversation}
         onNewConversation={focusComposerForNewConversation}
         onSelectConversation={selectConversation}

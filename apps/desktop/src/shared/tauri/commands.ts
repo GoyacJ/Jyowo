@@ -317,6 +317,7 @@ const attachmentReferenceSchema = z.union([
 
 const createAttachmentFromPathRequestSchema = z
   .object({
+    conversationId: z.string().trim().min(1).optional(),
     path: z.string().trim().min(1),
   })
   .strict()
@@ -4265,7 +4266,10 @@ export interface CommandClient {
     request: ApproveMemoryCandidateRequest,
   ) => Promise<ApproveMemoryCandidateResponse>
   cancelRun: (runId: string) => Promise<CancelRunResponse>
-  createAttachmentFromPath: (path: string) => Promise<CreateAttachmentFromPathResponse>
+  createAttachmentFromPath: (
+    path: string,
+    conversationId?: string,
+  ) => Promise<CreateAttachmentFromPathResponse>
   createConversation: () => Promise<CreateConversationResponse>
   deleteAutomation: (id: string) => Promise<DeleteAutomationResponse>
   deleteAgentProfile: (id: string) => Promise<DeleteAgentProfileResponse>
@@ -4629,11 +4633,13 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, cancelRunRequestSchema, { runId })
       return parsePayload(command, cancelRunResponseSchema, await invoke(command, args))
     },
-    async createAttachmentFromPath(path) {
+    async createAttachmentFromPath(path, conversationId) {
       const command = 'create_attachment_from_path'
-      const args = parseArgs(command, createAttachmentFromPathRequestSchema, {
-        path,
-      })
+      const args = parseArgs(
+        command,
+        createAttachmentFromPathRequestSchema,
+        conversationId ? { conversationId, path } : { path },
+      )
       return parsePayload(
         command,
         createAttachmentFromPathResponseSchema,
@@ -5495,9 +5501,14 @@ export function startRun(
 
 export function createAttachmentFromPath(
   path: string,
+  conversationIdOrClient?: string | CommandClient,
   client: CommandClient = tauriCommandClient,
 ): Promise<CreateAttachmentFromPathResponse> {
-  return client.createAttachmentFromPath(path)
+  if (typeof conversationIdOrClient === 'object' && conversationIdOrClient !== null) {
+    return conversationIdOrClient.createAttachmentFromPath(path)
+  }
+  const conversationId = conversationIdOrClient
+  return client.createAttachmentFromPath(path, conversationId)
 }
 
 export function listReferenceCandidates(

@@ -555,12 +555,14 @@ async fn save_mcp_server_with_runtime_state_registers_and_injects_stdio_tools() 
 #[tokio::test]
 async fn save_mcp_server_with_runtime_state_runs_npx_without_explicit_inherited_env() {
     let _guard = WORKSPACE_ROOT_ENV_LOCK.lock().unwrap();
+    let _home_lock = HOME_ENV_LOCK.lock().unwrap();
     let workspace = unique_workspace("mcp-save-npx-empty-env");
     let fake_bin = workspace.join("bin");
     std::fs::create_dir_all(&fake_bin).unwrap();
     write_test_executable(&fake_bin.join("npx"), &context7_npx_fixture_script());
+    let canonical_home = workspace.canonicalize().unwrap();
     let path_guard = EnvVarGuard::set("PATH", fake_bin.as_os_str());
-    let home_guard = EnvVarGuard::set("HOME", workspace.as_os_str());
+    let home_guard = EnvVarGuard::set("HOME", canonical_home.as_os_str());
     let state =
         runtime_state_with_mcp_registry_for_workspace(workspace, McpRegistry::new(), Vec::new())
             .await;
@@ -603,12 +605,14 @@ async fn save_mcp_server_with_runtime_state_runs_npx_without_explicit_inherited_
 #[tokio::test]
 async fn save_mcp_server_with_runtime_state_accepts_workspace_relative_working_dir() {
     let _guard = WORKSPACE_ROOT_ENV_LOCK.lock().unwrap();
+    let _home_lock = HOME_ENV_LOCK.lock().unwrap();
     let workspace = unique_workspace("mcp-save-relative-working-dir");
     let fake_bin = workspace.join("bin");
     std::fs::create_dir_all(&fake_bin).unwrap();
     write_test_executable(&fake_bin.join("npx"), &context7_npx_fixture_script());
+    let canonical_home = workspace.canonicalize().unwrap();
     let path_guard = EnvVarGuard::set("PATH", fake_bin.as_os_str());
-    let home_guard = EnvVarGuard::set("HOME", workspace.as_os_str());
+    let home_guard = EnvVarGuard::set("HOME", canonical_home.as_os_str());
     let state = runtime_state_with_mcp_registry_for_workspace(
         workspace.clone(),
         McpRegistry::new(),

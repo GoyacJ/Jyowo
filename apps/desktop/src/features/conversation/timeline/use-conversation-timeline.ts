@@ -371,6 +371,7 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     resolvePermission: permissionMutation.mutateAsync,
     state: displayState,
     workspacePath: conversation.workspacePath,
+    workspacePathReady: conversation.workspacePathReady,
   }
 }
 

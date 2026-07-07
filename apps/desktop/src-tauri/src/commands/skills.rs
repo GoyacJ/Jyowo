@@ -731,19 +731,23 @@ pub(crate) fn migrate_skills_on_startup(
     state: &DesktopRuntimeState,
 ) -> Result<(), CommandErrorPayload> {
     let (result, enabled_ids) = migrate_skills_from_runtime(&state.workspace_root)?;
+    if let MigrationResult::Conflict(conflict) = result {
+        return Err(runtime_init_failed(format!(
+            "skill migration conflict: {:?}: {}",
+            conflict.kind, conflict.detail
+        )));
+    }
 
     if matches!(result, MigrationResult::Migrated) && !enabled_ids.is_empty() {
-        if let Some(project_config) = &state.project_config_store {
-            let selection = SkillSelectionRecord {
-                enabled: enabled_ids,
-            };
-            if let Err(error) = project_config.save_project_skill_selection(&selection) {
-                log::warn!(
-                    "skill migration: failed to persist enabled selection: {}",
-                    error.message
-                );
-            }
-        }
+        let project_config = state.project_config_store.as_ref().ok_or_else(|| {
+            runtime_init_failed(
+                "project config store is unavailable for skill migration".to_owned(),
+            )
+        })?;
+        let selection = SkillSelectionRecord {
+            enabled: enabled_ids,
+        };
+        project_config.save_project_skill_selection(&selection)?;
     }
 
     Ok(())

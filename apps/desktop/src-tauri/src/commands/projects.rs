@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use super::error::CommandErrorPayload;
 use super::runtime::{
-    canonical_workspace_root, runtime_state_for_workspace, unconfigured_runtime_state,
+    canonical_workspace_root, runtime_state_for_no_workspace, runtime_state_for_workspace,
     ManagedDesktopRuntime,
 };
 use crate::project_registry::{ProjectRecord, ProjectRegistry};
@@ -65,7 +65,7 @@ pub async fn delete_project_payload(
     let removed = project_registry.remove(&PathBuf::from(path))?;
     let active_path = project_registry.active_path();
     if active_path.is_none() {
-        *runtime_handle.write().await = unconfigured_runtime_state();
+        *runtime_handle.write().await = runtime_state_for_no_workspace().await?;
     }
 
     Ok(DeleteProjectResponse {

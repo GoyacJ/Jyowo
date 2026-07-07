@@ -12,7 +12,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
-    BlobMeta, BlobRef, BlobRetention, Event, ExecFingerprint, KillScope, RedactRules,
+    BlobMeta, BlobRef, BlobRetention, Event, ExecFingerprint, KillScope,
     SandboxActivityHeartbeatEvent, SandboxActivityTimeoutFiredEvent,
     SandboxBackpressureAppliedEvent, SandboxError, SandboxExecutionCompletedEvent,
     SandboxExecutionStartedEvent, SandboxExitStatus, SandboxOutputSpilledEvent,

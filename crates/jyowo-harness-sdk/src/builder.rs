@@ -42,6 +42,8 @@ pub(crate) struct BuilderExtras {
     pub(crate) memory_providers: Vec<Arc<dyn MemoryProvider>>,
     #[cfg(feature = "memory-provider-registry")]
     pub(crate) memory_extractor: Option<Arc<dyn MemoryExtractor>>,
+    #[cfg(feature = "memory-provider-registry")]
+    pub(crate) memory_database_path: Option<PathBuf>,
     #[cfg(feature = "memory-builtin")]
     pub(crate) builtin_memory: Option<BuiltinMemoryConfig>,
     pub(crate) blob_store: Option<Arc<dyn BlobStore>>,
@@ -265,6 +267,13 @@ impl<M, S, SB> HarnessBuilder<M, S, SB> {
     #[must_use]
     pub fn with_memory_extractor_arc(mut self, extractor: Arc<dyn MemoryExtractor>) -> Self {
         self.extras.memory_extractor = Some(extractor);
+        self
+    }
+
+    #[cfg(feature = "memory-provider-registry")]
+    #[must_use]
+    pub fn with_memory_database_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.extras.memory_database_path = Some(path.into());
         self
     }
 

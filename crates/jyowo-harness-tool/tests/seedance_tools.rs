@@ -327,6 +327,7 @@ fn ctx_with_cap_registry(cap_registry: CapabilityRegistry) -> ToolContext {
         agent_id: harness_contracts::AgentId::new(),
         subagent_depth: 0,
         workspace_root: PathBuf::from("/tmp"),
+        project_workspace_root: None,
         sandbox: None,
         cap_registry: Arc::new(cap_registry),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),

@@ -1027,11 +1027,13 @@ type ConversationWorktreePage = {
 }
 ```
 
-Composer model selection is a per-run control. The frontend keeps the selected
-`modelConfigId` in local composer state and includes it in `startRun`. Changing
-the selector must not persist a conversation setting or call a separate model
-config command. Rust persists the selected model as the conversation default
-only after `start_run` succeeds.
+Composer model selection is a per-run control. The frontend may keep a selected
+`modelConfigId` in local composer state and includes it in `startRun` only when
+the user selected one. Changing the selector must not persist a conversation
+setting or call a separate model config command. When `modelConfigId` is
+omitted, Rust resolves the effective default from runtime/provider policy. Rust
+persists the resolved model as the conversation default only after `start_run`
+succeeds.
 
 `page_conversation_worktree` is the `ConversationCanvas` data source.
 `page_conversation_timeline` remains for Activity, Replay, and details views.
@@ -1061,6 +1063,9 @@ Rules:
 - Provider catalog service capabilities are read-only context and must not authorize route selection.
 - Route payloads must not include API keys.
 - `CapabilityRouteEditorDrawer` may display `runtimeSupported = false` options as disabled with backend reasons, but backend validation remains authoritative.
+- In no-workspace sessions, project route and MCP stores are unavailable. List
+  surfaces must render empty or typed unavailable states; mutation errors must
+  be shown safely and must not retry by writing to the session scratch cwd.
 
 Capability route schema fields:
 

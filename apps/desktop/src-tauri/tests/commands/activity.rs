@@ -560,27 +560,31 @@ async fn list_activity_with_runtime_state_maps_assistant_interaction_events() {
                 Event::AssistantReviewRequested(AssistantReviewRequestedEvent {
                     run_id,
                     request_id: review_request_id,
-                    title: UiSafeText::from_trusted_redacted(
+                    title: UiSafeText::from_redacted_display(
                         "Review https://provider.example/review",
+                        &DefaultRedactor::default(),
                     ),
-                    body: Some(UiSafeText::from_trusted_redacted(
+                    body: Some(UiSafeText::from_redacted_display(
                         "Approve blob:.jyowo/runtime/blobs/blob-001?",
+                        &DefaultRedactor::default(),
                     )),
                     at: now(),
                 }),
                 Event::AssistantClarificationRequested(AssistantClarificationRequestedEvent {
                     run_id,
                     request_id: clarification_request_id,
-                    prompt: UiSafeText::from_trusted_redacted(
+                    prompt: UiSafeText::from_redacted_display(
                         "Which size链接https://provider.example/prompt?",
+                        &DefaultRedactor::default(),
                     ),
                     at: now(),
                 }),
                 Event::AssistantNotice(AssistantNoticeEvent {
                     run_id,
                     notice_id,
-                    body: UiSafeText::from_trusted_redacted(
+                    body: UiSafeText::from_redacted_display(
                         "Generation queued at 路径：.jyowo/runtime/blobs/blob-002.",
+                        &DefaultRedactor::default(),
                     ),
                     code: None,
                     at: now(),

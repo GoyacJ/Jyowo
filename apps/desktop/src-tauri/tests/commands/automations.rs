@@ -350,7 +350,9 @@ fn execution_settings_save_default_without_changing_session_options() {
     )
     .expect("execution settings should save");
 
-    let options = state.conversation_session_options(SessionId::new());
+    let options = state
+        .conversation_session_options(SessionId::new())
+        .expect("session options");
 
     assert_eq!(options.permission_mode, PermissionMode::Default);
     assert_eq!(options.tool_profile, ToolProfile::Coding);
@@ -377,6 +379,7 @@ async fn active_conversation_runtime_applies_saved_tool_profile() {
 
     let (_, options) = state
         .active_conversation_runtime(SessionId::new())
+        .expect("active runtime lookup")
         .expect("active runtime should be present");
 
     assert_eq!(options.tool_profile, ToolProfile::Coding);
@@ -484,7 +487,8 @@ fn get_execution_settings_for_request_reads_registered_workspace_instead_of_acti
     std::fs::create_dir_all(&active_workspace).expect("active workspace should exist");
     std::fs::create_dir_all(&requested_workspace).expect("requested workspace should exist");
     std::fs::create_dir_all(&unregistered_workspace).expect("unregistered workspace should exist");
-    let _home = EnvVarGuard::set(HOME_ENV, home.as_os_str());
+    let canonical_home = home.canonicalize().unwrap();
+    let _home = EnvVarGuard::set(HOME_ENV, canonical_home.as_os_str());
     let active_workspace = active_workspace.canonicalize().unwrap();
     let requested_workspace = requested_workspace.canonicalize().unwrap();
     let unregistered_workspace = unregistered_workspace.canonicalize().unwrap();
@@ -701,8 +705,8 @@ fn invalid_execution_settings_file_resets_agent_capabilities() {
     assert!(!settings.agent_capabilities.agent_teams_enabled);
     assert!(!settings.agent_capabilities.background_agents_enabled);
     assert!(
-        !settings_path.exists(),
-        "invalid execution settings file should be removed"
+        settings_path.exists(),
+        "production execution settings load must not read or delete legacy runtime file"
     );
 }
 

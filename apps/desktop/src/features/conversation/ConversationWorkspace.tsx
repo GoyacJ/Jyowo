@@ -70,13 +70,11 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
     queryKey: ['conversation-model-configs'],
   })
   const executionSettingsQuery = useQuery({
-    enabled: Boolean(timeline.workspacePath),
-    queryFn: () => {
-      if (!timeline.workspacePath) {
-        throw new Error('Workspace path is required')
-      }
-      return commandClient.getExecutionSettings({ workspacePath: timeline.workspacePath })
-    },
+    enabled: timeline.workspacePathReady,
+    queryFn: () =>
+      commandClient.getExecutionSettings(
+        timeline.workspacePath ? { workspacePath: timeline.workspacePath } : {},
+      ),
     queryKey: ['conversation-execution-settings', workspaceKey],
   })
   const threadMemorySettingsQuery = useQuery({
@@ -208,16 +206,20 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
     (composerPermissionModeDirtyRef.current ||
       composerPermissionMode === executionSettings?.permissionMode)
   const composerDisabled =
-    timeline.composerMode.kind === 'running-disabled' ||
-    !composerPermissionModeReady ||
-    !currentModelProfile
+    timeline.composerMode.kind === 'running-disabled' || !composerPermissionModeReady
 
   function submitReviewContinue(prompt: string) {
     if (!composerPermissionModeReady) {
       return
     }
 
-    void timeline.submitPrompt(emptySubmit(prompt, composerPermissionMode, selectedModelConfigId))
+    void timeline.submitPrompt(
+      emptySubmit(
+        prompt,
+        composerPermissionMode,
+        selectedModelConfigId.length > 0 ? selectedModelConfigId : undefined,
+      ),
+    )
   }
 
   async function submitMessage(draft: ComposerSubmitPayload) {
@@ -329,13 +331,16 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
 function emptySubmit(
   prompt: string,
   permissionMode: PermissionMode,
-  modelConfigId: string,
+  modelConfigId?: string,
 ): ComposerSubmitPayload {
-  return {
+  const payload: ComposerSubmitPayload = {
     attachments: [],
     contextReferences: [],
-    modelConfigId,
     permissionMode,
     prompt,
   }
+  if (modelConfigId) {
+    payload.modelConfigId = modelConfigId
+  }
+  return payload
 }

@@ -46,9 +46,11 @@ pub(crate) mod skill;
 
 pub(crate) use automation::migrate_automations_from_runtime;
 pub use automation::DesktopAutomationStore;
+pub use automation::NoWorkspaceAutomationStore;
 pub use global_config::GlobalConfigStore;
 pub use mcp::DesktopMcpDiagnosticStore;
 pub(crate) use mcp::DesktopMcpServerStore;
+pub(crate) use mcp::NoWorkspaceMcpServerStore;
 pub use project_config::ProjectConfigStore;
 // Task 4A: migration framework — consumed by domain tasks 5-13.
 pub(crate) use mcp::migrate_mcp_servers_from_runtime;
@@ -74,6 +76,18 @@ pub(crate) fn read_json_file<T: DeserializeOwned>(
     }
 }
 
+pub(crate) fn read_json_file_invalid_payload<T: DeserializeOwned>(
+    path: &Path,
+    label: &str,
+) -> Result<Option<T>, CommandErrorPayload> {
+    match read_file_no_follow(path, label)? {
+        Some(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|error| invalid_payload(format!("{label} parse failed: {error}"))),
+        None => Ok(None),
+    }
+}
+
 pub(crate) fn read_secret_json_file<T: DeserializeOwned>(
     path: &Path,
     label: &str,
@@ -81,6 +95,15 @@ pub(crate) fn read_secret_json_file<T: DeserializeOwned>(
     ensure_no_symlink_components(path, &format!("{label} file"))?;
     set_owner_only_if_exists_unix(path, label)?;
     read_json_file(path, label)
+}
+
+pub(crate) fn read_secret_json_file_invalid_payload<T: DeserializeOwned>(
+    path: &Path,
+    label: &str,
+) -> Result<Option<T>, CommandErrorPayload> {
+    ensure_no_symlink_components(path, &format!("{label} file"))?;
+    set_owner_only_if_exists_unix(path, label)?;
+    read_json_file_invalid_payload(path, label)
 }
 
 pub(crate) fn read_secret_json_file_or_default_on_blank<T: Default + DeserializeOwned>(
@@ -169,6 +192,172 @@ pub(crate) fn remove_invalid_json_file(
                 "{label} cleanup failed: {error}"
             ))),
         }
+    }
+}
+
+pub(crate) fn retire_existing_regular_file_no_follow(
+    path: &Path,
+    label: &str,
+) -> Result<(), CommandErrorPayload> {
+    #[cfg(unix)]
+    {
+        let Some(parent) = open_parent_dir_no_symlink_for_read(path, &format!("{label} file"))?
+        else {
+            return Ok(());
+        };
+        let Some(file) = parent.try_open_existing_file(parent.file_name(), label)? else {
+            return Ok(());
+        };
+        let metadata = file.metadata().map_err(|error| {
+            runtime_operation_failed(format!("{label} metadata failed: {error}"))
+        })?;
+        if !metadata.is_file() {
+            return Err(runtime_operation_failed(format!(
+                "{label} target path is not a file"
+            )));
+        }
+        drop(file);
+        match parent.unlink_file(parent.file_name()) {
+            Ok(()) | Err(rustix::io::Errno::NOENT) => {}
+            Err(error) => {
+                return Err(runtime_operation_failed(format!(
+                    "{label} cleanup failed: {error}"
+                )));
+            }
+        }
+        parent.sync_all(label)?;
+        return Ok(());
+    }
+
+    #[cfg(not(unix))]
+    {
+        ensure_no_symlink_components(path, &format!("{label} file"))?;
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return Err(runtime_operation_failed(format!(
+                    "{label} target path is not a file"
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(runtime_operation_failed(format!(
+                    "{label} metadata failed: {error}"
+                )));
+            }
+        }
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(runtime_operation_failed(format!(
+                "{label} cleanup failed: {error}"
+            ))),
+        }
+    }
+}
+
+pub(crate) fn rename_existing_regular_file_no_follow(
+    source: &Path,
+    destination: &Path,
+    label: &str,
+) -> Result<(), CommandErrorPayload> {
+    rename_existing_regular_file_no_follow_if_present(source, destination, label).and_then(
+        |renamed| {
+            if renamed {
+                Ok(())
+            } else {
+                Err(runtime_operation_failed(format!(
+                    "{label} source file is missing"
+                )))
+            }
+        },
+    )
+}
+
+pub(crate) fn rename_existing_regular_file_no_follow_if_present(
+    source: &Path,
+    destination: &Path,
+    label: &str,
+) -> Result<bool, CommandErrorPayload> {
+    #[cfg(unix)]
+    {
+        if source.parent() != destination.parent() {
+            return Err(runtime_operation_failed(format!(
+                "{label} source and destination must share a parent directory"
+            )));
+        }
+        let Some(parent) = open_parent_dir_no_symlink_for_read(source, &format!("{label} file"))?
+        else {
+            return Ok(false);
+        };
+        let source_name = parent.file_name().to_os_string();
+        let destination_name = destination.file_name().ok_or_else(|| {
+            runtime_operation_failed(format!("{label} destination path has no file name"))
+        })?;
+        let Some(file) = parent.try_open_existing_file(&source_name, label)? else {
+            return Ok(false);
+        };
+        let metadata = file.metadata().map_err(|error| {
+            runtime_operation_failed(format!("{label} metadata failed: {error}"))
+        })?;
+        if !metadata.is_file() {
+            return Err(runtime_operation_failed(format!(
+                "{label} source path is not a file"
+            )));
+        }
+        if parent
+            .try_open_existing_file(destination_name, label)?
+            .is_some()
+        {
+            return Err(runtime_operation_failed(format!(
+                "{label} destination already exists"
+            )));
+        }
+        parent.hard_link_file(&source_name, destination_name, label)?;
+        if let Err(error) = parent.unlink_file(&source_name) {
+            let _ = parent.unlink_file(destination_name);
+            return Err(runtime_operation_failed(format!(
+                "{label} source cleanup failed: {error}"
+            )));
+        }
+        parent.sync_all(label)?;
+        return Ok(true);
+    }
+
+    #[cfg(not(unix))]
+    {
+        ensure_no_symlink_components(source, &format!("{label} source file"))?;
+        ensure_no_symlink_components(destination, &format!("{label} destination file"))?;
+        match std::fs::symlink_metadata(source) {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return Err(runtime_operation_failed(format!(
+                    "{label} source path is not a file"
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(runtime_operation_failed(format!(
+                    "{label} source metadata failed: {error}"
+                )));
+            }
+        }
+        match std::fs::symlink_metadata(destination) {
+            Ok(_) => {
+                return Err(runtime_operation_failed(format!(
+                    "{label} destination already exists"
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(runtime_operation_failed(format!(
+                    "{label} destination metadata failed: {error}"
+                )));
+            }
+        }
+        std::fs::rename(source, destination)
+            .map(|()| true)
+            .map_err(|error| runtime_operation_failed(format!("{label} commit failed: {error}")))
     }
 }
 
@@ -2204,19 +2393,22 @@ pub(crate) fn normalize_skill_relative_path(value: &str) -> Result<PathBuf, Comm
 
 #[derive(Clone)]
 pub struct DesktopProviderDiagnosticsStore {
-    workspace_root: PathBuf,
+    runtime_root: PathBuf,
 }
 
 impl DesktopProviderDiagnosticsStore {
     pub fn new(workspace_root: PathBuf) -> Self {
-        Self { workspace_root }
+        Self {
+            runtime_root: workspace_root.join(".jyowo").join("runtime"),
+        }
+    }
+
+    pub fn new_runtime_root(runtime_root: PathBuf) -> Self {
+        Self { runtime_root }
     }
 
     fn diagnostics_path(&self) -> PathBuf {
-        self.workspace_root
-            .join(".jyowo")
-            .join("runtime")
-            .join("provider-diagnostics.json")
+        self.runtime_root.join("provider-diagnostics.json")
     }
 }
 
@@ -2260,19 +2452,22 @@ impl ProviderDiagnosticsStore for DesktopProviderDiagnosticsStore {
 
 #[derive(Clone)]
 pub struct DesktopProviderQuotaCacheStore {
-    workspace_root: PathBuf,
+    runtime_root: PathBuf,
 }
 
 impl DesktopProviderQuotaCacheStore {
     pub fn new(workspace_root: PathBuf) -> Self {
-        Self { workspace_root }
+        Self {
+            runtime_root: workspace_root.join(".jyowo").join("runtime"),
+        }
+    }
+
+    pub fn new_runtime_root(runtime_root: PathBuf) -> Self {
+        Self { runtime_root }
     }
 
     fn quota_cache_path(&self) -> PathBuf {
-        self.workspace_root
-            .join(".jyowo")
-            .join("runtime")
-            .join("provider-quota-cache.json")
+        self.runtime_root.join("provider-quota-cache.json")
     }
 }
 
@@ -2346,7 +2541,7 @@ pub struct DesktopRuntimeState {
     pub(crate) provider_quota_cache_store: Arc<dyn ProviderQuotaCacheStore>,
     pub(crate) official_quota_flights: OfficialQuotaFlights,
     pub(crate) account_usage_registry: Arc<ProviderAccountUsageRegistry>,
-    pub(crate) provider_capability_route_store: Arc<DesktopProviderCapabilityRouteStore>,
+    pub(crate) provider_capability_route_store: Arc<dyn ProviderCapabilityRouteStore>,
     pub(crate) provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
     pub(crate) execution_settings_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) execution_settings_store: Arc<DesktopExecutionSettingsStore>,
@@ -2358,6 +2553,7 @@ pub struct DesktopRuntimeState {
     pub(crate) skill_store_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) start_run_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) stream_permission_runtime: Option<Arc<StreamPermissionRuntime>>,
+    pub(crate) runtime_layout: crate::storage_layout::RuntimeLayout,
     pub(crate) workspace_root: PathBuf,
 }
 

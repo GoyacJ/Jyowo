@@ -2,6 +2,8 @@ import { Plus } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { useActiveProjectPath } from '@/features/workspace/use-active-project-path'
+import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 
@@ -22,6 +24,8 @@ type HealthFilter = 'all' | 'online' | 'failing' | 'never_checked' | 'unavailabl
 
 export function ModelSettingsPage() {
   const { t } = useTranslation('settings')
+  const activeProjectPathQuery = useActiveProjectPath()
+  const hasProjectScope = activeProjectPathQuery.data != null
   const {
     isAnySetDefaultPending,
     isProbePending,
@@ -99,7 +103,10 @@ export function ModelSettingsPage() {
   return (
     <section className="space-y-4" data-testid="model-settings-page">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="font-semibold text-xl">{t('models.title')}</h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="font-semibold text-xl">{t('models.title')}</h1>
+          <Badge variant="outline">{t('scope.globalDefaults')}</Badge>
+        </div>
         <Button onClick={() => setCreateConfigOpen(true)} type="button">
           <Plus aria-hidden="true" className="size-4" data-icon />
           {t('provider.newConfig')}
@@ -206,6 +213,7 @@ export function ModelSettingsPage() {
 
         <TabsContent value="capabilityRoutes">
           <CapabilityRoutesPanel
+            hasProjectScope={hasProjectScope}
             onConfigure={setRouteEditorRoute}
             routeSection={pageState.viewModel.capabilityRoutes}
           />

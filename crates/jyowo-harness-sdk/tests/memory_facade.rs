@@ -6,8 +6,8 @@ use futures::executor::block_on;
 use harness_contracts::{
     ActionPlanId, ContentHash, MemoryCandidateOperation, MemoryCandidateState, MemoryEvidence,
     MemoryEvidenceOrigin, MemoryKind, MemoryMetadata, MemoryRecordDraft, MemorySource,
-    MemoryThreadMode, MemoryThreadSettings, MemoryVisibility, MessageId, NoopRedactor, RunId,
-    SessionId, TenantId,
+    MemoryThreadMode, MemoryThreadSettings, MemoryVisibility, MessageId, RunId, SessionId,
+    TenantId,
 };
 use jyowo_harness_sdk::{prelude::*, testing::*};
 

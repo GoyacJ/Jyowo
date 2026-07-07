@@ -24,7 +24,10 @@ impl Harness {
         self.activate_plugins(&options).await?;
         #[cfg(feature = "memory-provider-registry")]
         {
-            options.memory_thread_settings = Some(memory_thread_settings_for_session(&options)?);
+            options.memory_thread_settings = Some(memory_thread_settings_for_session(
+                &self.inner.memory_database_path,
+                &options,
+            )?);
         }
         #[cfg(feature = "memory-provider-registry")]
         let memory_manager = self.memory_manager_for_session(&options).await?;
@@ -66,7 +69,9 @@ impl Harness {
             user_id: options.user_id.clone(),
             #[cfg(feature = "memory-provider-registry")]
             team_id: options.team_id,
-            workspace_root: options.workspace_root.clone(),
+            project_workspace_root: options.project_workspace_root.clone(),
+            #[cfg(feature = "memory-provider-registry")]
+            memory_database_path: self.inner.memory_database_path.clone(),
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
             deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
@@ -226,6 +231,22 @@ impl Harness {
                 "workspace_root invalid: {error}"
             )))
         })?;
+        if let Some(project_workspace_root) = canonical.project_workspace_root.take() {
+            canonical.project_workspace_root =
+                Some(project_workspace_root.canonicalize().map_err(|error| {
+                    HarnessError::Session(SessionError::Message(format!(
+                        "project_workspace_root invalid: {error}"
+                    )))
+                })?);
+        }
+        if let Some(agent_runtime_root) = canonical.agent_runtime_root.take() {
+            canonical.agent_runtime_root =
+                Some(agent_runtime_root.canonicalize().map_err(|error| {
+                    HarnessError::Session(SessionError::Message(format!(
+                        "agent_runtime_root invalid: {error}"
+                    )))
+                })?);
+        }
         if !self.session_options_hash_matches(&canonical, created.options_hash) {
             return Err(HarnessError::PermissionDenied(
                 "conversation session options do not match the existing session".to_owned(),
@@ -309,7 +330,9 @@ impl Harness {
             user_id: turn_options.user_id.clone(),
             #[cfg(feature = "memory-provider-registry")]
             team_id: turn_options.team_id,
-            workspace_root: turn_options.workspace_root.clone(),
+            project_workspace_root: turn_options.project_workspace_root.clone(),
+            #[cfg(feature = "memory-provider-registry")]
+            memory_database_path: self.inner.memory_database_path.clone(),
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
             deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
@@ -488,6 +511,8 @@ impl Harness {
             })?;
         }
         let mut cap_registry = (*self.inner.cap_registry).clone();
+        #[cfg(feature = "agents-team")]
+        super::tool_pool::install_agent_runtime_root_capability(&mut cap_registry, options);
         if let Some(blob_store) = &self.inner.blob_store {
             cap_registry.install::<dyn harness_contracts::BlobReaderCap>(
                 ToolCapability::BlobReader,
@@ -706,6 +731,9 @@ impl Harness {
         if enable_subagent_tool {
             builder = builder.with_subagent_tool();
         }
+        if let Some(project_workspace_root) = &options.project_workspace_root {
+            builder = builder.with_project_workspace_root(project_workspace_root);
+        }
         if let Some(blob_store) = &self.inner.blob_store {
             builder = builder.with_blob_store(Arc::clone(blob_store));
         }
@@ -891,6 +919,12 @@ fn apply_non_default_session_options(options: &mut SessionOptions, defaults: &Se
     if defaults.workspace_root != PathBuf::from(".") {
         options.workspace_root = defaults.workspace_root.clone();
     }
+    if defaults.project_workspace_root.is_some() {
+        options.project_workspace_root = defaults.project_workspace_root.clone();
+    }
+    if defaults.agent_runtime_root.is_some() {
+        options.agent_runtime_root = defaults.agent_runtime_root.clone();
+    }
     if defaults.workspace_bootstrap.is_some() {
         options.workspace_bootstrap = defaults.workspace_bootstrap.clone();
     }
@@ -935,6 +969,12 @@ fn apply_explicit_session_options(options: &mut SessionOptions, explicit: &Sessi
     }
     if explicit.workspace_root != PathBuf::from(".") {
         options.workspace_root = explicit.workspace_root.clone();
+    }
+    if explicit.project_workspace_root.is_some() {
+        options.project_workspace_root = explicit.project_workspace_root.clone();
+    }
+    if explicit.agent_runtime_root.is_some() {
+        options.agent_runtime_root = explicit.agent_runtime_root.clone();
     }
     if explicit.workspace_bootstrap.is_some() {
         options.workspace_bootstrap = explicit.workspace_bootstrap.clone();

@@ -8,12 +8,12 @@ use harness_context::ContextEngine;
 use harness_contracts::{
     BudgetMetric, CapabilityRegistry, Decision, DecisionScope, DeferPolicy, EndReason, Event,
     HookEventKind, HookFailureMode, InteractivityLevel, Message, MessageId, MessagePart,
-    MessageRole, ModelError, NetworkAccess, NoopRedactor, OverflowAction, PermissionError,
-    PermissionMode, PermissionSubject, ProviderRestriction, RedactRules, Redactor, ResultBudget,
-    RunId, SessionId, StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup,
-    ToolOrigin, ToolProperties, ToolResult, ToolSearchMode, ToolUseId, TrustLevel, TurnInput,
-    UsageSnapshot, WorkspaceAccess,
+    MessageRole, ModelError, NetworkAccess, OverflowAction, PermissionError, PermissionMode,
+    PermissionSubject, ProviderRestriction, ResultBudget, RunId, SessionId, StopReason, TenantId,
+    ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
+    ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot, WorkspaceAccess,
 };
+use harness_contracts::{NoopRedactor, RedactRules, Redactor};
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{
     HookContext, HookDispatcher, HookEvent, HookHandler, HookMessageView, HookOutcome,

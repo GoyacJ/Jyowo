@@ -81,6 +81,21 @@ describe('AutomationSettings', () => {
     expect(await screen.findByText('暂无自动化任务。')).toBeInTheDocument()
   })
 
+  it('renders runtime diagnostics without project write controls when no project is active', async () => {
+    renderAutomationSettings(
+      createTestCommandClient({
+        automationRuns: { runs: [] },
+        automations: { automations: [] },
+        projects: { activePath: null, projects: [] },
+      }),
+    )
+
+    expect(await screen.findByText('运行时诊断')).toBeInTheDocument()
+    expect(screen.queryByLabelText('任务 ID')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '保存自动化任务' })).not.toBeInTheDocument()
+    expect(await screen.findByText('暂无自动化任务。')).toBeInTheDocument()
+  })
+
   it('saves an automation without credentials or raw output', async () => {
     const saveAutomation = vi.fn(async (request) => ({
       automation: request.automation,

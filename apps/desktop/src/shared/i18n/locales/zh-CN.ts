@@ -391,6 +391,11 @@ export const zhCN = {
       models: '模型',
       about: '关于',
     },
+    scope: {
+      globalDefaults: '全局默认',
+      projectOverrides: '项目覆写',
+      runtimeDiagnostics: '运行时诊断',
+    },
     language: {
       title: '语言',
       description: '选择这个桌面工作区的界面语言。',

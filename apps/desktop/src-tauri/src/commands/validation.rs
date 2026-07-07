@@ -157,19 +157,23 @@ pub(crate) async fn build_conversation_turn_input(
         .await?,
         attachments: validate_attachment_references(
             request.attachments.as_deref().unwrap_or_default(),
-            state.workspace_root(),
+            state.runtime_root(),
         )?,
     })
 }
 
 pub(crate) fn resolve_start_run_permission_mode(
     requested: Option<PermissionMode>,
-    store: &DesktopExecutionSettingsStore,
+    state: &DesktopRuntimeState,
 ) -> Result<PermissionMode, CommandErrorPayload> {
-    let permission_mode = match requested {
-        Some(permission_mode) => permission_mode,
-        None => effective_execution_settings_permission_mode(store.load_record()?.permission_mode),
-    };
+    if let Some(permission_mode) = requested {
+        ensure_start_run_permission_mode(permission_mode)?;
+    }
+    let permission_mode = effective_execution_settings_permission_mode(
+        state
+            .effective_execution_settings(requested)?
+            .permission_mode,
+    );
     ensure_start_run_permission_mode(permission_mode)?;
     Ok(permission_mode)
 }
@@ -338,19 +342,21 @@ pub(crate) async fn validate_context_references(
     for reference in references {
         validated.push(match reference {
             ContextReferencePayload::WorkspaceFile { path, label } => {
-                let absolute_path = state.workspace_root().join(path);
+                let Some(workspace_root) = state.project_workspace_root() else {
+                    return Err(invalid_payload(
+                        "workspace file references require an active project workspace".to_owned(),
+                    ));
+                };
+                let absolute_path = workspace_root.join(path);
                 let canonical_path = absolute_path.canonicalize().map_err(|error| {
                     invalid_payload(format!("workspace file reference is invalid: {error}"))
                 })?;
-                let relative_path = workspace_relative_path(
-                    &canonical_path,
-                    state.workspace_root(),
-                )
-                .ok_or_else(|| {
-                    invalid_payload(
-                        "workspace file reference must stay inside the workspace".to_owned(),
-                    )
-                })?;
+                let relative_path = workspace_relative_path(&canonical_path, workspace_root)
+                    .ok_or_else(|| {
+                        invalid_payload(
+                            "workspace file reference must stay inside the workspace".to_owned(),
+                        )
+                    })?;
                 ConversationContextReference::WorkspaceFile {
                     path: relative_path,
                     label: label.clone(),
@@ -407,12 +413,12 @@ pub(crate) async fn validate_context_references(
 
 pub(crate) fn validate_attachment_references(
     attachments: &[AttachmentReferencePayload],
-    workspace_root: &Path,
+    runtime_root: &Path,
 ) -> Result<Vec<ConversationAttachmentReference>, CommandErrorPayload> {
     let mut validated = Vec::with_capacity(attachments.len());
 
     for attachment in attachments {
-        let record = read_attachment_record(workspace_root, &attachment.id)?;
+        let record = read_attachment_record(runtime_root, &attachment.id)?;
         if record.attachment != *attachment {
             return Err(invalid_payload(
                 "attachment reference does not match stored metadata".to_owned(),

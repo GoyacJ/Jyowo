@@ -2537,6 +2537,11 @@ describe('CommandClient', () => {
       attachment: { id: validAttachmentId, name: 'notes.txt' },
     })
     await expect(
+      createAttachmentFromPath('/tmp/draft-notes.txt', 'conversation-001', client),
+    ).resolves.toMatchObject({
+      attachment: { id: validAttachmentId, name: 'notes.txt' },
+    })
+    await expect(
       listReferenceCandidates({ conversationId: 'conversation-001' }, client),
     ).resolves.toEqual({
       artifacts: [],
@@ -2550,6 +2555,10 @@ describe('CommandClient', () => {
 
     expect(invoke).toHaveBeenCalledWith('create_attachment_from_path', {
       path: '/tmp/notes.txt',
+    })
+    expect(invoke).toHaveBeenCalledWith('create_attachment_from_path', {
+      conversationId: 'conversation-001',
+      path: '/tmp/draft-notes.txt',
     })
     expect(invoke).toHaveBeenCalledWith('list_reference_candidates', {
       conversationId: 'conversation-001',

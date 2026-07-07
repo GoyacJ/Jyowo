@@ -76,7 +76,6 @@ fn harness_registers_locked_skill_version_snapshot() {
     use std::sync::Arc;
 
     use futures::executor::block_on;
-    use harness_contracts::NoopRedactor;
     use jyowo_harness_sdk::{prelude::*, testing::*};
 
     block_on(async {

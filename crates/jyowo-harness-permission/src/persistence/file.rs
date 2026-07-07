@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use fs2::FileExt;
 use harness_contracts::{
     Decision, DecisionId, DecisionScope, ExecFingerprint, PermissionError,
-    PermissionPersistenceTamperedEvent, PersistenceTamperReason, RuleSource, TenantId,
+    PermissionPersistenceTamperedEvent, PersistenceTamperReason, RuleSource, SessionId, TenantId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -30,6 +30,7 @@ fn fs_err(error: harness_fs::FsError) -> PermissionError {
 
 pub struct FileDecisionPersistence {
     tenant_id: TenantId,
+    runtime_scope: Option<DecisionRuntimeScope>,
     lock_path: PathBuf,
     path: PathBuf,
     signer: Arc<dyn IntegritySigner>,
@@ -54,6 +55,8 @@ impl PermissionTamperEventSink for NoopPermissionTamperEventSink {
 struct SignedDecisionRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tenant_id: Option<TenantId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_scope: Option<DecisionRuntimeScope>,
     decision_id: DecisionId,
     decision: Decision,
     scope: DecisionScope,
@@ -62,6 +65,12 @@ struct SignedDecisionRecord {
     fingerprint: Option<ExecFingerprint>,
     recorded_at: DateTime<Utc>,
     signature: StoredSignature,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum DecisionRuntimeScope {
+    NoWorkspaceConversation { conversation_id: SessionId },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +106,7 @@ impl FileDecisionPersistence {
         let path = path.into();
         Self {
             tenant_id,
+            runtime_scope: None,
             lock_path: lock_path_for(&path),
             path,
             signer,
@@ -105,18 +115,53 @@ impl FileDecisionPersistence {
         }
     }
 
+    #[must_use]
+    pub fn with_no_workspace_conversation_scope(mut self, conversation_id: SessionId) -> Self {
+        self.runtime_scope =
+            Some(DecisionRuntimeScope::NoWorkspaceConversation { conversation_id });
+        self
+    }
+
+    pub async fn remove_no_workspace_conversation_scope(
+        &self,
+        conversation_id: SessionId,
+    ) -> Result<(), PermissionError> {
+        let target_scope = DecisionRuntimeScope::NoWorkspaceConversation { conversation_id };
+        let _guard = self.lock.lock().await;
+        let lock_file = self.open_lock_file()?;
+        lock_file.lock_exclusive().map_err(|err| {
+            PermissionError::Message(format!("lock permission decision file: {err}"))
+        })?;
+        let mut records = match self.load_records().await {
+            Ok(records) => records,
+            Err(error) => {
+                let _ = lock_file.unlock();
+                return Err(error);
+            }
+        };
+        let original_len = records.len();
+        records.retain(|record| record.runtime_scope.as_ref() != Some(&target_scope));
+        let result = if records.len() == original_len {
+            Ok(())
+        } else {
+            harness_fs::write_json_file_atomic(&self.path, &records, true).map_err(fs_err)
+        };
+        let unlock_result = lock_file.unlock().map_err(|err| {
+            PermissionError::Message(format!("unlock permission decision file: {err}"))
+        });
+        match (result, unlock_result) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        }
+    }
+
     pub async fn load_decisions(&self) -> Result<Vec<PersistedDecision>, PermissionError> {
         let records = self.load_records().await?;
         Ok(records
             .into_iter()
-            .map(|record| PersistedDecision {
-                decision_id: record.decision_id,
-                decision: record.decision,
-                scope: record.scope,
-                source: record.source,
-                session_id: record.session_id,
-                fingerprint: record.fingerprint,
-            })
+            .filter(|record| self.runtime_scope_matches(record.runtime_scope.as_ref()))
+            .map(record_to_persisted_decision)
             .collect())
     }
 
@@ -220,6 +265,7 @@ impl FileDecisionPersistence {
             decision.source,
             decision.session_id,
             decision.fingerprint,
+            self.runtime_scope.as_ref(),
             recorded_at,
         );
         let payload = canonical_bytes(&unsigned)
@@ -228,6 +274,7 @@ impl FileDecisionPersistence {
 
         Ok(SignedDecisionRecord {
             tenant_id: Some(self.tenant_id),
+            runtime_scope: self.runtime_scope.clone(),
             decision_id: decision.decision_id,
             decision: decision.decision,
             scope: decision.scope,
@@ -250,22 +297,32 @@ impl FileDecisionPersistence {
                 record.source,
                 record.session_id,
                 record.fingerprint,
+                record.runtime_scope.as_ref(),
                 record.recorded_at,
             ),
             Some(_) => return Err(IntegrityError::Mismatch),
-            None if self.tenant_id == TenantId::SINGLE => legacy_unsigned_record_value(
-                record.decision_id,
-                &record.decision,
-                &record.scope,
-                record.source,
-                record.session_id,
-                record.fingerprint,
-                record.recorded_at,
-            ),
+            None if self.tenant_id == TenantId::SINGLE && record.runtime_scope.is_none() => {
+                legacy_unsigned_record_value(
+                    record.decision_id,
+                    &record.decision,
+                    &record.scope,
+                    record.source,
+                    record.session_id,
+                    record.fingerprint,
+                    record.recorded_at,
+                )
+            }
             None => return Err(IntegrityError::Mismatch),
         };
         let payload = canonical_bytes(&unsigned)?;
         self.signer.verify(&payload, &signature).await
+    }
+
+    fn runtime_scope_matches(&self, runtime_scope: Option<&DecisionRuntimeScope>) -> bool {
+        match self.runtime_scope.as_ref() {
+            Some(expected) => runtime_scope == Some(expected),
+            None => runtime_scope.is_none(),
+        }
     }
 
     async fn report_tamper(
@@ -409,6 +466,17 @@ impl DecisionHistory for FileDecisionPersistence {
     }
 }
 
+fn record_to_persisted_decision(record: SignedDecisionRecord) -> PersistedDecision {
+    PersistedDecision {
+        decision_id: record.decision_id,
+        decision: record.decision,
+        scope: record.scope,
+        source: record.source,
+        session_id: record.session_id,
+        fingerprint: record.fingerprint,
+    }
+}
+
 fn fingerprint_matches(
     decision_fingerprint: Option<ExecFingerprint>,
     lookup_fingerprint: ExecFingerprint,
@@ -456,9 +524,10 @@ fn unsigned_record_value(
     source: RuleSource,
     session_id: Option<harness_contracts::SessionId>,
     fingerprint: Option<ExecFingerprint>,
+    runtime_scope: Option<&DecisionRuntimeScope>,
     recorded_at: DateTime<Utc>,
 ) -> Value {
-    json!({
+    let mut value = json!({
         "tenant_id": tenant_id,
         "decision_id": decision_id,
         "decision": decision,
@@ -467,7 +536,14 @@ fn unsigned_record_value(
         "session_id": session_id,
         "fingerprint": fingerprint,
         "recorded_at": recorded_at,
-    })
+    });
+    if let Some(runtime_scope) = runtime_scope {
+        value
+            .as_object_mut()
+            .expect("unsigned decision record is an object")
+            .insert("runtime_scope".to_owned(), json!(runtime_scope));
+    }
+    value
 }
 
 fn legacy_unsigned_record_value(

@@ -1421,6 +1421,10 @@ pub(crate) mod provider_capability_route_store_seal {
 pub trait ProviderCapabilityRouteStore:
     provider_capability_route_store_seal::Sealed + Send + Sync
 {
+    fn project_scope_available(&self) -> bool {
+        true
+    }
+
     fn load_record(&self) -> Result<Option<ProviderCapabilityRouteSettings>, CommandErrorPayload>;
     fn save_record(
         &self,
@@ -1732,6 +1736,8 @@ pub struct BackgroundAgentDeleteResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateAttachmentFromPathRequest {
+    #[serde(default)]
+    pub conversation_id: Option<String>,
     pub path: String,
 }
 

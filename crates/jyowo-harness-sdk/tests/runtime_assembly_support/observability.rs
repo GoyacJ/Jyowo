@@ -1,4 +1,5 @@
 use super::*;
+use harness_contracts::{RedactRules, Redactor};
 
 #[derive(Default)]
 pub struct RecordingTracer {

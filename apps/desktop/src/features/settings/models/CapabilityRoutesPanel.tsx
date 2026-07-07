@@ -7,11 +7,16 @@ import { Button } from '@/shared/ui/button'
 import type { CapabilityRouteRow, SectionState } from './model-settings-view-model'
 
 type CapabilityRoutesPanelProps = {
+  hasProjectScope?: boolean
   routeSection: SectionState<CapabilityRouteRow[]>
   onConfigure: (route: CapabilityRouteRow) => void
 }
 
-export function CapabilityRoutesPanel({ onConfigure, routeSection }: CapabilityRoutesPanelProps) {
+export function CapabilityRoutesPanel({
+  hasProjectScope = true,
+  onConfigure,
+  routeSection,
+}: CapabilityRoutesPanelProps) {
   const { t } = useTranslation('settings')
 
   if (routeSection.status === 'loading') {
@@ -51,7 +56,12 @@ export function CapabilityRoutesPanel({ onConfigure, routeSection }: CapabilityR
   if (routeSection.data.length === 0) {
     return (
       <section className="rounded-md border border-border bg-surface p-4">
-        <h2 className="font-semibold text-base">{t('models.routes.title')}</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="font-semibold text-base">{t('models.routes.title')}</h2>
+          <Badge variant="outline">
+            {hasProjectScope ? t('scope.projectOverrides') : t('scope.runtimeDiagnostics')}
+          </Badge>
+        </div>
         <p className="mt-2 text-muted-foreground text-sm">{t('models.routes.empty')}</p>
       </section>
     )
@@ -61,7 +71,12 @@ export function CapabilityRoutesPanel({ onConfigure, routeSection }: CapabilityR
     <section className="space-y-3" data-testid="capability-routes-panel">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="font-semibold text-base">{t('models.routes.title')}</h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="font-semibold text-base">{t('models.routes.title')}</h2>
+            <Badge variant="outline">
+              {hasProjectScope ? t('scope.projectOverrides') : t('scope.runtimeDiagnostics')}
+            </Badge>
+          </div>
           <p className="mt-1 text-muted-foreground text-sm">{t('models.routes.description')}</p>
         </div>
       </div>

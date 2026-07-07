@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlarmClock, Play, Save, Trash2 } from 'lucide-react'
 import { type FormEvent, type ReactNode, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-
+import { useActiveProjectPath } from '@/features/workspace/use-active-project-path'
 import type {
   AutomationRunRecord,
   AutomationSpec,
@@ -44,6 +44,8 @@ export function AutomationSettings() {
   const { t } = useTranslation('settings')
   const commandClient = useCommandClient()
   const queryClient = useQueryClient()
+  const activeProjectPathQuery = useActiveProjectPath()
+  const hasProjectScope = activeProjectPathQuery.data != null
   const formRef = useRef<HTMLFormElement>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [operationError, setOperationError] = useState<string | null>(null)
@@ -175,7 +177,12 @@ export function AutomationSettings() {
           <AlarmClock className="size-4" />
         </div>
         <div>
-          <h2 className="font-semibold text-base">{t('automation.title')}</h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="font-semibold text-base">{t('automation.title')}</h2>
+            <Badge variant="outline">
+              {hasProjectScope ? t('scope.projectOverrides') : t('scope.runtimeDiagnostics')}
+            </Badge>
+          </div>
           <p className="mt-1 text-muted-foreground text-sm">{t('automation.description')}</p>
         </div>
       </div>
@@ -209,100 +216,105 @@ export function AutomationSettings() {
               </div>
             )}
 
-            <div className="space-y-3 rounded-md border border-border bg-background p-4">
-              <h3 className="font-medium text-sm">{t('automation.form.title')}</h3>
-              <form className="space-y-4" onSubmit={submit} ref={formRef}>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <Field fieldId="automation-id" label={t('automation.form.id')}>
-                    <input
-                      className={inputClassName}
-                      id="automation-id"
-                      name="id"
-                      placeholder="nightly-checks"
-                    />
-                  </Field>
-                  <Field fieldId="automation-interval" label={t('automation.form.interval')}>
-                    <input
-                      className={inputClassName}
-                      defaultValue={30}
-                      id="automation-interval"
-                      min={1}
-                      name="intervalMinutes"
-                      type="number"
-                    />
-                  </Field>
-                  <Field fieldId="automation-tool-profile" label={t('automation.form.toolProfile')}>
-                    <select
-                      className={inputClassName}
-                      defaultValue="coding"
-                      id="automation-tool-profile"
-                      name="toolProfile"
-                    >
-                      {toolProfileOptions.map((toolProfile) => (
-                        <option key={toolProfile} value={toolProfile}>
-                          {t(`automation.toolProfile.${toolProfile}`)}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field
-                    fieldId="automation-permission-mode"
-                    label={t('automation.form.permissionMode')}
-                  >
-                    <select
-                      className={inputClassName}
-                      defaultValue="default"
-                      id="automation-permission-mode"
-                      name="permissionMode"
-                    >
-                      {permissionModeOptions.map((permissionMode) => (
-                        <option key={permissionMode} value={permissionMode}>
-                          {t(`automation.permissionMode.${permissionMode}`)}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field
-                    fieldId="automation-missed-policy"
-                    label={t('automation.form.missedRunPolicy')}
-                  >
-                    <select
-                      className={inputClassName}
-                      defaultValue="skip"
-                      id="automation-missed-policy"
-                      name="missedRunPolicy"
-                    >
-                      {missedRunPolicyOptions.map((policy) => (
-                        <option key={policy} value={policy}>
-                          {t(`automation.missedRunPolicy.${policy}`)}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <label className="flex items-center gap-2 self-end text-sm">
-                    <input className="size-4" name="enabled" type="checkbox" />
-                    {t('automation.form.enabled')}
-                  </label>
-                  <div className="md:col-span-2">
-                    <Field fieldId="automation-prompt" label={t('automation.form.prompt')}>
-                      <textarea
-                        className={`${inputClassName} min-h-24 resize-y py-2`}
-                        id="automation-prompt"
-                        name="prompt"
-                        placeholder={t('automation.form.promptPlaceholder')}
+            {hasProjectScope ? (
+              <div className="space-y-3 rounded-md border border-border bg-background p-4">
+                <h3 className="font-medium text-sm">{t('automation.form.title')}</h3>
+                <form className="space-y-4" onSubmit={submit} ref={formRef}>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Field fieldId="automation-id" label={t('automation.form.id')}>
+                      <input
+                        className={inputClassName}
+                        id="automation-id"
+                        name="id"
+                        placeholder="nightly-checks"
                       />
                     </Field>
+                    <Field fieldId="automation-interval" label={t('automation.form.interval')}>
+                      <input
+                        className={inputClassName}
+                        defaultValue={30}
+                        id="automation-interval"
+                        min={1}
+                        name="intervalMinutes"
+                        type="number"
+                      />
+                    </Field>
+                    <Field
+                      fieldId="automation-tool-profile"
+                      label={t('automation.form.toolProfile')}
+                    >
+                      <select
+                        className={inputClassName}
+                        defaultValue="coding"
+                        id="automation-tool-profile"
+                        name="toolProfile"
+                      >
+                        {toolProfileOptions.map((toolProfile) => (
+                          <option key={toolProfile} value={toolProfile}>
+                            {t(`automation.toolProfile.${toolProfile}`)}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field
+                      fieldId="automation-permission-mode"
+                      label={t('automation.form.permissionMode')}
+                    >
+                      <select
+                        className={inputClassName}
+                        defaultValue="default"
+                        id="automation-permission-mode"
+                        name="permissionMode"
+                      >
+                        {permissionModeOptions.map((permissionMode) => (
+                          <option key={permissionMode} value={permissionMode}>
+                            {t(`automation.permissionMode.${permissionMode}`)}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field
+                      fieldId="automation-missed-policy"
+                      label={t('automation.form.missedRunPolicy')}
+                    >
+                      <select
+                        className={inputClassName}
+                        defaultValue="skip"
+                        id="automation-missed-policy"
+                        name="missedRunPolicy"
+                      >
+                        {missedRunPolicyOptions.map((policy) => (
+                          <option key={policy} value={policy}>
+                            {t(`automation.missedRunPolicy.${policy}`)}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <label className="flex items-center gap-2 self-end text-sm">
+                      <input className="size-4" name="enabled" type="checkbox" />
+                      {t('automation.form.enabled')}
+                    </label>
+                    <div className="md:col-span-2">
+                      <Field fieldId="automation-prompt" label={t('automation.form.prompt')}>
+                        <textarea
+                          className={`${inputClassName} min-h-24 resize-y py-2`}
+                          id="automation-prompt"
+                          name="prompt"
+                          placeholder={t('automation.form.promptPlaceholder')}
+                        />
+                      </Field>
+                    </div>
                   </div>
-                </div>
-                {formError ? <p className="text-destructive text-sm">{formError}</p> : null}
-                <div className="flex justify-end">
-                  <Button disabled={saveMutation.isPending} type="submit">
-                    <Save className="size-4" />
-                    {saveMutation.isPending ? t('automation.saving') : t('automation.save')}
-                  </Button>
-                </div>
-              </form>
-            </div>
+                  {formError ? <p className="text-destructive text-sm">{formError}</p> : null}
+                  <div className="flex justify-end">
+                    <Button disabled={saveMutation.isPending} type="submit">
+                      <Save className="size-4" />
+                      {saveMutation.isPending ? t('automation.saving') : t('automation.save')}
+                    </Button>
+                  </div>
+                </form>
+              </div>
+            ) : null}
           </div>
 
           <aside className="space-y-3 rounded-md border border-border bg-background p-4">

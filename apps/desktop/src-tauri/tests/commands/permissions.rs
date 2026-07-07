@@ -54,7 +54,9 @@ async fn start_run_with_runtime_state_exposes_runtime_permission_request_to_acti
         .expect("runtime state should retain the configured harness");
     let page = harness
         .page_conversation_events(ConversationEventsPageRequest {
-            options: state.conversation_session_options(session_id),
+            options: state
+                .conversation_session_options(session_id)
+                .expect("session options"),
             after_event_id: None,
             limit: 20,
         })

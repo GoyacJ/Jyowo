@@ -391,6 +391,11 @@ export const enUS = {
       models: 'Models',
       about: 'About',
     },
+    scope: {
+      globalDefaults: 'Global defaults',
+      projectOverrides: 'Project overrides',
+      runtimeDiagnostics: 'Runtime diagnostics',
+    },
     language: {
       title: 'Language',
       description: 'Choose the interface language for this desktop workspace.',

@@ -8,6 +8,8 @@ pub struct RunScopedTeamStartupRequest {
     pub conversation_session_id: SessionId,
     pub goal: String,
     pub workspace_root: PathBuf,
+    pub project_workspace_root: Option<PathBuf>,
+    pub agent_runtime_root: Option<PathBuf>,
     pub workspace_bootstrap: Option<WorkspaceBootstrap>,
 }
 
@@ -32,6 +34,7 @@ impl harness_agent_runtime::RunScopedTeamHost for SdkRunScopedTeamHost {
                 Some(request.conversation_session_id),
                 Some(&request.agent_tool_policy),
                 Some(request.workspace_root),
+                request.project_workspace_root,
                 self.workspace_bootstrap.clone(),
                 Some(request.member_profile_ids),
                 Some(request.run_id),
@@ -123,6 +126,8 @@ mod tests {
             conversation_session_id: SessionId::new(),
             goal: "inspect".to_owned(),
             workspace_root: PathBuf::from("."),
+            project_workspace_root: None,
+            agent_runtime_root: None,
             workspace_bootstrap: None,
         };
 
@@ -147,6 +152,49 @@ mod tests {
             vec![prepared.members[0].agent_id]
         );
     }
+
+    #[test]
+    fn run_scoped_team_store_uses_agent_runtime_root_without_creating_scratch_runtime() {
+        let root = std::env::temp_dir().join(format!(
+            "jyowo-run-scoped-team-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let scratch = root.join("scratch");
+        let runtime = root.join("runtime");
+        std::fs::create_dir_all(&scratch).expect("scratch dir");
+        std::fs::create_dir_all(&runtime).expect("runtime dir");
+        let runtime = runtime.canonicalize().expect("canonical runtime");
+        let request = RunScopedTeamStartupRequest {
+            agent_tool_policy: harness_contracts::AgentToolPolicy {
+                subagents: harness_contracts::AgentUsePolicy::Allowed,
+                agent_team: harness_contracts::AgentUsePolicy::Allowed,
+                team_config: None,
+                background_agents: harness_contracts::AgentUsePolicy::Off,
+                workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
+                max_depth: 1,
+                max_concurrent_subagents: 1,
+                max_team_members: 2,
+            },
+            profiles: vec![profile("lead", "lead"), profile("worker", "worker")],
+            run_id: RunId::new(),
+            conversation_session_id: SessionId::new(),
+            goal: "inspect".to_owned(),
+            workspace_root: scratch.clone(),
+            project_workspace_root: None,
+            agent_runtime_root: Some(runtime.clone()),
+            workspace_bootstrap: None,
+        };
+
+        let store = open_run_scoped_team_store(&request).expect("team runtime store");
+
+        assert_eq!(store.runtime_dir(), runtime.as_path());
+        assert!(!scratch.join(".jyowo").join("runtime").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 #[cfg(feature = "agents-team")]
@@ -155,7 +203,7 @@ impl Harness {
         &self,
         builder: harness_team::TeamBuilder,
     ) -> Result<crate::team::Team, HarnessError> {
-        self.create_team_from_spec(builder.build(), None, None, None, None, None, None)
+        self.create_team_from_spec(builder.build(), None, None, None, None, None, None, None)
             .await
     }
 
@@ -165,6 +213,7 @@ impl Harness {
         journal_session_id: Option<SessionId>,
         agent_tool_policy: Option<&harness_contracts::AgentToolPolicy>,
         workspace_root: Option<PathBuf>,
+        project_workspace_root: Option<PathBuf>,
         workspace_bootstrap: Option<WorkspaceBootstrap>,
         member_profile_ids: Option<HashMap<AgentId, String>>,
         journal_run_id: Option<RunId>,
@@ -194,6 +243,7 @@ impl Harness {
             journal,
             Arc::clone(&blob_store),
             &workspace_root,
+            project_workspace_root.as_deref(),
             journal_run_id,
         )
         .await?;
@@ -219,6 +269,7 @@ impl Harness {
                 journal_session_id,
                 agent_tool_policy,
                 &workspace_root,
+                project_workspace_root.as_deref(),
                 workspace_bootstrap.as_ref(),
                 member_profile_ids.as_ref(),
             )
@@ -236,7 +287,7 @@ impl Harness {
         &self,
         request: RunScopedTeamStartupRequest,
     ) -> Result<Arc<crate::team::Team>, HarnessError> {
-        let store = harness_agent_runtime::open_team_runtime_store(&request.workspace_root)
+        let store = open_run_scoped_team_store(&request)
             .map_err(|error| HarnessError::Other(error.to_string()))?;
         let host = SdkRunScopedTeamHost {
             harness: self.clone(),
@@ -252,6 +303,7 @@ impl Harness {
                     conversation_session_id: request.conversation_session_id,
                     goal: request.goal,
                     workspace_root: request.workspace_root,
+                    project_workspace_root: request.project_workspace_root,
                 },
             )
             .await
@@ -353,6 +405,7 @@ impl Harness {
         journal_session_id: harness_contracts::SessionId,
         agent_tool_policy: Option<&harness_contracts::AgentToolPolicy>,
         workspace_root: &Path,
+        project_workspace_root: Option<&Path>,
         workspace_bootstrap: Option<&WorkspaceBootstrap>,
         member_profile_ids: Option<&HashMap<AgentId, String>>,
     ) -> Result<crate::team::TeamExecutionRuntime, HarnessError> {
@@ -369,6 +422,7 @@ impl Harness {
                             journal_session_id,
                             agent_tool_policy,
                             workspace_root,
+                            project_workspace_root,
                             workspace_bootstrap,
                             member_profile_ids
                                 .and_then(|profiles| profiles.get(&member.agent_id))
@@ -393,6 +447,7 @@ impl Harness {
                             journal_session_id,
                             agent_tool_policy,
                             workspace_root,
+                            project_workspace_root,
                             workspace_bootstrap,
                             member_profile_ids
                                 .and_then(|profiles| profiles.get(&member.agent_id))
@@ -417,6 +472,7 @@ impl Harness {
                             journal_session_id,
                             agent_tool_policy,
                             workspace_root,
+                            project_workspace_root,
                             workspace_bootstrap,
                             member_profile_ids
                                 .and_then(|profiles| profiles.get(&member.agent_id))
@@ -443,6 +499,7 @@ impl Harness {
         session_id: harness_contracts::SessionId,
         agent_tool_policy: Option<&harness_contracts::AgentToolPolicy>,
         workspace_root: &Path,
+        project_workspace_root: Option<&Path>,
         workspace_bootstrap: Option<&WorkspaceBootstrap>,
         team_member_profile_id: Option<&str>,
     ) -> Result<Arc<dyn harness_team::TeamMemberRunner>, HarnessError> {
@@ -462,6 +519,9 @@ impl Harness {
             .with_permission_mode(member.engine_config.permission_mode)
             .with_interactivity(member.engine_config.interactivity)
             .with_max_iterations(member.engine_config.max_iterations);
+        if let Some(project_workspace_root) = project_workspace_root {
+            options = options.with_project_workspace_root(project_workspace_root);
+        }
         options.workspace_bootstrap = workspace_bootstrap.cloned();
         if let Some(model_ref) = &member.engine_config.model_ref {
             options = options.with_model_id(model_ref.model_id.clone());
@@ -522,6 +582,7 @@ impl Harness {
         journal: harness_team::TeamJournalContext,
         blob_store: Arc<dyn BlobStore>,
         workspace_root: &Path,
+        project_workspace_root: Option<&Path>,
         journal_run_id: Option<RunId>,
     ) -> Result<(), HarnessError> {
         let member_specs = serde_json::to_vec(&spec.members)
@@ -539,11 +600,15 @@ impl Harness {
         for member in &spec.members {
             let session_id = harness_contracts::SessionId::new();
             Session::builder()
-                .with_options(
-                    SessionOptions::new(workspace_root)
+                .with_options({
+                    let mut options = SessionOptions::new(workspace_root)
                         .with_tenant_id(journal.tenant_id)
-                        .with_session_id(session_id),
-                )
+                        .with_session_id(session_id);
+                    if let Some(project_workspace_root) = project_workspace_root {
+                        options = options.with_project_workspace_root(project_workspace_root);
+                    }
+                    options
+                })
                 .with_event_store(Arc::clone(&self.inner.event_store))
                 .build()
                 .await
@@ -593,5 +658,17 @@ impl Harness {
             .await
             .map(|_| ())
             .map_err(HarnessError::Journal)
+    }
+}
+
+#[cfg(feature = "agents-team")]
+fn open_run_scoped_team_store(
+    request: &RunScopedTeamStartupRequest,
+) -> Result<harness_agent_runtime::AgentRuntimeStore, harness_agent_runtime::TeamRuntimeError> {
+    match request.agent_runtime_root.as_ref() {
+        Some(runtime_root) => Ok(harness_agent_runtime::AgentRuntimeStore::open_runtime_dir(
+            runtime_root,
+        )?),
+        None => harness_agent_runtime::open_team_runtime_store(&request.workspace_root),
     }
 }

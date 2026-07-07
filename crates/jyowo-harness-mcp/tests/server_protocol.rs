@@ -1455,6 +1455,7 @@ fn tool_context() -> ToolContext {
         agent_id: harness_contracts::AgentId::from_u128(1),
         subagent_depth: 0,
         workspace_root: std::path::PathBuf::from("."),
+        project_workspace_root: None,
         sandbox: None,
         cap_registry: std::sync::Arc::new(CapabilityRegistry::default()),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),

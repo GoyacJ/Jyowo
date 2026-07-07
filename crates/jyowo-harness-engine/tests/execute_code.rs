@@ -11,8 +11,8 @@ use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
 use harness_contracts::{
     CapabilityRegistry, Decision, EmbeddedRefusedReason, Message, MessageId, MessagePart,
-    MessageRole, ModelError, NoopRedactor, PermissionError, RunId, StopReason, TenantId,
-    ToolCapability, ToolResult, TurnInput, UsageSnapshot,
+    MessageRole, ModelError, PermissionError, RunId, StopReason, TenantId, ToolCapability,
+    ToolResult, TurnInput, UsageSnapshot,
 };
 use harness_engine::{Engine, EngineBuilder, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{HookDispatcher, HookRegistry};

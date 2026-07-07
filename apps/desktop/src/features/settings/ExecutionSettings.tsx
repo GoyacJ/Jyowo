@@ -12,6 +12,7 @@ import type {
 import { getExecutionSettings, setExecutionSettings } from '@/shared/tauri/commands'
 import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { useCommandClient } from '@/shared/tauri/react'
+import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 import { Switch } from '@/shared/ui/switch'
 
@@ -166,7 +167,10 @@ export function ExecutionSettings() {
           <Shield className="size-4" />
         </div>
         <div>
-          <h2 className="font-semibold text-base">{t('execution.title')}</h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="font-semibold text-base">{t('execution.title')}</h2>
+            <Badge variant="outline">{t('scope.globalDefaults')}</Badge>
+          </div>
           <p className="mt-1 text-muted-foreground text-sm">{t('execution.description')}</p>
         </div>
       </div>

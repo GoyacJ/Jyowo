@@ -3111,6 +3111,7 @@ dependencies = [
  "fs2",
  "futures",
  "jyowo-harness-contracts",
+ "jyowo-harness-fs",
  "rusqlite",
  "serde",
  "serde_json",

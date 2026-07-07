@@ -62,6 +62,7 @@ pub struct RunScopedTeamCoordinatorRequest {
     pub conversation_session_id: SessionId,
     pub goal: String,
     pub workspace_root: PathBuf,
+    pub project_workspace_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +73,7 @@ pub struct RunScopedTeamCreateRequest {
     pub agent_tool_policy: AgentToolPolicy,
     pub member_profile_ids: HashMap<AgentId, String>,
     pub workspace_root: PathBuf,
+    pub project_workspace_root: Option<PathBuf>,
 }
 
 #[async_trait]
@@ -138,6 +140,7 @@ impl<'store> RunScopedTeamCoordinator<'store> {
                 agent_tool_policy: request.agent_tool_policy,
                 member_profile_ids,
                 workspace_root: request.workspace_root,
+                project_workspace_root: request.project_workspace_root,
             })
             .await
             .map_err(TeamRuntimeError::Host)?;

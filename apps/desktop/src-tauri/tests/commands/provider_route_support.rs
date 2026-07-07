@@ -193,13 +193,13 @@ pub(crate) async fn runtime_state_with_capability_route_harness(
 ) -> DesktopRuntimeState {
     std::fs::create_dir_all(&workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
-    DesktopProviderSettingsStore::new(workspace.clone())
+    provider_settings_store_for_workspace(&workspace)
         .save_record(&provider_settings)
         .expect("provider settings should save");
     let routes = Arc::new(ParkingRwLock::new(routes));
     let resolver = desktop_provider_credential_resolver_with_stores(
         Arc::new(DesktopConversationMetadataStore::new(workspace.clone())),
-        Arc::new(DesktopProviderSettingsStore::new(workspace.clone())),
+        Arc::new(provider_settings_store_for_workspace(&workspace)),
         Arc::clone(&routes),
     );
     let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
@@ -233,10 +233,13 @@ pub(crate) async fn runtime_state_with_capability_route_harness(
             .expect("harness should build with capability routes"),
     );
 
-    DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
+    let mut state = DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
         workspace,
         harness,
         stream_permission_runtime,
     )
-    .expect("state should use the harness permission broker")
+    .expect("state should use the harness permission broker");
+    let state_workspace = state.workspace_root().to_path_buf();
+    use_test_provider_settings_store(&mut state, &state_workspace);
+    state
 }

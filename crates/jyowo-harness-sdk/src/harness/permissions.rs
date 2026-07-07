@@ -15,11 +15,7 @@ impl StreamPermissionRuntime {
 
         thread::spawn(move || while receiver.blocking_recv().is_some() {});
 
-        let permission_broker = Arc::new(PermissionAuthorityBroker::new(
-            Arc::new(NoRulePolicyBroker),
-            Some(Arc::new(stream_broker)),
-            Arc::new(TransientDecisionStore::default()),
-        ));
+        let permission_broker = Arc::new(stream_broker);
 
         Self {
             permission_broker,
@@ -303,32 +299,6 @@ impl PermissionBroker for PermissionAuthorityBroker {
 
     async fn persist(&self, decision: PersistedDecision) -> Result<(), PermissionError> {
         self.decision_store.persist(decision).await
-    }
-}
-
-impl PermissionAuthorityBroker {
-    #[cfg(feature = "stream-permission")]
-    fn new(
-        policy_broker: Arc<dyn PermissionBroker>,
-        interactive_broker: Option<Arc<dyn PermissionBroker>>,
-        decision_store: Arc<dyn DecisionStore>,
-    ) -> Self {
-        let mut builder = harness_permission::PermissionAuthority::builder()
-            .with_policy_broker(policy_broker.clone())
-            .with_transient_decision_store(decision_store.clone());
-        if let Some(interactive_broker) = interactive_broker {
-            builder = builder.with_interactive_broker(interactive_broker);
-        }
-        let authority = Arc::new(
-            builder
-                .build()
-                .expect("permission authority broker inputs must be valid"),
-        );
-        Self {
-            authority,
-            policy_broker,
-            decision_store,
-        }
     }
 }
 

@@ -167,6 +167,49 @@ describe('SidebarNav', () => {
     })
   })
 
+  it('lists and creates runtime conversations without an active project', async () => {
+    const createConversation = vi.fn(async () => ({
+      conversation: {
+        id: 'conversation-no-workspace-created',
+        isEmpty: true,
+        lastMessagePreview: 'Start from the composer when ready.',
+        title: 'New conversation',
+        updatedAt: '2026-06-17T00:00:00.000Z',
+      },
+    }))
+
+    renderSidebarNav({
+      ...createTestCommandClient({
+        projects: { activePath: null, projects: [] },
+        conversations: {
+          conversations: [
+            {
+              id: 'conversation-no-workspace-existing',
+              isEmpty: false,
+              lastMessagePreview: 'Global runtime session',
+              title: 'No workspace conversation',
+              updatedAt: '2026-06-17T00:00:00.000Z',
+            },
+          ],
+        },
+      }),
+      createConversation,
+    })
+
+    const navigation = screen.getByRole('navigation', { name: 'Workspace' })
+
+    expect(await within(navigation).findByText('No workspace conversation')).toBeInTheDocument()
+    fireEvent.click(within(navigation).getByRole('button', { name: 'New conversation' }))
+
+    await waitFor(() => {
+      expect(createConversation).toHaveBeenCalledTimes(1)
+    })
+    expect(routerSpy.navigate).toHaveBeenCalledWith({
+      search: { conversationId: 'conversation-no-workspace-created' },
+      to: '/',
+    })
+  })
+
   it('localizes runtime default empty conversation labels', async () => {
     await appI18n.changeLanguage('zh-CN')
     renderSidebarNav(
@@ -508,7 +551,8 @@ describe('SidebarNav', () => {
     await waitFor(() => {
       expect(screen.getByText('No project selected')).toBeInTheDocument()
     })
-    expect(screen.getByText('Open a project to view conversations.')).toBeInTheDocument()
+    expect(screen.queryByText('Open a project to view conversations.')).not.toBeInTheDocument()
+    expect(screen.getByText('Build the desktop foundation')).toBeInTheDocument()
   })
 
   it('routes evals from the command palette', () => {

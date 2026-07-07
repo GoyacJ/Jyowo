@@ -582,6 +582,7 @@ fn tool_ctx_at(workspace_root: impl AsRef<Path>, cap_registry: CapabilityRegistr
         agent_id: AgentId::from_u128(1),
         subagent_depth: 0,
         workspace_root: workspace_root.as_ref().to_path_buf(),
+        project_workspace_root: None,
         sandbox: None,
         cap_registry: Arc::new(cap_registry),
         redactor: Arc::new(NoopRedactor),

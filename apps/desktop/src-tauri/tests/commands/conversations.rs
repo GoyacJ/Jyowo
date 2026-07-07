@@ -129,15 +129,21 @@ async fn runtime_state_with_provider_configs(base_url: &str) -> DesktopRuntimeSt
     let workspace = unique_workspace("run-model-config");
     std::fs::create_dir_all(&workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
-    DesktopProviderSettingsStore::new(workspace.clone())
+    let provider_settings_store: Arc<dyn ProviderSettingsStore> =
+        Arc::new(provider_settings_store_for_workspace(&workspace));
+    provider_settings_store
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some(DEEPSEEK_CONFIG_ID.to_owned()),
             configs: vec![deepseek_config(base_url), minimax_config(base_url)],
         })
         .expect("provider settings should save");
-    runtime_state_for_workspace(workspace)
-        .await
-        .expect("runtime should start from provider settings")
+    runtime_state_from_stream_permission_runtime_with_provider_settings_store_for_test(
+        workspace,
+        Arc::new(StreamPermissionRuntime::default()),
+        provider_settings_store,
+    )
+    .await
+    .expect("runtime should start from provider settings")
 }
 
 async fn runtime_state_with_duplicate_minimax_configs(
@@ -147,7 +153,9 @@ async fn runtime_state_with_duplicate_minimax_configs(
     let workspace = unique_workspace("run-model-config-duplicate-provider");
     std::fs::create_dir_all(&workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
-    DesktopProviderSettingsStore::new(workspace.clone())
+    let provider_settings_store: Arc<dyn ProviderSettingsStore> =
+        Arc::new(provider_settings_store_for_workspace(&workspace));
+    provider_settings_store
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some(MINIMAX_PRIMARY_CONFIG_ID.to_owned()),
             configs: vec![
@@ -156,9 +164,13 @@ async fn runtime_state_with_duplicate_minimax_configs(
             ],
         })
         .expect("provider settings should save");
-    runtime_state_for_workspace(workspace)
-        .await
-        .expect("runtime should start from provider settings")
+    runtime_state_from_stream_permission_runtime_with_provider_settings_store_for_test(
+        workspace,
+        Arc::new(StreamPermissionRuntime::default()),
+        provider_settings_store,
+    )
+    .await
+    .expect("runtime should start from provider settings")
 }
 
 fn deepseek_config(base_url: &str) -> ProviderConfigRecord {
@@ -500,7 +512,7 @@ async fn create_conversation_with_runtime_state_does_not_bind_default_model_conf
     let workspace = unique_workspace("create-conversation-default-model");
     std::fs::create_dir_all(&workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
-    DesktopProviderSettingsStore::new(workspace.clone())
+    provider_settings_store_for_workspace(&workspace)
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some("openai-work".to_owned()),
             configs: vec![ProviderConfigRecord {

@@ -234,6 +234,8 @@ struct HarnessInner {
     hook_registry: HookRegistry,
     memory_providers: Vec<Arc<dyn MemoryProvider>>,
     #[cfg(feature = "memory-provider-registry")]
+    memory_database_path: PathBuf,
+    #[cfg(feature = "memory-provider-registry")]
     _memory_extraction_runtime: Option<MemoryExtractionRuntime>,
     #[cfg(feature = "memory-builtin")]
     builtin_memory: Option<BuiltinMemoryConfig>,
@@ -649,7 +651,7 @@ fn parse_extraction_output(raw: &str) -> Result<harness_memory::ExtractionOutput
 #[cfg(feature = "memory-provider-registry")]
 impl MemoryExtractionRuntime {
     fn spawn(
-        workspace_root: PathBuf,
+        memory_database_path: PathBuf,
         tenant_id: TenantId,
         extractor: Arc<dyn MemoryExtractor>,
         observer: Option<Arc<Observer>>,
@@ -657,12 +659,7 @@ impl MemoryExtractionRuntime {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let handle = std::thread::spawn(move || {
-            let db_path = workspace_root
-                .join(".jyowo")
-                .join("runtime")
-                .join("memory")
-                .join("memory.sqlite3");
-            let db_path = db_path.to_string_lossy().to_string();
+            let db_path = memory_database_path.to_string_lossy().to_string();
             while !worker_stop.load(Ordering::SeqCst) {
                 if let Err(error) =
                     poll_memory_extraction_once(&db_path, tenant_id, Arc::clone(&extractor))
@@ -1175,9 +1172,26 @@ impl Harness {
             ))
         });
         #[cfg(feature = "memory-provider-registry")]
+        let memory_database_path = extras.memory_database_path.take().unwrap_or_else(|| {
+            builder
+                .options
+                .default_session_options
+                .agent_runtime_root
+                .clone()
+                .unwrap_or_else(|| {
+                    builder
+                        .options
+                        .workspace_root
+                        .join(".jyowo")
+                        .join("runtime")
+                })
+                .join("memory")
+                .join("memory.sqlite3")
+        });
+        #[cfg(feature = "memory-provider-registry")]
         let memory_extraction_runtime = Some({
             MemoryExtractionRuntime::spawn(
-                builder.options.workspace_root.clone(),
+                memory_database_path.clone(),
                 builder.options.tenant_policy.id,
                 Arc::clone(&memory_extractor),
                 observer.as_ref().map(Arc::clone),
@@ -1200,6 +1214,8 @@ impl Harness {
                 tool_registry,
                 hook_registry,
                 memory_providers: extras.memory_providers,
+                #[cfg(feature = "memory-provider-registry")]
+                memory_database_path,
                 #[cfg(feature = "memory-provider-registry")]
                 _memory_extraction_runtime: memory_extraction_runtime,
                 #[cfg(feature = "memory-builtin")]

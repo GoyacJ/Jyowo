@@ -1,6 +1,10 @@
 use harness_contracts::*;
 use serde_json::json;
 
+fn ui(value: &str) -> UiSafeText {
+    UiSafeText::from_trusted_redacted(value)
+}
+
 #[test]
 fn ids_roundtrip_and_tenant_sentinels_are_stable() {
     let session = SessionId::new();
@@ -225,10 +229,8 @@ fn assistant_review_requested_segment_source_events_serialize_with_stable_tags()
     let review = Event::AssistantReviewRequested(AssistantReviewRequestedEvent {
         run_id,
         request_id: RequestId::new(),
-        title: UiSafeText::from_trusted_redacted("Review changes"),
-        body: Some(UiSafeText::from_trusted_redacted(
-            "Confirm before applying.",
-        )),
+        title: ui("Review changes"),
+        body: Some(ui("Confirm before applying.")),
         at,
     });
     let value = serde_json::to_value(review).unwrap();
@@ -241,7 +243,7 @@ fn assistant_review_requested_segment_source_events_serialize_with_stable_tags()
         Event::AssistantClarificationRequested(AssistantClarificationRequestedEvent {
             run_id,
             request_id: RequestId::new(),
-            prompt: UiSafeText::from_trusted_redacted("Which style should I use?"),
+            prompt: ui("Which style should I use?"),
             at,
         });
     let value = serde_json::to_value(clarification).unwrap();
@@ -252,7 +254,7 @@ fn assistant_review_requested_segment_source_events_serialize_with_stable_tags()
     let notice = Event::AssistantNotice(AssistantNoticeEvent {
         run_id,
         notice_id: RequestId::new(),
-        body: UiSafeText::from_trusted_redacted("Tool output was summarized."),
+        body: ui("Tool output was summarized."),
         code: Some(AssistantNoticeCode::ContextCompacted),
         at,
     });
@@ -339,8 +341,6 @@ fn schema_export_contains_required_surface() {
 
 #[test]
 fn ui_safe_text_redacts_private_paths_and_obvious_secrets() {
-    let redactor: &dyn Redactor = &NoopRedactor;
-
     for value in [
         "Authorization: Bearer abcdef123456",
         "Bearer abcdefghijklmnop",
@@ -372,7 +372,7 @@ fn ui_safe_text_redacts_private_paths_and_obvious_secrets() {
         "[A3TABCDEFGHIJKLMNOPQ]",
         "api_key = sk-abcdefghijkl",
     ] {
-        let text = UiSafeText::from_redacted_display(value, redactor);
+        let text = UiSafeText::from_redacted_display(value, &NoopRedactor);
         assert_eq!(text.as_str(), "[REDACTED]");
     }
 
@@ -389,11 +389,11 @@ fn ui_safe_text_redacts_private_paths_and_obvious_secrets() {
         ("open /Users/alice/My Project/.env", "open [REDACTED]"),
         ("type C:\\Users\\Alice\\My Project\\.env", "type [REDACTED]"),
     ] {
-        let text = UiSafeText::from_redacted_display(value, redactor);
+        let text = UiSafeText::from_redacted_display(value, &NoopRedactor);
         assert_eq!(text.as_str(), expected);
     }
 
-    let text = UiSafeText::from_redacted_display("plain project note", redactor);
+    let text = "plain project note".to_string();
     assert_eq!(text.as_str(), "plain project note");
 }
 
@@ -405,7 +405,7 @@ fn conversation_read_model_contracts_use_stable_wire_shape() {
     };
     let message = ConversationMessage {
         author: ConversationMessageAuthor::User,
-        body: UiSafeText::from_trusted_redacted("hello"),
+        body: ui("hello"),
         client_message_id: Some("550e8400-e29b-41d4-a716-446655440000".to_owned()),
         id: MessageId::new().to_string(),
         timestamp: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
@@ -415,7 +415,7 @@ fn conversation_read_model_contracts_use_stable_wire_shape() {
         id: SessionId::new().to_string(),
         messages: vec![message],
         model_config_id: Some("provider-config-1".to_owned()),
-        title: UiSafeText::from_trusted_redacted("hello"),
+        title: ui("hello"),
         updated_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
         cursor: Some(cursor),
     };
@@ -484,7 +484,7 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
             user: ConversationTurnUserMessage {
                 id: "user:user-message-1".to_owned(),
                 message_id: "user-message-1".to_owned(),
-                body: UiSafeText::from_trusted_redacted("Generate an image"),
+                body: ui("Generate an image"),
                 client_message_id: Some("client-1".to_owned()),
                 attachments: vec![ConversationAttachmentReference {
                     id: "attachment-001".to_owned(),
@@ -508,17 +508,15 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                         id: "segment:process:run-1".to_owned(),
                         order: 0,
                         status: ProcessSegmentStatus::Running,
-                        summary: UiSafeText::from_trusted_redacted("Processing request"),
+                        summary: ui("Processing request"),
                         steps: vec![
                             ProcessStep {
                                 id: "process-step:run-1:reasoning".to_owned(),
                                 order: 0,
                                 kind: ProcessStepKind::Reasoning,
                                 status: ProcessStepStatus::Running,
-                                title: UiSafeText::from_trusted_redacted("Analyze request"),
-                                body: Some(UiSafeText::from_trusted_redacted(
-                                    "Need to generate an image.",
-                                )),
+                                title: ui("Analyze request"),
+                                body: Some(ui("Need to generate an image.")),
                                 detail: None,
                                 visibility: UiVisibility::UserSafe,
                                 event_refs: vec![event_ref.clone()],
@@ -528,7 +526,7 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                                 order: 1,
                                 kind: ProcessStepKind::Artifact,
                                 status: ProcessStepStatus::Complete,
-                                title: UiSafeText::from_trusted_redacted("Generated image"),
+                                title: ui("Generated image"),
                                 body: None,
                                 detail: Some(ProcessStepDetail::Artifact {
                                     artifact_id: "artifact-1".to_owned(),
@@ -549,7 +547,7 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                         id: "segment:text:assistant-message-1".to_owned(),
                         order: 1,
                         message_id: "assistant-message-1".to_owned(),
-                        body: UiSafeText::from_trusted_redacted("I can help with that."),
+                        body: ui("I can help with that."),
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::ToolGroup(ToolGroupSegment {
@@ -583,8 +581,8 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                         kind: "image".to_owned(),
                         status: ArtifactStatus::Ready,
                         source: ArtifactSource::Tool,
-                        title: UiSafeText::from_trusted_redacted("Generated image"),
-                        summary: Some(UiSafeText::from_trusted_redacted("Image artifact ready")),
+                        title: ui("Generated image"),
+                        summary: Some(ui("Image artifact ready")),
                         revision: ArtifactRevisionSummary {
                             artifact_id: "artifact-1".to_owned(),
                             revision_id: "rev-1".to_owned(),
@@ -607,30 +605,28 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                         id: "segment:review:review-1".to_owned(),
                         order: 4,
                         request_id: "review-1".to_owned(),
-                        title: UiSafeText::from_trusted_redacted("Review changes"),
-                        body: Some(UiSafeText::from_trusted_redacted(
-                            "Confirm before applying.",
-                        )),
+                        title: ui("Review changes"),
+                        body: Some(ui("Confirm before applying.")),
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::ClarificationRequest(ClarificationRequestSegment {
                         id: "segment:clarification:clarification-1".to_owned(),
                         order: 5,
                         request_id: "clarification-1".to_owned(),
-                        prompt: UiSafeText::from_trusted_redacted("Which style should I use?"),
+                        prompt: ui("Which style should I use?"),
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::Notice(NoticeSegment {
                         id: "segment:notice:event-1".to_owned(),
                         order: 6,
-                        body: UiSafeText::from_trusted_redacted("Tool output was summarized."),
+                        body: ui("Tool output was summarized."),
                         code: Some(AssistantNoticeCode::ContextCompacted),
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::Error(ErrorSegment {
                         id: "segment:error:event-2".to_owned(),
                         order: 7,
-                        body: UiSafeText::from_trusted_redacted("Tool execution failed."),
+                        body: ui("Tool execution failed."),
                         event_refs: vec![event_ref.clone()],
                     }),
                     AssistantSegment::AgentActivity(AgentActivitySegment {
@@ -638,12 +634,10 @@ fn conversation_worktree_contracts_use_stable_wire_shape() {
                         order: 8,
                         activity_kind: AgentActivityKind::Subagent,
                         agent_id: "subagent-1".to_owned(),
-                        role: UiSafeText::from_trusted_redacted("Reviewer"),
-                        task_summary: UiSafeText::from_trusted_redacted("Review recent changes"),
+                        role: ui("Reviewer"),
+                        task_summary: ui("Review recent changes"),
                         status: AgentActivityStatus::Completed,
-                        result_summary: Some(UiSafeText::from_trusted_redacted(
-                            "No blocking issues found.",
-                        )),
+                        result_summary: Some(ui("No blocking issues found.")),
                         permission: None,
                         team: None,
                         event_refs: vec![event_ref.clone()],
@@ -775,8 +769,8 @@ fn process_segment_contracts_use_stable_wire_shape() {
         order: 0,
         kind: ProcessStepKind::Command,
         status: ProcessStepStatus::Complete,
-        title: UiSafeText::from_trusted_redacted("Run tests"),
-        body: Some(UiSafeText::from_trusted_redacted("cargo test passed")),
+        title: ui("Run tests"),
+        body: Some(ui("cargo test passed")),
         detail: Some(ProcessStepDetail::Command(CommandExecution {
             command: "cargo test".to_owned(),
             cwd: None,
@@ -799,7 +793,7 @@ fn process_segment_contracts_use_stable_wire_shape() {
         id: "segment:process:run-1".to_owned(),
         order: 0,
         status: ProcessSegmentStatus::Complete,
-        summary: UiSafeText::from_trusted_redacted("Process completed"),
+        summary: ui("Process completed"),
         steps: vec![step],
         event_refs: Vec::new(),
     };
@@ -824,17 +818,15 @@ fn agent_activity_segment_roundtrips_with_camel_case_tags() {
         order: 0,
         activity_kind: AgentActivityKind::Subagent,
         agent_id: "subagent-1".to_owned(),
-        role: UiSafeText::from_trusted_redacted("Reviewer"),
-        task_summary: UiSafeText::from_trusted_redacted("Review recent changes"),
+        role: ui("Reviewer"),
+        task_summary: ui("Review recent changes"),
         status: AgentActivityStatus::WaitingPermission,
         result_summary: None,
         permission: Some(AgentActivityPermissionState {
             id: "permission:req-1".to_owned(),
             request_id: "req-1".to_owned(),
             status: DecisionRequestStatus::Pending,
-            summary: Some(UiSafeText::from_trusted_redacted(
-                "Needs approval to continue.",
-            )),
+            summary: Some(ui("Needs approval to continue.")),
             event_refs: Vec::new(),
         }),
         team: None,

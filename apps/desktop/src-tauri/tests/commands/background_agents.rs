@@ -267,6 +267,7 @@ async fn background_agent_tool_persists_record_without_copying_parent_context() 
     std::fs::write(state.workspace_root().join("attachment.txt"), "attachment").unwrap();
     let mut attachment = create_attachment_from_path_with_runtime_state(
         CreateAttachmentFromPathRequest {
+            conversation_id: None,
             path: "attachment.txt".to_owned(),
         },
         &state,

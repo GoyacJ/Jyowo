@@ -32,9 +32,11 @@ use super::stores::*;
 use super::validation::*;
 use super::*;
 use crate::agent_supervisor::BackgroundSupervisorSession;
-use crate::storage_layout::RuntimeLayout;
+use crate::storage_layout::{ConfigScope, JyowoHome, RuntimeLayout, RuntimeScope, StorageLayout};
 use async_trait::async_trait;
 use harness_contracts::global_config::AgentProfileSelectionRecord;
+#[cfg(test)]
+use harness_contracts::NoopRedactor;
 use harness_execution::{AuthorizationEventSink, AuthorizationService, TicketLedger};
 use harness_model::{default_account_usage_registry, ProviderAccountUsageRegistry};
 use harness_permission::{FileDecisionPersistence, IntegrityAlgorithm, PermissionAuthority};
@@ -44,7 +46,9 @@ const PROVIDER_CONTINUATION_RUNTIME_VERSION: &str = "1";
 
 #[derive(Clone)]
 struct DesktopBackgroundAgentStarter {
-    workspace_root: PathBuf,
+    runtime_layout: RuntimeLayout,
+    global_config_store: GlobalConfigStore,
+    project_config_store: Option<ProjectConfigStore>,
     event_store: Arc<dyn EventStore>,
 }
 
@@ -54,20 +58,41 @@ impl BackgroundAgentStarterCap for DesktopBackgroundAgentStarter {
         request: BackgroundAgentToolStartRequest,
     ) -> futures::future::BoxFuture<'static, Result<BackgroundAgentToolStartResponse, ToolError>>
     {
-        let workspace_root = self.workspace_root.clone();
+        let runtime_layout = self.runtime_layout.clone();
+        let global_config_store = self.global_config_store.clone();
+        let project_config_store = self.project_config_store.clone();
         let event_store = Arc::clone(&self.event_store);
         Box::pin(async move {
-            let settings_store = DesktopExecutionSettingsStore::new(workspace_root.clone());
-            let settings = settings_store
-                .load_record()
-                .map_err(|error| ToolError::Internal(error.message))?;
-            let capabilities_payload = agent_capabilities_payload(
-                &settings,
-                &workspace_root,
-                Some(&AgentCapabilityResolutionContext {
-                    stream_permission_runtime_available: true,
-                }),
-            );
+            let policy_root = runtime_layout
+                .workspace_root
+                .clone()
+                .unwrap_or_else(|| runtime_layout.runtime_root.clone());
+            let settings = resolve_effective_execution_settings(
+                Some(&global_config_store),
+                project_config_store.as_ref(),
+                None,
+                None,
+            )
+            .map_err(|error| ToolError::Internal(error.message))?;
+            let capabilities_payload =
+                if let Some(project_workspace_root) = runtime_layout.workspace_root.as_deref() {
+                    agent_capabilities_payload(
+                        &settings,
+                        project_workspace_root,
+                        Some(&AgentCapabilityResolutionContext {
+                            stream_permission_runtime_available: true,
+                        }),
+                    )
+                } else {
+                    no_workspace_agent_capabilities_payload_for_conversation(
+                        &settings,
+                        &runtime_layout.runtime_root,
+                        Some(request.conversation_id),
+                        Some(&AgentCapabilityResolutionContext {
+                            stream_permission_runtime_available: true,
+                        }),
+                    )
+                };
             let capabilities = AgentCapabilitiesInput {
                 subagents_available: capabilities_payload.subagents_available,
                 agent_teams_available: capabilities_payload.agent_teams_available,
@@ -78,11 +103,15 @@ impl BackgroundAgentStarterCap for DesktopBackgroundAgentStarter {
                 agent_teams_enabled: settings.agent_teams_enabled,
                 background_agents_enabled: settings.background_agents_enabled,
             };
-            let profiles = jyowo_harness_sdk::list_agent_profiles(&workspace_root)
-                .map_err(|error| ToolError::Internal(error.to_string()))?;
+            let mut profiles = jyowo_harness_sdk::builtin_agent_profiles();
+            profiles.extend(
+                global_config_store
+                    .load_global_agent_profiles()
+                    .map_err(|error| ToolError::Internal(error.message))?,
+            );
             let profile_ids: Vec<String> = profiles.into_iter().map(|profile| profile.id).collect();
-            let _resolved_policy = resolve_agent_runtime_policy(
-                &workspace_root,
+            let resolved_policy = resolve_agent_runtime_policy(
+                &policy_root,
                 &settings_input,
                 Some(&request.agent_tool_policy),
                 &capabilities,
@@ -92,7 +121,7 @@ impl BackgroundAgentStarterCap for DesktopBackgroundAgentStarter {
             .map_err(|error| ToolError::Validation(error.to_string()))?;
 
             let store = Arc::new(
-                AgentRuntimeStore::open(&workspace_root)
+                AgentRuntimeStore::open_runtime_dir(&runtime_layout.runtime_root)
                     .map_err(|error| ToolError::Internal(error.to_string()))?,
             );
             let redactor = Arc::new(DefaultRedactor::default());
@@ -119,7 +148,7 @@ impl BackgroundAgentStarterCap for DesktopBackgroundAgentStarter {
             }
             let supervisor_session =
                 BackgroundSupervisorSession::from_tool_session_snapshot(request.session.clone());
-            let mut agent_tool_policy = request.agent_tool_policy.clone();
+            let mut agent_tool_policy = resolved_policy.options;
             agent_tool_policy.background_agents = AgentUsePolicy::Off;
             let record = manager
                 .start(BackgroundAgentStartRequest {
@@ -144,7 +173,8 @@ impl BackgroundAgentStarterCap for DesktopBackgroundAgentStarter {
                 })
                 .await
                 .map_err(|error| ToolError::Internal(error.to_string()))?;
-            let _ = crate::agent_supervisor::wake_agent_supervisor(&workspace_root).await;
+            let supervisor_scope = agent_supervisor_scope_for_layout(&runtime_layout);
+            let _ = crate::agent_supervisor::wake_agent_supervisor_scope(&supervisor_scope).await;
             Ok(BackgroundAgentToolStartResponse {
                 background_agent_id: record.background_agent_id,
                 conversation_id: request.conversation_id,
@@ -169,6 +199,7 @@ pub(crate) struct DesktopActiveRuntime {
     default_model_id: String,
     default_protocol: ModelProtocol,
     provider_config_fingerprint: Option<[u8; 32]>,
+    runtime_scope: RuntimeScope,
     harness: Option<Arc<Harness>>,
 }
 
@@ -184,11 +215,14 @@ pub(crate) struct McpDiagnosticSubscriptionHandle {
 }
 
 fn active_runtime_provider_binding(
-    workspace_root: &Path,
+    project_workspace_root: Option<&Path>,
     default_model_id: &str,
     default_protocol: ModelProtocol,
 ) -> Result<Option<(String, [u8; 32])>, CommandErrorPayload> {
-    let store = DesktopProviderSettingsStore::new(workspace_root.to_path_buf());
+    let store = project_workspace_root.map_or_else(
+        DesktopProviderSettingsStore::global_only,
+        |workspace_root| DesktopProviderSettingsStore::new(workspace_root.to_path_buf()),
+    );
     let Some(record) = store.load_record()? else {
         return Ok(None);
     };
@@ -215,6 +249,8 @@ impl DesktopRuntimeState {
 
     pub fn with_workspace_for_test(workspace_root: PathBuf) -> Result<Self, CommandErrorPayload> {
         let workspace_root = canonical_workspace_root(workspace_root, "workspace root".to_owned())?;
+        let storage_layout = test_storage_layout_for_workspace(&workspace_root);
+        let runtime_layout = storage_layout.runtime_layout_for_project(&workspace_root);
 
         Ok(Self {
             active_runtime: Arc::new(RwLock::new(DesktopActiveRuntime {
@@ -222,10 +258,14 @@ impl DesktopRuntimeState {
                 default_model_id: "llama3.1".to_owned(),
                 default_protocol: ModelProtocol::ChatCompletions,
                 provider_config_fingerprint: None,
+                runtime_scope: runtime_layout.scope.clone(),
                 harness: None,
             })),
             automation_lock: Arc::new(tokio::sync::Mutex::new(())),
-            automation_store: Arc::new(DesktopAutomationStore::new(workspace_root.clone())),
+            automation_store: Arc::new(DesktopAutomationStore::new_with_layout(
+                storage_layout.clone(),
+                workspace_root.clone(),
+            )),
             conversation_metadata_lock: Arc::new(tokio::sync::Mutex::new(())),
             conversation_metadata_store: Arc::new(DesktopConversationMetadataStore::new(
                 workspace_root.clone(),
@@ -234,11 +274,13 @@ impl DesktopRuntimeState {
             default_conversation_id: SessionId::new(),
             deleted_conversation_ids: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             memory_lock: Arc::new(tokio::sync::Mutex::new(())),
-            mcp_diagnostic_store: Arc::new(DesktopMcpDiagnosticStore::new(workspace_root.clone())),
+            mcp_diagnostic_store: Arc::new(DesktopMcpDiagnosticStore::new_runtime_root(
+                runtime_layout.runtime_root.clone(),
+            )),
             mcp_diagnostic_subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             mcp_server_lock: Arc::new(tokio::sync::Mutex::new(())),
             mcp_server_store: Arc::new(DesktopMcpServerStore::new(
-                storage_layout_for_home(),
+                storage_layout.clone(),
                 workspace_root.clone(),
             )),
             permission_resolver: None,
@@ -246,26 +288,30 @@ impl DesktopRuntimeState {
             plugin_store: Arc::new(DesktopPluginStore::new(workspace_root.clone())),
             plugin_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             provider_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
-            provider_settings_store: Arc::new(DesktopProviderSettingsStore::new(
+            provider_settings_store: Arc::new(DesktopProviderSettingsStore::new_with_layout(
+                storage_layout.clone(),
                 workspace_root.clone(),
             )),
-            provider_diagnostics_store: Arc::new(DesktopProviderDiagnosticsStore::new(
-                workspace_root.clone(),
-            )),
+            provider_diagnostics_store: Arc::new(
+                DesktopProviderDiagnosticsStore::new_runtime_root(
+                    runtime_layout.runtime_root.clone(),
+                ),
+            ),
             provider_probe_flights: new_provider_probe_flights(),
-            provider_quota_cache_store: Arc::new(DesktopProviderQuotaCacheStore::new(
-                workspace_root.clone(),
+            provider_quota_cache_store: Arc::new(DesktopProviderQuotaCacheStore::new_runtime_root(
+                runtime_layout.runtime_root.clone(),
             )),
             official_quota_flights: new_official_quota_flights(),
             account_usage_registry: Arc::new(default_account_usage_registry()),
-            provider_capability_route_store: Arc::new(DesktopProviderCapabilityRouteStore::new(
-                workspace_root.clone(),
-            )),
+            provider_capability_route_store: provider_capability_route_store_for_layout(
+                &runtime_layout,
+            ),
             provider_capability_routes: Arc::new(ParkingRwLock::new(
                 empty_provider_capability_route_settings(),
             )),
             execution_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
-            execution_settings_store: Arc::new(DesktopExecutionSettingsStore::new(
+            execution_settings_store: Arc::new(DesktopExecutionSettingsStore::new_with_layout(
+                storage_layout.clone(),
                 workspace_root.clone(),
             )),
             skill_catalog_install_tasks: Arc::new(RwLock::new(HashMap::new())),
@@ -273,8 +319,12 @@ impl DesktopRuntimeState {
             skill_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             start_run_lock: Arc::new(tokio::sync::Mutex::new(())),
             stream_permission_runtime: None,
-            global_config_store: None,
-            project_config_store: None,
+            global_config_store: Some(GlobalConfigStore::new(storage_layout.clone())),
+            project_config_store: Some(ProjectConfigStore::new(
+                storage_layout,
+                workspace_root.clone(),
+            )),
+            runtime_layout,
             workspace_root,
         })
     }
@@ -347,6 +397,23 @@ impl DesktopRuntimeState {
         default_model_id: String,
         default_protocol: ModelProtocol,
     ) -> Result<Self, CommandErrorPayload> {
+        let runtime_layout = project_runtime_layout(&workspace_root);
+        Self::with_harness_stream_permission_runtime_and_model_for_layout(
+            runtime_layout,
+            harness,
+            stream_permission_runtime,
+            default_model_id,
+            default_protocol,
+        )
+    }
+
+    fn with_harness_stream_permission_runtime_and_model_for_layout(
+        runtime_layout: RuntimeLayout,
+        harness: Arc<Harness>,
+        stream_permission_runtime: Arc<StreamPermissionRuntime>,
+        default_model_id: String,
+        default_protocol: ModelProtocol,
+    ) -> Result<Self, CommandErrorPayload> {
         let Some(permission_broker) = harness.permission_broker() else {
             return Err(runtime_unavailable(
                 "Permission decisions require a Harness PermissionBroker.",
@@ -366,8 +433,14 @@ impl DesktopRuntimeState {
         let permission_resolver: Arc<dyn PermissionResolver> = stream_permission_runtime.clone();
 
         let provider_capability_routes = harness.provider_capability_routes();
-        let active_runtime_binding =
-            active_runtime_provider_binding(&workspace_root, &default_model_id, default_protocol)?;
+        let active_runtime_binding = active_runtime_provider_binding(
+            runtime_layout.workspace_root.as_deref(),
+            &default_model_id,
+            default_protocol,
+        )
+        .ok()
+        .flatten();
+        let state_workspace_root = runtime_layout.conversation_cwd.clone();
         let state = Self {
             active_runtime: Arc::new(RwLock::new(DesktopActiveRuntime {
                 default_model_config_id: active_runtime_binding
@@ -376,94 +449,165 @@ impl DesktopRuntimeState {
                 default_model_id,
                 default_protocol,
                 provider_config_fingerprint: active_runtime_binding.map(|binding| binding.1),
+                runtime_scope: runtime_layout.scope.clone(),
                 harness: Some(harness),
             })),
             automation_lock: Arc::new(tokio::sync::Mutex::new(())),
-            automation_store: Arc::new(DesktopAutomationStore::new(workspace_root.clone())),
+            automation_store: automation_store_for_layout(&runtime_layout),
             conversation_metadata_lock: Arc::new(tokio::sync::Mutex::new(())),
-            conversation_metadata_store: Arc::new(DesktopConversationMetadataStore::new(
-                workspace_root.clone(),
-            )),
+            conversation_metadata_store: Arc::new(
+                DesktopConversationMetadataStore::new_runtime_root(
+                    runtime_layout.runtime_root.clone(),
+                ),
+            ),
             conversation_event_subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             default_conversation_id: SessionId::new(),
             deleted_conversation_ids: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             memory_lock: Arc::new(tokio::sync::Mutex::new(())),
-            mcp_diagnostic_store: Arc::new(DesktopMcpDiagnosticStore::new(workspace_root.clone())),
+            mcp_diagnostic_store: Arc::new(DesktopMcpDiagnosticStore::new_runtime_root(
+                runtime_layout.runtime_root.clone(),
+            )),
             mcp_diagnostic_subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             mcp_server_lock: Arc::new(tokio::sync::Mutex::new(())),
-            mcp_server_store: Arc::new(DesktopMcpServerStore::new(
-                storage_layout_for_home(),
-                workspace_root.clone(),
-            )),
+            mcp_server_store: mcp_server_store_for_layout(&runtime_layout),
             permission_resolver: Some(permission_resolver),
             provider_api_key_reveal_tokens: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-            plugin_store: Arc::new(DesktopPluginStore::new(workspace_root.clone())),
+            plugin_store: Arc::new(if runtime_layout.workspace_root.is_some() {
+                DesktopPluginStore::new(
+                    runtime_layout
+                        .workspace_root
+                        .clone()
+                        .expect("project runtime layout has workspace root"),
+                )
+            } else {
+                DesktopPluginStore::global(storage_layout_for_home())
+            }),
             plugin_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             provider_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
-            provider_settings_store: Arc::new(DesktopProviderSettingsStore::new(
-                workspace_root.clone(),
+            provider_settings_store: Arc::new(DesktopProviderSettingsStore::from_runtime_layout(
+                &runtime_layout,
             )),
-            provider_diagnostics_store: Arc::new(DesktopProviderDiagnosticsStore::new(
-                workspace_root.clone(),
-            )),
+            provider_diagnostics_store: Arc::new(
+                DesktopProviderDiagnosticsStore::new_runtime_root(
+                    runtime_layout.runtime_root.clone(),
+                ),
+            ),
             provider_probe_flights: new_provider_probe_flights(),
-            provider_quota_cache_store: Arc::new(DesktopProviderQuotaCacheStore::new(
-                workspace_root.clone(),
+            provider_quota_cache_store: Arc::new(DesktopProviderQuotaCacheStore::new_runtime_root(
+                runtime_layout.runtime_root.clone(),
             )),
             official_quota_flights: new_official_quota_flights(),
             account_usage_registry: Arc::new(default_account_usage_registry()),
-            provider_capability_route_store: Arc::new(DesktopProviderCapabilityRouteStore::new(
-                workspace_root.clone(),
-            )),
+            provider_capability_route_store: provider_capability_route_store_for_layout(
+                &runtime_layout,
+            ),
             provider_capability_routes,
             execution_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
-            execution_settings_store: Arc::new(DesktopExecutionSettingsStore::new(
-                workspace_root.clone(),
+            execution_settings_store: Arc::new(DesktopExecutionSettingsStore::from_runtime_layout(
+                &runtime_layout,
             )),
             skill_catalog_install_tasks: Arc::new(RwLock::new(HashMap::new())),
-            skill_store: Arc::new(DesktopSkillStore::new(workspace_root.clone())),
+            skill_store: Arc::new(if runtime_layout.workspace_root.is_some() {
+                DesktopSkillStore::new(
+                    runtime_layout
+                        .workspace_root
+                        .clone()
+                        .expect("project runtime layout has workspace root"),
+                )
+            } else {
+                DesktopSkillStore::global(storage_layout_for_home())
+            }),
             skill_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             start_run_lock: Arc::new(tokio::sync::Mutex::new(())),
             stream_permission_runtime: Some(stream_permission_runtime),
             global_config_store: Some(global_config_store_for_home()),
-            project_config_store: Some(project_config_store_for_workspace(&workspace_root)),
-            workspace_root,
+            project_config_store: runtime_layout
+                .workspace_root
+                .as_deref()
+                .map(project_config_store_for_workspace),
+            runtime_layout,
+            workspace_root: state_workspace_root,
         };
-        // Migrate old execution-settings.json to project config overrides.
-        // Format handled by ExecutionDefaultsRecord serde aliases (snake_case → camelCase).
-        let _ = crate::commands::providers::migrate_execution_settings(&state.workspace_root);
-        // Migrate old provider-capability-routes.json from runtime to project config.
-        let _ =
-            crate::commands::providers::migrate_provider_capability_routes(&state.workspace_root);
-        // Migrate old runtime/skills/ to new skills/ location.
-        if let Err(error) = migrate_skills_on_startup(&state) {
-            log::warn!("skill migration failed: {}", error.message);
-        }
-        // Migrate old runtime/plugins/ to new plugins/ location.
-        if let Err(error) = migrate_plugins_on_startup(&state) {
-            log::warn!("plugin migration failed: {}", error.message);
-        }
-        // Migrate old runtime/mcp-servers.json to project config.
-        if let Err(error) =
-            migrate_mcp_servers_from_runtime(&storage_layout_for_home(), &state.workspace_root)
-        {
-            log::warn!("mcp server migration failed: {}", error.message);
-        }
-        // Migrate old runtime/automations.json to project config.
-        if let Err(error) =
-            migrate_automations_from_runtime(&storage_layout_for_home(), &state.workspace_root)
-        {
-            log::warn!("automation migration failed: {}", error.message);
-        }
-        // Migrate old runtime/agent-profiles.json to global config.
-        if let Err(error) = migrate_agent_profiles_from_runtime(
-            &state.workspace_root,
-            state.global_config_store.as_ref(),
-            state.project_config_store.as_ref(),
-        ) {
-            log::warn!("agent profile migration failed: {}", error.message);
+        if let Some(project_workspace_root) = state.runtime_layout.workspace_root.as_deref() {
+            // Migrate old provider-settings.json into global provider profiles/secrets and
+            // project provider selection before other config overlays read provider state.
+            crate::commands::providers::migrate_provider_settings_to_split_layout(&state)?;
+            // Migrate old execution-settings.json to project config overrides.
+            // Format handled by ExecutionDefaultsRecord serde aliases (snake_case → camelCase).
+            ensure_startup_migration(
+                "execution settings",
+                crate::commands::providers::migrate_execution_settings(project_workspace_root),
+            )?;
+            // Migrate old provider-capability-routes.json from runtime to project config.
+            ensure_startup_migration(
+                "provider capability routes",
+                crate::commands::providers::migrate_provider_capability_routes(
+                    project_workspace_root,
+                ),
+            )?;
+            // Migrate old runtime/skills/ to new skills/ location.
+            migrate_skills_on_startup(&state)?;
+            // Migrate old runtime/plugins/ to new plugins/ location.
+            migrate_plugins_on_startup(&state)?;
+            // Migrate old runtime/mcp-servers.json to project config.
+            ensure_startup_migration(
+                "mcp server settings",
+                migrate_mcp_servers_from_runtime(
+                    &storage_layout_for_home(),
+                    project_workspace_root,
+                ),
+            )?;
+            // Migrate old runtime/automations.json to project config.
+            ensure_startup_migration(
+                "automation settings",
+                migrate_automations_from_runtime(
+                    &storage_layout_for_home(),
+                    project_workspace_root,
+                ),
+            )?;
+            // Migrate old runtime/agent-profiles.json to global config.
+            migrate_agent_profiles_from_runtime(
+                project_workspace_root,
+                state.global_config_store.as_ref(),
+                state.project_config_store.as_ref(),
+            )?;
         }
         Ok(state)
+    }
+
+    #[doc(hidden)]
+    pub fn set_provider_settings_store_for_test(
+        &mut self,
+        provider_settings_store: Arc<dyn ProviderSettingsStore>,
+    ) {
+        self.provider_settings_store = provider_settings_store;
+    }
+
+    #[doc(hidden)]
+    pub fn set_config_stores_for_test(
+        &mut self,
+        global_config_store: GlobalConfigStore,
+        project_config_store: Option<ProjectConfigStore>,
+    ) {
+        self.global_config_store = Some(global_config_store);
+        self.project_config_store = project_config_store;
+    }
+
+    #[doc(hidden)]
+    pub fn set_active_runtime_provider_config_for_test(
+        &self,
+        config: &ProviderConfigRecord,
+    ) -> Result<(), CommandErrorPayload> {
+        let fingerprint = provider_config_runtime_fingerprint(config)?;
+        let mut active_runtime = self
+            .active_runtime
+            .write()
+            .expect("desktop active runtime lock should not be poisoned");
+        active_runtime.default_model_config_id = Some(config.id.clone());
+        active_runtime.default_model_id = config.model_id.clone();
+        active_runtime.default_protocol = config.protocol;
+        active_runtime.provider_config_fingerprint = Some(fingerprint);
+        Ok(())
     }
 
     #[must_use]
@@ -483,7 +627,7 @@ impl DesktopRuntimeState {
         default_protocol: ModelProtocol,
     ) {
         let active_runtime_binding = active_runtime_provider_binding(
-            &self.workspace_root,
+            self.runtime_layout.workspace_root.as_deref(),
             &default_model_id,
             default_protocol,
         )
@@ -499,6 +643,7 @@ impl DesktopRuntimeState {
             default_model_id,
             default_protocol,
             provider_config_fingerprint: active_runtime_binding.map(|binding| binding.1),
+            runtime_scope: self.runtime_layout.scope.clone(),
             harness: Some(harness),
         };
     }
@@ -509,41 +654,48 @@ impl DesktopRuntimeState {
         session_id: SessionId,
         model_config_id: &str,
         provider_config_fingerprint: [u8; 32],
-    ) -> Option<(Arc<Harness>, SessionOptions)> {
+    ) -> Result<Option<(Arc<Harness>, SessionOptions)>, CommandErrorPayload> {
         let active_runtime = self
             .active_runtime
             .read()
             .expect("desktop active runtime lock should not be poisoned");
         if active_runtime.default_model_config_id.as_deref() != Some(model_config_id)
             || active_runtime.provider_config_fingerprint != Some(provider_config_fingerprint)
+            || !active_runtime_scope_matches_session(&active_runtime.runtime_scope, session_id)
         {
-            return None;
+            return Ok(None);
         }
-        let harness = active_runtime.harness.as_ref().map(Arc::clone)?;
+        let Some(harness) = active_runtime.harness.as_ref().map(Arc::clone) else {
+            return Ok(None);
+        };
         let options = self.conversation_session_options_for_model(
             session_id,
             active_runtime.default_model_id.clone(),
             active_runtime.default_protocol,
-        );
-        Some((harness, options))
+        )?;
+        Ok(Some((harness, options)))
     }
 
-    #[must_use]
     pub fn active_conversation_runtime(
         &self,
         session_id: SessionId,
-    ) -> Option<(Arc<Harness>, SessionOptions)> {
+    ) -> Result<Option<(Arc<Harness>, SessionOptions)>, CommandErrorPayload> {
         let active_runtime = self
             .active_runtime
             .read()
             .expect("desktop active runtime lock should not be poisoned");
-        let harness = active_runtime.harness.as_ref().map(Arc::clone)?;
+        if !active_runtime_scope_matches_session(&active_runtime.runtime_scope, session_id) {
+            return Ok(None);
+        }
+        let Some(harness) = active_runtime.harness.as_ref().map(Arc::clone) else {
+            return Ok(None);
+        };
         let options = self.conversation_session_options_for_model(
             session_id,
             active_runtime.default_model_id.clone(),
             active_runtime.default_protocol,
-        );
-        Some((harness, options))
+        )?;
+        Ok(Some((harness, options)))
     }
 
     #[must_use]
@@ -553,8 +705,22 @@ impl DesktopRuntimeState {
             .map_or_else(Vec::new, |runtime| runtime.pending_permission_requests())
     }
 
-    #[must_use]
-    pub fn conversation_session_options(&self, session_id: SessionId) -> SessionOptions {
+    pub fn effective_execution_settings(
+        &self,
+        run_permission_mode: Option<PermissionMode>,
+    ) -> Result<harness_contracts::ExecutionDefaultsRecord, CommandErrorPayload> {
+        resolve_effective_execution_settings(
+            self.global_config_store.as_ref(),
+            self.project_config_store.as_ref(),
+            run_permission_mode,
+            None,
+        )
+    }
+
+    pub fn conversation_session_options(
+        &self,
+        session_id: SessionId,
+    ) -> Result<SessionOptions, CommandErrorPayload> {
         let active_runtime = self
             .active_runtime
             .read()
@@ -566,33 +732,38 @@ impl DesktopRuntimeState {
         )
     }
 
-    #[must_use]
     pub fn conversation_session_options_for_model(
         &self,
         session_id: SessionId,
         model_id: String,
         protocol: ModelProtocol,
-    ) -> SessionOptions {
-        let execution_settings = self.execution_settings_store.load_record().unwrap_or(
-            harness_contracts::ExecutionDefaultsRecord {
-                permission_mode: PermissionMode::Default,
-                tool_profile: ToolProfile::Full,
-                context_compression_trigger_ratio: default_context_compression_trigger_ratio(),
-                subagents_enabled: false,
-                agent_teams_enabled: false,
-                background_agents_enabled: false,
-            },
-        );
-        SessionOptions::new(&self.workspace_root)
+    ) -> Result<SessionOptions, CommandErrorPayload> {
+        let execution_settings = self.effective_execution_settings(None)?;
+        let mut options = SessionOptions::new(self.conversation_cwd_for_session(session_id))
             .with_tenant_id(TenantId::SINGLE)
             .with_session_id(session_id)
+            .with_agent_runtime_root(self.runtime_layout.runtime_root.clone())
             .with_interactivity(InteractivityLevel::FullyInteractive)
             .with_model_id(model_id)
             .with_protocol(protocol)
             .with_tool_profile(execution_settings.tool_profile)
             .with_context_compression_trigger_ratio(
                 execution_settings.context_compression_trigger_ratio,
-            )
+            );
+        if let Some(project_workspace_root) = self.runtime_layout.workspace_root.as_ref() {
+            options = options.with_project_workspace_root(project_workspace_root.clone());
+        }
+        Ok(options)
+    }
+
+    fn conversation_cwd_for_session(&self, session_id: SessionId) -> PathBuf {
+        if self.runtime_layout.workspace_root.is_some() {
+            return self.runtime_layout.conversation_cwd.clone();
+        }
+        self.runtime_layout
+            .runtime_root
+            .join("workdir")
+            .join(session_id.to_string())
     }
 
     #[must_use]
@@ -603,6 +774,36 @@ impl DesktopRuntimeState {
     #[must_use]
     pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
+    }
+
+    #[must_use]
+    pub fn project_workspace_root(&self) -> Option<&Path> {
+        self.runtime_layout.workspace_root.as_deref()
+    }
+
+    #[must_use]
+    pub fn runtime_layout(&self) -> &RuntimeLayout {
+        &self.runtime_layout
+    }
+
+    #[must_use]
+    pub fn runtime_root(&self) -> &Path {
+        &self.runtime_layout.runtime_root
+    }
+
+    #[must_use]
+    pub fn conversation_cwd(&self) -> &Path {
+        &self.runtime_layout.conversation_cwd
+    }
+}
+
+fn active_runtime_scope_matches_session(
+    runtime_scope: &RuntimeScope,
+    session_id: SessionId,
+) -> bool {
+    match runtime_scope {
+        RuntimeScope::Project { .. } => true,
+        RuntimeScope::GlobalConversation { conversation_id } => *conversation_id == session_id,
     }
 }
 
@@ -647,12 +848,8 @@ pub(crate) fn initial_managed_runtime_state() -> DesktopRuntimeState {
 }
 
 pub(crate) fn unconfigured_runtime_state() -> DesktopRuntimeState {
-    let workspace_root = crate::project_registry::unconfigured_workspace_root();
-    let _ = std::fs::create_dir_all(&workspace_root);
-    DesktopRuntimeState::with_workspace_for_test(workspace_root).unwrap_or_else(|_| {
-        tauri::async_runtime::block_on(runtime_state_async())
-            .expect("desktop runtime state should initialize")
-    })
+    tauri::async_runtime::block_on(runtime_state_for_no_workspace())
+        .expect("desktop no-workspace runtime state should initialize")
 }
 
 #[must_use]
@@ -665,6 +862,11 @@ pub async fn runtime_state_async() -> Result<DesktopRuntimeState, CommandErrorPa
     runtime_state_for_workspace(current_workspace_root()?).await
 }
 
+pub(crate) async fn runtime_state_for_no_workspace(
+) -> Result<DesktopRuntimeState, CommandErrorPayload> {
+    runtime_state_for_global_conversation(SessionId::new()).await
+}
+
 pub async fn runtime_state_for_workspace(
     workspace_root: PathBuf,
 ) -> Result<DesktopRuntimeState, CommandErrorPayload> {
@@ -672,9 +874,79 @@ pub async fn runtime_state_for_workspace(
     runtime_state_from_stream_permission_runtime(workspace_root, stream_permission_runtime).await
 }
 
+pub(crate) async fn runtime_state_for_global_conversation(
+    conversation_id: SessionId,
+) -> Result<DesktopRuntimeState, CommandErrorPayload> {
+    let stream_permission_runtime = Arc::new(StreamPermissionRuntime::default());
+    let layout = global_conversation_runtime_layout(conversation_id);
+    runtime_state_for_global_conversation_layout(layout, stream_permission_runtime).await
+}
+
+pub(crate) async fn runtime_state_for_global_conversation_with_runtime_root(
+    conversation_id: SessionId,
+    runtime_root: PathBuf,
+    stream_permission_runtime: Arc<StreamPermissionRuntime>,
+) -> Result<DesktopRuntimeState, CommandErrorPayload> {
+    let layout =
+        global_conversation_runtime_layout_with_runtime_root(conversation_id, runtime_root);
+    runtime_state_for_global_conversation_layout(layout, stream_permission_runtime).await
+}
+
+async fn runtime_state_for_global_conversation_layout(
+    layout: RuntimeLayout,
+    stream_permission_runtime: Arc<StreamPermissionRuntime>,
+) -> Result<DesktopRuntimeState, CommandErrorPayload> {
+    let provider_capability_routes = Arc::new(ParkingRwLock::new(
+        empty_provider_capability_route_settings(),
+    ));
+    let (harness, model_id, protocol) = build_desktop_harness(
+        &layout,
+        Arc::clone(&stream_permission_runtime),
+        None,
+        Arc::clone(&provider_capability_routes),
+        None,
+    )
+    .await?;
+
+    DesktopRuntimeState::with_harness_stream_permission_runtime_and_model_for_layout(
+        layout,
+        Arc::new(harness),
+        stream_permission_runtime,
+        model_id,
+        protocol,
+    )
+}
+
 pub(crate) async fn runtime_state_from_stream_permission_runtime(
     workspace_root: PathBuf,
     stream_permission_runtime: Arc<StreamPermissionRuntime>,
+) -> Result<DesktopRuntimeState, CommandErrorPayload> {
+    runtime_state_from_stream_permission_runtime_inner(
+        workspace_root,
+        stream_permission_runtime,
+        None,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn runtime_state_from_stream_permission_runtime_with_provider_settings_store_for_test(
+    workspace_root: PathBuf,
+    stream_permission_runtime: Arc<StreamPermissionRuntime>,
+    provider_settings_store: Arc<dyn ProviderSettingsStore>,
+) -> Result<DesktopRuntimeState, CommandErrorPayload> {
+    runtime_state_from_stream_permission_runtime_inner(
+        workspace_root,
+        stream_permission_runtime,
+        Some(provider_settings_store),
+    )
+    .await
+}
+
+async fn runtime_state_from_stream_permission_runtime_inner(
+    workspace_root: PathBuf,
+    stream_permission_runtime: Arc<StreamPermissionRuntime>,
+    provider_settings_store_override: Option<Arc<dyn ProviderSettingsStore>>,
 ) -> Result<DesktopRuntimeState, CommandErrorPayload> {
     let workspace_root = canonical_workspace_root(workspace_root, "workspace root".to_owned())?;
     let route_store = DesktopProviderCapabilityRouteStore::new(workspace_root.clone());
@@ -685,10 +957,11 @@ pub(crate) async fn runtime_state_from_stream_permission_runtime(
         Arc::clone(&stream_permission_runtime),
         None,
         Arc::clone(&provider_capability_routes),
+        provider_settings_store_override.clone(),
     )
     .await?;
 
-    let state =
+    let mut state =
         DesktopRuntimeState::with_harness_stream_permission_runtime_and_model_for_workspace(
             workspace_root,
             Arc::new(harness),
@@ -696,6 +969,9 @@ pub(crate) async fn runtime_state_from_stream_permission_runtime(
             model_id,
             protocol,
         )?;
+    if let Some(provider_settings_store) = provider_settings_store_override {
+        state.set_provider_settings_store_for_test(provider_settings_store);
+    }
     Ok(state)
 }
 
@@ -706,17 +982,73 @@ pub(crate) fn project_runtime_layout(workspace_root: &Path) -> RuntimeLayout {
     storage.runtime_layout_for_project(workspace_root)
 }
 
+pub(crate) fn global_conversation_runtime_layout(conversation_id: SessionId) -> RuntimeLayout {
+    let home = jyowo_home_dir();
+    let storage =
+        crate::storage_layout::StorageLayout::new(crate::storage_layout::JyowoHome::new(home));
+    storage.runtime_layout_for_global_conversation(conversation_id)
+}
+
+pub(crate) fn global_conversation_runtime_layout_with_runtime_root(
+    conversation_id: SessionId,
+    runtime_root: PathBuf,
+) -> RuntimeLayout {
+    RuntimeLayout {
+        scope: RuntimeScope::GlobalConversation { conversation_id },
+        workspace_root: None,
+        conversation_cwd: runtime_root
+            .join("workdir")
+            .join(conversation_id.to_string()),
+        runtime_root,
+        config_scope: ConfigScope::GlobalOnly,
+    }
+}
+
 fn storage_layout_for_home() -> crate::storage_layout::StorageLayout {
     let home = jyowo_home_dir();
     crate::storage_layout::StorageLayout::new(crate::storage_layout::JyowoHome::new(home))
 }
 
-fn global_config_store_for_home() -> GlobalConfigStore {
+fn test_storage_layout_for_workspace(workspace_root: &Path) -> StorageLayout {
+    StorageLayout::new(JyowoHome::new(
+        workspace_root.join(".jyowo-test-home").join(".jyowo"),
+    ))
+}
+
+pub(crate) fn global_config_store_for_home() -> GlobalConfigStore {
     GlobalConfigStore::new(storage_layout_for_home())
 }
 
-fn project_config_store_for_workspace(workspace_root: &Path) -> ProjectConfigStore {
+pub(crate) fn project_config_store_for_workspace(workspace_root: &Path) -> ProjectConfigStore {
     ProjectConfigStore::new(storage_layout_for_home(), workspace_root.to_path_buf())
+}
+
+fn automation_store_for_layout(layout: &RuntimeLayout) -> Arc<dyn AutomationStore> {
+    match layout.workspace_root.as_ref() {
+        Some(workspace_root) => Arc::new(DesktopAutomationStore::new(workspace_root.clone())),
+        None => Arc::new(NoWorkspaceAutomationStore),
+    }
+}
+
+fn mcp_server_store_for_layout(layout: &RuntimeLayout) -> Arc<dyn McpServerStore> {
+    match layout.workspace_root.as_ref() {
+        Some(workspace_root) => Arc::new(DesktopMcpServerStore::new(
+            storage_layout_for_home(),
+            workspace_root.clone(),
+        )),
+        None => Arc::new(NoWorkspaceMcpServerStore),
+    }
+}
+
+fn provider_capability_route_store_for_layout(
+    layout: &RuntimeLayout,
+) -> Arc<dyn ProviderCapabilityRouteStore> {
+    match layout.workspace_root.as_ref() {
+        Some(workspace_root) => Arc::new(DesktopProviderCapabilityRouteStore::new(
+            workspace_root.clone(),
+        )),
+        None => Arc::new(NoWorkspaceProviderCapabilityRouteStore),
+    }
 }
 
 fn jyowo_home_dir() -> PathBuf {
@@ -730,11 +1062,54 @@ pub(crate) async fn ensure_agent_supervisor_sidecar_for_state<R: tauri::Runtime>
     app: &tauri::AppHandle<R>,
     state: &DesktopRuntimeState,
 ) -> Result<(), CommandErrorPayload> {
-    crate::agent_supervisor::launch_agent_supervisor_sidecar(app, state.workspace_root.clone())
+    let supervisor_scope = agent_supervisor_scope_for_state(state);
+    crate::agent_supervisor::launch_agent_supervisor_sidecar_for_scope(app, supervisor_scope)
         .await
         .map_err(|error| {
             runtime_init_failed(format!("agent supervisor sidecar startup failed: {error}"))
         })
+}
+
+fn ensure_startup_migration(
+    label: &str,
+    result: Result<MigrationResult, CommandErrorPayload>,
+) -> Result<(), CommandErrorPayload> {
+    match result? {
+        MigrationResult::NotNeeded
+        | MigrationResult::Migrated
+        | MigrationResult::AlreadyMigrated => Ok(()),
+        MigrationResult::Conflict(conflict) => Err(runtime_init_failed(format!(
+            "{label} migration conflict: {:?}: {}",
+            conflict.kind, conflict.detail
+        ))),
+    }
+}
+
+pub(crate) fn agent_supervisor_scope_for_state(
+    state: &DesktopRuntimeState,
+) -> crate::agent_supervisor::AgentSupervisorScope {
+    agent_supervisor_scope_for_layout(&state.runtime_layout)
+}
+
+pub(crate) fn agent_supervisor_scope_for_layout(
+    layout: &RuntimeLayout,
+) -> crate::agent_supervisor::AgentSupervisorScope {
+    match layout.workspace_root.as_ref() {
+        Some(workspace_root) => {
+            crate::agent_supervisor::AgentSupervisorScope::project(workspace_root.clone())
+        }
+        None => match &layout.scope {
+            RuntimeScope::GlobalConversation { conversation_id } => {
+                crate::agent_supervisor::AgentSupervisorScope::runtime_conversation(
+                    layout.runtime_root.clone(),
+                    *conversation_id,
+                )
+            }
+            RuntimeScope::Project { .. } => {
+                crate::agent_supervisor::AgentSupervisorScope::runtime(layout.runtime_root.clone())
+            }
+        },
+    }
 }
 
 pub fn agent_supervisor_sidecar_startup_result_for_project_command(
@@ -753,13 +1128,14 @@ pub(crate) async fn build_desktop_harness(
     stream_permission_runtime: Arc<StreamPermissionRuntime>,
     model_config_id: Option<&str>,
     provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
+    provider_settings_store_override: Option<Arc<dyn ProviderSettingsStore>>,
 ) -> Result<(Harness, String, ModelProtocol), CommandErrorPayload> {
-    let workspace_root = layout.workspace_root.as_deref().ok_or_else(|| {
-        runtime_init_failed("build_desktop_harness requires a project runtime layout".to_owned())
-    })?;
+    let project_workspace_root = layout.workspace_root.as_deref();
+    let execution_cwd = layout.conversation_cwd.as_path();
     let runtime_root = &layout.runtime_root;
 
-    reset_legacy_conversation_runtime_for_provider_continuations(workspace_root)?;
+    reset_legacy_conversation_runtime_for_provider_continuations(runtime_root)?;
+    ensure_desktop_runtime_store_paths(runtime_root)?;
     let provider_continuation_store = Arc::new(
         FileProviderContinuationStore::open_runtime_dir(runtime_root).map_err(|error| {
             runtime_init_failed(format!(
@@ -777,35 +1153,49 @@ pub(crate) async fn build_desktop_harness(
             runtime_init_failed(format!("event store initialization failed: {error}"))
         })?,
     );
-    let mcp_server_store =
-        DesktopMcpServerStore::new(storage_layout_for_home(), workspace_root.to_path_buf());
-    let mcp_diagnostic_store: Arc<dyn McpDiagnosticStore> =
-        Arc::new(DesktopMcpDiagnosticStore::new(workspace_root.to_path_buf()));
-    let provider_settings_store = DesktopProviderSettingsStore::new(workspace_root.to_path_buf());
+    let mcp_server_records = if let Some(project_workspace_root) = layout.workspace_root.as_deref()
+    {
+        let mcp_server_store = DesktopMcpServerStore::new(
+            storage_layout_for_home(),
+            project_workspace_root.to_path_buf(),
+        );
+        mcp_server_store.load_records()?
+    } else {
+        Vec::new()
+    };
+    let mcp_diagnostic_store: Arc<dyn McpDiagnosticStore> = Arc::new(
+        DesktopMcpDiagnosticStore::new_runtime_root(runtime_root.clone()),
+    );
+    let default_provider_settings_store =
+        Arc::new(DesktopProviderSettingsStore::from_runtime_layout(layout))
+            as Arc<dyn ProviderSettingsStore>;
+    let provider_settings_store =
+        provider_settings_store_override.unwrap_or(default_provider_settings_store);
     let conversation_metadata_store =
-        DesktopConversationMetadataStore::new(workspace_root.to_path_buf());
+        DesktopConversationMetadataStore::new_runtime_root(runtime_root.clone());
     let (model_provider, model_id, protocol) =
-        model_from_provider_settings(&provider_settings_store, model_config_id)?.unwrap_or_else(
-            || {
+        model_from_provider_settings(provider_settings_store.as_ref(), model_config_id)?
+            .unwrap_or_else(|| {
                 (
                     Arc::new(LocalLlamaProvider::default()) as Arc<dyn ModelProvider>,
                     "llama3.1".to_owned(),
                     ModelProtocol::ChatCompletions,
                 )
-            },
-        );
-    let skill_store = DesktopSkillStore::new(workspace_root.to_path_buf());
+            });
     let storage_layout = storage_layout_for_home();
     let global_skill_store = DesktopSkillStore::global(storage_layout);
-    let skill_loader = SkillLoader::default()
-        .with_source(SkillSourceConfig::DirectoryPackages {
+    let mut skill_loader =
+        SkillLoader::default().with_source(SkillSourceConfig::DirectoryPackages {
             path: global_skill_store.enabled_dir(),
             source_kind: DirectorySourceKind::User,
-        })
-        .with_source(SkillSourceConfig::DirectoryPackages {
+        });
+    if let Some(project_workspace_root) = layout.workspace_root.as_deref() {
+        let skill_store = DesktopSkillStore::new(project_workspace_root.to_path_buf());
+        skill_loader = skill_loader.with_source(SkillSourceConfig::DirectoryPackages {
             path: skill_store.enabled_dir(),
             source_kind: DirectorySourceKind::Workspace,
         });
+    }
     let blob_store: Arc<dyn harness_contracts::BlobStore> = Arc::new(
         FileBlobStore::open(runtime_root.join("blobs")).map_err(|error| {
             runtime_init_failed(format!("blob store initialization failed: {error}"))
@@ -828,26 +1218,45 @@ pub(crate) async fn build_desktop_harness(
     let provider_credential_resolver: Arc<dyn ProviderCredentialResolverCap> =
         Arc::new(DesktopProviderCredentialResolver::new(
             Arc::new(conversation_metadata_store),
-            Arc::new(provider_settings_store.clone()),
+            Arc::clone(&provider_settings_store),
             Arc::clone(&provider_capability_routes),
         ));
-    let plugin_store: Arc<dyn PluginStore> =
-        Arc::new(DesktopPluginStore::new(workspace_root.to_path_buf()));
     let global_plugin_store = DesktopPluginStore::global(storage_layout_for_home());
+    let plugin_store: Arc<dyn PluginStore> =
+        if let Some(project_workspace_root) = layout.workspace_root.as_deref() {
+            Arc::new(DesktopPluginStore::new(
+                project_workspace_root.to_path_buf(),
+            ))
+        } else {
+            Arc::new(global_plugin_store.clone())
+        };
+    let global_plugin_store_for_registry = if layout.workspace_root.is_some() {
+        Some(&global_plugin_store)
+    } else {
+        None
+    };
     let plugin_registry = build_plugin_registry(
-        workspace_root,
+        execution_cwd,
+        project_workspace_root,
         plugin_store.as_ref(),
-        Some(&global_plugin_store),
+        global_plugin_store_for_registry,
     )?;
 
-    let sandbox = Arc::new(LocalSandbox::new(workspace_root)) as Arc<dyn SandboxBackend>;
+    let sandbox = Arc::new(LocalSandbox::new(execution_cwd)) as Arc<dyn SandboxBackend>;
 
     // Build the production PermissionAuthority with signed file persistence.
-    let signer = desktop_integrity_signer(workspace_root)?;
+    let signer = desktop_integrity_signer(runtime_root)?;
     let decision_path = runtime_root.join("permission-decisions.json");
-    let file_persistence: Arc<dyn harness_permission::DecisionStore> = Arc::new(
-        FileDecisionPersistence::new(TenantId::SINGLE, decision_path, signer),
-    );
+    let decision_persistence =
+        FileDecisionPersistence::new(TenantId::SINGLE, decision_path, signer);
+    let decision_persistence = match &layout.scope {
+        crate::storage_layout::RuntimeScope::GlobalConversation { conversation_id } => {
+            decision_persistence.with_no_workspace_conversation_scope(*conversation_id)
+        }
+        crate::storage_layout::RuntimeScope::Project { .. } => decision_persistence,
+    };
+    let file_persistence: Arc<dyn harness_permission::DecisionStore> =
+        Arc::new(decision_persistence);
 
     let rule_broker: Arc<dyn harness_permission::PermissionBroker> = Arc::new(
         harness_permission::RuleEngineBroker::builder()
@@ -880,12 +1289,12 @@ pub(crate) async fn build_desktop_harness(
         Arc::new(TicketLedger::default()),
     ));
     let mcp_config = mcp_config_from_records(
-        mcp_server_store.load_records()?,
+        mcp_server_records,
         SessionId::new(),
         AgentId::new(),
         Arc::clone(&mcp_diagnostic_store),
         Arc::clone(&authorization_service),
-        workspace_root,
+        project_workspace_root,
     )
     .await?;
 
@@ -893,19 +1302,27 @@ pub(crate) async fn build_desktop_harness(
         Arc::new(DesktopDiagnosticsRunner::new(Arc::clone(&sandbox)));
     let background_agent_starter: Arc<dyn BackgroundAgentStarterCap> =
         Arc::new(DesktopBackgroundAgentStarter {
-            workspace_root: workspace_root.to_path_buf(),
+            runtime_layout: layout.clone(),
+            global_config_store: global_config_store_for_home(),
+            project_config_store: project_workspace_root
+                .as_deref()
+                .map(project_config_store_for_workspace),
             event_store: Arc::clone(&event_store),
         });
+    let mut default_session_options = SessionOptions::new(execution_cwd)
+        .with_agent_runtime_root(runtime_root)
+        .with_model_id(model_id.clone())
+        .with_protocol(protocol);
+    if let Some(project_workspace_root) = project_workspace_root {
+        default_session_options =
+            default_session_options.with_project_workspace_root(project_workspace_root);
+    }
     let harness = Harness::builder()
-        .with_workspace_root(workspace_root)
+        .with_workspace_root(execution_cwd)
         .with_model_arc(model_provider)
         .with_model_id(model_id.clone())
         .with_shared_provider_capability_routes(provider_capability_routes)
-        .with_default_session_options(
-            SessionOptions::new(workspace_root)
-                .with_model_id(model_id.clone())
-                .with_protocol(protocol),
-        )
+        .with_default_session_options(default_session_options)
         .with_store_arc(event_store)
         .with_sandbox_arc(sandbox)
         .with_blob_store_arc(blob_store)
@@ -925,9 +1342,11 @@ pub(crate) async fn build_desktop_harness(
         )
         .with_mcp_config(mcp_config)
         .with_plugin_registry(plugin_registry)
+        .with_memory_database_path(layout.runtime_root.join("memory").join("memory.sqlite3"))
         .with_memory_provider(
             harness_memory::local::LocalMemoryProvider::open(
-                &runtime_root
+                &layout
+                    .runtime_root
                     .join("memory")
                     .join("memory.sqlite3")
                     .to_string_lossy(),
@@ -951,10 +1370,68 @@ pub(crate) async fn build_desktop_harness(
     Ok((harness, model_id, protocol))
 }
 
-pub fn reset_legacy_conversation_runtime_for_provider_continuations(
-    workspace_root: &Path,
+fn ensure_desktop_runtime_store_paths(runtime_root: &Path) -> Result<(), CommandErrorPayload> {
+    ensure_runtime_directory_no_symlink(runtime_root, "runtime root")?;
+    ensure_runtime_directory_no_symlink(&runtime_root.join("events"), "runtime events directory")?;
+    ensure_runtime_directory_no_symlink(&runtime_root.join("blobs"), "runtime blob directory")?;
+    ensure_runtime_directory_no_symlink(&runtime_root.join("memory"), "runtime memory directory")?;
+
+    for (path, label) in [
+        (
+            runtime_root.join("provider-continuations.jsonl"),
+            "provider continuation file",
+        ),
+        (
+            runtime_root.join("permission-decisions.json"),
+            "permission decisions file",
+        ),
+        (
+            runtime_root.join("conversation-read-model.sqlite"),
+            "conversation read model sqlite file",
+        ),
+        (
+            runtime_root.join("conversation-read-model.sqlite-shm"),
+            "conversation read model sqlite shm file",
+        ),
+        (
+            runtime_root.join("conversation-read-model.sqlite-wal"),
+            "conversation read model sqlite wal file",
+        ),
+        (
+            runtime_root.join("memory").join("memory.sqlite3"),
+            "memory sqlite file",
+        ),
+        (
+            runtime_root.join("memory").join("memory.sqlite3-shm"),
+            "memory sqlite shm file",
+        ),
+        (
+            runtime_root.join("memory").join("memory.sqlite3-wal"),
+            "memory sqlite wal file",
+        ),
+    ] {
+        ensure_runtime_path_no_symlink(&path, label)?;
+    }
+
+    Ok(())
+}
+
+fn ensure_runtime_directory_no_symlink(
+    path: &Path,
+    label: &str,
 ) -> Result<(), CommandErrorPayload> {
-    let runtime_dir = workspace_root.join(".jyowo").join("runtime");
+    super::stores::ensure_app_dir_no_symlink(path, label)
+        .map_err(|error| runtime_init_failed(error.message))
+}
+
+fn ensure_runtime_path_no_symlink(path: &Path, label: &str) -> Result<(), CommandErrorPayload> {
+    super::stores::ensure_no_symlink_components(path, label)
+        .map_err(|error| runtime_init_failed(error.message))
+}
+
+pub fn reset_legacy_conversation_runtime_for_provider_continuations(
+    runtime_dir: &Path,
+) -> Result<(), CommandErrorPayload> {
     let marker_path = runtime_dir.join("provider-continuation-runtime.version");
 
     super::stores::ensure_no_symlink_components(&runtime_dir, "provider continuation runtime")?;
@@ -1034,10 +1511,10 @@ fn remove_provider_continuation_dev_reset_target(target: &Path) -> Result<(), Co
     Ok(())
 }
 
-fn desktop_integrity_signer(
-    workspace_root: &Path,
+pub(crate) fn desktop_integrity_signer(
+    runtime_root: &Path,
 ) -> Result<Arc<dyn harness_permission::IntegritySigner>, CommandErrorPayload> {
-    let key = desktop_integrity_key(workspace_root)?;
+    let key = desktop_integrity_key(runtime_root)?;
     harness_permission::StaticSignerStore::from_key(
         "desktop-integrity",
         key,
@@ -1048,11 +1525,8 @@ fn desktop_integrity_signer(
     })
 }
 
-fn desktop_integrity_key(workspace_root: &Path) -> Result<Vec<u8>, CommandErrorPayload> {
-    let path = workspace_root
-        .join(".jyowo")
-        .join("runtime")
-        .join("permission-integrity.key");
+fn desktop_integrity_key(runtime_root: &Path) -> Result<Vec<u8>, CommandErrorPayload> {
+    let path = runtime_root.join("permission-integrity.key");
     ensure_no_symlink_components(&path, "integrity key file")?;
     match std::fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.is_file() => {
@@ -1359,12 +1833,13 @@ impl EventSink for RecordingSandboxEventSink {
 }
 
 pub(crate) fn build_plugin_registry(
-    workspace_root: &Path,
+    execution_cwd: &Path,
+    project_workspace_root: Option<&Path>,
     plugin_store: &dyn PluginStore,
     global_plugin_store: Option<&DesktopPluginStore>,
 ) -> Result<PluginRegistry, CommandErrorPayload> {
     let settings = plugin_store.load_record()?;
-    let (sidecar_sandbox, sidecar_sandbox_mode) = desktop_plugin_sidecar_sandbox(workspace_root);
+    let (sidecar_sandbox, sidecar_sandbox_mode) = desktop_plugin_sidecar_sandbox(execution_cwd);
     let mut entries = BTreeMap::new();
     let mut disabled_plugins = BTreeSet::new();
     for record in &settings.records {
@@ -1384,11 +1859,15 @@ pub(crate) fn build_plugin_registry(
             &settings,
             disabled_plugins,
             entries,
+            project_workspace_root,
         ))
-        .with_source(DiscoverySource::User(plugin_store.package_root()))
-        .with_source(DiscoverySource::Workspace(
+        .with_source(DiscoverySource::User(plugin_store.package_root()));
+
+    if project_workspace_root.is_some() {
+        builder = builder.with_source(DiscoverySource::Workspace(
             plugin_store.workspace_plugin_root(),
         ));
+    }
 
     if let Some(global_store) = global_plugin_store {
         builder = builder.with_source(DiscoverySource::User(global_store.package_root()));
@@ -1404,17 +1883,21 @@ pub(crate) fn build_plugin_registry(
                 .with_sandbox(
                     sidecar_sandbox.clone(),
                     sidecar_sandbox_mode.clone(),
-                    workspace_root.to_path_buf(),
+                    execution_cwd.to_path_buf(),
                 ),
         ))
         .with_runtime_loader(Arc::new(CargoExtensionRuntimeLoader::new().with_sandbox(
             sidecar_sandbox,
             sidecar_sandbox_mode,
-            workspace_root.to_path_buf(),
+            execution_cwd.to_path_buf(),
         )));
 
-    if settings.allow_project_plugins {
-        builder = builder.with_source(DiscoverySource::Project(workspace_root.to_path_buf()));
+    if let Some(project_workspace_root) = project_workspace_root {
+        if settings.allow_project_plugins {
+            builder = builder.with_source(DiscoverySource::Project(
+                project_workspace_root.to_path_buf(),
+            ));
+        }
     }
 
     builder.build().map_err(|error| {
@@ -1444,6 +1927,7 @@ pub(crate) fn plugin_config_from_settings(
     settings: &PluginSettingsRecord,
     disabled_plugins: BTreeSet<PluginName>,
     entries: BTreeMap<PluginName, Value>,
+    project_workspace_root: Option<&Path>,
 ) -> PluginConfig {
     let allowed_user_plugins = entries.keys().cloned().collect();
     PluginConfig {
@@ -1451,6 +1935,7 @@ pub(crate) fn plugin_config_from_settings(
         allowed_user_plugins: Some(allowed_user_plugins),
         disabled_plugins,
         entries,
+        workspace_root: project_workspace_root.map(Path::to_path_buf),
         ..PluginConfig::default()
     }
 }
@@ -1481,12 +1966,13 @@ pub(crate) async fn reload_desktop_harness_after_plugin_change_locked(
     let Some(stream_permission_runtime) = state.stream_permission_runtime.as_ref() else {
         return Ok(());
     };
-    let layout = project_runtime_layout(&state.workspace_root);
+    let layout = state.runtime_layout().clone();
     let (harness, model_id, protocol) = build_desktop_harness(
         &layout,
         Arc::clone(stream_permission_runtime),
         None,
         Arc::clone(&state.provider_capability_routes),
+        Some(Arc::clone(&state.provider_settings_store)),
     )
     .await?;
     if let Some(old_harness) = state.harness() {
@@ -1534,9 +2020,9 @@ pub(crate) fn current_process_workspace_root() -> Result<PathBuf, CommandErrorPa
 /// Migration rules:
 /// - Builtin profiles are skipped (never written to global).
 /// - User profiles migrate to global with their original id and `scope: User`.
-/// - Project profiles migrate to global with normalized `scope: User`.
-/// - If the old file had a default profile, the project selection records it.
-/// - Id collisions with different profile content produce a warning and skip.
+/// - Project profiles migrate to global as `<workspaceHash8>-<oldId>` and `scope: User`.
+/// - If the old file explicitly had a default profile, the project selection records it.
+/// - Id collisions with different profile content fail closed and leave the old file for retry.
 pub(crate) fn migrate_agent_profiles_from_runtime(
     workspace_root: &Path,
     global_config: Option<&GlobalConfigStore>,
@@ -1555,7 +2041,6 @@ pub(crate) fn migrate_agent_profiles_from_runtime(
         return Ok(());
     };
 
-    // Read old profiles.
     let old_bytes = match std::fs::read(&old_path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -1566,62 +2051,93 @@ pub(crate) fn migrate_agent_profiles_from_runtime(
         }
     };
 
+    let old_value: serde_json::Value = serde_json::from_slice(&old_bytes)
+        .map_err(|error| runtime_init_failed(format!("agent profiles parse failed: {error}")))?;
+
     #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
     struct OldProfilesFile {
         profiles: Vec<AgentProfile>,
     }
 
-    let old_file: OldProfilesFile = serde_json::from_slice(&old_bytes).map_err(|error| {
-        runtime_operation_failed(format!("agent profiles parse failed: {error}"))
-    })?;
+    let old_file: OldProfilesFile = serde_json::from_value(old_value.clone())
+        .map_err(|error| runtime_init_failed(format!("agent profiles parse failed: {error}")))?;
+    let explicit_default_profile_id = old_value
+        .get("defaultProfileId")
+        .or_else(|| old_value.get("default_profile_id"))
+        .map(|value| match value {
+            serde_json::Value::String(id) => Ok(Some(id.clone())),
+            serde_json::Value::Null => Ok(None),
+            _ => Err(runtime_init_failed(
+                "agent profiles default profile id must be a string".to_owned(),
+            )),
+        })
+        .transpose()?
+        .flatten();
+    let default_was_explicit = old_value.get("defaultProfileId").is_some()
+        || old_value.get("default_profile_id").is_some();
 
-    // Collect user/project profiles (skip builtin).
+    let workspace_hash8 = crate::commands::providers::workspace_hash_short(workspace_root);
     let mut migrated: Vec<AgentProfile> = Vec::new();
     let mut default_profile_id: Option<String> = None;
+    let mut old_default_seen = false;
 
     for mut profile in old_file.profiles {
-        if profile.scope == AgentProfileScope::Builtin {
+        let old_id = profile.id.clone();
+        let old_scope = profile.scope;
+
+        let new_id = match old_scope {
+            AgentProfileScope::Builtin => old_id.clone(),
+            AgentProfileScope::User => old_id.clone(),
+            AgentProfileScope::Project => format!("{workspace_hash8}-{old_id}"),
+        };
+        if explicit_default_profile_id.as_deref() == Some(old_id.as_str()) {
+            old_default_seen = true;
+            default_profile_id = Some(new_id.clone());
+        }
+
+        if old_scope == AgentProfileScope::Builtin {
             continue;
         }
 
-        // Normalize scope to User for global storage.
+        profile.id = new_id;
         profile.scope = AgentProfileScope::User;
 
-        // Check for id collision in already-migrated set.
         if let Some(existing) = migrated.iter().find(|p| p.id == profile.id) {
             if *existing != profile {
-                log::warn!(
-                    "agent profile migration: duplicate id {} with different content, skipping",
+                return Err(runtime_init_failed(format!(
+                    "agent profile migration conflict: duplicate id {} with different content",
                     profile.id
-                );
+                )));
             }
             continue;
-        }
-
-        // Use the first non-builtin profile as default if none set.
-        if default_profile_id.is_none() {
-            default_profile_id = Some(profile.id.clone());
         }
 
         migrated.push(profile);
     }
 
+    if default_was_explicit && explicit_default_profile_id.is_some() && !old_default_seen {
+        return Err(runtime_init_failed(format!(
+            "agent profile migration conflict: default profile id {} was not found in old profiles",
+            explicit_default_profile_id.expect("guarded by is_some")
+        )));
+    }
+
     if migrated.is_empty() {
-        let _ = std::fs::remove_file(&old_path);
+        crate::commands::stores::retire_existing_regular_file_no_follow(
+            &old_path,
+            "agent profiles old file",
+        )?;
         return Ok(());
     }
 
-    // Load existing global profiles and merge.
     let mut global_profiles = global_config.load_global_agent_profiles()?;
     for profile in &migrated {
-        // Check for collision with existing global profiles.
         if let Some(existing) = global_profiles.iter().find(|p| p.id == profile.id) {
             if existing != profile {
-                log::warn!(
-                    "agent profile migration: id {} exists in global config with different content, skipping",
+                return Err(runtime_init_failed(format!(
+                    "agent profile migration conflict: id {} exists in global config with different content",
                     profile.id
-                );
+                )));
             }
             continue;
         }
@@ -1629,15 +2145,18 @@ pub(crate) fn migrate_agent_profiles_from_runtime(
     }
     global_config.save_global_agent_profiles(&global_profiles)?;
 
-    // Persist project selection if we have a default.
-    if let (Some(project_config), Some(default_id)) = (project_config, default_profile_id) {
-        let _ = project_config.save_project_agent_profile_selection(&AgentProfileSelectionRecord {
+    if let (Some(project_config), true, Some(default_id)) =
+        (project_config, default_was_explicit, default_profile_id)
+    {
+        project_config.save_project_agent_profile_selection(&AgentProfileSelectionRecord {
             default_profile_id: Some(default_id),
-        });
+        })?;
     }
 
-    // Remove old file after successful migration.
-    let _ = std::fs::remove_file(&old_path);
+    crate::commands::stores::retire_existing_regular_file_no_follow(
+        &old_path,
+        "agent profiles old file",
+    )?;
 
     Ok(())
 }
@@ -1646,10 +2165,218 @@ pub(crate) fn migrate_agent_profiles_from_runtime(
 mod tests {
     use super::*;
     use harness_contracts::{
-        AgentToolPolicy, AgentWorkspaceIsolationMode, BackgroundAgentToolSessionSnapshot,
-        ToolSearchMode,
+        AgentProfileContextMode, AgentProfileMemoryScope, AgentProfileSandboxInheritance,
+        AgentToolPolicy, AgentWorkspaceIsolationMode, AssistantSegment,
+        BackgroundAgentToolSessionSnapshot, DeferPolicy, MessageId, MessageMetadata,
+        ProcessStepDetail, ProviderProfileDefinition, ProviderProfileModelDescriptor,
+        ProviderProfileModelLifecycle, ToolProperties, ToolResult, ToolSearchMode,
+        ToolUseCompletedEvent, ToolUseRequestedEvent, UserMessageAppendedEvent,
     };
-    use jyowo_harness_sdk::testing::{InMemoryEventStore, NoopRedactor};
+    use jyowo_harness_sdk::testing::InMemoryEventStore;
+    use std::sync::Mutex;
+
+    static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct HomeEnvGuard {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    struct CurrentDirGuard {
+        previous: PathBuf,
+    }
+
+    impl HomeEnvGuard {
+        fn set(home: &Path) -> Self {
+            let previous = std::env::var_os("HOME");
+            std::env::set_var("HOME", home.as_os_str());
+            Self { previous }
+        }
+    }
+
+    impl CurrentDirGuard {
+        fn set(cwd: &Path) -> Self {
+            let previous = std::env::current_dir().expect("current dir");
+            std::env::set_current_dir(cwd).expect("set current dir");
+            Self { previous }
+        }
+    }
+
+    fn lock_home_env() -> std::sync::MutexGuard<'static, ()> {
+        HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn temp_home_dir() -> tempfile::TempDir {
+        let base = std::env::current_dir()
+            .expect("current dir")
+            .join("target")
+            .join("runtime-test-homes");
+        std::fs::create_dir_all(&base).expect("test home base");
+        tempfile::Builder::new()
+            .prefix("home-")
+            .tempdir_in(base)
+            .expect("home tempdir")
+    }
+
+    fn runtime_test_agent_profile(id: &str, scope: AgentProfileScope, role: &str) -> AgentProfile {
+        AgentProfile {
+            id: id.to_owned(),
+            scope,
+            role: role.to_owned(),
+            description: format!("{role} profile"),
+            model_config_override: None,
+            tool_allowlist: None,
+            tool_blocklist: vec![],
+            sandbox_inheritance: AgentProfileSandboxInheritance::InheritParent,
+            memory_scope: AgentProfileMemoryScope::ReadOnly,
+            context_mode: AgentProfileContextMode::Focused,
+            max_turns: 8,
+            max_depth: 1,
+            default_workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
+        }
+    }
+
+    fn write_old_agent_profiles_file(workspace_root: &Path, value: serde_json::Value) -> PathBuf {
+        let old_path = workspace_root
+            .join(".jyowo")
+            .join("runtime")
+            .join("agent-profiles.json");
+        std::fs::create_dir_all(old_path.parent().expect("old profiles parent"))
+            .expect("create old profiles parent");
+        std::fs::write(
+            &old_path,
+            serde_json::to_vec_pretty(&value).expect("serialize old profiles"),
+        )
+        .expect("write old profiles");
+        old_path
+    }
+
+    fn test_tool_use_requested_event(
+        run_id: RunId,
+        tool_use_id: ToolUseId,
+        tool_name: &str,
+    ) -> ToolUseRequestedEvent {
+        ToolUseRequestedEvent {
+            at: now(),
+            causation_id: EventId::new(),
+            input: json!({ "toolName": tool_name }),
+            properties: ToolProperties {
+                is_concurrency_safe: true,
+                is_destructive: false,
+                is_read_only: false,
+                long_running: None,
+                defer_policy: DeferPolicy::AlwaysLoad,
+            },
+            run_id,
+            tool_name: tool_name.to_owned(),
+            tool_use_id,
+        }
+    }
+
+    async fn command_output_ref_for_session(
+        state: &DesktopRuntimeState,
+        session_id: SessionId,
+        stdout: &str,
+        stderr: &str,
+    ) -> String {
+        let run_id = RunId::new();
+        let user_message_id = MessageId::new();
+        let tool_use_id = ToolUseId::new();
+
+        state
+            .harness()
+            .expect("runtime harness should exist")
+            .open_or_create_conversation_session(
+                state
+                    .conversation_session_options(session_id)
+                    .expect("session options"),
+            )
+            .await
+            .expect("conversation session should open");
+        state
+            .harness()
+            .expect("runtime harness should exist")
+            .event_store()
+            .append(
+                TenantId::SINGLE,
+                session_id,
+                &[
+                    Event::UserMessageAppended(UserMessageAppendedEvent {
+                        run_id,
+                        message_id: user_message_id,
+                        content: MessageContent::Text("run command".to_owned()),
+                        metadata: MessageMetadata::default(),
+                        attachments: Vec::new(),
+                        at: now(),
+                    }),
+                    Event::ToolUseRequested(test_tool_use_requested_event(
+                        run_id,
+                        tool_use_id,
+                        "shell",
+                    )),
+                    Event::ToolUseCompleted(ToolUseCompletedEvent {
+                        tool_use_id,
+                        result: ToolResult::Structured(json!({
+                            "exitCode": 0,
+                            "stdout": stdout,
+                            "stderr": stderr,
+                        })),
+                        usage: None,
+                        duration_ms: 21,
+                        at: now(),
+                    }),
+                ],
+            )
+            .await
+            .expect("events should append");
+
+        let page = page_conversation_worktree_with_runtime_state(
+            PageConversationWorktreeRequest {
+                conversation_id: session_id.to_string(),
+                page_cursor: None,
+                direction: PageConversationWorktreeDirection::After,
+                limit: Some(1),
+            },
+            state,
+        )
+        .await
+        .expect("worktree should load");
+
+        page.turns[0]
+            .assistant
+            .as_ref()
+            .expect("assistant projection should exist")
+            .segments
+            .iter()
+            .find_map(|segment| match segment {
+                AssistantSegment::Process(process) => {
+                    process.steps.iter().find_map(|step| match &step.detail {
+                        Some(ProcessStepDetail::Command(command)) => {
+                            command.full_output_ref.as_ref().map(ToString::to_string)
+                        }
+                        _ => None,
+                    })
+                }
+                _ => None,
+            })
+            .expect("command output ref should be projected")
+    }
+
+    impl Drop for HomeEnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.previous).expect("restore current dir");
+        }
+    }
 
     #[cfg(unix)]
     #[test]
@@ -1661,7 +2388,8 @@ mod tests {
             .path()
             .canonicalize()
             .expect("canonical workspace");
-        let key = desktop_integrity_key(&workspace_root).expect("integrity key");
+        let runtime_dir = workspace_root.join(".jyowo").join("runtime");
+        let key = desktop_integrity_key(&runtime_dir).expect("integrity key");
 
         assert_eq!(key.len(), 32);
         let key_path = workspace_root
@@ -1684,7 +2412,8 @@ mod tests {
         std::os::unix::fs::symlink(external.path(), workspace_root.join(".jyowo"))
             .expect("symlink");
 
-        let error = desktop_integrity_key(&workspace_root).expect_err("symlink should fail");
+        let error = desktop_integrity_key(&workspace_root.join(".jyowo").join("runtime"))
+            .expect_err("symlink should fail");
 
         assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
         assert!(error.message.contains("symlink"));
@@ -1708,7 +2437,7 @@ mod tests {
         )
         .expect("symlink");
 
-        let error = desktop_integrity_key(&workspace_root).expect_err("symlink should fail");
+        let error = desktop_integrity_key(&runtime_dir).expect_err("symlink should fail");
 
         assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
         assert!(error.message.contains("symlink"));
@@ -1732,7 +2461,7 @@ mod tests {
         std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644))
             .expect("widen key mode");
 
-        let loaded = desktop_integrity_key(&workspace_root).expect("integrity key");
+        let loaded = desktop_integrity_key(&runtime_dir).expect("integrity key");
 
         assert_eq!(loaded, key);
         let mode = std::fs::metadata(key_path).unwrap().permissions().mode() & 0o777;
@@ -1750,7 +2479,8 @@ mod tests {
             .canonicalize()
             .expect("canonical workspace");
 
-        reset_legacy_conversation_runtime_for_provider_continuations(&workspace_root)
+        let runtime_dir = workspace_root.join(".jyowo").join("runtime");
+        reset_legacy_conversation_runtime_for_provider_continuations(&runtime_dir)
             .expect("reset should succeed");
 
         let marker_path = workspace_root
@@ -1777,8 +2507,10 @@ mod tests {
         std::os::unix::fs::symlink(external.path(), workspace_root.join(".jyowo"))
             .expect("symlink");
 
-        let error = reset_legacy_conversation_runtime_for_provider_continuations(&workspace_root)
-            .expect_err("symlink runtime parent should fail");
+        let error = reset_legacy_conversation_runtime_for_provider_continuations(
+            &workspace_root.join(".jyowo").join("runtime"),
+        )
+        .expect_err("symlink runtime parent should fail");
 
         assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
         assert!(error.message.contains("symlink"));
@@ -1802,7 +2534,7 @@ mod tests {
         )
         .expect("symlink");
 
-        let error = reset_legacy_conversation_runtime_for_provider_continuations(&workspace_root)
+        let error = reset_legacy_conversation_runtime_for_provider_continuations(&runtime_dir)
             .expect_err("symlink marker should fail");
 
         assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
@@ -1817,8 +2549,14 @@ mod tests {
             .path()
             .canonicalize()
             .expect("canonical workspace");
+        let storage_layout = test_storage_layout_for_workspace(&workspace_root);
         let starter = DesktopBackgroundAgentStarter {
-            workspace_root: workspace_root.clone(),
+            runtime_layout: storage_layout.runtime_layout_for_project(&workspace_root),
+            global_config_store: GlobalConfigStore::new(storage_layout.clone()),
+            project_config_store: Some(ProjectConfigStore::new(
+                storage_layout,
+                workspace_root.clone(),
+            )),
             event_store: Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))),
         };
         let conversation_id = SessionId::new();
@@ -1870,6 +2608,903 @@ mod tests {
                 .is_empty(),
             "policy rejection must happen before creating a background record"
         );
+    }
+
+    #[test]
+    fn global_conversation_runtime_state_uses_global_runtime_not_unconfigured_workspace() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let conversation_id = SessionId::new();
+        let state =
+            tauri::async_runtime::block_on(runtime_state_for_global_conversation(conversation_id))
+                .expect("global conversation runtime state");
+
+        let layout = state.runtime_layout();
+        assert!(layout.workspace_root.is_none());
+        assert!(layout
+            .runtime_root
+            .ends_with(Path::new(".jyowo/runtime/global-conversations")));
+        assert!(layout.conversation_cwd.ends_with(
+            Path::new("global-conversations")
+                .join("workdir")
+                .join(conversation_id.to_string())
+        ));
+        assert_ne!(
+            layout.conversation_cwd,
+            crate::project_registry::unconfigured_workspace_root()
+        );
+        assert_ne!(
+            layout.runtime_root,
+            crate::project_registry::unconfigured_workspace_root()
+                .join(".jyowo")
+                .join("runtime")
+        );
+        assert!(state.project_config_store.is_none());
+        assert_eq!(
+            state.runtime_root().join("memory").join("memory.sqlite3"),
+            layout.runtime_root.join("memory").join("memory.sqlite3")
+        );
+        assert_eq!(
+            state.skill_store.enabled_dir(),
+            home.path()
+                .join(".jyowo")
+                .join("skills")
+                .join("packages")
+                .join("enabled")
+        );
+        assert_eq!(
+            state.plugin_store.package_root(),
+            home.path().join(".jyowo").join("plugins").join("packages")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn global_conversation_runtime_state_rejects_symlink_blob_store_directory() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let runtime_root = home
+            .path()
+            .join(".jyowo")
+            .join("runtime")
+            .join("global-conversations");
+        std::fs::create_dir_all(&runtime_root).expect("runtime root");
+        let external = tempfile::tempdir().expect("external");
+        std::os::unix::fs::symlink(external.path(), runtime_root.join("blobs")).expect("symlink");
+
+        let error = match tauri::async_runtime::block_on(runtime_state_for_global_conversation(
+            SessionId::new(),
+        )) {
+            Ok(_) => panic!("symlinked blob directory should fail"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, "RUNTIME_INIT_FAILED");
+        assert!(error.message.contains("symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unconfigured_runtime_state_fails_closed_without_current_dir_workspace_fallback() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let workspace = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let _cwd_guard = CurrentDirGuard::set(workspace.path());
+        let runtime_root = home
+            .path()
+            .join(".jyowo")
+            .join("runtime")
+            .join("global-conversations");
+        std::fs::create_dir_all(&runtime_root).expect("runtime root");
+        let external = tempfile::tempdir().expect("external");
+        std::os::unix::fs::symlink(external.path(), runtime_root.join("blobs")).expect("symlink");
+
+        let result = std::panic::catch_unwind(unconfigured_runtime_state);
+
+        assert!(result.is_err());
+        assert!(
+            !workspace.path().join(".jyowo").join("runtime").exists(),
+            "no-workspace init failure must not create cwd project runtime"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn global_conversation_runtime_state_rejects_symlink_sqlite_read_model_file() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let runtime_root = home
+            .path()
+            .join(".jyowo")
+            .join("runtime")
+            .join("global-conversations");
+        std::fs::create_dir_all(&runtime_root).expect("runtime root");
+        super::stores::write_atomic_runtime_file(
+            &runtime_root.join("provider-continuation-runtime.version"),
+            "provider-continuation-runtime.version",
+            "provider continuation runtime marker",
+            format!("{PROVIDER_CONTINUATION_RUNTIME_VERSION}\n").as_bytes(),
+        )
+        .expect("marker");
+        let external = tempfile::NamedTempFile::new().expect("external sqlite");
+        std::os::unix::fs::symlink(
+            external.path(),
+            runtime_root.join("conversation-read-model.sqlite"),
+        )
+        .expect("symlink");
+
+        let error = match tauri::async_runtime::block_on(runtime_state_for_global_conversation(
+            SessionId::new(),
+        )) {
+            Ok(_) => panic!("symlinked sqlite read model should fail"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, "RUNTIME_INIT_FAILED");
+        assert!(error.message.contains("symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_workspace_delete_preserves_metadata_when_cleanup_fails() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let state =
+            tauri::async_runtime::block_on(runtime_state_for_global_conversation(SessionId::new()))
+                .expect("global conversation runtime state");
+        let created =
+            tauri::async_runtime::block_on(create_conversation_with_runtime_state(&state))
+                .expect("create conversation");
+        let conversation_id = created.conversation.id.clone();
+        let session_id = SessionId::parse(&conversation_id).expect("session id");
+        let workdir_parent = state.runtime_root().join("workdir");
+        std::fs::create_dir_all(&workdir_parent).expect("workdir parent");
+        let external = tempfile::tempdir().expect("external");
+        std::os::unix::fs::symlink(external.path(), workdir_parent.join(session_id.to_string()))
+            .expect("symlink");
+
+        let error = tauri::async_runtime::block_on(delete_conversation_with_runtime_state(
+            DeleteConversationRequest {
+                conversation_id: conversation_id.clone(),
+            },
+            &state,
+        ))
+        .expect_err("cleanup failure should fail delete");
+
+        assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+        assert!(error.message.contains("symlink"));
+        let metadata = state
+            .conversation_metadata_store
+            .load_record()
+            .expect("load metadata");
+        assert!(metadata.conversations.contains_key(&conversation_id));
+    }
+
+    #[test]
+    fn no_workspace_attachment_owner_uses_requested_conversation_id() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let state =
+            tauri::async_runtime::block_on(runtime_state_for_global_conversation(SessionId::new()))
+                .expect("global conversation runtime state");
+        let created =
+            tauri::async_runtime::block_on(create_conversation_with_runtime_state(&state))
+                .expect("create conversation");
+        let conversation_id = created.conversation.id.clone();
+        let session_id = SessionId::parse(&conversation_id).expect("session id");
+        let attachment_path = state
+            .runtime_root()
+            .join("workdir")
+            .join(session_id.to_string())
+            .join("notes.txt");
+        std::fs::create_dir_all(attachment_path.parent().expect("attachment parent"))
+            .expect("create attachment parent");
+        std::fs::write(&attachment_path, "draft notes").expect("write attachment");
+
+        let attachment =
+            tauri::async_runtime::block_on(create_attachment_from_path_with_runtime_state(
+                CreateAttachmentFromPathRequest {
+                    conversation_id: Some(conversation_id.clone()),
+                    path: attachment_path.to_string_lossy().to_string(),
+                },
+                &state,
+            ))
+            .expect("create attachment")
+            .attachment;
+        let record_path = state
+            .runtime_root()
+            .join("attachments")
+            .join("records")
+            .join(format!("{}.json", attachment.id));
+        assert!(record_path.exists());
+
+        tauri::async_runtime::block_on(delete_conversation_with_runtime_state(
+            DeleteConversationRequest { conversation_id },
+            &state,
+        ))
+        .expect("delete conversation");
+
+        assert!(!record_path.exists());
+    }
+
+    #[test]
+    fn no_workspace_execution_settings_use_global_defaults_not_workdir_overrides() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let conversation_id = SessionId::new();
+        let state =
+            tauri::async_runtime::block_on(runtime_state_for_global_conversation(conversation_id))
+                .expect("global conversation runtime state");
+
+        state
+            .global_config_store
+            .as_ref()
+            .expect("global config store")
+            .save_execution_defaults(&harness_contracts::ExecutionDefaultsRecord {
+                permission_mode: PermissionMode::BypassPermissions,
+                tool_profile: ToolProfile::Minimal,
+                context_compression_trigger_ratio: 0.7,
+                subagents_enabled: false,
+                agent_teams_enabled: false,
+                background_agents_enabled: false,
+            })
+            .expect("save global defaults");
+
+        let record = state
+            .execution_settings_store
+            .load_record()
+            .expect("load execution settings");
+        assert_eq!(record.permission_mode, PermissionMode::BypassPermissions);
+        assert_eq!(record.tool_profile, ToolProfile::Minimal);
+        assert!(!state
+            .conversation_cwd()
+            .join(".jyowo")
+            .join("config")
+            .join("execution-overrides.json")
+            .exists());
+    }
+
+    #[test]
+    fn project_runtime_state_fails_closed_when_provider_settings_migration_fails() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let old_provider_settings_path = workspace_root
+            .join(".jyowo")
+            .join("runtime")
+            .join("provider-settings.json");
+        std::fs::create_dir_all(old_provider_settings_path.parent().expect("parent"))
+            .expect("create old runtime dir");
+        std::fs::write(&old_provider_settings_path, "{ not valid json")
+            .expect("write invalid old provider settings");
+
+        let error = match tauri::async_runtime::block_on(runtime_state_for_workspace(
+            workspace_root.clone(),
+        )) {
+            Ok(_) => panic!("provider migration failure must prevent runtime startup"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, "INVALID_PAYLOAD");
+        assert!(error.message.contains("provider settings"));
+        assert!(
+            old_provider_settings_path.exists(),
+            "failed migration must leave old provider settings for retry"
+        );
+    }
+
+    #[test]
+    fn provider_capability_routes_migration_conflict_fails_runtime_startup() {
+        for result in [
+            MigrationResult::NotNeeded,
+            MigrationResult::Migrated,
+            MigrationResult::AlreadyMigrated,
+        ] {
+            ensure_startup_migration("provider capability routes", Ok(result))
+                .expect("non-conflict migration result should not fail startup");
+        }
+
+        let error = ensure_startup_migration(
+            "provider capability routes",
+            Ok(MigrationResult::Conflict(MigrationConflict {
+                kind: MigrationConflictKind::IdCollision,
+                old_path: PathBuf::from("old.json"),
+                new_path: PathBuf::from("new.json"),
+                detail: "old and new routes differ".to_owned(),
+            })),
+        )
+        .expect_err("provider route migration conflict must fail startup");
+
+        assert_eq!(error.code, "RUNTIME_INIT_FAILED");
+        assert!(error.message.contains("provider capability routes"));
+        assert!(error.message.contains("old and new routes differ"));
+    }
+
+    #[test]
+    fn agent_profile_migration_mints_project_ids_and_preserves_explicit_default() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let project_profile =
+            runtime_test_agent_profile("planner", AgentProfileScope::Project, "Planner");
+        let user_profile =
+            runtime_test_agent_profile("reviewer_local", AgentProfileScope::User, "Reviewer");
+        let old_path = write_old_agent_profiles_file(
+            &workspace_root,
+            json!({
+                "profiles": [project_profile, user_profile],
+                "defaultProfileId": "planner",
+            }),
+        );
+        let global = global_config_store_for_home();
+        let project = project_config_store_for_workspace(&workspace_root);
+        let expected_project_id = format!(
+            "{}-planner",
+            crate::commands::providers::workspace_hash_short(&workspace_root)
+        );
+
+        migrate_agent_profiles_from_runtime(&workspace_root, Some(&global), Some(&project))
+            .expect("migrate agent profiles");
+
+        let profiles = global
+            .load_global_agent_profiles()
+            .expect("load global profiles");
+        let migrated_project = profiles
+            .iter()
+            .find(|profile| profile.id == expected_project_id)
+            .expect("project profile migrated with workspace-prefixed id");
+        assert_eq!(migrated_project.scope, AgentProfileScope::User);
+        assert!(profiles
+            .iter()
+            .any(|profile| profile.id == "reviewer_local"));
+        let selection = project
+            .load_project_agent_profile_selection()
+            .expect("load project selection");
+        assert_eq!(selection.default_profile_id, Some(expected_project_id));
+        assert!(!old_path.exists(), "old profile file must be retired");
+    }
+
+    #[test]
+    fn agent_profile_migration_does_not_invent_default_selection() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        write_old_agent_profiles_file(
+            &workspace_root,
+            json!({
+                "profiles": [
+                    runtime_test_agent_profile("worker_local", AgentProfileScope::User, "Worker")
+                ],
+            }),
+        );
+        let global = global_config_store_for_home();
+        let project = project_config_store_for_workspace(&workspace_root);
+        let selection_path = workspace_root
+            .join(".jyowo")
+            .join("config")
+            .join("agent-profile-selection.json");
+
+        migrate_agent_profiles_from_runtime(&workspace_root, Some(&global), Some(&project))
+            .expect("migrate agent profiles");
+
+        assert!(
+            !selection_path.exists(),
+            "migration must not create project selection when old file has no explicit default"
+        );
+        assert!(global
+            .load_global_agent_profiles()
+            .expect("load global profiles")
+            .iter()
+            .any(|profile| profile.id == "worker_local"));
+    }
+
+    #[test]
+    fn agent_profile_migration_conflict_fails_without_partial_write() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let old_profile =
+            runtime_test_agent_profile("existing", AgentProfileScope::User, "Old Existing");
+        let existing_profile =
+            runtime_test_agent_profile("existing", AgentProfileScope::User, "New Existing");
+        let old_path = write_old_agent_profiles_file(
+            &workspace_root,
+            json!({
+                "profiles": [old_profile.clone()],
+                "defaultProfileId": "existing",
+            }),
+        );
+        let global = global_config_store_for_home();
+        let project = project_config_store_for_workspace(&workspace_root);
+        global
+            .save_global_agent_profiles(&[existing_profile.clone()])
+            .expect("seed global profiles");
+        let error =
+            migrate_agent_profiles_from_runtime(&workspace_root, Some(&global), Some(&project))
+                .expect_err("conflicting agent profile must fail migration");
+
+        assert_eq!(error.code, "RUNTIME_INIT_FAILED");
+        assert!(error.message.contains("agent profile migration conflict"));
+        assert!(old_path.exists(), "old profile file must remain for retry");
+        assert_eq!(
+            global
+                .load_global_agent_profiles()
+                .expect("load global profiles"),
+            vec![existing_profile]
+        );
+        let selection_path = workspace_root
+            .join(".jyowo")
+            .join("config")
+            .join("agent-profile-selection.json");
+        assert!(
+            !selection_path.exists(),
+            "conflict must not write project selection"
+        );
+    }
+
+    #[test]
+    fn no_workspace_project_scoped_stores_read_empty_and_fail_closed_without_scratch_config() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        global_config_store_for_home()
+            .save_provider_profiles(&[ProviderProfileDefinition {
+                id: "global-openai".to_owned(),
+                display_name: "Global OpenAI".to_owned(),
+                provider_id: "openai".to_owned(),
+                model_id: "gpt-5".to_owned(),
+                protocol: ModelProtocol::ChatCompletions,
+                base_url: None,
+                model_descriptor: ProviderProfileModelDescriptor {
+                    protocol: ModelProtocol::ChatCompletions,
+                    context_window: 128000,
+                    display_name: "GPT-5".to_owned(),
+                    lifecycle: ProviderProfileModelLifecycle::Stable,
+                    max_output_tokens: 16384,
+                    model_id: "gpt-5".to_owned(),
+                    provider_id: "openai".to_owned(),
+                    conversation_capability:
+                        harness_contracts::ProviderProfileConversationCapability {
+                            input_modalities: vec!["text".to_owned()],
+                            output_modalities: vec!["text".to_owned()],
+                            context_window: 128000,
+                            max_output_tokens: 16384,
+                            streaming: true,
+                            tool_calling: true,
+                            reasoning: false,
+                            prompt_cache: false,
+                            structured_output: false,
+                        },
+                },
+            }])
+            .expect("save global provider profile");
+        let conversation_id = SessionId::new();
+        let state =
+            tauri::async_runtime::block_on(runtime_state_for_global_conversation(conversation_id))
+                .expect("global conversation runtime state");
+        let scratch_config_root = state.conversation_cwd().join(".jyowo").join("config");
+
+        assert_eq!(
+            state
+                .automation_store
+                .load_automations()
+                .expect("automations read"),
+            Vec::<AutomationSpec>::new()
+        );
+        assert_eq!(
+            state
+                .mcp_server_store
+                .load_records()
+                .expect("mcp servers read"),
+            Vec::<McpServerConfigRecord>::new()
+        );
+        assert_eq!(
+            state
+                .provider_capability_route_store
+                .load_record()
+                .expect("provider routes read"),
+            Some(empty_provider_capability_route_settings())
+        );
+
+        let automation_error = state
+            .automation_store
+            .save_automations(&[])
+            .expect_err("no-workspace automations must be unavailable");
+        assert_eq!(automation_error.code, "INVALID_PAYLOAD");
+
+        let mcp_error = state
+            .mcp_server_store
+            .save_record(&browser_mcp_preset_record(
+                BrowserMcpPresetId::Playwright,
+                true,
+            ))
+            .expect_err("no-workspace mcp servers must be unavailable");
+        assert_eq!(mcp_error.code, "INVALID_PAYLOAD");
+
+        let provider_route_error = state
+            .provider_capability_route_store
+            .save_record(
+                &empty_provider_capability_route_settings(),
+                ProviderCapabilityRouteValidationToken { _private: () },
+            )
+            .expect_err("no-workspace provider routes must be unavailable");
+        assert_eq!(provider_route_error.code, "INVALID_PAYLOAD");
+
+        assert!(
+            !scratch_config_root.exists(),
+            "no-workspace project stores must not create scratch .jyowo/config"
+        );
+    }
+
+    #[test]
+    fn no_workspace_session_options_use_per_conversation_cwd() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let first = SessionId::new();
+        let second = SessionId::new();
+        let state = tauri::async_runtime::block_on(runtime_state_for_global_conversation(first))
+            .expect("global conversation runtime state");
+
+        let first_options = state
+            .conversation_session_options(first)
+            .expect("first session options");
+        let second_options = state
+            .conversation_session_options(second)
+            .expect("second session options");
+
+        assert!(first_options.workspace_root.ends_with(
+            Path::new("global-conversations")
+                .join("workdir")
+                .join(first.to_string())
+        ));
+        assert!(second_options.workspace_root.ends_with(
+            Path::new("global-conversations")
+                .join("workdir")
+                .join(second.to_string())
+        ));
+        assert_ne!(first_options.workspace_root, second_options.workspace_root);
+        assert_ne!(
+            first_options.workspace_root,
+            crate::project_registry::unconfigured_workspace_root()
+        );
+        assert_eq!(
+            first_options.agent_runtime_root.as_deref(),
+            Some(state.runtime_root())
+        );
+        assert_eq!(
+            second_options.agent_runtime_root.as_deref(),
+            Some(state.runtime_root())
+        );
+    }
+
+    #[test]
+    fn global_conversation_runtime_layout_can_use_explicit_runtime_root() {
+        let conversation_id = SessionId::new();
+        let runtime_root = tempfile::tempdir().expect("runtime").path().join("runtime");
+
+        let layout = global_conversation_runtime_layout_with_runtime_root(
+            conversation_id,
+            runtime_root.clone(),
+        );
+
+        assert_eq!(layout.runtime_root, runtime_root);
+        assert_eq!(
+            layout.conversation_cwd,
+            layout
+                .runtime_root
+                .join("workdir")
+                .join(conversation_id.to_string())
+        );
+        assert!(layout.workspace_root.is_none());
+    }
+
+    #[test]
+    fn no_workspace_active_runtime_cache_is_scoped_to_conversation() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let first = SessionId::new();
+        let second = SessionId::new();
+        let state = tauri::async_runtime::block_on(runtime_state_for_global_conversation(first))
+            .expect("global conversation runtime state");
+        let model_config_id = "test-model-config";
+        let provider_fingerprint = [7_u8; 32];
+        {
+            let mut active = state
+                .active_runtime
+                .write()
+                .expect("desktop active runtime lock should not be poisoned");
+            active.default_model_config_id = Some(model_config_id.to_owned());
+            active.provider_config_fingerprint = Some(provider_fingerprint);
+        }
+
+        assert!(state
+            .active_conversation_runtime_for_model_config(
+                first,
+                model_config_id,
+                provider_fingerprint
+            )
+            .expect("active runtime lookup")
+            .is_some());
+        assert!(state
+            .active_conversation_runtime_for_model_config(
+                second,
+                model_config_id,
+                provider_fingerprint
+            )
+            .expect("active runtime lookup")
+            .is_none());
+    }
+
+    #[test]
+    fn no_workspace_plugin_reload_preserves_conversation_runtime_scope() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let conversation_id = SessionId::new();
+        let state =
+            tauri::async_runtime::block_on(runtime_state_for_global_conversation(conversation_id))
+                .expect("global conversation runtime state");
+
+        tauri::async_runtime::block_on(reload_desktop_harness_after_plugin_change_locked(&state))
+            .expect("plugin reload should rebuild no-workspace runtime");
+
+        let active = state
+            .active_runtime
+            .read()
+            .expect("desktop active runtime lock should not be poisoned");
+        assert_eq!(
+            active.runtime_scope,
+            RuntimeScope::GlobalConversation { conversation_id }
+        );
+    }
+
+    #[test]
+    fn no_workspace_attachment_records_use_global_runtime_root() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let conversation_id = SessionId::new();
+        let state =
+            tauri::async_runtime::block_on(runtime_state_for_global_conversation(conversation_id))
+                .expect("global conversation runtime state");
+        let attachment_path = state.conversation_cwd().join("notes.txt");
+        std::fs::create_dir_all(attachment_path.parent().unwrap()).expect("workdir");
+        std::fs::write(&attachment_path, "local notes").expect("attachment source");
+
+        let payload =
+            tauri::async_runtime::block_on(create_attachment_from_path_with_runtime_state(
+                CreateAttachmentFromPathRequest {
+                    conversation_id: None,
+                    path: attachment_path.to_string_lossy().into_owned(),
+                },
+                &state,
+            ))
+            .expect("attachment should be stored");
+
+        assert!(state
+            .runtime_root()
+            .join("attachments")
+            .join("records")
+            .join(format!("{}.json", payload.attachment.id))
+            .is_file());
+        assert!(state.runtime_root().join("blobs").is_dir());
+        assert!(!state
+            .conversation_cwd()
+            .join(".jyowo")
+            .join("runtime")
+            .join("attachments")
+            .exists());
+    }
+
+    #[test]
+    fn no_workspace_evidence_exports_use_global_runtime_root() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let conversation_id = SessionId::new();
+        let state =
+            tauri::async_runtime::block_on(runtime_state_for_global_conversation(conversation_id))
+                .expect("global conversation runtime state");
+        let command_ref = tauri::async_runtime::block_on(command_output_ref_for_session(
+            &state,
+            conversation_id,
+            "exported output",
+            "",
+        ));
+
+        let exported =
+            tauri::async_runtime::block_on(export_conversation_evidence_with_runtime_state(
+                ExportConversationEvidenceRequest {
+                    conversation_id: conversation_id.to_string(),
+                    kind: "command-output".to_owned(),
+                    ref_id: command_ref,
+                },
+                &state,
+            ))
+            .expect("command output evidence should export");
+
+        assert!(exported
+            .path
+            .starts_with(&format!("exports/{conversation_id}/")));
+        assert_eq!(
+            std::fs::read_to_string(state.runtime_root().join(&exported.path))
+                .expect("export should be readable"),
+            "exported output"
+        );
+        assert!(!state
+            .conversation_cwd()
+            .join(".jyowo")
+            .join("runtime")
+            .join("exports")
+            .exists());
+    }
+
+    #[test]
+    fn no_workspace_rejects_workspace_file_context_reference() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let conversation_id = SessionId::new();
+        let state =
+            tauri::async_runtime::block_on(runtime_state_for_global_conversation(conversation_id))
+                .expect("global conversation runtime state");
+
+        let error = tauri::async_runtime::block_on(build_conversation_turn_input(
+            &StartRunRequest {
+                attachments: None,
+                client_message_id: None,
+                context_references: Some(vec![ContextReferencePayload::WorkspaceFile {
+                    path: "notes.txt".to_owned(),
+                    label: "Notes".to_owned(),
+                }]),
+                conversation_id: conversation_id.to_string(),
+                model_config_id: Some("test-model-config".to_owned()),
+                permission_mode: None,
+                prompt: "Use this file".to_owned(),
+            },
+            &state,
+        ))
+        .expect_err("no-workspace must not accept workspace file references");
+
+        assert_eq!(error.code, "INVALID_PAYLOAD");
+        assert!(error.message.contains("active project workspace"));
+    }
+
+    #[test]
+    fn deleting_no_workspace_conversation_prunes_workdir_and_exports() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let state =
+            tauri::async_runtime::block_on(runtime_state_for_global_conversation(SessionId::new()))
+                .expect("global conversation runtime state");
+        let created =
+            tauri::async_runtime::block_on(create_conversation_with_runtime_state(&state))
+                .expect("conversation created");
+        let conversation_id =
+            SessionId::parse(&created.conversation.id).expect("created id should parse");
+        let workdir = state
+            .runtime_root()
+            .join("workdir")
+            .join(conversation_id.to_string());
+        let exports = state
+            .runtime_root()
+            .join("exports")
+            .join(conversation_id.to_string());
+        std::fs::create_dir_all(&workdir).expect("workdir");
+        std::fs::write(workdir.join("scratch.txt"), "scratch").expect("scratch");
+        std::fs::create_dir_all(&exports).expect("exports");
+        std::fs::write(exports.join("support.json"), "{}").expect("export");
+
+        tauri::async_runtime::block_on(delete_conversation_with_runtime_state(
+            DeleteConversationRequest {
+                conversation_id: conversation_id.to_string(),
+            },
+            &state,
+        ))
+        .expect("delete should succeed");
+
+        assert!(!workdir.exists());
+        assert!(!exports.exists());
+    }
+
+    #[test]
+    fn deleting_no_workspace_conversation_prunes_attachment_records() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let conversation_id = SessionId::new();
+        let state =
+            tauri::async_runtime::block_on(runtime_state_for_global_conversation(conversation_id))
+                .expect("global conversation runtime state");
+        let attachment_path = state.conversation_cwd().join("notes.txt");
+        std::fs::create_dir_all(attachment_path.parent().unwrap()).expect("workdir");
+        std::fs::write(&attachment_path, "local notes").expect("attachment source");
+        let attachment =
+            tauri::async_runtime::block_on(create_attachment_from_path_with_runtime_state(
+                CreateAttachmentFromPathRequest {
+                    conversation_id: None,
+                    path: attachment_path.to_string_lossy().into_owned(),
+                },
+                &state,
+            ))
+            .expect("attachment should be stored");
+        let attachment_record =
+            attachment_record_path(state.runtime_root(), &attachment.attachment.id);
+        assert!(attachment_record.exists());
+        let command_ref = tauri::async_runtime::block_on(command_output_ref_for_session(
+            &state,
+            conversation_id,
+            "deleted output",
+            "",
+        ));
+        let exported =
+            tauri::async_runtime::block_on(export_conversation_evidence_with_runtime_state(
+                ExportConversationEvidenceRequest {
+                    conversation_id: conversation_id.to_string(),
+                    kind: "command-output".to_owned(),
+                    ref_id: command_ref.clone(),
+                },
+                &state,
+            ))
+            .expect("command output evidence should export");
+        let exported_path = state.runtime_root().join(&exported.path);
+        assert!(exported_path.exists());
+
+        tauri::async_runtime::block_on(delete_conversation_with_runtime_state(
+            DeleteConversationRequest {
+                conversation_id: conversation_id.to_string(),
+            },
+            &state,
+        ))
+        .expect("delete should succeed");
+
+        assert!(!state.conversation_cwd().exists());
+        assert!(!exported_path.exists());
+        assert!(!attachment_record.exists());
+        let attachment_error =
+            read_attachment_record(state.runtime_root(), &attachment.attachment.id).unwrap_err();
+        assert_eq!(attachment_error.code, "INVALID_PAYLOAD");
+        let export_error =
+            tauri::async_runtime::block_on(export_conversation_evidence_with_runtime_state(
+                ExportConversationEvidenceRequest {
+                    conversation_id: conversation_id.to_string(),
+                    kind: "command-output".to_owned(),
+                    ref_id: command_ref,
+                },
+                &state,
+            ))
+            .unwrap_err();
+        assert_eq!(export_error.code, "INVALID_PAYLOAD");
     }
 }
 

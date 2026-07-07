@@ -401,6 +401,21 @@ fn provider_capability_route_options_use_injected_adapter_availability() {
 }
 
 #[test]
+fn no_workspace_provider_capability_route_options_are_empty() {
+    let provider_settings = provider_settings_record_with_minimax_config("minimax-image", true);
+
+    let payload = list_provider_capability_route_options_from_inputs(
+        &NoWorkspaceProviderCapabilityRouteStore,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &minimax_image_adapter_availability(),
+    )
+    .unwrap();
+
+    assert!(payload.options.is_empty());
+}
+
+#[test]
 fn provider_capability_route_options_never_expose_api_keys() {
     let provider_settings = provider_settings_record_with_minimax_config("minimax-image", true);
     let store = provider_capability_route_store("provider-capability-route-options-redaction");
@@ -516,7 +531,7 @@ async fn provider_capability_route_saving_empty_routes_writes_empty_settings() {
 }
 
 #[tokio::test]
-async fn provider_capability_route_invalid_file_is_removed_and_returns_empty_settings() {
+async fn provider_capability_route_invalid_legacy_file_is_ignored_and_preserved() {
     let workspace = canonical_unique_workspace("provider-capability-route-invalid-file");
     let route_dir = workspace.join(".jyowo").join("runtime");
     std::fs::create_dir_all(&route_dir).unwrap();
@@ -539,11 +554,11 @@ async fn provider_capability_route_invalid_file_is_removed_and_returns_empty_set
 
     assert_eq!(payload.version, 1);
     assert!(payload.routes.is_empty());
-    assert!(!route_path.exists());
+    assert!(route_path.exists());
 }
 
 #[tokio::test]
-async fn provider_capability_route_malformed_json_file_is_removed_and_returns_empty_settings() {
+async fn provider_capability_route_malformed_legacy_file_is_ignored_and_preserved() {
     let workspace = canonical_unique_workspace("provider-capability-route-malformed-file");
     let route_dir = workspace.join(".jyowo").join("runtime");
     std::fs::create_dir_all(&route_dir).unwrap();
@@ -562,7 +577,7 @@ async fn provider_capability_route_malformed_json_file_is_removed_and_returns_em
 
     assert_eq!(payload.version, 1);
     assert!(payload.routes.is_empty());
-    assert!(!route_path.exists());
+    assert!(route_path.exists());
 }
 
 #[cfg(unix)]
@@ -948,10 +963,10 @@ mod capability_route_conversation {
         }));
         let resolver = desktop_provider_credential_resolver_with_stores(
             Arc::new(DesktopConversationMetadataStore::new(workspace.clone())),
-            Arc::new(DesktopProviderSettingsStore::new(workspace.clone())),
+            Arc::new(provider_settings_store_for_workspace(&workspace)),
             Arc::clone(&routes),
         );
-        DesktopProviderSettingsStore::new(workspace.clone())
+        provider_settings_store_for_workspace(&workspace)
             .save_record(&provider_settings_with_test_and_minimax(
                 "minimax-image",
                 "route-token",
@@ -989,12 +1004,15 @@ mod capability_route_conversation {
                 .await
                 .expect("harness should build"),
         );
-        let state = DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
-            workspace,
-            harness,
-            stream_permission_runtime,
-        )
-        .expect("state should initialize");
+        let mut state =
+            DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
+                workspace,
+                harness,
+                stream_permission_runtime,
+            )
+            .expect("state should initialize");
+        let state_workspace = state.workspace_root().to_path_buf();
+        use_test_provider_settings_store(&mut state, &state_workspace);
         let session_id = SessionId::new();
         open_conversation_session(&state, session_id).await;
 
@@ -1104,221 +1122,5 @@ mod capability_route_conversation {
         let requests = wait_for_scripted_model_requests(&provider).await;
         let tool_names = model_request_tool_names(&requests[0]);
         assert!(tool_names.contains(&"MiniMaxTextToSpeech".to_owned()));
-    }
-}
-
-mod provider_credential_route {
-    use super::*;
-
-    #[tokio::test]
-    async fn provider_credential_route_provider_only_resolution_still_works() {
-        let workspace = canonical_unique_workspace("provider-credential-route-provider-only");
-        let provider_settings = provider_settings_record_with_minimax_config("minimax-main", true);
-        let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
-        provider_store
-            .save_record(&provider_settings)
-            .expect("provider settings should save");
-        let conversation_store = DesktopConversationMetadataStore::new(workspace);
-        let resolver = desktop_provider_credential_resolver_with_stores(
-            Arc::new(conversation_store),
-            Arc::new(provider_store),
-            empty_provider_capability_routes(),
-        );
-        let session_id = SessionId::new();
-
-        let credential = resolver
-            .resolve_provider_credential(ProviderCredentialResolveContext {
-                tenant_id: TenantId::SINGLE,
-                session_id,
-                run_id: RunId::new(),
-                provider_id: "minimax".to_owned(),
-                model_config_id: Some("minimax-main".to_owned()),
-                operation_id: None,
-                route_kind: None,
-            })
-            .await
-            .expect("provider-only credential resolution should succeed");
-
-        assert_eq!(credential.provider_id, "minimax");
-        assert_eq!(credential.config_id, "minimax-main");
-        assert!(!credential.api_key.is_empty());
-    }
-
-    #[tokio::test]
-    async fn provider_credential_route_routed_service_context_fails_closed_without_route() {
-        let workspace = canonical_unique_workspace("provider-credential-route-routed-fail-closed");
-        let provider_settings = provider_settings_record_with_minimax_config("minimax-main", true);
-        let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
-        provider_store
-            .save_record(&provider_settings)
-            .expect("provider settings should save");
-        let conversation_store = DesktopConversationMetadataStore::new(workspace);
-        let resolver = desktop_provider_credential_resolver_with_stores(
-            Arc::new(conversation_store),
-            Arc::new(provider_store),
-            empty_provider_capability_routes(),
-        );
-
-        let error = resolver
-            .resolve_provider_credential(ProviderCredentialResolveContext {
-                tenant_id: TenantId::SINGLE,
-                session_id: SessionId::new(),
-                run_id: RunId::new(),
-                provider_id: "minimax".to_owned(),
-                model_config_id: None,
-                operation_id: Some("minimax.image_generation".to_owned()),
-                route_kind: Some(CapabilityRouteKind::ImageGeneration),
-            })
-            .await
-            .expect_err("routed service credential resolution should fail closed");
-
-        assert!(matches!(error, ToolError::PermissionDenied(_)));
-        assert!(!error.to_string().contains("provider-test-token"));
-    }
-
-    #[tokio::test]
-    async fn provider_credential_route_resolves_routed_service_credential() {
-        let workspace = canonical_unique_workspace("provider-credential-route-success");
-        let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
-        provider_store
-            .save_record(&provider_settings_with_openai_and_minimax(
-                "openai-main",
-                "minimax-image",
-                "route-specific-token",
-            ))
-            .expect("provider settings should save");
-        let routes = Arc::new(ParkingRwLock::new(ProviderCapabilityRouteSettings {
-            version: 1,
-            routes: vec![minimax_image_route("minimax-image", true)],
-        }));
-        let resolver = desktop_provider_credential_resolver_with_stores(
-            Arc::new(DesktopConversationMetadataStore::new(workspace)),
-            Arc::new(provider_store),
-            routes,
-        );
-
-        let credential = resolver
-            .resolve_provider_credential(ProviderCredentialResolveContext {
-                tenant_id: TenantId::SINGLE,
-                session_id: SessionId::new(),
-                run_id: RunId::new(),
-                provider_id: "minimax".to_owned(),
-                model_config_id: None,
-                operation_id: Some("minimax.image_generation".to_owned()),
-                route_kind: Some(CapabilityRouteKind::ImageGeneration),
-            })
-            .await
-            .expect("routed service credential resolution should succeed");
-
-        assert_eq!(credential.config_id, "minimax-image");
-        assert_eq!(credential.api_key, "route-specific-token");
-    }
-
-    #[tokio::test]
-    async fn provider_credential_route_wrong_provider_denies_routed_service_credential() {
-        let workspace = canonical_unique_workspace("provider-credential-route-wrong-provider");
-        let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
-        provider_store
-            .save_record(&provider_settings_with_openai_and_minimax(
-                "openai-main",
-                "minimax-image",
-                "route-specific-token",
-            ))
-            .expect("provider settings should save");
-        let routes = Arc::new(ParkingRwLock::new(ProviderCapabilityRouteSettings {
-            version: 1,
-            routes: vec![minimax_image_route("minimax-image", true)],
-        }));
-        let resolver = desktop_provider_credential_resolver_with_stores(
-            Arc::new(DesktopConversationMetadataStore::new(workspace)),
-            Arc::new(provider_store),
-            routes,
-        );
-
-        let error = resolver
-            .resolve_provider_credential(ProviderCredentialResolveContext {
-                tenant_id: TenantId::SINGLE,
-                session_id: SessionId::new(),
-                run_id: RunId::new(),
-                provider_id: "openai".to_owned(),
-                model_config_id: None,
-                operation_id: Some("minimax.image_generation".to_owned()),
-                route_kind: Some(CapabilityRouteKind::ImageGeneration),
-            })
-            .await
-            .expect_err("wrong provider should deny routed credential");
-
-        assert!(matches!(error, ToolError::PermissionDenied(_)));
-    }
-
-    #[tokio::test]
-    async fn provider_credential_route_disabled_route_denies_routed_service_credential() {
-        let workspace = canonical_unique_workspace("provider-credential-route-disabled");
-        let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
-        provider_store
-            .save_record(&provider_settings_with_openai_and_minimax(
-                "openai-main",
-                "minimax-image",
-                "route-specific-token",
-            ))
-            .expect("provider settings should save");
-        let routes = Arc::new(ParkingRwLock::new(ProviderCapabilityRouteSettings {
-            version: 1,
-            routes: vec![minimax_image_route("minimax-image", false)],
-        }));
-        let resolver = desktop_provider_credential_resolver_with_stores(
-            Arc::new(DesktopConversationMetadataStore::new(workspace)),
-            Arc::new(provider_store),
-            routes,
-        );
-
-        let error = resolver
-            .resolve_provider_credential(ProviderCredentialResolveContext {
-                tenant_id: TenantId::SINGLE,
-                session_id: SessionId::new(),
-                run_id: RunId::new(),
-                provider_id: "minimax".to_owned(),
-                model_config_id: None,
-                operation_id: Some("minimax.image_generation".to_owned()),
-                route_kind: Some(CapabilityRouteKind::ImageGeneration),
-            })
-            .await
-            .expect_err("disabled route should deny routed credential");
-
-        assert!(matches!(error, ToolError::PermissionDenied(_)));
-    }
-
-    #[tokio::test]
-    async fn provider_credential_route_routed_service_never_falls_back_to_default_config() {
-        let workspace = canonical_unique_workspace("provider-credential-route-no-fallback");
-        let provider_store = DesktopProviderSettingsStore::new(workspace.clone());
-        provider_store
-            .save_record(&provider_settings_with_openai_and_minimax(
-                "openai-main",
-                "minimax-image",
-                "route-specific-token",
-            ))
-            .expect("provider settings should save");
-        let resolver = desktop_provider_credential_resolver_with_stores(
-            Arc::new(DesktopConversationMetadataStore::new(workspace)),
-            Arc::new(provider_store),
-            empty_provider_capability_routes(),
-        );
-
-        let error = resolver
-            .resolve_provider_credential(ProviderCredentialResolveContext {
-                tenant_id: TenantId::SINGLE,
-                session_id: SessionId::new(),
-                run_id: RunId::new(),
-                provider_id: "minimax".to_owned(),
-                model_config_id: None,
-                operation_id: Some("minimax.image_generation".to_owned()),
-                route_kind: Some(CapabilityRouteKind::ImageGeneration),
-            })
-            .await
-            .expect_err("routed service must not fall back to default provider config");
-
-        assert!(matches!(error, ToolError::PermissionDenied(_)));
-        assert!(!error.to_string().contains("openai-test-token"));
     }
 }

@@ -17,7 +17,7 @@ use crate::commands::error::CommandErrorPayload;
 
 use super::{
     ensure_app_dir_no_symlink, quarantine_invalid_json_file, read_json_file,
-    write_json_file_atomic, write_secret_json_file_atomic,
+    retire_existing_regular_file_no_follow, write_json_file_atomic, write_secret_json_file_atomic,
 };
 
 // ── Result types ──────────────────────────────────────────────────────
@@ -225,11 +225,13 @@ where
             // New file missing — migrate.
             ensure_new_parent_dir(new_path, label)?;
             write(new_path, label, &old_value)?;
+            retire_migrated_old_file(old_path, label)?;
             Ok(MigrationResult::Migrated)
         }
         Some(new_value) => {
             // Both exist — compare.
             if eq(&old_value, &new_value) {
+                retire_migrated_old_file(old_path, label)?;
                 Ok(MigrationResult::AlreadyMigrated)
             } else {
                 Ok(MigrationResult::Conflict(MigrationConflict {
@@ -241,6 +243,10 @@ where
             }
         }
     }
+}
+
+fn retire_migrated_old_file(old_path: &Path, label: &str) -> Result<(), CommandErrorPayload> {
+    retire_existing_regular_file_no_follow(old_path, &format!("{label} old file"))
 }
 
 /// Wrapper that catches invalid-JSON errors during old-file reads and handles
@@ -338,6 +344,7 @@ mod tests {
             .expect("migration should succeed");
         assert_eq!(result, MigrationResult::Migrated);
         assert!(new.exists(), "new file must exist");
+        assert!(!old.exists(), "old file must be retired");
 
         let loaded: TestRecord = read_json_file(&new, "test")
             .expect("read new")
@@ -377,8 +384,7 @@ mod tests {
             .filter_map(|e| e.ok())
             .collect();
 
-        // Should have exactly one more file (new.json) plus old.json.
-        // No .tmp files should remain.
+        // Should replace old.json with new.json and leave no temp files.
         let tmp_files: Vec<_> = after
             .iter()
             .filter(|e| e.file_name().to_str().is_some_and(|n| n.contains(".tmp")))
@@ -387,7 +393,7 @@ mod tests {
             tmp_files.is_empty(),
             "no temp files should remain: {tmp_files:?}"
         );
-        assert_eq!(after.len(), before_count + 1, "only one new file expected");
+        assert_eq!(after.len(), before_count, "old file should be retired");
     }
 
     // ── AlreadyMigrated ─────────────────────────────────────────────
@@ -409,6 +415,31 @@ mod tests {
         let result = migrate_json_file::<TestRecord>(&old, &new, "test", false)
             .expect("migration should succeed");
         assert_eq!(result, MigrationResult::AlreadyMigrated);
+        assert!(!old.exists(), "old file must be retired");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn retiring_old_file_rejects_symlink() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = canonical_temp_root(&temp);
+        let old = root.join("old.json");
+        let symlink_target = root.join("external-old.json");
+        std::fs::write(&symlink_target, br#"{"id":"r1","value":42}"#)
+            .expect("write symlink target");
+        std::os::unix::fs::symlink(&symlink_target, &old).expect("old symlink");
+
+        let error =
+            retire_migrated_old_file(&old, "test").expect_err("old symlink must fail closed");
+
+        assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+        assert!(
+            std::fs::symlink_metadata(&old)
+                .expect("old symlink metadata")
+                .file_type()
+                .is_symlink(),
+            "old symlink must not be removed"
+        );
     }
 
     #[test]
@@ -530,6 +561,7 @@ mod tests {
             .expect("migration should succeed");
         assert_eq!(result, MigrationResult::Migrated);
         assert!(new.exists(), "new secret file must exist");
+        assert!(!old.exists(), "old secret file must be retired");
     }
 
     #[test]

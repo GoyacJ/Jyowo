@@ -47,7 +47,12 @@ pub async fn list_plugins_with_runtime_state(
         }
     }
 
-    let registry = build_plugin_registry(&state.workspace_root, state.plugin_store.as_ref(), None)?;
+    let registry = build_plugin_registry(
+        state.conversation_cwd(),
+        state.project_workspace_root(),
+        state.plugin_store.as_ref(),
+        None,
+    )?;
     registry
         .discover()
         .await
@@ -75,7 +80,12 @@ pub async fn get_plugin_detail_with_runtime_state(
         }
     }
 
-    let registry = build_plugin_registry(&state.workspace_root, state.plugin_store.as_ref(), None)?;
+    let registry = build_plugin_registry(
+        state.conversation_cwd(),
+        state.project_workspace_root(),
+        state.plugin_store.as_ref(),
+        None,
+    )?;
     registry
         .discover()
         .await
@@ -280,7 +290,12 @@ pub async fn update_plugin_config_with_runtime_state(
         .iter()
         .position(|record| record.plugin_id == request.plugin_id)
         .ok_or_else(|| invalid_payload("plugin not found".to_owned()))?;
-    let registry = build_plugin_registry(&state.workspace_root, state.plugin_store.as_ref(), None)?;
+    let registry = build_plugin_registry(
+        state.conversation_cwd(),
+        state.project_workspace_root(),
+        state.plugin_store.as_ref(),
+        None,
+    )?;
     let discovered = registry
         .discover()
         .await
@@ -405,7 +420,12 @@ pub(crate) async fn preflight_plugin_activation(
     state: &DesktopRuntimeState,
     plugin_id: &PluginId,
 ) -> Result<(), CommandErrorPayload> {
-    let registry = build_plugin_registry(&state.workspace_root, state.plugin_store.as_ref(), None)?;
+    let registry = build_plugin_registry(
+        state.conversation_cwd(),
+        state.project_workspace_root(),
+        state.plugin_store.as_ref(),
+        None,
+    )?;
     let discovered = registry
         .discover()
         .await
@@ -965,19 +985,23 @@ pub(crate) fn migrate_plugins_on_startup(
     state: &DesktopRuntimeState,
 ) -> Result<(), CommandErrorPayload> {
     let (result, enabled_ids) = migrate_plugins_from_runtime(&state.workspace_root)?;
+    if let MigrationResult::Conflict(conflict) = result {
+        return Err(runtime_init_failed(format!(
+            "plugin migration conflict: {:?}: {}",
+            conflict.kind, conflict.detail
+        )));
+    }
 
     if matches!(result, MigrationResult::Migrated) && !enabled_ids.is_empty() {
-        if let Some(project_config) = &state.project_config_store {
-            let selection = PluginSelectionRecord {
-                enabled: enabled_ids,
-            };
-            if let Err(error) = project_config.save_project_plugin_selection(&selection) {
-                log::warn!(
-                    "plugin migration: failed to persist enabled selection: {}",
-                    error.message
-                );
-            }
-        }
+        let project_config = state.project_config_store.as_ref().ok_or_else(|| {
+            runtime_init_failed(
+                "project config store is unavailable for plugin migration".to_owned(),
+            )
+        })?;
+        let selection = PluginSelectionRecord {
+            enabled: enabled_ids,
+        };
+        project_config.save_project_plugin_selection(&selection)?;
     }
 
     Ok(())

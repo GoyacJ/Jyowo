@@ -23,7 +23,8 @@ mod tests {
         PermissionActorSource, PermissionDecisionOption, PermissionOptionId,
         PermissionRequestedEvent, PluginCapabilitiesSummary, PluginFailedEvent,
         PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginProductState,
-        PluginRejectedEvent, PluginSourceKind, RejectionReason, TeamId, TrustLevel,
+        PluginRejectedEvent, PluginSourceKind, RedactRules, Redactor, RejectionReason, TeamId,
+        TrustLevel,
     };
 
     struct EmptyRedactor;

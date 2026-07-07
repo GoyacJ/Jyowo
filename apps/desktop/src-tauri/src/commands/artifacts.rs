@@ -29,6 +29,7 @@ use super::stores::*;
 #[allow(unused_imports)]
 use super::validation::*;
 use super::*;
+use harness_contracts::Redactor;
 
 pub async fn list_artifacts_with_runtime_state(
     request: ListArtifactsRequest,
@@ -93,7 +94,7 @@ pub(crate) async fn collect_artifacts_from_runtime_state(
         ));
     };
     if !harness
-        .conversation_session_exists(state.conversation_session_options(session_id))
+        .conversation_session_exists(state.conversation_session_options(session_id)?)
         .await
         .map_err(|error| runtime_operation_failed(error.to_string()))?
     {
@@ -108,7 +109,7 @@ pub(crate) async fn collect_artifacts_from_runtime_state(
     loop {
         let page = harness
             .page_conversation_events(ConversationEventsPageRequest {
-                options: state.conversation_session_options(session_id),
+                options: state.conversation_session_options(session_id)?,
                 after_event_id,
                 limit: 200,
             })
@@ -212,7 +213,7 @@ pub(crate) async fn find_attachment_media_record(
         ));
     };
     if !harness
-        .conversation_session_exists(state.conversation_session_options(session_id))
+        .conversation_session_exists(state.conversation_session_options(session_id)?)
         .await
         .map_err(|error| runtime_operation_failed(error.to_string()))?
     {
@@ -223,7 +224,7 @@ pub(crate) async fn find_attachment_media_record(
     loop {
         let page = harness
             .page_conversation_events(ConversationEventsPageRequest {
-                options: state.conversation_session_options(session_id),
+                options: state.conversation_session_options(session_id)?,
                 after_event_id,
                 limit: 200,
             })
@@ -369,14 +370,9 @@ pub(crate) async fn read_attachment_image_blob_preview(
     blob_ref: &BlobRef,
     declared_attachment_mime: &str,
 ) -> Result<GetAttachmentMediaPreviewResponse, CommandErrorPayload> {
-    let blob_store = FileBlobStore::open(
-        state
-            .workspace_root()
-            .join(".jyowo")
-            .join("runtime")
-            .join("blobs"),
-    )
-    .map_err(|_| runtime_operation_failed("attachment image preview is unavailable".to_owned()))?;
+    let blob_store = FileBlobStore::open(state.runtime_root().join("blobs")).map_err(|_| {
+        runtime_operation_failed("attachment image preview is unavailable".to_owned())
+    })?;
     let meta = blob_store
         .head(TenantId::SINGLE, blob_ref)
         .await

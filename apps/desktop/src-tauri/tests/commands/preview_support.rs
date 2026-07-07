@@ -38,14 +38,8 @@ pub(crate) async fn append_user_message_attachment_for_preview_with_blob_mime(
 ) {
     let size = bytes.len() as u64;
     let content_hash = *blake3::hash(&bytes).as_bytes();
-    let blob_store = FileBlobStore::open(
-        state
-            .workspace_root()
-            .join(".jyowo")
-            .join("runtime")
-            .join("blobs"),
-    )
-    .expect("blob store opens");
+    let blob_store =
+        FileBlobStore::open(state.runtime_root().join("blobs")).expect("blob store opens");
     let blob_ref = blob_store
         .put(
             TenantId::SINGLE,

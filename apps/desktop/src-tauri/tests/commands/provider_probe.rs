@@ -1,4 +1,4 @@
-use super::{openai_descriptor_record, unique_workspace};
+use super::{openai_descriptor_record, provider_settings_store_for_workspace, unique_workspace};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -84,7 +84,7 @@ fn prepare_workspace(name: &str) -> std::path::PathBuf {
 #[tokio::test]
 async fn provider_probe_rejects_unknown_config_id() {
     let workspace = prepare_workspace("provider-probe-unknown-config");
-    DesktopProviderSettingsStore::new(workspace.clone())
+    provider_settings_store_for_workspace(&workspace)
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some("openai-work".to_owned()),
             configs: vec![sample_provider_config("provider-test-token")],

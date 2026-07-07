@@ -55,6 +55,27 @@ impl McpServerStore for DesktopMcpServerStore {
     }
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct NoWorkspaceMcpServerStore;
+
+impl McpServerStore for NoWorkspaceMcpServerStore {
+    fn load_records(&self) -> Result<Vec<McpServerConfigRecord>, CommandErrorPayload> {
+        Ok(Vec::new())
+    }
+
+    fn save_record(&self, _record: &McpServerConfigRecord) -> Result<(), CommandErrorPayload> {
+        Err(invalid_payload(
+            "custom MCP servers require an active project workspace".to_owned(),
+        ))
+    }
+
+    fn delete_record(&self, _id: &str) -> Result<(), CommandErrorPayload> {
+        Err(invalid_payload(
+            "custom MCP servers require an active project workspace".to_owned(),
+        ))
+    }
+}
+
 // ── Migration ──────────────────────────────────────────────────────────
 
 /// Migrate MCP server configuration from the old runtime path to the new
@@ -186,7 +207,7 @@ pub(crate) fn find_mcp_records_with_inline_secrets(
 #[derive(Clone)]
 pub struct DesktopMcpDiagnosticStore {
     retention_limit: usize,
-    workspace_root: PathBuf,
+    runtime_root: PathBuf,
 }
 
 impl DesktopMcpDiagnosticStore {
@@ -198,15 +219,23 @@ impl DesktopMcpDiagnosticStore {
         let workspace_root = workspace_root.canonicalize().unwrap_or(workspace_root);
         Self {
             retention_limit,
-            workspace_root,
+            runtime_root: workspace_root.join(".jyowo").join("runtime"),
+        }
+    }
+
+    pub fn new_runtime_root(runtime_root: PathBuf) -> Self {
+        Self::new_runtime_root_with_limit(runtime_root, MCP_DIAGNOSTIC_RETENTION_LIMIT)
+    }
+
+    pub fn new_runtime_root_with_limit(runtime_root: PathBuf, retention_limit: usize) -> Self {
+        Self {
+            retention_limit,
+            runtime_root,
         }
     }
 
     fn diagnostics_path(&self) -> PathBuf {
-        self.workspace_root
-            .join(".jyowo")
-            .join("runtime")
-            .join("mcp-diagnostics.jsonl")
+        self.runtime_root.join("mcp-diagnostics.jsonl")
     }
 }
 

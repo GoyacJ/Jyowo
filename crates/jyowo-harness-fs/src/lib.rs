@@ -663,7 +663,10 @@ fn write_bytes_file_atomic_unix(
         set_owner_only_file_if_unix(&temp_file)?;
     }
     drop(temp_file);
-    parent.rename_file(&temp_name, parent.file_name())?;
+    if let Err(error) = parent.rename_file(&temp_name, parent.file_name()) {
+        let _ = parent.unlink_file(&temp_name);
+        return Err(error);
+    }
     if owner_only {
         let file = parent.open_existing_file(parent.file_name())?;
         set_owner_only_file_if_unix(&file)?;
@@ -924,6 +927,34 @@ mod tests {
                 .to_string_lossy()
                 .contains(".tmp")),
             "no temp files left behind"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_json_file_atomic_removes_temp_file_when_commit_fails() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = canonical_temp_root(&temp);
+        let path = temp_root.join("settings.json");
+        std::fs::create_dir(&path).expect("destination directory");
+
+        write_json_file_atomic(
+            &path,
+            &TestRecord {
+                value: "new".to_owned(),
+            },
+            false,
+        )
+        .expect_err("commit should fail");
+
+        let leftover_temp_files = std::fs::read_dir(&temp_root)
+            .expect("read temp root")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+            .collect::<Vec<_>>();
+        assert!(
+            leftover_temp_files.is_empty(),
+            "temp files must be removed on commit failure"
         );
     }
 

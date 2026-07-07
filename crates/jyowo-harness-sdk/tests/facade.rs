@@ -6,9 +6,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::{executor::block_on, StreamExt};
 use harness_contracts::{
-    Decision, DecisionId, DecisionScope, Event, FallbackPolicy, HookEventKind, InteractivityLevel,
-    McpServerId, ModelError, NoopRedactor, PermissionError, PermissionMode, PermissionSubject,
-    RequestId, RuleSource, Severity, ToolUseId,
+    Decision, DecisionId, DecisionLifetime, DecisionMatcherKind, DecisionMatcherSummary,
+    DecisionScope, Event, FallbackPolicy, HookEventKind, InteractivityLevel, McpServerId,
+    ModelError, PermissionDecisionOption, PermissionError, PermissionMode, PermissionOptionId,
+    PermissionSubject, RequestId, RuleSource, Severity, ToolUseId,
 };
 use harness_mcp::ElicitationHandler;
 use harness_model::{
@@ -517,6 +518,71 @@ fn stream_permission_runtime_does_not_backpressure_resolved_requests() {
 }
 
 #[test]
+fn stream_permission_runtime_does_not_reuse_permanent_allow_across_sessions() {
+    tokio_runtime().block_on(async {
+        let runtime = jyowo_harness_sdk::StreamPermissionRuntime::new(StreamBrokerConfig {
+            default_timeout: Some(Duration::from_secs(5)),
+            heartbeat_interval: None,
+            max_pending: 16,
+        });
+        let broker = runtime.broker();
+
+        let mut first = permission_request_named("shared-no-workspace-permission");
+        first.decision_options = reusable_permission_options(&first);
+        let first_request_id = first.request_id;
+        let first_tenant_id = first.tenant_id;
+        let first_session_id = first.session_id;
+        let first_ctx = permission_context_for(&first);
+        let first_task = tokio::spawn(async move { broker.decide(first, first_ctx).await });
+        wait_for_pending_permission(&runtime, first_request_id).await;
+        let allow_always = pending_option_id_for_decision(
+            &runtime.resolver_handle(),
+            first_request_id,
+            Decision::AllowPermanent,
+        );
+        runtime
+            .resolve_permission_option(
+                first_request_id,
+                first_tenant_id,
+                first_session_id,
+                allow_always,
+                Decision::AllowPermanent,
+                None,
+            )
+            .await
+            .expect("first permission should resolve");
+        assert_eq!(first_task.await.unwrap(), Decision::AllowPermanent);
+
+        let broker = runtime.broker();
+        let mut second = permission_request_named("shared-no-workspace-permission");
+        second.decision_options = reusable_permission_options(&second);
+        let second_request_id = second.request_id;
+        let second_tenant_id = second.tenant_id;
+        let second_session_id = second.session_id;
+        let second_ctx = permission_context_for(&second);
+        let second_task = tokio::spawn(async move { broker.decide(second, second_ctx).await });
+        wait_for_pending_permission(&runtime, second_request_id).await;
+        let deny = pending_option_id_for_decision(
+            &runtime.resolver_handle(),
+            second_request_id,
+            Decision::DenyOnce,
+        );
+        runtime
+            .resolve_permission_option(
+                second_request_id,
+                second_tenant_id,
+                second_session_id,
+                deny,
+                Decision::DenyOnce,
+                None,
+            )
+            .await
+            .expect("second permission should resolve independently");
+        assert_eq!(second_task.await.unwrap(), Decision::DenyOnce);
+    });
+}
+
+#[test]
 fn harness_resolves_stream_elicitation_requests() {
     tokio_runtime().block_on(async {
         let workspace = unique_workspace("sdk-facade-elicitation");
@@ -790,6 +856,39 @@ fn permission_request_named(kind: &str) -> PermissionRequest {
         confirmation_expected: None,
         created_at: harness_contracts::now(),
     }
+}
+
+fn reusable_permission_options(request: &PermissionRequest) -> Vec<PermissionDecisionOption> {
+    vec![
+        PermissionDecisionOption {
+            option_id: PermissionOptionId::new(),
+            decision: Decision::AllowPermanent,
+            scope: request.scope_hint.clone(),
+            lifetime: DecisionLifetime::Persisted,
+            matcher_summary: DecisionMatcherSummary {
+                kind: DecisionMatcherKind::ToolName,
+                label: "test-tool".to_owned(),
+            },
+            label: "Always allow".to_owned(),
+            requires_confirmation: false,
+            action_plan_hash: request.action_plan_hash.clone(),
+            fingerprint: None,
+        },
+        PermissionDecisionOption {
+            option_id: PermissionOptionId::new(),
+            decision: Decision::DenyOnce,
+            scope: request.scope_hint.clone(),
+            lifetime: DecisionLifetime::Once,
+            matcher_summary: DecisionMatcherSummary {
+                kind: DecisionMatcherKind::ToolName,
+                label: "test-tool".to_owned(),
+            },
+            label: "Deny once".to_owned(),
+            requires_confirmation: false,
+            action_plan_hash: request.action_plan_hash.clone(),
+            fingerprint: None,
+        },
+    ]
 }
 
 fn permission_context_for(request: &PermissionRequest) -> PermissionContext {

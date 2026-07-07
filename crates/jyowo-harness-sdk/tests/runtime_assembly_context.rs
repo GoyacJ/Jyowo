@@ -197,6 +197,74 @@ fn session_end_worker_processes_durable_memory_extraction_job() {
 }
 
 #[test]
+fn session_end_worker_uses_configured_memory_database_path() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-memory-extraction-custom-db");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let memory_database_path = workspace
+            .join(".global-runtime")
+            .join("memory")
+            .join("memory.sqlite3");
+        let session_id = SessionId::new();
+        let model = Arc::new(CapabilityScriptedProvider::new(
+            ConversationModelCapability::default(),
+            vec![vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text(
+                        "remember: custom memory database path is active".to_owned(),
+                    ),
+                },
+                ModelStreamEvent::MessageStop,
+            ]],
+        ));
+        let harness = Harness::builder()
+            .with_workspace_root(&workspace)
+            .with_model_arc(model)
+            .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+            .with_sandbox(NoopSandbox::new())
+            .with_memory_database_path(&memory_database_path)
+            .with_memory_extractor(harness_memory::HeuristicMemoryExtractor)
+            .build()
+            .await
+            .expect("harness should build");
+        let session = harness
+            .create_session(SessionOptions::new(&workspace).with_session_id(session_id))
+            .await
+            .expect("session should be created");
+        session
+            .run_turn("extract at session end")
+            .await
+            .expect("turn should run");
+        session
+            .end(EndReason::Completed)
+            .await
+            .expect("session should end");
+
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        let inbox = harness_memory::MemoryInbox::open(
+            &memory_database_path.to_string_lossy(),
+            TenantId::SINGLE,
+        )
+        .expect("custom memory inbox should open");
+        let candidates = inbox
+            .list(Some(harness_contracts::MemoryCandidateState::Proposed))
+            .expect("custom candidates should list");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].evidence.session_id, Some(session_id));
+        assert!(candidates[0]
+            .proposed_record
+            .content
+            .contains("custom memory database path"));
+        assert!(
+            !memory_db_path(&workspace).exists(),
+            "default workspace memory database must not be created"
+        );
+    });
+}
+
+#[test]
 fn session_end_external_context_policy_blocks_memory_extraction_enqueue() {
     block_on(async {
         let workspace = unique_workspace("sdk-memory-extraction-external-block");

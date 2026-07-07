@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use harness_contracts::{Event, NoopRedactor, TenantId, UnexpectedErrorEvent};
+use harness_contracts::{Event, TenantId, UnexpectedErrorEvent};
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_observability::Observer;
 use jyowo_harness_sdk::{
@@ -121,7 +121,7 @@ async fn conversation_event_page_applies_default_redaction_after_noop_observer()
     let raw_secret = "token sk-abcdefghijklmnopqrstuvwxyz";
     let observer = Arc::new(
         Observer::builder()
-            .with_redactor(Arc::new(NoopRedactor))
+            .with_redactor(Arc::new(testing::NoopRedactor))
             .build()
             .expect("observer should build"),
     );

@@ -100,6 +100,7 @@ const expectedLayers = new Map([
   ['jyowo-desktop-shell', 'Tauri shell'],
   ['jyowo-harness-contracts', 'L0'],
   ['jyowo-harness-budget', 'L1'],
+  ['jyowo-harness-fs', 'L1'],
   ['jyowo-harness-journal', 'L1'],
   ['jyowo-harness-memory', 'L1'],
   ['jyowo-harness-model', 'L1'],

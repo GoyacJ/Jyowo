@@ -25,25 +25,31 @@ async fn page_conversation_timeline_with_runtime_state_accepts_assistant_interac
                 Event::AssistantReviewRequested(AssistantReviewRequestedEvent {
                     run_id,
                     request_id: RequestId::new(),
-                    title: UiSafeText::from_trusted_redacted(
+                    title: UiSafeText::from_redacted_display(
                         "Review Authorization: Bearer synthetic-token",
+                        &DefaultRedactor::default(),
                     ),
-                    body: Some(UiSafeText::from_trusted_redacted(
+                    body: Some(UiSafeText::from_redacted_display(
                         "Approve /Users/example/private?",
+                        &DefaultRedactor::default(),
                     )),
                     at: now(),
                 }),
                 Event::AssistantClarificationRequested(AssistantClarificationRequestedEvent {
                     run_id,
                     request_id: RequestId::new(),
-                    prompt: UiSafeText::from_trusted_redacted("Which size uses sk-synthetic?"),
+                    prompt: UiSafeText::from_redacted_display(
+                        "Which size uses sk-synthetic?",
+                        &DefaultRedactor::default(),
+                    ),
                     at: now(),
                 }),
                 Event::AssistantNotice(AssistantNoticeEvent {
                     run_id,
                     notice_id: RequestId::new(),
-                    body: UiSafeText::from_trusted_redacted(
+                    body: UiSafeText::from_redacted_display(
                         "Generation queued from /home/example/private.",
+                        &DefaultRedactor::default(),
                     ),
                     code: None,
                     at: now(),
@@ -77,20 +83,14 @@ async fn page_conversation_timeline_with_runtime_state_accepts_assistant_interac
         .iter()
         .find(|event| event.event_type == "assistant.review.requested")
         .expect("review event should be mapped");
-    assert_eq!(
-        review.payload["title"],
-        json!("Review [REDACTED] [REDACTED] [REDACTED]")
-    );
+    assert_eq!(review.payload["title"], json!("[REDACTED]"));
     assert_eq!(review.payload["body"], json!("Approve [REDACTED]"));
     let clarification = page
         .events
         .iter()
         .find(|event| event.event_type == "assistant.clarification.requested")
         .expect("clarification event should be mapped");
-    assert_eq!(
-        clarification.payload["prompt"],
-        json!("Which size uses [REDACTED]")
-    );
+    assert_eq!(clarification.payload["prompt"], json!("[REDACTED]"));
     let notice = page
         .events
         .iter()
@@ -122,7 +122,10 @@ async fn page_conversation_timeline_keeps_background_started_before_real_run_sta
                     background_agent_id,
                     conversation_id: session_id,
                     attempt_id,
-                    title: UiSafeText::from_trusted_redacted("Background run"),
+                    title: UiSafeText::from_redacted_display(
+                        "Background run",
+                        &DefaultRedactor::default(),
+                    ),
                     at: now(),
                 }),
                 Event::RunStarted(test_run_started_event(session_id, run_id)),

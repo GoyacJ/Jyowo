@@ -5,9 +5,10 @@ use futures::{stream, StreamExt};
 use harness_context::{
     CompactHint, ContextBuffer, ContextEngine, ContextOutcome, ContextProvider, TokenBudget,
 };
+use harness_contracts::NoopRedactor;
 use harness_contracts::{
     BudgetExceedanceSource, CapabilityRegistry, ContextError, ContextStageId, Decision, EndReason,
-    Event, Message, MessageContent, MessageId, MessagePart, MessageRole, ModelError, NoopRedactor,
+    Event, Message, MessageContent, MessageId, MessagePart, MessageRole, ModelError,
     PermissionError, RunId, SessionId, StopReason, TenantId, TurnInput, UsageSnapshot,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};

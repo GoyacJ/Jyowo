@@ -24,6 +24,7 @@ blob-sqlite = ["sqlite"]
 
 [dependencies]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+jyowo-harness-fs = { path = "../jyowo-harness-fs" }
 async-trait = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }

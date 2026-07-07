@@ -94,6 +94,31 @@ async fn file_persistence_loads_legacy_single_tenant_signed_decision() {
 }
 
 #[tokio::test]
+async fn file_persistence_rejects_legacy_signed_decision_with_injected_runtime_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = canonical_temp_root(&temp)
+        .join("global-conversations")
+        .join("permission-decisions.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let conversation_id = SessionId::new();
+    let decision = persisted_decision();
+    write_legacy_signed_decision(&path, &decision).await;
+    let mut records: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    records[0]["runtime_scope"] = serde_json::json!({
+        "kind": "no_workspace_conversation",
+        "conversation_id": conversation_id,
+    });
+    fs::write(&path, serde_json::to_vec_pretty(&records).unwrap()).unwrap();
+    let persistence = FileDecisionPersistence::new(TenantId::SINGLE, &path, signer())
+        .with_no_workspace_conversation_scope(conversation_id);
+
+    let error = persistence.load_decisions().await.unwrap_err();
+
+    assert!(error.to_string().contains("integrity verification"));
+    assert!(!path.exists());
+}
+
+#[tokio::test]
 async fn file_persistence_rejects_legacy_signed_decision_for_shared_tenant() {
     let temp = tempfile::tempdir().unwrap();
     let path = canonical_temp_root(&temp).join("permissions.json");
@@ -154,6 +179,131 @@ async fn file_persistence_does_not_reuse_session_allow_across_sessions() {
     assert_eq!(
         persistence
             .find_scoped_decision(other_session_lookup)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn file_persistence_no_workspace_permanent_allow_is_conversation_scoped() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = canonical_temp_root(&temp)
+        .join("global-conversations")
+        .join("permission-decisions.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let first_conversation = SessionId::new();
+    let second_conversation = SessionId::new();
+    let first_persistence = Arc::new(
+        FileDecisionPersistence::new(TenantId::SINGLE, &path, signer())
+            .with_no_workspace_conversation_scope(first_conversation),
+    );
+    let second_persistence = Arc::new(
+        FileDecisionPersistence::new(TenantId::SINGLE, &path, signer())
+            .with_no_workspace_conversation_scope(second_conversation),
+    );
+    let mut decision = persisted_decision();
+    decision.source = RuleSource::User;
+
+    first_persistence.persist(decision.clone()).await.unwrap();
+    let records: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).expect("decision file should exist")).unwrap();
+    assert_eq!(
+        records[0]["runtime_scope"],
+        serde_json::json!({
+            "kind": "no_workspace_conversation",
+            "conversation_id": first_conversation,
+        })
+    );
+
+    let mut first_lookup = lookup();
+    first_lookup.decision_source = RuleSource::User;
+    first_lookup.session_id = first_conversation;
+    assert_eq!(
+        first_persistence
+            .find_scoped_decision(first_lookup)
+            .await
+            .unwrap(),
+        Some(decision)
+    );
+
+    let mut second_lookup = lookup();
+    second_lookup.decision_source = RuleSource::User;
+    second_lookup.session_id = second_conversation;
+    assert_eq!(
+        second_persistence
+            .find_scoped_decision(second_lookup)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn file_persistence_removes_no_workspace_conversation_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = canonical_temp_root(&temp)
+        .join("global-conversations")
+        .join("permission-decisions.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let first_conversation = SessionId::new();
+    let second_conversation = SessionId::new();
+    let first_persistence = FileDecisionPersistence::new(TenantId::SINGLE, &path, signer())
+        .with_no_workspace_conversation_scope(first_conversation);
+    let second_persistence = FileDecisionPersistence::new(TenantId::SINGLE, &path, signer())
+        .with_no_workspace_conversation_scope(second_conversation);
+
+    let mut first_decision = persisted_decision();
+    first_decision.session_id = Some(first_conversation);
+    let mut second_decision = persisted_decision();
+    second_decision.decision_id = DecisionId::new();
+    second_decision.session_id = Some(second_conversation);
+
+    first_persistence
+        .persist(first_decision.clone())
+        .await
+        .unwrap();
+    second_persistence
+        .persist(second_decision.clone())
+        .await
+        .unwrap();
+
+    FileDecisionPersistence::new(TenantId::SINGLE, &path, signer())
+        .remove_no_workspace_conversation_scope(first_conversation)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        first_persistence.load_decisions().await.unwrap(),
+        Vec::new()
+    );
+    assert_eq!(
+        second_persistence.load_decisions().await.unwrap(),
+        vec![second_decision]
+    );
+}
+
+#[tokio::test]
+async fn file_persistence_no_workspace_ignores_legacy_record_without_conversation_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = canonical_temp_root(&temp)
+        .join("global-conversations")
+        .join("permission-decisions.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let conversation_id = SessionId::new();
+    let unscoped_persistence = FileDecisionPersistence::new(TenantId::SINGLE, &path, signer());
+    let scoped_persistence = FileDecisionPersistence::new(TenantId::SINGLE, &path, signer())
+        .with_no_workspace_conversation_scope(conversation_id);
+    let mut decision = persisted_decision();
+    decision.source = RuleSource::User;
+    unscoped_persistence.persist(decision).await.unwrap();
+
+    let mut scoped_lookup = lookup();
+    scoped_lookup.decision_source = RuleSource::User;
+    scoped_lookup.session_id = conversation_id;
+    assert_eq!(
+        scoped_persistence
+            .find_scoped_decision(scoped_lookup)
             .await
             .unwrap(),
         None

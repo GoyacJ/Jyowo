@@ -147,6 +147,48 @@ async fn jsonl_store_redacts_and_replays() {
     assert_event_store_contract(&store).await;
 }
 
+#[cfg(all(unix, feature = "jsonl"))]
+#[tokio::test]
+async fn jsonl_store_rejects_symlink_root() {
+    let root = temp_root("jsonl-symlink-root");
+    let external = temp_root("jsonl-symlink-external");
+    std::fs::create_dir_all(&external).expect("external dir");
+    std::os::unix::fs::symlink(&external, &root).expect("symlink");
+
+    let error = match JsonlEventStore::open(&root, Arc::new(NoopRedactor)).await {
+        Ok(_) => panic!("symlink root should fail"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("symlink"));
+}
+
+#[cfg(all(unix, feature = "jsonl"))]
+#[tokio::test]
+async fn jsonl_store_rejects_symlink_segment_file() {
+    let root = temp_root("jsonl-symlink-segment");
+    let store = JsonlEventStore::open(&root, Arc::new(NoopRedactor))
+        .await
+        .expect("store opens");
+    let session = SessionId::new();
+    let tenant_dir = root.join(TenantId::SINGLE.to_string());
+    std::fs::create_dir_all(&tenant_dir).expect("tenant dir");
+    let external = root.join("external.jsonl");
+    std::fs::write(&external, "{}\n").expect("external event file");
+    std::os::unix::fs::symlink(&external, tenant_dir.join(format!("{session}.0.jsonl")))
+        .expect("symlink");
+
+    let error = match store
+        .read(TenantId::SINGLE, session, ReplayCursor::FromStart)
+        .await
+    {
+        Ok(_) => panic!("symlink segment should fail"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("symlink"));
+}
+
 #[cfg(feature = "jsonl")]
 #[tokio::test]
 async fn jsonl_store_persists_snapshots_across_reopen() {
@@ -416,6 +458,40 @@ async fn file_and_memory_blob_stores_round_trip_bytes() {
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn file_blob_store_rejects_symlink_root() {
+    let root = temp_root("blob-symlink-root");
+    let external = temp_root("blob-symlink-external");
+    std::fs::create_dir_all(&external).expect("external dir");
+    std::os::unix::fs::symlink(&external, &root).expect("symlink");
+
+    let error = FileBlobStore::open(&root).expect_err("symlink root should fail");
+
+    assert!(error.to_string().contains("symlink"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn file_blob_store_rejects_symlink_metadata_file() {
+    let root = temp_root("blob-symlink-metadata");
+    let store = FileBlobStore::open(&root).expect("store opens");
+    let id = BlobId::new();
+    let id_text = id.to_string();
+    let meta_dir = root.join(TenantId::SINGLE.to_string()).join(&id_text[..2]);
+    std::fs::create_dir_all(&meta_dir).expect("meta dir");
+    let external = root.join("external.meta.json");
+    std::fs::write(&external, "{}").expect("external meta");
+    std::os::unix::fs::symlink(&external, meta_dir.join(format!("{id}.meta.json")))
+        .expect("symlink");
+
+    let error = store
+        .inventory(TenantId::SINGLE)
+        .expect_err("symlink meta should fail");
+
+    assert!(error.to_string().contains("symlink"));
+}
+
 #[tokio::test]
 async fn file_blob_store_rejects_hash_mismatch_and_uses_prefixed_paths() {
     let bytes = Bytes::from_static(b"hello blob");
@@ -514,6 +590,24 @@ async fn retention_enforcer_collects_unreferenced_expired_file_blobs() {
         .await
         .expect("live head succeeds")
         .is_some());
+}
+
+#[cfg(all(unix, feature = "sqlite"))]
+#[tokio::test]
+async fn sqlite_evidence_registry_rejects_symlink_database_file() {
+    let root = temp_root("evidence-symlink-file");
+    std::fs::create_dir_all(&root).expect("root created");
+    let external = root.join("external.sqlite");
+    std::fs::write(&external, "").expect("external file");
+    let database_path = root.join("evidence.sqlite");
+    std::os::unix::fs::symlink(&external, &database_path).expect("symlink");
+
+    let error = match SqliteEvidenceRefRegistry::open(&database_path).await {
+        Ok(_) => panic!("symlink sqlite file should fail"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("symlink"));
 }
 
 #[cfg(feature = "sqlite")]

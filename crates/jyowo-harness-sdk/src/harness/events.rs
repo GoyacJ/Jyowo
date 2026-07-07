@@ -54,7 +54,9 @@ pub(super) struct LifecycleHookEventStore {
     pub(super) user_id: Option<String>,
     #[cfg(feature = "memory-provider-registry")]
     pub(super) team_id: Option<harness_contracts::TeamId>,
-    pub(super) workspace_root: PathBuf,
+    pub(super) project_workspace_root: Option<PathBuf>,
+    #[cfg(feature = "memory-provider-registry")]
+    pub(super) memory_database_path: PathBuf,
     pub(super) redactor: Arc<dyn Redactor>,
     pub(super) session_limits: Arc<SessionLimitState>,
     pub(super) deleted_conversation_sessions:
@@ -483,7 +485,7 @@ impl LifecycleHookEventStore {
                 Event::SessionCreated(created) => {
                     output.extend(
                         self.dispatch_lifecycle_hook(HookEvent::Setup {
-                            workspace_root: Some(self.workspace_root.clone()),
+                            workspace_root: self.project_workspace_root.clone(),
                         })
                         .await?,
                     );
@@ -636,7 +638,7 @@ impl LifecycleHookEventStore {
             interactivity: InteractivityLevel::NoInteractive,
             at: harness_contracts::now(),
             view: Arc::new(SdkHookView {
-                workspace_root: self.workspace_root.clone(),
+                workspace_root: self.project_workspace_root.clone(),
                 redactor: Arc::clone(&self.redactor),
             }),
             upstream_outcome: None,
@@ -732,13 +734,7 @@ impl LifecycleHookEventStore {
             return Ok(());
         }
         let settings_store = harness_memory::settings::MemorySettingsStore::open(
-            &self
-                .workspace_root
-                .join(".jyowo")
-                .join("runtime")
-                .join("memory")
-                .join("memory.sqlite3")
-                .to_string_lossy(),
+            &self.memory_database_path.to_string_lossy(),
         )
         .map_err(|error| {
             harness_contracts::JournalError::Message(format!(
@@ -787,12 +783,7 @@ impl LifecycleHookEventStore {
         if !matches!(decision, harness_contracts::MemoryPolicyDecision::Allow) {
             return Ok(());
         }
-        let memory_db_path = self
-            .workspace_root
-            .join(".jyowo")
-            .join("runtime")
-            .join("memory")
-            .join("memory.sqlite3");
+        let memory_db_path = self.memory_database_path.clone();
         let queue = harness_memory::ExtractionJobQueue::open(
             &memory_db_path.to_string_lossy(),
             harness_memory::ExtractionJobConfig::default(),
@@ -1116,13 +1107,13 @@ mod tests {
 }
 
 struct SdkHookView {
-    workspace_root: PathBuf,
+    workspace_root: Option<PathBuf>,
     redactor: Arc<dyn Redactor>,
 }
 
 impl HookSessionView for SdkHookView {
     fn workspace_root(&self) -> Option<&Path> {
-        Some(&self.workspace_root)
+        self.workspace_root.as_deref()
     }
 
     fn recent_messages(&self, _limit: usize) -> Vec<HookMessageView> {

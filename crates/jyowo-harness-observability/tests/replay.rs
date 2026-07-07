@@ -13,7 +13,7 @@ use harness_contracts::{
     SubagentSpawnedEvent, SubagentStatus, TeamCreatedEvent, TeamId, TeamMemberJoinedEvent,
     TeamTerminationReason, TeamTurnCompletedEvent, TenantId, ToolProperties, ToolResult,
     ToolUseCompletedEvent, ToolUseId, ToolUseRequestedEvent, TopologyKind, TranscriptRef,
-    UiSafeText, UsageAccumulatedEvent, UsageSnapshot, UserMessageAppendedEvent,
+    UsageAccumulatedEvent, UsageSnapshot, UserMessageAppendedEvent,
 };
 use harness_journal::{
     EventStore, InMemoryEventStore, Projection, ReplayCursor, SessionProjection,
@@ -467,7 +467,7 @@ async fn export_session_withholds_child_agent_internals_from_json_lines_and_har(
                 Event::BackgroundAgentInputSubmitted(BackgroundAgentInputSubmittedEvent {
                     background_agent_id,
                     request_id: RequestId::new(),
-                    input: UiSafeText::from_redacted_display(
+                    input: String::from_redacted_display(
                         format!("continue with {secret}"),
                         &DefaultRedactor::default(),
                     ),

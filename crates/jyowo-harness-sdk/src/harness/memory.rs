@@ -31,8 +31,8 @@ impl Harness {
         &self,
         options: &SessionOptions,
     ) -> Result<Option<Arc<harness_memory::MemoryManager>>, HarnessError> {
-        let memory_db_path = memory_db_path(options);
-        let settings_store = memory_settings_store_for_session(options)?;
+        let memory_db_path = self.inner.memory_database_path.clone();
+        let settings_store = memory_settings_store_for_session(&memory_db_path)?;
         let global_settings = settings_store
             .get_global(options.tenant_id)
             .map_err(|error| {
@@ -172,7 +172,8 @@ impl Harness {
         self.enforce_tenant(&options)?;
         let manager = self.memory_manager_for_browser(&options).await?;
         let content = content.into();
-        let (engine, thread) = memory_policy_for_session(&options)?;
+        let (engine, thread) =
+            memory_policy_for_session(&self.inner.memory_database_path, &options)?;
         let actor = harness_contracts::MemoryActor::User {
             user_label: options.user_id.clone(),
         };
@@ -206,7 +207,8 @@ impl Harness {
         action_plan_id: Option<harness_contracts::ActionPlanId>,
     ) -> Result<(), HarnessError> {
         self.enforce_tenant(&options)?;
-        let (_engine, thread) = memory_policy_for_session(&options)?;
+        let (_engine, thread) =
+            memory_policy_for_session(&self.inner.memory_database_path, &options)?;
         let actor = harness_contracts::MemoryActor::User {
             user_label: options.user_id.clone(),
         };
@@ -259,7 +261,8 @@ impl Harness {
             ));
         }
 
-        let (policy_engine, thread) = memory_policy_for_session(&options)?;
+        let (policy_engine, thread) =
+            memory_policy_for_session(&self.inner.memory_database_path, &options)?;
         let export_actor = harness_contracts::MemoryActor::User {
             user_label: options.user_id.clone(),
         };
@@ -367,7 +370,7 @@ impl Harness {
     ) -> Result<harness_contracts::ListMemoryCandidatesResponse, HarnessError> {
         self.enforce_tenant(&options)?;
         enforce_memory_tenant(&options, request.tenant_id)?;
-        let inbox = memory_inbox_for_session(&options)?;
+        let inbox = memory_inbox_for_session(&self.inner.memory_database_path, &options)?;
         let mut candidates = inbox
             .list(request.state)
             .map_err(harness_contracts::MemoryError::Message)?;
@@ -394,7 +397,7 @@ impl Harness {
     ) -> Result<harness_contracts::GetMemorySettingsResponse, HarnessError> {
         self.enforce_tenant(&options)?;
         enforce_memory_tenant(&options, request.tenant_id)?;
-        let store = memory_settings_store_for_session(&options)?;
+        let store = memory_settings_store_for_session(&self.inner.memory_database_path)?;
         let settings = store.get_global(request.tenant_id).map_err(|error| {
             HarnessError::Memory(harness_contracts::MemoryError::Message(error))
         })?;
@@ -409,7 +412,7 @@ impl Harness {
     ) -> Result<harness_contracts::UpdateMemorySettingsResponse, HarnessError> {
         self.enforce_tenant(&options)?;
         enforce_memory_tenant(&options, request.tenant_id)?;
-        let store = memory_settings_store_for_session(&options)?;
+        let store = memory_settings_store_for_session(&self.inner.memory_database_path)?;
         let settings = store
             .update_global(request.tenant_id, request.settings)
             .map_err(|error| {
@@ -426,7 +429,7 @@ impl Harness {
     ) -> Result<harness_contracts::GetThreadMemorySettingsResponse, HarnessError> {
         self.enforce_tenant(&options)?;
         enforce_memory_tenant(&options, request.tenant_id)?;
-        let store = memory_settings_store_for_session(&options)?;
+        let store = memory_settings_store_for_session(&self.inner.memory_database_path)?;
         let settings = store
             .get_thread(request.tenant_id, request.session_id)
             .map_err(|error| {
@@ -443,13 +446,28 @@ impl Harness {
     ) -> Result<harness_contracts::UpdateThreadMemorySettingsResponse, HarnessError> {
         self.enforce_tenant(&options)?;
         enforce_memory_tenant(&options, request.tenant_id)?;
-        let store = memory_settings_store_for_session(&options)?;
+        let store = memory_settings_store_for_session(&self.inner.memory_database_path)?;
         let settings = store
             .update_thread(request.tenant_id, request.settings)
             .map_err(|error| {
                 HarnessError::Memory(harness_contracts::MemoryError::Message(error))
             })?;
         Ok(harness_contracts::UpdateThreadMemorySettingsResponse { settings })
+    }
+
+    #[cfg(feature = "memory-provider-registry")]
+    pub async fn delete_thread_memory_settings(
+        &self,
+        options: SessionOptions,
+        tenant_id: harness_contracts::TenantId,
+        session_id: harness_contracts::SessionId,
+    ) -> Result<(), HarnessError> {
+        self.enforce_tenant(&options)?;
+        enforce_memory_tenant(&options, tenant_id)?;
+        let store = memory_settings_store_for_session(&self.inner.memory_database_path)?;
+        store
+            .delete_thread(tenant_id, session_id)
+            .map_err(|error| HarnessError::Memory(harness_contracts::MemoryError::Message(error)))
     }
 
     #[cfg(feature = "memory-provider-registry")]
@@ -460,7 +478,7 @@ impl Harness {
     ) -> Result<harness_contracts::ApproveMemoryCandidateResponse, HarnessError> {
         self.enforce_tenant(&options)?;
         enforce_memory_tenant(&options, request.tenant_id)?;
-        let inbox = memory_inbox_for_session(&options)?;
+        let inbox = memory_inbox_for_session(&self.inner.memory_database_path, &options)?;
         let candidate = inbox
             .list(None)
             .map_err(harness_contracts::MemoryError::Message)?
@@ -488,7 +506,8 @@ impl Harness {
                 )),
             ));
         }
-        let (_engine, thread) = memory_policy_for_session(&options)?;
+        let (_engine, thread) =
+            memory_policy_for_session(&self.inner.memory_database_path, &options)?;
         let permission = manual_user_memory_permission(request.action_plan_id);
         let actor = harness_contracts::MemoryActor::User {
             user_label: options.user_id.clone(),
@@ -547,7 +566,7 @@ impl Harness {
         self.enforce_tenant(&options)?;
         enforce_memory_tenant(&options, request.tenant_id)?;
         let _ = request.reason;
-        let inbox = memory_inbox_for_session(&options)?;
+        let inbox = memory_inbox_for_session(&self.inner.memory_database_path, &options)?;
         let candidate = inbox
             .list(None)
             .map_err(harness_contracts::MemoryError::Message)?
@@ -590,12 +609,13 @@ impl Harness {
         self.enforce_tenant(&options)?;
         enforce_memory_tenant(&options, request.tenant_id)?;
         ensure_distinct_memory_candidates(&request.candidate_ids)?;
-        let (_engine, thread) = memory_policy_for_session(&options)?;
+        let (_engine, thread) =
+            memory_policy_for_session(&self.inner.memory_database_path, &options)?;
         let permission = manual_user_memory_permission(request.action_plan_id);
         let actor = harness_contracts::MemoryActor::User {
             user_label: options.user_id.clone(),
         };
-        let inbox = memory_inbox_for_session(&options)?;
+        let inbox = memory_inbox_for_session(&self.inner.memory_database_path, &options)?;
         let candidates = inbox
             .list(None)
             .map_err(harness_contracts::MemoryError::Message)?;
@@ -810,7 +830,7 @@ impl Harness {
         options: &SessionOptions,
     ) -> Arc<dyn harness_engine::ModelRequestPreviewSink> {
         Arc::new(SdkModelRequestPreviewSink {
-            db_path: memory_db_path(options),
+            db_path: self.inner.memory_database_path.clone(),
             tenant_id: options.tenant_id,
         })
     }
@@ -1035,7 +1055,9 @@ impl SdkMemoryToolRuntime {
         };
         let manager = self.memory_manager(options).await?;
         let max_records = (*max_records).clamp(1, 50);
-        let (engine, thread) = memory_policy_for_session(options).map_err(memory_tool_error)?;
+        let (engine, thread) =
+            memory_policy_for_session(&self.harness.inner.memory_database_path, options)
+                .map_err(memory_tool_error)?;
         let _ = engine;
         let sources = manager
             .recall_with_policy_sources(
@@ -1371,7 +1393,9 @@ impl SdkMemoryToolRuntime {
         ),
         ToolError,
     > {
-        let (engine, thread) = memory_policy_for_session(options).map_err(memory_tool_error)?;
+        let (engine, thread) =
+            memory_policy_for_session(&self.harness.inner.memory_database_path, options)
+                .map_err(memory_tool_error)?;
         let decision =
             engine.evaluate_write(&thread, &actor, &evidence, &permission, target_visibility);
         Ok((
@@ -1398,7 +1422,9 @@ impl SdkMemoryToolRuntime {
         ),
         ToolError,
     > {
-        let (engine, thread) = memory_policy_for_session(options).map_err(memory_tool_error)?;
+        let (engine, thread) =
+            memory_policy_for_session(&self.harness.inner.memory_database_path, options)
+                .map_err(memory_tool_error)?;
         let decision = engine.evaluate_delete(&thread, &actor, &permission);
         Ok((
             harness_memory::MemoryOperationPolicy {
@@ -1420,7 +1446,8 @@ impl SdkMemoryToolRuntime {
         mut evidence: harness_contracts::MemoryEvidence,
         action_plan_id: Option<harness_contracts::ActionPlanId>,
     ) -> Result<MemoryToolResponse, ToolError> {
-        let inbox = memory_inbox_for_session(options).map_err(memory_tool_error)?;
+        let inbox = memory_inbox_for_session(&self.harness.inner.memory_database_path, options)
+            .map_err(memory_tool_error)?;
         let draft = scan_memory_candidate_draft(draft)?;
         evidence.content_hash = content_hash(&draft.content);
         let candidate = inbox
@@ -2741,23 +2768,24 @@ pub(super) fn memory_actor_from_options(
 #[cfg(feature = "memory-provider-registry")]
 fn memory_db_path(options: &SessionOptions) -> std::path::PathBuf {
     options
-        .workspace_root
-        .join(".jyowo")
-        .join("runtime")
+        .agent_runtime_root
+        .clone()
+        .unwrap_or_else(|| options.workspace_root.join(".jyowo").join("runtime"))
         .join("memory")
         .join("memory.sqlite3")
 }
 
 #[cfg(feature = "memory-provider-registry")]
 fn memory_settings_store_for_session(
-    options: &SessionOptions,
+    memory_database_path: &std::path::Path,
 ) -> Result<harness_memory::settings::MemorySettingsStore, HarnessError> {
-    harness_memory::settings::MemorySettingsStore::open(&memory_db_path(options).to_string_lossy())
+    harness_memory::settings::MemorySettingsStore::open(&memory_database_path.to_string_lossy())
         .map_err(|error| HarnessError::Memory(harness_contracts::MemoryError::Message(error)))
 }
 
 #[cfg(feature = "memory-provider-registry")]
 fn memory_policy_for_session(
+    memory_database_path: &std::path::Path,
     options: &SessionOptions,
 ) -> Result<
     (
@@ -2766,7 +2794,7 @@ fn memory_policy_for_session(
     ),
     HarnessError,
 > {
-    let store = memory_settings_store_for_session(options)?;
+    let store = memory_settings_store_for_session(memory_database_path)?;
     let global = store
         .get_global(options.tenant_id)
         .map_err(|error| HarnessError::Memory(harness_contracts::MemoryError::Message(error)))?;
@@ -2789,9 +2817,10 @@ fn memory_policy_for_session(
 
 #[cfg(feature = "memory-provider-registry")]
 pub(super) fn memory_thread_settings_for_session(
+    memory_database_path: &std::path::Path,
     options: &SessionOptions,
 ) -> Result<harness_contracts::MemoryThreadSettings, HarnessError> {
-    let store = memory_settings_store_for_session(options)?;
+    let store = memory_settings_store_for_session(memory_database_path)?;
     store
         .get_thread(options.tenant_id, options.session_id)
         .map_err(|error| HarnessError::Memory(harness_contracts::MemoryError::Message(error)))
@@ -2876,13 +2905,11 @@ fn manual_memory_evidence(
 
 #[cfg(feature = "memory-provider-registry")]
 fn memory_inbox_for_session(
+    memory_database_path: &std::path::Path,
     options: &SessionOptions,
 ) -> Result<harness_memory::MemoryInbox, HarnessError> {
-    harness_memory::MemoryInbox::open(
-        &memory_db_path(options).to_string_lossy(),
-        options.tenant_id,
-    )
-    .map_err(|error| HarnessError::Memory(harness_contracts::MemoryError::Message(error)))
+    harness_memory::MemoryInbox::open(&memory_database_path.to_string_lossy(), options.tenant_id)
+        .map_err(|error| HarnessError::Memory(harness_contracts::MemoryError::Message(error)))
 }
 
 #[cfg(feature = "memory-provider-registry")]
