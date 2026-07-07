@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    DeferPolicy, ProviderRestriction, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup,
-    ToolOrigin, ToolProperties, ToolResult, TrustLevel,
+    DeferPolicy, ProviderRestriction, ToolActionPlan, ToolDescriptor, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult, TrustLevel,
 };
 use harness_permission::PermissionCheck;
 use harness_tool::{
@@ -60,6 +60,7 @@ impl Tool for TestTool {
             Vec::new(),
             harness_contracts::WorkspaceAccess::None,
             harness_contracts::NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

@@ -2,13 +2,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::Utc;
 use futures::{future::BoxFuture, stream, stream::BoxStream, StreamExt};
 use harness_contracts::{
-    BlobReaderCap, BlobRef, BudgetMetric, CapabilityRegistry, DeferPolicy, OverflowAction,
-    ProviderRestriction, ResultBudget, SessionId, TenantId, ToolActionPlan, ToolCapability,
-    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId,
-    TrustLevel,
+    BlobReaderCap, BlobRef, BudgetMetric, CapabilityRegistry, DeferPolicy, HostRule, NetworkAccess,
+    OverflowAction, ProviderRestriction, ResultBudget, SessionId, TenantId, ToolActionPlan,
+    ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin,
+    ToolProperties, ToolResult, ToolUseId, TrustLevel,
 };
 use harness_permission::PermissionCheck;
 use harness_tool::{
@@ -53,6 +52,7 @@ impl Tool for EchoTool {
             Vec::new(),
             harness_contracts::WorkspaceAccess::None,
             harness_contracts::NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 
@@ -144,7 +144,32 @@ async fn authorized_tool_input_rejects_plan_hash_mismatch() {
     assert_eq!(
         error,
         ToolError::PermissionDenied(
-            "authorization ticket action plan hash does not match action plan".to_owned()
+            "authorization ticket action plan hash does not match canonical action plan".to_owned()
+        )
+    );
+}
+
+#[tokio::test]
+async fn authorized_tool_input_rejects_plan_with_mutated_security_fields() {
+    let tool: Arc<dyn Tool> = Arc::new(EchoTool {
+        descriptor: descriptor(true),
+    });
+    let ctx = tool_ctx(CapabilityRegistry::default());
+    let input = json!({ "message": "hello" });
+    let plan = tool.plan(&input, &ctx).await.unwrap();
+    let mut mutated_plan = plan.clone();
+    mutated_plan.network_access = NetworkAccess::AllowList(vec![HostRule {
+        pattern: "example.com".to_owned(),
+        ports: Some(vec![443]),
+    }]);
+    mutated_plan.sandbox_policy.network = mutated_plan.network_access.clone();
+
+    let error = AuthorizedToolInput::new(input, mutated_plan, ticket_for(&plan)).unwrap_err();
+
+    assert_eq!(
+        error,
+        ToolError::PermissionDenied(
+            "authorization ticket action plan hash does not match canonical action plan".to_owned()
         )
     );
 }
@@ -172,15 +197,22 @@ fn tool_ctx(cap_registry: CapabilityRegistry) -> ToolContext {
 }
 
 fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
-    AuthorizedTicketSummary {
-        ticket_id: harness_contracts::AuthorizationTicketId::new(),
-        tenant_id: TenantId::SINGLE,
-        session_id: SessionId::new(),
-        run_id: harness_contracts::RunId::new(),
-        tool_use_id: plan.tool_use_id,
-        tool_name: plan.tool_name.clone(),
-        action_plan_hash: plan.plan_hash.clone(),
-        consumed_at: Utc::now(),
+    {
+        let ledger = harness_tool::TicketLedger::default();
+        let claims = harness_tool::AuthorizationTicketClaims {
+            tenant_id: harness_contracts::TenantId::SINGLE,
+            session_id: harness_contracts::SessionId::new(),
+            run_id: harness_contracts::RunId::new(),
+            tool_use_id: plan.tool_use_id,
+            tool_name: plan.tool_name.clone(),
+            action_plan_hash: plan.plan_hash.clone(),
+        };
+        let ticket = ledger
+            .mint(claims.clone(), chrono::Utc::now())
+            .expect("test ticket should mint");
+        ledger
+            .consume(ticket.id, &claims, chrono::Utc::now())
+            .expect("test ticket should consume")
     }
 }
 
@@ -301,6 +333,7 @@ async fn action_plan_propagates_actor_source_from_context() {
         Vec::new(),
         WorkspaceAccess::None,
         NetworkAccess::None,
+        ToolExecutionChannel::DirectAuthorizedRust,
     )
     .expect("plan created");
 

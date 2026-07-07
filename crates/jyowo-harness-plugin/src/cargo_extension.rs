@@ -17,8 +17,8 @@ use harness_contracts::{
     McpServerSource, NetworkAccess, NoopRedactor, PermissionSubject, PluginRuntimeRpcError,
     PluginRuntimeRpcRequest, PluginRuntimeRpcResponse, ProviderRestriction, RedactRules,
     ResourceLimits, RunId, SandboxError, SandboxExitStatus, SandboxMode, SandboxPolicy,
-    SandboxScope, SessionId, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup,
-    ToolOrigin, ToolProperties, ToolResult, WorkspaceAccess,
+    SandboxScope, SessionId, TenantId, ToolActionPlan, ToolDescriptor, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult, WorkspaceAccess,
 };
 use harness_hook::{
     ContextPatch, ContextPatchRole, HookContext, HookEvent, HookHandler, HookOutcome,
@@ -524,6 +524,7 @@ impl Tool for CargoExtensionToolProxy {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 
@@ -759,6 +760,7 @@ async fn run_extension_command_sandboxed(
         event_sink: Arc::new(NoopSandboxEventSink),
         redactor: Arc::new(NoopRedactor),
         blob_store: None,
+        execution_id: 0,
     };
     let mut handle = execute_with_lifecycle(sandbox, spec, ctx)
         .await
@@ -1420,8 +1422,8 @@ mod tests {
     use bytes::Bytes;
     use harness_contracts::{KillScope, LocalIsolationTag};
     use harness_sandbox::{
-        ActivityHandle, ExecOutcome, ProcessHandle, ResourceLimitSupport, SandboxCapabilities,
-        SessionSnapshotFile, SnapshotSpec,
+        ActivityHandle, ExecOutcome, NetworkPolicySupport, ProcessHandle, ResourceLimitSupport,
+        SandboxCapabilities, SessionSnapshotFile, SnapshotSpec, WorkspacePolicySupport,
     };
 
     #[test]
@@ -1609,11 +1611,20 @@ mod tests {
 
         fn capabilities(&self) -> SandboxCapabilities {
             SandboxCapabilities {
-                supports_network: true,
+                network: NetworkPolicySupport {
+                    none: true,
+                    loopback_only: false,
+                    allowlist: false,
+                    unrestricted: true,
+                },
                 max_concurrent_execs: 1,
                 resource_limit_support: ResourceLimitSupport {
                     wall_clock: true,
                     ..ResourceLimitSupport::default()
+                },
+                workspace: WorkspacePolicySupport {
+                    read_only: true,
+                    ..WorkspacePolicySupport::default()
                 },
                 ..SandboxCapabilities::default()
             }

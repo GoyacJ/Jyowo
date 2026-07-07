@@ -22,9 +22,9 @@ use crate::{
         apply_wall_clock_resource_limit, has_non_wall_clock_resource_limits,
         unsupported_resource_limits,
     },
-    ActivityHandle, CwdMarkerSupport, ExecContext, ExecOutcome, ExecSpec, ProcessHandle,
-    ResourceLimitSupport, SandboxBackend, SandboxBaseConfig, SandboxCapabilities,
-    SessionSnapshotFile, Signal, SnapshotMetadata, SnapshotSpec,
+    ActivityHandle, CwdMarkerSupport, ExecContext, ExecOutcome, ExecSpec, NetworkPolicySupport,
+    ProcessHandle, ResourceLimitSupport, SandboxBackend, SandboxBaseConfig, SandboxCapabilities,
+    SessionSnapshotFile, Signal, SnapshotMetadata, SnapshotSpec, WorkspacePolicySupport,
 };
 
 const BACKEND_ID: &str = "docker";
@@ -52,7 +52,9 @@ impl DockerSandbox {
         DockerSandboxBuilder::default()
     }
 
-    async fn ensure_available(&self) -> Result<(), SandboxError> {
+    /// Checks whether the Docker daemon is reachable. Public so desktop runtime
+    /// assembly can verify Docker availability before registering it as a router candidate.
+    pub async fn ensure_available(&self) -> Result<(), SandboxError> {
         let result = Command::new(&self.docker_binary)
             .arg("version")
             .arg("--format")
@@ -374,6 +376,46 @@ impl DockerSandbox {
         }
     }
 
+    fn validate_execute_policy(&self, spec: &mut ExecSpec) -> Result<(), SandboxError> {
+        self.validate_network_policy(spec)?;
+        self.validate_resource_policy(spec)?;
+        crate::backend::validate_preflight_capabilities(
+            self.backend_id(),
+            &self.capabilities(),
+            spec,
+        )
+    }
+
+    /// Resolves the container-side workdir for an ephemeral container execution.
+    ///
+    /// When a volume mount maps the host workspace root to `/workspace`, host cwd
+    /// paths under that root are rewritten to container-relative paths. When no cwd
+    /// is specified, defaults to `/workspace`.
+    fn resolve_container_workdir(&self, spec_cwd: Option<&Path>) -> Option<PathBuf> {
+        let workspace_mount = self
+            .volumes
+            .iter()
+            .find(|v| v.container_path == Path::new("/workspace"))?;
+
+        match spec_cwd {
+            Some(cwd) => {
+                // If the host cwd is under the workspace root, rewrite to container path.
+                match cwd.strip_prefix(&workspace_mount.host_path) {
+                    Ok(relative) => {
+                        let container_path = workspace_mount.container_path.join(relative);
+                        Some(container_path)
+                    }
+                    Err(_) => {
+                        // cwd outside the workspace mount — keep the host path as-is;
+                        // the container may not have this path.
+                        Some(cwd.to_path_buf())
+                    }
+                }
+            }
+            None => Some(workspace_mount.container_path.clone()),
+        }
+    }
+
     fn command_for_execute(&self, spec: &ExecSpec, container_id: Option<&str>) -> Command {
         let mut command = Command::new(&self.docker_binary);
         if let Some(container_id) = container_id {
@@ -390,6 +432,10 @@ impl DockerSandbox {
                 &effective_resource_limits(spec, &self.base),
                 &network,
             );
+            // Set the container workdir for ephemeral containers.
+            if let Some(workdir) = self.resolve_container_workdir(spec.cwd.as_deref()) {
+                command.arg("-w").arg(workdir);
+            }
             command.arg(&self.image);
         }
         command.arg(&spec.command).args(&spec.args);
@@ -437,8 +483,17 @@ impl SandboxBackend for DockerSandbox {
             cwd_marker_support: CwdMarkerSupport::Disabled,
             supports_activity_heartbeat: true,
             supports_interactive_shell: false,
-            supports_network: true,
-            supports_filesystem_write: self.volumes.iter().any(|volume| !volume.read_only),
+            network: NetworkPolicySupport {
+                none: true,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
+            workspace: WorkspacePolicySupport {
+                read_write_all: self.volumes.iter().any(|volume| !volume.read_only),
+                read_only: false,
+                writable_subpaths: false,
+            },
             supports_gpu: false,
             supports_pty: false,
             supports_detach: false,
@@ -473,9 +528,8 @@ impl SandboxBackend for DockerSandbox {
     }
 
     fn preflight_execute(&self, spec: &ExecSpec) -> Result<(), SandboxError> {
-        self.validate_network_policy(spec)?;
         let mut spec = spec.clone();
-        self.validate_resource_policy(&mut spec)
+        self.validate_execute_policy(&mut spec)
     }
 
     async fn before_execute(
@@ -483,9 +537,8 @@ impl SandboxBackend for DockerSandbox {
         spec: &ExecSpec,
         _ctx: &ExecContext,
     ) -> Result<(), SandboxError> {
-        self.validate_network_policy(spec)?;
         let mut spec = spec.clone();
-        self.validate_resource_policy(&mut spec)
+        self.validate_execute_policy(&mut spec)
     }
 
     async fn execute(
@@ -493,8 +546,7 @@ impl SandboxBackend for DockerSandbox {
         mut spec: ExecSpec,
         ctx: ExecContext,
     ) -> Result<ProcessHandle, SandboxError> {
-        self.validate_network_policy(&spec)?;
-        self.validate_resource_policy(&mut spec)?;
+        self.validate_execute_policy(&mut spec)?;
         self.ensure_available().await?;
         let lease = match self.lifecycle {
             ContainerLifecycle::CreatePerSession { .. }

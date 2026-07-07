@@ -94,16 +94,19 @@ pub use task_stop::TaskStopTool;
 #[cfg(feature = "builtin-toolset")]
 pub use todo::TodoTool;
 #[cfg(feature = "builtin-toolset")]
-pub use web_fetch::{WebFetchBackend, WebFetchRequest, WebFetchResponse, WebFetchTool};
+pub use web_fetch::WebFetchTool;
 #[cfg(feature = "builtin-toolset")]
-pub use web_search::{WebSearchBackend, WebSearchRequest, WebSearchResult, WebSearchTool};
+pub use web_search::{
+    WebSearchBackend, WebSearchRequest, WebSearchResult, WebSearchTool,
+    WEB_SEARCH_BACKEND_CAPABILITY,
+};
 #[cfg(feature = "builtin-toolset")]
 pub use write::FileWriteTool;
 
 use harness_contracts::{
     BudgetMetric, DeferPolicy, NetworkAccess, OverflowAction, ProviderRestriction, ResultBudget,
-    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
-    ToolProperties, ToolServiceBinding, TrustLevel, WorkspaceAccess,
+    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
+    ToolOrigin, ToolProperties, ToolServiceBinding, TrustLevel, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -196,6 +199,7 @@ fn generic_action_plan(
     input: &Value,
     ctx: &ToolContext,
     check: PermissionCheck,
+    channel: ToolExecutionChannel,
 ) -> Result<ToolActionPlan, ToolError> {
     action_plan_from_permission_check(
         descriptor,
@@ -205,5 +209,6 @@ fn generic_action_plan(
         Vec::new(),
         WorkspaceAccess::None,
         NetworkAccess::None,
+        channel,
     )
 }

@@ -1,5 +1,8 @@
 use super::*;
 
+use harness_contracts::CapabilityRegistry;
+use harness_execution::ExecutionPreflightRegistry;
+
 pub fn test_authorization_service(
     broker: Arc<dyn harness_permission::PermissionBroker>,
     event_store: Arc<dyn EventStore>,
@@ -14,7 +17,11 @@ pub fn test_authorization_service(
     );
     Arc::new(harness_execution::AuthorizationService::new(
         authority,
-        Arc::new(NoopSandbox::new()),
+        ExecutionPreflightRegistry::new(
+            Arc::new(NoopSandbox::new()),
+            None,
+            Arc::new(CapabilityRegistry::default()),
+        ),
         Arc::new(RuntimeAuthorizationEventSink { event_store }),
         Arc::new(harness_execution::TicketLedger::default()),
     ))

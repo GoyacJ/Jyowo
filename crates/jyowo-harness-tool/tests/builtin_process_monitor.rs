@@ -9,7 +9,6 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::Utc;
 use futures::{future::BoxFuture, stream, StreamExt};
 use harness_contracts::{
     ActionResource, CapabilityRegistry, CorrelationId, Event, ProcessReadInvocation,
@@ -20,13 +19,14 @@ use harness_contracts::{
     ToolUseId, WorkspaceAccess, RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
 };
 use harness_sandbox::{
-    ActivityHandle, ExecContext, ExecOutcome, ExecSpec, KillScope, ProcessHandle, SandboxBackend,
-    SandboxCapabilities, SessionSnapshotFile,
+    ActivityHandle, ExecContext, ExecOutcome, ExecSpec, KillScope, NetworkPolicySupport,
+    ProcessHandle, SandboxBackend, SandboxCapabilities, SessionSnapshotFile,
+    WorkspacePolicySupport,
 };
 use harness_tool::{
     builtin::{ProcessReadTool, ProcessStartTool, ProcessStopTool},
-    AuthorizedTicketSummary, AuthorizedToolInput, DefaultRunScopedProcessRegistry, InterruptToken,
-    Tool, ToolContext, ValidationError,
+    canonical_action_plan_hash, AuthorizedTicketSummary, AuthorizedToolInput,
+    DefaultRunScopedProcessRegistry, InterruptToken, Tool, ToolContext, ValidationError,
 };
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -186,6 +186,7 @@ async fn process_start_default_registry_uses_authorized_sandbox_policy() {
     plan.sandbox_policy
         .denied_host_paths
         .push(std::path::PathBuf::from("/tmp/blocked"));
+    plan.plan_hash = canonical_action_plan_hash(&plan);
     let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
 
     let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
@@ -243,6 +244,7 @@ async fn process_start_rejects_authorized_command_when_fingerprint_no_longer_mat
         panic!("expected command resource");
     };
     *command = "rm".to_owned();
+    plan.plan_hash = canonical_action_plan_hash(&plan);
     let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
 
     let error = match tool.execute_authorized(authorized, ctx).await {
@@ -547,8 +549,17 @@ impl SandboxBackend for FakeSandbox {
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
             supports_streaming: true,
-            supports_network: true,
-            supports_filesystem_write: true,
+            network: NetworkPolicySupport {
+                none: true,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
+            workspace: WorkspacePolicySupport {
+                read_write_all: true,
+                read_only: false,
+                writable_subpaths: false,
+            },
             max_concurrent_execs: 1,
             ..SandboxCapabilities::default()
         }
@@ -697,15 +708,22 @@ fn tool_ctx_at(
 }
 
 fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
-    AuthorizedTicketSummary {
-        ticket_id: harness_contracts::AuthorizationTicketId::new(),
-        tenant_id: TenantId::SINGLE,
-        session_id: harness_contracts::SessionId::new(),
-        run_id: harness_contracts::RunId::new(),
-        tool_use_id: plan.tool_use_id,
-        tool_name: plan.tool_name.clone(),
-        action_plan_hash: plan.plan_hash.clone(),
-        consumed_at: Utc::now(),
+    {
+        let ledger = harness_tool::TicketLedger::default();
+        let claims = harness_tool::AuthorizationTicketClaims {
+            tenant_id: harness_contracts::TenantId::SINGLE,
+            session_id: harness_contracts::SessionId::new(),
+            run_id: harness_contracts::RunId::new(),
+            tool_use_id: plan.tool_use_id,
+            tool_name: plan.tool_name.clone(),
+            action_plan_hash: plan.plan_hash.clone(),
+        };
+        let ticket = ledger
+            .mint(claims.clone(), chrono::Utc::now())
+            .expect("test ticket should mint");
+        ledger
+            .consume(ticket.id, &claims, chrono::Utc::now())
+            .expect("test ticket should consume")
     }
 }
 

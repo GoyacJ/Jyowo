@@ -3,12 +3,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use harness_contracts::{
-    Decision, Event, FallbackPolicy, InteractivityLevel, ManifestOriginRef, McpServerId,
-    McpServerScope, PermissionActorSource, PermissionMode, PermissionSubject, RequestId, RunId,
-    SamplingBudgetDimension, SamplingDenyReason, SamplingOutcome, SessionId, TenantId, TrustLevel,
+    CapabilityRegistry, Decision, Event, FallbackPolicy, InteractivityLevel, ManifestOriginRef,
+    McpServerId, McpServerScope, PermissionActorSource, PermissionMode, PermissionSubject,
+    RequestId, RunId, SamplingBudgetDimension, SamplingDenyReason, SamplingOutcome, SessionId,
+    TenantId, TrustLevel,
 };
 use harness_execution::{
-    AuthorizationEventSink, AuthorizationService, ExecutionError, TicketLedger,
+    AuthorizationEventSink, AuthorizationService, ExecutionError, ExecutionPreflightRegistry,
+    TicketLedger,
 };
 use harness_mcp::{
     AggregateBudget, JsonRpcRequest, McpAuthorizationContext, McpEventSink, McpMetric,
@@ -615,7 +617,11 @@ fn sampling_authorization_context(
     );
     let service = Arc::new(AuthorizationService::new(
         authority,
-        Arc::new(NoopSandbox::new()),
+        ExecutionPreflightRegistry::new(
+            Arc::new(NoopSandbox::new()),
+            None,
+            Arc::new(CapabilityRegistry::default()),
+        ),
         sink,
         Arc::new(TicketLedger::default()),
     ));

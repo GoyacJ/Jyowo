@@ -17,9 +17,9 @@ use harness_contracts::{
     NoopRedactor, PermissionError, PermissionMode, ProviderRestriction, ResourceLimits,
     ResultBudget, RunId, RunModelSnapshot, RunStartedEvent, SandboxMode, SandboxPolicy,
     SandboxScope, SessionId, SnapshotId, StopReason, SubagentTerminationReason, TenantId,
-    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
-    ToolProperties, ToolResult, ToolUseCompletedEvent, ToolUseId, TrustLevel, TurnInput,
-    UsageSnapshot, UserMessageAppendedEvent, WorkspaceAccess,
+    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
+    ToolOrigin, ToolProperties, ToolResult, ToolUseCompletedEvent, ToolUseId, TrustLevel,
+    TurnInput, UsageSnapshot, UserMessageAppendedEvent, WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_journal::{EventStore, ReplayCursor};
@@ -29,8 +29,8 @@ use harness_model::{
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_sandbox::{
-    ExecContext, ExecSpec, ProcessHandle, SandboxBackend, SandboxCapabilities, SessionSnapshotFile,
-    SnapshotSpec,
+    ExecContext, ExecSpec, NetworkPolicySupport, ProcessHandle, SandboxBackend,
+    SandboxCapabilities, SessionSnapshotFile, SnapshotSpec, WorkspacePolicySupport,
 };
 use harness_subagent::{
     AnnounceMode, BootstrapFilter, MemorySelector, ParentContext, RequiredSandboxCapabilities,
@@ -535,7 +535,7 @@ async fn sandbox_require_mismatch_fails_closed_before_child_run() {
                     harness_contracts::SubagentTerminationReason::Failed { detail }
                         if detail.contains("sandbox requirements are not satisfied")
                             || detail.contains("sandbox capability mismatch")
-                                && detail.contains("supports_network")
+                                && detail.contains("network.none")
                 )
         )
     }));
@@ -556,8 +556,17 @@ async fn sandbox_override_applies_policy_to_child_sandbox_execution() {
     let workspace = tempfile::tempdir().unwrap();
     let sandbox = Arc::new(FakeSandbox::new("parent-sandbox").with_capabilities(
         SandboxCapabilities {
-            supports_network: true,
-            supports_filesystem_write: true,
+            network: NetworkPolicySupport {
+                none: true,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
+            workspace: WorkspacePolicySupport {
+                read_write_all: true,
+                read_only: false,
+                writable_subpaths: false,
+            },
             resource_limit_support: harness_sandbox::ResourceLimitSupport {
                 wall_clock: true,
                 ..Default::default()
@@ -1957,6 +1966,7 @@ impl Tool for TestTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 
@@ -2016,6 +2026,7 @@ impl Tool for SandboxProbeTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

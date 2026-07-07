@@ -3051,6 +3051,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
+ "bytes",
  "chrono",
  "futures",
  "jyowo-harness-contracts",
@@ -3058,10 +3059,12 @@ dependencies = [
  "jyowo-harness-sandbox",
  "jyowo-harness-tool",
  "parking_lot",
+ "reqwest 0.13.4",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -3439,12 +3442,14 @@ dependencies = [
  "futures",
  "globset",
  "jyowo-harness-contracts",
+ "jyowo-harness-execution",
  "jyowo-harness-model",
  "jyowo-harness-permission",
  "jyowo-harness-sandbox",
  "parking_lot",
  "regex",
  "reqwest 0.13.4",
+ "ring",
  "schemars 1.2.1",
  "secrecy",
  "serde",

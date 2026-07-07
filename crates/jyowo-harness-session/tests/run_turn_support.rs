@@ -2,18 +2,19 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use harness_contracts::{
-    Event, Message, MessagePart, SandboxError, SessionId, StopReason, TenantId, ToolUseId,
-    UsageSnapshot,
+    CapabilityRegistry, Event, Message, MessagePart, SandboxError, SessionId, StopReason, TenantId,
+    ToolUseId, UsageSnapshot,
 };
 use harness_execution::{
-    AuthorizationEventSink, AuthorizationService, ExecutionError, TicketLedger,
+    AuthorizationEventSink, AuthorizationService, ExecutionError, ExecutionPreflightRegistry,
+    TicketLedger,
 };
 use harness_journal::{EventStore, InMemoryEventStore};
 use harness_model::{ContentDelta, ModelStreamEvent};
 use harness_permission::{NoopDecisionPersistence, PermissionAuthority, PermissionBroker};
 use harness_sandbox::{
-    ExecContext, ExecSpec, ProcessHandle, SandboxBackend, SandboxCapabilities, SessionSnapshotFile,
-    SnapshotSpec,
+    ExecContext, ExecSpec, NetworkPolicySupport, ProcessHandle, SandboxBackend,
+    SandboxCapabilities, SessionSnapshotFile, SnapshotSpec, WorkspacePolicySupport,
 };
 use serde_json::Value;
 
@@ -94,7 +95,11 @@ pub fn test_authorization_service(
         .unwrap();
     Arc::new(AuthorizationService::new(
         Arc::new(authority),
-        Arc::new(AllowPreflightSandbox),
+        ExecutionPreflightRegistry::new(
+            Arc::new(AllowPreflightSandbox),
+            None,
+            Arc::new(CapabilityRegistry::default()),
+        ),
         Arc::new(JournalAuthorizationEventSink { event_store }),
         Arc::new(TicketLedger::default()),
     ))
@@ -132,8 +137,17 @@ impl SandboxBackend for AllowPreflightSandbox {
 
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
-            supports_network: true,
-            supports_filesystem_write: true,
+            network: NetworkPolicySupport {
+                none: true,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
+            workspace: WorkspacePolicySupport {
+                read_write_all: true,
+                read_only: false,
+                writable_subpaths: false,
+            },
             resource_limit_support: harness_sandbox::ResourceLimitSupport {
                 memory: true,
                 cpu: true,

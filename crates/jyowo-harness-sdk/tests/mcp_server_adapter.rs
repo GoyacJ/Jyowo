@@ -6,8 +6,8 @@ use harness_contracts::{
     BlobMeta, BlobRetention, BlobStore, BudgetMetric, Decision, DecisionScope, DeferPolicy,
     InteractivityLevel, NetworkAccess, NoopRedactor, OverflowAction, PermissionSubject,
     ProviderRestriction, ResultBudget, SemverString, SessionId, StopReason, TenantId,
-    ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-    ToolUseId, TrustLevel, UsageSnapshot, WorkspaceAccess,
+    ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin,
+    ToolProperties, ToolResult, ToolUseId, TrustLevel, UsageSnapshot, WorkspaceAccess,
 };
 use harness_journal::{InMemoryBlobStore, InMemoryEventStore};
 use harness_mcp::{ExposedCapability, HarnessMcpBackend, McpServerRequestContext};
@@ -653,6 +653,7 @@ impl Tool for ApprovalTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

@@ -22,6 +22,7 @@ use crate::{
     action_plan_from_permission_check, AuthorizedToolInput, InterruptToken, Tool, ToolContext,
     ToolEvent, ToolStream, ValidationError,
 };
+use harness_contracts::ToolExecutionChannel;
 
 #[derive(Clone)]
 pub struct BashTool {
@@ -81,6 +82,7 @@ impl Tool for BashTool {
                     allowed_writable_subpaths: Vec::new(),
                 },
                 NetworkAccess::None,
+                ToolExecutionChannel::ProcessSandbox,
             );
         }
 
@@ -116,6 +118,7 @@ impl Tool for BashTool {
                 allowed_writable_subpaths: Vec::new(),
             },
             NetworkAccess::None,
+            ToolExecutionChannel::ProcessSandbox,
         )
     }
 
@@ -227,6 +230,7 @@ fn exec_context(ctx: &ToolContext, event_sink: Arc<dyn EventSink>) -> ExecContex
         event_sink,
         redactor: Arc::clone(&ctx.redactor) as Arc<dyn Redactor>,
         blob_store: None,
+        execution_id: 0,
     }
 }
 

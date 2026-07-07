@@ -4,8 +4,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use harness_contracts::{
-    AgentId, CapabilityRegistry, CorrelationId, DecisionScope, PermissionSubject, TenantId,
-    ToolUseId, WorkspaceAccess,
+    AgentId, CapabilityRegistry, CorrelationId, DecisionScope, DeferPolicy, NetworkAccess,
+    PermissionSubject, ProviderRestriction, TenantId, ToolDescriptor, ToolGroup, ToolOrigin,
+    ToolProperties, ToolUseId, TrustLevel, WorkspaceAccess,
 };
 use harness_sandbox::{ExecSpec, SandboxBaseConfig, StdioSpec};
 use harness_tool::{
@@ -122,6 +123,74 @@ fn command_fingerprint(
 
     assert_eq!(*fingerprint, expected);
     fingerprint.clone()
+}
+
+#[tokio::test]
+async fn channel_changes_alter_plan_hash() {
+    use harness_contracts::ToolExecutionChannel;
+    use harness_tool::action_plan_from_permission_check;
+
+    let workspace = tempfile::tempdir().unwrap();
+    let ctx = tool_ctx(workspace.path());
+
+    let descriptor = ToolDescriptor {
+        name: "TestTool".to_owned(),
+        display_name: "Test Tool".to_owned(),
+        description: "Test tool for fingerprint verification".to_owned(),
+        category: "test".to_owned(),
+        group: ToolGroup::Custom("test".to_owned()),
+        version: "0.0.1".to_owned(),
+        input_schema: serde_json::json!({ "type": "object" }),
+        output_schema: None,
+        dynamic_schema: false,
+        properties: ToolProperties {
+            is_concurrency_safe: true,
+            is_read_only: true,
+            is_destructive: false,
+            long_running: None,
+            defer_policy: DeferPolicy::AlwaysLoad,
+        },
+        trust_level: TrustLevel::UserControlled,
+        required_capabilities: Vec::new(),
+        budget: harness_tool::default_result_budget(),
+        provider_restriction: ProviderRestriction::All,
+        origin: ToolOrigin::Builtin,
+        search_hint: None,
+        service_binding: None,
+    };
+
+    let process_sandbox_plan = action_plan_from_permission_check(
+        &descriptor,
+        &serde_json::json!({"key": "value"}),
+        &ctx,
+        harness_permission::PermissionCheck::Allowed,
+        Vec::new(),
+        WorkspaceAccess::None,
+        NetworkAccess::None,
+        ToolExecutionChannel::ProcessSandbox,
+    )
+    .unwrap();
+
+    let direct_rust_plan = action_plan_from_permission_check(
+        &descriptor,
+        &serde_json::json!({"key": "value"}),
+        &ctx,
+        harness_permission::PermissionCheck::Allowed,
+        Vec::new(),
+        WorkspaceAccess::None,
+        NetworkAccess::None,
+        ToolExecutionChannel::DirectAuthorizedRust,
+    )
+    .unwrap();
+
+    assert_ne!(
+        process_sandbox_plan.execution_channel,
+        direct_rust_plan.execution_channel
+    );
+    assert_ne!(
+        process_sandbox_plan.plan_hash, direct_rust_plan.plan_hash,
+        "plan_hash must change when execution_channel changes"
+    );
 }
 
 fn tool_ctx(workspace_root: &Path) -> ToolContext {

@@ -14,7 +14,8 @@ fn ticket_ledger_consumes_ticket_exactly_once() {
 
     let consumed = ledger.consume(ticket.id, &claims, Utc::now()).unwrap();
 
-    assert_eq!(consumed.id, ticket.id);
+    assert_eq!(consumed.ticket_id(), ticket.id);
+    assert!(consumed.verify_authority(&ledger.authority_key()));
     assert!(matches!(
         ledger.consume(ticket.id, &claims, Utc::now()).unwrap_err(),
         ExecutionError::TicketConsumed { .. }

@@ -1,28 +1,30 @@
 use crate::provider_media::{
     download_provider_https_media, safe_mime_types_for_modality, validate_media_bytes,
-    ProviderMediaBytes, ProviderMediaDownloadRequest, ProviderMediaDownloader,
-    ReqwestProviderMediaDownloader, MAX_MINIMAX_MEDIA_BYTES,
+    BrokerProviderMediaDownloader, ProviderMediaBytes, ProviderMediaDownloadRequest,
+    ProviderMediaDownloader, MAX_MINIMAX_MEDIA_BYTES,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
 use chrono::Utc;
-use futures::stream;
+use futures::{future::BoxFuture, stream};
 use harness_contracts::{
     ActionResource, BlobMeta, BlobRetention, BlobWriterCap, BudgetMetric, CapabilityRouteKind,
     DecisionScope, HostRule, ModelModality, NetworkAccess, PermissionSubject, ProviderCredential,
     ProviderCredentialResolveContext, ProviderCredentialResolverCap, ToolActionPlan,
-    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult, ToolResultPart,
-    ToolServiceBinding, WorkspaceAccess,
+    ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
+    ToolResultPart, ToolServiceBinding, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 use url::Url;
 
+use std::sync::Arc;
+
 use crate::provider_minimax::{MinimaxApiClient, MinimaxProviderClientError};
 use crate::{
-    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
-    ToolStream, ValidationError,
+    action_plan_from_permission_check, AuthorizedNetworkPermit, AuthorizedToolInput, Tool,
+    ToolContext, ToolEvent, ToolNetworkBrokerCap, ToolStream, ValidationError,
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.minimaxi.com";
@@ -82,15 +84,22 @@ macro_rules! minimax_tool {
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
                 let input = authorized.raw_input().clone();
+                let permit = authorized.network_permit()?;
+                let broker =
+                    ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
                 Ok(execute_request(
                     input,
                     ctx,
                     &self.descriptor,
-                    |client, request| async move {
-                        client
-                            .$operation(request)
-                            .await
-                            .map_err(provider_client_error)
+                    permit,
+                    broker,
+                    |client, request| {
+                        Box::pin(async move {
+                            client
+                                .$operation(request)
+                                .await
+                                .map_err(provider_client_error)
+                        })
                     },
                 ))
             }
@@ -145,7 +154,16 @@ macro_rules! minimax_image_tool {
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
                 let input = authorized.raw_input().clone();
-                Ok(execute_image_request(input, ctx, &self.descriptor))
+                let permit = authorized.network_permit()?;
+                let broker =
+                    ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
+                Ok(execute_image_request(
+                    input,
+                    ctx,
+                    &self.descriptor,
+                    permit,
+                    broker,
+                ))
             }
         }
     };
@@ -202,6 +220,9 @@ macro_rules! minimax_async_create_tool {
                     .as_ref()
                     .map(|binding| binding.output_artifact)
                     .unwrap_or(ModelModality::Video);
+                let permit = authorized.network_permit()?;
+                let broker =
+                    ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
                 Ok(execute_async_create_request(
                     input,
                     ctx,
@@ -209,11 +230,15 @@ macro_rules! minimax_async_create_tool {
                     poll_operation_id,
                     artifact_kind,
                     $display_name,
-                    |client, request| async move {
-                        client
-                            .$operation(request)
-                            .await
-                            .map_err(provider_client_error)
+                    permit,
+                    broker,
+                    |client, request| {
+                        Box::pin(async move {
+                            client
+                                .$operation(request)
+                                .await
+                                .map_err(provider_client_error)
+                        })
                     },
                 ))
             }
@@ -271,17 +296,24 @@ macro_rules! minimax_sync_media_tool {
                     .as_ref()
                     .map(|binding| binding.output_artifact)
                     .unwrap_or(ModelModality::Audio);
+                let permit = authorized.network_permit()?;
+                let broker =
+                    ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
                 Ok(execute_sync_media_request(
                     input,
                     ctx,
                     &self.descriptor,
                     artifact_kind,
                     $artifact_title,
-                    |client, request| async move {
-                        client
-                            .$operation(request)
-                            .await
-                            .map_err(provider_client_error)
+                    permit,
+                    broker,
+                    |client, request| {
+                        Box::pin(async move {
+                            client
+                                .$operation(request)
+                                .await
+                                .map_err(provider_client_error)
+                        })
                     },
                 ))
             }
@@ -340,19 +372,26 @@ macro_rules! minimax_media_query_tool {
                     .as_ref()
                     .map(|binding| binding.output_artifact)
                     .unwrap_or(ModelModality::Video);
+                let permit = authorized.network_permit()?;
+                let broker =
+                    ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
                 Ok(execute_media_query_request(
                     input,
                     ctx,
                     &self.descriptor,
                     artifact_kind,
                     $artifact_title,
-                    |client, request| async move {
-                        let task_id =
-                            required_string(&request, "task_id").map_err(validation_error)?;
-                        client
-                            .$operation(&task_id)
-                            .await
-                            .map_err(provider_client_error)
+                    permit,
+                    broker,
+                    |client, request| {
+                        Box::pin(async move {
+                            let task_id =
+                                required_string(&request, "task_id").map_err(validation_error)?;
+                            client
+                                .$operation(&task_id)
+                                .await
+                                .map_err(provider_client_error)
+                        })
                     },
                 ))
             }
@@ -405,16 +444,24 @@ macro_rules! minimax_string_arg_tool {
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
                 let input = authorized.raw_input().clone();
+                let permit = authorized.network_permit()?;
+                let broker =
+                    ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
                 Ok(execute_request(
                     input,
                     ctx,
                     &self.descriptor,
-                    |client, request| async move {
-                        let value = required_string(&request, $field).map_err(validation_error)?;
-                        client
-                            .$operation(&value)
-                            .await
-                            .map_err(provider_client_error)
+                    permit,
+                    broker,
+                    |client, request| {
+                        Box::pin(async move {
+                            let value =
+                                required_string(&request, $field).map_err(validation_error)?;
+                            client
+                                .$operation(&value)
+                                .await
+                                .map_err(provider_client_error)
+                        })
                     },
                 ))
             }
@@ -728,21 +775,27 @@ impl Tool for MiniMaxFileUploadTool {
         ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
         let input = authorized.raw_input().clone();
+        let permit = authorized.network_permit()?;
+        let broker = ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
         Ok(execute_request(
             input,
             ctx,
             &self.descriptor,
-            |client, request| async move {
-                let upload = file_upload_request(&request).map_err(validation_error)?;
-                client
-                    .file_upload_with_group_id(
-                        &upload.purpose,
-                        &upload.file_name,
-                        upload.bytes,
-                        upload.group_id.as_deref(),
-                    )
-                    .await
-                    .map_err(provider_client_error)
+            permit,
+            broker,
+            |client, request| {
+                Box::pin(async move {
+                    let upload = file_upload_request(&request).map_err(validation_error)?;
+                    client
+                        .file_upload_with_group_id(
+                            &upload.purpose,
+                            &upload.file_name,
+                            upload.bytes,
+                            upload.group_id.as_deref(),
+                        )
+                        .await
+                        .map_err(provider_client_error)
+                })
             },
         ))
     }
@@ -820,16 +873,22 @@ impl Tool for MiniMaxFileListTool {
         ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
         let input = authorized.raw_input().clone();
+        let permit = authorized.network_permit()?;
+        let broker = ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
         Ok(execute_request(
             input,
             ctx,
             &self.descriptor,
-            |client, request| async move {
-                let purpose = optional_string(&request, "purpose").map_err(validation_error)?;
-                client
-                    .file_list(purpose.as_deref())
-                    .await
-                    .map_err(provider_client_error)
+            permit,
+            broker,
+            |client, request| {
+                Box::pin(async move {
+                    let purpose = optional_string(&request, "purpose").map_err(validation_error)?;
+                    client
+                        .file_list(purpose.as_deref())
+                        .await
+                        .map_err(provider_client_error)
+                })
             },
         ))
     }
@@ -874,11 +933,17 @@ impl Tool for MiniMaxModelsListTool {
         ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
         let input = authorized.raw_input().clone();
+        let permit = authorized.network_permit()?;
+        let broker = ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
         Ok(execute_request(
             input,
             ctx,
             &self.descriptor,
-            |client, _request| async move { client.list_models().await.map_err(provider_client_error) },
+            permit,
+            broker,
+            |client, _request| {
+                Box::pin(async move { client.list_models().await.map_err(provider_client_error) })
+            },
         ))
     }
 }
@@ -922,46 +987,58 @@ impl Tool for MiniMaxAnthropicModelsListTool {
         ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
         let input = authorized.raw_input().clone();
+        let permit = authorized.network_permit()?;
+        let broker = ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
         Ok(execute_request(
             input,
             ctx,
             &self.descriptor,
-            |client, request| async move {
-                let limit = optional_u32(&request, "limit").map_err(validation_error)?;
-                let after_id = optional_string(&request, "after_id").map_err(validation_error)?;
-                let before_id = optional_string(&request, "before_id").map_err(validation_error)?;
-                client
-                    .list_anthropic_models(limit, after_id.as_deref(), before_id.as_deref())
-                    .await
-                    .map_err(provider_client_error)
+            permit,
+            broker,
+            |client, request| {
+                Box::pin(async move {
+                    let limit = optional_u32(&request, "limit").map_err(validation_error)?;
+                    let after_id =
+                        optional_string(&request, "after_id").map_err(validation_error)?;
+                    let before_id =
+                        optional_string(&request, "before_id").map_err(validation_error)?;
+                    client
+                        .list_anthropic_models(limit, after_id.as_deref(), before_id.as_deref())
+                        .await
+                        .map_err(provider_client_error)
+                })
             },
         ))
     }
 }
 
-fn execute_async_create_request<F, Fut>(
+fn execute_async_create_request<F>(
     input: Value,
     ctx: ToolContext,
     descriptor: &ToolDescriptor,
     poll_operation_id: &'static str,
     artifact_kind: ModelModality,
     title: &'static str,
+    permit: AuthorizedNetworkPermit,
+    broker: Arc<dyn crate::ToolNetworkBrokerCap>,
     call: F,
 ) -> ToolStream
 where
-    F: FnOnce(MinimaxApiClient, Value) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<Value, ToolError>> + Send + 'static,
+    F: for<'a> FnOnce(&'a MinimaxApiClient, Value) -> BoxFuture<'a, Result<Value, ToolError>>
+        + Send
+        + 'static,
 {
     let (operation_id, route_kind) = service_credential_context(descriptor);
     Box::pin(stream::once(async move {
         let result = async {
             let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
             let request = request(&input).map_err(validation_error)?;
-            let mut client = MinimaxApiClient::from_api_key(credential.api_key);
+            let mut client =
+                MinimaxApiClient::from_broker(Arc::clone(&broker), permit, credential.api_key);
             if let Some(base_url) = credential.base_url {
                 client = client.with_base_url(base_url);
             }
-            let response = call(client, request).await?;
+            let response = call(&client, request).await?;
             async_job_tool_result(&response, poll_operation_id, artifact_kind, title)
         }
         .await;
@@ -972,17 +1049,20 @@ where
     }))
 }
 
-fn execute_sync_media_request<F, Fut>(
+fn execute_sync_media_request<F>(
     input: Value,
     ctx: ToolContext,
     descriptor: &ToolDescriptor,
     artifact_kind: ModelModality,
     title: &'static str,
+    permit: AuthorizedNetworkPermit,
+    broker: Arc<dyn crate::ToolNetworkBrokerCap>,
     call: F,
 ) -> ToolStream
 where
-    F: FnOnce(MinimaxApiClient, Value) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<Value, ToolError>> + Send + 'static,
+    F: for<'a> FnOnce(&'a MinimaxApiClient, Value) -> BoxFuture<'a, Result<Value, ToolError>>
+        + Send
+        + 'static,
 {
     let (operation_id, route_kind) = service_credential_context(descriptor);
     let media_operation_id = operation_id.clone();
@@ -990,11 +1070,12 @@ where
         let result = async {
             let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
             let request = request(&input).map_err(validation_error)?;
-            let mut client = MinimaxApiClient::from_api_key(credential.api_key);
+            let mut client =
+                MinimaxApiClient::from_broker(Arc::clone(&broker), permit, credential.api_key);
             if let Some(base_url) = credential.base_url {
                 client = client.with_base_url(base_url);
             }
-            let response = call(client, request).await?;
+            let response = call(&client, request).await?;
             let media_operation_id = media_operation_id.as_deref().ok_or_else(|| {
                 ToolError::PermissionDenied(
                     "MiniMax media operation credential context is incomplete".to_owned(),
@@ -1006,7 +1087,10 @@ where
                 media_operation_id,
                 artifact_kind,
                 title,
-                &ReqwestProviderMediaDownloader,
+                &BrokerProviderMediaDownloader::new(
+                    Arc::clone(&broker),
+                    client.broker_permit().map_err(provider_client_error)?,
+                ),
             )
             .await
         }
@@ -1018,17 +1102,20 @@ where
     }))
 }
 
-fn execute_media_query_request<F, Fut>(
+fn execute_media_query_request<F>(
     input: Value,
     ctx: ToolContext,
     descriptor: &ToolDescriptor,
     artifact_kind: ModelModality,
     title: &'static str,
+    permit: AuthorizedNetworkPermit,
+    broker: Arc<dyn crate::ToolNetworkBrokerCap>,
     call: F,
 ) -> ToolStream
 where
-    F: FnOnce(MinimaxApiClient, Value) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<Value, ToolError>> + Send + 'static,
+    F: for<'a> FnOnce(&'a MinimaxApiClient, Value) -> BoxFuture<'a, Result<Value, ToolError>>
+        + Send
+        + 'static,
 {
     let (operation_id, route_kind) = service_credential_context(descriptor);
     let media_operation_id = operation_id.clone();
@@ -1036,11 +1123,12 @@ where
         let result = async {
             let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
             let request = request(&input).map_err(validation_error)?;
-            let mut client = MinimaxApiClient::from_api_key(credential.api_key);
+            let mut client =
+                MinimaxApiClient::from_broker(Arc::clone(&broker), permit, credential.api_key);
             if let Some(base_url) = credential.base_url {
                 client = client.with_base_url(base_url);
             }
-            let response = call(client, request).await?;
+            let response = call(&client, request).await?;
             let media_operation_id = media_operation_id.as_deref().ok_or_else(|| {
                 ToolError::PermissionDenied(
                     "MiniMax media operation credential context is incomplete".to_owned(),
@@ -1052,7 +1140,10 @@ where
                 media_operation_id,
                 artifact_kind,
                 title,
-                &ReqwestProviderMediaDownloader,
+                &BrokerProviderMediaDownloader::new(
+                    Arc::clone(&broker),
+                    client.broker_permit().map_err(provider_client_error)?,
+                ),
             )
             .await
         }
@@ -1064,26 +1155,30 @@ where
     }))
 }
 
-fn execute_request<F, Fut>(
+fn execute_request<F>(
     input: Value,
     ctx: ToolContext,
     descriptor: &ToolDescriptor,
+    permit: AuthorizedNetworkPermit,
+    broker: Arc<dyn crate::ToolNetworkBrokerCap>,
     call: F,
 ) -> ToolStream
 where
-    F: FnOnce(MinimaxApiClient, Value) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<Value, ToolError>> + Send + 'static,
+    F: for<'a> FnOnce(&'a MinimaxApiClient, Value) -> BoxFuture<'a, Result<Value, ToolError>>
+        + Send
+        + 'static,
 {
     let (operation_id, route_kind) = service_credential_context(descriptor);
     Box::pin(stream::once(async move {
         let result = async {
             let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
             let request = request(&input).map_err(validation_error)?;
-            let mut client = MinimaxApiClient::from_api_key(credential.api_key);
+            let mut client =
+                MinimaxApiClient::from_broker(Arc::clone(&broker), permit, credential.api_key);
             if let Some(base_url) = credential.base_url {
                 client = client.with_base_url(base_url);
             }
-            call(client, request).await
+            call(&client, request).await
         }
         .await;
         match result {
@@ -1097,6 +1192,8 @@ fn execute_image_request(
     input: Value,
     ctx: ToolContext,
     descriptor: &ToolDescriptor,
+    permit: AuthorizedNetworkPermit,
+    broker: Arc<dyn crate::ToolNetworkBrokerCap>,
 ) -> ToolStream {
     let (operation_id, route_kind) = service_credential_context(descriptor);
     let media_operation_id = operation_id.clone();
@@ -1105,7 +1202,8 @@ fn execute_image_request(
             let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
             let base_url = credential.base_url.clone();
             let request = request(&input).map_err(validation_error)?;
-            let mut client = MinimaxApiClient::from_api_key(credential.api_key);
+            let mut client =
+                MinimaxApiClient::from_broker(Arc::clone(&broker), permit, credential.api_key);
             if let Some(base_url) = &base_url {
                 client = client.with_base_url(base_url.clone());
             }
@@ -1118,8 +1216,18 @@ fn execute_image_request(
                     "MiniMax media operation credential context is incomplete".to_owned(),
                 )
             })?;
-            image_tool_result_from_response(response, &ctx, base_url.as_deref(), media_operation_id)
-                .await
+            let downloader = BrokerProviderMediaDownloader::new(
+                Arc::clone(&broker),
+                client.broker_permit().map_err(provider_client_error)?,
+            );
+            image_tool_result_from_response(
+                response,
+                &ctx,
+                base_url.as_deref(),
+                media_operation_id,
+                &downloader,
+            )
+            .await
         }
         .await;
         match result {
@@ -1134,13 +1242,14 @@ async fn image_tool_result_from_response(
     ctx: &ToolContext,
     provider_base_url: Option<&str>,
     operation_id: &str,
+    downloader: &dyn ProviderMediaDownloader,
 ) -> Result<ToolResult, ToolError> {
     image_tool_result_from_response_with_downloader(
         response,
         ctx,
         provider_base_url,
         operation_id,
-        &ReqwestProviderMediaDownloader,
+        downloader,
     )
     .await
 }
@@ -1500,6 +1609,7 @@ async fn minimax_network_action_plan(
     descriptor: &ToolDescriptor,
 ) -> Result<ToolActionPlan, ToolError> {
     let (operation_id, route_kind) = service_credential_context(descriptor);
+    let downloads_media = minimax_operation_downloads_media(operation_id.as_deref());
     let credential = match minimax_credential(ctx, operation_id, route_kind).await {
         Ok(credential) => credential,
         Err(error) => {
@@ -1511,32 +1621,31 @@ async fn minimax_network_action_plan(
                 Vec::new(),
                 WorkspaceAccess::None,
                 NetworkAccess::None,
+                ToolExecutionChannel::HttpBroker,
             );
         }
     };
 
     match minimax_base_url_host(credential.base_url.as_deref()) {
-        Ok((host, port)) => action_plan_from_permission_check(
-            descriptor,
-            input,
-            ctx,
-            PermissionCheck::AskUser {
-                subject: PermissionSubject::NetworkAccess {
-                    host: host.clone(),
-                    port,
+        Ok((host, port)) => {
+            let host_rules = minimax_host_rules(&host, port, downloads_media);
+            action_plan_from_permission_check(
+                descriptor,
+                input,
+                ctx,
+                PermissionCheck::AskUser {
+                    subject: PermissionSubject::NetworkAccess {
+                        host: host.clone(),
+                        port: Some(port),
+                    },
+                    scope: DecisionScope::Category("network".to_owned()),
                 },
-                scope: DecisionScope::Category("network".to_owned()),
-            },
-            vec![ActionResource::Network {
-                host: host.clone(),
-                port,
-            }],
-            WorkspaceAccess::None,
-            NetworkAccess::AllowList(vec![HostRule {
-                pattern: host,
-                ports: port.map(|port| vec![port]),
-            }]),
-        ),
+                network_resources(&host_rules),
+                WorkspaceAccess::None,
+                NetworkAccess::AllowList(host_rules),
+                ToolExecutionChannel::HttpBroker,
+            )
+        }
         Err(reason) => action_plan_from_permission_check(
             descriptor,
             input,
@@ -1545,6 +1654,7 @@ async fn minimax_network_action_plan(
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::HttpBroker,
         ),
     }
 }
@@ -1560,7 +1670,63 @@ fn minimax_permission_denied(error: ToolError) -> PermissionCheck {
     PermissionCheck::Denied { reason }
 }
 
-fn minimax_base_url_host(base_url: Option<&str>) -> Result<(String, Option<u16>), String> {
+fn minimax_operation_downloads_media(operation_id: Option<&str>) -> bool {
+    matches!(
+        operation_id,
+        Some(
+            "minimax.image_generation"
+                | "minimax.video_generation.query"
+                | "minimax.video_template.query"
+                | "minimax.text_to_speech.sync"
+                | "minimax.text_to_speech.async.query"
+                | "minimax.music_generation"
+        )
+    )
+}
+
+fn minimax_host_rules(base_host: &str, base_port: u16, include_media_hosts: bool) -> Vec<HostRule> {
+    let mut rules = Vec::new();
+    push_host_rule(&mut rules, base_host, base_port);
+    if include_media_hosts {
+        for host in ["*.minimaxi.com", "*.minimax.io", "*.minimax.chat"] {
+            push_host_rule(&mut rules, host, 443);
+        }
+    }
+    rules
+}
+
+fn push_host_rule(rules: &mut Vec<HostRule>, pattern: &str, port: u16) {
+    if !rules.iter().any(|rule| {
+        rule.pattern == pattern
+            && rule
+                .ports
+                .as_ref()
+                .is_some_and(|ports| ports.contains(&port))
+    }) {
+        rules.push(HostRule {
+            pattern: pattern.to_owned(),
+            ports: Some(vec![port]),
+        });
+    }
+}
+
+fn network_resources(rules: &[HostRule]) -> Vec<ActionResource> {
+    rules
+        .iter()
+        .flat_map(|rule| {
+            rule.ports
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .map(|port| ActionResource::Network {
+                    host: rule.pattern.clone(),
+                    port: Some(*port),
+                })
+        })
+        .collect()
+}
+
+fn minimax_base_url_host(base_url: Option<&str>) -> Result<(String, u16), String> {
     let raw_base_url = base_url
         .map(str::trim)
         .filter(|base_url| !base_url.is_empty())
@@ -1574,7 +1740,10 @@ fn minimax_base_url_host(base_url: Option<&str>) -> Result<(String, Option<u16>)
         .host_str()
         .filter(|host| !host.is_empty())
         .ok_or_else(|| "MiniMax provider base URL is invalid".to_owned())?;
-    Ok((host.to_owned(), url.port()))
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| "MiniMax provider base URL is invalid".to_owned())?;
+    Ok((host.to_owned(), port))
 }
 
 fn service_binding(
@@ -1857,6 +2026,7 @@ mod tests {
             &ctx,
             None,
             "minimax.image_generation",
+            &FakeImageDownloader,
         )
         .await
         .expect("image result is extracted");
@@ -1891,6 +2061,7 @@ mod tests {
             &ctx,
             None,
             "minimax.image_generation",
+            &FakeImageDownloader,
         )
         .await
         .expect_err("disallowed host is rejected");
@@ -1939,6 +2110,7 @@ mod tests {
             &ctx,
             None,
             "minimax.image_generation",
+            &FakeImageDownloader,
         )
         .await
         .expect_err("svg data URL should be rejected");
@@ -1959,6 +2131,7 @@ mod tests {
             &ctx,
             None,
             "minimax.image_generation",
+            &FakeImageDownloader,
         )
         .await
         .expect_err("oversized inline image should be rejected");

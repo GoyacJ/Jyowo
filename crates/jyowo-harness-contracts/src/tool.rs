@@ -11,8 +11,8 @@ use crate::{
     ActionPlanHash, ActionPlanId, CapabilityRouteKind, DecisionScope, ExecFingerprint,
     ManifestOriginRef, ModelModality, NetworkAccess, PermissionActorSource, PermissionSubject,
     ProviderRestriction, ResultBudget, SandboxPolicy, SandboxPolicyHash, SemverString, Severity,
-    ToolCapability, ToolGroup, ToolName, ToolOrigin, ToolProperties, ToolUseId, TrustLevel,
-    WorkspaceAccess,
+    ToolCapability, ToolExecutionChannel, ToolGroup, ToolName, ToolOrigin, ToolProperties,
+    ToolUseId, TrustLevel, WorkspaceAccess,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -190,6 +190,7 @@ pub struct ToolActionPlan {
     pub sandbox_policy: SandboxPolicy,
     pub workspace_access: WorkspaceAccess,
     pub network_access: NetworkAccess,
+    pub execution_channel: ToolExecutionChannel,
     pub review: PermissionReview,
     pub plan_hash: ActionPlanHash,
     pub created_at: chrono::DateTime<chrono::Utc>,

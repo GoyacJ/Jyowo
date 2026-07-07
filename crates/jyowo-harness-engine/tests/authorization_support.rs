@@ -2,9 +2,12 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use harness_contracts::{Event, PermissionError, SandboxError, SessionId, TenantId};
+use harness_contracts::{
+    CapabilityRegistry, Event, PermissionError, SandboxError, SessionId, TenantId,
+};
 use harness_execution::{
-    AuthorizationEventSink, AuthorizationService, ExecutionError, TicketLedger,
+    AuthorizationEventSink, AuthorizationService, ExecutionError, ExecutionPreflightRegistry,
+    TicketLedger,
 };
 use harness_journal::EventStore;
 use harness_permission::{
@@ -12,8 +15,8 @@ use harness_permission::{
     PersistedDecision,
 };
 use harness_sandbox::{
-    ExecContext, ExecSpec, ProcessHandle, ResourceLimitSupport, SandboxBackend,
-    SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
+    ExecContext, ExecSpec, NetworkPolicySupport, ProcessHandle, ResourceLimitSupport,
+    SandboxBackend, SandboxCapabilities, SessionSnapshotFile, SnapshotSpec, WorkspacePolicySupport,
 };
 use parking_lot::Mutex;
 
@@ -29,9 +32,14 @@ pub fn test_authorization_service(
             .build()
             .expect("test permission authority should build"),
     );
+    let registry = ExecutionPreflightRegistry::new(
+        Arc::new(TestSandbox),
+        None,
+        Arc::new(CapabilityRegistry::default()),
+    );
     Arc::new(AuthorizationService::new(
         authority,
-        Arc::new(TestSandbox),
+        registry,
         Arc::new(JournalAuthorizationEventSink { event_store }),
         Arc::new(TicketLedger::default()),
     ))
@@ -92,8 +100,17 @@ impl SandboxBackend for TestSandbox {
 
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
-            supports_network: true,
-            supports_filesystem_write: true,
+            network: NetworkPolicySupport {
+                none: true,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
+            workspace: WorkspacePolicySupport {
+                read_write_all: true,
+                read_only: false,
+                writable_subpaths: false,
+            },
             max_concurrent_execs: 1,
             snapshot_kinds: BTreeSet::new(),
             resource_limit_support: ResourceLimitSupport {

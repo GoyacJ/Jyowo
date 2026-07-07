@@ -2,19 +2,52 @@
 
 use std::{path::Path, sync::Arc};
 
-use chrono::Utc;
 use futures::{future::BoxFuture, StreamExt};
 use harness_contracts::{
-    CapabilityRegistry, DiagnosticLanguage, DiagnosticSeverity, DiagnosticsRawOutput,
-    DiagnosticsRunRequest, DiagnosticsRunnerCap, DiagnosticsRunnerKind, Event, RedactRules,
-    Redactor, TenantId, ToolActionPlan, ToolCapability, ToolError, ToolResult,
-    ToolUseHeartbeatEvent, ToolUseId,
+    ActionResource, CapabilityRegistry, DiagnosticLanguage, DiagnosticSeverity,
+    DiagnosticsRawOutput, DiagnosticsRunRequest, DiagnosticsRunnerCap, DiagnosticsRunnerKind,
+    Event, NetworkAccess, RedactRules, Redactor, TenantId, ToolActionPlan, ToolCapability,
+    ToolError, ToolExecutionChannel, ToolResult, ToolUseHeartbeatEvent, ToolUseId, WorkspaceAccess,
 };
 use harness_tool::{
     builtin::{parse_cargo_diagnostics, parse_typescript_diagnostics, DiagnosticsTool},
     AuthorizedTicketSummary, AuthorizedToolInput, InterruptToken, Tool, ToolContext,
 };
 use serde_json::{json, Value};
+
+#[tokio::test]
+async fn diagnostics_tool_plan_declares_real_process_execution_requirements() {
+    let workspace = tempfile::tempdir().unwrap();
+    let tool = DiagnosticsTool::default();
+    let ctx = tool_ctx_at(
+        workspace.path(),
+        CapabilityRegistry::default(),
+        Arc::new(NoopRedactor),
+    );
+
+    let plan = tool.plan(&json!({ "runner": "rust" }), &ctx).await.unwrap();
+
+    assert_eq!(plan.execution_channel, ToolExecutionChannel::ProcessSandbox);
+    assert_eq!(plan.network_access, NetworkAccess::None);
+    assert!(matches!(
+        plan.workspace_access,
+        WorkspaceAccess::ReadWrite {
+            allowed_writable_subpaths: ref paths
+        } if paths.is_empty()
+    ));
+    assert!(matches!(
+        plan.resources.as_slice(),
+        [ActionResource::Command {
+            command,
+            argv,
+            cwd: Some(cwd),
+            ..
+        }] if command == "cargo"
+            && argv.first().map(String::as_str) == Some("check")
+            && argv.iter().any(|arg| arg == "--message-format=json")
+            && cwd == workspace.path()
+    ));
+}
 
 #[tokio::test]
 async fn diagnostics_tool_requires_runner_capability() {
@@ -262,15 +295,22 @@ fn tool_ctx_at(
 }
 
 fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
-    AuthorizedTicketSummary {
-        ticket_id: harness_contracts::AuthorizationTicketId::new(),
-        tenant_id: TenantId::SINGLE,
-        session_id: harness_contracts::SessionId::new(),
-        run_id: harness_contracts::RunId::new(),
-        tool_use_id: plan.tool_use_id,
-        tool_name: plan.tool_name.clone(),
-        action_plan_hash: plan.plan_hash.clone(),
-        consumed_at: Utc::now(),
+    {
+        let ledger = harness_tool::TicketLedger::default();
+        let claims = harness_tool::AuthorizationTicketClaims {
+            tenant_id: harness_contracts::TenantId::SINGLE,
+            session_id: harness_contracts::SessionId::new(),
+            run_id: harness_contracts::RunId::new(),
+            tool_use_id: plan.tool_use_id,
+            tool_name: plan.tool_name.clone(),
+            action_plan_hash: plan.plan_hash.clone(),
+        };
+        let ticket = ledger
+            .mint(claims.clone(), chrono::Utc::now())
+            .expect("test ticket should mint");
+        ledger
+            .consume(ticket.id, &claims, chrono::Utc::now())
+            .expect("test ticket should consume")
     }
 }
 

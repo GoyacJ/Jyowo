@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant};
@@ -33,6 +33,10 @@ pub type BoxStdin = Pin<Box<dyn tokio::io::AsyncWrite + Send + 'static>>;
 #[async_trait]
 pub trait SandboxBackend: Send + Sync + 'static {
     fn backend_id(&self) -> &str;
+
+    fn candidate_backend_ids(&self) -> Vec<String> {
+        vec![self.backend_id().to_owned()]
+    }
 
     fn capabilities(&self) -> SandboxCapabilities;
 
@@ -240,8 +244,9 @@ pub trait ActivityHandle: Send + Sync + 'static {
 pub async fn execute_with_lifecycle(
     backend: Arc<dyn SandboxBackend>,
     spec: ExecSpec,
-    ctx: ExecContext,
+    mut ctx: ExecContext,
 ) -> Result<ProcessHandle, SandboxError> {
+    ctx.execution_id = NEXT_EXECUTION_ID.fetch_add(1, Ordering::Relaxed);
     let backend_id = backend.backend_id().to_owned();
     preflight_exec(backend.as_ref(), &spec, &ctx)?;
     if let Err(error) = backend.before_execute(&spec, &ctx).await {
@@ -472,7 +477,7 @@ fn emit_backend_failed(
         }));
 }
 
-fn validate_preflight_capabilities(
+pub fn validate_preflight_capabilities(
     backend_id: &str,
     capabilities: &SandboxCapabilities,
     spec: &ExecSpec,
@@ -484,37 +489,23 @@ fn validate_preflight_capabilities(
         });
     }
 
-    match &spec.policy.network {
-        NetworkAccess::Unrestricted => {}
-        NetworkAccess::None if capabilities.supports_network => {}
-        NetworkAccess::None => {
-            return Err(SandboxError::CapabilityMismatch {
-                capability: "network".to_owned(),
-                detail: format!("sandbox backend `{backend_id}` cannot enforce no-network policy"),
-            });
-        }
-        NetworkAccess::LoopbackOnly | NetworkAccess::AllowList(_) => {
-            return Err(SandboxError::CapabilityMismatch {
-                capability: "network".to_owned(),
-                detail: format!(
-                    "sandbox backend `{backend_id}` cannot enforce fine-grained network policy"
-                ),
-            });
-        }
-        _ => {
-            return Err(SandboxError::CapabilityMismatch {
-                capability: "network".to_owned(),
-                detail: format!("sandbox backend `{backend_id}` cannot enforce network policy"),
-            });
-        }
+    if !capabilities.network.supports(&spec.policy.network) {
+        return Err(SandboxError::CapabilityMismatch {
+            capability: "network".to_owned(),
+            detail: format!(
+                "sandbox backend `{backend_id}` cannot enforce network policy: {:?}",
+                spec.policy.network
+            ),
+        });
     }
 
-    if matches!(spec.workspace_access, WorkspaceAccess::ReadWrite { .. })
-        && !capabilities.supports_filesystem_write
-    {
+    if !capabilities.workspace.supports(&spec.workspace_access) {
         return Err(SandboxError::CapabilityMismatch {
             capability: "workspace_access".to_owned(),
-            detail: format!("sandbox backend `{backend_id}` does not support filesystem writes"),
+            detail: format!(
+                "sandbox backend `{backend_id}` does not support workspace access policy: {:?}",
+                spec.workspace_access
+            ),
         });
     }
 
@@ -657,8 +648,8 @@ pub struct SandboxCapabilities {
     pub cwd_marker_support: CwdMarkerSupport,
     pub supports_activity_heartbeat: bool,
     pub supports_interactive_shell: bool,
-    pub supports_network: bool,
-    pub supports_filesystem_write: bool,
+    pub network: NetworkPolicySupport,
+    pub workspace: WorkspacePolicySupport,
     pub supports_gpu: bool,
     pub supports_pty: bool,
     pub supports_detach: bool,
@@ -680,8 +671,8 @@ impl Default for SandboxCapabilities {
             cwd_marker_support: CwdMarkerSupport::Disabled,
             supports_activity_heartbeat: false,
             supports_interactive_shell: false,
-            supports_network: false,
-            supports_filesystem_write: false,
+            network: NetworkPolicySupport::default(),
+            workspace: WorkspacePolicySupport::default(),
             supports_gpu: false,
             supports_pty: false,
             supports_detach: false,
@@ -713,6 +704,70 @@ pub struct ResourceLimitSupport {
     pub open_files: bool,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub struct NetworkPolicySupport {
+    pub none: bool,
+    pub loopback_only: bool,
+    pub allowlist: bool,
+    pub unrestricted: bool,
+}
+
+impl Default for NetworkPolicySupport {
+    fn default() -> Self {
+        Self {
+            none: false,
+            loopback_only: false,
+            allowlist: false,
+            unrestricted: false,
+        }
+    }
+}
+
+impl NetworkPolicySupport {
+    pub fn supports(&self, access: &NetworkAccess) -> bool {
+        match access {
+            NetworkAccess::None => self.none,
+            NetworkAccess::LoopbackOnly => self.loopback_only,
+            NetworkAccess::AllowList(_) => self.allowlist,
+            NetworkAccess::Unrestricted => self.unrestricted,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct WorkspacePolicySupport {
+    pub read_write_all: bool,
+    pub read_only: bool,
+    pub writable_subpaths: bool,
+}
+
+impl Default for WorkspacePolicySupport {
+    fn default() -> Self {
+        Self {
+            read_write_all: false,
+            read_only: false,
+            writable_subpaths: false,
+        }
+    }
+}
+
+impl WorkspacePolicySupport {
+    pub fn supports(&self, access: &WorkspaceAccess) -> bool {
+        match access {
+            WorkspaceAccess::ReadWrite {
+                allowed_writable_subpaths,
+            } if allowed_writable_subpaths.is_empty() => self.read_write_all,
+            WorkspaceAccess::ReadOnly => self.read_only,
+            WorkspaceAccess::ReadWrite { .. } => self.writable_subpaths,
+            WorkspaceAccess::None => true,
+            _ => false,
+        }
+    }
+}
+
+static NEXT_EXECUTION_ID: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Clone)]
 pub struct ExecContext {
     pub session_id: SessionId,
@@ -724,10 +779,14 @@ pub struct ExecContext {
     pub event_sink: Arc<dyn EventSink>,
     pub redactor: Arc<dyn Redactor>,
     pub blob_store: Option<Arc<dyn BlobStore>>,
+    /// Internal per-execution id assigned by `execute_with_lifecycle` before preflight.
+    /// Not a public serde contract; must not be exposed to the frontend.
+    #[doc(hidden)]
+    pub execution_id: u64,
 }
 
 impl ExecContext {
-    pub fn for_test(event_sink: Arc<dyn EventSink>) -> Self {
+    pub fn new(event_sink: Arc<dyn EventSink>) -> Self {
         Self {
             session_id: SessionId::new(),
             run_id: RunId::new(),
@@ -738,7 +797,12 @@ impl ExecContext {
             event_sink,
             redactor: Arc::new(NoopRedactor),
             blob_store: None,
+            execution_id: NEXT_EXECUTION_ID.fetch_add(1, Ordering::Relaxed),
         }
+    }
+
+    pub fn for_test(event_sink: Arc<dyn EventSink>) -> Self {
+        Self::new(event_sink)
     }
 }
 

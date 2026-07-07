@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   registeredTauriCommands,
@@ -78,4 +79,10 @@ test('workspace dependency direction rejects lower layer depending on higher lay
       dependencyLayer: 'L3',
     },
   ])
+})
+
+test('backend docs gate requires harness sandbox architecture doc', () => {
+  const checker = readFileSync(new URL('./check-backend-docs.mjs', import.meta.url), 'utf8')
+
+  assert.match(checker, /docs\/architecture\/harness\/crates\/harness-sandbox\.md/)
 })

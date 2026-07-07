@@ -82,7 +82,8 @@ pub use team::{Team, TeamBuilder};
 
 pub use harness_contracts::{
     AgentId, ConversationAttachmentReference, ConversationContextReference, ConversationTurnInput,
-    Event, MessageId, RunId, SessionId, TeamId, TenantId, ToolUseId, TurnInput, WorkspaceId,
+    Event, MessageId, RunId, SessionId, TeamId, TenantId, ToolExecutionChannel, ToolUseId,
+    TurnInput, WorkspaceId,
 };
 
 #[cfg(feature = "agents-team")]
@@ -473,6 +474,7 @@ pub mod agents_team {
                 Vec::new(),
                 harness_contracts::WorkspaceAccess::None,
                 harness_contracts::NetworkAccess::None,
+                harness_contracts::ToolExecutionChannel::DirectAuthorizedRust,
             )
         }
 

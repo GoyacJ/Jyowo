@@ -16,8 +16,8 @@ use harness_contracts::{
     MessagePart, MessageRole, ModelError, NetworkAccess, NoopRedactor, OverflowAction,
     PermissionActorSource, PermissionError, PermissionMode, PermissionSubject, ProviderRestriction,
     RedactRules, Redactor, ResultBudget, RunId, SessionId, TenantId, ToolActionPlan,
-    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-    TrustLevel, WorkspaceAccess,
+    ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin,
+    ToolProperties, ToolResult, TrustLevel, WorkspaceAccess,
 };
 use harness_hook::{
     HookContext, HookDispatcher, HookEvent, HookHandler, HookOutcome, HookRegistry,
@@ -1172,6 +1172,7 @@ impl Tool for TestListDirTool {
             vec![ActionResource::FileRead { path }],
             WorkspaceAccess::ReadOnly,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

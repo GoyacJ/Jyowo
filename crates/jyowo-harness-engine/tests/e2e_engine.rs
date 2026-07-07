@@ -8,8 +8,8 @@ use harness_contracts::{
     Message, MessageContent, MessageId, MessagePart, MessageRole, ModelError, NetworkAccess,
     OverflowAction, PermissionError, PermissionSubject, ProviderRestriction, RedactRules, Redactor,
     ResultBudget, RunId, SessionId, StopReason, TenantId, ToolActionPlan, ToolDescriptor,
-    ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolSearchMode, ToolUseId,
-    TrustLevel, TurnInput, UsageSnapshot, WorkspaceAccess,
+    ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
+    ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{HookDispatcher, HookRegistry};
@@ -323,6 +323,7 @@ impl Tool for SecretDumpTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

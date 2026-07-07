@@ -129,7 +129,7 @@ Lower layers MUST NOT depend on higher layers.
 | `jyowo-harness-model` | `crates/jyowo-harness-model` | L1 | Owns provider abstractions, model errors, and usage reporting. |
 | `jyowo-harness-permission` | `crates/jyowo-harness-permission` | L1 | Owns PermissionAuthority, hard policy, rule engine, deduplication, decision history, signed persistence, and interactive resolution. |
 | `jyowo-harness-provider-state` | `crates/jyowo-harness-provider-state` | L1 | `jyowo-harness-provider-state` owns private provider continuation persistence and lookup. It stores provider-private replay payloads outside Journal, Replay, logs, traces, frontend state, and public serde contracts. |
-| `jyowo-harness-sandbox` | `crates/jyowo-harness-sandbox` | L1 | Owns sandbox policies, execution isolation, capability preflight, resource limits, and backend errors. Fail-closed when requested policy cannot be enforced. |
+| `jyowo-harness-sandbox` | `crates/jyowo-harness-sandbox` | L1 | Owns sandbox policies, execution isolation, routing sandbox lifecycle, policy-specific capability preflight, resource limits, and backend errors. Fail-closed when requested policy cannot be enforced. Normative design: [harness-sandbox](../architecture/harness/crates/harness-sandbox.md). |
 | `jyowo-harness-context` | `crates/jyowo-harness-context` | L2 | Owns context assembly, compaction, token budget behavior, and context events. |
 | `jyowo-harness-hook` | `crates/jyowo-harness-hook` | L2 | Owns hook execution, hook outcomes, and hook event contracts. |
 | `jyowo-harness-skill` | `crates/jyowo-harness-skill` | L2 | Owns skill loading, validation, threat detection, and invocation contracts. |
@@ -316,6 +316,7 @@ get_mcp_server_config
 get_plugin_detail
 get_provider_config_api_key
 get_replay_timeline
+get_runtime_execution_status
 get_thread_memory_settings
 get_skill_catalog_entry
 get_skill_catalog_file
@@ -896,8 +897,9 @@ mode automatically allowed a request; the projection exposes it as
 audit record instead of a pending approval.
 
 `BypassPermissions` / `DontAsk` skip interactive permission approval prompts,
-but they do not bypass tenant scope, workspace scope, sandbox policy, Secret
-redaction, payload validation, or hard policy deny rules.
+but they do not bypass tenant scope, workspace scope, sandbox policy, HTTP
+broker validation, authorization ticket validation, Secret redaction, payload
+validation, event ordering, capability checks, or hard policy deny rules.
 
 `page_conversation_worktree` is the conversation canvas data source. It returns
 `ConversationWorktreePage`, whose top-level items are complete conversation
@@ -1107,6 +1109,8 @@ Backend code MUST NOT bypass:
 - `Journal` for product trace events.
 - tenant and workspace scope checks for Memory, Replay, and Audit reads.
 - result budget handling for large Tool output.
+- process sandbox lifecycle for process tools.
+- authorized HTTP broker validation for HTTP and provider tools.
 
 Bypass code is allowed only for tests that explicitly use test adapters.
 

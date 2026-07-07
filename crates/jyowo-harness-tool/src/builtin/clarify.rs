@@ -3,7 +3,7 @@ use futures::{stream, StreamExt};
 use harness_contracts::{
     AssistantClarificationRequestedEvent, ClarifyChannelCap, ClarifyChoice, ClarifyPrompt,
     DecisionScope, Event, PermissionSubject, RequestId, ToolActionPlan, ToolCapability,
-    ToolDescriptor, ToolError, ToolGroup, ToolResult, UiSafeText,
+    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult, UiSafeText,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -77,6 +77,7 @@ impl Tool for ClarifyTool {
                 },
                 scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

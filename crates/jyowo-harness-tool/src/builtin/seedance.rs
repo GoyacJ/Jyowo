@@ -1,6 +1,6 @@
 use crate::provider_media::{
-    download_provider_https_media, validate_media_bytes, ProviderMediaBytes,
-    ProviderMediaDownloadRequest, ProviderMediaDownloader, ReqwestProviderMediaDownloader,
+    download_provider_https_media, validate_media_bytes, BrokerProviderMediaDownloader,
+    ProviderMediaBytes, ProviderMediaDownloadRequest, ProviderMediaDownloader,
     MAX_MINIMAX_MEDIA_BYTES,
 };
 use async_trait::async_trait;
@@ -12,17 +12,20 @@ use harness_contracts::{
     ActionResource, BlobMeta, BlobRetention, BlobWriterCap, BudgetMetric, CapabilityRouteKind,
     DecisionScope, HostRule, ModelModality, NetworkAccess, PermissionSubject, ProviderCredential,
     ProviderCredentialResolveContext, ProviderCredentialResolverCap, ToolActionPlan,
-    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult, ToolResultPart,
-    ToolServiceBinding, WorkspaceAccess,
+    ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
+    ToolResultPart, ToolServiceBinding, WorkspaceAccess,
 };
+use std::sync::Arc;
+
 use harness_model::{SeedanceApiClient, SEEDANCE_DEFAULT_BASE_URL, SEEDANCE_PROVIDER_ID};
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 use url::Url;
 
 use crate::{
-    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
-    ToolStream, ValidationError,
+    action_plan_from_permission_check, AuthorizedNetworkPermit, AuthorizedToolInput,
+    BrokerSeedanceTransport, Tool, ToolContext, ToolEvent, ToolNetworkBrokerCap, ToolStream,
+    ValidationError,
 };
 
 const POLL_OPERATION_ID: &str = "seedance.video_generation.query";
@@ -72,11 +75,16 @@ macro_rules! seedance_create_tool {
                 ctx: ToolContext,
             ) -> Result<ToolStream, ToolError> {
                 let input = authorized.raw_input().clone();
+                let permit = authorized.network_permit()?;
+                let broker =
+                    ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
                 Ok(execute_create_request(
                     input,
                     ctx,
                     &self.descriptor,
                     $display_name,
+                    permit,
+                    broker,
                 ))
             }
         }
@@ -135,7 +143,15 @@ impl Tool for SeedanceVideoGenerationQueryTool {
         ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
         let input = authorized.raw_input().clone();
-        Ok(execute_query_request(input, ctx, &self.descriptor))
+        let permit = authorized.network_permit()?;
+        let broker = ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
+        Ok(execute_query_request(
+            input,
+            ctx,
+            &self.descriptor,
+            permit,
+            broker,
+        ))
     }
 }
 
@@ -144,13 +160,16 @@ fn execute_create_request(
     ctx: ToolContext,
     descriptor: &ToolDescriptor,
     title: &'static str,
+    permit: AuthorizedNetworkPermit,
+    broker: Arc<dyn ToolNetworkBrokerCap>,
 ) -> ToolStream {
     let (operation_id, route_kind) = service_credential_context(descriptor);
     Box::pin(stream::once(async move {
         let result = async {
             let credential = seedance_credential(&ctx, operation_id, route_kind).await?;
             let request = request(&input).map_err(validation_error)?;
-            let mut client = SeedanceApiClient::from_api_key(credential.api_key);
+            let transport = Arc::new(BrokerSeedanceTransport::new(broker, permit));
+            let mut client = SeedanceApiClient::from_transport(transport, credential.api_key);
             if let Some(base_url) = credential.base_url {
                 client = client.with_base_url(base_url);
             }
@@ -172,6 +191,8 @@ fn execute_query_request(
     input: Value,
     ctx: ToolContext,
     descriptor: &ToolDescriptor,
+    permit: AuthorizedNetworkPermit,
+    broker: Arc<dyn ToolNetworkBrokerCap>,
 ) -> ToolStream {
     let (operation_id, route_kind) = service_credential_context(descriptor);
     let media_operation_id = operation_id.clone();
@@ -180,7 +201,9 @@ fn execute_query_request(
             let credential = seedance_credential(&ctx, operation_id, route_kind).await?;
             let request = request(&input).map_err(validation_error)?;
             let task_id = required_string(&request, "task_id").map_err(validation_error)?;
-            let mut client = SeedanceApiClient::from_api_key(credential.api_key);
+            let transport = Arc::new(BrokerSeedanceTransport::new(Arc::clone(&broker), permit));
+            let mut client =
+                SeedanceApiClient::from_transport(transport.clone(), credential.api_key);
             if let Some(base_url) = credential.base_url {
                 client = client.with_base_url(base_url);
             }
@@ -197,7 +220,7 @@ fn execute_query_request(
                 response,
                 &ctx,
                 media_operation_id,
-                &ReqwestProviderMediaDownloader,
+                &BrokerProviderMediaDownloader::new(Arc::clone(&broker), transport.permit()),
             )
             .await
         }
@@ -526,6 +549,7 @@ async fn seedance_network_action_plan(
     descriptor: &ToolDescriptor,
 ) -> Result<ToolActionPlan, ToolError> {
     let (operation_id, route_kind) = service_credential_context(descriptor);
+    let downloads_media = seedance_operation_downloads_media(operation_id.as_deref());
     let credential = match seedance_credential(ctx, operation_id, route_kind).await {
         Ok(credential) => credential,
         Err(error) => {
@@ -537,32 +561,31 @@ async fn seedance_network_action_plan(
                 Vec::new(),
                 WorkspaceAccess::None,
                 NetworkAccess::None,
+                ToolExecutionChannel::HttpBroker,
             );
         }
     };
 
     match seedance_base_url_host(credential.base_url.as_deref()) {
-        Ok((host, port)) => action_plan_from_permission_check(
-            descriptor,
-            input,
-            ctx,
-            PermissionCheck::AskUser {
-                subject: PermissionSubject::NetworkAccess {
-                    host: host.clone(),
-                    port,
+        Ok((host, port)) => {
+            let host_rules = seedance_host_rules(&host, port, downloads_media);
+            action_plan_from_permission_check(
+                descriptor,
+                input,
+                ctx,
+                PermissionCheck::AskUser {
+                    subject: PermissionSubject::NetworkAccess {
+                        host: host.clone(),
+                        port: Some(port),
+                    },
+                    scope: DecisionScope::Category("network".to_owned()),
                 },
-                scope: DecisionScope::Category("network".to_owned()),
-            },
-            vec![ActionResource::Network {
-                host: host.clone(),
-                port,
-            }],
-            WorkspaceAccess::None,
-            NetworkAccess::AllowList(vec![HostRule {
-                pattern: host,
-                ports: port.map(|port| vec![port]),
-            }]),
-        ),
+                network_resources(&host_rules),
+                WorkspaceAccess::None,
+                NetworkAccess::AllowList(host_rules),
+                ToolExecutionChannel::HttpBroker,
+            )
+        }
         Err(reason) => action_plan_from_permission_check(
             descriptor,
             input,
@@ -571,6 +594,7 @@ async fn seedance_network_action_plan(
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::HttpBroker,
         ),
     }
 }
@@ -586,7 +610,57 @@ fn seedance_permission_denied(error: ToolError) -> PermissionCheck {
     PermissionCheck::Denied { reason }
 }
 
-fn seedance_base_url_host(base_url: Option<&str>) -> Result<(String, Option<u16>), String> {
+fn seedance_operation_downloads_media(operation_id: Option<&str>) -> bool {
+    matches!(operation_id, Some("seedance.video_generation.query"))
+}
+
+fn seedance_host_rules(
+    base_host: &str,
+    base_port: u16,
+    include_media_hosts: bool,
+) -> Vec<HostRule> {
+    let mut rules = Vec::new();
+    push_host_rule(&mut rules, base_host, base_port);
+    if include_media_hosts {
+        for host in ["*.volces.com", "*.volccdn.com"] {
+            push_host_rule(&mut rules, host, 443);
+        }
+    }
+    rules
+}
+
+fn push_host_rule(rules: &mut Vec<HostRule>, pattern: &str, port: u16) {
+    if !rules.iter().any(|rule| {
+        rule.pattern == pattern
+            && rule
+                .ports
+                .as_ref()
+                .is_some_and(|ports| ports.contains(&port))
+    }) {
+        rules.push(HostRule {
+            pattern: pattern.to_owned(),
+            ports: Some(vec![port]),
+        });
+    }
+}
+
+fn network_resources(rules: &[HostRule]) -> Vec<ActionResource> {
+    rules
+        .iter()
+        .flat_map(|rule| {
+            rule.ports
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .map(|port| ActionResource::Network {
+                    host: rule.pattern.clone(),
+                    port: Some(*port),
+                })
+        })
+        .collect()
+}
+
+fn seedance_base_url_host(base_url: Option<&str>) -> Result<(String, u16), String> {
     let raw_base_url = base_url
         .map(str::trim)
         .filter(|base_url| !base_url.is_empty())
@@ -600,7 +674,10 @@ fn seedance_base_url_host(base_url: Option<&str>) -> Result<(String, Option<u16>
         .host_str()
         .filter(|host| !host.is_empty())
         .ok_or_else(|| "Seedance provider base URL is invalid".to_owned())?;
-    Ok((host.to_owned(), url.port()))
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| "Seedance provider base URL is invalid".to_owned())?;
+    Ok((host.to_owned(), port))
 }
 
 async fn seedance_credential(

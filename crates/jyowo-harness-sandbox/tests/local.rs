@@ -276,7 +276,7 @@ async fn local_sandbox_capability_truth_matches_unrestricted_only_without_os_iso
     let sandbox = LocalSandbox::new(&root);
     let ctx = ExecContext::for_test(Arc::new(NullSink));
 
-    assert!(!sandbox.capabilities().supports_network);
+    assert!(!sandbox.capabilities().network.none);
 
     let unrestricted = shell_spec("printf ok");
     preflight_exec(&sandbox, &unrestricted, &ctx)

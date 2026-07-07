@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { AppI18nProvider } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
 import { CommandClientProvider } from '@/shared/tauri/react'
-import { createTestCommandClient } from '@/testing/command-client'
+import { createTestCommandClient, type TestCommandClientOptions } from '@/testing/command-client'
 
 import { SettingsPage } from './SettingsPage'
 
@@ -17,7 +17,7 @@ const emptyProviderSettingsList = {
   configs: [],
 }
 
-function renderSettingsPage() {
+function renderSettingsPage(options: TestCommandClientOptions = {}) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -27,7 +27,10 @@ function renderSettingsPage() {
   function Wrapper({ children }: { children: ReactNode }) {
     return (
       <CommandClientProvider
-        client={createTestCommandClient({ providerSettingsList: emptyProviderSettingsList })}
+        client={createTestCommandClient({
+          providerSettingsList: emptyProviderSettingsList,
+          ...options,
+        })}
       >
         <QueryClientProvider client={queryClient}>
           <AppI18nProvider>{children}</AppI18nProvider>
@@ -102,6 +105,48 @@ describe('SettingsPage', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: '关于' }))
 
     expect(await screen.findByRole('heading', { name: '关于 Jyowo' })).toBeInTheDocument()
+  })
+
+  it('renders backend-authored runtime execution status in the tools tab', async () => {
+    renderSettingsPage({
+      runtimeExecutionStatus: {
+        processSandbox: {
+          backendId: 'routing',
+          candidateIds: ['local-process', 'docker-process'],
+          availableNetworkPolicies: ['none', 'allowlist'],
+          availableWorkspacePolicies: ['read_only', 'writable_subpaths'],
+          unavailableReasons: [],
+        },
+        httpBroker: {
+          available: false,
+          deniedReasons: ['network broker is not registered in the capability registry'],
+        },
+        tools: [
+          {
+            toolName: 'Bash',
+            available: true,
+            unavailableReason: null,
+          },
+          {
+            toolName: 'WebFetch',
+            available: false,
+            unavailableReason: 'HTTP broker is not registered',
+          },
+        ],
+      },
+    })
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '工具' }))
+
+    expect(await screen.findByRole('heading', { name: '运行时执行状态' })).toBeInTheDocument()
+    expect(await screen.findByText('routing')).toBeInTheDocument()
+    expect(screen.getByText('local-process')).toBeInTheDocument()
+    expect(screen.getByText('docker-process')).toBeInTheDocument()
+    expect(
+      screen.getByText('network broker is not registered in the capability registry'),
+    ).toBeInTheDocument()
+    expect(screen.getAllByText('WebFetch').length).toBeGreaterThan(0)
+    expect(screen.getByText('HTTP broker is not registered')).toBeInTheDocument()
   })
 
   it('owns the right pane scroll container', () => {

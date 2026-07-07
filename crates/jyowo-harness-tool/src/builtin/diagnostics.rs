@@ -1,15 +1,18 @@
 use std::path::{Component, Path};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    DecisionScope, DiagnosticItem, DiagnosticLanguage, DiagnosticSeverity, DiagnosticsRawOutput,
-    DiagnosticsRequest, DiagnosticsResult, DiagnosticsRunRequest, DiagnosticsRunnerCap,
-    DiagnosticsRunnerKind, PermissionSubject, RedactRules, Redactor, ToolActionPlan,
-    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult,
+    ActionResource, DecisionScope, DiagnosticItem, DiagnosticLanguage, DiagnosticSeverity,
+    DiagnosticsRawOutput, DiagnosticsRequest, DiagnosticsResult, DiagnosticsRunRequest,
+    DiagnosticsRunnerCap, DiagnosticsRunnerKind, NetworkAccess, PermissionSubject, RedactRules,
+    Redactor, RunId, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolResult, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
+use harness_sandbox::{ExecSpec, SandboxBaseConfig, StdioSpec};
 use regex::Regex;
 use serde_json::{json, Value};
 
@@ -61,17 +64,36 @@ impl Tool for DiagnosticsTool {
     }
 
     async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
-        super::generic_action_plan(
+        let request = diagnostics_request(input).map_err(validation_error)?;
+        let spec = diagnostics_plan_exec_spec(request.runner, &ctx.workspace_root, ctx.run_id);
+        let fingerprint = spec.canonical_fingerprint(&SandboxBaseConfig::default());
+        crate::action_plan_from_permission_check(
             &self.descriptor,
             input,
             ctx,
             PermissionCheck::AskUser {
-                subject: PermissionSubject::ToolInvocation {
-                    tool: self.descriptor.name.clone(),
-                    input: input.clone(),
+                subject: PermissionSubject::CommandExec {
+                    command: spec.command.clone(),
+                    argv: spec.args.clone(),
+                    cwd: spec.cwd.clone(),
+                    fingerprint: Some(fingerprint),
                 },
-                scope: DecisionScope::ToolName(self.descriptor.name.clone()),
+                scope: DecisionScope::ExactCommand {
+                    command: spec.command.clone(),
+                    cwd: spec.cwd.clone(),
+                },
             },
+            vec![ActionResource::Command {
+                command: spec.command,
+                argv: spec.args,
+                cwd: spec.cwd,
+                fingerprint,
+            }],
+            WorkspaceAccess::ReadWrite {
+                allowed_writable_subpaths: Vec::new(),
+            },
+            NetworkAccess::None,
+            ToolExecutionChannel::ProcessSandbox,
         )
     }
 
@@ -105,6 +127,54 @@ impl Tool for DiagnosticsTool {
                 .chain(std::iter::once(final_result))
                 .collect::<Vec<_>>(),
         )))
+    }
+}
+
+fn diagnostics_plan_exec_spec(
+    runner: DiagnosticsRunnerKind,
+    workspace_root: &Path,
+    run_id: RunId,
+) -> ExecSpec {
+    let (command, args) = match runner {
+        DiagnosticsRunnerKind::Rust => (
+            "cargo".to_owned(),
+            vec![
+                "check".to_owned(),
+                "--message-format=json".to_owned(),
+                "--target-dir".to_owned(),
+                std::env::temp_dir()
+                    .join(format!("jyowo-diagnostics-target-{run_id}"))
+                    .display()
+                    .to_string(),
+            ],
+        ),
+        DiagnosticsRunnerKind::DesktopTs => (
+            "pnpm".to_owned(),
+            vec![
+                "--dir".to_owned(),
+                "apps/desktop".to_owned(),
+                "exec".to_owned(),
+                "tsc".to_owned(),
+                "--noEmit".to_owned(),
+                "--pretty".to_owned(),
+                "false".to_owned(),
+            ],
+        ),
+        _ => ("true".to_owned(), Vec::new()),
+    };
+
+    ExecSpec {
+        command,
+        args,
+        cwd: Some(workspace_root.to_path_buf()),
+        stdin: StdioSpec::Null,
+        stdout: StdioSpec::Piped,
+        stderr: StdioSpec::Piped,
+        timeout: Some(Duration::from_secs(180)),
+        workspace_access: WorkspaceAccess::ReadWrite {
+            allowed_writable_subpaths: Vec::new(),
+        },
+        ..ExecSpec::default()
     }
 }
 

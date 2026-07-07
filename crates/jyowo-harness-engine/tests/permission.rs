@@ -8,8 +8,9 @@ use harness_contracts::{
     BudgetMetric, CapabilityRegistry, Decision, DecisionScope, DeferPolicy, Event, Message,
     MessageId, MessagePart, MessageRole, ModelError, NetworkAccess, NoopRedactor, OverflowAction,
     PermissionMode, PermissionSubject, ProviderRestriction, ResultBudget, RunId, SessionId,
-    StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
-    ToolProperties, ToolResult, ToolUseId, TrustLevel, TurnInput, UsageSnapshot, WorkspaceAccess,
+    StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel,
+    ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId, TrustLevel, TurnInput,
+    UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{HookDispatcher, HookRegistry};
@@ -386,6 +387,7 @@ impl Tool for EchoTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

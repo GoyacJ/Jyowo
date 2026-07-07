@@ -6,8 +6,9 @@ use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_contracts::{
     BudgetMetric, Decision, DeferPolicy, Event, NetworkAccess, OverflowAction, PermissionMode,
-    ProviderRestriction, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
-    ToolProperties, ToolResult, ToolSearchMode, ToolUseId, TrustLevel, WorkspaceAccess,
+    ProviderRestriction, ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel,
+    ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolSearchMode, ToolUseId, TrustLevel,
+    WorkspaceAccess,
 };
 use harness_journal::{EventStore, ReplayCursor};
 use harness_model::{ContentDelta, ModelRequest, ModelStreamEvent};
@@ -332,6 +333,7 @@ impl Tool for TestTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

@@ -43,8 +43,9 @@ use harness_contracts::{
     PluginCapabilitiesSummary, PluginFailedEvent, PluginLifecycleStateDiscriminant,
     PluginLoadedEvent, PluginRejectedEvent, ProviderCapabilityRouteSettings, RedactPatternSet,
     RedactRules, RedactScope, Redactor, RejectionReason, RunId, RunModelSnapshot,
-    RunScopedProcessRegistryCap, SessionError, SessionId, TenantId, ToolCapability, ToolProfile,
-    ToolSearchMode, TrustLevel, TurnInput, RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
+    RunScopedProcessRegistryCap, RuntimeExecutionStatus, SessionError, SessionId, TenantId,
+    ToolCapability, ToolProfile, ToolRuntimeStatus, ToolSearchMode, TrustLevel, TurnInput,
+    WorkspaceAccess, RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
 };
 #[cfg(feature = "sqlite-store")]
 use harness_contracts::{
@@ -110,7 +111,7 @@ use harness_plugin::{
     PluginEventSink,
 };
 use harness_provider_state::ProviderContinuationStore;
-use harness_sandbox::SandboxBackend;
+use harness_sandbox::{ExecSpec, SandboxBackend, StdioSpec};
 #[cfg(feature = "agents-team")]
 use harness_session::WorkspaceBootstrap;
 use harness_session::{
@@ -755,10 +756,194 @@ impl AuthorizationEventSink for SdkAuthorizationEventSink {
     }
 }
 
+fn process_tool_status_spec() -> ExecSpec {
+    ExecSpec {
+        command: "true".to_owned(),
+        stdin: StdioSpec::Null,
+        stdout: StdioSpec::Null,
+        stderr: StdioSpec::Null,
+        workspace_access: WorkspaceAccess::ReadWrite {
+            allowed_writable_subpaths: Vec::new(),
+        },
+        ..ExecSpec::default()
+    }
+}
+
 impl Harness {
     #[must_use]
     pub fn builder() -> HarnessBuilder<Unset, Unset, Unset> {
         HarnessBuilder::new()
+    }
+
+    /// Returns the capability registry.
+    #[must_use]
+    pub fn capability_registry(&self) -> Arc<CapabilityRegistry> {
+        Arc::clone(&self.inner.cap_registry)
+    }
+
+    /// Computes a backend-authored runtime execution capability status.
+    ///
+    /// The returned payload describes which sandbox backend is active, whether
+    /// the HTTP broker is available, and per-tool availability with reasons.
+    /// The frontend must render this payload read-only; it must not infer
+    /// availability from local constants.
+    #[must_use]
+    pub fn runtime_execution_status(&self) -> RuntimeExecutionStatus {
+        let sandbox = &self.inner.sandbox;
+        let caps = sandbox.capabilities();
+
+        // Process sandbox
+        let backend_id = sandbox.backend_id().to_owned();
+        let candidate_ids = sandbox.candidate_backend_ids();
+
+        let mut available_network_policies = Vec::new();
+        if caps.network.none {
+            available_network_policies.push("none".to_owned());
+        }
+        if caps.network.loopback_only {
+            available_network_policies.push("loopback_only".to_owned());
+        }
+        if caps.network.allowlist {
+            available_network_policies.push("allowlist".to_owned());
+        }
+        if caps.network.unrestricted {
+            available_network_policies.push("unrestricted".to_owned());
+        }
+
+        let mut available_workspace_policies = Vec::new();
+        if caps.workspace.read_write_all {
+            available_workspace_policies.push("read_write_all".to_owned());
+        }
+        if caps.workspace.read_only {
+            available_workspace_policies.push("read_only".to_owned());
+        }
+        if caps.workspace.writable_subpaths {
+            available_workspace_policies.push("writable_subpaths".to_owned());
+        }
+
+        let mut unavailable_reasons = Vec::new();
+        if !caps.network.none {
+            unavailable_reasons
+                .push("network policy `none` is not supported by the current sandbox".to_owned());
+        }
+        if !caps.network.allowlist {
+            unavailable_reasons.push(
+                "network policy `allowlist` is not supported by the current sandbox".to_owned(),
+            );
+        }
+        if !caps.workspace.read_only {
+            unavailable_reasons.push(
+                "workspace policy `read_only` is not supported by the current sandbox".to_owned(),
+            );
+        }
+        if !caps.workspace.writable_subpaths {
+            unavailable_reasons.push(
+                "workspace policy `writable_subpaths` is not supported by the current sandbox"
+                    .to_owned(),
+            );
+        }
+
+        // HTTP broker
+        let broker_available = self
+            .inner
+            .cap_registry
+            .get::<dyn harness_tool::ToolNetworkBrokerCap>(&ToolCapability::NetworkBroker)
+            .is_some();
+        let broker_denied_reasons: Vec<String> = if broker_available {
+            Vec::new()
+        } else {
+            vec!["network broker is not registered in the capability registry".to_owned()]
+        };
+        let process_unavailable_reason = sandbox
+            .preflight_execute(&process_tool_status_spec())
+            .err()
+            .map(|error| format!("process sandbox preflight failed: {error}"));
+        let diagnostics_runner_available = self
+            .inner
+            .cap_registry
+            .contains(&ToolCapability::Custom("diagnostics_runner".to_owned()));
+        let web_search_backend_available = self
+            .inner
+            .cap_registry
+            .contains(&ToolCapability::Custom("web_search_backend".to_owned()));
+        let user_messenger_available = self
+            .inner
+            .cap_registry
+            .contains(&ToolCapability::UserMessenger);
+
+        // Per-tool status — report key tools this runtime knows about.
+        let tools = vec![
+            ToolRuntimeStatus {
+                tool_name: "Bash".to_owned(),
+                available: process_unavailable_reason.is_none(),
+                unavailable_reason: process_unavailable_reason.clone(),
+            },
+            ToolRuntimeStatus {
+                tool_name: "Diagnostics".to_owned(),
+                available: diagnostics_runner_available && process_unavailable_reason.is_none(),
+                unavailable_reason: if !diagnostics_runner_available {
+                    Some("Diagnostics runner capability is not registered".to_owned())
+                } else {
+                    process_unavailable_reason.clone()
+                },
+            },
+            ToolRuntimeStatus {
+                tool_name: "WebFetch".to_owned(),
+                available: broker_available,
+                unavailable_reason: if broker_available {
+                    None
+                } else {
+                    Some("HTTP broker is not registered".to_owned())
+                },
+            },
+            ToolRuntimeStatus {
+                tool_name: "WebSearch".to_owned(),
+                available: web_search_backend_available,
+                unavailable_reason: if web_search_backend_available {
+                    None
+                } else {
+                    Some("web search backend capability is not registered".to_owned())
+                },
+            },
+            ToolRuntimeStatus {
+                tool_name: "MiniMaxTextToImage".to_owned(),
+                available: broker_available,
+                unavailable_reason: if broker_available {
+                    None
+                } else {
+                    Some("HTTP broker is not registered".to_owned())
+                },
+            },
+            ToolRuntimeStatus {
+                tool_name: "SeedanceTextToVideo".to_owned(),
+                available: broker_available,
+                unavailable_reason: if broker_available {
+                    None
+                } else {
+                    Some("HTTP broker is not registered".to_owned())
+                },
+            },
+            ToolRuntimeStatus {
+                tool_name: "SendMessage".to_owned(),
+                available: user_messenger_available,
+                unavailable_reason: if user_messenger_available {
+                    None
+                } else {
+                    Some("UserMessenger capability is not registered".to_owned())
+                },
+            },
+        ];
+
+        RuntimeExecutionStatus::compute(
+            &backend_id,
+            candidate_ids,
+            available_network_policies,
+            available_workspace_policies,
+            unavailable_reasons,
+            broker_available,
+            broker_denied_reasons,
+            tools,
+        )
     }
 
     fn evidence_ref_store(&self) -> Result<Arc<harness_journal::EvidenceRefStore>, HarnessError> {
@@ -1065,12 +1250,32 @@ impl Harness {
             policy_broker: permission_authority.policy_broker(),
             decision_store: permission_authority.decision_store(),
         }) as Arc<dyn PermissionBroker>;
+        let mut cap_registry = extras.cap_registry.take().unwrap_or_default();
+        let process_registry_capability =
+            ToolCapability::Custom(RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY.to_owned());
+        if !cap_registry.contains(&process_registry_capability) {
+            cap_registry.install::<dyn RunScopedProcessRegistryCap>(
+                process_registry_capability,
+                Arc::new(DefaultRunScopedProcessRegistry::new(Arc::clone(
+                    &builder.sandbox.0,
+                ))),
+            );
+        }
+        let cap_registry = Arc::new(cap_registry);
         let authorization_service = if let Some(service) = authorization_service {
             service
         } else {
+            let network_broker = cap_registry
+                .get::<dyn harness_tool::ToolNetworkBrokerCap>(&ToolCapability::NetworkBroker)
+                .map(|broker| broker as Arc<dyn harness_tool::ToolNetworkBrokerPreflightCap>);
+            let registry = harness_execution::ExecutionPreflightRegistry::new(
+                Arc::clone(&builder.sandbox.0),
+                network_broker,
+                Arc::clone(&cap_registry),
+            );
             Arc::new(harness_execution::AuthorizationService::new(
                 Arc::clone(&permission_authority),
-                Arc::clone(&builder.sandbox.0),
+                registry,
                 Arc::new(SdkAuthorizationEventSink {
                     event_store: Arc::clone(&builder.store.0),
                     redactor: observer
@@ -1112,17 +1317,6 @@ impl Harness {
                     .clone_with_metrics_sink(Arc::new(SdkMcpMetricsSink {
                         observer: Arc::clone(observer),
                     }));
-        }
-        let mut cap_registry = extras.cap_registry.take().unwrap_or_default();
-        let process_registry_capability =
-            ToolCapability::Custom(RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY.to_owned());
-        if !cap_registry.contains(&process_registry_capability) {
-            cap_registry.install::<dyn RunScopedProcessRegistryCap>(
-                process_registry_capability,
-                Arc::new(DefaultRunScopedProcessRegistry::new(Arc::clone(
-                    &builder.sandbox.0,
-                ))),
-            );
         }
         let session_limits = Arc::new(SessionLimitState::new(
             builder
@@ -1218,7 +1412,7 @@ impl Harness {
                 aux_model: extras.aux_model.take(),
                 model_middlewares: extras.model_middlewares,
                 rule_providers: extras.rule_providers,
-                cap_registry: Arc::new(cap_registry),
+                cap_registry,
                 #[cfg(feature = "tool-search")]
                 tool_search_scorer: extras.tool_search_scorer.take(),
                 enabled_features: Self::enabled_feature_set(),

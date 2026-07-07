@@ -30,9 +30,9 @@ use harness_contracts::{
     PluginConfigUpdate, PluginDetail, PluginId, PluginInstallReport, PluginOperationResult,
     PluginOperationStatus, PluginSummary, ProviderCapabilityRoute, ProviderCapabilityRouteOption,
     ProviderCapabilityRouteSettings, ProviderProbeSnapshot, ProviderServiceAdapterAvailability,
-    RejectMemoryCandidateRequest, RejectMemoryCandidateResponse, RejectionReason, SandboxError,
-    SandboxMode, ToolGroup, TrustLevel, UiSafeText, UpdateMemorySettingsRequest,
-    UpdateMemorySettingsResponse, UpdateThreadMemorySettingsRequest,
+    RejectMemoryCandidateRequest, RejectMemoryCandidateResponse, RejectionReason,
+    RuntimeExecutionStatus, SandboxMode, ToolGroup, TrustLevel, UiSafeText,
+    UpdateMemorySettingsRequest, UpdateMemorySettingsResponse, UpdateThreadMemorySettingsRequest,
     UpdateThreadMemorySettingsResponse, WorkspaceAccess,
 };
 use harness_model::ModelRuntimeSemantics;
@@ -357,6 +357,18 @@ pub fn get_app_info() -> AppInfoPayload {
 #[tauri::command]
 pub fn harness_healthcheck() -> HarnessHealthcheckPayload {
     harness_healthcheck_payload()
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_runtime_execution_status(
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<RuntimeExecutionStatus, CommandErrorPayload> {
+    let state = runtime_handle.read().await;
+    let harness = state.harness().ok_or_else(|| CommandErrorPayload {
+        code: "RUNTIME_NOT_READY",
+        message: "harness is not initialized".to_owned(),
+    })?;
+    Ok(harness.runtime_execution_status())
 }
 
 #[tauri::command]

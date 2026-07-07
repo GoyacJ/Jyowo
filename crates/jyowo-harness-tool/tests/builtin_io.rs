@@ -10,7 +10,6 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::Utc;
 use futures::{future::BoxFuture, stream, StreamExt};
 use harness_contracts::{
     ActionResource, BlobError, BlobMeta, BlobReaderCap, BlobReaderCapAdapter, BlobRef,
@@ -20,8 +19,8 @@ use harness_contracts::{
 };
 use harness_tool::{
     builtin::{FileReadTool, FileWriteTool, GrepTool, ListDirTool, ReadBlobTool},
-    AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset, InterruptToken, Tool,
-    ToolContext, ToolRegistry,
+    canonical_action_plan_hash, AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset,
+    InterruptToken, Tool, ToolContext, ToolRegistry,
 };
 use serde_json::{json, Value};
 use tempfile::tempdir;
@@ -92,7 +91,8 @@ async fn file_write_authorized_plan_hash_mismatch_is_rejected() {
     let ctx = tool_ctx_at(dir.path(), CapabilityRegistry::default());
     let plan = tool.plan(&input, &ctx).await.unwrap();
     let mut mismatched = plan.clone();
-    mismatched.plan_hash = harness_contracts::ActionPlanHash::from_bytes([9; 32]);
+    mismatched.resources.clear();
+    mismatched.plan_hash = canonical_action_plan_hash(&mismatched);
 
     let error = AuthorizedToolInput::new(input, mismatched, ticket_for(&plan)).unwrap_err();
 
@@ -118,6 +118,7 @@ async fn file_read_executes_from_authorized_plan_path() {
     plan.resources = vec![ActionResource::FileRead {
         path: authorized_path.clone(),
     }];
+    plan.plan_hash = canonical_action_plan_hash(&plan);
     let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
 
     let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
@@ -139,6 +140,7 @@ async fn file_read_without_authorized_file_resource_fails_closed() {
     let ctx = tool_ctx_at(dir.path(), CapabilityRegistry::default());
     let mut plan = tool.plan(&input, &ctx).await.unwrap();
     plan.resources.clear();
+    plan.plan_hash = canonical_action_plan_hash(&plan);
     let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
 
     let error = match tool.execute_authorized(authorized, ctx).await {
@@ -596,15 +598,22 @@ fn tool_ctx_at(workspace_root: impl AsRef<Path>, cap_registry: CapabilityRegistr
 }
 
 fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
-    AuthorizedTicketSummary {
-        ticket_id: harness_contracts::AuthorizationTicketId::new(),
-        tenant_id: TenantId::SINGLE,
-        session_id: harness_contracts::SessionId::new(),
-        run_id: harness_contracts::RunId::new(),
-        tool_use_id: plan.tool_use_id,
-        tool_name: plan.tool_name.clone(),
-        action_plan_hash: plan.plan_hash.clone(),
-        consumed_at: Utc::now(),
+    {
+        let ledger = harness_tool::TicketLedger::default();
+        let claims = harness_tool::AuthorizationTicketClaims {
+            tenant_id: harness_contracts::TenantId::SINGLE,
+            session_id: harness_contracts::SessionId::new(),
+            run_id: harness_contracts::RunId::new(),
+            tool_use_id: plan.tool_use_id,
+            tool_name: plan.tool_name.clone(),
+            action_plan_hash: plan.plan_hash.clone(),
+        };
+        let ticket = ledger
+            .mint(claims.clone(), chrono::Utc::now())
+            .expect("test ticket should mint");
+        ledger
+            .consume(ticket.id, &claims, chrono::Utc::now())
+            .expect("test ticket should consume")
     }
 }
 

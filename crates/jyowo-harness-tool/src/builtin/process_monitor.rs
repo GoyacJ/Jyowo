@@ -7,7 +7,7 @@ use harness_contracts::{
     ActionResource, DecisionScope, Event, NetworkAccess, PermissionSubject, ProcessReadInvocation,
     ProcessReadRequest, ProcessStartInvocation, ProcessStartRequest, ProcessStopInvocation,
     ProcessStopRequest, RunScopedProcessRegistryCap, ToolActionPlan, ToolCapability,
-    ToolDescriptor, ToolError, ToolGroup, ToolResult, WorkspaceAccess,
+    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult, WorkspaceAccess,
     RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
 };
 use harness_permission::{DangerousPatternLibrary, PermissionCheck};
@@ -89,6 +89,7 @@ impl Tool for ProcessStartTool {
                     allowed_writable_subpaths: Vec::new(),
                 },
                 NetworkAccess::None,
+                ToolExecutionChannel::ProcessSandbox,
             );
         }
         let spec = permission_exec_spec(&request);
@@ -124,6 +125,7 @@ impl Tool for ProcessStartTool {
                 allowed_writable_subpaths: Vec::new(),
             },
             NetworkAccess::None,
+            ToolExecutionChannel::ProcessSandbox,
         )
     }
 
@@ -208,6 +210,7 @@ impl Tool for ProcessReadTool {
                 },
                 scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 
@@ -286,6 +289,7 @@ impl Tool for ProcessStopTool {
                 },
                 scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

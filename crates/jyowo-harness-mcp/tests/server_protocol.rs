@@ -7,7 +7,7 @@ mod support;
 use async_trait::async_trait;
 use harness_contracts::{
     CapabilityRegistry, McpServerId, NetworkAccess, RunId, SessionId, TenantId, ToolActionPlan,
-    ToolUseId, TrustLevel, WorkspaceAccess,
+    ToolExecutionChannel, ToolUseId, TrustLevel, WorkspaceAccess,
 };
 use harness_mcp::{
     ExposedCapability, HarnessMcpBackend, HarnessMcpServer, IsolationMode, JsonRpcRequest,
@@ -1306,6 +1306,7 @@ impl Tool for SchemaTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

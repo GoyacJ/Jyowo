@@ -20,6 +20,7 @@ pub mod noop;
 pub mod policy;
 #[cfg(any(feature = "docker", feature = "ssh"))]
 mod process;
+pub mod routing;
 pub mod skill_script;
 #[cfg(feature = "ssh")]
 pub mod ssh;
@@ -36,6 +37,7 @@ pub use local::*;
 #[cfg(feature = "noop")]
 pub use noop::*;
 pub use policy::*;
+pub use routing::*;
 pub use skill_script::*;
 #[cfg(feature = "ssh")]
 pub use ssh::*;

@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
     ActionResource, DecisionScope, NetworkAccess, OutboundUserMessage, PermissionSubject,
-    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult,
-    UserMessengerCap, WorkspaceAccess,
+    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
+    ToolResult, UserMessengerCap, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -74,6 +74,9 @@ impl Tool for SendMessageTool {
             vec![ActionResource::Network { host, port: None }],
             WorkspaceAccess::None,
             NetworkAccess::AllowList(Vec::new()),
+            ToolExecutionChannel::ExternalCapability {
+                capability: ToolCapability::UserMessenger,
+            },
         )
     }
 

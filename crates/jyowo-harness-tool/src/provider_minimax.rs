@@ -1,15 +1,25 @@
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+#[cfg(test)]
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
+use url::Url;
+
+use crate::{AuthorizedNetworkPermit, HttpMethod, ToolHttpJsonRequest, ToolNetworkBrokerCap};
 
 const DEFAULT_BASE_URL: &str = "https://api.minimaxi.com";
 const MULTIPART_BOUNDARY: &str = "jyowo-minimax-boundary";
+const DEFAULT_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_MAX_RESPONSE_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum MinimaxProviderClientError {
     #[error("invalid MiniMax API request: {0}")]
     InvalidRequest(String),
     #[error("MiniMax API authentication header is invalid: {0}")]
+    #[cfg(test)]
     AuthExpired(String),
     #[error("MiniMax API request failed: {0}")]
     ProviderUnavailable(String),
@@ -17,20 +27,57 @@ pub(crate) enum MinimaxProviderClientError {
     UnexpectedResponse(String),
 }
 
-#[derive(Clone)]
+/// Internal transport for MiniMax API calls.
+enum MinimaxTransport {
+    /// Production: authorized broker.
+    Broker(Arc<dyn ToolNetworkBrokerCap>, AuthorizedNetworkPermit),
+    /// Direct reqwest (test / legacy credential path).
+    #[cfg(test)]
+    Direct(reqwest::Client),
+}
+
 pub(crate) struct MinimaxApiClient {
-    http: reqwest::Client,
+    transport: MinimaxTransport,
     api_key: SecretString,
     base_url: String,
 }
 
 impl MinimaxApiClient {
+    /// Production constructor using the authorized network broker.
+    pub(crate) fn from_broker(
+        transport: Arc<dyn ToolNetworkBrokerCap>,
+        permit: AuthorizedNetworkPermit,
+        api_key: impl Into<String>,
+    ) -> Self {
+        Self {
+            transport: MinimaxTransport::Broker(transport, permit),
+            api_key: SecretString::new(api_key.into().into_boxed_str()),
+            base_url: DEFAULT_BASE_URL.to_owned(),
+        }
+    }
+
+    pub(crate) fn broker_permit(
+        &self,
+    ) -> Result<&AuthorizedNetworkPermit, MinimaxProviderClientError> {
+        match &self.transport {
+            MinimaxTransport::Broker(_, permit) => Ok(permit),
+            #[cfg(test)]
+            MinimaxTransport::Direct(_) => Err(MinimaxProviderClientError::InvalidRequest(
+                "MiniMax direct test client does not carry an authorized network permit".to_owned(),
+            )),
+        }
+    }
+
+    /// Legacy constructor using a direct reqwest client. Only used in tests.
+    #[cfg(test)]
     pub(crate) fn from_api_key(api_key: impl Into<String>) -> Self {
         Self {
-            http: reqwest::Client::builder()
-                .pool_max_idle_per_host(0)
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+            transport: MinimaxTransport::Direct(
+                reqwest::Client::builder()
+                    .pool_max_idle_per_host(0)
+                    .build()
+                    .unwrap_or_else(|_| reqwest::Client::new()),
+            ),
             api_key: SecretString::new(api_key.into().into_boxed_str()),
             base_url: DEFAULT_BASE_URL.to_owned(),
         }
@@ -218,17 +265,43 @@ impl MinimaxApiClient {
         let query = group_id
             .map(|group_id| vec![("GroupId", group_id.to_owned())])
             .unwrap_or_default();
-        let response = self
-            .http
-            .post(self.query_url("/v1/files/upload", &query)?)
-            .headers(self.headers_with_content_type(&format!(
-                "multipart/form-data; boundary={MULTIPART_BOUNDARY}"
-            ))?)
-            .body(body)
-            .send()
-            .await
-            .map_err(transport_error)?;
-        self.response_json(response).await
+        let url = self.query_url("/v1/files/upload", &query)?;
+        let content_type = format!("multipart/form-data; boundary={MULTIPART_BOUNDARY}");
+
+        match &self.transport {
+            MinimaxTransport::Broker(transport, permit) => {
+                let mut headers = BTreeMap::new();
+                headers.insert(
+                    "authorization".to_owned(),
+                    format!("Bearer {}", self.api_key.expose_secret()),
+                );
+                headers.insert("content-type".to_owned(), content_type);
+                let req = ToolHttpJsonRequest {
+                    method: HttpMethod::Post,
+                    url: url.to_string(),
+                    headers,
+                    body: Some(body),
+                    timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+                    max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+                };
+                let resp = transport
+                    .execute_json(permit, req)
+                    .await
+                    .map_err(|e| MinimaxProviderClientError::ProviderUnavailable(e.to_string()))?;
+                self.broker_response_json(resp.status, &resp.body).await
+            }
+            #[cfg(test)]
+            MinimaxTransport::Direct(http) => {
+                let response = http
+                    .post(url)
+                    .headers(self.reqwest_headers_with_content_type(&content_type)?)
+                    .body(body)
+                    .send()
+                    .await
+                    .map_err(transport_error)?;
+                self.direct_response_json(response).await
+            }
+        }
     }
 
     pub(crate) async fn file_delete(
@@ -270,28 +343,82 @@ impl MinimaxApiClient {
         if let Some(before_id) = before_id {
             query.push(("before_id", before_id.to_owned()));
         }
-        let response = self
-            .http
-            .get(self.query_url("/anthropic/v1/models", &query)?)
-            .headers(self.x_api_key_headers()?)
-            .send()
-            .await
-            .map_err(transport_error)?;
-        self.response_json(response).await
+        let url = self.query_url("/anthropic/v1/models", &query)?;
+
+        match &self.transport {
+            MinimaxTransport::Broker(transport, permit) => {
+                let mut headers = BTreeMap::new();
+                headers.insert(
+                    "x-api-key".to_owned(),
+                    self.api_key.expose_secret().to_string(),
+                );
+                headers.insert("content-type".to_owned(), "application/json".to_owned());
+                let req = ToolHttpJsonRequest {
+                    method: HttpMethod::Get,
+                    url: url.to_string(),
+                    headers,
+                    body: None,
+                    timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+                    max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+                };
+                let resp = transport
+                    .execute_json(permit, req)
+                    .await
+                    .map_err(|e| MinimaxProviderClientError::ProviderUnavailable(e.to_string()))?;
+                self.broker_response_json(resp.status, &resp.body).await
+            }
+            #[cfg(test)]
+            MinimaxTransport::Direct(http) => {
+                let response = http
+                    .get(url)
+                    .headers(self.x_api_key_headers()?)
+                    .send()
+                    .await
+                    .map_err(transport_error)?;
+                self.direct_response_json(response).await
+            }
+        }
     }
 
     pub(crate) async fn retrieve_anthropic_model(
         &self,
         model_id: &str,
     ) -> Result<Value, MinimaxProviderClientError> {
-        let response = self
-            .http
-            .get(self.url(&format!("/anthropic/v1/models/{}", path_segment(model_id))))
-            .headers(self.x_api_key_headers()?)
-            .send()
-            .await
-            .map_err(transport_error)?;
-        self.response_json(response).await
+        let url = self.url(&format!("/anthropic/v1/models/{}", path_segment(model_id)));
+
+        match &self.transport {
+            MinimaxTransport::Broker(transport, permit) => {
+                let mut headers = BTreeMap::new();
+                headers.insert(
+                    "x-api-key".to_owned(),
+                    self.api_key.expose_secret().to_string(),
+                );
+                headers.insert("content-type".to_owned(), "application/json".to_owned());
+                let req = ToolHttpJsonRequest {
+                    method: HttpMethod::Get,
+                    url,
+                    headers,
+                    body: None,
+                    timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+                    max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+                };
+                let resp = transport
+                    .execute_json(permit, req)
+                    .await
+                    .map_err(|e| MinimaxProviderClientError::ProviderUnavailable(e.to_string()))?;
+                self.broker_response_json(resp.status, &resp.body).await
+            }
+            #[cfg(test)]
+            MinimaxTransport::Direct(http) => {
+                let response = http
+                    .get(url)
+                    .headers(self.x_api_key_headers()?)
+                    .send()
+                    .await
+                    .map_err(transport_error)?;
+                self.direct_response_json(response).await
+            }
+        }
     }
 
     async fn post_json(
@@ -299,15 +426,39 @@ impl MinimaxApiClient {
         path: &str,
         request: Value,
     ) -> Result<Value, MinimaxProviderClientError> {
-        let response = self
-            .http
-            .post(self.url(path))
-            .headers(self.headers()?)
-            .json(&request)
-            .send()
-            .await
-            .map_err(transport_error)?;
-        self.response_json(response).await
+        let body = serde_json::to_vec(&request)
+            .map_err(|e| MinimaxProviderClientError::InvalidRequest(e.to_string()))?;
+        let headers = self.broker_headers()?;
+        let url = self.url(path);
+
+        match &self.transport {
+            MinimaxTransport::Broker(transport, permit) => {
+                let req = ToolHttpJsonRequest {
+                    method: HttpMethod::Post,
+                    url: url.to_string(),
+                    headers,
+                    body: Some(body),
+                    timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+                    max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+                };
+                let resp = transport
+                    .execute_json(permit, req)
+                    .await
+                    .map_err(|e| MinimaxProviderClientError::ProviderUnavailable(e.to_string()))?;
+                self.broker_response_json(resp.status, &resp.body).await
+            }
+            #[cfg(test)]
+            MinimaxTransport::Direct(http) => {
+                let response = http
+                    .post(url)
+                    .headers(self.reqwest_headers()?)
+                    .json(&request)
+                    .send()
+                    .await
+                    .map_err(transport_error)?;
+                self.direct_response_json(response).await
+            }
+        }
     }
 
     async fn get_json(
@@ -316,17 +467,55 @@ impl MinimaxApiClient {
         query: &[(&str, String)],
     ) -> Result<Value, MinimaxProviderClientError> {
         let url = self.query_url(path, query)?;
-        let response = self
-            .http
-            .get(url)
-            .headers(self.headers()?)
-            .send()
-            .await
-            .map_err(transport_error)?;
-        self.response_json(response).await
+        let headers = self.broker_headers()?;
+
+        match &self.transport {
+            MinimaxTransport::Broker(transport, permit) => {
+                let req = ToolHttpJsonRequest {
+                    method: HttpMethod::Get,
+                    url,
+                    headers,
+                    body: None,
+                    timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+                    max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+                };
+                let resp = transport
+                    .execute_json(permit, req)
+                    .await
+                    .map_err(|e| MinimaxProviderClientError::ProviderUnavailable(e.to_string()))?;
+                self.broker_response_json(resp.status, &resp.body).await
+            }
+            #[cfg(test)]
+            MinimaxTransport::Direct(http) => {
+                let response = http
+                    .get(url)
+                    .headers(self.reqwest_headers()?)
+                    .send()
+                    .await
+                    .map_err(transport_error)?;
+                self.direct_response_json(response).await
+            }
+        }
     }
 
-    async fn response_json(
+    async fn broker_response_json(
+        &self,
+        status: u16,
+        body: &[u8],
+    ) -> Result<Value, MinimaxProviderClientError> {
+        let body_str = String::from_utf8_lossy(body).into_owned();
+        if !(200..300).contains(&status) {
+            return Err(MinimaxProviderClientError::ProviderUnavailable(format!(
+                "MiniMax API request failed with status {status}: {}",
+                redact_secret(&body_str, self.api_key.expose_secret())
+            )));
+        }
+        serde_json::from_str(&body_str)
+            .map_err(|error| MinimaxProviderClientError::UnexpectedResponse(error.to_string()))
+    }
+
+    #[cfg(test)]
+    async fn direct_response_json(
         &self,
         response: reqwest::Response,
     ) -> Result<Value, MinimaxProviderClientError> {
@@ -342,11 +531,23 @@ impl MinimaxApiClient {
             .map_err(|error| MinimaxProviderClientError::UnexpectedResponse(error.to_string()))
     }
 
-    fn headers(&self) -> Result<HeaderMap, MinimaxProviderClientError> {
-        self.headers_with_content_type("application/json")
+    fn broker_headers(&self) -> Result<BTreeMap<String, String>, MinimaxProviderClientError> {
+        let mut headers = BTreeMap::new();
+        headers.insert(
+            "authorization".to_owned(),
+            format!("Bearer {}", self.api_key.expose_secret()),
+        );
+        headers.insert("content-type".to_owned(), "application/json".to_owned());
+        Ok(headers)
     }
 
-    fn headers_with_content_type(
+    #[cfg(test)]
+    fn reqwest_headers(&self) -> Result<HeaderMap, MinimaxProviderClientError> {
+        self.reqwest_headers_with_content_type("application/json")
+    }
+
+    #[cfg(test)]
+    fn reqwest_headers_with_content_type(
         &self,
         content_type: &str,
     ) -> Result<HeaderMap, MinimaxProviderClientError> {
@@ -363,6 +564,7 @@ impl MinimaxApiClient {
         Ok(headers)
     }
 
+    #[cfg(test)]
     fn x_api_key_headers(&self) -> Result<HeaderMap, MinimaxProviderClientError> {
         let mut headers = HeaderMap::new();
         let auth = HeaderValue::from_str(self.api_key.expose_secret())
@@ -388,8 +590,8 @@ impl MinimaxApiClient {
         &self,
         path: &str,
         query: &[(&str, String)],
-    ) -> Result<reqwest::Url, MinimaxProviderClientError> {
-        let mut url = reqwest::Url::parse(&self.url(path))
+    ) -> Result<String, MinimaxProviderClientError> {
+        let mut url = Url::parse(&self.url(path))
             .map_err(|error| MinimaxProviderClientError::InvalidRequest(error.to_string()))?;
         {
             let mut pairs = url.query_pairs_mut();
@@ -397,10 +599,11 @@ impl MinimaxApiClient {
                 pairs.append_pair(key, value);
             }
         }
-        Ok(url)
+        Ok(url.to_string())
     }
 }
 
+#[cfg(test)]
 fn transport_error(error: reqwest::Error) -> MinimaxProviderClientError {
     MinimaxProviderClientError::ProviderUnavailable(error.to_string())
 }

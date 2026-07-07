@@ -1327,11 +1327,11 @@ fn missing_required_sandbox_capabilities(
     if required.supports_interactive_shell && !capabilities.supports_interactive_shell {
         missing.push("supports_interactive_shell".to_owned());
     }
-    if required.supports_network && !capabilities.supports_network {
-        missing.push("supports_network".to_owned());
+    if required.supports_network && !capabilities.network.none {
+        missing.push("network.none".to_owned());
     }
-    if required.supports_filesystem_write && !capabilities.supports_filesystem_write {
-        missing.push("supports_filesystem_write".to_owned());
+    if required.supports_filesystem_write && !capabilities.workspace.read_write_all {
+        missing.push("workspace.read_write_all".to_owned());
     }
     if required.supports_gpu && !capabilities.supports_gpu {
         missing.push("supports_gpu".to_owned());
@@ -2390,6 +2390,7 @@ agent rules
                 Vec::new(),
                 WorkspaceAccess::None,
                 NetworkAccess::None,
+                harness_contracts::ToolExecutionChannel::DirectAuthorizedRust,
             )
         }
 

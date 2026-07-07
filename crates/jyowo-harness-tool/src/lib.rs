@@ -12,6 +12,7 @@ pub mod builder;
 pub mod builtin;
 pub mod context;
 pub mod error;
+pub mod network_broker;
 pub mod orchestrator;
 pub mod pool;
 pub mod process_registry;
@@ -33,6 +34,7 @@ pub use harness_permission::{
     canonical_permission_fingerprint, PermissionBroker, PermissionCheck, PermissionContext,
     PermissionRequest, PersistedDecision, RuleSnapshot,
 };
+pub use network_broker::*;
 pub use orchestrator::*;
 pub use pool::*;
 pub use process_registry::*;

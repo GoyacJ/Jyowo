@@ -4,44 +4,44 @@
 
 | Layer | Count |
 |---|---|
-| Frontend Vitest files | 74 |
-| Frontend Vitest test cases | 703 |
+| Frontend Vitest files | 75 |
+| Frontend Vitest test cases | 712 |
 | Storybook files | 19 |
 | Playwright spec files | 4 |
-| Rust test files | 332 |
-| Rust `#[test]` / `#[tokio::test]` count | 2479 |
-| Script policy test files | 9 |
+| Rust test files | 338 |
+| Rust `#[test]` / `#[tokio::test]` count | 2526 |
+| Script policy test files | 10 |
 
 ## Largest Test Files by Line Count
 
 | File | Lines | Kind |
 |---|---|---|
 | apps/desktop/src/shared/tauri/commands.test.ts | 6591 | frontend |
-| crates/jyowo-harness-journal/tests/conversation_read_model.rs | 3683 | rust |
+| crates/jyowo-harness-journal/tests/conversation_read_model.rs | 3717 | rust |
 | crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs | 3503 | rust |
-| crates/jyowo-harness-plugin/tests/registry.rs | 3168 | rust |
-| crates/jyowo-harness-engine/tests/subagent_tool_feature.rs | 2373 | rust |
-| crates/jyowo-harness-engine/tests/main_loop.rs | 1895 | rust |
-| crates/jyowo-harness-engine/tests/hook_pipeline.rs | 1729 | rust |
-| crates/jyowo-harness-mcp/tests/server_protocol.rs | 1595 | rust |
+| crates/jyowo-harness-plugin/tests/registry.rs | 3169 | rust |
+| crates/jyowo-harness-engine/tests/subagent_tool_feature.rs | 2384 | rust |
+| crates/jyowo-harness-engine/tests/main_loop.rs | 1909 | rust |
+| crates/jyowo-harness-engine/tests/hook_pipeline.rs | 1731 | rust |
+| crates/jyowo-harness-mcp/tests/server_protocol.rs | 1596 | rust |
 | apps/desktop/src/shared/events/run-event-schema.test.ts | 1594 | frontend |
 | crates/jyowo-harness-team/tests/team_e2e.rs | 1388 | rust |
-| crates/jyowo-harness-plugin/tests/sources.rs | 1274 | rust |
+| crates/jyowo-harness-plugin/tests/sources.rs | 1281 | rust |
+| crates/jyowo-harness-session/tests/run_turn.rs | 1199 | rust |
 | crates/jyowo-harness-subagent/tests/default_runner.rs | 1199 | rust |
-| crates/jyowo-harness-session/tests/run_turn.rs | 1198 | rust |
 | crates/jyowo-harness-contracts/tests/core_contracts.rs | 1196 | rust |
 | crates/jyowo-harness-journal/tests/evidence_ref_store.rs | 1195 | rust |
-| crates/jyowo-harness-sdk/tests/runtime_assembly_support/mod.rs | 1184 | rust |
+| crates/jyowo-harness-sdk/tests/runtime_assembly_support/mod.rs | 1186 | rust |
+| crates/jyowo-harness-tool/tests/builtin_exec.rs | 1184 | rust |
 | apps/desktop/src/features/conversation/ConversationWorkspace.test.tsx | 1176 | frontend |
 | apps/desktop/src-tauri/tests/commands/provider_routes.rs | 1174 | rust |
 | apps/desktop/src-tauri/tests/commands/permissions.rs | 1163 | rust |
 | crates/jyowo-harness-sdk/tests/runtime_assembly_agents.rs | 1161 | rust |
-| crates/jyowo-harness-tool/tests/builtin_exec.rs | 1152 | rust |
 | crates/jyowo-harness-contracts/tests/memory_platform_contracts.rs | 1146 | rust |
 | crates/jyowo-harness-mcp/tests/http.rs | 1145 | rust |
-| apps/desktop/src-tauri/tests/agent_orchestration_e2e.rs | 1133 | rust |
+| apps/desktop/src-tauri/tests/agent_orchestration_e2e.rs | 1134 | rust |
 | apps/desktop/src/features/workbench/WorkbenchInspector.artifacts.test.tsx | 1126 | frontend |
-| crates/jyowo-harness-sdk/tests/agents_team.rs | 1125 | rust |
+| crates/jyowo-harness-sdk/tests/agents_team.rs | 1126 | rust |
 | apps/desktop/src-tauri/tests/commands/provider_settings.rs | 1092 | rust |
 | apps/desktop/src-tauri/tests/commands/mcp.rs | 1078 | rust |
 | crates/jyowo-harness-sdk/tests/facade.rs | 1074 | rust |
@@ -50,61 +50,60 @@
 ## Files Over 1200 Lines (hard fail)
 
 - apps/desktop/src/shared/tauri/commands.test.ts (6591 lines)
-- crates/jyowo-harness-journal/tests/conversation_read_model.rs (3683 lines)
+- crates/jyowo-harness-journal/tests/conversation_read_model.rs (3717 lines)
 - crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs (3503 lines)
-- crates/jyowo-harness-plugin/tests/registry.rs (3168 lines)
-- crates/jyowo-harness-engine/tests/subagent_tool_feature.rs (2373 lines)
-- crates/jyowo-harness-engine/tests/main_loop.rs (1895 lines)
-- crates/jyowo-harness-engine/tests/hook_pipeline.rs (1729 lines)
-- crates/jyowo-harness-mcp/tests/server_protocol.rs (1595 lines)
+- crates/jyowo-harness-plugin/tests/registry.rs (3169 lines)
+- crates/jyowo-harness-engine/tests/subagent_tool_feature.rs (2384 lines)
+- crates/jyowo-harness-engine/tests/main_loop.rs (1909 lines)
+- crates/jyowo-harness-engine/tests/hook_pipeline.rs (1731 lines)
+- crates/jyowo-harness-mcp/tests/server_protocol.rs (1596 lines)
 - apps/desktop/src/shared/events/run-event-schema.test.ts (1594 lines)
 - crates/jyowo-harness-team/tests/team_e2e.rs (1388 lines)
-- crates/jyowo-harness-plugin/tests/sources.rs (1274 lines)
+- crates/jyowo-harness-plugin/tests/sources.rs (1281 lines)
 
 ## Files Over 800 Lines (warning)
 
+- crates/jyowo-harness-session/tests/run_turn.rs (1199 lines)
 - crates/jyowo-harness-subagent/tests/default_runner.rs (1199 lines)
-- crates/jyowo-harness-session/tests/run_turn.rs (1198 lines)
 - crates/jyowo-harness-contracts/tests/core_contracts.rs (1196 lines)
 - crates/jyowo-harness-journal/tests/evidence_ref_store.rs (1195 lines)
-- crates/jyowo-harness-sdk/tests/runtime_assembly_support/mod.rs (1184 lines)
+- crates/jyowo-harness-sdk/tests/runtime_assembly_support/mod.rs (1186 lines)
+- crates/jyowo-harness-tool/tests/builtin_exec.rs (1184 lines)
 - apps/desktop/src/features/conversation/ConversationWorkspace.test.tsx (1176 lines)
 - apps/desktop/src-tauri/tests/commands/provider_routes.rs (1174 lines)
 - apps/desktop/src-tauri/tests/commands/permissions.rs (1163 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_agents.rs (1161 lines)
-- crates/jyowo-harness-tool/tests/builtin_exec.rs (1152 lines)
 - crates/jyowo-harness-contracts/tests/memory_platform_contracts.rs (1146 lines)
 - crates/jyowo-harness-mcp/tests/http.rs (1145 lines)
-- apps/desktop/src-tauri/tests/agent_orchestration_e2e.rs (1133 lines)
+- apps/desktop/src-tauri/tests/agent_orchestration_e2e.rs (1134 lines)
 - apps/desktop/src/features/workbench/WorkbenchInspector.artifacts.test.tsx (1126 lines)
-- crates/jyowo-harness-sdk/tests/agents_team.rs (1125 lines)
+- crates/jyowo-harness-sdk/tests/agents_team.rs (1126 lines)
 - apps/desktop/src-tauri/tests/commands/provider_settings.rs (1092 lines)
 - apps/desktop/src-tauri/tests/commands/mcp.rs (1078 lines)
 - crates/jyowo-harness-sdk/tests/facade.rs (1074 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_context.rs (1071 lines)
 - apps/desktop/src/features/conversation/timeline/conversation-timeline.stories.tsx (1071 lines)
+- crates/jyowo-harness-tool/tests/minimax_tools.rs (1068 lines)
 - crates/jyowo-harness-agent-runtime/tests/agent_orchestration_background.rs (1062 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_tools.rs (1059 lines)
 - crates/jyowo-harness-subagent/tests/permission_bridge.rs (1059 lines)
+- apps/desktop/src-tauri/tests/commands/support.rs (1055 lines)
 - crates/jyowo-harness-sdk/tests/runtime_assembly_contract.rs (1055 lines)
-- apps/desktop/src-tauri/tests/commands/support.rs (1044 lines)
 - crates/jyowo-harness-memory/tests/local_provider.rs (1041 lines)
 - apps/desktop/src-tauri/tests/commands/conversations.rs (1016 lines)
 - crates/jyowo-harness-journal/tests/conversation_workbench_projection.rs (977 lines)
 - crates/jyowo-harness-team/tests/routing.rs (977 lines)
-- crates/jyowo-harness-tool/tests/registry_pool.rs (940 lines)
+- crates/jyowo-harness-sandbox/tests/docker.rs (943 lines)
+- crates/jyowo-harness-engine/tests/interrupt.rs (942 lines)
+- crates/jyowo-harness-tool/tests/registry_pool.rs (941 lines)
 - crates/jyowo-harness-sandbox/tests/local.rs (933 lines)
-- crates/jyowo-harness-engine/tests/interrupt.rs (931 lines)
 - apps/desktop/src-tauri/tests/commands/activity_redaction.rs (930 lines)
-- crates/jyowo-harness-tool/tests/orchestrator.rs (905 lines)
-- crates/jyowo-harness-execution/tests/authorization_flow.rs (901 lines)
+- crates/jyowo-harness-tool/tests/orchestrator.rs (916 lines)
 - crates/jyowo-harness-memory/tests/extraction.rs (898 lines)
 - apps/desktop/src-tauri/tests/commands/artifact_listing.rs (894 lines)
 - crates/jyowo-harness-memory/tests/recall.rs (893 lines)
-- crates/jyowo-harness-sandbox/tests/docker.rs (891 lines)
-- crates/jyowo-harness-tool/tests/minimax_tools.rs (865 lines)
 - crates/jyowo-harness-memory/tests/store_audit.rs (849 lines)
-- crates/jyowo-harness-mcp/tests/core.rs (823 lines)
+- crates/jyowo-harness-mcp/tests/core.rs (829 lines)
 
 ## Disallowed or Suspect Names
 

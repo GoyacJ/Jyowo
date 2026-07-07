@@ -8,22 +8,23 @@ use harness_contracts::{
     PermissionRequestedEvent, PermissionResolvedEvent, ResourceLimits, RunId, SandboxPolicy,
     SandboxPolicyHash, SandboxPolicySummary, SandboxPreflightFailedEvent,
     SandboxPreflightPassedEvent, SandboxPreflightStatus, SessionId, TenantId, ToolActionPlan,
+    ToolExecutionChannel, WorkspaceAccess,
 };
 use harness_permission::{
     canonical_permission_fingerprint, default_permission_decision_options, PermissionAuthority,
     PermissionAuthorityDecisionSource, PermissionContext, PermissionRequest,
 };
-use harness_sandbox::{ExecSpec, SandboxBackend, SandboxCapabilities};
-use harness_tool::{AuthorizedTicketSummary, AuthorizedToolInput};
+use harness_sandbox::{ExecSpec, SandboxCapabilities};
+use harness_tool::{AuthorizedTicketSummary, AuthorizedToolInput, NetworkBrokerPreflightRequest};
 
 use crate::{
     AuthorizationAudit, AuthorizationEventSink, AuthorizationTicket, AuthorizationTicketClaims,
-    ExecutionError, TicketLedger,
+    ExecutionError, ExecutionPreflightRegistry, TicketLedger,
 };
 
 pub struct AuthorizationService {
     permission_authority: Arc<PermissionAuthority>,
-    sandbox_backend: Arc<dyn SandboxBackend>,
+    registry: ExecutionPreflightRegistry,
     event_sink: Arc<dyn AuthorizationEventSink>,
     ticket_ledger: Arc<TicketLedger>,
 }
@@ -59,13 +60,13 @@ impl AuthorizationService {
     #[must_use]
     pub fn new(
         permission_authority: Arc<PermissionAuthority>,
-        sandbox_backend: Arc<dyn SandboxBackend>,
+        registry: ExecutionPreflightRegistry,
         event_sink: Arc<dyn AuthorizationEventSink>,
         ticket_ledger: Arc<TicketLedger>,
     ) -> Self {
         Self {
             permission_authority,
-            sandbox_backend,
+            registry,
             event_sink,
             ticket_ledger,
         }
@@ -170,21 +171,28 @@ impl AuthorizationService {
             });
         }
 
-        let preflight = match sandbox_preflight(
-            self.sandbox_backend.as_ref(),
+        let preflight_result = channel_enforcement_preflight(
+            &self.registry,
             &plan,
-            &self.sandbox_backend.capabilities(),
             context.session_id,
             context.run_id,
-        ) {
-            Ok(event) => event,
-            Err((event, error)) => {
+        )
+        .await;
+
+        let (preflight, enforcement_id) = match preflight_result {
+            Ok((event, id)) => (event, id),
+            Err((preflight_err_event, error)) => {
                 self.event_sink
-                    .emit_batch(context.tenant_id, context.session_id, vec![resolved, event])
+                    .emit_batch(
+                        context.tenant_id,
+                        context.session_id,
+                        vec![resolved, preflight_err_event],
+                    )
                     .await?;
                 return Err(error);
             }
         };
+
         let claims = AuthorizationTicketClaims {
             tenant_id: context.tenant_id,
             session_id: context.session_id,
@@ -207,7 +215,7 @@ impl AuthorizationService {
             decision: permission_outcome.decision.clone(),
             ticket,
             action_plan_hash: plan.plan_hash,
-            sandbox_backend_id: self.sandbox_backend.backend_id().to_owned(),
+            sandbox_backend_id: enforcement_id,
             audit: AuthorizationAudit {
                 permission_decision: permission_outcome.decision,
                 permission_source: permission_outcome.decided_by,
@@ -249,83 +257,258 @@ impl AuthorizationService {
         &self,
         ticket: AuthorizationTicket,
     ) -> Result<AuthorizedTicketSummary, ExecutionError> {
-        let consumed = self
-            .ticket_ledger
-            .consume(ticket.id, &ticket.claims, Utc::now())?;
-        Ok(AuthorizedTicketSummary {
-            ticket_id: consumed.id,
-            tenant_id: consumed.claims.tenant_id,
-            session_id: consumed.claims.session_id,
-            run_id: consumed.claims.run_id,
-            tool_use_id: consumed.claims.tool_use_id,
-            tool_name: consumed.claims.tool_name,
-            action_plan_hash: consumed.claims.action_plan_hash,
-            consumed_at: Utc::now(),
-        })
+        self.ticket_ledger
+            .consume(ticket.id, &ticket.claims, Utc::now())
     }
 }
 
-fn sandbox_preflight(
-    backend: &dyn SandboxBackend,
+// ── Channel preflight dispatcher ──
+
+/// Route enforcement preflight to the component that matches `plan.execution_channel`.
+///
+/// Returns `(preflight_event, enforcement_id)` on success, or
+/// `(failed_event, error)` on failure.
+async fn channel_enforcement_preflight(
+    registry: &ExecutionPreflightRegistry,
     plan: &ToolActionPlan,
-    capabilities: &SandboxCapabilities,
     session_id: SessionId,
     run_id: RunId,
-) -> Result<Event, (Event, ExecutionError)> {
-    let backend_id = backend.backend_id().to_owned();
-    let effective_policy = effective_sandbox_policy(plan);
-    let policy = sandbox_policy_summary(&effective_policy);
-    let policy_hash = sandbox_policy_hash(&effective_policy, &backend_id);
+) -> Result<(Event, String), (Event, ExecutionError)> {
+    match &plan.execution_channel {
+        ToolExecutionChannel::ProcessSandbox => {
+            let backend = registry.sandbox_backend.as_ref();
+            let backend_id = backend.backend_id().to_owned();
+            let capabilities = backend.capabilities();
+            let effective_policy = effective_sandbox_policy(plan);
+            let policy = sandbox_policy_summary(&effective_policy);
+            let policy_hash = sandbox_policy_hash(&effective_policy, &backend_id);
 
-    if let Some(reason) = sandbox_preflight_failure(plan, capabilities, &backend_id) {
-        let event = Event::SandboxPreflightFailed(SandboxPreflightFailedEvent {
-            session_id,
-            run_id,
-            tool_use_id: Some(plan.tool_use_id),
-            backend_id: backend_id.clone(),
-            status: SandboxPreflightStatus::Failed,
-            policy,
-            policy_hash,
-            reason: reason.clone(),
-            at: Utc::now(),
-        });
-        return Err((
-            event,
-            ExecutionError::SandboxPreflightFailed { backend_id, reason },
-        ));
-    }
+            if let Some(reason) = sandbox_preflight_failure(plan, &capabilities, &backend_id) {
+                let reason = format!("[process_sandbox] {reason}");
+                let event = Event::SandboxPreflightFailed(SandboxPreflightFailedEvent {
+                    session_id,
+                    run_id,
+                    tool_use_id: Some(plan.tool_use_id),
+                    backend_id: backend_id.clone(),
+                    status: SandboxPreflightStatus::Failed,
+                    policy,
+                    policy_hash,
+                    reason: reason.clone(),
+                    at: Utc::now(),
+                });
+                return Err((
+                    event,
+                    ExecutionError::SandboxPreflightFailed { backend_id, reason },
+                ));
+            }
 
-    if let Some(spec) = preflight_spec_for_plan(plan) {
-        if let Err(error) = backend.preflight_execute(&spec) {
-            let reason = error.to_string();
-            let event = Event::SandboxPreflightFailed(SandboxPreflightFailedEvent {
+            if let Some(spec) = preflight_spec_for_plan(plan) {
+                if let Err(error) = backend.preflight_execute(&spec) {
+                    let reason = format!("[process_sandbox] {}", error);
+                    let event = Event::SandboxPreflightFailed(SandboxPreflightFailedEvent {
+                        session_id,
+                        run_id,
+                        tool_use_id: Some(plan.tool_use_id),
+                        backend_id: backend_id.clone(),
+                        status: SandboxPreflightStatus::Failed,
+                        policy,
+                        policy_hash,
+                        reason: reason.clone(),
+                        at: Utc::now(),
+                    });
+                    return Err((
+                        event,
+                        ExecutionError::SandboxPreflightFailed { backend_id, reason },
+                    ));
+                }
+            }
+
+            let event = Event::SandboxPreflightPassed(SandboxPreflightPassedEvent {
                 session_id,
                 run_id,
                 tool_use_id: Some(plan.tool_use_id),
                 backend_id: backend_id.clone(),
-                status: SandboxPreflightStatus::Failed,
+                status: SandboxPreflightStatus::Passed,
                 policy,
                 policy_hash,
+                at: Utc::now(),
+            });
+            Ok((event, backend_id))
+        }
+
+        ToolExecutionChannel::HttpBroker => {
+            const BROKER_ID: &str = "http_broker";
+
+            let broker = registry.network_broker.as_deref().ok_or_else(|| {
+                let reason = "[http_broker] network broker is not registered".to_owned();
+                let event = Event::SandboxPreflightFailed(SandboxPreflightFailedEvent {
+                    session_id,
+                    run_id,
+                    tool_use_id: Some(plan.tool_use_id),
+                    backend_id: BROKER_ID.to_owned(),
+                    status: SandboxPreflightStatus::Failed,
+                    policy: sandbox_policy_summary(&plan.sandbox_policy),
+                    policy_hash: SandboxPolicyHash::default(),
+                    reason: reason.clone(),
+                    at: Utc::now(),
+                });
+                (
+                    event,
+                    ExecutionError::SandboxPreflightFailed {
+                        backend_id: BROKER_ID.to_owned(),
+                        reason,
+                    },
+                )
+            })?;
+
+            // HTTP broker v1: reject NetworkAccess::None (HTTP execution
+            // inherently requires network). AllowList is standard; Unrestricted
+            // is blocked until a separate explicit policy is designed.
+            let network_access = plan.sandbox_policy.network.clone();
+            if matches!(network_access, NetworkAccess::None) {
+                let reason =
+                    "[http_broker] HTTP execution requires network access; received NetworkAccess::None"
+                        .to_owned();
+                let event = Event::SandboxPreflightFailed(SandboxPreflightFailedEvent {
+                    session_id,
+                    run_id,
+                    tool_use_id: Some(plan.tool_use_id),
+                    backend_id: BROKER_ID.to_owned(),
+                    status: SandboxPreflightStatus::Failed,
+                    policy: sandbox_policy_summary(&plan.sandbox_policy),
+                    policy_hash: SandboxPolicyHash::default(),
+                    reason: reason.clone(),
+                    at: Utc::now(),
+                });
+                return Err((
+                    event,
+                    ExecutionError::SandboxPreflightFailed {
+                        backend_id: BROKER_ID.to_owned(),
+                        reason,
+                    },
+                ));
+            }
+
+            let request = NetworkBrokerPreflightRequest {
+                tool_name: plan.tool_name.clone(),
+                tool_use_id: plan.tool_use_id,
+                network_access,
+                action_plan_hash: plan.plan_hash.clone(),
+            };
+            match broker.preflight_network_request(&request).await {
+                Ok(()) => {
+                    let event = Event::SandboxPreflightPassed(SandboxPreflightPassedEvent {
+                        session_id,
+                        run_id,
+                        tool_use_id: Some(plan.tool_use_id),
+                        backend_id: BROKER_ID.to_owned(),
+                        status: SandboxPreflightStatus::Passed,
+                        policy: sandbox_policy_summary(&plan.sandbox_policy),
+                        policy_hash: SandboxPolicyHash::default(),
+                        at: Utc::now(),
+                    });
+                    Ok((event, BROKER_ID.to_owned()))
+                }
+                Err(error) => {
+                    let reason = format!("[http_broker] broker preflight failed: {error}");
+                    let event = Event::SandboxPreflightFailed(SandboxPreflightFailedEvent {
+                        session_id,
+                        run_id,
+                        tool_use_id: Some(plan.tool_use_id),
+                        backend_id: BROKER_ID.to_owned(),
+                        status: SandboxPreflightStatus::Failed,
+                        policy: sandbox_policy_summary(&plan.sandbox_policy),
+                        policy_hash: SandboxPolicyHash::default(),
+                        reason: reason.clone(),
+                        at: Utc::now(),
+                    });
+                    Err((
+                        event,
+                        ExecutionError::SandboxPreflightFailed {
+                            backend_id: BROKER_ID.to_owned(),
+                            reason,
+                        },
+                    ))
+                }
+            }
+        }
+
+        ToolExecutionChannel::ExternalCapability { capability } => {
+            let backend_id = format!("external_capability:{capability}");
+            let present = registry.capabilities.contains(capability);
+            if !present {
+                let reason = format!(
+                    "[external_capability] required capability `{capability}` is not registered"
+                );
+                let event = Event::SandboxPreflightFailed(SandboxPreflightFailedEvent {
+                    session_id,
+                    run_id,
+                    tool_use_id: Some(plan.tool_use_id),
+                    backend_id: backend_id.clone(),
+                    status: SandboxPreflightStatus::Failed,
+                    policy: sandbox_policy_summary(&plan.sandbox_policy),
+                    policy_hash: SandboxPolicyHash::default(),
+                    reason: reason.clone(),
+                    at: Utc::now(),
+                });
+                return Err((
+                    event,
+                    ExecutionError::SandboxPreflightFailed {
+                        backend_id: backend_id.clone(),
+                        reason,
+                    },
+                ));
+            }
+            let event = Event::SandboxPreflightPassed(SandboxPreflightPassedEvent {
+                session_id,
+                run_id,
+                tool_use_id: Some(plan.tool_use_id),
+                backend_id: backend_id.clone(),
+                status: SandboxPreflightStatus::Passed,
+                policy: sandbox_policy_summary(&plan.sandbox_policy),
+                policy_hash: SandboxPolicyHash::default(),
+                at: Utc::now(),
+            });
+            Ok((event, backend_id))
+        }
+
+        ToolExecutionChannel::DirectAuthorizedRust => {
+            let backend_id = "direct_authorized_rust".to_owned();
+            let event = Event::SandboxPreflightPassed(SandboxPreflightPassedEvent {
+                session_id,
+                run_id,
+                tool_use_id: Some(plan.tool_use_id),
+                backend_id: backend_id.clone(),
+                status: SandboxPreflightStatus::Passed,
+                policy: sandbox_policy_summary(&plan.sandbox_policy),
+                policy_hash: SandboxPolicyHash::default(),
+                at: Utc::now(),
+            });
+            Ok((event, backend_id))
+        }
+
+        _ => {
+            let reason = format!("unknown execution channel: {:?}", plan.execution_channel);
+            let event = Event::SandboxPreflightFailed(SandboxPreflightFailedEvent {
+                session_id,
+                run_id,
+                tool_use_id: Some(plan.tool_use_id),
+                backend_id: "unknown".to_owned(),
+                status: SandboxPreflightStatus::Failed,
+                policy: sandbox_policy_summary(&plan.sandbox_policy),
+                policy_hash: SandboxPolicyHash::default(),
                 reason: reason.clone(),
                 at: Utc::now(),
             });
-            return Err((
+            Err((
                 event,
-                ExecutionError::SandboxPreflightFailed { backend_id, reason },
-            ));
+                ExecutionError::SandboxPreflightFailed {
+                    backend_id: "unknown".to_owned(),
+                    reason,
+                },
+            ))
         }
     }
-
-    Ok(Event::SandboxPreflightPassed(SandboxPreflightPassedEvent {
-        session_id,
-        run_id,
-        tool_use_id: Some(plan.tool_use_id),
-        backend_id,
-        status: SandboxPreflightStatus::Passed,
-        policy,
-        policy_hash,
-        at: Utc::now(),
-    }))
 }
 
 fn preflight_spec_for_plan(plan: &ToolActionPlan) -> Option<ExecSpec> {
@@ -414,20 +597,26 @@ fn sandbox_preflight_failure(
         }
     }
 
-    if !matches!(plan.network_access, NetworkAccess::None)
-        || !matches!(plan.sandbox_policy.network, NetworkAccess::None)
-    {
-        if !capabilities.supports_network {
-            return Some("sandbox backend does not support requested network access".to_owned());
-        }
+    // Network capability check: only when the plan actually needs network enforcement.
+    // When both plan.network_access and sandbox_policy.network are None, the plan has
+    // no network requirement and we skip the check — same as the coarse-capability era.
+    let plan_requires_network = !matches!(plan.network_access, NetworkAccess::None)
+        || !matches!(plan.sandbox_policy.network, NetworkAccess::None);
+    if plan_requires_network && !capabilities.network.supports(&plan.sandbox_policy.network) {
+        return Some(format!(
+            "sandbox backend cannot enforce network policy: {:?}",
+            plan.sandbox_policy.network
+        ));
     }
 
-    if matches!(
-        plan.workspace_access,
-        harness_contracts::WorkspaceAccess::ReadWrite { .. }
-    ) && !capabilities.supports_filesystem_write
-    {
-        return Some("sandbox backend does not support filesystem writes".to_owned());
+    // Workspace capability check: only when the plan requires write access.
+    // ReadOnly and None do not need sandbox enforcement.
+    let plan_requires_write = matches!(plan.workspace_access, WorkspaceAccess::ReadWrite { .. });
+    if plan_requires_write && !capabilities.workspace.supports(&plan.workspace_access) {
+        return Some(format!(
+            "sandbox backend cannot enforce workspace access policy: {:?}",
+            plan.workspace_access
+        ));
     }
 
     unsupported_resource_limit(&plan.sandbox_policy.resource_limits, capabilities)

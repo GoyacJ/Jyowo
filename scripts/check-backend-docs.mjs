@@ -33,6 +33,7 @@ const requiredArchitectureDocs = [
   'docs/architecture/harness/crates/harness-model.md',
   'docs/architecture/harness/crates/harness-plugin.md',
   'docs/architecture/harness/crates/harness-provider-state.md',
+  'docs/architecture/harness/crates/harness-sandbox.md',
 ]
 
 const requiredConcepts = [

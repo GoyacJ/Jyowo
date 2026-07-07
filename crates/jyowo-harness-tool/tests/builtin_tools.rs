@@ -2,7 +2,6 @@
 
 use std::{path::Path, sync::Arc};
 
-use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
     CapabilityRegistry, DecisionScope, TenantId, ToolActionPlan, ToolCapability, ToolError,
@@ -307,14 +306,21 @@ fn tool_ctx_at(workspace_root: impl AsRef<Path>, cap_registry: CapabilityRegistr
 }
 
 fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
-    AuthorizedTicketSummary {
-        ticket_id: harness_contracts::AuthorizationTicketId::new(),
-        tenant_id: TenantId::SINGLE,
-        session_id: harness_contracts::SessionId::new(),
-        run_id: harness_contracts::RunId::new(),
-        tool_use_id: plan.tool_use_id,
-        tool_name: plan.tool_name.clone(),
-        action_plan_hash: plan.plan_hash.clone(),
-        consumed_at: Utc::now(),
+    {
+        let ledger = harness_tool::TicketLedger::default();
+        let claims = harness_tool::AuthorizationTicketClaims {
+            tenant_id: harness_contracts::TenantId::SINGLE,
+            session_id: harness_contracts::SessionId::new(),
+            run_id: harness_contracts::RunId::new(),
+            tool_use_id: plan.tool_use_id,
+            tool_name: plan.tool_name.clone(),
+            action_plan_hash: plan.plan_hash.clone(),
+        };
+        let ticket = ledger
+            .mint(claims.clone(), chrono::Utc::now())
+            .expect("test ticket should mint");
+        ledger
+            .consume(ticket.id, &claims, chrono::Utc::now())
+            .expect("test ticket should consume")
     }
 }

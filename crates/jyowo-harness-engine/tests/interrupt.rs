@@ -13,9 +13,9 @@ use harness_contracts::{
     ModelError, NetworkAccess, NoopRedactor, OverflowAction, PermissionError, PermissionSubject,
     ProviderRestriction, ResourceLimits, ResultBudget, RunId, SandboxExecutionCompletedEvent,
     SandboxExecutionStartedEvent, SandboxMode, SandboxPolicySummary, SandboxScope, SessionId,
-    StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
-    ToolProperties, ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
-    WorkspaceAccess,
+    StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel,
+    ToolGroup, ToolOrigin, ToolProperties, ToolSearchMode, ToolUseId, TrustLevel, TurnInput,
+    UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{
     CancellationToken, Engine, EngineId, EngineRunner, InterruptCause, RunContext, SessionHandle,
@@ -30,8 +30,9 @@ use harness_model::{
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_sandbox::{
-    ActivityHandle, EventSink, ExecContext, ExecOutcome, ExecSpec, ProcessHandle, SandboxBackend,
-    SandboxBaseConfig, SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
+    ActivityHandle, EventSink, ExecContext, ExecOutcome, ExecSpec, NetworkPolicySupport,
+    ProcessHandle, SandboxBackend, SandboxBaseConfig, SandboxCapabilities, SessionSnapshotFile,
+    SnapshotSpec, WorkspacePolicySupport,
 };
 use harness_tool::{
     action_plan_from_permission_check, AuthorizedToolInput, SchemaResolverContext, Tool,
@@ -683,6 +684,7 @@ impl Tool for InterruptibleTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 
@@ -717,8 +719,17 @@ impl SandboxBackend for QueuedJournalSandbox {
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
             supports_streaming: true,
-            supports_network: true,
-            supports_filesystem_write: true,
+            network: NetworkPolicySupport {
+                none: true,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
+            workspace: WorkspacePolicySupport {
+                read_write_all: true,
+                read_only: false,
+                writable_subpaths: false,
+            },
             max_concurrent_execs: 1,
             ..SandboxCapabilities::default()
         }

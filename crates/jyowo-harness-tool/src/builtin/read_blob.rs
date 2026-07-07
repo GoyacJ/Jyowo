@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_contracts::{
     BlobReaderCap, BlobRef, DecisionScope, OffloadedBlobAuthorizerCap, PermissionSubject,
-    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult,
+    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
+    ToolResult,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -73,6 +74,7 @@ impl Tool for ReadBlobTool {
                 },
                 scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

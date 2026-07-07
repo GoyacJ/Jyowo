@@ -13,9 +13,9 @@ use harness_contracts::{
     CapabilityRegistry, ContextError, ContextStageId, Decision, DeferPolicy, Event, Message,
     MessageContent, MessageId, MessagePart, MessageRole, ModelError, ModelProtocol, NetworkAccess,
     NoopRedactor, PermissionError, ProviderRestriction, RunId, RunModelSnapshot, SessionId,
-    StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
-    ToolProperties, ToolResult, ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
-    WorkspaceAccess,
+    StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel,
+    ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolSearchMode, ToolUseId, TrustLevel,
+    TurnInput, UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{HookDispatcher, HookRegistry};
@@ -403,6 +403,7 @@ impl Tool for CountingLookupTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

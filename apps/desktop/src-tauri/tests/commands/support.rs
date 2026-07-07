@@ -2,7 +2,8 @@
 #![allow(unused_imports)]
 
 use super::*;
-use harness_contracts::{NetworkAccess, ToolActionPlan};
+use harness_contracts::{NetworkAccess, ToolActionPlan, ToolExecutionChannel};
+use harness_sandbox::{NetworkPolicySupport, WorkspacePolicySupport};
 use harness_tool::{action_plan_from_permission_check, AuthorizedToolInput};
 
 pub(crate) fn permission_request() -> PermissionRequest {
@@ -101,6 +102,7 @@ impl Tool for NeedsPermissionTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 
@@ -481,8 +483,17 @@ impl jyowo_harness_sdk::ext::SandboxBackend for AllowExecPreflightSandbox {
 
     fn capabilities(&self) -> jyowo_harness_sdk::ext::SandboxCapabilities {
         jyowo_harness_sdk::ext::SandboxCapabilities {
-            supports_network: true,
-            supports_filesystem_write: true,
+            network: NetworkPolicySupport {
+                none: true,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
+            workspace: WorkspacePolicySupport {
+                read_write_all: true,
+                read_only: false,
+                writable_subpaths: false,
+            },
             max_concurrent_execs: 1,
             ..jyowo_harness_sdk::ext::SandboxCapabilities::default()
         }

@@ -13,7 +13,8 @@ use harness_contracts::{
 use harness_sandbox::{
     execute_with_lifecycle, preflight_exec, restore_with_lifecycle, shutdown_with_lifecycle,
     snapshot_with_lifecycle, ActivityHandle, EventSink, ExecContext, ExecOutcome, ExecSpec,
-    ProcessHandle, SandboxBackend, SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
+    NetworkPolicySupport, ProcessHandle, SandboxBackend, SandboxCapabilities, SessionSnapshotFile,
+    SnapshotSpec,
 };
 
 #[derive(Default)]
@@ -98,7 +99,12 @@ impl SandboxBackend for TestBackend {
 
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
-            supports_network: true,
+            network: NetworkPolicySupport {
+                none: true,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
             max_concurrent_execs: 1,
             snapshot_kinds: BTreeSet::default(),
             ..SandboxCapabilities::default()

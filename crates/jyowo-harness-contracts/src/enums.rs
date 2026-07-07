@@ -239,6 +239,7 @@ pub enum ToolCapability {
     EmbeddedToolDispatcher,
     CodeRuntime,
     ProviderCredentialResolver,
+    NetworkBroker,
     Custom(String),
 }
 
@@ -259,9 +260,20 @@ impl fmt::Display for ToolCapability {
             Self::EmbeddedToolDispatcher => f.write_str("embedded_tool_dispatcher"),
             Self::CodeRuntime => f.write_str("code_runtime"),
             Self::ProviderCredentialResolver => f.write_str("provider_credential_resolver"),
+            Self::NetworkBroker => f.write_str("network_broker"),
             Self::Custom(value) => write!(f, "custom:{value}"),
         }
     }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum ToolExecutionChannel {
+    DirectAuthorizedRust,
+    ProcessSandbox,
+    HttpBroker,
+    ExternalCapability { capability: ToolCapability },
 }
 
 #[non_exhaustive]

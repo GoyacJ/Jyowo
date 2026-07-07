@@ -623,7 +623,7 @@ mod credential_pool_tests {
             })))
             .mount(&server)
             .await;
-        let client = OpenAiCompatibleClient::from_api_key("custom-provider-token", server.uri());
+        let client = test_client_from_api_key("custom-provider-token", server.uri());
 
         let error = match client.infer(request(), test_context()).await {
             Ok(_) => panic!("auth failure should be returned"),
@@ -696,9 +696,22 @@ mod credential_pool_tests {
         resolver: Arc<dyn ModelCredentialResolver>,
         provider_id: &'static str,
     ) -> OpenAiCompatibleClient {
-        OpenAiCompatibleClient::from_api_key("unused", server.uri())
+        test_client_from_api_key("unused", server.uri())
             .with_provider_id(provider_id)
             .with_credential_resolver(resolver)
+    }
+
+    fn test_client_from_api_key(
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+    ) -> OpenAiCompatibleClient {
+        let mut client = OpenAiCompatibleClient::from_api_key(api_key, base_url);
+        client.http = reqwest::Client::builder()
+            .no_proxy()
+            .pool_max_idle_per_host(0)
+            .build()
+            .expect("test http client should build");
+        client
     }
 
     async fn ok_server(auth_headers: Arc<Mutex<Vec<String>>>) -> MockServer {

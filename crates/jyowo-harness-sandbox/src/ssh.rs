@@ -16,8 +16,9 @@ use crate::{
         apply_wall_clock_resource_limit, has_non_wall_clock_resource_limits,
         unsupported_resource_limits,
     },
-    CwdMarkerSupport, ExecContext, ExecSpec, ProcessHandle, ResourceLimitSupport, SandboxBackend,
-    SandboxBaseConfig, SandboxCapabilities, SessionSnapshotFile, SnapshotMetadata, SnapshotSpec,
+    CwdMarkerSupport, ExecContext, ExecSpec, NetworkPolicySupport, ProcessHandle,
+    ResourceLimitSupport, SandboxBackend, SandboxBaseConfig, SandboxCapabilities,
+    SessionSnapshotFile, SnapshotMetadata, SnapshotSpec, WorkspacePolicySupport,
 };
 
 const BACKEND_ID: &str = "ssh";
@@ -218,8 +219,17 @@ impl SandboxBackend for SshSandbox {
             cwd_marker_support: CwdMarkerSupport::Disabled,
             supports_activity_heartbeat: true,
             supports_interactive_shell: false,
-            supports_network: true,
-            supports_filesystem_write: true,
+            network: NetworkPolicySupport {
+                none: false,
+                loopback_only: false,
+                allowlist: false,
+                unrestricted: true,
+            },
+            workspace: WorkspacePolicySupport {
+                read_write_all: true,
+                read_only: false,
+                writable_subpaths: false,
+            },
             supports_gpu: false,
             supports_pty: false,
             supports_detach: false,

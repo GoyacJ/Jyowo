@@ -157,6 +157,39 @@ const harnessHealthcheckSchema = z
   })
   .strict()
 
+const processSandboxStatusSchema = z
+  .object({
+    backendId: z.string().min(1),
+    candidateIds: z.array(z.string()),
+    availableNetworkPolicies: z.array(z.string()),
+    availableWorkspacePolicies: z.array(z.string()),
+    unavailableReasons: z.array(z.string()),
+  })
+  .strict()
+
+const brokerStatusSchema = z
+  .object({
+    available: z.boolean(),
+    deniedReasons: z.array(z.string()),
+  })
+  .strict()
+
+const toolRuntimeStatusSchema = z
+  .object({
+    toolName: z.string().min(1),
+    available: z.boolean(),
+    unavailableReason: z.string().nullable(),
+  })
+  .strict()
+
+export const runtimeExecutionStatusSchema = z
+  .object({
+    processSandbox: processSandboxStatusSchema,
+    httpBroker: brokerStatusSchema,
+    tools: z.array(toolRuntimeStatusSchema),
+  })
+  .strict()
+
 const conversationSummarySchema = z
   .object({
     id: z.string().min(1),
@@ -3977,6 +4010,8 @@ const deleteProjectResponseSchema = z
 
 export type AppInfo = z.infer<typeof appInfoSchema>
 export type HarnessHealthcheck = z.infer<typeof harnessHealthcheckSchema>
+export type RuntimeExecutionStatus = z.infer<typeof runtimeExecutionStatusSchema>
+export type ToolRuntimeStatus = z.infer<typeof toolRuntimeStatusSchema>
 export type ListConversationsResponse = z.infer<typeof listConversationsResponseSchema>
 export type ListProjectsResponse = z.infer<typeof listProjectsResponseSchema>
 export type SwitchProjectResponse = z.infer<typeof switchProjectResponseSchema>
@@ -4286,6 +4321,7 @@ export interface CommandClient {
   getConversation: (conversationId: string) => Promise<GetConversationResponse>
   getAppInfo: () => Promise<AppInfo>
   getHarnessHealthcheck: () => Promise<HarnessHealthcheck>
+  getRuntimeExecutionStatus: () => Promise<RuntimeExecutionStatus>
   getModelUsageSummary: () => Promise<GetModelUsageSummaryResponse>
   listOfficialQuotaSnapshots: () => Promise<ListOfficialQuotaSnapshotsResponse>
   getMemoryItem: (id: string) => Promise<GetMemoryItemResponse>
@@ -4729,6 +4765,10 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
     async getHarnessHealthcheck() {
       const command = 'harness_healthcheck'
       return parsePayload(command, harnessHealthcheckSchema, await invoke(command))
+    },
+    async getRuntimeExecutionStatus() {
+      const command = 'get_runtime_execution_status'
+      return parsePayload(command, runtimeExecutionStatusSchema, await invoke(command))
     },
     async getModelUsageSummary() {
       const command = 'get_model_usage_summary'
@@ -5429,6 +5469,12 @@ export function getHarnessHealthcheck(
   client: CommandClient = tauriCommandClient,
 ): Promise<HarnessHealthcheck> {
   return client.getHarnessHealthcheck()
+}
+
+export function getRuntimeExecutionStatus(
+  client: CommandClient = tauriCommandClient,
+): Promise<RuntimeExecutionStatus> {
+  return client.getRuntimeExecutionStatus()
 }
 
 export function listConversations(

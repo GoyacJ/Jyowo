@@ -49,6 +49,7 @@ globset = { workspace = true }
 parking_lot = "0.12.5"
 regex = { workspace = true }
 reqwest = { workspace = true, optional = true }
+ring = { workspace = true }
 schemars = { workspace = true }
 secrecy = { workspace = true, optional = true }
 serde = { workspace = true }
@@ -58,5 +59,6 @@ tokio = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+jyowo-harness-execution = { path = "../jyowo-harness-execution" }
 tempfile = { workspace = true }
 wiremock = "0.6.5"

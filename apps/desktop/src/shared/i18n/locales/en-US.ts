@@ -481,6 +481,21 @@ export const enUS = {
         },
       },
     },
+    runtimeStatus: {
+      title: 'Runtime execution status',
+      description: 'Sandbox, network broker, and tool availability reported by the local runtime.',
+      loading: 'Loading runtime execution status.',
+      processBackend: 'Sandbox backend',
+      candidates: 'Candidate backends',
+      httpBroker: 'HTTP broker',
+      networkPolicies: 'Network policies',
+      workspacePolicies: 'Workspace policies',
+      tool: 'Tool',
+      status: 'Status',
+      reason: 'Reason',
+      available: 'Available',
+      unavailable: 'Unavailable',
+    },
     automation: {
       title: 'Automations',
       description:

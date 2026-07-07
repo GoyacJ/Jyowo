@@ -39,6 +39,7 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "permission_review", PermissionReview);
     insert_schema!(schemas, "permission_confirmation", PermissionConfirmation);
     insert_schema!(schemas, "action_resource", ActionResource);
+    insert_schema!(schemas, "tool_execution_channel", ToolExecutionChannel);
     insert_schema!(schemas, "tool_action_plan", ToolActionPlan);
     insert_schema!(schemas, "mcp_resource_operation", McpResourceOperation);
     insert_schema!(schemas, "mcp_prompt_operation", McpPromptOperation);
@@ -419,6 +420,10 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "clarify_answer", ClarifyAnswer);
     insert_schema!(schemas, "outbound_user_message", OutboundUserMessage);
     insert_schema!(schemas, "user_message_delivery", UserMessageDelivery);
+    insert_schema!(schemas, "runtime_execution_status", RuntimeExecutionStatus);
+    insert_schema!(schemas, "process_sandbox_status", ProcessSandboxStatus);
+    insert_schema!(schemas, "broker_status", BrokerStatus);
+    insert_schema!(schemas, "tool_runtime_status", ToolRuntimeStatus);
 
     insert_schema!(schemas, "session_created", SessionCreatedEvent);
     insert_schema!(schemas, "session_forked", SessionForkedEvent);

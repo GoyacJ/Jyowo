@@ -178,6 +178,7 @@ impl Tool for ToolSearchTool {
             Vec::new(),
             harness_contracts::WorkspaceAccess::None,
             harness_contracts::NetworkAccess::None,
+            harness_contracts::ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

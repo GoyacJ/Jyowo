@@ -1,10 +1,9 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
     ActionResource, DecisionScope, HostRule, NetworkAccess, PermissionSubject, ToolActionPlan,
-    ToolCapability, ToolDescriptor, ToolError, ToolGroup, ToolResult, WorkspaceAccess,
+    ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
+    WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde::{Deserialize, Serialize};
@@ -15,6 +14,8 @@ use crate::{
     action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
     ToolStream, ValidationError,
 };
+
+pub const WEB_SEARCH_BACKEND_CAPABILITY: &str = "web_search_backend";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebSearchRequest {
@@ -40,14 +41,13 @@ pub trait WebSearchBackend: Send + Sync + 'static {
 #[derive(Clone)]
 pub struct WebSearchTool {
     descriptor: ToolDescriptor,
-    backends: Vec<Arc<dyn WebSearchBackend>>,
 }
 
 impl WebSearchTool {
-    pub fn new(backends: Vec<Arc<dyn WebSearchBackend>>) -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             descriptor: Self::default_descriptor(),
-            backends,
         }
     }
 
@@ -82,7 +82,6 @@ impl Default for WebSearchTool {
     fn default() -> Self {
         Self {
             descriptor: Self::default_descriptor(),
-            backends: Vec::new(),
         }
     }
 }
@@ -119,17 +118,18 @@ impl Tool for WebSearchTool {
                 pattern: "web-search".to_owned(),
                 ports: None,
             }]),
+            ToolExecutionChannel::ExternalCapability {
+                capability: web_search_backend_capability(),
+            },
         )
     }
 
     async fn execute_authorized(
         &self,
         authorized: AuthorizedToolInput,
-        _ctx: ToolContext,
+        ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
-        let backend = self.backends.first().ok_or_else(|| {
-            ToolError::CapabilityMissing(ToolCapability::Custom("web_search_backend".to_owned()))
-        })?;
+        let backend = ctx.capability::<dyn WebSearchBackend>(web_search_backend_capability())?;
         let results = backend
             .search(request(authorized.raw_input()).map_err(validation_error)?)
             .await?;
@@ -140,6 +140,10 @@ impl Tool for WebSearchTool {
             ),
         )])))
     }
+}
+
+fn web_search_backend_capability() -> ToolCapability {
+    ToolCapability::Custom(WEB_SEARCH_BACKEND_CAPABILITY.to_owned())
 }
 
 fn validation_error(error: ValidationError) -> ToolError {
