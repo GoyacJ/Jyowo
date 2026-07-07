@@ -41,7 +41,6 @@ export type ConversationTimelineState = {
   }
   hasMoreBefore: boolean
   hasMoreAfter: boolean
-  gapMarkers: Array<{ id: string; afterCursor: ConversationCursor | null }>
   eventCursor: ConversationCursor | null
   optimisticTurnsByClientMessageId: Record<string, ConversationTurn>
   activeRunIds: string[]
@@ -64,7 +63,6 @@ export function createConversationTimelineState(conversationId: string): Convers
     loadedRange: {},
     hasMoreBefore: false,
     hasMoreAfter: false,
-    gapMarkers: [],
     eventCursor: null,
     optimisticTurnsByClientMessageId: {},
     activeRunIds: [],
@@ -137,9 +135,6 @@ function conversationTimelineReducer(
         hasMoreBefore: action.hasMoreBefore,
         hasMoreAfter: action.hasMoreAfter,
         eventCursor: action.eventCursor,
-        gapMarkers: action.gap
-          ? [...state.gapMarkers, { id: `gap:${Date.now()}`, afterCursor: action.eventCursor }]
-          : state.gapMarkers,
         activeRunIds: activeRunIds(reconciled),
         optimisticTurnsByClientMessageId: filterOptimisticAfterReconcile(
           state.optimisticTurnsByClientMessageId,
@@ -251,9 +246,7 @@ function conversationTimelineReducer(
         id: `segment:error:local:${action.clientMessageId}`,
         order: 0,
         body: safe.body,
-        ...(safe.redactedOriginalBody
-          ? { redactedOriginalBody: safe.redactedOriginalBody }
-          : {}),
+        ...(safe.redactedOriginalBody ? { redactedOriginalBody: safe.redactedOriginalBody } : {}),
       }
       return {
         ...state,
@@ -300,21 +293,6 @@ function conversationTimelineReducer(
         redactedOriginalReason: safe.redactedOriginalBody,
       })
     }
-    case 'markGap':
-      return {
-        ...state,
-        gapMarkers: [
-          ...state.gapMarkers,
-          { id: `gap:${Date.now()}`, afterCursor: action.afterCursor },
-        ],
-      }
-    case 'retryGap':
-      return {
-        ...state,
-        gapMarkers: [],
-        refreshRequests: state.refreshRequests + 1,
-        immediateRefreshRequests: state.immediateRefreshRequests + 1,
-      }
     case 'worktreeRefreshRequested':
       return {
         ...state,

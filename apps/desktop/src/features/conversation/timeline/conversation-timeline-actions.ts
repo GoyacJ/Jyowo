@@ -33,6 +33,4 @@ export type ConversationTimelineAction =
   | { type: 'commandFailed'; clientMessageId: string; errorMessage: string }
   | { type: 'permissionSubmitting'; requestId: string; decision: 'approve' | 'deny' }
   | { type: 'permissionSubmitFailed'; requestId: string; errorMessage: string }
-  | { type: 'markGap'; afterCursor: ConversationCursor | null }
-  | { type: 'retryGap' }
   | { type: 'worktreeRefreshRequested'; immediate: boolean }

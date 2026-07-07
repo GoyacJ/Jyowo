@@ -12,20 +12,6 @@ describe('coalesceTimelineActions', () => {
     ).toEqual([{ type: 'worktreeRefreshRequested', immediate: true }])
   })
 
-  it('keeps gap ordering between refetch updates', () => {
-    expect(
-      coalesceTimelineActions([
-        { type: 'worktreeRefreshRequested', immediate: false },
-        { type: 'markGap', afterCursor: null },
-        { type: 'worktreeRefreshRequested', immediate: true },
-      ]),
-    ).toEqual([
-      { type: 'worktreeRefreshRequested', immediate: false },
-      { type: 'markGap', afterCursor: null },
-      { type: 'worktreeRefreshRequested', immediate: true },
-    ])
-  })
-
   it('collapses one frame of streaming updates but keeps terminal urgency', () => {
     expect(
       coalesceTimelineActions([

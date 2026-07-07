@@ -30,6 +30,18 @@ function cursor(conversationSequence = 1) {
   return { eventId: '01ARZ3NDEKTSV4RRFFQ69G5FAV', conversationSequence }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
+function nextTask() {
+  return new Promise<void>((resolve) => setTimeout(resolve, 0))
+}
+
 const replayEvent: ConversationEventBatchPayload['events'][number] = {
   id: 'evt-replay',
   conversationSequence: 1,
@@ -196,15 +208,25 @@ describe('createConversationTimelineSource', () => {
     expect(client.unsubscribeConversationEvents).toHaveBeenCalledWith('subscription-001')
   })
 
-  it('marks gap for replay and live overflow batches', async () => {
-    const { client, emit } = createClient({
-      subscribeConversationEvents: vi.fn(async () => ({
+  it('uses replay and live gap as internal resync signals', async () => {
+    const subscribeConversationEvents = vi
+      .fn<CommandClient['subscribeConversationEvents']>()
+      .mockResolvedValueOnce({
         subscriptionId: 'subscription-001',
         conversationId: 'conversation-001',
         replayEvents: [],
         cursor: cursor(),
         gap: true,
-      })),
+      })
+      .mockResolvedValueOnce({
+        subscriptionId: 'subscription-002',
+        conversationId: 'conversation-001',
+        replayEvents: [],
+        cursor: cursor(2),
+        gap: false,
+      })
+    const { client, emit } = createClient({
+      subscribeConversationEvents,
     })
     const actions: ConversationTimelineAction[] = []
 
@@ -219,20 +241,100 @@ describe('createConversationTimelineSource', () => {
       gap: true,
       phase: 'live',
     })
+    await Promise.resolve()
+    await Promise.resolve()
 
     expect(actions).toEqual([
       { type: 'worktreeRefreshRequested', immediate: true },
-      { type: 'markGap', afterCursor: cursor() },
       { type: 'worktreeRefreshRequested', immediate: true },
-      { type: 'markGap', afterCursor: cursor() },
     ])
+    expect(subscribeConversationEvents).toHaveBeenCalledTimes(2)
+    expect(subscribeConversationEvents).toHaveBeenNthCalledWith(2, {
+      conversationId: 'conversation-001',
+      afterCursor: cursor(),
+    })
   })
 
-  it('falls back to gap state when subscribe fails', async () => {
+  it('serializes live gap resubscriptions', async () => {
+    const pendingSubscription =
+      deferred<Awaited<ReturnType<CommandClient['subscribeConversationEvents']>>>()
+    const subscribeConversationEvents = vi
+      .fn<CommandClient['subscribeConversationEvents']>()
+      .mockResolvedValueOnce({
+        subscriptionId: 'subscription-001',
+        conversationId: 'conversation-001',
+        replayEvents: [],
+        cursor: cursor(),
+        gap: false,
+      })
+      .mockReturnValueOnce(pendingSubscription.promise)
+      .mockResolvedValueOnce({
+        subscriptionId: 'subscription-003',
+        conversationId: 'conversation-001',
+        replayEvents: [],
+        cursor: cursor(3),
+        gap: false,
+      })
+    const { client, emit } = createClient({
+      subscribeConversationEvents,
+    })
+    const cleanup = await createConversationTimelineSource(client).subscribe(
+      'conversation-001',
+      null,
+      () => undefined,
+    )
+
+    emit({
+      subscriptionId: 'subscription-001',
+      conversationId: 'conversation-001',
+      events: [],
+      cursor: cursor(),
+      gap: true,
+      phase: 'live',
+    })
+    emit({
+      subscriptionId: 'subscription-001',
+      conversationId: 'conversation-001',
+      events: [],
+      cursor: cursor(2),
+      gap: true,
+      phase: 'live',
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(subscribeConversationEvents).toHaveBeenCalledTimes(2)
+
+    pendingSubscription.resolve({
+      subscriptionId: 'subscription-002',
+      conversationId: 'conversation-001',
+      replayEvents: [],
+      cursor: cursor(2),
+      gap: false,
+    })
+    await Promise.resolve()
+    await nextTask()
+
+    expect(subscribeConversationEvents).toHaveBeenCalledTimes(3)
+    expect(client.unsubscribeConversationEvents).toHaveBeenCalledWith('subscription-001')
+    expect(client.unsubscribeConversationEvents).toHaveBeenCalledWith('subscription-002')
+
+    await cleanup()
+  })
+
+  it('retries stale subscribe failures as resync without visible gap actions', async () => {
+    const subscribeConversationEvents = vi
+      .fn<CommandClient['subscribeConversationEvents']>()
+      .mockRejectedValueOnce(new Error('conversation cursor is unknown'))
+      .mockResolvedValueOnce({
+        subscriptionId: 'subscription-002',
+        conversationId: 'conversation-001',
+        replayEvents: [],
+        cursor: cursor(2),
+        gap: true,
+      })
     const { client } = createClient({
-      subscribeConversationEvents: vi.fn(async () => {
-        throw new Error('subscription unavailable')
-      }),
+      subscribeConversationEvents,
     })
     const actions: ConversationTimelineAction[] = []
 
@@ -244,8 +346,15 @@ describe('createConversationTimelineSource', () => {
       },
     )
 
+    expect(subscribeConversationEvents).toHaveBeenNthCalledWith(1, {
+      conversationId: 'conversation-001',
+      afterCursor: cursor(),
+    })
+    expect(subscribeConversationEvents).toHaveBeenNthCalledWith(2, {
+      conversationId: 'conversation-001',
+    })
     expect(actions).toEqual([
-      { type: 'markGap', afterCursor: null },
+      { type: 'worktreeRefreshRequested', immediate: true },
       { type: 'worktreeRefreshRequested', immediate: true },
     ])
   })

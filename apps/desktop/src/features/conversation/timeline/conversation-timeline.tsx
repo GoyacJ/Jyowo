@@ -17,7 +17,6 @@ const composerReservePx = 112
 const virtualListThreshold = 24
 
 export function ConversationTimeline({
-  gapMarkers = [],
   hasMoreAfter = false,
   hasMoreBefore = false,
   loadEarlier,
@@ -27,12 +26,10 @@ export function ConversationTimeline({
   onOpenDetails,
   onPermissionResolve,
   onReviewContinue,
-  retryGap,
   showTitle = true,
   title,
   turns,
 }: {
-  gapMarkers?: Array<{ id: string }>
   hasMoreAfter?: boolean
   hasMoreBefore?: boolean
   loadEarlier?: () => Promise<void> | void
@@ -44,7 +41,6 @@ export function ConversationTimeline({
   onOpenDetails?: (eventRef: ConversationEventRef) => void
   onPermissionResolve?: (request: ResolvePermissionRequest) => void
   onReviewContinue?: (prompt: string) => void
-  retryGap?: () => void
   showTitle?: boolean
 }) {
   const { t } = useTranslation('conversation')
@@ -174,18 +170,6 @@ export function ConversationTimeline({
           onClick={handleLoadEarlier}
           visible={hasMoreBefore}
         />
-        {gapMarkers.map((gap) => (
-          <TimelineGapMarker
-            key={gap.id}
-            onRetry={retryGap}
-            retryLabel={t('timeline.retryGap', 'Retry')}
-            title={t('timeline.gapTitle', 'Timeline gap')}
-            description={t(
-              'timeline.gapDescription',
-              'Some conversation updates were missed. Refresh the worktree projection to continue from the latest safe state.',
-            )}
-          />
-        ))}
         {timelineTurns.length > 0 ? (
           useVirtualList ? (
             <div
@@ -285,32 +269,6 @@ function TimelinePageControl({
       <Button disabled={disabled} onClick={onClick} type="button" variant="secondary">
         {label}
       </Button>
-    </div>
-  )
-}
-
-function TimelineGapMarker({
-  description,
-  onRetry,
-  retryLabel,
-  title,
-}: {
-  description: string
-  onRetry?: () => void
-  retryLabel: string
-  title: string
-}) {
-  return (
-    <div className="mx-auto my-3 grid max-w-xl gap-2 rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-sm">
-      <div className="flex items-center justify-between gap-3">
-        <span className="font-medium text-warning">{title}</span>
-        {onRetry ? (
-          <Button onClick={onRetry} size="sm" type="button" variant="ghost">
-            {retryLabel}
-          </Button>
-        ) : null}
-      </div>
-      <p className="text-muted-foreground text-xs">{description}</p>
     </div>
   )
 }

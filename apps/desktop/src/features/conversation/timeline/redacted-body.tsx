@@ -2,7 +2,13 @@ import { Eye, EyeOff } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-export function RedactedBody({ originalBody, className }: { originalBody: string; className?: string }) {
+export function RedactedBody({
+  originalBody,
+  className,
+}: {
+  originalBody: string
+  className?: string
+}) {
   const { t } = useTranslation('conversation')
   const [revealed, setRevealed] = useState(false)
 

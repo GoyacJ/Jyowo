@@ -107,6 +107,81 @@ async fn subscribe_conversation_events_emits_live_batches_and_unsubscribes() {
 }
 
 #[tokio::test]
+async fn subscribe_conversation_events_resyncs_unknown_cursor_to_empty_worktree() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    open_conversation_session(&state, session_id).await;
+    let conversation_id = session_id.to_string();
+    let batches = Arc::new(Mutex::new(Vec::<ConversationEventBatchPayload>::new()));
+    let emitted_batches = Arc::clone(&batches);
+
+    let subscription = subscribe_conversation_events_for_window_with_runtime_state(
+        SubscribeConversationEventsRequest {
+            conversation_id: conversation_id.clone(),
+            after_cursor: Some(ConversationCursor {
+                event_id: EventId::new(),
+                conversation_sequence: 1,
+            }),
+        },
+        "main".to_owned(),
+        Arc::new(move |batch| {
+            emitted_batches.lock().unwrap().push(batch);
+            Ok(())
+        }),
+        &state,
+    )
+    .await
+    .expect("unknown cursor should resync to the empty canonical worktree");
+
+    assert!(subscription.gap);
+    assert!(subscription.replay_events.is_empty());
+    assert_eq!(subscription.cursor, None);
+
+    let started = start_run_with_runtime_state(
+        StartRunRequest {
+            attachments: None,
+            client_message_id: Some("00000000-0000-4000-8000-000000000101".to_owned()),
+            context_references: None,
+            conversation_id: conversation_id.clone(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            permission_mode: None,
+            prompt: "Create live event after empty resync".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("run should start after empty resync");
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if batches.lock().unwrap().iter().any(|batch| {
+                batch.subscription_id == subscription.subscription_id
+                    && batch.conversation_id == conversation_id
+                    && batch.phase == "live"
+                    && batch.events.iter().any(|event| {
+                        event.run_id == started.run_id && event.event_type == "run.started"
+                    })
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("empty resynced subscription should continue with future live events");
+
+    unsubscribe_conversation_events_for_window_with_runtime_state(
+        UnsubscribeConversationEventsRequest {
+            subscription_id: subscription.subscription_id,
+        },
+        "main".to_owned(),
+        &state,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn unsubscribe_conversation_events_rejects_other_window_subscription() {
     let state = runtime_state_with_harness().await;
     let session_id = SessionId::new();
@@ -239,6 +314,109 @@ async fn subscribe_conversation_events_accepts_cursor_after_replayed_permission_
             request_id: pending.request.request_id.to_string(),
             confirmation_text: None,
         },
+        &state,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn subscribe_conversation_events_resyncs_unknown_cursor_and_keeps_live_subscription() {
+    let state = runtime_state_with_harness().await;
+    let session_id = SessionId::new();
+    open_conversation_session(&state, session_id).await;
+    let conversation_id = session_id.to_string();
+
+    let first_run = start_run_with_runtime_state(
+        StartRunRequest {
+            attachments: None,
+            client_message_id: Some("00000000-0000-4000-8000-000000000001".to_owned()),
+            context_references: None,
+            conversation_id: conversation_id.clone(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            permission_mode: None,
+            prompt: "Create initial event".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("first run should create a timeline event");
+    let latest = page_conversation_timeline_with_runtime_state(
+        PageConversationTimelineRequest {
+            conversation_id: conversation_id.clone(),
+            after_cursor: None,
+            limit: Some(200),
+        },
+        &state,
+    )
+    .await
+    .expect("timeline page should read the initial event")
+    .cursor
+    .expect("initial timeline should have a cursor");
+
+    let batches = Arc::new(Mutex::new(Vec::<ConversationEventBatchPayload>::new()));
+    let emitted_batches = Arc::clone(&batches);
+    let subscription = subscribe_conversation_events_for_window_with_runtime_state(
+        SubscribeConversationEventsRequest {
+            conversation_id: conversation_id.clone(),
+            after_cursor: Some(ConversationCursor {
+                event_id: EventId::new(),
+                conversation_sequence: latest.conversation_sequence,
+            }),
+        },
+        "main".to_owned(),
+        Arc::new(move |batch| {
+            emitted_batches.lock().unwrap().push(batch);
+            Ok(())
+        }),
+        &state,
+    )
+    .await
+    .expect("unknown cursor should resync instead of rejecting the subscription");
+
+    assert!(subscription.gap);
+    assert!(subscription.replay_events.is_empty());
+    assert_eq!(subscription.cursor, Some(latest));
+
+    let second_run = start_run_with_runtime_state(
+        StartRunRequest {
+            attachments: None,
+            client_message_id: Some("00000000-0000-4000-8000-000000000002".to_owned()),
+            context_references: None,
+            conversation_id: conversation_id.clone(),
+            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            permission_mode: None,
+            prompt: "Create live event after resync".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect("second run should create a live timeline event");
+    assert_ne!(first_run.run_id, second_run.run_id);
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if batches.lock().unwrap().iter().any(|batch| {
+                batch.subscription_id == subscription.subscription_id
+                    && batch.conversation_id == conversation_id
+                    && batch.phase == "live"
+                    && batch.events.iter().any(|event| {
+                        event.run_id == second_run.run_id && event.event_type == "run.started"
+                    })
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("resynced live subscription should continue after unknown cursor");
+
+    unsubscribe_conversation_events_for_window_with_runtime_state(
+        UnsubscribeConversationEventsRequest {
+            subscription_id: subscription.subscription_id,
+        },
+        "main".to_owned(),
         &state,
     )
     .await

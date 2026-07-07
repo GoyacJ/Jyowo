@@ -95,10 +95,6 @@ export function selectPendingPermissions(
   return pending
 }
 
-export function selectShouldPollFallback(state: ConversationTimelineState): boolean {
-  return state.gapMarkers.length > 0
-}
-
 export type TurnGroup = {
   turnId: string
   turns: ConversationTurn[]

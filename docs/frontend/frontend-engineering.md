@@ -207,14 +207,16 @@ type ConversationTimelineState = {
   loadedRange: { first?: ConversationTurnCursor; last?: ConversationTurnCursor }
   hasMoreBefore: boolean
   hasMoreAfter: boolean
-  gapMarkers: Array<{ id: string; afterCursor: ConversationCursor | null }>
+  eventCursor: ConversationCursor | null
   optimisticTurnsByClientMessageId: Record<string, ConversationTurn>
   ...
 }
 ```
 
-Actions include `hydrateInitialPage`, `prependPage`, `appendPage`, `markGap`, `retryGap`.
-Optimistic turns reconcile by `clientMessageId` across pages. The `useConversationTimeline` hook exposes `loadEarlier`, `loadLater`, and `retryGap`.
+Actions include `hydrateInitialPage`, `prependPage`, `appendPage`, and
+`worktreeRefreshRequested`. Optimistic turns reconcile by `clientMessageId`
+across pages. The `useConversationTimeline` hook exposes `loadEarlier` and
+`loadLater`.
 
 ## Component Architecture
 
@@ -1154,8 +1156,11 @@ Conversation timeline:
   typed listener for `conversation_event_batch` and exposes parsed payloads.
 - Replay returned by `subscribe_conversation_events` must be applied before
   live batches for the same `subscriptionId`.
-- Gaps or cursor mismatches mark the reducer gap state and request replay or
-  snapshot recovery. The UI must not guess missing event order locally.
+- Gaps or cursor mismatches are internal resync signals. The frontend must
+  request a canonical worktree refresh and, for live batches, resubscribe from
+  the backend-returned cursor or from `null` when no cursor is available. The
+  conversation canvas must not render a gap marker or guess missing event order
+  locally.
 - Streaming assistant deltas request projected worktree refreshes. The product
   canvas renders the latest Rust-owned `AssistantWork` tree, including
   process, text, tool attempts, permissions, artifacts, review requests,

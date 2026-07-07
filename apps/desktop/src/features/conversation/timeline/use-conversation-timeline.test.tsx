@@ -22,6 +22,7 @@ function cursor(conversationSequence = 1) {
 function liveBatch(
   sequence: number,
   type: 'assistant.delta' | 'run.ended' = 'assistant.delta',
+  gap = false,
 ): ConversationEventBatchPayload {
   if (type === 'run.ended') {
     return {
@@ -41,7 +42,7 @@ function liveBatch(
         },
       ],
       cursor: cursor(sequence),
-      gap: false,
+      gap,
       phase: 'live',
     }
   }
@@ -63,7 +64,7 @@ function liveBatch(
       },
     ],
     cursor: cursor(sequence),
-    gap: false,
+    gap,
     phase: 'live',
   }
 }
@@ -277,5 +278,77 @@ describe('useConversationTimeline', () => {
       pageCursor: { turnId: 'turn-11', position: 11 },
       limit: 50,
     })
+  })
+
+  it('refetches the canonical worktree and resubscribes after a live gap signal', async () => {
+    vi.useFakeTimers()
+
+    let listener: ((batch: ConversationEventBatchPayload) => void) | undefined
+    const baseClient = createTestCommandClient()
+    const pageConversationWorktree = vi.fn(baseClient.pageConversationWorktree)
+    const subscribeConversationEvents = vi
+      .fn<CommandClient['subscribeConversationEvents']>()
+      .mockResolvedValueOnce({
+        subscriptionId: 'subscription-001',
+        conversationId: 'conversation-001',
+        replayEvents: [],
+        cursor: cursor(1),
+        gap: false,
+      })
+      .mockResolvedValueOnce({
+        subscriptionId: 'subscription-002',
+        conversationId: 'conversation-001',
+        replayEvents: [],
+        cursor: cursor(2),
+        gap: false,
+      })
+    const commandClient = {
+      ...baseClient,
+      listenConversationEventBatches: vi.fn(async (callback) => {
+        listener = callback
+        return () => undefined
+      }),
+      pageConversationWorktree,
+      subscribeConversationEvents,
+    } satisfies CommandClient
+
+    renderTimelineHook(commandClient)
+
+    await flushUntil(() => {
+      expect(listener).toBeDefined()
+      expect(pageConversationWorktree).toHaveBeenCalled()
+      expect(subscribeConversationEvents).toHaveBeenCalledTimes(1)
+    })
+    pageConversationWorktree.mockClear()
+
+    act(() => {
+      listener?.({
+        ...liveBatch(2, 'assistant.delta', true),
+        cursor: cursor(2),
+      })
+    })
+    await flushAsync(16)
+
+    await flushUntil(() => expect(pageConversationWorktree).toHaveBeenCalled())
+    await flushUntil(() => expect(subscribeConversationEvents).toHaveBeenCalledTimes(2))
+    expect(subscribeConversationEvents).toHaveBeenNthCalledWith(2, {
+      conversationId: 'conversation-001',
+      afterCursor: cursor(2),
+    })
+  })
+
+  it('exposes canonical worktree query errors', async () => {
+    const baseClient = createTestCommandClient()
+    const commandClient = {
+      ...baseClient,
+      pageConversationWorktree: vi.fn(async () => {
+        throw new Error('worktree unavailable')
+      }),
+    } satisfies CommandClient
+
+    const { result } = renderTimelineHook(commandClient)
+
+    await flushUntil(() => expect(result.current.error).toBeInstanceOf(Error))
+    expect(result.current.error).toMatchObject({ message: 'worktree unavailable' })
   })
 })

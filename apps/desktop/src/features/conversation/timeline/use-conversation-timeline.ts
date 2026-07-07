@@ -18,7 +18,6 @@ import type { ConversationTimelineAction } from './conversation-timeline-actions
 import {
   selectComposerMode,
   selectPendingPermissions,
-  selectShouldPollFallback,
   selectTurns,
 } from './conversation-timeline-selectors'
 import type { ConversationTimelineState } from './conversation-timeline-store'
@@ -336,11 +335,6 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     worktreeQueryKey,
   ])
 
-  const retryGap = useCallback(() => {
-    dispatch({ type: 'retryGap' })
-    void queryClient.invalidateQueries({ queryKey: worktreeQueryKey })
-  }, [dispatch, queryClient, worktreeQueryKey])
-
   return {
     turns: selectTurns(displayState),
     composerMode: submitMutation.isPending
@@ -355,15 +349,12 @@ export function useConversationTimeline({ conversationId }: { conversationId?: s
     isCancelling: cancelMutation.isPending,
     isSubmitting: submitMutation.isPending,
     pendingToolPermissions: selectPendingPermissions(displayState),
-    shouldPollFallback: selectShouldPollFallback(displayState),
     loadEarlier,
     loadLater,
     loadingEarlier,
     loadingLater,
     hasMoreBefore: displayState.hasMoreBefore,
     hasMoreAfter: displayState.hasMoreAfter,
-    retryGap,
-    gapMarkers: displayState.gapMarkers,
     cancelActiveRun: cancelMutation.mutateAsync,
     cancelError: cancelMutation.error,
     submitError: submitMutation.error,

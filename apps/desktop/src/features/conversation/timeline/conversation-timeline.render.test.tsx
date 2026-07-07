@@ -209,21 +209,11 @@ describe('ConversationTimeline', () => {
     }
   })
 
-  it('renders timeline gap markers and retries through the supplied callback', () => {
-    const retryGap = vi.fn()
-    render(
-      <ConversationTimeline
-        gapMarkers={[{ id: 'gap-001' }]}
-        retryGap={retryGap}
-        title="Gapped conversation"
-        turns={[turn('Final answer')]}
-      />,
-    )
+  it('does not render timeline gap recovery UI for canonical turns', () => {
+    render(<ConversationTimeline title="Canonical conversation" turns={[turn('Final answer')]} />)
 
-    expect(screen.getByText('Timeline gap')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
-    expect(retryGap).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText('Timeline gap')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
   })
 
   it('renders review and clarification requests inside assistant work', () => {

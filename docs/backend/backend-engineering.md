@@ -962,7 +962,13 @@ Live subscription delivery is a single-process guarantee. The durable replay
 and snapshot paths are the restart-stable guarantee. The desktop shell may poll
 the runtime journal tail on a documented interval for live delivery, but
 overflow, unknown ordering, or cursor mismatch must surface `gap: true` instead
-of silently dropping events.
+of silently dropping events. `gap: true` is an internal resync signal: the
+desktop shell must refetch the canonical `page_conversation_worktree`
+projection and must not show a timeline gap marker in the conversation canvas.
+Unknown or stale `after_cursor` values in `subscribe_conversation_events` should
+resync to the latest projected worktree cursor and keep the live subscription
+open. Runtime unavailable, missing conversation, and other hard read errors
+remain command failures or terminal live subscription errors.
 
 `list_artifacts` must require an explicit conversation id and read through that
 runtime conversation projection, not a static demo payload. It must project only explicit artifact lifecycle events.

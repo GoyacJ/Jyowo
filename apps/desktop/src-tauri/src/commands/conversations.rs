@@ -1251,7 +1251,7 @@ pub async fn subscribe_conversation_events_for_window_with_runtime_state(
         )));
     }
 
-    let replay_page = page_conversation_timeline_with_runtime_state(
+    let replay_page = match page_conversation_timeline_with_runtime_state(
         PageConversationTimelineRequest {
             conversation_id: request.conversation_id.clone(),
             after_cursor: request.after_cursor,
@@ -1259,7 +1259,14 @@ pub async fn subscribe_conversation_events_for_window_with_runtime_state(
         },
         state,
     )
-    .await?;
+    .await
+    {
+        Ok(page) => page,
+        Err(error) if is_conversation_cursor_mismatch(&error) => {
+            resync_conversation_subscription_page(&request.conversation_id, state).await?
+        }
+        Err(error) => return Err(error),
+    };
     let cursor = replay_page.cursor;
     let replay_events = replay_page.events;
     let gap = replay_page.gap;
@@ -1372,6 +1379,33 @@ pub(crate) fn spawn_conversation_event_subscription(
             .await
             {
                 Ok(page) => page,
+                Err(error) if is_conversation_cursor_mismatch(&error) => {
+                    match resync_conversation_subscription_page(&conversation_id, &state).await {
+                        Ok(page) => {
+                            cursor = page.cursor.clone();
+                            let _ = emitter(ConversationEventBatchPayload {
+                                subscription_id: subscription_id.clone(),
+                                conversation_id: conversation_id.clone(),
+                                events: Vec::new(),
+                                cursor: cursor.clone(),
+                                gap: true,
+                                phase: "live",
+                            });
+                            continue;
+                        }
+                        Err(_) => {
+                            let _ = emitter(ConversationEventBatchPayload {
+                                subscription_id: subscription_id.clone(),
+                                conversation_id: conversation_id.clone(),
+                                events: Vec::new(),
+                                cursor: None,
+                                gap: true,
+                                phase: "live",
+                            });
+                            break;
+                        }
+                    }
+                }
                 Err(_) => {
                     let _ = emitter(ConversationEventBatchPayload {
                         subscription_id: subscription_id.clone(),
@@ -1417,6 +1451,33 @@ pub(crate) fn spawn_conversation_event_subscription(
             .await
             .remove(&subscription_id);
         let _ = window_label;
+    })
+}
+
+fn is_conversation_cursor_mismatch(error: &CommandErrorPayload) -> bool {
+    error.code == "RUNTIME_OPERATION_FAILED"
+        && error.message.contains("conversation cursor is unknown")
+}
+
+async fn resync_conversation_subscription_page(
+    conversation_id: &str,
+    state: &DesktopRuntimeState,
+) -> Result<PageConversationTimelineResponse, CommandErrorPayload> {
+    let worktree = page_conversation_worktree_with_runtime_state(
+        PageConversationWorktreeRequest {
+            conversation_id: conversation_id.to_owned(),
+            page_cursor: None,
+            direction: PageConversationWorktreeDirection::Before,
+            limit: Some(1),
+        },
+        state,
+    )
+    .await?;
+
+    Ok(PageConversationTimelineResponse {
+        events: Vec::new(),
+        cursor: worktree.event_cursor,
+        gap: true,
     })
 }
 

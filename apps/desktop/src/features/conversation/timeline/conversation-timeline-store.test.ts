@@ -307,6 +307,28 @@ describe('conversationTimelineStore', () => {
     expect(state.refreshRequests).toBe(2)
     expect(state.immediateRefreshRequests).toBe(1)
   })
+
+  it('treats worktree gap flags as non-visible resync metadata', () => {
+    let root = createConversationTimelineRoot()
+
+    root = conversationTimelineRootReducerFromAction(root, {
+      conversationId: 'conversation-a',
+      action: {
+        type: 'hydrateInitialPage',
+        turns: [],
+        pageCursor: null,
+        eventCursor: cursor(),
+        hasMoreBefore: false,
+        hasMoreAfter: false,
+        gap: true,
+      },
+    })
+
+    const state = getConversationTimelineState(root, 'conversation-a')
+
+    expect('gapMarkers' in state).toBe(false)
+    expect(selectTurns(state)).toEqual([])
+  })
 })
 
 function localSubmit(clientMessageId: string, prompt: string): ConversationTimelineAction {
