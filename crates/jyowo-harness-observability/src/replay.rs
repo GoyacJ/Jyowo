@@ -4,7 +4,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 use harness_contracts::{
     AgentId, ContextVisibility, Event, Message, ModelRef, SessionId, SubagentId, SubagentStatus,
-    TeamId, TeamTerminationReason, TenantId, ToolUseId, UiSafeText, UsageSnapshot,
+    TeamId, TeamTerminationReason, TenantId, ToolUseId, UsageSnapshot,
 };
 use harness_journal::{
     EventStore, EventStream, Projection, ReplayCursor,
@@ -528,9 +528,7 @@ fn safe_replay_export_event(event: Event) -> Event {
             Event::AgentMessageSent(event)
         }
         Event::BackgroundAgentInputSubmitted(mut event) => {
-            event.input = UiSafeText::from_trusted_redacted(
-                "Background agent input withheld from replay export.",
-            );
+            event.input = "Background agent input withheld from replay export.".to_string();
             Event::BackgroundAgentInputSubmitted(event)
         }
         Event::TeamTurnCompleted(mut event) => {

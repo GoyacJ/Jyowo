@@ -31,8 +31,8 @@ use harness_contracts::{
     PluginOperationStatus, PluginSummary, ProviderCapabilityRoute, ProviderCapabilityRouteOption,
     ProviderCapabilityRouteSettings, ProviderProbeSnapshot, ProviderServiceAdapterAvailability,
     RejectMemoryCandidateRequest, RejectMemoryCandidateResponse, RejectionReason,
-    RuntimeExecutionStatus, SandboxMode, ToolGroup, TrustLevel, UiSafeText,
-    UpdateMemorySettingsRequest, UpdateMemorySettingsResponse, UpdateThreadMemorySettingsRequest,
+    RuntimeExecutionStatus, SandboxMode, ToolGroup, TrustLevel, UpdateMemorySettingsRequest,
+    UpdateMemorySettingsResponse, UpdateThreadMemorySettingsRequest,
     UpdateThreadMemorySettingsResponse, WorkspaceAccess,
 };
 use harness_model::ModelRuntimeSemantics;
@@ -66,9 +66,9 @@ use jyowo_harness_sdk::ext::{
     ProviderCredentialResolveContext, ProviderCredentialResolverCap, ProviderProbeInput,
     ProviderProbeRunner, ProviderRegistryError, ProviderRuntimeCapability,
     ProviderServiceCapability, ProviderServiceCategory, ProviderServiceCostRisk,
-    ProviderServiceExecution, RedactPatternSet, RedactRules, RedactScope, Redactor, RequestId,
-    RunId, SessionId, Severity, SkillLoader, SkillSourceConfig, StdioEnv, StdioPolicy,
-    StdioTransport, TenantId, ToolCapability, ToolError, ToolProfile, ToolUseId, TransportChoice,
+    ProviderServiceExecution, RequestId, RunId, SessionId, Severity, SkillLoader,
+    SkillSourceConfig, StdioEnv, StdioPolicy, StdioTransport, TenantId, ToolCapability, ToolError,
+    ToolProfile, ToolUseId, TransportChoice,
 };
 use jyowo_harness_sdk::{
     resolve_agent_runtime_policy, AgentCapabilitiesInput, AgentCapabilityResolutionContext,
@@ -118,7 +118,7 @@ mod projects;
 mod providers;
 mod runtime;
 mod skills;
-mod stores;
+pub mod stores;
 #[cfg(test)]
 mod tests;
 mod validation;
@@ -129,6 +129,10 @@ pub(crate) use conversations::{
     wait_for_started_conversation_run,
 };
 use error::{invalid_payload, runtime_unavailable};
+use harness_contracts::AgentCapabilityKind;
+pub(crate) use providers::{
+    agent_capabilities_payload, no_workspace_agent_capabilities_payload_for_conversation,
+};
 use providers::{
     provider_capability_route_runtime_context, save_provider_settings_with_runtime_state_unlocked,
     sync_runtime_provider_capability_routes,
@@ -136,7 +140,7 @@ use providers::{
 pub(crate) use runtime::build_desktop_harness;
 use validation::{ensure_non_empty, ensure_provider_settings};
 
-pub(crate) use agents::map_agent_runtime_error;
+pub(crate) use agents::list_global_agent_profiles_with_builtin;
 pub use agents::{
     delete_agent_profile_with_runtime_state, list_agent_profiles_with_runtime_state,
     save_agent_profile_with_runtime_state,
@@ -204,44 +208,44 @@ pub use contracts::{
     ListReferenceCandidatesRequest, ListReferenceCandidatesResponse,
     ListSkillCatalogInstallTasksResponse, ListSkillsResponse, McpDiagnosticBatchEmitter,
     McpDiagnosticBatchPayload, McpDiagnosticRecord, McpDiagnosticSeverity, McpDiagnosticStore,
-    McpHeaderEnvRecord, McpNameValueRecord, McpServerConfigRecord, McpServerStore,
-    McpServerSummaryPayload, McpServerTransportConfig, MemoryItemPayload, MemoryItemSummaryPayload,
-    ModelCatalogEntry, ModelLifecyclePayload, ModelProviderCatalogEntry,
-    ModelProviderCatalogResponse, ModelRuntimeStatusPayload, OfficialQuotaScopePayload,
-    OfficialQuotaSnapshotPayload, OfficialQuotaStatusPayload, PageConversationTimelineRequest,
-    PageConversationTimelineResponse, PageConversationWorktreeDirection,
-    PageConversationWorktreeRequest, PermissionDecision, PermissionRequestedRunEventPayload,
-    PermissionResolver, PluginSettingsRecord, PluginStore, PluginStoreRecord,
-    ProbeProviderConfigRequest, ProbeProviderConfigResponse, ProviderBaseUrlRegionPayload,
-    ProviderCapabilityRouteStore, ProviderCapabilityRouteValidationToken, ProviderConfigPayload,
-    ProviderConfigRecord, ProviderDiagnosticsStore, ProviderModelDescriptorRecord,
-    ProviderModelLifecycleRecord, ProviderModelModalityRecord, ProviderProbeErrorKindPayload,
-    ProviderProbeSnapshotPayload, ProviderProbeStatusPayload, ProviderQuotaCacheRecord,
-    ProviderQuotaCacheStore, ProviderRuntimeCapabilityPayload, ProviderServiceCapabilityPayload,
-    ProviderSettingsRecord, ProviderSettingsRequest, ProviderSettingsStore,
-    ReferenceCandidatePayload, RefreshOfficialQuotaRequest, RefreshOfficialQuotaResponse,
-    ReloadPluginRequest, ReplayTimelineRequest, ReplayTimelineResponse,
-    RequestProviderConfigApiKeyRevealRequest, RequestProviderConfigApiKeyRevealResponse,
-    ResolvePermissionRequest, ResolvePermissionResponse, RestartMcpServerRequest,
-    RestartMcpServerResponse, RunAutomationNowRequest, RunAutomationNowResponse,
-    RunEvalCaseRequest, RunEvalCaseResponse, RunEventBodyPayload, RunEventPayload,
-    SaveAgentProfileResponse, SaveAutomationRequest, SaveAutomationResponse,
+    McpHeaderEnvRecord, McpNameValueRecord, McpNameValueSaveRecord, McpServerConfigRecord,
+    McpServerConfigTransportPayload, McpServerStore, McpServerSummaryPayload,
+    McpServerTransportConfig, MemoryItemPayload, MemoryItemSummaryPayload, ModelCatalogEntry,
+    ModelLifecyclePayload, ModelProviderCatalogEntry, ModelProviderCatalogResponse,
+    ModelRuntimeStatusPayload, OfficialQuotaScopePayload, OfficialQuotaSnapshotPayload,
+    OfficialQuotaStatusPayload, PageConversationTimelineRequest, PageConversationTimelineResponse,
+    PageConversationWorktreeDirection, PageConversationWorktreeRequest, PermissionDecision,
+    PermissionRequestedRunEventPayload, PermissionResolver, PluginSettingsRecord, PluginStore,
+    PluginStoreRecord, ProbeProviderConfigRequest, ProbeProviderConfigResponse,
+    ProviderBaseUrlRegionPayload, ProviderCapabilityRouteStore,
+    ProviderCapabilityRouteValidationToken, ProviderConfigPayload, ProviderConfigRecord,
+    ProviderDiagnosticsStore, ProviderModelDescriptorRecord, ProviderModelLifecycleRecord,
+    ProviderModelModalityRecord, ProviderProbeErrorKindPayload, ProviderProbeSnapshotPayload,
+    ProviderProbeStatusPayload, ProviderQuotaCacheRecord, ProviderQuotaCacheStore,
+    ProviderRuntimeCapabilityPayload, ProviderServiceCapabilityPayload, ProviderSettingsRecord,
+    ProviderSettingsRequest, ProviderSettingsStore, ReferenceCandidatePayload,
+    RefreshOfficialQuotaRequest, RefreshOfficialQuotaResponse, ReloadPluginRequest,
+    ReplayTimelineRequest, ReplayTimelineResponse, RequestProviderConfigApiKeyRevealRequest,
+    RequestProviderConfigApiKeyRevealResponse, ResolvePermissionRequest, ResolvePermissionResponse,
+    RestartMcpServerRequest, RestartMcpServerResponse, RunAutomationNowRequest,
+    RunAutomationNowResponse, RunEvalCaseRequest, RunEvalCaseResponse, RunEventBodyPayload,
+    RunEventPayload, SaveAgentProfileResponse, SaveAutomationRequest, SaveAutomationResponse,
     SaveBrowserMcpPresetRequest, SaveBrowserMcpPresetResponse, SaveMcpServerRequest,
-    SaveMcpServerResponse, SaveProviderCapabilityRouteRequest, SaveProviderCapabilityRouteResponse,
-    SaveProviderSettingsResponse, SendBackgroundAgentInputRequest, SetAutomationEnabledRequest,
-    SetAutomationEnabledResponse, SetExecutionSettingsRequest, SetExecutionSettingsResponse,
-    SetMcpServerEnabledRequest, SetMcpServerEnabledResponse, SetPluginEnabledRequest,
-    SetProjectPluginsEnabledRequest, SetProjectPluginsEnabledResponse, SetSkillEnabledRequest,
-    SetSkillEnabledResponse, SkillCatalogInstallProgressEmitter,
-    SkillCatalogInstallProgressPayload, SkillCatalogInstallTaskPayload, SkillDetailPayload,
-    SkillFileContentPayload, SkillFilePayload, SkillParameterPayload, SkillStore, SkillStoreRecord,
-    SkillSummaryPayload, StartRunRequest, StartRunResponse, SubscribeConversationEventsRequest,
-    SubscribeConversationEventsResponse, SubscribeMcpDiagnosticsRequest,
-    SubscribeMcpDiagnosticsResponse, UninstallPluginRequest, UnsubscribeConversationEventsRequest,
-    UnsubscribeConversationEventsResponse, UnsubscribeMcpDiagnosticsRequest,
-    UnsubscribeMcpDiagnosticsResponse, UpdateMemoryItemRequest, UpdateMemoryItemResponse,
-    UpdatePluginConfigRequest, ValidatePluginFromPathRequest, ValidateProviderSettingsRequest,
-    ValidateProviderSettingsResponse,
+    SaveMcpServerResponse, SaveMcpServerTransportConfig, SaveProviderCapabilityRouteRequest,
+    SaveProviderCapabilityRouteResponse, SaveProviderSettingsResponse,
+    SendBackgroundAgentInputRequest, SetAutomationEnabledRequest, SetAutomationEnabledResponse,
+    SetExecutionSettingsRequest, SetExecutionSettingsResponse, SetMcpServerEnabledRequest,
+    SetMcpServerEnabledResponse, SetPluginEnabledRequest, SetProjectPluginsEnabledRequest,
+    SetProjectPluginsEnabledResponse, SetSkillEnabledRequest, SetSkillEnabledResponse,
+    SkillCatalogInstallProgressEmitter, SkillCatalogInstallProgressPayload,
+    SkillCatalogInstallTaskPayload, SkillDetailPayload, SkillFileContentPayload, SkillFilePayload,
+    SkillParameterPayload, SkillStore, SkillStoreRecord, SkillSummaryPayload, StartRunRequest,
+    StartRunResponse, SubscribeConversationEventsRequest, SubscribeConversationEventsResponse,
+    SubscribeMcpDiagnosticsRequest, SubscribeMcpDiagnosticsResponse, UninstallPluginRequest,
+    UnsubscribeConversationEventsRequest, UnsubscribeConversationEventsResponse,
+    UnsubscribeMcpDiagnosticsRequest, UnsubscribeMcpDiagnosticsResponse, UpdateMemoryItemRequest,
+    UpdateMemoryItemResponse, UpdatePluginConfigRequest, ValidatePluginFromPathRequest,
+    ValidateProviderSettingsRequest, ValidateProviderSettingsResponse,
 };
 pub use conversations::{
     cancel_run_payload, cancel_run_with_runtime_state, create_attachment_from_path_payload,
@@ -311,26 +315,33 @@ pub use projects::{
 };
 pub use providers::{
     delete_provider_capability_route_with_store, desktop_provider_credential_resolver_with_stores,
-    get_execution_settings_for_request, get_execution_settings_with_store,
-    get_provider_config_api_key_with_runtime_state, get_provider_config_api_key_with_store,
-    list_model_provider_catalog_payload, list_model_provider_catalog_payload_with_remote,
+    get_execution_settings_for_request, get_execution_settings_for_state_request,
+    get_execution_settings_with_store, get_provider_config_api_key_with_runtime_state,
+    get_provider_config_api_key_with_store, list_model_provider_catalog_payload,
+    list_model_provider_catalog_payload_with_remote,
     list_provider_capability_route_options_from_inputs, list_provider_capability_routes_with_store,
-    list_provider_settings_with_store, request_provider_config_api_key_reveal_with_runtime_state,
-    request_provider_config_api_key_reveal_with_store,
+    list_provider_settings_with_store, migrate_execution_settings,
+    migrate_provider_capability_routes, request_provider_config_api_key_reveal_with_runtime_state,
+    request_provider_config_api_key_reveal_with_store, resolve_effective_execution_settings,
     save_provider_capability_route_settings_with_store, save_provider_capability_route_with_store,
     save_provider_settings_with_runtime_state, save_provider_settings_with_store,
     set_execution_settings_with_store, validate_provider_settings_payload,
     AgentCapabilitiesPayload, DesktopConversationMetadataStore, DesktopExecutionSettingsStore,
-    DesktopProviderCapabilityRouteStore, DesktopProviderSettingsStore, ExecutionSettingsRecord,
+    DesktopProviderCapabilityRouteStore, DesktopProviderSettingsStore,
+    NoWorkspaceProviderCapabilityRouteStore,
 };
 pub use runtime::{
     agent_supervisor_sidecar_startup_result_for_project_command, managed_runtime_state,
     reset_legacy_conversation_runtime_for_provider_continuations, runtime_state,
-    runtime_state_async, runtime_state_for_workspace, spawn_automation_scheduler,
-    spawn_automation_scheduler_on_tauri_runtime, ManagedDesktopRuntime,
+    runtime_state_async, runtime_state_for_workspace,
+    runtime_state_from_stream_permission_runtime_with_provider_settings_store_for_test,
+    spawn_automation_scheduler, spawn_automation_scheduler_on_tauri_runtime, ManagedDesktopRuntime,
 };
 pub(crate) use runtime::{
-    ensure_agent_supervisor_sidecar_for_state, runtime_state_from_stream_permission_runtime,
+    ensure_agent_supervisor_sidecar_for_state,
+    global_conversation_runtime_layout_with_runtime_root, project_runtime_layout,
+    runtime_state_for_global_conversation_with_runtime_root,
+    runtime_state_from_stream_permission_runtime,
 };
 pub use skills::{
     delete_skill_with_runtime_state, get_skill_catalog_entry_with_runtime_state,
@@ -436,9 +447,9 @@ pub fn get_execution_settings(
 ) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.blocking_read();
     let context = runtime_state.agent_capability_resolution_context();
-    get_execution_settings_for_request(
+    get_execution_settings_for_state_request(
         GetExecutionSettingsRequest { workspace_path },
-        runtime_state.execution_settings_store.as_ref(),
+        &runtime_state,
         &project_registry,
         Some(&context),
     )
@@ -758,11 +769,13 @@ pub async fn save_provider_settings(
             .stream_permission_runtime
             .as_ref()
             .ok_or_else(|| runtime_unavailable("Provider settings require the desktop runtime."))?;
+        let layout = runtime_state.runtime_layout().clone();
         let (harness, model_id, protocol) = build_desktop_harness(
-            &runtime_state.workspace_root,
+            &layout,
             Arc::clone(stream_permission_runtime),
             Some(&response.config.id),
             Arc::clone(&runtime_state.provider_capability_routes),
+            Some(Arc::clone(&runtime_state.provider_settings_store)),
         )
         .await?;
         let _start_run_guard = runtime_state.start_run_lock.lock().await;
@@ -811,7 +824,7 @@ pub async fn save_mcp_server(
     display_name: String,
     id: String,
     scope: String,
-    transport: McpServerTransportConfig,
+    transport: SaveMcpServerTransportConfig,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<SaveMcpServerResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
@@ -1729,7 +1742,7 @@ pub async fn start_run(
     client_message_id: Option<String>,
     context_references: Option<Vec<ContextReferencePayload>>,
     conversation_id: String,
-    model_config_id: String,
+    model_config_id: Option<String>,
     permission_mode: Option<PermissionMode>,
     prompt: String,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
@@ -1752,12 +1765,16 @@ pub async fn start_run(
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn create_attachment_from_path(
+    conversation_id: Option<String>,
     path: String,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<CreateAttachmentFromPathResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
     create_attachment_from_path_with_runtime_state(
-        CreateAttachmentFromPathRequest { path },
+        CreateAttachmentFromPathRequest {
+            conversation_id,
+            path,
+        },
         &*runtime_state,
     )
     .await

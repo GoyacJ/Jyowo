@@ -7,7 +7,7 @@ use harness_contracts::{
     ArtifactCreatedEvent, ArtifactRevisionId, ArtifactSource, ArtifactStatus, BlobId, BlobMeta,
     BlobRef, BlobRetention, BlobStore, ConversationEventRef, ConversationInspectorItem,
     ConversationInspectorSelection, Event, EvidenceRedactionState, EvidenceRefId, EvidenceRefKind,
-    NoopRedactor, RunId, SessionId, TenantId,
+    RunId, SessionId, TenantId,
 };
 use harness_journal::evidence::{
     EvidenceRefRecord, EvidenceRefSource, EvidenceRefStore, InMemoryEvidenceRefRegistry,

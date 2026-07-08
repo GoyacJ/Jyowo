@@ -162,6 +162,39 @@ pub(super) fn subagent_tool_should_be_enabled(
 
 #[cfg(feature = "agents-team")]
 const AGENT_TEAM_RUNNER_CAPABILITY: &str = "jyowo.agent_team.runner";
+#[cfg(feature = "agents-team")]
+const AGENT_RUNTIME_ROOT_CAPABILITY: &str = "jyowo.agent_runtime.root";
+
+#[cfg(feature = "agents-team")]
+trait AgentRuntimeRootCap: Send + Sync + 'static {
+    fn agent_runtime_root(&self) -> PathBuf;
+}
+
+#[cfg(feature = "agents-team")]
+struct FixedAgentRuntimeRootCap {
+    root: PathBuf,
+}
+
+#[cfg(feature = "agents-team")]
+impl AgentRuntimeRootCap for FixedAgentRuntimeRootCap {
+    fn agent_runtime_root(&self) -> PathBuf {
+        self.root.clone()
+    }
+}
+
+#[cfg(feature = "agents-team")]
+pub(super) fn install_agent_runtime_root_capability(
+    cap_registry: &mut CapabilityRegistry,
+    options: &SessionOptions,
+) {
+    let Some(root) = options.agent_runtime_root.clone() else {
+        return;
+    };
+    cap_registry.install::<dyn AgentRuntimeRootCap>(
+        ToolCapability::Custom(AGENT_RUNTIME_ROOT_CAPABILITY.to_owned()),
+        Arc::new(FixedAgentRuntimeRootCap { root }),
+    );
+}
 
 #[cfg(feature = "agents-subagent")]
 pub(crate) const BACKGROUND_AGENT_STARTER_CAPABILITY: &str = "jyowo.background_agent.starter";
@@ -184,6 +217,8 @@ struct AgentTeamToolStartRequest {
     topology: harness_contracts::AgentTeamTopology,
     max_turns_per_goal: u32,
     workspace_root: PathBuf,
+    project_workspace_root: Option<PathBuf>,
+    agent_runtime_root: Option<PathBuf>,
 }
 
 #[cfg(feature = "agents-team")]
@@ -191,6 +226,7 @@ struct SdkAgentTeamRunner {
     harness: Harness,
     agent_tool_policy: harness_contracts::AgentToolPolicy,
     workspace_bootstrap: Option<WorkspaceBootstrap>,
+    agent_profiles: Vec<harness_contracts::AgentProfile>,
 }
 
 #[cfg(feature = "agents-team")]
@@ -205,8 +241,15 @@ impl AgentTeamRunnerCap for SdkAgentTeamRunner {
                 "an agent team is already active for this run".to_owned(),
             ));
         }
-        let profiles = crate::list_agent_profiles(&request.workspace_root)
-            .map_err(|error| ToolError::Internal(error.to_string()))?;
+        let profiles = if self.agent_profiles.is_empty() {
+            match request.agent_runtime_root.as_ref() {
+                Some(runtime_root) => crate::list_agent_profiles_from_runtime_dir(runtime_root),
+                None => crate::list_agent_profiles(&request.workspace_root),
+            }
+            .map_err(|error| ToolError::Internal(error.to_string()))?
+        } else {
+            self.agent_profiles.clone()
+        };
         let mut agent_tool_policy = self.agent_tool_policy.clone();
         agent_tool_policy.agent_team = harness_contracts::AgentUsePolicy::Allowed;
         agent_tool_policy.team_config = Some(harness_contracts::AgentTeamRunConfig {
@@ -225,6 +268,8 @@ impl AgentTeamRunnerCap for SdkAgentTeamRunner {
                 conversation_session_id: request.conversation_session_id,
                 goal: request.goal,
                 workspace_root: request.workspace_root,
+                project_workspace_root: request.project_workspace_root,
+                agent_runtime_root: request.agent_runtime_root,
                 workspace_bootstrap: self.workspace_bootstrap.clone(),
             })
             .await
@@ -240,6 +285,7 @@ pub(super) fn install_agent_team_tool_for_run(
     tools: &mut ToolPool,
     agent_tool_policy: &harness_contracts::AgentToolPolicy,
     workspace_bootstrap: Option<WorkspaceBootstrap>,
+    agent_profiles: Vec<harness_contracts::AgentProfile>,
 ) {
     cap_registry.install::<dyn AgentTeamRunnerCap>(
         ToolCapability::Custom(AGENT_TEAM_RUNNER_CAPABILITY.to_owned()),
@@ -247,6 +293,7 @@ pub(super) fn install_agent_team_tool_for_run(
             harness,
             agent_tool_policy: agent_tool_policy.clone(),
             workspace_bootstrap,
+            agent_profiles,
         }),
     );
     tools.append_runtime_tool(Arc::new(AgentTeamTool::default()));
@@ -576,6 +623,12 @@ impl Tool for AgentTeamTool {
         let runner = ctx.capability::<dyn AgentTeamRunnerCap>(ToolCapability::Custom(
             AGENT_TEAM_RUNNER_CAPABILITY.to_owned(),
         ))?;
+        let agent_runtime_root = ctx
+            .cap_registry
+            .get::<dyn AgentRuntimeRootCap>(&ToolCapability::Custom(
+                AGENT_RUNTIME_ROOT_CAPABILITY.to_owned(),
+            ))
+            .map(|capability| capability.agent_runtime_root());
         let team_id = runner
             .start_team(AgentTeamToolStartRequest {
                 run_id: ctx.run_id,
@@ -584,6 +637,8 @@ impl Tool for AgentTeamTool {
                 topology,
                 max_turns_per_goal,
                 workspace_root: ctx.workspace_root,
+                project_workspace_root: ctx.project_workspace_root,
+                agent_runtime_root,
             })
             .await?;
         Ok(Box::pin(futures::stream::iter([ToolEvent::Final(
@@ -780,7 +835,7 @@ fn tool_search_hook_context(
         interactivity: InteractivityLevel::NoInteractive,
         at: harness_contracts::now(),
         view: Arc::new(ToolSearchHookView {
-            workspace_root: ctx.workspace_root.clone(),
+            workspace_root: ctx.project_workspace_root.clone(),
             redactor,
         }),
         upstream_outcome: None,
@@ -790,14 +845,14 @@ fn tool_search_hook_context(
 
 #[cfg(feature = "tool-search")]
 struct ToolSearchHookView {
-    workspace_root: PathBuf,
+    workspace_root: Option<PathBuf>,
     redactor: Arc<dyn Redactor>,
 }
 
 #[cfg(feature = "tool-search")]
 impl HookSessionView for ToolSearchHookView {
     fn workspace_root(&self) -> Option<&Path> {
-        Some(&self.workspace_root)
+        self.workspace_root.as_deref()
     }
 
     fn recent_messages(&self, _limit: usize) -> Vec<HookMessageView> {
@@ -824,4 +879,121 @@ pub(super) fn loaded_tool_names(tools: &ToolPool) -> BTreeSet<String> {
         .into_iter()
         .map(|descriptor| descriptor.name)
         .collect()
+}
+
+#[cfg(all(test, feature = "agents-team"))]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+    use harness_contracts::{
+        AuthorizationTicketId, CorrelationId, NoopRedactor, PermissionActorSource, ToolActionPlan,
+        ToolUseId,
+    };
+    use harness_tool::{AuthorizedTicketSummary, AuthorizedToolInput, InterruptToken};
+    use std::sync::Mutex;
+
+    #[test]
+    fn agent_team_tool_preserves_no_workspace_project_context() {
+        futures::executor::block_on(async {
+            let execution_cwd = std::env::temp_dir().join(format!(
+                "jyowo-agent-team-no-workspace-{}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&execution_cwd).expect("execution cwd");
+            let captured = Arc::new(Mutex::new(None));
+            let mut cap_registry = CapabilityRegistry::default();
+            cap_registry.install::<dyn AgentTeamRunnerCap>(
+                ToolCapability::Custom(AGENT_TEAM_RUNNER_CAPABILITY.to_owned()),
+                Arc::new(CapturingAgentTeamRunner {
+                    captured: Arc::clone(&captured),
+                }),
+            );
+            cap_registry.install::<dyn AgentRuntimeRootCap>(
+                ToolCapability::Custom(AGENT_RUNTIME_ROOT_CAPABILITY.to_owned()),
+                Arc::new(TestAgentRuntimeRoot {
+                    root: execution_cwd.join("runtime"),
+                }),
+            );
+            let ctx = ToolContext {
+                tool_use_id: ToolUseId::new(),
+                run_id: RunId::new(),
+                session_id: SessionId::new(),
+                tenant_id: TenantId::SINGLE,
+                model: None,
+                model_config_id: None,
+                memory_thread_settings: None,
+                correlation_id: CorrelationId::new(),
+                agent_id: AgentId::new(),
+                subagent_depth: 0,
+                workspace_root: execution_cwd.clone(),
+                project_workspace_root: None,
+                sandbox: None,
+                cap_registry: Arc::new(cap_registry),
+                redactor: Arc::new(NoopRedactor),
+                interrupt: InterruptToken::new(),
+                parent_run: None,
+                actor_source: PermissionActorSource::ParentRun,
+            };
+            let tool = AgentTeamTool::default();
+            let input = json!({ "goal": "inspect no-workspace" });
+            tool.validate(&input, &ctx).await.expect("validate");
+            let plan = tool.plan(&input, &ctx).await.expect("plan");
+            let authorized =
+                AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).expect("ticket");
+            let mut stream = tool
+                .execute_authorized(authorized, ctx)
+                .await
+                .expect("execute");
+            let event = stream.next().await.expect("final event");
+            assert!(matches!(event, ToolEvent::Final(_)));
+
+            let request = captured
+                .lock()
+                .expect("captured lock")
+                .clone()
+                .expect("captured request");
+            assert_eq!(request.workspace_root, execution_cwd);
+            assert_eq!(request.project_workspace_root, None);
+        });
+    }
+
+    #[derive(Clone)]
+    struct CapturingAgentTeamRunner {
+        captured: Arc<Mutex<Option<AgentTeamToolStartRequest>>>,
+    }
+
+    #[async_trait]
+    impl AgentTeamRunnerCap for CapturingAgentTeamRunner {
+        async fn start_team(
+            &self,
+            request: AgentTeamToolStartRequest,
+        ) -> Result<harness_contracts::TeamId, ToolError> {
+            *self.captured.lock().expect("captured lock") = Some(request);
+            Ok(harness_contracts::TeamId::new())
+        }
+    }
+
+    #[derive(Clone)]
+    struct TestAgentRuntimeRoot {
+        root: PathBuf,
+    }
+
+    impl AgentRuntimeRootCap for TestAgentRuntimeRoot {
+        fn agent_runtime_root(&self) -> PathBuf {
+            self.root.clone()
+        }
+    }
+
+    fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+        AuthorizedTicketSummary {
+            ticket_id: AuthorizationTicketId::new(),
+            tenant_id: TenantId::SINGLE,
+            session_id: SessionId::new(),
+            run_id: RunId::new(),
+            tool_use_id: plan.tool_use_id,
+            tool_name: plan.tool_name.clone(),
+            action_plan_hash: plan.plan_hash.clone(),
+            consumed_at: chrono::Utc::now(),
+        }
+    }
 }

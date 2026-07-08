@@ -12,12 +12,11 @@ use bytes::Bytes;
 use futures::{future::BoxFuture, stream, StreamExt};
 use harness_contracts::{
     ActionResource, BlobError, BlobMeta, BlobRef, BlobStore, CapabilityRegistry, ClarifyAnswer,
-    ClarifyPrompt, Event, OutboundUserMessage, PermissionSubject, SandboxError,
-    SandboxExecutionStartedEvent, SandboxExitStatus, SandboxPolicySummary, Severity, TenantId,
-    ToolActionPlan, ToolCapability, ToolError, ToolExecutionChannel, ToolResult, ToolUseId,
-    UserMessageDelivery, WorkspaceAccess,
+    ClarifyPrompt, Event, OutboundUserMessage, PermissionSubject, RedactRules, Redactor,
+    SandboxError, SandboxExecutionStartedEvent, SandboxExitStatus, SandboxPolicySummary, Severity,
+    TenantId, ToolActionPlan, ToolCapability, ToolError, ToolExecutionChannel, ToolResult,
+    ToolUseId, UserMessageDelivery, WorkspaceAccess,
 };
-use harness_contracts::{RedactRules, Redactor};
 use harness_sandbox::{
     ActivityHandle, ExecContext, ExecOutcome, ExecSpec, KillScope, NetworkPolicySupport,
     ProcessHandle, SandboxBackend, SandboxBaseConfig, SandboxCapabilities, SessionSnapshotFile,
@@ -752,6 +751,7 @@ fn tool_ctx_with_root(
         agent_id: harness_contracts::AgentId::from_u128(1),
         subagent_depth: 0,
         workspace_root,
+        project_workspace_root: None,
         sandbox,
         cap_registry: Arc::new(cap_registry),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
@@ -782,6 +782,7 @@ fn orchestrator_ctx(
             agent_id: harness_contracts::AgentId::from_u128(1),
             subagent_depth: 0,
             workspace_root: std::env::temp_dir(),
+            project_workspace_root: None,
             sandbox,
             cap_registry: Arc::new(CapabilityRegistry::default()),
             redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),

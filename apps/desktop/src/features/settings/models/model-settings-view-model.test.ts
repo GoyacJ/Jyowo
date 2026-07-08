@@ -78,6 +78,7 @@ const catalog: ModelProviderCatalogResponse = {
 
 const settings: ListProviderSettingsResponse = {
   defaultConfigId: 'cfg-primary',
+  selectionScope: 'global',
   configs: [
     {
       id: 'cfg-primary',
@@ -588,7 +589,11 @@ describe('model-settings-view-model', () => {
   })
 
   it('returns empty rows and explicit empty summary for empty backend state', () => {
-    const emptySettings: ListProviderSettingsResponse = { defaultConfigId: null, configs: [] }
+    const emptySettings: ListProviderSettingsResponse = {
+      defaultConfigId: null,
+      selectionScope: 'global',
+      configs: [],
+    }
     const viewModel = buildModelSettingsViewModel(
       baseInput({
         providerSettings: ready(emptySettings),

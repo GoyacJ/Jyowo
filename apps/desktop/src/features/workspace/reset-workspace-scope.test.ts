@@ -28,6 +28,7 @@ describe('onProjectWorkspaceChanged', () => {
     )
     queryClient.setQueryData(['provider-settings'], {
       defaultConfigId: 'openai',
+      selectionScope: 'global',
       configs: [{ id: 'openai', hasApiKey: true }],
     })
     const providerSettingsSaveMutation = queryClient.getMutationCache().build(queryClient, {

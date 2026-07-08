@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::Read as _;
+use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
 use harness_contracts::{
@@ -182,14 +183,7 @@ fn manifest_path(plugin_dir: &Path) -> Result<Option<PathBuf>, ManifestLoaderErr
 }
 
 fn read_manifest(path: &Path) -> Result<ManifestRecord, ManifestLoaderError> {
-    let metadata =
-        fs::symlink_metadata(path).map_err(|error| ManifestLoaderError::Io(error.to_string()))?;
-    if metadata.file_type().is_symlink() {
-        return Err(ManifestLoaderError::Io(
-            "plugin manifest must not be a symlink".to_owned(),
-        ));
-    }
-    let bytes = fs::read(path).map_err(|error| ManifestLoaderError::Io(error.to_string()))?;
+    let bytes = read_regular_file_no_follow(path)?;
     let raw_hash = sha256(&bytes);
     let file_origin = ManifestOrigin::File {
         path: path.to_path_buf(),
@@ -222,6 +216,104 @@ fn read_manifest(path: &Path) -> Result<ManifestRecord, ManifestLoaderError> {
             format!("manifest basic validation failed: {error}"),
         )
     })
+}
+
+#[cfg(unix)]
+fn read_regular_file_no_follow(path: &Path) -> Result<Vec<u8>, ManifestLoaderError> {
+    let mut components = Vec::new();
+    let mut absolute = false;
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) => {
+                return Err(ManifestLoaderError::Io(
+                    "plugin manifest path has unsupported prefix".to_owned(),
+                ));
+            }
+            Component::RootDir => absolute = true,
+            Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(ManifestLoaderError::Io(
+                    "plugin manifest path must not use parent directory components".to_owned(),
+                ));
+            }
+            Component::Normal(value) => components.push(value.to_os_string()),
+        }
+    }
+    let file_name = components.pop().ok_or_else(|| {
+        ManifestLoaderError::Io("plugin manifest path has no file name".to_owned())
+    })?;
+    let mut directory = if absolute {
+        fs::File::open(Path::new("/"))
+    } else {
+        fs::File::open(Path::new("."))
+    }
+    .map_err(|error| ManifestLoaderError::Io(error.to_string()))?;
+
+    for component in components {
+        let fd = match rustix::fs::openat(
+            &directory,
+            Path::new(&component),
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::from_raw_mode(0),
+        ) {
+            Ok(fd) => fd,
+            Err(rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR) => {
+                return Err(ManifestLoaderError::Io(
+                    "plugin manifest must not use symlinks".to_owned(),
+                ));
+            }
+            Err(error) => return Err(ManifestLoaderError::Io(error.to_string())),
+        };
+        directory = fs::File::from(fd);
+    }
+
+    let fd = match rustix::fs::openat(
+        &directory,
+        Path::new(&file_name),
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::from_raw_mode(0),
+    ) {
+        Ok(fd) => fd,
+        Err(rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR) => {
+            return Err(ManifestLoaderError::Io(
+                "plugin manifest must not be a symlink".to_owned(),
+            ));
+        }
+        Err(error) => return Err(ManifestLoaderError::Io(error.to_string())),
+    };
+    let mut file = fs::File::from(fd);
+    let metadata = file
+        .metadata()
+        .map_err(|error| ManifestLoaderError::Io(error.to_string()))?;
+    if !metadata.is_file() {
+        return Err(ManifestLoaderError::Io(
+            "plugin manifest must be a file".to_owned(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| ManifestLoaderError::Io(error.to_string()))?;
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
+fn read_regular_file_no_follow(path: &Path) -> Result<Vec<u8>, ManifestLoaderError> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| ManifestLoaderError::Io(error.to_string()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(ManifestLoaderError::Io(
+            "plugin manifest must not be a symlink".to_owned(),
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(ManifestLoaderError::Io(
+            "plugin manifest must be a file".to_owned(),
+        ));
+    }
+    fs::read(path).map_err(|error| ManifestLoaderError::Io(error.to_string()))
 }
 
 fn secure_plugin_directory(path: &Path) -> Result<fs::Metadata, ManifestLoaderError> {

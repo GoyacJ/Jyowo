@@ -1,4 +1,4 @@
-use super::{openai_descriptor_record, unique_workspace};
+use super::{openai_descriptor_record, provider_settings_store_for_workspace, unique_workspace};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -84,7 +84,7 @@ fn prepare_workspace(name: &str) -> std::path::PathBuf {
 #[tokio::test]
 async fn provider_probe_rejects_unknown_config_id() {
     let workspace = prepare_workspace("provider-probe-unknown-config");
-    DesktopProviderSettingsStore::new(workspace.clone())
+    provider_settings_store_for_workspace(&workspace)
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some("openai-work".to_owned()),
             configs: vec![sample_provider_config("provider-test-token")],
@@ -268,4 +268,20 @@ fn desktop_provider_diagnostics_store_rejects_symlink_file() {
         .load_record()
         .unwrap_err();
     assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+}
+
+#[test]
+fn provider_diagnostics_store_recovers_from_invalid_json() {
+    let workspace = prepare_workspace("provider-diagnostics-invalid-json");
+    let runtime_dir = workspace.join(".jyowo").join("runtime");
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+    let diagnostics_path = runtime_dir.join("provider-diagnostics.json");
+    std::fs::write(&diagnostics_path, b"{not-json").unwrap();
+
+    let record = DesktopProviderDiagnosticsStore::new(workspace)
+        .load_record()
+        .unwrap();
+
+    assert!(record.snapshots.is_empty());
+    assert!(!diagnostics_path.exists());
 }

@@ -467,7 +467,11 @@ pub(crate) async fn open_conversation_session(state: &DesktopRuntimeState, sessi
     state
         .harness()
         .expect("runtime state should retain the configured harness")
-        .open_or_create_conversation_session(state.conversation_session_options(session_id))
+        .open_or_create_conversation_session(
+            state
+                .conversation_session_options(session_id)
+                .expect("session options"),
+        )
         .await
         .expect("conversation session should open");
 }
@@ -700,8 +704,67 @@ pub(crate) async fn runtime_state_with_harness_for_workspace(
             .expect("harness should build with stream permission runtime"),
     );
 
-    DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
+    let mut state = DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
         workspace,
+        harness,
+        stream_permission_runtime,
+    )
+    .expect("state should use the harness permission broker");
+    let state_workspace = state.workspace_root().to_path_buf();
+    use_test_provider_settings_store(&mut state, &state_workspace);
+    state
+}
+
+pub(crate) async fn runtime_state_with_harness_for_global_conversation(
+    runtime_root: PathBuf,
+    conversation_id: SessionId,
+) -> DesktopRuntimeState {
+    std::fs::create_dir_all(&runtime_root).unwrap();
+    let conversation_cwd = runtime_root
+        .join("workdir")
+        .join(conversation_id.to_string());
+    std::fs::create_dir_all(&conversation_cwd).unwrap();
+    write_test_provider_settings(&conversation_cwd);
+    let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
+        default_timeout: Some(Duration::from_secs(5)),
+        heartbeat_interval: None,
+        max_pending: 16,
+    }));
+    let blob_store: Arc<dyn BlobStore> = Arc::new(
+        FileBlobStore::open(runtime_root.join("blobs")).expect("test blob store should open"),
+    );
+    let evidence_registry = Arc::new(
+        SqliteEvidenceRefRegistry::open(runtime_root.join("conversation-read-model.sqlite"))
+            .await
+            .expect("test evidence registry should open"),
+    );
+    let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let event_store_for_evidence = Arc::clone(&event_store) as Arc<dyn harness_journal::EventStore>;
+    let evidence_ref_store = Arc::new(EvidenceRefStore::new_with_event_store(
+        evidence_registry,
+        Arc::clone(&blob_store),
+        event_store_for_evidence,
+    ));
+    let harness = Arc::new(
+        Harness::builder()
+            .with_options(test_harness_options(&conversation_cwd))
+            .with_model(TestModelProvider::default())
+            .with_store(event_store)
+            .with_sandbox(NoopSandbox::new())
+            .with_blob_store_arc(blob_store)
+            .with_evidence_ref_store_arc(evidence_ref_store)
+            .with_stream_permission_broker_arc(
+                stream_permission_runtime.broker(),
+                stream_permission_runtime.resolver_handle(),
+            )
+            .build()
+            .await
+            .expect("harness should build with stream permission runtime"),
+    );
+
+    DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_global_conversation(
+        runtime_root,
+        conversation_id,
         harness,
         stream_permission_runtime,
     )
@@ -735,12 +798,15 @@ pub(crate) async fn runtime_state_with_memory_provider(
             .expect("harness should build with memory provider"),
     );
 
-    DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
+    let mut state = DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
         workspace,
         harness,
         stream_permission_runtime,
     )
-    .expect("state should use the harness permission broker")
+    .expect("state should use the harness permission broker");
+    let state_workspace = state.workspace_root().to_path_buf();
+    use_test_provider_settings_store(&mut state, &state_workspace);
+    state
 }
 
 pub(crate) async fn runtime_state_with_mcp_registry(
@@ -786,12 +852,15 @@ pub(crate) async fn runtime_state_with_mcp_registry_for_workspace(
             .expect("harness should build with MCP registry"),
     );
 
-    DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
+    let mut state = DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
         workspace,
         harness,
         stream_permission_runtime,
     )
-    .expect("state should use the harness permission broker")
+    .expect("state should use the harness permission broker");
+    let state_workspace = state.workspace_root().to_path_buf();
+    use_test_provider_settings_store(&mut state, &state_workspace);
+    state
 }
 
 pub(crate) async fn runtime_state_with_scripted_model(
@@ -844,12 +913,15 @@ pub(crate) async fn runtime_state_with_scripted_model_for_workspace(
             .expect("harness should build with stream permission runtime"),
     );
 
-    DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
+    let mut state = DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
         workspace,
         harness,
         stream_permission_runtime,
     )
-    .expect("state should use the harness permission broker")
+    .expect("state should use the harness permission broker");
+    let state_workspace = state.workspace_root().to_path_buf();
+    use_test_provider_settings_store(&mut state, &state_workspace);
+    state
 }
 
 pub(crate) fn test_harness_options(workspace: &Path) -> HarnessOptions {
@@ -865,6 +937,54 @@ pub(crate) fn unique_workspace(name: &str) -> PathBuf {
         std::process::id(),
         SessionId::new()
     ))
+}
+
+pub(crate) fn provider_settings_store_for_workspace(
+    workspace: &Path,
+) -> DesktopProviderSettingsStore {
+    let layout = test_storage_layout_for_workspace(workspace);
+    DesktopProviderSettingsStore::new_with_layout(layout, workspace.to_path_buf())
+}
+
+pub(crate) fn use_test_provider_settings_store(state: &mut DesktopRuntimeState, workspace: &Path) {
+    let layout = test_storage_layout_for_workspace(workspace);
+    let store = provider_settings_store_for_workspace(workspace);
+    let record = store
+        .load_record()
+        .expect("test provider settings should load")
+        .expect("test provider settings should exist");
+    let config_id = record
+        .default_config_id
+        .as_deref()
+        .expect("test provider settings should have default config");
+    let config = record
+        .configs
+        .iter()
+        .find(|config| config.id == config_id)
+        .expect("test provider settings default config should exist");
+    state
+        .set_active_runtime_provider_config_for_test(config)
+        .expect("test active runtime provider binding should update");
+    state.set_provider_settings_store_for_test(Arc::new(store));
+    state.set_config_stores_for_test(
+        jyowo_desktop_shell::commands::stores::GlobalConfigStore::new(layout.clone()),
+        Some(
+            jyowo_desktop_shell::commands::stores::ProjectConfigStore::new(
+                layout,
+                workspace.to_path_buf(),
+            ),
+        ),
+    );
+}
+
+fn test_storage_layout_for_workspace(
+    workspace: &Path,
+) -> jyowo_desktop_shell::storage_layout::StorageLayout {
+    jyowo_desktop_shell::storage_layout::StorageLayout::new(
+        jyowo_desktop_shell::storage_layout::JyowoHome::new(
+            workspace.join(".jyowo-test-home").join(".jyowo"),
+        ),
+    )
 }
 
 pub(crate) fn test_attachment_blob_ref(size: u64, content_type: &str) -> AttachmentBlobRefPayload {

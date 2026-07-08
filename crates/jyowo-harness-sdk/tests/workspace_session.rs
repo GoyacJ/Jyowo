@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use futures::executor::block_on;
-use harness_contracts::{NoopRedactor, TenantId};
+use harness_contracts::TenantId;
 use harness_model::ModelProtocol;
 use jyowo_harness_sdk::{builtin::*, prelude::*, testing::*};
 use serde_json::json;

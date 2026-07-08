@@ -9,17 +9,17 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
+use harness_contracts::NoopRedactor;
 use harness_contracts::{
     ActionResource, ArtifactSource, ArtifactStatus, BlobRef, BudgetMetric, CapabilityRegistry,
     DecidedBy, Decision, DecisionScope, DeferPolicy, DeltaChunk, EndReason, Event, HookEventKind,
-    Message, MessageId, MessagePart, MessageRole, ModelError, NetworkAccess, NoopRedactor,
-    OverflowAction, PermissionError, PermissionSubject, ProviderRestriction, ResourceLimits,
-    ResultBudget, RunId, SandboxError, SandboxExecutionCompletedEvent,
-    SandboxExecutionStartedEvent, SandboxExitStatus, SandboxMode, SandboxPolicySummary,
-    SandboxScope, SessionId, SteeringId, SteeringKind, SteeringMessageAppliedEvent, StopReason,
-    TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
-    ToolOrigin, ToolProperties, ToolResult, ToolResultPart, ToolSearchMode, ToolUseId, TrustLevel,
-    TurnInput, UsageSnapshot, WorkspaceAccess,
+    Message, MessageId, MessagePart, MessageRole, ModelError, NetworkAccess, OverflowAction,
+    PermissionError, PermissionSubject, ProviderRestriction, ResourceLimits, ResultBudget, RunId,
+    SandboxError, SandboxExecutionCompletedEvent, SandboxExecutionStartedEvent, SandboxExitStatus,
+    SandboxMode, SandboxPolicySummary, SandboxScope, SessionId, SteeringId, SteeringKind,
+    SteeringMessageAppliedEvent, StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolResultPart,
+    ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{
     Engine, EngineError, EngineId, EngineRunner, RunContext, SessionHandle, SteeringDrain,

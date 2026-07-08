@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use futures::executor::block_on;
 use harness_contracts::{
-    ConfigHash, Event, NoopRedactor, SessionCreatedEvent, SessionId, SnapshotId, TenantId,
-    TrustLevel,
+    ConfigHash, Event, SessionCreatedEvent, SessionId, SnapshotId, TenantId, TrustLevel,
 };
 use harness_journal::{AuditFilter, AuditOrder, AuditQuery, AuditScope, EventStore};
 use jyowo_harness_sdk::{testing::*, Harness};

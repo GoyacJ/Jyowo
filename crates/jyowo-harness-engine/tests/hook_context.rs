@@ -5,9 +5,10 @@ use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
 use harness_contracts::{
     Decision, Event, HookError, HookEventKind, InteractivityLevel, Message, MessagePart,
-    MessageRole, ModelError, NoopRedactor, PermissionError, PermissionMode, RedactRules, Redactor,
-    RunId, SessionId, StopReason, TenantId, TurnInput, UsageSnapshot,
+    MessageRole, ModelError, PermissionError, PermissionMode, RunId, SessionId, StopReason,
+    TenantId, TurnInput, UsageSnapshot,
 };
+use harness_contracts::{NoopRedactor, RedactRules, Redactor};
 use harness_engine::{Engine, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{
     HookContext, HookDispatcher, HookEvent, HookHandler, HookOutcome, HookRegistry,
@@ -95,6 +96,53 @@ async fn hook_context_uses_runtime_permission_interactivity_and_redactor() {
     assert_eq!(captured.redacted, "marked:secret");
 }
 
+#[tokio::test]
+async fn no_workspace_hook_context_does_not_expose_execution_cwd_as_workspace_root() {
+    let execution_cwd = tempfile::tempdir().unwrap();
+    let tenant_id = TenantId::SINGLE;
+    let session_id = SessionId::new();
+    let captured = Arc::new(Mutex::new(None));
+    let registry = HookRegistry::builder()
+        .with_hook(Box::new(CaptureWorkspaceHook {
+            captured: Arc::clone(&captured),
+        }))
+        .build()
+        .unwrap();
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+
+    let engine = Engine::builder()
+        .with_event_store(store.clone())
+        .with_context(ContextEngine::builder().build().unwrap())
+        .with_hooks(HookDispatcher::new(registry.snapshot()))
+        .with_model(Arc::new(OneShotModel))
+        .with_tools(ToolPool::default())
+        .with_authorization_service(test_authorization_service(
+            Arc::new(AllowBroker),
+            store.clone(),
+        ))
+        .with_workspace_root(execution_cwd.path())
+        .with_model_id("test-model")
+        .with_protocol(ModelProtocol::Messages)
+        .build()
+        .unwrap();
+
+    engine
+        .run(
+            SessionHandle {
+                tenant_id,
+                session_id,
+            },
+            turn_input("capture workspace"),
+            RunContext::new(tenant_id, session_id, RunId::new()),
+        )
+        .await
+        .unwrap()
+        .collect::<Vec<Event>>()
+        .await;
+
+    assert_eq!(*captured.lock().await, Some(None));
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CapturedContext {
     permission_mode: PermissionMode,
@@ -102,6 +150,26 @@ struct CapturedContext {
     interactivity: InteractivityLevel,
     correlation_id: harness_contracts::CorrelationId,
     redacted: String,
+}
+
+struct CaptureWorkspaceHook {
+    captured: Arc<Mutex<Option<Option<std::path::PathBuf>>>>,
+}
+
+#[async_trait]
+impl HookHandler for CaptureWorkspaceHook {
+    fn handler_id(&self) -> &str {
+        "capture-workspace"
+    }
+
+    fn interested_events(&self) -> &[HookEventKind] {
+        &[HookEventKind::PreLlmCall]
+    }
+
+    async fn handle(&self, _event: HookEvent, ctx: HookContext) -> Result<HookOutcome, HookError> {
+        *self.captured.lock().await = Some(ctx.view.workspace_root().map(ToOwned::to_owned));
+        Ok(HookOutcome::Continue)
+    }
 }
 
 struct CaptureContextHook {

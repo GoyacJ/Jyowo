@@ -7,10 +7,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
+use harness_contracts::NoopRedactor;
 use harness_contracts::{
     BudgetMetric, CancelInitiator, CapabilityRegistry, Decision, DecisionScope, DeferPolicy,
     DeltaChunk, EndReason, Event, HookEventKind, Message, MessageId, MessagePart, MessageRole,
-    ModelError, NetworkAccess, NoopRedactor, OverflowAction, PermissionError, PermissionSubject,
+    ModelError, NetworkAccess, OverflowAction, PermissionError, PermissionSubject,
     ProviderRestriction, ResourceLimits, ResultBudget, RunId, SandboxExecutionCompletedEvent,
     SandboxExecutionStartedEvent, SandboxMode, SandboxPolicySummary, SandboxScope, SessionId,
     StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel,

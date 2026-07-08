@@ -3,11 +3,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
+use harness_contracts::NoopRedactor;
 use harness_contracts::{
     CapabilityRegistry, ConversationCursor, ConversationTimelineEvent, DeltaChunk, Event, EventId,
-    Message, MessageId, MessagePart, MessageRole, ModelError, ModelProtocol, NoopRedactor,
-    PermissionError, RunId, RunModelSnapshot, SessionId, StopReason, TenantId, TurnInput,
-    UsageSnapshot,
+    Message, MessageId, MessagePart, MessageRole, ModelError, ModelProtocol, PermissionError,
+    RunId, RunModelSnapshot, SessionId, StopReason, TenantId, TurnInput, UsageSnapshot,
 };
 use harness_engine::{
     turn_assembly::TurnAssembly, Engine, EngineId, EngineRunner, RunContext, SessionHandle,

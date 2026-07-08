@@ -386,21 +386,41 @@ ProviderServiceAdapterAvailability
 Persistence:
 
 ```text
-.jyowo/runtime/provider-capability-routes.json
+<workspace>/.jyowo/config/provider-capability-routes.json
 ```
 
-Conversation metadata and provider settings live in:
+Provider profile metadata and secrets live in global config:
 
 ```text
-.jyowo/runtime/conversation-metadata.json
-.jyowo/runtime/provider-settings.json
+~/.jyowo/config/provider-profiles.json
+~/.jyowo/config/provider-secrets.json
+~/.jyowo/config/provider-selection.json
 ```
+
+Project workspaces store only provider selection and capability-route overrides:
+
+```text
+<workspace>/.jyowo/config/provider-selection.json
+<workspace>/.jyowo/config/provider-capability-routes.json
+```
+
+Conversation metadata remains runtime state:
+
+```text
+<runtime-root>/conversation-metadata.json
+```
+
+No-workspace sessions use a global conversation runtime root and
+`workspace_root = None`. They must not create project-scoped config under the
+session scratch cwd. Project-scoped reads normalize to empty settings or typed
+unavailable responses; project-scoped writes fail closed.
 
 Runtime flow:
 
 ```text
 user message
-  -> start_run request.model_config_id
+  -> start_run optional request.model_config_id
+  -> Rust resolves explicit or default provider profile
   -> run model snapshot
   -> optional tool call
   -> ToolPool exposes only route-enabled service tools
@@ -446,8 +466,8 @@ if operation_id and route_kind are present:
   find provider config by route.config_id
   validate provider id and API key
   return route credential
-else if model_config_id is present:
-  find provider config by model_config_id
+else if model_config_id is present or an effective default profile is resolved:
+  find provider config by the explicit or resolved profile id
   validate provider id and API key
   return run model credential
 else:

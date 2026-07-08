@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use harness_contracts::{
-    Event, ModelRef, SessionId, TenantId, UsageAccumulatedEvent, UsageSnapshot,
+    Event, ModelRef, NoopRedactor, SessionId, TenantId, UsageAccumulatedEvent, UsageSnapshot,
 };
 use jyowo_desktop_shell::commands::{
     collect_persisted_usage_events, get_model_usage_summary_with_runtime_state,
 };
 use jyowo_harness_sdk::ext::EventStore;
-use jyowo_harness_sdk::testing::{InMemoryEventStore, NoopRedactor};
+use jyowo_harness_sdk::testing::InMemoryEventStore;
 
 use super::runtime_state_with_harness;
 

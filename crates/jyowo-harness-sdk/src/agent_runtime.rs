@@ -53,6 +53,13 @@ pub fn list_agent_profiles(
     Ok(AgentProfileRegistry::new(&store).list()?)
 }
 
+pub fn list_agent_profiles_from_runtime_dir(
+    runtime_root: impl AsRef<Path>,
+) -> Result<Vec<AgentProfile>, AgentRuntimeFacadeError> {
+    let store = AgentRuntimeStore::open_runtime_dir(runtime_root)?;
+    Ok(AgentProfileRegistry::new(&store).list()?)
+}
+
 pub fn save_agent_profile(
     workspace_root: impl AsRef<Path>,
     profile: AgentProfile,

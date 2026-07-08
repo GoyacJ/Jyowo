@@ -20,6 +20,7 @@ fn sdk_installs_steering_drain() {
         ]));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -163,6 +164,7 @@ fn sdk_default_profile_matches_architecture() {
         ]));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -294,6 +296,7 @@ fn sdk_default_profile_matches_architecture() {
             ]),
         ]));
         let compact_harness = Harness::builder()
+            .with_workspace_root(&compact_workspace)
             .with_model_arc(compact_model)
             .with_store_arc(compact_store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -354,6 +357,7 @@ fn sdk_default_installs_builtin_toolset() {
         ])]));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -428,6 +432,7 @@ fn tool_search_uses_conversation_model_capabilities() {
             .expect("tool registry should build");
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -514,6 +519,7 @@ fn tool_search_inline_reinjection_makes_deferred_schema_visible_to_next_turn_req
             .expect("tool registry should build");
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -622,6 +628,7 @@ fn tool_stream_deferred_pool_change_is_not_injected_into_next_sdk_turn() {
             .expect("tool registry should build");
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -696,6 +703,7 @@ fn default_session_installs_tool_search_runtime_cap_when_tool_search_is_enabled(
         ]));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -786,6 +794,7 @@ fn default_session_installs_skill_registry_cap_when_skill_loader_is_configured()
         });
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -842,6 +851,7 @@ fn conversation_session_created_event_precedes_skill_loader_events() {
         });
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -906,6 +916,7 @@ unused body
         });
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -942,6 +953,7 @@ async fn reload_rejects_invalid_skill_and_keeps_registry_generation() {
     let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model(TestModelProvider::default())
         .with_store_arc(store)
         .with_sandbox(NoopSandbox::new())
@@ -996,6 +1008,7 @@ async fn running_turn_uses_snapshot_captured_before_skill_reload() {
     });
 
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model_arc(model.clone())
         .with_store_arc(store.clone())
         .with_sandbox(NoopSandbox::new())

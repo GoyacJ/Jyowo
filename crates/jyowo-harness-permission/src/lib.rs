@@ -46,7 +46,8 @@ pub use direct::*;
 pub use integrity_signer::*;
 #[cfg(feature = "integrity")]
 pub use persistence::{
-    FileDecisionPersistence, NoopPermissionTamperEventSink, PermissionTamperEventSink,
+    migrate_legacy_no_workspace_permission_decisions, FileDecisionPersistence,
+    NoopPermissionTamperEventSink, PermissionTamperEventSink,
 };
 #[cfg(feature = "rule-engine")]
 pub use providers::*;

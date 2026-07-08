@@ -358,7 +358,8 @@ fn title(record: &BackgroundAgentRecord) -> &str {
 #[tokio::test]
 async fn agent_orchestration_background_record_is_durable_before_execution_and_journaled() {
     let workspace = tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let workspace_root = workspace.path().canonicalize().expect("canonical");
+    let store = Arc::new(AgentRuntimeStore::open(&workspace_root).expect("store opens"));
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let session_id = SessionId::new();
     let manager = BackgroundAgentManager::new(
@@ -409,7 +410,8 @@ async fn agent_orchestration_background_record_is_durable_before_execution_and_j
 #[tokio::test]
 async fn agent_orchestration_background_lifecycle_operations_follow_transition_table() {
     let workspace = tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let workspace_root = workspace.path().canonicalize().expect("canonical");
+    let store = Arc::new(AgentRuntimeStore::open(&workspace_root).expect("store opens"));
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let manager = manager(
@@ -524,7 +526,8 @@ async fn agent_orchestration_background_lifecycle_operations_follow_transition_t
 #[tokio::test]
 async fn agent_orchestration_background_start_does_not_create_record_when_journal_append_fails() {
     let workspace = tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let workspace_root = workspace.path().canonicalize().expect("canonical");
+    let store = Arc::new(AgentRuntimeStore::open(&workspace_root).expect("store opens"));
     let conversation_id = SessionId::new();
     let failing_manager = BackgroundAgentManager::new(
         Arc::clone(&store),
@@ -556,7 +559,8 @@ async fn agent_orchestration_background_start_does_not_create_record_when_journa
 async fn agent_orchestration_background_transition_does_not_mutate_state_when_journal_append_fails()
 {
     let workspace = tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let workspace_root = workspace.path().canonicalize().expect("canonical");
+    let store = Arc::new(AgentRuntimeStore::open(&workspace_root).expect("store opens"));
     let good_event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let good_manager = manager(
@@ -598,7 +602,8 @@ async fn agent_orchestration_background_transition_does_not_mutate_state_when_jo
 #[tokio::test]
 async fn agent_orchestration_background_delete_does_not_remove_record_when_journal_append_fails() {
     let workspace = tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let workspace_root = workspace.path().canonicalize().expect("canonical");
+    let store = Arc::new(AgentRuntimeStore::open(&workspace_root).expect("store opens"));
     let good_event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let good_manager = manager(
@@ -649,7 +654,8 @@ async fn agent_orchestration_background_delete_does_not_remove_record_when_journ
 async fn agent_orchestration_background_resume_interrupted_does_not_create_attempt_when_journal_append_fails(
 ) {
     let workspace = tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let workspace_root = workspace.path().canonicalize().expect("canonical");
+    let store = Arc::new(AgentRuntimeStore::open(&workspace_root).expect("store opens"));
     let good_event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let good_manager = manager(
@@ -703,7 +709,8 @@ async fn agent_orchestration_background_resume_interrupted_does_not_create_attem
 async fn agent_orchestration_background_resume_interrupted_uses_single_durable_append_before_sqlite_mutation(
 ) {
     let workspace = tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let workspace_root = workspace.path().canonicalize().expect("canonical");
+    let store = Arc::new(AgentRuntimeStore::open(&workspace_root).expect("store opens"));
     let good_event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let good_manager = manager(
@@ -750,7 +757,8 @@ async fn agent_orchestration_background_resume_interrupted_uses_single_durable_a
 #[tokio::test]
 async fn agent_orchestration_background_resume_interrupted_emits_started_for_new_attempt() {
     let workspace = tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let workspace_root = workspace.path().canonicalize().expect("canonical");
+    let store = Arc::new(AgentRuntimeStore::open(&workspace_root).expect("store opens"));
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let manager = manager(
@@ -806,7 +814,8 @@ async fn agent_orchestration_background_resume_interrupted_emits_started_for_new
 async fn agent_orchestration_background_startup_recovery_does_not_mutate_state_when_interrupted_event_append_fails(
 ) {
     let workspace = tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let workspace_root = workspace.path().canonicalize().expect("canonical");
+    let store = Arc::new(AgentRuntimeStore::open(&workspace_root).expect("store opens"));
     let good_event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let good_manager = manager(
@@ -846,7 +855,8 @@ async fn agent_orchestration_background_startup_recovery_does_not_mutate_state_w
 #[tokio::test]
 async fn agent_orchestration_background_invalid_transitions_fail_closed() {
     let workspace = tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let workspace_root = workspace.path().canonicalize().expect("canonical");
+    let store = Arc::new(AgentRuntimeStore::open(&workspace_root).expect("store opens"));
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let manager = manager(
         Arc::clone(&store),
@@ -887,7 +897,8 @@ async fn agent_orchestration_background_invalid_transitions_fail_closed() {
 async fn agent_orchestration_background_startup_recovery_marks_live_process_states_without_deleting_terminal_records(
 ) {
     let workspace = tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let workspace_root = workspace.path().canonicalize().expect("canonical");
+    let store = Arc::new(AgentRuntimeStore::open(&workspace_root).expect("store opens"));
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let manager = manager(

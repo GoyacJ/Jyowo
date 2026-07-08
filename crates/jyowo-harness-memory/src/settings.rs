@@ -144,6 +144,19 @@ impl MemorySettingsStore {
         .map_err(|e| format!("write thread settings: {e}"))?;
         Ok(settings)
     }
+
+    pub fn delete_thread(&self, tenant_id: TenantId, session_id: SessionId) -> Result<(), String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("settings lock: {e}"))?;
+        conn.execute(
+            "DELETE FROM memory_thread_settings WHERE tenant_id = ?1 AND session_id = ?2",
+            rusqlite::params![tenant_id.to_string(), session_id.to_string()],
+        )
+        .map_err(|e| format!("delete thread settings: {e}"))?;
+        Ok(())
+    }
 }
 
 impl Default for MemorySettingsStore {

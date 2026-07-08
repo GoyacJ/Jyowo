@@ -9,7 +9,7 @@ async fn save_mcp_server_payload_rejects_invalid_config_fail_closed() {
             display_name: String::new(),
             id: "bad id".to_owned(),
             scope: "global".to_owned(),
-            transport: McpServerTransportConfig::Stdio {
+            transport: SaveMcpServerTransportConfig::Stdio {
                 command: String::new(),
                 args: Vec::new(),
                 env: Vec::new(),
@@ -142,7 +142,7 @@ async fn save_mcp_server_payload_allows_secret_bearing_stdio_args() {
             display_name: "Workspace GitHub".to_owned(),
             id: "github".to_owned(),
             scope: "global".to_owned(),
-            transport: McpServerTransportConfig::Stdio {
+            transport: SaveMcpServerTransportConfig::Stdio {
                 command: "node".to_owned(),
                 args: vec!["--token=mcp-secret-token".to_owned()],
                 env: Vec::new(),
@@ -173,7 +173,7 @@ async fn save_mcp_server_payload_allows_raw_secret_like_stdio_args() {
             display_name: "Workspace GitHub".to_owned(),
             id: "github".to_owned(),
             scope: "global".to_owned(),
-            transport: McpServerTransportConfig::Stdio {
+            transport: SaveMcpServerTransportConfig::Stdio {
                 command: "node".to_owned(),
                 args: vec!["ghp_abcdefghijklmnopqrstuvwxyz0123456789".to_owned()],
                 env: Vec::new(),
@@ -204,7 +204,7 @@ async fn save_mcp_server_payload_rejects_in_process_workspace_config() {
             display_name: "Internal".to_owned(),
             id: "internal".to_owned(),
             scope: "global".to_owned(),
-            transport: McpServerTransportConfig::InProcess,
+            transport: SaveMcpServerTransportConfig::InProcess,
         },
         &store,
     )
@@ -224,12 +224,13 @@ async fn save_mcp_server_payload_persists_http_config_without_secret_values() {
             display_name: "Remote Context".to_owned(),
             id: "context7".to_owned(),
             scope: "global".to_owned(),
-            transport: McpServerTransportConfig::Http {
+            transport: SaveMcpServerTransportConfig::Http {
                 url: "https://mcp.example.com/mcp".to_owned(),
                 bearer_token_env_var: Some("MCP_BEARER_TOKEN".to_owned()),
-                headers: vec![McpNameValueRecord {
+                headers: vec![McpNameValueSaveRecord {
                     key: "X-Workspace".to_owned(),
-                    value: "jyowo".to_owned(),
+                    value: Some("jyowo".to_owned()),
+                    preserve_existing: false,
                 }],
                 headers_from_env: vec![McpHeaderEnvRecord {
                     key: "X-Api-Key".to_owned(),
@@ -262,12 +263,13 @@ async fn get_mcp_server_config_with_store_returns_workspace_managed_record() {
             display_name: "Remote Context".to_owned(),
             id: "context7".to_owned(),
             scope: "global".to_owned(),
-            transport: McpServerTransportConfig::Http {
+            transport: SaveMcpServerTransportConfig::Http {
                 url: "https://mcp.example.com/mcp".to_owned(),
                 bearer_token_env_var: Some("MCP_BEARER_TOKEN".to_owned()),
-                headers: vec![McpNameValueRecord {
+                headers: vec![McpNameValueSaveRecord {
                     key: "X-Workspace".to_owned(),
-                    value: "jyowo".to_owned(),
+                    value: Some("jyowo".to_owned()),
+                    preserve_existing: false,
                 }],
                 headers_from_env: vec![McpHeaderEnvRecord {
                     key: "X-Api-Key".to_owned(),
@@ -292,12 +294,105 @@ async fn get_mcp_server_config_with_store_returns_workspace_managed_record() {
 
     assert_eq!(payload.server.display_name, "Remote Context");
     assert_eq!(payload.server.id, "context7");
-    assert!(matches!(
-        payload.server.transport,
-        McpServerTransportConfig::Http { .. }
-    ));
+    match payload.server.transport {
+        McpServerConfigTransportPayload::Http { headers, .. } => {
+            assert_eq!(headers.len(), 1);
+            assert_eq!(headers[0].key, "X-Workspace");
+            assert!(headers[0].has_value);
+            assert_eq!(headers[0].value, None);
+        }
+        _ => panic!("expected http transport"),
+    }
     assert!(serialized.contains("MCP_BEARER_TOKEN"));
+    assert!(!serialized.contains("jyowo"));
     assert!(!serialized.contains("mcp-secret-token"));
+}
+
+#[tokio::test]
+async fn save_mcp_server_with_store_preserves_existing_redacted_http_header_value() {
+    let store = RecordingMcpServerStore::default();
+    save_mcp_server_with_store(
+        SaveMcpServerRequest {
+            enabled: true,
+            display_name: "Remote Context".to_owned(),
+            id: "context7".to_owned(),
+            scope: "global".to_owned(),
+            transport: SaveMcpServerTransportConfig::Http {
+                url: "https://mcp.example.com/mcp".to_owned(),
+                bearer_token_env_var: None,
+                headers: vec![McpNameValueSaveRecord {
+                    key: "X-Workspace".to_owned(),
+                    value: Some("jyowo".to_owned()),
+                    preserve_existing: false,
+                }],
+                headers_from_env: Vec::new(),
+            },
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+
+    save_mcp_server_with_store(
+        SaveMcpServerRequest {
+            enabled: true,
+            display_name: "Remote Context".to_owned(),
+            id: "context7".to_owned(),
+            scope: "global".to_owned(),
+            transport: SaveMcpServerTransportConfig::Http {
+                url: "https://mcp.example.com/mcp".to_owned(),
+                bearer_token_env_var: None,
+                headers: vec![McpNameValueSaveRecord {
+                    key: "X-Workspace".to_owned(),
+                    value: None,
+                    preserve_existing: true,
+                }],
+                headers_from_env: Vec::new(),
+            },
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+    let stored = store.record.lock().unwrap().clone().unwrap();
+
+    match stored.transport {
+        McpServerTransportConfig::Http { headers, .. } => {
+            assert_eq!(headers.len(), 1);
+            assert_eq!(headers[0].key, "X-Workspace");
+            assert_eq!(headers[0].value, "jyowo");
+        }
+        _ => panic!("expected http transport"),
+    }
+}
+
+#[tokio::test]
+async fn save_mcp_server_with_store_rejects_preserve_existing_without_existing_value() {
+    let store = RecordingMcpServerStore::default();
+    let error = save_mcp_server_with_store(
+        SaveMcpServerRequest {
+            enabled: true,
+            display_name: "Remote Context".to_owned(),
+            id: "context7".to_owned(),
+            scope: "global".to_owned(),
+            transport: SaveMcpServerTransportConfig::Http {
+                url: "https://mcp.example.com/mcp".to_owned(),
+                bearer_token_env_var: None,
+                headers: vec![McpNameValueSaveRecord {
+                    key: "X-Workspace".to_owned(),
+                    value: None,
+                    preserve_existing: true,
+                }],
+                headers_from_env: Vec::new(),
+            },
+        },
+        &store,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(store.record.lock().unwrap().is_none());
 }
 
 #[tokio::test]
@@ -340,12 +435,13 @@ async fn save_mcp_server_payload_rejects_secret_bearing_http_headers() {
             display_name: "Remote Context".to_owned(),
             id: "context7".to_owned(),
             scope: "global".to_owned(),
-            transport: McpServerTransportConfig::Http {
+            transport: SaveMcpServerTransportConfig::Http {
                 url: "https://mcp.example.com/mcp".to_owned(),
                 bearer_token_env_var: None,
-                headers: vec![McpNameValueRecord {
+                headers: vec![McpNameValueSaveRecord {
                     key: "Authorization".to_owned(),
-                    value: "Bearer mcp-secret-token".to_owned(),
+                    value: Some("Bearer mcp-secret-token".to_owned()),
+                    preserve_existing: false,
                 }],
                 headers_from_env: Vec::new(),
             },
@@ -368,7 +464,7 @@ async fn save_mcp_server_payload_rejects_cookie_headers_from_env() {
             display_name: "Remote Browser".to_owned(),
             id: "remote-browser".to_owned(),
             scope: "global".to_owned(),
-            transport: McpServerTransportConfig::Http {
+            transport: SaveMcpServerTransportConfig::Http {
                 url: "https://mcp.example.com/mcp".to_owned(),
                 bearer_token_env_var: None,
                 headers: Vec::new(),
@@ -423,7 +519,7 @@ async fn save_mcp_server_with_runtime_state_registers_and_injects_stdio_tools() 
                 display_name: "Workspace Stdio".to_owned(),
                 id: "stdio".to_owned(),
                 scope: "global".to_owned(),
-                transport: McpServerTransportConfig::Stdio {
+                transport: SaveMcpServerTransportConfig::Stdio {
                     command: "/bin/sh".to_owned(),
                     args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
                     env: Vec::new(),
@@ -459,12 +555,14 @@ async fn save_mcp_server_with_runtime_state_registers_and_injects_stdio_tools() 
 #[tokio::test]
 async fn save_mcp_server_with_runtime_state_runs_npx_without_explicit_inherited_env() {
     let _guard = WORKSPACE_ROOT_ENV_LOCK.lock().unwrap();
+    let _home_lock = HOME_ENV_LOCK.lock().unwrap();
     let workspace = unique_workspace("mcp-save-npx-empty-env");
     let fake_bin = workspace.join("bin");
     std::fs::create_dir_all(&fake_bin).unwrap();
     write_test_executable(&fake_bin.join("npx"), &context7_npx_fixture_script());
+    let canonical_home = workspace.canonicalize().unwrap();
     let path_guard = EnvVarGuard::set("PATH", fake_bin.as_os_str());
-    let home_guard = EnvVarGuard::set("HOME", workspace.as_os_str());
+    let home_guard = EnvVarGuard::set("HOME", canonical_home.as_os_str());
     let state =
         runtime_state_with_mcp_registry_for_workspace(workspace, McpRegistry::new(), Vec::new())
             .await;
@@ -477,7 +575,7 @@ async fn save_mcp_server_with_runtime_state_runs_npx_without_explicit_inherited_
                 display_name: "Context7".to_owned(),
                 id: "context7".to_owned(),
                 scope: "global".to_owned(),
-                transport: McpServerTransportConfig::Stdio {
+                transport: SaveMcpServerTransportConfig::Stdio {
                     command: "npx".to_owned(),
                     args: vec![
                         "-y".to_owned(),
@@ -507,12 +605,14 @@ async fn save_mcp_server_with_runtime_state_runs_npx_without_explicit_inherited_
 #[tokio::test]
 async fn save_mcp_server_with_runtime_state_accepts_workspace_relative_working_dir() {
     let _guard = WORKSPACE_ROOT_ENV_LOCK.lock().unwrap();
+    let _home_lock = HOME_ENV_LOCK.lock().unwrap();
     let workspace = unique_workspace("mcp-save-relative-working-dir");
     let fake_bin = workspace.join("bin");
     std::fs::create_dir_all(&fake_bin).unwrap();
     write_test_executable(&fake_bin.join("npx"), &context7_npx_fixture_script());
+    let canonical_home = workspace.canonicalize().unwrap();
     let path_guard = EnvVarGuard::set("PATH", fake_bin.as_os_str());
-    let home_guard = EnvVarGuard::set("HOME", workspace.as_os_str());
+    let home_guard = EnvVarGuard::set("HOME", canonical_home.as_os_str());
     let state = runtime_state_with_mcp_registry_for_workspace(
         workspace.clone(),
         McpRegistry::new(),
@@ -528,7 +628,7 @@ async fn save_mcp_server_with_runtime_state_accepts_workspace_relative_working_d
                 display_name: "Context7".to_owned(),
                 id: "context7".to_owned(),
                 scope: "global".to_owned(),
-                transport: McpServerTransportConfig::Stdio {
+                transport: SaveMcpServerTransportConfig::Stdio {
                     command: "npx".to_owned(),
                     args: vec![
                         "-y".to_owned(),
@@ -573,7 +673,7 @@ async fn save_mcp_server_with_runtime_state_rejects_invalid_working_dir_without_
             display_name: "Context7".to_owned(),
             id: "context7".to_owned(),
             scope: "global".to_owned(),
-            transport: McpServerTransportConfig::Stdio {
+            transport: SaveMcpServerTransportConfig::Stdio {
                 command: "npx".to_owned(),
                 args: vec![
                     "-y".to_owned(),
@@ -610,7 +710,7 @@ async fn disabled_mcp_server_with_runtime_state_does_not_register_or_inject_tool
             display_name: "Workspace Stdio".to_owned(),
             id: "stdio".to_owned(),
             scope: "global".to_owned(),
-            transport: McpServerTransportConfig::Stdio {
+            transport: SaveMcpServerTransportConfig::Stdio {
                 command: "/bin/sh".to_owned(),
                 args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
                 env: Vec::new(),
@@ -650,7 +750,7 @@ async fn set_mcp_server_enabled_registers_and_injects_tools() {
             display_name: "Workspace Stdio".to_owned(),
             id: "stdio".to_owned(),
             scope: "global".to_owned(),
-            transport: McpServerTransportConfig::Stdio {
+            transport: SaveMcpServerTransportConfig::Stdio {
                 command: "/bin/sh".to_owned(),
                 args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
                 env: Vec::new(),
@@ -715,7 +815,7 @@ async fn restart_mcp_server_removes_registers_and_injects_tools() {
                 display_name: "Workspace Stdio".to_owned(),
                 id: "stdio".to_owned(),
                 scope: "global".to_owned(),
-                transport: McpServerTransportConfig::Stdio {
+                transport: SaveMcpServerTransportConfig::Stdio {
                     command: "/bin/sh".to_owned(),
                     args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
                     env: Vec::new(),
@@ -783,12 +883,13 @@ async fn http_mcp_server_with_runtime_state_registers_as_http_transport() {
             display_name: "Remote Context".to_owned(),
             id: "context7".to_owned(),
             scope: "global".to_owned(),
-            transport: McpServerTransportConfig::Http {
+            transport: SaveMcpServerTransportConfig::Http {
                 url: "http://127.0.0.1:9/mcp".to_owned(),
                 bearer_token_env_var: Some("MCP_TEST_BEARER".to_owned()),
-                headers: vec![McpNameValueRecord {
+                headers: vec![McpNameValueSaveRecord {
                     key: "X-Workspace".to_owned(),
-                    value: "jyowo".to_owned(),
+                    value: Some("jyowo".to_owned()),
+                    preserve_existing: false,
                 }],
                 headers_from_env: Vec::new(),
             },

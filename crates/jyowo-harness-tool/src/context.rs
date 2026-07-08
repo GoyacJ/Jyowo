@@ -36,6 +36,7 @@ pub struct ToolContext {
     pub agent_id: AgentId,
     pub subagent_depth: u8,
     pub workspace_root: PathBuf,
+    pub project_workspace_root: Option<PathBuf>,
     pub sandbox: Option<Arc<dyn SandboxBackend>>,
     pub cap_registry: Arc<CapabilityRegistry>,
     pub redactor: Arc<dyn Redactor>,

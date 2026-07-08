@@ -523,11 +523,16 @@ Composer model selection rules:
 
 - The composer model selector is per-run state.
 - Changing the selector must update only the local composer state before send.
-- Send and review-continue actions must include the current `modelConfigId`.
-- A successful send persists that `modelConfigId` as the conversation default
-  through backend metadata; failed sends must not change the default.
+- Send and review-continue actions include `modelConfigId` only when the user has
+  selected a concrete config. They must remain available without an active
+  project and without a selected config.
+- A successful send persists the backend-resolved model as the conversation
+  default through backend metadata; failed sends must not change the default.
 - Empty draft conversations use metadata only and should render with empty
   messages until the first run starts.
+- Settings labels must separate Global defaults, Project overrides, and Runtime
+  diagnostics. No-workspace sessions must not be presented as saving project
+  overrides.
 
 Capability routing UX rules:
 

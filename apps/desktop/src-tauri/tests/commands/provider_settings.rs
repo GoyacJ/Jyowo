@@ -229,7 +229,7 @@ async fn provider_config_api_key_reveal_token_is_single_use_and_scoped_to_config
     let workspace = unique_workspace("provider-key-reveal-token");
     std::fs::create_dir_all(&workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
-    DesktopProviderSettingsStore::new(workspace.clone())
+    provider_settings_store_for_workspace(&workspace)
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some("openai-work".to_owned()),
             configs: vec![
@@ -355,7 +355,7 @@ async fn provider_config_api_key_reveal_token_expires() {
     let workspace = unique_workspace("provider-key-reveal-expired");
     std::fs::create_dir_all(&workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
-    DesktopProviderSettingsStore::new(workspace.clone())
+    provider_settings_store_for_workspace(&workspace)
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some("openai".to_owned()),
             configs: vec![ProviderConfigRecord {
@@ -401,7 +401,7 @@ async fn provider_config_api_key_reveal_token_rejects_config_key_changed_after_i
     let workspace = unique_workspace("provider-key-reveal-key-changed");
     std::fs::create_dir_all(&workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
-    let store = DesktopProviderSettingsStore::new(workspace.clone());
+    let store = provider_settings_store_for_workspace(&workspace);
     store
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some("openai".to_owned()),
@@ -463,7 +463,7 @@ async fn save_provider_settings_with_runtime_state_invalidates_pending_reveal_to
     let workspace = unique_workspace("provider-key-reveal-save-invalidates");
     std::fs::create_dir_all(&workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
-    DesktopProviderSettingsStore::new(workspace.clone())
+    provider_settings_store_for_workspace(&workspace)
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some("openai".to_owned()),
             configs: vec![ProviderConfigRecord {
@@ -722,7 +722,7 @@ fn provider_settings_record_rejects_config_without_new_model_descriptor() {
 }
 
 #[test]
-fn desktop_provider_settings_store_deletes_legacy_provider_settings_file() {
+fn desktop_provider_settings_store_rejects_invalid_legacy_provider_settings_file() {
     let workspace = unique_workspace("provider-settings-legacy-provider-settings");
     let settings_dir = workspace.join(".jyowo").join("runtime");
     std::fs::create_dir_all(&settings_dir).unwrap();
@@ -764,10 +764,17 @@ fn desktop_provider_settings_store_deletes_legacy_provider_settings_file() {
         }]
     });
     std::fs::write(&settings_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
-    let store = DesktopProviderSettingsStore::new(workspace);
+    let store = provider_settings_store_for_workspace(&workspace);
 
-    assert_eq!(store.load_record().unwrap(), None);
-    assert!(!settings_path.exists());
+    let loaded = store
+        .load_record()
+        .expect("production provider settings load must ignore legacy runtime file");
+
+    assert!(
+        loaded.is_none(),
+        "legacy runtime provider settings must not be used as production fallback"
+    );
+    assert!(settings_path.exists());
 }
 
 #[test]

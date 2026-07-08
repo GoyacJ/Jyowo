@@ -12,7 +12,7 @@ fn desktop_provider_settings_store_rejects_config_without_api_key() {
     let workspace = unique_workspace("conversation-model-no-key");
     std::fs::create_dir_all(&workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
-    let error = DesktopProviderSettingsStore::new(workspace)
+    let error = provider_settings_store_for_workspace(&workspace)
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some("openai-work".to_owned()),
             configs: vec![ProviderConfigRecord {
@@ -41,7 +41,7 @@ fn desktop_provider_settings_store_writes_owner_only_file_permissions() {
     let workspace = unique_workspace("provider-settings-owner-only");
     std::fs::create_dir_all(&workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
-    DesktopProviderSettingsStore::new(workspace.clone())
+    provider_settings_store_for_workspace(&workspace)
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some("openai-work".to_owned()),
             configs: vec![ProviderConfigRecord {
@@ -59,14 +59,43 @@ fn desktop_provider_settings_store_writes_owner_only_file_permissions() {
         .unwrap();
 
     let settings_path = workspace
+        .join(".jyowo-test-home")
         .join(".jyowo")
-        .join("runtime")
-        .join("provider-settings.json");
+        .join("config")
+        .join("provider-secrets.json");
     let mode = std::fs::metadata(settings_path)
         .unwrap()
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600);
+    assert!(!workspace
+        .join(".jyowo")
+        .join("runtime")
+        .join("provider-settings.json")
+        .exists());
+}
+
+#[test]
+fn desktop_provider_settings_store_ignores_malformed_legacy_json_and_preserves_file() {
+    let workspace = unique_workspace("provider-settings-malformed-json");
+    let settings_dir = workspace.join(".jyowo").join("runtime");
+    std::fs::create_dir_all(&settings_dir).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    let settings_path = workspace
+        .join(".jyowo")
+        .join("runtime")
+        .join("provider-settings.json");
+    std::fs::write(&settings_path, b"{not-json").unwrap();
+
+    let loaded = provider_settings_store_for_workspace(&workspace)
+        .load_record()
+        .expect("production provider settings load must ignore legacy runtime file");
+
+    assert!(
+        loaded.is_none(),
+        "legacy runtime provider settings must not be used as production fallback"
+    );
+    assert!(settings_path.exists());
 }
 
 #[cfg(unix)]
@@ -79,7 +108,7 @@ fn desktop_provider_settings_store_rejects_symlink_settings_file() {
     std::fs::create_dir_all(&settings_dir).unwrap();
     std::fs::create_dir_all(&external).unwrap();
     std::os::unix::fs::symlink(external.join("provider-settings.json"), &settings_path).unwrap();
-    let store = DesktopProviderSettingsStore::new(workspace);
+    let store = provider_settings_store_for_workspace(&workspace);
 
     let error = store.load_record().unwrap_err();
     assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");

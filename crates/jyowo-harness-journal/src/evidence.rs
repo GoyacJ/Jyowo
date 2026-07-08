@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "sqlite")]
 use tokio::sync::Mutex;
 
-use crate::{EventStore, ReplayCursor};
+use crate::{app_controlled_path, EventStore, ReplayCursor};
 
 /// A durable registry record for an evidence ref.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -928,11 +928,15 @@ pub struct SqliteEvidenceRefRegistry {
 #[cfg(feature = "sqlite")]
 impl SqliteEvidenceRefRegistry {
     pub async fn open(path: impl AsRef<std::path::Path>) -> Result<Self, JournalError> {
-        if let Some(parent) = path.as_ref().parent() {
-            std::fs::create_dir_all(parent)
+        let path = app_controlled_path(path.as_ref())
+            .map_err(|e| JournalError::Message(format!("open evidence registry: {e}")))?;
+        if let Some(parent) = path.parent() {
+            harness_fs::ensure_app_dir_no_symlink(parent)
                 .map_err(|e| JournalError::Message(format!("create evidence registry dir: {e}")))?;
         }
-        let connection = rusqlite::Connection::open(path).map_err(journal_sqlite_error)?;
+        harness_fs::ensure_no_symlink_components(&path)
+            .map_err(|e| JournalError::Message(format!("open evidence registry: {e}")))?;
+        let connection = rusqlite::Connection::open(&path).map_err(journal_sqlite_error)?;
         connection
             .execute_batch(
                 "PRAGMA journal_mode = WAL;

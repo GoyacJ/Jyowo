@@ -380,6 +380,7 @@ mod tests {
             agent_id: AgentId::from_u128(1),
             subagent_depth: 0,
             workspace_root: workspace_root.to_path_buf(),
+            project_workspace_root: Some(workspace_root.to_path_buf()),
             sandbox: None,
             cap_registry: std::sync::Arc::new(CapabilityRegistry::default()),
             redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),

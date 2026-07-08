@@ -177,7 +177,7 @@ pub(crate) fn write_test_provider_settings(workspace: &Path) {
     let workspace = workspace
         .canonicalize()
         .expect("test workspace should canonicalize");
-    let store = DesktopProviderSettingsStore::new(workspace);
+    let store = provider_settings_store_for_workspace(&workspace);
     if store
         .load_record()
         .expect("test provider settings should load")

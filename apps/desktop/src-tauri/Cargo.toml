@@ -23,6 +23,7 @@ blake3 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
+fs2 = { workspace = true }
 iana-time-zone = { workspace = true }
 image = { workspace = true }
 async-trait = { workspace = true }
@@ -37,10 +38,12 @@ jyowo-harness-memory = { path = "../../../crates/jyowo-harness-memory" }
 jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false, features = ["stream-permission", "rule-engine-permission", "integrity", "jsonl-store", "sqlite-store", "blob-file", "local-sandbox", "mcp-http", "mcp-stdio", "memory-provider-registry", "provider-anthropic", "provider-codex", "provider-deepseek", "provider-doubao", "provider-gemini", "provider-km", "provider-local-llama", "provider-minimax", "minimax-tools", "seedance-tools", "provider-openai", "provider-openrouter", "provider-qwen", "provider-zhipu", "observability-redactor", "agents-subagent", "agents-team"] }
 jyowo-harness-model = { path = "../../../crates/jyowo-harness-model", features = ["openrouter", "deepseek"] }
 jyowo-harness-tool = { path = "../../../crates/jyowo-harness-tool", default-features = false, features = ["builtin-toolset", "minimax-tools", "seedance-tools"] }
+libc = { workspace = true }
 log = { workspace = true }
 parking_lot = "0.12.5"
 oxideav-avif = { workspace = true }
 reqwest = { workspace = true }
+rustix = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { workspace = true, features = [] }

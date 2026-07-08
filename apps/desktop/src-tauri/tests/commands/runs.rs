@@ -17,7 +17,7 @@ fn start_run_payload_validates_prompt_and_requires_runtime() {
             path: "apps/desktop".to_owned(),
         }]),
         conversation_id: SessionId::new().to_string(),
-        model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+        model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
         permission_mode: None,
         prompt: "Continue implementation".to_owned(),
     })
@@ -30,7 +30,7 @@ fn start_run_payload_validates_prompt_and_requires_runtime() {
         attachments: None,
         context_references: None,
         conversation_id: SessionId::new().to_string(),
-        model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+        model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
         permission_mode: None,
         prompt: String::new(),
     })
@@ -43,7 +43,7 @@ fn start_run_payload_validates_prompt_and_requires_runtime() {
         attachments: None,
         context_references: None,
         conversation_id: SessionId::new().to_string(),
-        model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+        model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
         permission_mode: None,
         prompt: "Continue implementation".to_owned(),
     })
@@ -62,6 +62,7 @@ async fn create_attachment_from_path_writes_workspace_file_to_blob_store() {
 
     let payload = create_attachment_from_path_with_runtime_state(
         CreateAttachmentFromPathRequest {
+            conversation_id: None,
             path: attachment_path.to_string_lossy().to_string(),
         },
         &state,
@@ -104,6 +105,7 @@ async fn create_attachment_from_path_rejects_external_file_before_read() {
 
     let error = create_attachment_from_path_with_runtime_state(
         CreateAttachmentFromPathRequest {
+            conversation_id: None,
             path: attachment_path.to_string_lossy().to_string(),
         },
         &state,
@@ -127,6 +129,7 @@ async fn create_attachment_from_path_does_not_reveal_external_path_existence() {
 
     let existing_error = create_attachment_from_path_with_runtime_state(
         CreateAttachmentFromPathRequest {
+            conversation_id: None,
             path: existing_path.to_string_lossy().to_string(),
         },
         &state,
@@ -135,6 +138,7 @@ async fn create_attachment_from_path_does_not_reveal_external_path_existence() {
     .unwrap_err();
     let missing_error = create_attachment_from_path_with_runtime_state(
         CreateAttachmentFromPathRequest {
+            conversation_id: None,
             path: missing_path.to_string_lossy().to_string(),
         },
         &state,
@@ -158,6 +162,7 @@ async fn create_attachment_from_path_rejects_files_larger_than_five_mb() {
 
     let error = create_attachment_from_path_with_runtime_state(
         CreateAttachmentFromPathRequest {
+            conversation_id: None,
             path: attachment_path.to_string_lossy().to_string(),
         },
         &state,
@@ -167,6 +172,84 @@ async fn create_attachment_from_path_rejects_files_larger_than_five_mb() {
 
     assert_eq!(error.code, "INVALID_PAYLOAD");
     assert!(error.message.contains("5 MB"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn create_attachment_from_path_rejects_symlink_attachment_store_parent() {
+    let workspace = unique_workspace("attachment-store-symlink-parent");
+    let attachment_path = workspace.join("notes.txt");
+    std::fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
+    std::fs::write(&attachment_path, "local notes").unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
+    let external = tempfile::tempdir().expect("external attachment dir");
+    std::os::unix::fs::symlink(external.path(), state.runtime_root().join("attachments"))
+        .expect("symlink");
+
+    let error = create_attachment_from_path_with_runtime_state(
+        CreateAttachmentFromPathRequest {
+            conversation_id: None,
+            path: attachment_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("symlink attachment store parent should fail");
+
+    assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+    assert!(error.message.contains("symlink"));
+    assert!(!external.path().join("records").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn start_run_with_runtime_state_rejects_symlink_attachment_record() {
+    let workspace = unique_workspace("attachment-record-symlink");
+    let attachment_path = workspace.join("notes.txt");
+    std::fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
+    std::fs::write(&attachment_path, "local notes").unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
+    let attachment = create_attachment_from_path_with_runtime_state(
+        CreateAttachmentFromPathRequest {
+            conversation_id: None,
+            path: attachment_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("attachment should be stored")
+    .attachment;
+    let record_path = state
+        .runtime_root()
+        .join("attachments")
+        .join("records")
+        .join(format!("{}.json", attachment.id));
+    let external = tempfile::NamedTempFile::new().expect("external record");
+    std::fs::write(
+        external.path(),
+        std::fs::read(&record_path).expect("record bytes"),
+    )
+    .expect("external record");
+    std::fs::remove_file(&record_path).expect("remove record");
+    std::os::unix::fs::symlink(external.path(), &record_path).expect("symlink");
+
+    let error = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: Some(vec![attachment]),
+            context_references: None,
+            conversation_id: SessionId::new().to_string(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
+            permission_mode: None,
+            prompt: "Use this attachment".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("symlink attachment record should fail");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("symlink"));
 }
 
 #[tokio::test]
@@ -185,7 +268,7 @@ async fn start_run_with_runtime_state_rejects_untrusted_attachment_id_before_rec
             }]),
             context_references: None,
             conversation_id: SessionId::new().to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Use this attachment".to_owned(),
         },
@@ -196,6 +279,55 @@ async fn start_run_with_runtime_state_rejects_untrusted_attachment_id_before_rec
 
     assert_eq!(error.code, "INVALID_PAYLOAD");
     assert!(error.message.contains("generated attachment id"));
+}
+
+#[tokio::test]
+async fn no_workspace_start_run_rejects_attachment_owned_by_another_conversation() {
+    let _lock = HOME_ENV_LOCK.lock().unwrap();
+    let home = unique_workspace("no-workspace-attachment-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let _home_guard = EnvVarGuard::set(HOME_ENV, home.as_os_str());
+    let owner_session_id = SessionId::new();
+    let other_session_id = SessionId::new();
+    let state = runtime_state_with_harness_for_global_conversation(
+        home.join(".jyowo")
+            .join("runtime")
+            .join("global-conversations"),
+        owner_session_id,
+    )
+    .await;
+    let attachment_path = state.conversation_cwd().join("notes.txt");
+    std::fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
+    std::fs::write(&attachment_path, "local notes").unwrap();
+    let attachment = create_attachment_from_path_with_runtime_state(
+        CreateAttachmentFromPathRequest {
+            conversation_id: Some(owner_session_id.to_string()),
+            path: attachment_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("attachment should be stored")
+    .attachment;
+
+    let error = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: Some(vec![attachment]),
+            context_references: None,
+            conversation_id: other_session_id.to_string(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
+            permission_mode: None,
+            prompt: "Use this attachment".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("no-workspace attachment must stay scoped to its owning conversation");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("does not belong"));
 }
 
 #[tokio::test]
@@ -217,7 +349,7 @@ async fn list_reference_candidates_includes_workspace_files() {
                 display_name: "Workspace Stdio".to_owned(),
                 id: "stdio".to_owned(),
                 scope: "global".to_owned(),
-                transport: McpServerTransportConfig::Stdio {
+                transport: SaveMcpServerTransportConfig::Stdio {
                     command: "/bin/sh".to_owned(),
                     args: vec!["-c".to_owned(), stdio_mcp_fixture_script()],
                     env: Vec::new(),
@@ -294,6 +426,7 @@ async fn start_run_with_runtime_state_accepts_structured_context_and_attachments
     let state = runtime_state_with_harness_for_workspace(workspace).await;
     let attachment = create_attachment_from_path_with_runtime_state(
         CreateAttachmentFromPathRequest {
+            conversation_id: None,
             path: workspace_file.to_string_lossy().to_string(),
         },
         &state,
@@ -312,7 +445,7 @@ async fn start_run_with_runtime_state_accepts_structured_context_and_attachments
                 path: "docs/notes.txt".to_owned(),
             }]),
             conversation_id: session_id.to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Run the relevant checks".to_owned(),
         },
@@ -344,7 +477,7 @@ async fn start_run_with_runtime_state_rejects_workspace_file_reference_outside_w
                 path: external_file.to_string_lossy().to_string(),
             }]),
             conversation_id: SessionId::new().to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Use this file".to_owned(),
         },
@@ -378,7 +511,7 @@ async fn start_run_with_runtime_state_returns_real_run_id_for_conversation() {
                 path: "apps/desktop/src/main.tsx".to_owned(),
             }]),
             conversation_id: conversation_id.clone(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Continue implementation".to_owned(),
         },
@@ -393,7 +526,9 @@ async fn start_run_with_runtime_state_returns_real_run_id_for_conversation() {
 
     let page = harness
         .page_conversation_events(ConversationEventsPageRequest {
-            options: state.conversation_session_options(session_id),
+            options: state
+                .conversation_session_options(session_id)
+                .expect("session options"),
             after_event_id: None,
             limit: 20,
         })
@@ -449,7 +584,7 @@ async fn cancel_run_with_runtime_state_cancels_active_run_through_sdk() {
                 attachments: None,
                 context_references: None,
                 conversation_id: session_id.to_string(),
-                model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+                model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
                 permission_mode: None,
                 prompt: "Run a cancellable command".to_owned(),
             },
@@ -484,7 +619,9 @@ async fn runtime_state_async_uses_explicit_workspace_root() {
     let state = runtime_state_async()
         .await
         .expect("runtime state should initialize with explicit workspace root");
-    let options = state.conversation_session_options(SessionId::new());
+    let options = state
+        .conversation_session_options(SessionId::new())
+        .expect("session options");
 
     assert_eq!(
         options.workspace_root,

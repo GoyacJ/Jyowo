@@ -2210,6 +2210,7 @@ mod tests {
             agent_id: AgentId::new(),
             subagent_depth: 0,
             workspace_root: PathBuf::from("/tmp"),
+            project_workspace_root: None,
             sandbox: None,
             cap_registry: Arc::new(caps),
             redactor: Arc::new(harness_contracts::NoopRedactor),

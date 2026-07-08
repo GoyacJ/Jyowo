@@ -1,9 +1,8 @@
-use std::sync::Arc;
-
 use harness_contracts::{NoopRedactor, Redactor};
 use harness_observability::{
     NoopTracer, Observer, SpanAttributes, Tracer, UsageAccumulator, UsageScope,
 };
+use std::sync::Arc;
 
 #[test]
 fn observer_builder_assembles_tracer_usage_and_redactor() {

@@ -6,11 +6,12 @@ use async_trait::async_trait;
 #[cfg(feature = "recall-memory")]
 use harness_contracts::MemoryThreadSettings;
 use harness_contracts::{
-    ConfigHash, ContextPatchRequest, ContextPatchSinkCap, ConversationAttachmentReference,
-    DeferredToolsDeltaAttachment, EndReason, Event, InteractivityLevel, Message, MessageId,
-    MessagePart, ModelProtocol, PermissionActorSource, PermissionMode, RunId, RunModelSnapshot,
-    SessionCreatedEvent, SessionEndedEvent, SessionError, SessionId, SnapshotId, TeamId, TenantId,
-    ToolProfile, ToolSearchMode, UsageSnapshot, WorkspaceId,
+    AgentProfile, ConfigHash, ContextPatchRequest, ContextPatchSinkCap,
+    ConversationAttachmentReference, DeferredToolsDeltaAttachment, EndReason, Event,
+    InteractivityLevel, Message, MessageId, MessagePart, ModelProtocol, PermissionActorSource,
+    PermissionMode, RunId, RunModelSnapshot, SessionCreatedEvent, SessionEndedEvent, SessionError,
+    SessionId, SnapshotId, TeamId, TenantId, ToolProfile, ToolSearchMode, UsageSnapshot,
+    WorkspaceId,
 };
 use harness_journal::EventStore;
 use harness_skill::SkillRegistration;
@@ -31,6 +32,7 @@ pub struct SessionTurnContext {
     pub user_id: Option<String>,
     pub team_id: Option<TeamId>,
     pub workspace_root: PathBuf,
+    pub project_workspace_root: Option<PathBuf>,
     pub snapshot_id: SnapshotId,
     pub config_snapshot_id: SnapshotId,
     pub effective_config_hash: ConfigHash,
@@ -91,6 +93,10 @@ pub struct SessionOptions {
     pub workspace_ref: Option<WorkspaceId>,
     #[serde(default = "default_workspace_root")]
     pub workspace_root: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_workspace_root: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_runtime_root: Option<PathBuf>,
     #[serde(default)]
     pub workspace_bootstrap: Option<WorkspaceBootstrap>,
     #[serde(default = "default_tenant_id")]
@@ -117,6 +123,8 @@ pub struct SessionOptions {
     pub team_id: Option<TeamId>,
     #[serde(default)]
     pub system_prompt_addendum: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_profiles: Vec<AgentProfile>,
     #[serde(default)]
     pub max_iterations: u32,
     #[serde(default = "default_context_compression_trigger_ratio")]
@@ -130,6 +138,8 @@ impl SessionOptions {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             workspace_root: root.into(),
+            project_workspace_root: None,
+            agent_runtime_root: None,
             workspace_ref: None,
             workspace_bootstrap: None,
             tenant_id: TenantId::SINGLE,
@@ -144,6 +154,7 @@ impl SessionOptions {
             user_id: None,
             team_id: None,
             system_prompt_addendum: None,
+            agent_profiles: Vec::new(),
             max_iterations: 0,
             context_compression_trigger_ratio: default_context_compression_trigger_ratio(),
             #[cfg(feature = "recall-memory")]
@@ -154,6 +165,18 @@ impl SessionOptions {
     #[must_use]
     pub fn with_workspace(mut self, workspace: WorkspaceId) -> Self {
         self.workspace_ref = Some(workspace);
+        self
+    }
+
+    #[must_use]
+    pub fn with_project_workspace_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.project_workspace_root = Some(root.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_agent_runtime_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.agent_runtime_root = Some(root.into());
         self
     }
 
@@ -232,6 +255,12 @@ impl SessionOptions {
     #[must_use]
     pub fn with_system_prompt_addendum(mut self, addendum: impl Into<String>) -> Self {
         self.system_prompt_addendum = Some(addendum.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_agent_profiles(mut self, profiles: Vec<AgentProfile>) -> Self {
+        self.agent_profiles = profiles;
         self
     }
 
@@ -524,6 +553,7 @@ impl Session {
                 tenant_id: self.options.tenant_id,
                 session_id: self.options.session_id,
                 workspace_root: self.options.workspace_root.clone(),
+                project_workspace_root: self.options.project_workspace_root.clone(),
                 snapshot_id: projection.snapshot_id,
                 config_snapshot_id: self.config_snapshot_id(),
                 effective_config_hash: self.effective_config_hash(),
@@ -748,6 +778,7 @@ pub fn session_options_hash(options: &SessionOptions) -> [u8; 32] {
     hash_json(&json!({
         "workspace_ref": options.workspace_ref,
         "workspace_root": options.workspace_root,
+        "project_workspace_root": options.project_workspace_root,
         "workspace_bootstrap": options.workspace_bootstrap,
         "tenant_id": options.tenant_id,
         "session_id": options.session_id,

@@ -4,13 +4,14 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
+use harness_contracts::NoopRedactor;
 use harness_contracts::{
     BlobMeta, BlobRetention, BlobStore, BudgetMetric, CapabilityRegistry, Decision, DecisionScope,
     DeferPolicy, Event, Message, MessageId, MessagePart, MessageRole, ModelError, NetworkAccess,
-    NoopRedactor, OverflowAction, PermissionError, PermissionSubject, ProviderRestriction,
-    ResultBudget, RunId, SessionId, TenantId, ToolActionPlan, ToolCapability, ToolDescriptor,
-    ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-    ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot, WorkspaceAccess,
+    OverflowAction, PermissionError, PermissionSubject, ProviderRestriction, ResultBudget, RunId,
+    SessionId, TenantId, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolSearchMode,
+    ToolUseId, TrustLevel, TurnInput, UsageSnapshot, WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{HookDispatcher, HookRegistry};

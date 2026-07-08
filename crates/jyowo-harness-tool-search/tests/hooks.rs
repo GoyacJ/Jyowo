@@ -102,6 +102,7 @@ async fn execute(tool: &ToolSearchTool, runtime: Arc<FakeRuntime>, input: Value)
         agent_id: harness_contracts::AgentId::from_u128(1),
         subagent_depth: 0,
         workspace_root: std::env::temp_dir(),
+        project_workspace_root: None,
         sandbox: None,
         cap_registry: Arc::new(caps),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),

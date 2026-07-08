@@ -341,13 +341,22 @@ fn plugin_activation_failure_records_failed_event_without_raw_error() {
 #[test]
 fn plugin_manifest_validation_records_real_hash() {
     tokio_runtime().block_on(async {
-        let workspace = unique_workspace("sdk-plugin-manifest-validation");
+        let workspace = std::env::current_dir()
+            .expect("current dir")
+            .join("target/test-workspaces")
+            .join(format!(
+                "sdk-plugin-manifest-validation-{}-{}",
+                std::process::id(),
+                SessionId::new()
+            ));
         let plugin_dir = workspace.join(".jyowo/plugins/bad-plugin");
         std::fs::create_dir_all(&plugin_dir).unwrap();
         let raw_manifest = r#"{
-  "manifest_schema_version": 1,
+  "manifest_schema_version": 99,
   "name": "bad-plugin",
   "version": "0.1.0",
+  "trust_level": "admin_trusted",
+  "min_harness_version": ">=0.0.0",
   "capabilities": {}
 }"#;
         std::fs::write(plugin_dir.join("plugin.json"), raw_manifest).unwrap();
@@ -379,6 +388,10 @@ fn plugin_manifest_validation_records_real_hash() {
             .expect("invalid plugin manifest should be skipped after recording validation event");
 
         let events = sink.events();
+        assert!(
+            !events.is_empty(),
+            "validation event should be sent to sink"
+        );
         assert!(events.iter().any(|event| matches!(
             event,
             Event::ManifestValidationFailed(failed)

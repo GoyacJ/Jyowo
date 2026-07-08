@@ -9,13 +9,14 @@ use futures::{stream, StreamExt};
 use harness_context::{
     CompactHint, ContextBuffer, ContextEngine, ContextOutcome, ContextProvider, TokenBudget,
 };
+use harness_contracts::NoopRedactor;
 use harness_contracts::{
     CapabilityRegistry, ContextError, ContextStageId, Decision, DeferPolicy, Event, Message,
     MessageContent, MessageId, MessagePart, MessageRole, ModelError, ModelProtocol, NetworkAccess,
-    NoopRedactor, PermissionError, ProviderRestriction, RunId, RunModelSnapshot, SessionId,
-    StopReason, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel,
-    ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolSearchMode, ToolUseId, TrustLevel,
-    TurnInput, UsageSnapshot, WorkspaceAccess,
+    PermissionError, ProviderRestriction, RunId, RunModelSnapshot, SessionId, StopReason, TenantId,
+    ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin,
+    ToolProperties, ToolResult, ToolSearchMode, ToolUseId, TrustLevel, TurnInput, UsageSnapshot,
+    WorkspaceAccess,
 };
 use harness_engine::{Engine, EngineId, EngineRunner, RunContext, SessionHandle};
 use harness_hook::{HookDispatcher, HookRegistry};

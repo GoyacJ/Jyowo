@@ -2506,6 +2506,7 @@ pub mod testing {
             agent_id: AgentId::new(),
             subagent_depth: 0,
             workspace_root: PathBuf::from("."),
+            project_workspace_root: None,
             sandbox: None,
             cap_registry,
             redactor: Arc::new(NoopRedactor),

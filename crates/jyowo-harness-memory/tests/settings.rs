@@ -50,3 +50,43 @@ fn sqlite_settings_persist_global_and_thread_overrides_after_reopen() {
     assert_eq!(thread.generate_memories, Some(false));
     assert_eq!(thread.memory_mode, MemoryThreadMode::ReadOnly);
 }
+
+#[test]
+fn sqlite_settings_delete_thread_removes_only_that_thread_override() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("memory.sqlite3");
+    let store = MemorySettingsStore::open(db_path.to_str().unwrap()).unwrap();
+    let deleted_session_id = SessionId::new();
+    let kept_session_id = SessionId::new();
+
+    for session_id in [deleted_session_id, kept_session_id] {
+        store
+            .update_thread(
+                TenantId::SINGLE,
+                MemoryThreadSettings {
+                    session_id,
+                    use_memories: Some(false),
+                    generate_memories: Some(false),
+                    memory_mode: MemoryThreadMode::ReadOnly,
+                },
+            )
+            .unwrap();
+    }
+
+    store
+        .delete_thread(TenantId::SINGLE, deleted_session_id)
+        .unwrap();
+
+    let deleted = store
+        .get_thread(TenantId::SINGLE, deleted_session_id)
+        .unwrap();
+    let kept = store.get_thread(TenantId::SINGLE, kept_session_id).unwrap();
+
+    assert_eq!(deleted.session_id, deleted_session_id);
+    assert_eq!(deleted.use_memories, None);
+    assert_eq!(deleted.generate_memories, None);
+    assert_eq!(deleted.memory_mode, MemoryThreadMode::ReadWrite);
+    assert_eq!(kept.use_memories, Some(false));
+    assert_eq!(kept.generate_memories, Some(false));
+    assert_eq!(kept.memory_mode, MemoryThreadMode::ReadOnly);
+}

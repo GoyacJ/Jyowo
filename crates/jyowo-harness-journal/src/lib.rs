@@ -46,3 +46,15 @@ pub use store::*;
 #[cfg(any(test, feature = "testing"))]
 pub use testing::*;
 pub use version::*;
+
+pub(crate) fn app_controlled_path(
+    path: &std::path::Path,
+) -> Result<std::path::PathBuf, harness_fs::FsError> {
+    let Some(parent) = path.parent() else {
+        return harness_fs::resolve_canonical_prefix(path);
+    };
+    let Some(file_name) = path.file_name() else {
+        return harness_fs::resolve_canonical_prefix(path);
+    };
+    Ok(harness_fs::resolve_canonical_prefix(parent)?.join(file_name))
+}

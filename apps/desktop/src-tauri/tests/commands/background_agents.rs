@@ -267,6 +267,7 @@ async fn background_agent_tool_persists_record_without_copying_parent_context() 
     std::fs::write(state.workspace_root().join("attachment.txt"), "attachment").unwrap();
     let mut attachment = create_attachment_from_path_with_runtime_state(
         CreateAttachmentFromPathRequest {
+            conversation_id: None,
             path: "attachment.txt".to_owned(),
         },
         &state,
@@ -308,7 +309,7 @@ async fn background_agent_tool_persists_record_without_copying_parent_context() 
                 label: "sk-contextlabel1234567890".to_owned(),
             }]),
             conversation_id: conversation_id.to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: Some(PermissionMode::BypassPermissions),
             prompt: "Run in background\nsk-12345678901234567890".to_owned(),
         },

@@ -32,7 +32,7 @@ async fn list_conversations_with_runtime_state_returns_startable_conversation_id
             attachments: None,
             context_references: None,
             conversation_id,
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Continue implementation".to_owned(),
         },
@@ -129,15 +129,21 @@ async fn runtime_state_with_provider_configs(base_url: &str) -> DesktopRuntimeSt
     let workspace = unique_workspace("run-model-config");
     std::fs::create_dir_all(&workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
-    DesktopProviderSettingsStore::new(workspace.clone())
+    let provider_settings_store: Arc<dyn ProviderSettingsStore> =
+        Arc::new(provider_settings_store_for_workspace(&workspace));
+    provider_settings_store
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some(DEEPSEEK_CONFIG_ID.to_owned()),
             configs: vec![deepseek_config(base_url), minimax_config(base_url)],
         })
         .expect("provider settings should save");
-    runtime_state_for_workspace(workspace)
-        .await
-        .expect("runtime should start from provider settings")
+    runtime_state_from_stream_permission_runtime_with_provider_settings_store_for_test(
+        workspace,
+        Arc::new(StreamPermissionRuntime::default()),
+        provider_settings_store,
+    )
+    .await
+    .expect("runtime should start from provider settings")
 }
 
 async fn runtime_state_with_duplicate_minimax_configs(
@@ -147,7 +153,9 @@ async fn runtime_state_with_duplicate_minimax_configs(
     let workspace = unique_workspace("run-model-config-duplicate-provider");
     std::fs::create_dir_all(&workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
-    DesktopProviderSettingsStore::new(workspace.clone())
+    let provider_settings_store: Arc<dyn ProviderSettingsStore> =
+        Arc::new(provider_settings_store_for_workspace(&workspace));
+    provider_settings_store
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some(MINIMAX_PRIMARY_CONFIG_ID.to_owned()),
             configs: vec![
@@ -156,9 +164,13 @@ async fn runtime_state_with_duplicate_minimax_configs(
             ],
         })
         .expect("provider settings should save");
-    runtime_state_for_workspace(workspace)
-        .await
-        .expect("runtime should start from provider settings")
+    runtime_state_from_stream_permission_runtime_with_provider_settings_store_for_test(
+        workspace,
+        Arc::new(StreamPermissionRuntime::default()),
+        provider_settings_store,
+    )
+    .await
+    .expect("runtime should start from provider settings")
 }
 
 fn deepseek_config(base_url: &str) -> ProviderConfigRecord {
@@ -257,7 +269,7 @@ async fn start_run_uses_request_model_config_for_first_draft_run() {
             attachments: None,
             context_references: None,
             conversation_id: created.conversation.id.clone(),
-            model_config_id: MINIMAX_CONFIG_ID.to_owned(),
+            model_config_id: Some(MINIMAX_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Use MiniMax for this run".to_owned(),
         },
@@ -300,7 +312,7 @@ async fn start_run_allows_active_conversation_to_switch_models_per_run() {
             attachments: None,
             context_references: None,
             conversation_id: created.conversation.id.clone(),
-            model_config_id: MINIMAX_CONFIG_ID.to_owned(),
+            model_config_id: Some(MINIMAX_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "First MiniMax run".to_owned(),
         },
@@ -314,7 +326,7 @@ async fn start_run_allows_active_conversation_to_switch_models_per_run() {
             attachments: None,
             context_references: None,
             conversation_id: created.conversation.id.clone(),
-            model_config_id: DEEPSEEK_CONFIG_ID.to_owned(),
+            model_config_id: Some(DEEPSEEK_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Second DeepSeek run".to_owned(),
         },
@@ -356,7 +368,7 @@ async fn start_run_rebuilds_harness_for_same_provider_model_with_different_confi
             attachments: None,
             context_references: None,
             conversation_id: created.conversation.id.clone(),
-            model_config_id: MINIMAX_PRIMARY_CONFIG_ID.to_owned(),
+            model_config_id: Some(MINIMAX_PRIMARY_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Use primary MiniMax config".to_owned(),
         },
@@ -372,7 +384,7 @@ async fn start_run_rebuilds_harness_for_same_provider_model_with_different_confi
             attachments: None,
             context_references: None,
             conversation_id: created.conversation.id.clone(),
-            model_config_id: MINIMAX_SECONDARY_CONFIG_ID.to_owned(),
+            model_config_id: Some(MINIMAX_SECONDARY_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Use secondary MiniMax config".to_owned(),
         },
@@ -407,7 +419,7 @@ async fn start_run_rejects_invalid_model_config_without_activating_draft() {
             attachments: None,
             context_references: None,
             conversation_id: created.conversation.id.clone(),
-            model_config_id: "missing-config".to_owned(),
+            model_config_id: Some("missing-config".to_owned()),
             permission_mode: None,
             prompt: "Should fail".to_owned(),
         },
@@ -473,7 +485,7 @@ async fn start_run_rejects_invalid_model_config_without_activating_draft() {
             attachments: None,
             context_references: None,
             conversation_id: created.conversation.id.clone(),
-            model_config_id: no_key_config_id.to_owned(),
+            model_config_id: Some(no_key_config_id.to_owned()),
             permission_mode: None,
             prompt: "Should fail without key".to_owned(),
         },
@@ -500,7 +512,7 @@ async fn create_conversation_with_runtime_state_does_not_bind_default_model_conf
     let workspace = unique_workspace("create-conversation-default-model");
     std::fs::create_dir_all(&workspace).unwrap();
     let workspace = workspace.canonicalize().unwrap();
-    DesktopProviderSettingsStore::new(workspace.clone())
+    provider_settings_store_for_workspace(&workspace)
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some("openai-work".to_owned()),
             configs: vec![ProviderConfigRecord {
@@ -620,7 +632,7 @@ async fn delete_conversation_with_runtime_state_removes_session_from_runtime_lis
             attachments: None,
             context_references: None,
             conversation_id: conversation_id.clone(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Create a conversation".to_owned(),
         },
@@ -663,7 +675,7 @@ async fn delete_conversation_with_runtime_state_removes_session_from_runtime_lis
             attachments: None,
             context_references: None,
             conversation_id,
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Do not recreate a deleted conversation".to_owned(),
         },
@@ -692,7 +704,7 @@ async fn get_and_delete_conversation_with_runtime_state_survive_runtime_option_c
             attachments: None,
             context_references: None,
             conversation_id: conversation_id.clone(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Create a conversation before changing runtime options".to_owned(),
         },
@@ -790,7 +802,7 @@ async fn get_conversation_with_runtime_state_returns_runtime_messages() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Tell me status".to_owned(),
         },
@@ -845,7 +857,7 @@ async fn list_conversations_with_runtime_state_projects_runtime_summary() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Tell me status\nwith details".to_owned(),
         },
@@ -902,7 +914,7 @@ async fn conversation_payloads_with_runtime_state_redact_private_paths() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Read /Users/goya/.ssh/config".to_owned(),
         },
@@ -973,7 +985,7 @@ async fn get_conversation_with_runtime_state_includes_safe_client_message_id() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Complete the task".to_owned(),
         },

@@ -309,6 +309,7 @@ export function createSettingsCommandHandlers(
         defaultConfigId: response.config.isDefault
           ? response.config.id
           : state.providerSettings.defaultConfigId,
+        selectionScope: state.providerSettings.selectionScope,
         configs: [
           ...state.providerSettings.configs.filter((config) => config.id !== response.config.id),
           response.config,

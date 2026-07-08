@@ -39,7 +39,7 @@ pub async fn list_memory_items_with_runtime_state(
             "Listing memory requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id);
+    let options = state.conversation_session_options(state.default_conversation_id)?;
     let mut items = harness
         .list_memory_items(options)
         .await
@@ -67,7 +67,7 @@ pub async fn get_memory_item_with_runtime_state(
             "Inspecting memory requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id);
+    let options = state.conversation_session_options(state.default_conversation_id)?;
     let summary = harness
         .list_memory_items(options.clone())
         .await
@@ -97,13 +97,13 @@ pub async fn update_memory_item_with_runtime_state(
             "Editing memory requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id);
+    let options = state.conversation_session_options(state.default_conversation_id)?;
     let item = harness
         .update_memory_item_content(options, id, request.content, action_plan_id)
         .await
         .map_err(|_| memory_operation_failed("Memory item could not be saved."))?;
     let summary = harness
-        .list_memory_items(state.conversation_session_options(state.default_conversation_id))
+        .list_memory_items(state.conversation_session_options(state.default_conversation_id)?)
         .await
         .ok()
         .and_then(|items| items.into_iter().find(|item| item.id == id))
@@ -125,7 +125,7 @@ pub async fn delete_memory_item_with_runtime_state(
             "Deleting memory requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id);
+    let options = state.conversation_session_options(state.default_conversation_id)?;
     harness
         .delete_memory_item(options, id, action_plan_id)
         .await
@@ -146,8 +146,9 @@ pub async fn export_memory_items_with_runtime_state(
             "Exporting memory requires the runtime memory facade.",
         ));
     };
-    let options = state
-        .conversation_session_options(request.session_id.unwrap_or(state.default_conversation_id));
+    let options = state.conversation_session_options(
+        request.session_id.unwrap_or(state.default_conversation_id),
+    )?;
     let export = harness
         .export_memory_items(
             options,
@@ -183,7 +184,7 @@ pub async fn list_memory_candidates_with_runtime_state(
             "Listing memory candidates requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id);
+    let options = state.conversation_session_options(state.default_conversation_id)?;
     harness
         .list_memory_candidates(options, request)
         .await
@@ -199,7 +200,7 @@ pub async fn approve_memory_candidate_with_runtime_state(
             "Approving memory candidates requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id);
+    let options = state.conversation_session_options(state.default_conversation_id)?;
     harness
         .approve_memory_candidate(options, request)
         .await
@@ -216,7 +217,7 @@ pub async fn reject_memory_candidate_with_runtime_state(
             "Rejecting memory candidates requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id);
+    let options = state.conversation_session_options(state.default_conversation_id)?;
     harness
         .reject_memory_candidate(options, request)
         .await
@@ -247,7 +248,7 @@ pub async fn merge_memory_candidate_with_runtime_state(
             "Merging memory candidates requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id);
+    let options = state.conversation_session_options(state.default_conversation_id)?;
     harness
         .merge_memory_candidate(options, request)
         .await
@@ -263,8 +264,9 @@ pub async fn list_memory_recall_traces_with_runtime_state(
             "Listing memory recall traces requires the runtime memory facade.",
         ));
     };
-    let options = state
-        .conversation_session_options(request.session_id.unwrap_or(state.default_conversation_id));
+    let options = state.conversation_session_options(
+        request.session_id.unwrap_or(state.default_conversation_id),
+    )?;
     harness
         .list_memory_recall_traces(options, request)
         .await
@@ -280,7 +282,7 @@ pub async fn get_memory_recall_trace_with_runtime_state(
             "Loading memory recall traces requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id);
+    let options = state.conversation_session_options(state.default_conversation_id)?;
     harness
         .get_memory_recall_trace(options, request)
         .await
@@ -296,7 +298,7 @@ pub async fn get_model_request_preview_with_runtime_state(
             "Building model request preview requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(request.session_id);
+    let options = state.conversation_session_options(request.session_id)?;
     harness
         .get_model_request_preview(options, request)
         .await

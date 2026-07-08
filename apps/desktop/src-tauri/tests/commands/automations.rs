@@ -19,6 +19,23 @@ async fn automation_store_missing_files_loads_empty_state() {
 }
 
 #[tokio::test]
+async fn automation_store_blank_config_loads_empty_state() {
+    let workspace = unique_workspace("automation-blank-state");
+    let runtime_dir = workspace.join(".jyowo").join("runtime");
+    std::fs::create_dir_all(&runtime_dir).expect("runtime directory should exist");
+    std::fs::write(runtime_dir.join("automations.json"), b"  \n\t")
+        .expect("blank automation file should be seeded");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+
+    let automations = list_automations_with_runtime_state(&state)
+        .await
+        .expect("blank automation file should load as empty");
+
+    assert!(automations.automations.is_empty());
+}
+
+#[tokio::test]
 async fn save_automation_writes_runtime_file_and_defaults_to_disabled() {
     let workspace = unique_workspace("automation-save-file");
     std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
@@ -40,7 +57,7 @@ async fn save_automation_writes_runtime_file_and_defaults_to_disabled() {
     let automations_path = state
         .workspace_root()
         .join(".jyowo")
-        .join("runtime")
+        .join("config")
         .join("automations.json");
     let saved = std::fs::read_to_string(&automations_path).expect("automation file should exist");
     assert!(saved.contains("\"id\": \"checks\""));
@@ -245,12 +262,12 @@ async fn automation_missed_policy_skip_or_run_once_is_enforced() {
 #[tokio::test]
 async fn automation_rejects_missing_permission_or_profile_snapshot() {
     let workspace = unique_workspace("automation-missing-snapshot");
-    std::fs::create_dir_all(workspace.join(".jyowo").join("runtime"))
-        .expect("runtime directory should exist");
+    std::fs::create_dir_all(workspace.join(".jyowo").join("config"))
+        .expect("config directory should exist");
     std::fs::write(
         workspace
             .join(".jyowo")
-            .join("runtime")
+            .join("config")
             .join("automations.json"),
         r#"[{
           "id":"legacy",
@@ -333,7 +350,9 @@ fn execution_settings_save_default_without_changing_session_options() {
     )
     .expect("execution settings should save");
 
-    let options = state.conversation_session_options(SessionId::new());
+    let options = state
+        .conversation_session_options(SessionId::new())
+        .expect("session options");
 
     assert_eq!(options.permission_mode, PermissionMode::Default);
     assert_eq!(options.tool_profile, ToolProfile::Coding);
@@ -360,6 +379,7 @@ async fn active_conversation_runtime_applies_saved_tool_profile() {
 
     let (_, options) = state
         .active_conversation_runtime(SessionId::new())
+        .expect("active runtime lookup")
         .expect("active runtime should be present");
 
     assert_eq!(options.tool_profile, ToolProfile::Coding);
@@ -467,7 +487,8 @@ fn get_execution_settings_for_request_reads_registered_workspace_instead_of_acti
     std::fs::create_dir_all(&active_workspace).expect("active workspace should exist");
     std::fs::create_dir_all(&requested_workspace).expect("requested workspace should exist");
     std::fs::create_dir_all(&unregistered_workspace).expect("unregistered workspace should exist");
-    let _home = EnvVarGuard::set(HOME_ENV, home.as_os_str());
+    let canonical_home = home.canonicalize().unwrap();
+    let _home = EnvVarGuard::set(HOME_ENV, canonical_home.as_os_str());
     let active_workspace = active_workspace.canonicalize().unwrap();
     let requested_workspace = requested_workspace.canonicalize().unwrap();
     let unregistered_workspace = unregistered_workspace.canonicalize().unwrap();
@@ -600,19 +621,19 @@ fn set_execution_settings_serializes_agent_capability_fields() {
     assert!(!response.agent_capabilities.subagents_enabled);
     let settings_path = workspace
         .join(".jyowo")
-        .join("runtime")
-        .join("execution-settings.json");
+        .join("config")
+        .join("execution-overrides.json");
     let saved = std::fs::read_to_string(settings_path).expect("settings file should exist");
     let saved: Value = serde_json::from_str(&saved).expect("settings file should be json");
     assert_eq!(
         saved,
         json!({
-            "permission_mode": "default",
-            "tool_profile": "coding",
-            "context_compression_trigger_ratio": 0.8,
-            "subagents_enabled": false,
-            "agent_teams_enabled": false,
-            "background_agents_enabled": false
+            "permissionMode": "default",
+            "toolProfile": "coding",
+            "contextCompressionTriggerRatio": 0.8,
+            "subagentsEnabled": false,
+            "agentTeamsEnabled": false,
+            "backgroundAgentsEnabled": false
         })
     );
 }
@@ -684,8 +705,8 @@ fn invalid_execution_settings_file_resets_agent_capabilities() {
     assert!(!settings.agent_capabilities.agent_teams_enabled);
     assert!(!settings.agent_capabilities.background_agents_enabled);
     assert!(
-        !settings_path.exists(),
-        "invalid execution settings file should be removed"
+        settings_path.exists(),
+        "production execution settings load must not read or delete legacy runtime file"
     );
 }
 

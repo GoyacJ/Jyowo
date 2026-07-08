@@ -32,9 +32,10 @@ use super::*;
 use harness_contracts::{
     BackgroundAgentId, ConversationAttachmentReference, ConversationContextReference,
     ConversationInspectorItemResponse, ManifestOriginRef, McpServerScope, PermissionActorSource,
-    PermissionConfirmation, PermissionMode, PermissionReview, SandboxMode, SandboxPolicySummary,
-    SandboxScope, SubagentId, SubagentStatus, SubagentTerminationReason, TeamId,
-    TeamTerminationReason, TopologyKind,
+    PermissionConfirmation, PermissionMode, PermissionReview, RedactPatternSet, RedactRules,
+    RedactScope, Redactor, SandboxMode, SandboxPolicySummary, SandboxScope, SubagentId,
+    SubagentStatus, SubagentTerminationReason, TeamId, TeamTerminationReason, TopologyKind,
+    UiSafeText,
 };
 use std::io::Write;
 
@@ -142,6 +143,93 @@ pub(crate) fn conversation_summary_payload_from_read_model(
     }
 }
 
+async fn cleanup_no_workspace_conversation_runtime(
+    state: &DesktopRuntimeState,
+    session_id: SessionId,
+) -> Result<(), CommandErrorPayload> {
+    if state.project_workspace_root().is_some() {
+        return Ok(());
+    }
+
+    let signer = crate::commands::runtime::desktop_integrity_signer(state.runtime_root())?;
+    harness_permission::FileDecisionPersistence::new(
+        TenantId::SINGLE,
+        state.runtime_root().join("permission-decisions.json"),
+        signer,
+    )
+    .remove_no_workspace_conversation_scope(session_id)
+    .await
+    .map_err(|error| {
+        runtime_operation_failed(format!(
+            "no-workspace permission decision cleanup failed: {error}"
+        ))
+    })?;
+    cleanup_no_workspace_attachment_records(state.runtime_root(), session_id)?;
+    AgentRuntimeStore::open_runtime_dir(state.runtime_root())
+        .map_err(|error| {
+            runtime_operation_failed(format!("background agent store open failed: {error}"))
+        })?
+        .delete_background_agents_for_conversation(&session_id.to_string())
+        .map_err(|error| {
+            runtime_operation_failed(format!("background agent cleanup failed: {error}"))
+        })?;
+    if let Some(harness) = state.harness() {
+        harness
+            .delete_thread_memory_settings(
+                state.conversation_session_options(session_id)?,
+                TenantId::SINGLE,
+                session_id,
+            )
+            .await
+            .map_err(|error| {
+                runtime_operation_failed(format!("memory thread settings cleanup failed: {error}"))
+            })?;
+    }
+    remove_runtime_child_dir(
+        state
+            .runtime_root()
+            .join("workdir")
+            .join(session_id.to_string()),
+        "no-workspace conversation workdir",
+    )?;
+    remove_runtime_child_dir(
+        state
+            .runtime_root()
+            .join("exports")
+            .join(session_id.to_string()),
+        "no-workspace conversation exports",
+    )?;
+    Ok(())
+}
+
+fn remove_runtime_child_dir(path: PathBuf, label: &str) -> Result<(), CommandErrorPayload> {
+    ensure_no_symlink_components(&path, label)?;
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(runtime_operation_failed(format!(
+                "{label} metadata failed: {error}"
+            )));
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(runtime_operation_failed(format!(
+            "{label} must not be a symlink"
+        )));
+    }
+    if metadata.is_dir() {
+        std::fs::remove_dir_all(&path).map_err(|error| {
+            runtime_operation_failed(format!("{label} removal failed: {error}"))
+        })?;
+    } else {
+        std::fs::remove_file(&path).map_err(|error| {
+            runtime_operation_failed(format!("{label} removal failed: {error}"))
+        })?;
+    }
+    Ok(())
+}
+
 pub async fn get_conversation_with_runtime_state(
     request: GetConversationRequest,
     state: &DesktopRuntimeState,
@@ -227,6 +315,52 @@ pub(crate) fn conversation_model_config_id(
         .and_then(|record| record.default_model_config_id))
 }
 
+/// Resolve the effective model config id for a run.
+///
+/// Precedence:
+/// 1. Explicit `model_config_id` in the run request (non-empty) wins.
+/// 2. Project-level provider selection from `<workspace>/.jyowo/config/provider-selection.json`.
+/// 3. Global provider selection from `~/.jyowo/config/provider-selection.json`.
+/// Fails closed if no effective selection can be resolved.
+pub(crate) fn resolve_effective_model_config_id(
+    model_config_id: Option<&str>,
+    state: &DesktopRuntimeState,
+) -> Result<String, CommandErrorPayload> {
+    // 1. Explicit request value wins.
+    if let Some(id) = model_config_id {
+        let id = id.trim();
+        if !id.is_empty() {
+            return Ok(id.to_owned());
+        }
+    }
+
+    // 2. Project-level provider selection.
+    if let Some(ref project_config) = state.project_config_store {
+        let selection = project_config.load_project_provider_selection()?;
+        if let Some(ref id) = selection.default_config_id {
+            let id = id.trim();
+            if !id.is_empty() {
+                return Ok(id.to_owned());
+            }
+        }
+    }
+
+    // 3. Global provider selection.
+    if let Some(ref global_config) = state.global_config_store {
+        let selection = global_config.load_global_provider_selection()?;
+        if let Some(ref id) = selection.default_config_id {
+            let id = id.trim();
+            if !id.is_empty() {
+                return Ok(id.to_owned());
+            }
+        }
+    }
+
+    Err(invalid_payload(
+        "modelConfigId is required when no default provider is configured".to_owned(),
+    ))
+}
+
 pub(crate) fn default_model_config_id_for_conversation_or_provider(
     session_id: &SessionId,
     state: &DesktopRuntimeState,
@@ -234,19 +368,8 @@ pub(crate) fn default_model_config_id_for_conversation_or_provider(
     if let Some(model_config_id) = conversation_model_config_id(session_id, state)? {
         return Ok(model_config_id);
     }
-    let record = state
-        .provider_settings_store
-        .load_record()?
-        .ok_or_else(|| invalid_payload("provider config is required".to_owned()))?;
-    let config_id = record
-        .default_config_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| invalid_payload("provider config is required".to_owned()))?;
-    let config = provider_config_by_id(&record, config_id)?;
-    ensure_provider_config_has_api_key(config)?;
-    Ok(config.id.clone())
+    // Delegate to the effective resolution chain (project selection → global selection → fail).
+    resolve_effective_model_config_id(None, state)
 }
 
 fn provider_config_for_run(
@@ -273,22 +396,31 @@ pub(crate) async fn runtime_for_model_config(
         session_id,
         model_config_id,
         provider_config_fingerprint,
-    ) {
+    )? {
         return Ok((harness, options, config.model_id.clone(), config.protocol));
     }
     let stream_permission_runtime = state
         .stream_permission_runtime
         .as_ref()
         .ok_or_else(|| runtime_unavailable("Starting runs requires the desktop runtime."))?;
+    let layout = if state.runtime_layout().workspace_root.is_some() {
+        project_runtime_layout(state.workspace_root())
+    } else {
+        crate::commands::global_conversation_runtime_layout_with_runtime_root(
+            session_id,
+            state.runtime_root().to_path_buf(),
+        )
+    };
     let (harness, model_id, protocol) = build_desktop_harness(
-        &state.workspace_root,
+        &layout,
         Arc::clone(stream_permission_runtime),
         Some(model_config_id),
         Arc::clone(&state.provider_capability_routes),
+        Some(Arc::clone(&state.provider_settings_store)),
     )
     .await?;
     let options =
-        state.conversation_session_options_for_model(session_id, model_id.clone(), protocol);
+        state.conversation_session_options_for_model(session_id, model_id.clone(), protocol)?;
     Ok((Arc::new(harness), options, model_id, protocol))
 }
 
@@ -348,19 +480,21 @@ pub async fn delete_conversation_with_runtime_state(
 ) -> Result<DeleteConversationResponse, CommandErrorPayload> {
     ensure_non_empty("conversationId", &request.conversation_id)?;
     let session_id = parse_session_id(&request.conversation_id)?;
-    let removed_metadata = {
+    let existing_metadata = {
         let _guard = state.conversation_metadata_lock.lock().await;
-        let mut metadata = state.conversation_metadata_store.load_record()?;
-        let removed = metadata.conversations.remove(&request.conversation_id);
-        if removed.is_some() {
-            state.conversation_metadata_store.save_record(&metadata)?;
-        }
-        removed
+        state
+            .conversation_metadata_store
+            .load_record()?
+            .conversations
+            .get(&request.conversation_id)
+            .cloned()
     };
-    if removed_metadata
+    if existing_metadata
         .as_ref()
         .is_some_and(|record| record.state == ConversationMetadataState::Draft)
     {
+        cleanup_no_workspace_conversation_runtime(state, session_id).await?;
+        remove_conversation_metadata_record(state, &request.conversation_id).await?;
         state
             .deleted_conversation_ids
             .lock()
@@ -374,7 +508,7 @@ pub async fn delete_conversation_with_runtime_state(
 
     let deleted = if let Some(harness) = state.harness() {
         harness
-            .delete_conversation_session(state.conversation_session_options(session_id))
+            .delete_conversation_session(state.conversation_session_options(session_id)?)
             .await
             .map_err(|error| {
                 runtime_operation_failed(format!("conversation delete failed: {error}"))
@@ -382,13 +516,17 @@ pub async fn delete_conversation_with_runtime_state(
     } else {
         false
     };
-    if !deleted && removed_metadata.is_none() {
+    if !deleted && existing_metadata.is_none() {
         return Err(not_found(format!(
             "conversation not found: {}",
             request.conversation_id
         )));
     }
 
+    cleanup_no_workspace_conversation_runtime(state, session_id).await?;
+    if existing_metadata.is_some() {
+        remove_conversation_metadata_record(state, &request.conversation_id).await?;
+    }
     state
         .deleted_conversation_ids
         .lock()
@@ -401,12 +539,26 @@ pub async fn delete_conversation_with_runtime_state(
     })
 }
 
+async fn remove_conversation_metadata_record(
+    state: &DesktopRuntimeState,
+    conversation_id: &str,
+) -> Result<(), CommandErrorPayload> {
+    let _guard = state.conversation_metadata_lock.lock().await;
+    let mut metadata = state.conversation_metadata_store.load_record()?;
+    if metadata.conversations.remove(conversation_id).is_some() {
+        state.conversation_metadata_store.save_record(&metadata)?;
+    }
+    Ok(())
+}
+
 pub fn start_run_payload(
     request: StartRunRequest,
 ) -> Result<StartRunResponse, CommandErrorPayload> {
     ensure_non_empty("conversationId", &request.conversation_id)?;
     let _session_id = parse_session_id(&request.conversation_id)?;
-    ensure_non_empty("modelConfigId", &request.model_config_id)?;
+    if let Some(ref model_config_id) = request.model_config_id {
+        ensure_non_empty("modelConfigId", model_config_id)?;
+    }
     ensure_non_empty("prompt", &request.prompt)?;
     if let Some(client_message_id) = request.client_message_id.as_deref() {
         validate_client_message_id(client_message_id)?;
@@ -428,7 +580,9 @@ pub async fn start_run_with_runtime_state(
 ) -> Result<StartRunResponse, CommandErrorPayload> {
     ensure_non_empty("conversationId", &request.conversation_id)?;
     let session_id = parse_session_id(&request.conversation_id)?;
-    ensure_non_empty("modelConfigId", &request.model_config_id)?;
+    if let Some(ref model_config_id) = request.model_config_id {
+        ensure_non_empty("modelConfigId", model_config_id)?;
+    }
     ensure_non_empty("prompt", &request.prompt)?;
     if let Some(client_message_id) = request.client_message_id.as_deref() {
         validate_client_message_id(client_message_id)?;
@@ -445,15 +599,17 @@ pub async fn start_run_with_runtime_state(
         )));
     }
 
-    let permission_mode = resolve_start_run_permission_mode(
-        request.permission_mode,
-        &state.execution_settings_store,
-    )?;
+    // Resolve effective model config id before any run activation.
+    // Falls back to project selection → global selection → fail closed.
+    let model_config_id =
+        resolve_effective_model_config_id(request.model_config_id.as_deref(), state)?;
+
+    let permission_mode = resolve_start_run_permission_mode(request.permission_mode, state)?;
     let agent_policy = resolve_start_run_agent_policy(&request, state)?;
     let input = build_conversation_turn_input(&request, state).await?;
     let _start_run_guard = state.start_run_lock.lock().await;
     let (harness, options, model_id, protocol) =
-        runtime_for_model_config(session_id, &request.model_config_id, state).await?;
+        runtime_for_model_config(session_id, &model_config_id, state).await?;
     harness
         .open_or_create_conversation_session(options.clone())
         .await
@@ -463,7 +619,7 @@ pub async fn start_run_with_runtime_state(
     let run_session_options = options.clone();
     let run_agent_options = agent_policy.options;
     let mut run_options = ConversationRunOptions::from_session_options(&run_session_options)
-        .with_model_config_id(request.model_config_id.clone())
+        .with_model_config_id(model_config_id.clone())
         .with_model_id(model_id)
         .with_protocol(protocol)
         .with_permission_mode(permission_mode);
@@ -489,7 +645,7 @@ pub async fn start_run_with_runtime_state(
             }
         };
     drop(run_task);
-    mark_conversation_metadata_active(session_id, Some(request.model_config_id), state).await?;
+    mark_conversation_metadata_active(session_id, Some(model_config_id), state).await?;
 
     Ok(StartRunResponse {
         run_id: run_id.to_string(),
@@ -595,13 +751,22 @@ pub fn resolve_start_run_agent_policy(
     request: &StartRunRequest,
     state: &DesktopRuntimeState,
 ) -> Result<ResolvedAgentToolPolicy, CommandErrorPayload> {
-    let settings = state.execution_settings_store.load_record()?;
+    let settings = state.effective_execution_settings(None)?;
     let capability_context = agent_capability_resolution_context_for_state(state);
-    let capabilities_payload = agent_capabilities_payload(
-        &settings,
-        state.workspace_root(),
-        capability_context.as_ref(),
-    );
+    let policy_root = state
+        .project_workspace_root()
+        .unwrap_or_else(|| state.conversation_cwd());
+    let capabilities_payload = if state.project_workspace_root().is_some() {
+        agent_capabilities_payload(&settings, policy_root, capability_context.as_ref())
+    } else {
+        let conversation_id = parse_session_id(&request.conversation_id)?;
+        no_workspace_agent_capabilities_payload_for_conversation(
+            &settings,
+            state.runtime_root(),
+            Some(conversation_id),
+            capability_context.as_ref(),
+        )
+    };
     let capabilities = AgentCapabilitiesInput {
         subagents_available: capabilities_payload.subagents_available,
         agent_teams_available: capabilities_payload.agent_teams_available,
@@ -612,12 +777,11 @@ pub fn resolve_start_run_agent_policy(
         agent_teams_enabled: settings.agent_teams_enabled,
         background_agents_enabled: settings.background_agents_enabled,
     };
-    let profiles = jyowo_harness_sdk::list_agent_profiles(state.workspace_root())
-        .map_err(map_agent_runtime_error)?;
+    let profiles = list_global_agent_profiles_with_builtin(state)?;
     let profile_ids: Vec<String> = profiles.into_iter().map(|profile| profile.id).collect();
 
     resolve_agent_runtime_policy(
-        state.workspace_root(),
+        policy_root,
         &settings_input,
         None,
         &capabilities,
@@ -643,6 +807,10 @@ pub fn create_attachment_from_path_payload(
     request: CreateAttachmentFromPathRequest,
 ) -> Result<CreateAttachmentFromPathResponse, CommandErrorPayload> {
     ensure_non_empty("path", &request.path)?;
+    if let Some(conversation_id) = request.conversation_id.as_deref() {
+        ensure_non_empty("conversationId", conversation_id)?;
+        let _ = parse_session_id(conversation_id)?;
+    }
 
     Err(runtime_unavailable(
         "Creating attachments requires the runtime workspace state.",
@@ -661,22 +829,38 @@ pub async fn create_attachment_from_path_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<CreateAttachmentFromPathResponse, CommandErrorPayload> {
     ensure_non_empty("path", &request.path)?;
+    let no_workspace_session_id =
+        no_workspace_attachment_conversation_session_id(state, request.conversation_id.as_deref())?;
+    let no_workspace_conversation_cwd = no_workspace_session_id.map(|session_id| {
+        state
+            .runtime_root()
+            .join("workdir")
+            .join(session_id.to_string())
+    });
+    let file_access_root = state.project_workspace_root().unwrap_or_else(|| {
+        no_workspace_conversation_cwd
+            .as_deref()
+            .unwrap_or_else(|| state.conversation_cwd())
+    });
     let requested_path = Path::new(&request.path);
     let candidate_path = if requested_path.is_absolute() {
-        if requested_path.strip_prefix(state.workspace_root()).is_err() {
+        if requested_path.strip_prefix(file_access_root).is_err() {
             let Some(parent) = requested_path.parent() else {
                 return Err(invalid_payload(
-                    "attachment path must stay inside the workspace".to_owned(),
+                    "attachment path must stay inside the active workspace file access root"
+                        .to_owned(),
                 ));
             };
             let Ok(parent) = parent.canonicalize() else {
                 return Err(invalid_payload(
-                    "attachment path must stay inside the workspace".to_owned(),
+                    "attachment path must stay inside the active workspace file access root"
+                        .to_owned(),
                 ));
             };
-            if workspace_relative_path(&parent, state.workspace_root()).is_none() {
+            if workspace_relative_path(&parent, file_access_root).is_none() {
                 return Err(invalid_payload(
-                    "attachment path must stay inside the workspace".to_owned(),
+                    "attachment path must stay inside the active workspace file access root"
+                        .to_owned(),
                 ));
             }
             let Some(file_name) = requested_path.file_name() else {
@@ -687,12 +871,12 @@ pub async fn create_attachment_from_path_with_runtime_state(
             requested_path.to_path_buf()
         }
     } else {
-        state.workspace_root().join(requested_path)
+        file_access_root.join(requested_path)
     };
     let source_path = canonicalize_existing_file(&candidate_path, "path")?;
-    if workspace_relative_path(&source_path, state.workspace_root()).is_none() {
+    if workspace_relative_path(&source_path, file_access_root).is_none() {
         return Err(invalid_payload(
-            "attachment path must stay inside the workspace".to_owned(),
+            "attachment path must stay inside the active workspace file access root".to_owned(),
         ));
     }
     let metadata = source_path.metadata().map_err(|error| {
@@ -719,14 +903,9 @@ pub async fn create_attachment_from_path_with_runtime_state(
     let bytes = std::fs::read(&source_path)
         .map_err(|error| runtime_operation_failed(format!("attachment read failed: {error}")))?;
     let hash = blake3::hash(&bytes);
-    let blob_store = FileBlobStore::open(
-        state
-            .workspace_root()
-            .join(".jyowo")
-            .join("runtime")
-            .join("blobs"),
-    )
-    .map_err(|error| runtime_operation_failed(format!("attachment store unavailable: {error}")))?;
+    let blob_store = FileBlobStore::open(state.runtime_root().join("blobs")).map_err(|error| {
+        runtime_operation_failed(format!("attachment store unavailable: {error}"))
+    })?;
     let blob_ref = blob_store
         .put(
             TenantId::SINGLE,
@@ -752,12 +931,18 @@ pub async fn create_attachment_from_path_with_runtime_state(
     };
 
     write_attachment_record(
-        state.workspace_root(),
+        state.runtime_root(),
         &AttachmentRecord {
             attachment: attachment.clone(),
             blob_ref,
         },
     )?;
+    if let Err(error) =
+        record_no_workspace_attachment_owner(state, no_workspace_session_id, &attachment.id)
+    {
+        let _ = std::fs::remove_file(attachment_record_path(state.runtime_root(), &attachment.id));
+        return Err(error);
+    }
 
     Ok(CreateAttachmentFromPathResponse { attachment })
 }
@@ -769,7 +954,10 @@ pub async fn list_reference_candidates_with_runtime_state(
     ensure_non_empty("conversationId", &request.conversation_id)?;
     let session_id = parse_session_id(&request.conversation_id)?;
     ensure_reference_conversation_exists(session_id, state).await?;
-    let files = context_files_from_workspace(state.workspace_root())
+    let files = state
+        .project_workspace_root()
+        .map(context_files_from_workspace)
+        .unwrap_or_default()
         .into_iter()
         .map(|file| ReferenceCandidatePayload {
             id: None,
@@ -883,24 +1071,26 @@ pub(crate) async fn ensure_existing_conversation_session_with_harness(
     state: &DesktopRuntimeState,
     harness: &Harness,
 ) -> Result<(), CommandErrorPayload> {
+    if state
+        .deleted_conversation_ids
+        .lock()
+        .await
+        .contains(&session_id)
+    {
+        return Err(not_found(format!("conversation not found: {session_id}")));
+    }
     if conversation_metadata_record(&session_id, state)?.is_some() {
         return Ok(());
     }
-    if session_id == state.default_conversation_id()
-        && !state
-            .deleted_conversation_ids
-            .lock()
-            .await
-            .contains(&session_id)
-    {
+    if session_id == state.default_conversation_id() {
         harness
-            .open_or_create_conversation_session(state.conversation_session_options(session_id))
+            .open_or_create_conversation_session(state.conversation_session_options(session_id)?)
             .await
             .map_err(|error| runtime_operation_failed(error.to_string()))?;
         return Ok(());
     }
     if harness
-        .conversation_session_exists(state.conversation_session_options(session_id))
+        .conversation_session_exists(state.conversation_session_options(session_id)?)
         .await
         .map_err(|error| runtime_operation_failed(error.to_string()))?
     {
@@ -996,7 +1186,8 @@ pub async fn resolve_permission_with_runtime_state(
             request.confirmation_text.as_deref(),
         )
         .await?;
-    let _ = crate::agent_supervisor::wake_agent_supervisor(state.workspace_root()).await;
+    let supervisor_scope = agent_supervisor_scope_for_state(state);
+    let _ = crate::agent_supervisor::wake_agent_supervisor_scope(&supervisor_scope).await;
 
     Ok(ResolvePermissionResponse {
         decision: permission_decision_from_resolved(resolved_decision)?,
@@ -1502,7 +1693,7 @@ pub async fn export_support_bundle_with_runtime_state(
     let exported_at = now();
     let stamp = exported_at.format("%Y%m%dT%H%M%S%.3fZ");
     let export_id = RunId::new();
-    let export_dir = PathBuf::from(".jyowo").join("runtime").join("exports");
+    let export_dir = export_response_dir(state, request.conversation_id.as_deref());
     let jsonl_path = export_dir.join(format!("events-{stamp}-{export_id}.jsonl"));
     let markdown_path = export_dir.join(format!("support-report-{stamp}-{export_id}.md"));
     let bundle_path = export_dir.join(format!("support-bundle-{stamp}-{export_id}.json"));
@@ -1527,9 +1718,9 @@ pub async fn export_support_bundle_with_runtime_state(
     });
     let bundle = serde_json::to_string(&bundle).map_err(|_| support_bundle_operation_failed())?;
 
-    write_support_bundle_file(&state.workspace_root.join(&jsonl_path), &jsonl)?;
-    write_support_bundle_file(&state.workspace_root.join(&markdown_path), &markdown)?;
-    write_support_bundle_file(&state.workspace_root.join(&bundle_path), &bundle)?;
+    write_support_bundle_file(&export_absolute_path(state, &jsonl_path), &jsonl)?;
+    write_support_bundle_file(&export_absolute_path(state, &markdown_path), &markdown)?;
+    write_support_bundle_file(&export_absolute_path(state, &bundle_path), &bundle)?;
 
     Ok(ExportSupportBundleResponse {
         bundle_path: bundle_path.to_string_lossy().into_owned(),
@@ -1539,6 +1730,44 @@ pub async fn export_support_bundle_with_runtime_state(
         markdown_path: markdown_path.to_string_lossy().into_owned(),
         redacted: true,
     })
+}
+
+fn export_response_dir(state: &DesktopRuntimeState, conversation_id: Option<&str>) -> PathBuf {
+    if state.project_workspace_root().is_some() {
+        return PathBuf::from(".jyowo").join("runtime").join("exports");
+    }
+
+    match conversation_id {
+        Some(conversation_id) => PathBuf::from("exports").join(conversation_id),
+        None => PathBuf::from("exports"),
+    }
+}
+
+fn evidence_export_response_path(
+    state: &DesktopRuntimeState,
+    conversation_id: &str,
+    kind: &str,
+) -> String {
+    let file_name = format!("evidence-{kind}-{}.txt", RunId::new());
+    let path = if state.project_workspace_root().is_some() {
+        PathBuf::from(".jyowo")
+            .join("runtime")
+            .join("exports")
+            .join(file_name)
+    } else {
+        PathBuf::from("exports")
+            .join(conversation_id)
+            .join(file_name)
+    };
+    path.to_string_lossy().into_owned()
+}
+
+fn export_absolute_path(state: &DesktopRuntimeState, relative_path: &Path) -> PathBuf {
+    if let Some(workspace_root) = state.project_workspace_root() {
+        workspace_root.join(relative_path)
+    } else {
+        state.runtime_root().join(relative_path)
+    }
 }
 
 fn support_bundle_safe_event(event: &RunEventPayload) -> Value {
@@ -1814,13 +2043,27 @@ pub async fn get_context_snapshot_with_runtime_state(
         next_actions.push("Continue the conversation".to_owned());
     }
 
+    let (files, path, project) = if let Some(workspace_root) = state.project_workspace_root() {
+        (
+            context_files_from_workspace(workspace_root),
+            "workspace://local".to_owned(),
+            redacted_display(workspace_project_name(workspace_root), &redactor),
+        )
+    } else {
+        (
+            Vec::new(),
+            "runtime://global-conversation".to_owned(),
+            "No workspace".to_owned(),
+        )
+    };
+
     Ok(GetContextSnapshotResponse {
         active_artifact,
         decisions,
-        files: context_files_from_workspace(state.workspace_root()),
+        files,
         next_actions,
-        path: "workspace://local".to_owned(),
-        project: redacted_display(workspace_project_name(state.workspace_root()), &redactor),
+        path,
+        project,
     })
 }
 
@@ -2435,7 +2678,7 @@ pub(crate) async fn read_replay_run_events_after(
     if let Some(cursor_event_id) = after_event_id {
         let seed = seed_run_event_mapper_until_cursor(
             &harness,
-            state.conversation_session_options(session_id),
+            state.conversation_session_options(session_id)?,
             session_id,
             cursor_event_id,
             &mut mapper,
@@ -2450,7 +2693,7 @@ pub(crate) async fn read_replay_run_events_after(
     loop {
         let page = harness
             .page_conversation_events(ConversationEventsPageRequest {
-                options: state.conversation_session_options(session_id),
+                options: state.conversation_session_options(session_id)?,
                 after_event_id,
                 limit: 200,
             })
@@ -2878,6 +3121,12 @@ pub(crate) struct AttachmentRecord {
     pub(crate) blob_ref: BlobRef,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentConversationIndex {
+    attachment_ids: BTreeSet<String>,
+}
+
 pub(crate) fn canonicalize_existing_file(
     path: &Path,
     field: &'static str,
@@ -2914,42 +3163,141 @@ pub(crate) fn attachment_id(path: &Path, size_bytes: u64) -> String {
     format!("attachment-{}", hasher.finalize().to_hex())
 }
 
-pub(crate) fn attachment_record_path(workspace_root: &Path, attachment_id: &str) -> PathBuf {
-    workspace_root
-        .join(".jyowo")
-        .join("runtime")
+pub(crate) fn attachment_record_path(runtime_root: &Path, attachment_id: &str) -> PathBuf {
+    runtime_root
         .join("attachments")
         .join("records")
         .join(format!("{attachment_id}.json"))
 }
 
+fn attachment_conversation_index_path(runtime_root: &Path, session_id: SessionId) -> PathBuf {
+    runtime_root
+        .join("attachments")
+        .join("conversations")
+        .join(format!("{session_id}.json"))
+}
+
+fn no_workspace_attachment_conversation_session_id(
+    state: &DesktopRuntimeState,
+    requested_conversation_id: Option<&str>,
+) -> Result<Option<SessionId>, CommandErrorPayload> {
+    if state.project_workspace_root().is_some() {
+        return Ok(None);
+    }
+    if let Some(conversation_id) = requested_conversation_id {
+        return SessionId::parse(conversation_id)
+            .map(Some)
+            .map_err(|_| invalid_payload("conversationId must be a valid session id".to_owned()));
+    }
+    let Some(value) = state
+        .conversation_cwd()
+        .file_name()
+        .and_then(|value| value.to_str())
+    else {
+        return Err(runtime_operation_failed(
+            "no-workspace conversation id is unavailable".to_owned(),
+        ));
+    };
+    SessionId::parse(value)
+        .map(Some)
+        .map_err(|_| runtime_operation_failed("no-workspace conversation id is invalid".to_owned()))
+}
+
+fn read_attachment_conversation_index(
+    path: &Path,
+) -> Result<AttachmentConversationIndex, CommandErrorPayload> {
+    read_json_file_invalid_payload(path, "attachment ownership index")
+        .map(|index| index.unwrap_or_default())
+}
+
+fn write_attachment_conversation_index(
+    path: &Path,
+    index: &AttachmentConversationIndex,
+) -> Result<(), CommandErrorPayload> {
+    write_json_file_atomic(path, "attachment ownership index", index)
+}
+
+fn record_no_workspace_attachment_owner(
+    state: &DesktopRuntimeState,
+    session_id: Option<SessionId>,
+    attachment_id: &str,
+) -> Result<(), CommandErrorPayload> {
+    let Some(session_id) = session_id else {
+        return Ok(());
+    };
+    ensure_attachment_id(attachment_id)?;
+    let index_path = attachment_conversation_index_path(state.runtime_root(), session_id);
+    let mut index = read_attachment_conversation_index(&index_path)?;
+    index.attachment_ids.insert(attachment_id.to_owned());
+    write_attachment_conversation_index(&index_path, &index)
+}
+
+pub(crate) fn no_workspace_attachment_belongs_to_conversation(
+    runtime_root: &Path,
+    session_id: SessionId,
+    attachment_id: &str,
+) -> Result<bool, CommandErrorPayload> {
+    ensure_attachment_id(attachment_id)?;
+    let index_path = attachment_conversation_index_path(runtime_root, session_id);
+    let index = read_attachment_conversation_index(&index_path)?;
+    Ok(index.attachment_ids.contains(attachment_id))
+}
+
+fn cleanup_no_workspace_attachment_records(
+    runtime_root: &Path,
+    session_id: SessionId,
+) -> Result<(), CommandErrorPayload> {
+    let index_path = attachment_conversation_index_path(runtime_root, session_id);
+    let index = read_attachment_conversation_index(&index_path)?;
+    for attachment_id in index.attachment_ids {
+        ensure_attachment_id(&attachment_id)?;
+        let record_path = attachment_record_path(runtime_root, &attachment_id);
+        ensure_no_symlink_components(&record_path, "no-workspace attachment record")?;
+        match std::fs::remove_file(&record_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(runtime_operation_failed(format!(
+                    "no-workspace attachment record removal failed: {error}"
+                )));
+            }
+        }
+    }
+    ensure_no_symlink_components(&index_path, "no-workspace attachment ownership index")?;
+    match std::fs::remove_file(&index_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(runtime_operation_failed(format!(
+                "no-workspace attachment ownership index removal failed: {error}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn write_attachment_record(
-    workspace_root: &Path,
+    runtime_root: &Path,
     record: &AttachmentRecord,
 ) -> Result<(), CommandErrorPayload> {
-    let path = attachment_record_path(workspace_root, &record.attachment.id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            runtime_operation_failed(format!("attachment record store unavailable: {error}"))
-        })?;
-    }
-    let content = serde_json::to_vec_pretty(record)
-        .map_err(|error| runtime_operation_failed(format!("attachment record failed: {error}")))?;
-    std::fs::write(path, content).map_err(|error| {
-        runtime_operation_failed(format!("attachment record write failed: {error}"))
-    })
+    let path = attachment_record_path(runtime_root, &record.attachment.id);
+    write_json_file_atomic(&path, "attachment record", record)
 }
 
 pub(crate) fn read_attachment_record(
-    workspace_root: &Path,
+    runtime_root: &Path,
     attachment_id: &str,
 ) -> Result<AttachmentRecord, CommandErrorPayload> {
     ensure_attachment_id(attachment_id)?;
-    let path = attachment_record_path(workspace_root, attachment_id);
-    let content = std::fs::read_to_string(path)
-        .map_err(|_| invalid_payload("attachment reference does not exist".to_owned()))?;
-    serde_json::from_str(&content)
-        .map_err(|_| invalid_payload("attachment record is invalid".to_owned()))
+    let path = attachment_record_path(runtime_root, attachment_id);
+    let record = read_json_file_invalid_payload(&path, "attachment record").map_err(|error| {
+        if error.message.contains("symlink") {
+            invalid_payload(error.message)
+        } else {
+            error
+        }
+    })?;
+    record.ok_or_else(|| invalid_payload("attachment reference does not exist".to_owned()))
 }
 
 pub(crate) fn infer_mime_type(path: &Path) -> String {
@@ -4129,12 +4477,9 @@ pub async fn export_conversation_evidence_with_runtime_state(
     let kind = validated_evidence_export_kind(&request.kind)?;
     let ref_id = harness_contracts::EvidenceRefId::new(&request.ref_id);
     let exported_at = chrono::Utc::now().to_rfc3339();
-    let relative_path = format!(
-        ".jyowo/runtime/exports/evidence-{kind}-{}.txt",
-        RunId::new()
-    );
+    let relative_path = evidence_export_response_path(state, &request.conversation_id, kind);
     let export_result = write_evidence_export_windows(
-        &state.workspace_root.join(&relative_path),
+        &export_absolute_path(state, Path::new(&relative_path)),
         &harness,
         kind,
         &request.conversation_id,

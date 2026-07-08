@@ -1,4 +1,7 @@
-use super::{openai_descriptor_record, unique_workspace};
+use super::{
+    openai_descriptor_record, provider_settings_store_for_workspace, unique_workspace,
+    use_test_provider_settings_store,
+};
 use async_trait::async_trait;
 use chrono::Utc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -116,13 +119,14 @@ fn official_quota_status_payload_serializes_camel_case_for_react() {
 #[tokio::test]
 async fn official_quota_refresh_rejects_unknown_config_id() {
     let workspace = prepare_workspace("official-quota-unknown-config");
-    DesktopProviderSettingsStore::new(workspace.clone())
+    provider_settings_store_for_workspace(&workspace)
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some("openrouter-work".to_owned()),
             configs: vec![sample_openrouter_config("provider-test-token")],
         })
         .unwrap();
-    let runtime = DesktopRuntimeState::with_workspace_for_test(workspace).unwrap();
+    let mut runtime = DesktopRuntimeState::with_workspace_for_test(workspace.clone()).unwrap();
+    use_test_provider_settings_store(&mut runtime, &workspace);
     let error = refresh_official_quota_with_runtime_state("missing", &runtime)
         .await
         .unwrap_err();
@@ -132,7 +136,7 @@ async fn official_quota_refresh_rejects_unknown_config_id() {
 #[tokio::test]
 async fn official_quota_refresh_persists_unsupported_snapshot_for_catalog_provider() {
     let workspace = prepare_workspace("official-quota-unsupported");
-    DesktopProviderSettingsStore::new(workspace.clone())
+    provider_settings_store_for_workspace(&workspace)
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some("gemini-work".to_owned()),
             configs: vec![ProviderConfigRecord {
@@ -148,7 +152,8 @@ async fn official_quota_refresh_persists_unsupported_snapshot_for_catalog_provid
             }],
         })
         .unwrap();
-    let runtime = DesktopRuntimeState::with_workspace_for_test(workspace).unwrap();
+    let mut runtime = DesktopRuntimeState::with_workspace_for_test(workspace.clone()).unwrap();
+    use_test_provider_settings_store(&mut runtime, &workspace);
     let response = refresh_official_quota_with_runtime_state("gemini-work", &runtime)
         .await
         .unwrap();
@@ -163,18 +168,19 @@ async fn official_quota_refresh_persists_unsupported_snapshot_for_catalog_provid
 #[tokio::test]
 async fn official_quota_refresh_persists_supported_snapshot() {
     let workspace = prepare_workspace("official-quota-persist");
-    DesktopProviderSettingsStore::new(workspace.clone())
+    provider_settings_store_for_workspace(&workspace)
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some("openrouter-work".to_owned()),
             configs: vec![sample_openrouter_config("provider-test-token")],
         })
         .unwrap();
     let call_count = Arc::new(AtomicUsize::new(0));
-    let runtime = DesktopRuntimeState::with_workspace_and_account_usage_registry_for_test(
+    let mut runtime = DesktopRuntimeState::with_workspace_and_account_usage_registry_for_test(
         workspace.clone(),
         fake_account_usage_registry(Arc::clone(&call_count), Duration::ZERO),
     )
     .unwrap();
+    use_test_provider_settings_store(&mut runtime, &workspace);
 
     let response = refresh_official_quota_with_runtime_state("openrouter-work", &runtime)
         .await
@@ -196,19 +202,19 @@ async fn official_quota_refresh_persists_supported_snapshot() {
 async fn official_quota_refresh_is_single_flight_per_config() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let workspace = prepare_workspace("official-quota-single-flight");
-    DesktopProviderSettingsStore::new(workspace.clone())
+    provider_settings_store_for_workspace(&workspace)
         .save_record(&ProviderSettingsRecord {
             default_config_id: Some("openrouter-work".to_owned()),
             configs: vec![sample_openrouter_config("provider-test-token")],
         })
         .unwrap();
-    let runtime = Arc::new(
-        DesktopRuntimeState::with_workspace_and_account_usage_registry_for_test(
-            workspace,
-            fake_account_usage_registry(Arc::clone(&call_count), Duration::from_millis(50)),
-        )
-        .unwrap(),
-    );
+    let mut runtime = DesktopRuntimeState::with_workspace_and_account_usage_registry_for_test(
+        workspace.clone(),
+        fake_account_usage_registry(Arc::clone(&call_count), Duration::from_millis(50)),
+    )
+    .unwrap();
+    use_test_provider_settings_store(&mut runtime, &workspace);
+    let runtime = Arc::new(runtime);
 
     let first = Arc::clone(&runtime);
     let second = Arc::clone(&runtime);

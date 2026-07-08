@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -39,12 +39,12 @@ use ring::digest;
 async fn workspace_source_scans_admin_plugin_json() {
     let root = tempfile::tempdir().unwrap();
     write_manifest(
-        &root.path().join("admin-a/plugin.json"),
+        &canonical_temp_root(&root).join("admin-a/plugin.json"),
         manifest_json("admin-a", TrustLevel::AdminTrusted),
     );
 
     let records = FileManifestLoader
-        .enumerate(&DiscoverySource::Workspace(root.path().into()))
+        .enumerate(&DiscoverySource::Workspace(canonical_temp_root(&root)))
         .await
         .unwrap();
 
@@ -58,12 +58,12 @@ async fn workspace_source_scans_admin_plugin_json() {
 async fn user_source_scans_user_controlled_plugin_json() {
     let home = tempfile::tempdir().unwrap();
     write_manifest(
-        &home.path().join("user-a/plugin.json"),
+        &canonical_temp_root(&home).join("user-a/plugin.json"),
         manifest_json("user-a", TrustLevel::UserControlled),
     );
 
     let records = FileManifestLoader
-        .enumerate(&DiscoverySource::User(home.path().into()))
+        .enumerate(&DiscoverySource::User(canonical_temp_root(&home)))
         .await
         .unwrap();
 
@@ -76,12 +76,12 @@ async fn user_source_scans_user_controlled_plugin_json() {
 async fn project_source_scans_project_plugin_json() {
     let project = tempfile::tempdir().unwrap();
     write_manifest(
-        &project.path().join("project-a/plugin.json"),
+        &canonical_temp_root(&project).join("project-a/plugin.json"),
         manifest_json("project-a", TrustLevel::UserControlled),
     );
 
     let records = FileManifestLoader
-        .enumerate(&DiscoverySource::Project(project.path().into()))
+        .enumerate(&DiscoverySource::Project(canonical_temp_root(&project)))
         .await
         .unwrap();
 
@@ -94,7 +94,7 @@ async fn project_source_scans_project_plugin_json() {
 async fn yaml_manifest_is_parsed_through_file_loader() {
     let root = tempfile::tempdir().unwrap();
     write_manifest(
-        &root.path().join("admin-yaml/plugin.yaml"),
+        &canonical_temp_root(&root).join("admin-yaml/plugin.yaml"),
         r#"
 manifest_schema_version: 1
 name: admin-yaml
@@ -109,7 +109,7 @@ capabilities:
     );
 
     let records = FileManifestLoader
-        .enumerate(&DiscoverySource::Workspace(root.path().into()))
+        .enumerate(&DiscoverySource::Workspace(canonical_temp_root(&root)))
         .await
         .unwrap();
 
@@ -122,19 +122,19 @@ capabilities:
 async fn source_trust_mismatch_is_rejected() {
     let home = tempfile::tempdir().unwrap();
     write_manifest(
-        &home.path().join("bad-trust/plugin.json"),
+        &canonical_temp_root(&home).join("bad-trust/plugin.json"),
         manifest_json("bad-trust", TrustLevel::AdminTrusted),
     );
 
     let records = FileManifestLoader
-        .enumerate(&DiscoverySource::User(home.path().into()))
+        .enumerate(&DiscoverySource::User(canonical_temp_root(&home)))
         .await
         .unwrap();
 
     assert_eq!(records.len(), 1);
 
     let registry = PluginRegistry::builder()
-        .with_source(DiscoverySource::User(home.path().into()))
+        .with_source(DiscoverySource::User(canonical_temp_root(&home)))
         .build()
         .unwrap();
     let discovered = registry.discover().await.unwrap();
@@ -152,12 +152,12 @@ async fn source_trust_mismatch_is_rejected() {
 async fn file_loader_records_canonical_manifest_hash() {
     let root = tempfile::tempdir().unwrap();
     write_manifest(
-        &root.path().join("data/plugins/hash-a/plugin.json"),
+        &canonical_temp_root(&root).join("data/plugins/hash-a/plugin.json"),
         manifest_json("hash-a", TrustLevel::AdminTrusted),
     );
 
     let records = FileManifestLoader
-        .enumerate(&DiscoverySource::Workspace(root.path().into()))
+        .enumerate(&DiscoverySource::Workspace(canonical_temp_root(&root)))
         .await
         .unwrap();
     let canonical = ManifestSigner::canonical_payload(&records[0].manifest).unwrap();
@@ -173,17 +173,17 @@ async fn file_loader_rejects_symlink_plugin_directory() {
     let root = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     write_manifest(
-        &outside.path().join("outside-plugin/plugin.json"),
+        &canonical_temp_root(&outside).join("outside-plugin/plugin.json"),
         manifest_json("outside-plugin", TrustLevel::AdminTrusted),
     );
     std::os::unix::fs::symlink(
-        outside.path().join("outside-plugin"),
-        root.path().join("linked-plugin"),
+        canonical_temp_root(&outside).join("outside-plugin"),
+        canonical_temp_root(&root).join("linked-plugin"),
     )
     .unwrap();
 
     let error = FileManifestLoader
-        .enumerate(&DiscoverySource::Workspace(root.path().into()))
+        .enumerate(&DiscoverySource::Workspace(canonical_temp_root(&root)))
         .await
         .unwrap_err();
 
@@ -196,18 +196,18 @@ async fn file_loader_rejects_symlink_manifest_file() {
     let root = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     write_manifest(
-        &outside.path().join("plugin.json"),
+        &canonical_temp_root(&outside).join("plugin.json"),
         manifest_json("linked-manifest", TrustLevel::AdminTrusted),
     );
-    std::fs::create_dir_all(root.path().join("linked-manifest")).unwrap();
+    std::fs::create_dir_all(canonical_temp_root(&root).join("linked-manifest")).unwrap();
     std::os::unix::fs::symlink(
-        outside.path().join("plugin.json"),
-        root.path().join("linked-manifest/plugin.json"),
+        canonical_temp_root(&outside).join("plugin.json"),
+        canonical_temp_root(&root).join("linked-manifest/plugin.json"),
     )
     .unwrap();
 
     let error = FileManifestLoader
-        .enumerate(&DiscoverySource::Workspace(root.path().into()))
+        .enumerate(&DiscoverySource::Workspace(canonical_temp_root(&root)))
         .await
         .unwrap_err();
 
@@ -220,7 +220,7 @@ async fn file_loader_rejects_world_writable_plugin_directory_ancestor() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = tempfile::tempdir().unwrap();
-    let parent = root.path().join("writable-parent");
+    let parent = canonical_temp_root(&root).join("writable-parent");
     let plugin = parent.join("plugin");
     write_manifest(
         &plugin.join("plugin.json"),
@@ -243,10 +243,13 @@ async fn file_loader_rejects_world_writable_plugin_directory_ancestor() {
 #[tokio::test]
 async fn malformed_manifest_returns_validation_error() {
     let root = tempfile::tempdir().unwrap();
-    write_manifest(&root.path().join("bad/plugin.json"), "{ this is not json");
+    write_manifest(
+        &canonical_temp_root(&root).join("bad/plugin.json"),
+        "{ this is not json",
+    );
 
     let error = FileManifestLoader
-        .enumerate(&DiscoverySource::Workspace(root.path().into()))
+        .enumerate(&DiscoverySource::Workspace(canonical_temp_root(&root)))
         .await
         .unwrap_err();
 
@@ -263,7 +266,7 @@ async fn malformed_manifest_returns_validation_error() {
 async fn unknown_manifest_fields_are_rejected_as_schema_violations() {
     let root = tempfile::tempdir().unwrap();
     write_manifest(
-        &root.path().join("unknown-field/plugin.json"),
+        &canonical_temp_root(&root).join("unknown-field/plugin.json"),
         r#"{
   "manifest_schema_version": 1,
   "name": "unknown-field",
@@ -276,7 +279,7 @@ async fn unknown_manifest_fields_are_rejected_as_schema_violations() {
     );
 
     let error = FileManifestLoader
-        .enumerate(&DiscoverySource::Workspace(root.path().into()))
+        .enumerate(&DiscoverySource::Workspace(canonical_temp_root(&root)))
         .await
         .unwrap_err();
 
@@ -293,7 +296,7 @@ async fn unknown_manifest_fields_are_rejected_as_schema_violations() {
 async fn unsupported_manifest_schema_version_is_typed() {
     let root = tempfile::tempdir().unwrap();
     write_manifest(
-        &root.path().join("future-schema/plugin.json"),
+        &canonical_temp_root(&root).join("future-schema/plugin.json"),
         r#"{
   "manifest_schema_version": 99,
   "name": "future-schema",
@@ -305,7 +308,7 @@ async fn unsupported_manifest_schema_version_is_typed() {
     );
 
     let error = FileManifestLoader
-        .enumerate(&DiscoverySource::Workspace(root.path().into()))
+        .enumerate(&DiscoverySource::Workspace(canonical_temp_root(&root)))
         .await
         .unwrap_err();
 
@@ -322,7 +325,7 @@ async fn unsupported_manifest_schema_version_is_typed() {
 async fn default_builder_discovers_file_manifests_without_custom_loader() {
     let root = tempfile::tempdir().unwrap();
     write_manifest(
-        &root.path().join("user-default/plugin.json"),
+        &canonical_temp_root(&root).join("user-default/plugin.json"),
         manifest_json("user-default", TrustLevel::UserControlled),
     );
     let registry = PluginRegistry::builder()
@@ -330,7 +333,7 @@ async fn default_builder_discovers_file_manifests_without_custom_loader() {
             allow_project_plugins: true,
             ..PluginConfig::default()
         })
-        .with_source(DiscoverySource::Project(root.path().into()))
+        .with_source(DiscoverySource::Project(canonical_temp_root(&root)))
         .build()
         .unwrap();
 
@@ -346,7 +349,7 @@ async fn default_builder_discovers_file_manifests_without_custom_loader() {
 #[tokio::test]
 async fn cargo_extension_manifest_loader_discovers_metadata_from_path_binary() {
     let root = tempfile::tempdir().unwrap();
-    let binary = root.path().join("jyowo-plugin-cargo-a");
+    let binary = canonical_temp_root(&root).join("jyowo-plugin-cargo-a");
     let metadata = serde_json::json!({
         "manifest": serde_json::from_str::<serde_json::Value>(&manifest_json("cargo-a", TrustLevel::AdminTrusted)).unwrap(),
         "package_metadata": { "package": "cargo-a" }
@@ -366,7 +369,7 @@ exit 2
     );
 
     let records = CargoExtensionManifestLoader::new()
-        .with_search_paths(vec![root.path().to_path_buf()])
+        .with_search_paths(vec![canonical_temp_root(&root).as_path().to_path_buf()])
         .with_timeout(Duration::from_secs(15))
         .enumerate(&DiscoverySource::CargoExtension)
         .await
@@ -383,7 +386,7 @@ exit 2
 #[tokio::test]
 async fn cargo_extension_manifest_loader_supports_runtime_metadata_rpc() {
     let root = tempfile::tempdir().unwrap();
-    let binary = root.path().join("jyowo-plugin-cargo-rpc");
+    let binary = canonical_temp_root(&root).join("jyowo-plugin-cargo-rpc");
     let metadata = serde_json::json!({
         "manifest": serde_json::from_str::<serde_json::Value>(&manifest_json("cargo-rpc", TrustLevel::AdminTrusted)).unwrap(),
         "package_metadata": { "package": "cargo-rpc" }
@@ -407,7 +410,7 @@ exit 2
     );
 
     let records = CargoExtensionManifestLoader::new()
-        .with_search_paths(vec![root.path().to_path_buf()])
+        .with_search_paths(vec![canonical_temp_root(&root).as_path().to_path_buf()])
         .with_timeout(Duration::from_secs(15))
         .enumerate(&DiscoverySource::CargoExtension)
         .await
@@ -435,7 +438,7 @@ async fn cargo_extension_manifest_loader_ignores_non_cargo_sources() {
 async fn cargo_extension_manifest_loader_reports_malformed_metadata() {
     let root = tempfile::tempdir().unwrap();
     write_executable(
-        &root.path().join("jyowo-plugin-bad"),
+        &canonical_temp_root(&root).join("jyowo-plugin-bad"),
         r#"#!/bin/sh
 if [ "$1" = "--harness-manifest" ]; then
 printf 'not-json'
@@ -446,7 +449,7 @@ exit 2
     );
 
     let report = CargoExtensionManifestLoader::new()
-        .with_search_paths(vec![root.path().to_path_buf()])
+        .with_search_paths(vec![canonical_temp_root(&root).as_path().to_path_buf()])
         .load_report(&DiscoverySource::CargoExtension)
         .await
         .unwrap();
@@ -462,7 +465,7 @@ exit 2
 #[tokio::test]
 async fn cargo_extension_runtime_loader_proxies_activation_and_deactivation() {
     let root = tempfile::tempdir().unwrap();
-    let binary = root.path().join("jyowo-plugin-cargo-a");
+    let binary = canonical_temp_root(&root).join("jyowo-plugin-cargo-a");
     write_executable(
         &binary,
         r#"#!/bin/sh
@@ -499,7 +502,7 @@ exit 2
 #[tokio::test]
 async fn cargo_extension_runtime_registers_manifest_tool_proxy_and_executes_it() {
     let root = tempfile::tempdir().unwrap();
-    let binary = root.path().join("jyowo-plugin-tool-proxy");
+    let binary = canonical_temp_root(&root).join("jyowo-plugin-tool-proxy");
     let manifest = manifest_with_tool(
         "tool-proxy",
         "sidecar-tool",
@@ -543,7 +546,7 @@ exit 2
         .with_source(DiscoverySource::CargoExtension)
         .with_manifest_loader(Arc::new(
             CargoExtensionManifestLoader::new()
-                .with_search_paths(vec![root.path().to_path_buf()])
+                .with_search_paths(vec![canonical_temp_root(&root).as_path().to_path_buf()])
                 .with_timeout(Duration::from_secs(15)),
         ))
         .with_runtime_loader(Arc::new(
@@ -589,7 +592,7 @@ exit 2
 #[tokio::test]
 async fn cargo_extension_tool_proxy_uses_manifest_input_schema() {
     let root = tempfile::tempdir().unwrap();
-    let binary = root.path().join("jyowo-plugin-tool-schema");
+    let binary = canonical_temp_root(&root).join("jyowo-plugin-tool-schema");
     let manifest = manifest_with_tool_schema(
         "tool-schema",
         "sidecar-tool",
@@ -635,7 +638,7 @@ exit 2
         .with_source(DiscoverySource::CargoExtension)
         .with_manifest_loader(Arc::new(
             CargoExtensionManifestLoader::new()
-                .with_search_paths(vec![root.path().to_path_buf()])
+                .with_search_paths(vec![canonical_temp_root(&root).as_path().to_path_buf()])
                 .with_timeout(Duration::from_secs(15)),
         ))
         .with_runtime_loader(Arc::new(
@@ -662,7 +665,7 @@ exit 2
 #[tokio::test]
 async fn cargo_extension_runtime_registers_hook_skill_and_mcp_proxies() {
     let root = tempfile::tempdir().unwrap();
-    let binary = root.path().join("jyowo-plugin-capability-proxy");
+    let binary = canonical_temp_root(&root).join("jyowo-plugin-capability-proxy");
     let manifest = manifest_with_proxy_capabilities("capability-proxy", TrustLevel::UserControlled);
     let metadata = serde_json::json!({
         "manifest": serde_json::to_value(&manifest).unwrap(),
@@ -716,7 +719,7 @@ exit 2
         .with_source(DiscoverySource::CargoExtension)
         .with_manifest_loader(Arc::new(
             CargoExtensionManifestLoader::new()
-                .with_search_paths(vec![root.path().to_path_buf()])
+                .with_search_paths(vec![canonical_temp_root(&root).as_path().to_path_buf()])
                 .with_timeout(Duration::from_secs(15)),
         ))
         .with_runtime_loader(Arc::new(
@@ -801,7 +804,7 @@ exit 2
 #[tokio::test]
 async fn cargo_extension_runtime_activate_failure_marks_plugin_failed() {
     let root = tempfile::tempdir().unwrap();
-    let binary = root.path().join("jyowo-plugin-failing");
+    let binary = canonical_temp_root(&root).join("jyowo-plugin-failing");
     let manifest = manifest("failing", TrustLevel::UserControlled);
     let metadata = serde_json::json!({
         "manifest": serde_json::to_value(&manifest).unwrap(),
@@ -831,7 +834,7 @@ exit 2
         .with_source(DiscoverySource::CargoExtension)
         .with_manifest_loader(Arc::new(
             CargoExtensionManifestLoader::new()
-                .with_search_paths(vec![root.path().to_path_buf()])
+                .with_search_paths(vec![canonical_temp_root(&root).as_path().to_path_buf()])
                 .with_timeout(Duration::from_secs(15)),
         ))
         .with_runtime_loader(Arc::new(
@@ -882,7 +885,7 @@ async fn cargo_extension_runtime_loader_rejects_file_origin() {
 async fn static_link_runtime_loader_loads_only_during_activate() {
     let root = tempfile::tempdir().unwrap();
     write_manifest(
-        &root.path().join("static-a/plugin.json"),
+        &canonical_temp_root(&root).join("static-a/plugin.json"),
         manifest_json("static-a", TrustLevel::UserControlled),
     );
     let load_count = Arc::new(AtomicUsize::new(0));
@@ -897,7 +900,7 @@ async fn static_link_runtime_loader_loads_only_during_activate() {
             allow_project_plugins: true,
             ..PluginConfig::default()
         })
-        .with_source(DiscoverySource::Project(root.path().into()))
+        .with_source(DiscoverySource::Project(canonical_temp_root(&root)))
         .with_runtime_loader(Arc::new(runtime))
         .build()
         .unwrap();
@@ -962,7 +965,7 @@ async fn wasm_runtime_loader_is_explicitly_unsupported_without_runtime() {
 async fn manifest_schema_accepts_explicit_custom_toolsets() {
     let root = tempfile::tempdir().unwrap();
     write_manifest(
-        &root.path().join("toolset/plugin.json"),
+        &canonical_temp_root(&root).join("toolset/plugin.json"),
         r#"{
   "manifest_schema_version": 1,
   "name": "toolset",
@@ -978,7 +981,7 @@ async fn manifest_schema_accepts_explicit_custom_toolsets() {
     );
 
     let records = FileManifestLoader
-        .enumerate(&DiscoverySource::Workspace(root.path().into()))
+        .enumerate(&DiscoverySource::Workspace(canonical_temp_root(&root)))
         .await
         .unwrap();
 
@@ -993,7 +996,7 @@ async fn manifest_schema_accepts_explicit_custom_toolsets() {
 async fn file_manifest_hash_uses_canonical_payload_not_raw_bytes() {
     let root = tempfile::tempdir().unwrap();
     write_manifest(
-        &root.path().join("hash-a/plugin.json"),
+        &canonical_temp_root(&root).join("hash-a/plugin.json"),
         r#"{
   "manifest_schema_version": 1,
   "name": "hash-plugin",
@@ -1004,12 +1007,12 @@ async fn file_manifest_hash_uses_canonical_payload_not_raw_bytes() {
 }"#,
     );
     write_manifest(
-        &root.path().join("hash-b/plugin.json"),
+        &canonical_temp_root(&root).join("hash-b/plugin.json"),
         r#"{"capabilities":{},"min_harness_version":">=0.0.0","trust_level":"admin_trusted","version":"0.1.0","name":"hash-plugin","manifest_schema_version":1}"#,
     );
 
     let records = FileManifestLoader
-        .enumerate(&DiscoverySource::Workspace(root.path().into()))
+        .enumerate(&DiscoverySource::Workspace(canonical_temp_root(&root)))
         .await
         .unwrap();
 
@@ -1017,12 +1020,12 @@ async fn file_manifest_hash_uses_canonical_payload_not_raw_bytes() {
     assert_eq!(records[0].manifest_hash, records[1].manifest_hash);
 }
 
-fn write_manifest(path: &std::path::Path, content: impl AsRef<str>) {
+fn write_manifest(path: &Path, content: impl AsRef<str>) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, content.as_ref()).unwrap();
 }
 
-fn write_executable(path: &std::path::Path, content: impl AsRef<str>) {
+fn write_executable(path: &Path, content: impl AsRef<str>) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, content.as_ref()).unwrap();
     #[cfg(unix)]
@@ -1148,6 +1151,7 @@ fn tool_ctx() -> ToolContext {
         agent_id: harness_contracts::AgentId::from_u128(1),
         subagent_depth: 0,
         workspace_root: std::env::temp_dir(),
+        project_workspace_root: None,
         sandbox: None,
         cap_registry: Arc::new(CapabilityRegistry::default()),
         redactor: Arc::new(TestRedactor),
@@ -1277,4 +1281,8 @@ impl Plugin for NoopPlugin {
     async fn deactivate(&self) -> Result<(), PluginError> {
         Ok(())
     }
+}
+
+fn canonical_temp_root(temp: &tempfile::TempDir) -> PathBuf {
+    temp.path().canonicalize().expect("canonical tempdir")
 }

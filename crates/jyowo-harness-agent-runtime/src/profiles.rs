@@ -1,5 +1,3 @@
-use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
@@ -27,6 +25,8 @@ pub enum AgentProfileRegistryError {
     Sqlite(#[from] rusqlite::Error),
     #[error("agent profile registry json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("agent profile registry fs error: {0}")]
+    Fs(#[from] harness_fs::FsError),
     #[error("agent profile validation error: {0}")]
     Validation(String),
     #[error("builtin agent profiles are read-only")]
@@ -96,24 +96,37 @@ impl<'store> AgentProfileRegistry<'store> {
         Ok(())
     }
 
-    fn load_user_profiles(&self) -> Result<Vec<AgentProfile>, AgentProfileRegistryError> {
-        let path = self.store.profiles_file_path();
+    /// Load user profiles from an explicit file path.
+    ///
+    /// This is used after migration to read profiles from the global config
+    /// location (`~/.jyowo/config/agent-profiles.json`) instead of the
+    /// legacy runtime directory.
+    pub fn load_user_profiles_from_path(
+        path: &Path,
+    ) -> Result<Vec<AgentProfile>, AgentProfileRegistryError> {
+        harness_fs::ensure_no_symlink_components(path)?;
         if !path.exists() {
             return Ok(Vec::new());
         }
 
-        let bytes = fs::read(&path)?;
+        let Some(bytes) = harness_fs::read_file_no_follow(path)? else {
+            return Ok(Vec::new());
+        };
+        harness_fs::set_owner_only_file_if_unix(
+            &std::fs::OpenOptions::new().read(true).open(path)?,
+        )?;
+
         let parsed = match serde_json::from_slice::<AgentProfilesFile>(&bytes) {
             Ok(file) => file,
             Err(error) => {
-                quarantine_invalid_profile_file(&path)?;
+                quarantine_invalid_profile_file(path)?;
                 return Err(AgentProfileRegistryError::Json(error));
             }
         };
 
         for profile in &parsed.profiles {
             if let Err(validation) = validate_agent_profile(profile) {
-                quarantine_invalid_profile_file(&path)?;
+                quarantine_invalid_profile_file(path)?;
                 return Err(AgentProfileRegistryError::Validation(
                     validation.to_string(),
                 ));
@@ -123,21 +136,29 @@ impl<'store> AgentProfileRegistry<'store> {
         Ok(parsed.profiles)
     }
 
+    /// Save user profiles to an explicit file path.
+    ///
+    /// Writes atomically with owner-only permissions on Unix.
+    pub fn save_user_profiles_to_path(
+        path: &Path,
+        profiles: &[AgentProfile],
+    ) -> Result<(), AgentProfileRegistryError> {
+        let payload = AgentProfilesFile {
+            profiles: profiles.to_vec(),
+        };
+        harness_fs::write_json_file_atomic(path, &payload, true)?;
+        Ok(())
+    }
+
+    fn load_user_profiles(&self) -> Result<Vec<AgentProfile>, AgentProfileRegistryError> {
+        Self::load_user_profiles_from_path(&self.store.profiles_file_path())
+    }
+
     fn save_user_profiles(
         &self,
         profiles: &[AgentProfile],
     ) -> Result<(), AgentProfileRegistryError> {
-        let path = self.store.profiles_file_path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let payload = AgentProfilesFile {
-            profiles: profiles.to_vec(),
-        };
-        let bytes = serde_json::to_vec_pretty(&payload)?;
-        write_atomic_file(&path, &bytes)?;
-        Ok(())
+        Self::save_user_profiles_to_path(&self.store.profiles_file_path(), profiles)
     }
 
     fn sync_profile_cache(
@@ -172,29 +193,7 @@ impl<'store> AgentProfileRegistry<'store> {
 }
 
 pub fn quarantine_invalid_profile_file(path: &Path) -> Result<PathBuf, AgentProfileRegistryError> {
-    let quarantine_path = path.with_extension("json.invalid");
-    if path.exists() {
-        fs::rename(path, &quarantine_path)?;
-    }
-    Ok(quarantine_path)
-}
-
-fn write_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), AgentProfileRegistryError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("profile file path has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let temp_path = path.with_extension(format!("json.tmp-{}", std::process::id()));
-    {
-        let mut temp_file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)?;
-        temp_file.write_all(bytes)?;
-        temp_file.sync_all()?;
-    }
-    fs::rename(temp_path, path)?;
-    Ok(())
+    Ok(harness_fs::quarantine_invalid_json_file(path)?)
 }
 
 #[must_use]
@@ -240,4 +239,85 @@ pub fn builtin_agent_profiles() -> Vec<AgentProfile> {
             default_workspace_isolation: AgentWorkspaceIsolationMode::PatchOnly,
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_profile_json_write_rejects_symlink_parent_components() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let external = tempfile::tempdir().expect("external tempdir");
+        let temp_root = temp.path().canonicalize().expect("canonical tempdir");
+        let external_root = external.path().canonicalize().expect("canonical external");
+        let symlinked_parent = temp_root.join("runtime");
+        std::os::unix::fs::symlink(&external_root, &symlinked_parent).expect("symlink");
+        let path = symlinked_parent.join("agent-profiles.json");
+
+        let error = harness_fs::write_json_file_atomic(
+            &path,
+            &AgentProfilesFile {
+                profiles: Vec::new(),
+            },
+            true,
+        )
+        .expect_err("profile write should reject symlink parent");
+
+        assert!(matches!(error, harness_fs::FsError::Symlink(_)));
+        assert!(!external_root.join("agent-profiles.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_profile_json_read_rejects_symlink_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let external = tempfile::NamedTempFile::new().expect("external file");
+        let temp_root = temp.path().canonicalize().expect("canonical tempdir");
+        let path = temp_root.join("agent-profiles.json");
+        std::os::unix::fs::symlink(external.path(), &path).expect("symlink");
+
+        let error = harness_fs::ensure_no_symlink_components(&path)
+            .expect_err("read should reject symlink");
+
+        assert!(matches!(error, harness_fs::FsError::Symlink(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quarantine_invalid_profile_file_moves_real_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().canonicalize().expect("canonical tempdir");
+        let path = temp_root.join("agent-profiles.json");
+        std::fs::write(&path, b"{not-json").expect("invalid profile file");
+
+        let quarantine_path =
+            quarantine_invalid_profile_file(&path).expect("quarantine real profile file");
+
+        assert!(!path.exists());
+        assert!(quarantine_path.exists());
+        assert_eq!(quarantine_path.extension().unwrap(), "invalid");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quarantine_invalid_profile_file_rejects_symlink_file_without_moving_target() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().canonicalize().expect("canonical tempdir");
+        let target = temp_root.join("target.json");
+        let path = temp_root.join("agent-profiles.json");
+        std::fs::write(&target, b"{not-json").expect("invalid target");
+        std::os::unix::fs::symlink(&target, &path).expect("symlink");
+
+        let error = quarantine_invalid_profile_file(&path)
+            .expect_err("profile quarantine should reject final symlink");
+
+        assert!(matches!(error, AgentProfileRegistryError::Fs(_)));
+        assert!(target.exists());
+        assert!(std::fs::symlink_metadata(&path)
+            .expect("link metadata")
+            .file_type()
+            .is_symlink());
+    }
 }

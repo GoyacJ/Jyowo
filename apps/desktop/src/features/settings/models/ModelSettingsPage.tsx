@@ -2,6 +2,8 @@ import { Plus } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { useActiveProjectPath } from '@/features/workspace/use-active-project-path'
+import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 
@@ -22,6 +24,8 @@ type HealthFilter = 'all' | 'online' | 'failing' | 'never_checked' | 'unavailabl
 
 export function ModelSettingsPage() {
   const { t } = useTranslation('settings')
+  const activeProjectPathQuery = useActiveProjectPath()
+  const routeHasProjectScope = activeProjectPathQuery.data != null
   const {
     isAnySetDefaultPending,
     isProbePending,
@@ -95,11 +99,18 @@ export function ModelSettingsPage() {
   const providerOptions = buildProviderOptions(pageState.viewModel.rows)
   const detailsRow =
     pageState.viewModel.rows.find((row) => row.configId === detailsConfigId) ?? null
+  const scopeLabelKey =
+    pageState.viewModel.selectionScope === 'project'
+      ? 'scope.projectOverrides'
+      : 'scope.globalDefaults'
 
   return (
     <section className="space-y-4" data-testid="model-settings-page">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="font-semibold text-xl">{t('models.title')}</h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="font-semibold text-xl">{t('models.title')}</h1>
+          <Badge variant="outline">{t(scopeLabelKey)}</Badge>
+        </div>
         <Button onClick={() => setCreateConfigOpen(true)} type="button">
           <Plus aria-hidden="true" className="size-4" data-icon />
           {t('provider.newConfig')}
@@ -206,6 +217,7 @@ export function ModelSettingsPage() {
 
         <TabsContent value="capabilityRoutes">
           <CapabilityRoutesPanel
+            hasProjectScope={routeHasProjectScope}
             onConfigure={setRouteEditorRoute}
             routeSection={pageState.viewModel.capabilityRoutes}
           />

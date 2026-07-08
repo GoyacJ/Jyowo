@@ -9,10 +9,14 @@ use harness_contracts::{
     BackgroundAgentId, BackgroundAgentInputRequestedEvent, BackgroundAgentInputSubmittedEvent,
     BackgroundAgentInterruptedEvent, BackgroundAgentPermissionRequestedEvent,
     BackgroundAgentPermissionResolvedEvent, BackgroundAgentStartedEvent, BackgroundAgentState,
-    BackgroundAgentStateChangedEvent, Decision, Event, NoopRedactor, RequestId, RunId, SessionId,
-    TenantId, UiSafeText,
+    BackgroundAgentStateChangedEvent, Decision, Event, RequestId, RunId, SessionId, TenantId,
+    UiSafeText,
 };
 use serde_json::json;
+
+fn ui(value: &str) -> UiSafeText {
+    UiSafeText::from_trusted_redacted(value)
+}
 
 #[test]
 fn capability_unavailable_not_compiled_roundtrips() {
@@ -285,14 +289,12 @@ fn background_agent_events_roundtrip_with_stable_tags() {
     let attempt_id = RunId::new();
     let request_id = RequestId::new();
     let at = chrono::Utc::now();
-    let redactor = NoopRedactor;
-
     let events = vec![
         Event::BackgroundAgentStarted(BackgroundAgentStartedEvent {
             background_agent_id,
             conversation_id,
             attempt_id,
-            title: UiSafeText::from_redacted_display("Nightly work", &redactor),
+            title: ui("Nightly work"),
             at,
         }),
         Event::BackgroundAgentStateChanged(BackgroundAgentStateChangedEvent {
@@ -306,13 +308,13 @@ fn background_agent_events_roundtrip_with_stable_tags() {
         Event::BackgroundAgentInputRequested(BackgroundAgentInputRequestedEvent {
             background_agent_id,
             request_id,
-            prompt: UiSafeText::from_redacted_display("Need input", &redactor),
+            prompt: ui("Need input"),
             at,
         }),
         Event::BackgroundAgentInputSubmitted(BackgroundAgentInputSubmittedEvent {
             background_agent_id,
             request_id,
-            input: UiSafeText::from_redacted_display("safe answer", &redactor),
+            input: ui("safe answer"),
             at,
         }),
         Event::BackgroundAgentPermissionRequested(BackgroundAgentPermissionRequestedEvent {
@@ -321,7 +323,7 @@ fn background_agent_events_roundtrip_with_stable_tags() {
             conversation_id,
             request_id,
             attempt_id: Some(attempt_id),
-            reason: UiSafeText::from_redacted_display("permission required", &redactor),
+            reason: ui("permission required"),
             at,
         }),
         Event::BackgroundAgentPermissionResolved(BackgroundAgentPermissionResolvedEvent {
@@ -335,25 +337,22 @@ fn background_agent_events_roundtrip_with_stable_tags() {
         }),
         Event::BackgroundAgentCancelled(BackgroundAgentCancelledEvent {
             background_agent_id,
-            reason: Some(UiSafeText::from_redacted_display(
-                "user cancelled",
-                &redactor,
-            )),
+            reason: Some(ui("user cancelled")),
             at,
         }),
         Event::BackgroundAgentCompleted(BackgroundAgentCompletedEvent {
             background_agent_id,
-            summary: Some(UiSafeText::from_redacted_display("done", &redactor)),
+            summary: Some(ui("done")),
             at,
         }),
         Event::BackgroundAgentFailed(BackgroundAgentFailedEvent {
             background_agent_id,
-            error: UiSafeText::from_redacted_display("failed safely", &redactor),
+            error: ui("failed safely"),
             at,
         }),
         Event::BackgroundAgentInterrupted(BackgroundAgentInterruptedEvent {
             background_agent_id,
-            reason: UiSafeText::from_redacted_display("restart", &redactor),
+            reason: ui("restart"),
             at,
         }),
         Event::BackgroundAgentArchived(BackgroundAgentArchivedEvent {

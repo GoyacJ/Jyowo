@@ -9,12 +9,13 @@ import { uiStore } from '@/shared/state/ui-store'
 import { CapabilityRoutesPanel } from './CapabilityRoutesPanel'
 import type { CapabilityRouteRow } from './model-settings-view-model'
 
-function renderPanel(rows: CapabilityRouteRow[]) {
+function renderPanel(rows: CapabilityRouteRow[], hasProjectScope = true) {
   uiStore.getState().setLocale('en-US')
   const onConfigure = vi.fn()
   render(
     <AppI18nProvider>
       <CapabilityRoutesPanel
+        hasProjectScope={hasProjectScope}
         onConfigure={onConfigure}
         routeSection={{ status: 'ready', data: rows }}
       />
@@ -95,6 +96,12 @@ describe('CapabilityRoutesPanel', () => {
     expect(screen.getByRole('heading', { name: 'Capability Routes' })).toBeInTheDocument()
     expect(screen.getByText('No capability route options are available.')).toBeInTheDocument()
     expect(screen.queryByRole('table', { name: 'Capability route table' })).not.toBeInTheDocument()
+  })
+
+  it('marks routes as runtime diagnostics without an active project', () => {
+    renderPanel(routeRows, false)
+
+    expect(screen.getByText('Runtime diagnostics')).toBeInTheDocument()
   })
 })
 

@@ -136,6 +136,7 @@ export const fixtureModelProviderCatalog: ModelProviderCatalogResponse = {
 
 export const fixtureProviderSettingsList: ListProviderSettingsResponse = {
   defaultConfigId: 'provider-config-001',
+  selectionScope: 'global',
   configs: [
     {
       protocol: 'responses',

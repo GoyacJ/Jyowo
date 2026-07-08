@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -56,6 +57,7 @@ pub enum SkillSourceConfig {
     DirectoryPackages {
         path: PathBuf,
         source_kind: DirectorySourceKind,
+        allowed_package_ids: Option<BTreeSet<String>>,
     },
     McpRecords {
         server_id: McpServerId,
@@ -344,11 +346,15 @@ impl SkillLoader {
                         }
                     }
                 }
-                SkillSourceConfig::DirectoryPackages { path, source_kind } => {
+                SkillSourceConfig::DirectoryPackages {
+                    path,
+                    source_kind,
+                    allowed_package_ids,
+                } => {
                     if !path.exists() {
                         continue;
                     }
-                    for raw_path in directory_skill_paths(path, false)? {
+                    for raw_path in directory_package_skill_paths(path, allowed_package_ids)? {
                         let source = source_from_directory(path.clone(), source_kind);
                         let markdown = std::fs::read_to_string(&raw_path)?;
                         match parse_skill_markdown_with_options(
@@ -517,11 +523,15 @@ impl SkillLoader {
                         }
                     }
                 }
-                SkillSourceConfig::DirectoryPackages { path, source_kind } => {
+                SkillSourceConfig::DirectoryPackages {
+                    path,
+                    source_kind,
+                    allowed_package_ids,
+                } => {
                     if !path.exists() {
                         continue;
                     }
-                    for raw_path in directory_skill_paths(path, false)? {
+                    for raw_path in directory_package_skill_paths(path, allowed_package_ids)? {
                         if reached_limit(loaded.len(), limit) {
                             break;
                         }
@@ -650,11 +660,15 @@ impl SkillLoader {
                         });
                     }
                 }
-                SkillSourceConfig::DirectoryPackages { path, source_kind } => {
+                SkillSourceConfig::DirectoryPackages {
+                    path,
+                    source_kind,
+                    allowed_package_ids,
+                } => {
                     if !path.exists() {
                         continue;
                     }
-                    for raw_path in directory_skill_paths(path, false)? {
+                    for raw_path in directory_package_skill_paths(path, allowed_package_ids)? {
                         if units.len() >= max_units {
                             break;
                         }
@@ -1082,23 +1096,91 @@ fn directory_skill_paths(
     path: &Path,
     include_markdown_files: bool,
 ) -> Result<Vec<PathBuf>, SkillError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "skill source path must not be a symlink: {}",
+                    path.display()
+                ),
+            )
+            .into());
+        }
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("skill source path must be a directory: {}", path.display()),
+            )
+            .into());
+        }
+        Err(error) => return Err(error.into()),
+    }
     let mut raw_paths = Vec::new();
     for entry in std::fs::read_dir(path)? {
-        let raw_path = entry?.path();
-        if include_markdown_files && raw_path.extension().and_then(|ext| ext.to_str()) == Some("md")
+        let entry = entry?;
+        let raw_path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "skill source path must not be a symlink: {}",
+                    raw_path.display()
+                ),
+            )
+            .into());
+        }
+        if include_markdown_files
+            && file_type.is_file()
+            && raw_path.extension().and_then(|ext| ext.to_str()) == Some("md")
         {
             raw_paths.push(raw_path);
             continue;
         }
-        if raw_path.is_dir() {
+        if file_type.is_dir() {
             let package_entry = raw_path.join("SKILL.md");
-            if package_entry.is_file() {
-                raw_paths.push(package_entry);
+            match std::fs::symlink_metadata(&package_entry) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "skill package entry must not be a symlink: {}",
+                            package_entry.display()
+                        ),
+                    )
+                    .into());
+                }
+                Ok(metadata) if metadata.is_file() => raw_paths.push(package_entry),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
             }
         }
     }
     raw_paths.sort();
     Ok(raw_paths)
+}
+
+fn directory_package_skill_paths(
+    path: &Path,
+    allowed_package_ids: &Option<BTreeSet<String>>,
+) -> Result<Vec<PathBuf>, SkillError> {
+    let paths = directory_skill_paths(path, false)?;
+    let Some(allowed_package_ids) = allowed_package_ids else {
+        return Ok(paths);
+    };
+    Ok(paths
+        .into_iter()
+        .filter(|raw_path| {
+            raw_path
+                .parent()
+                .and_then(|package_dir| package_dir.file_name())
+                .and_then(|name| name.to_str())
+                .is_some_and(|package_id| allowed_package_ids.contains(package_id))
+        })
+        .collect())
 }
 
 fn reached_limit(loaded: usize, limit: Option<usize>) -> bool {

@@ -108,6 +108,12 @@ impl SessionBuilder {
             .workspace_root
             .canonicalize()
             .map_err(|error| SessionError::Message(format!("workspace_root invalid: {error}")))?;
+        if let Some(project_workspace_root) = options.project_workspace_root.take() {
+            options.project_workspace_root =
+                Some(project_workspace_root.canonicalize().map_err(|error| {
+                    SessionError::Message(format!("project_workspace_root invalid: {error}"))
+                })?);
+        }
         let paths = SessionPaths::from_workspace(
             &options.workspace_root,
             options.tenant_id,

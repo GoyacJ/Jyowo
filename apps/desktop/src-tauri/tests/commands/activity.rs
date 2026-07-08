@@ -78,7 +78,7 @@ async fn list_activity_with_runtime_state_reads_journaled_permission_requests_by
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Run a command".to_owned(),
         },
@@ -162,7 +162,7 @@ async fn start_run_permission_mode_override_wins_over_saved_default() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             prompt: "Run a command".to_owned(),
             permission_mode: Some(PermissionMode::Default),
         },
@@ -199,7 +199,7 @@ async fn start_run_rejects_auto_without_runtime_support() {
             attachments: None,
             context_references: None,
             conversation_id: SessionId::new().to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             prompt: "Run a command".to_owned(),
             permission_mode: Some(PermissionMode::Auto),
         },
@@ -235,7 +235,7 @@ async fn start_run_bypass_permission_mode_finishes_without_pending_permission() 
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             prompt: "Run a command".to_owned(),
             permission_mode: Some(PermissionMode::BypassPermissions),
         },
@@ -334,7 +334,7 @@ async fn list_activity_with_runtime_state_reads_durable_run_events() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Complete the task".to_owned(),
         },
@@ -560,27 +560,31 @@ async fn list_activity_with_runtime_state_maps_assistant_interaction_events() {
                 Event::AssistantReviewRequested(AssistantReviewRequestedEvent {
                     run_id,
                     request_id: review_request_id,
-                    title: UiSafeText::from_trusted_redacted(
+                    title: UiSafeText::from_redacted_display(
                         "Review https://provider.example/review",
+                        &DefaultRedactor::default(),
                     ),
-                    body: Some(UiSafeText::from_trusted_redacted(
+                    body: Some(UiSafeText::from_redacted_display(
                         "Approve blob:.jyowo/runtime/blobs/blob-001?",
+                        &DefaultRedactor::default(),
                     )),
                     at: now(),
                 }),
                 Event::AssistantClarificationRequested(AssistantClarificationRequestedEvent {
                     run_id,
                     request_id: clarification_request_id,
-                    prompt: UiSafeText::from_trusted_redacted(
+                    prompt: UiSafeText::from_redacted_display(
                         "Which size链接https://provider.example/prompt?",
+                        &DefaultRedactor::default(),
                     ),
                     at: now(),
                 }),
                 Event::AssistantNotice(AssistantNoticeEvent {
                     run_id,
                     notice_id,
-                    body: UiSafeText::from_trusted_redacted(
+                    body: UiSafeText::from_redacted_display(
                         "Generation queued at 路径：.jyowo/runtime/blobs/blob-002.",
+                        &DefaultRedactor::default(),
                     ),
                     code: None,
                     at: now(),

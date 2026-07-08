@@ -6,6 +6,7 @@ import { useFieldArray, useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { z } from 'zod'
 
+import { useActiveProjectPath } from '@/features/workspace/use-active-project-path'
 import type {
   BrowserMcpPreset,
   McpDiagnosticRecord,
@@ -58,8 +59,8 @@ type MCPServerFormValues = {
   bearerTokenEnvVar: string
   command: string
   displayName: string
-  env: Array<{ key: string; value: string }>
-  headers: Array<{ key: string; value: string }>
+  env: Array<{ key: string; preserveExisting?: boolean; value: string }>
+  headers: Array<{ key: string; preserveExisting?: boolean; value: string }>
   headersFromEnv: Array<{ envVar: string; key: string }>
   inheritEnv: Array<{ value: string }>
   scope: 'global' | 'session' | 'agent'
@@ -87,6 +88,8 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
   const { t } = useTranslation('settings')
   const commandClient = useCommandClient()
   const queryClient = useQueryClient()
+  const activeProjectPathQuery = useActiveProjectPath()
+  const hasProjectScope = activeProjectPathQuery.data != null
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingServerId, setEditingServerId] = useState<string | null>(null)
   const [diagnosticServerId, setDiagnosticServerId] = useState<string | null>(null)
@@ -226,8 +229,20 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           bearerTokenEnvVar: z.string(),
           command: z.string(),
           displayName: z.string().trim().min(1, t('mcp.errors.serverNameRequired')),
-          env: z.array(z.object({ key: z.string(), value: z.string() })),
-          headers: z.array(z.object({ key: z.string(), value: z.string() })),
+          env: z.array(
+            z.object({
+              key: z.string(),
+              preserveExisting: z.boolean().optional(),
+              value: z.string(),
+            }),
+          ),
+          headers: z.array(
+            z.object({
+              key: z.string(),
+              preserveExisting: z.boolean().optional(),
+              value: z.string(),
+            }),
+          ),
           headersFromEnv: z.array(z.object({ envVar: z.string(), key: z.string() })),
           inheritEnv: z.array(z.object({ value: z.string() })),
           scope: z.enum(['global', 'session', 'agent']),
@@ -345,7 +360,12 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
             <Server className="size-4" />
           </div>
           <div>
-            <h2 className="font-semibold text-base">{t('mcp.title')}</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="font-semibold text-base">{t('mcp.title')}</h2>
+              <Badge variant="outline">
+                {hasProjectScope ? t('scope.projectOverrides') : t('scope.runtimeDiagnostics')}
+              </Badge>
+            </div>
             <p className="mt-1 text-muted-foreground text-sm">{t('mcp.description')}</p>
             <a
               className="mt-2 inline-flex items-center gap-1 text-muted-foreground text-xs hover:text-foreground"
@@ -359,311 +379,324 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           </div>
         </div>
 
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogTrigger asChild>
-            <Button onClick={openCreateDialog} size="sm" type="button">
-              <Plus className="size-4" />
-              {t('mcp.addServer')}
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="max-h-[min(88vh,760px)] w-[min(calc(100vw-2rem),44rem)] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>{t('mcp.dialogTitle')}</DialogTitle>
-              <DialogDescription>{t('mcp.dialogDescription')}</DialogDescription>
-            </DialogHeader>
-            <form className="space-y-5" onSubmit={handleSubmit(submit)}>
-              <div className="grid gap-4 md:grid-cols-2">
-                <Field
-                  fieldId="mcp-server-name"
-                  label={t('mcp.serverName')}
-                  message={errors.displayName?.message}
-                >
-                  <input
-                    className={inputClassName}
-                    disabled={isSubmitting || isConfigLoading}
-                    id="mcp-server-name"
-                    placeholder={t('mcp.serverNamePlaceholder')}
-                    {...register('displayName', {
-                      onChange: (event) => updateDisplayName(String(event.target.value)),
-                    })}
-                  />
-                </Field>
-                <Field
-                  fieldId="mcp-server-scope"
-                  label={t('mcp.scope')}
-                  message={errors.scope?.message}
-                >
-                  <select
-                    className={inputClassName}
-                    disabled={isSubmitting || isConfigLoading}
-                    id="mcp-server-scope"
-                    {...register('scope')}
-                  >
-                    <option value="global">{t('mcp.global')}</option>
-                    <option value="session">{t('mcp.session')}</option>
-                    <option value="agent">{t('mcp.agent')}</option>
-                  </select>
-                </Field>
-                <div className="space-y-2 text-sm">
-                  <span className="font-medium">{t('mcp.transport')}</span>
-                  <div className="grid grid-cols-2 rounded-md border border-border bg-background p-1">
-                    {(['stdio', 'http'] as const).map((kind) => (
-                      <button
-                        className={
-                          transportKind === kind
-                            ? 'rounded-sm bg-primary px-3 py-1.5 text-primary-foreground text-sm'
-                            : 'rounded-sm px-3 py-1.5 text-muted-foreground text-sm hover:bg-muted'
-                        }
-                        disabled={isSubmitting || isConfigLoading}
-                        key={kind}
-                        onClick={() => setValue('transportKind', kind)}
-                        type="button"
-                      >
-                        {t(`mcp.transportKind.${kind}`)}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {transportKind === 'stdio' ? (
+        {hasProjectScope ? (
+          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+            <DialogTrigger asChild>
+              <Button onClick={openCreateDialog} size="sm" type="button">
+                <Plus className="size-4" />
+                {t('mcp.addServer')}
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-h-[min(88vh,760px)] w-[min(calc(100vw-2rem),44rem)] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>{t('mcp.dialogTitle')}</DialogTitle>
+                <DialogDescription>{t('mcp.dialogDescription')}</DialogDescription>
+              </DialogHeader>
+              <form className="space-y-5" onSubmit={handleSubmit(submit)}>
                 <div className="grid gap-4 md:grid-cols-2">
                   <Field
-                    fieldId="mcp-server-command"
-                    label={t('mcp.command')}
-                    message={errors.command?.message}
+                    fieldId="mcp-server-name"
+                    label={t('mcp.serverName')}
+                    message={errors.displayName?.message}
                   >
                     <input
                       className={inputClassName}
                       disabled={isSubmitting || isConfigLoading}
-                      id="mcp-server-command"
-                      placeholder="node"
-                      {...register('command')}
+                      id="mcp-server-name"
+                      placeholder={t('mcp.serverNamePlaceholder')}
+                      {...register('displayName', {
+                        onChange: (event) => updateDisplayName(String(event.target.value)),
+                      })}
                     />
                   </Field>
                   <Field
-                    fieldId="mcp-server-working-dir"
-                    label={t('mcp.workingDir')}
-                    message={errors.workingDir?.message}
+                    fieldId="mcp-server-scope"
+                    label={t('mcp.scope')}
+                    message={errors.scope?.message}
                   >
-                    <input
+                    <select
                       className={inputClassName}
                       disabled={isSubmitting || isConfigLoading}
-                      id="mcp-server-working-dir"
-                      placeholder="."
-                      {...register('workingDir')}
-                    />
-                  </Field>
-                  <RepeatableField
-                    addLabel={t('mcp.addArgument')}
-                    disabled={isSubmitting || isConfigLoading}
-                    label={t('mcp.arguments')}
-                    message={formErrorMessage(errors.args)}
-                    onAdd={() => argumentFields.append({ value: '' })}
-                  >
-                    {argumentFields.fields.map((field, index) => (
-                      <div className="flex gap-2" key={field.id}>
-                        <input
-                          aria-label={t('mcp.argument')}
-                          className={inputClassName}
-                          disabled={isSubmitting || isConfigLoading}
-                          placeholder="mcp-server"
-                          {...register(`args.${index}.value`)}
-                        />
-                        <IconButton
-                          disabled={isSubmitting || isConfigLoading}
-                          label={t('mcp.removeArgument')}
-                          onClick={() => argumentFields.remove(index)}
-                        />
-                      </div>
-                    ))}
-                  </RepeatableField>
-                  <RepeatableField
-                    addLabel={t('mcp.addInheritedEnv')}
-                    disabled={isSubmitting || isConfigLoading}
-                    label={t('mcp.inheritEnv')}
-                    message={formErrorMessage(errors.inheritEnv)}
-                    onAdd={() => inheritEnvFields.append({ value: '' })}
-                  >
-                    {inheritEnvFields.fields.map((field, index) => (
-                      <div className="flex gap-2" key={field.id}>
-                        <input
-                          aria-label={t('mcp.inheritedEnvVar')}
-                          className={inputClassName}
-                          disabled={isSubmitting || isConfigLoading}
-                          placeholder="GITHUB_TOKEN"
-                          {...register(`inheritEnv.${index}.value`)}
-                        />
-                        <IconButton
-                          disabled={isSubmitting || isConfigLoading}
-                          label={t('mcp.removeInheritedEnv')}
-                          onClick={() => inheritEnvFields.remove(index)}
-                        />
-                      </div>
-                    ))}
-                  </RepeatableField>
-                  <div className="md:col-span-2">
-                    <RepeatableField
-                      addLabel={t('mcp.addEnv')}
-                      disabled={isSubmitting || isConfigLoading}
-                      label={t('mcp.env')}
-                      message={formErrorMessage(errors.env)}
-                      onAdd={() => envFields.append({ key: '', value: '' })}
+                      id="mcp-server-scope"
+                      {...register('scope')}
                     >
-                      {envFields.fields.map((field, index) => (
-                        <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto]" key={field.id}>
-                          <input
-                            aria-label={t('mcp.envName')}
-                            className={inputClassName}
-                            disabled={isSubmitting || isConfigLoading}
-                            placeholder="LOG_LEVEL"
-                            {...register(`env.${index}.key`)}
-                          />
-                          <input
-                            aria-label={t('mcp.envValue')}
-                            className={inputClassName}
-                            disabled={isSubmitting || isConfigLoading}
-                            placeholder="info"
-                            {...register(`env.${index}.value`)}
-                          />
-                          <IconButton
-                            disabled={isSubmitting || isConfigLoading}
-                            label={t('mcp.removeEnv')}
-                            onClick={() => envFields.remove(index)}
-                          />
-                        </div>
+                      <option value="global">{t('mcp.global')}</option>
+                      <option value="session">{t('mcp.session')}</option>
+                      <option value="agent">{t('mcp.agent')}</option>
+                    </select>
+                  </Field>
+                  <div className="space-y-2 text-sm">
+                    <span className="font-medium">{t('mcp.transport')}</span>
+                    <div className="grid grid-cols-2 rounded-md border border-border bg-background p-1">
+                      {(['stdio', 'http'] as const).map((kind) => (
+                        <button
+                          className={
+                            transportKind === kind
+                              ? 'rounded-sm bg-primary px-3 py-1.5 text-primary-foreground text-sm'
+                              : 'rounded-sm px-3 py-1.5 text-muted-foreground text-sm hover:bg-muted'
+                          }
+                          disabled={isSubmitting || isConfigLoading}
+                          key={kind}
+                          onClick={() => setValue('transportKind', kind)}
+                          type="button"
+                        >
+                          {t(`mcp.transportKind.${kind}`)}
+                        </button>
                       ))}
-                    </RepeatableField>
+                    </div>
                   </div>
                 </div>
-              ) : (
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="md:col-span-2">
+
+                {transportKind === 'stdio' ? (
+                  <div className="grid gap-4 md:grid-cols-2">
                     <Field
-                      fieldId="mcp-server-url"
-                      label={t('mcp.url')}
-                      message={errors.url?.message}
+                      fieldId="mcp-server-command"
+                      label={t('mcp.command')}
+                      message={errors.command?.message}
                     >
                       <input
                         className={inputClassName}
                         disabled={isSubmitting || isConfigLoading}
-                        id="mcp-server-url"
-                        placeholder="https://mcp.example.com/mcp"
-                        {...register('url')}
+                        id="mcp-server-command"
+                        placeholder="node"
+                        {...register('command')}
                       />
                     </Field>
-                  </div>
-                  <Field
-                    fieldId="mcp-server-bearer-token-env-var"
-                    label={t('mcp.bearerTokenEnvVar')}
-                    message={errors.bearerTokenEnvVar?.message}
-                  >
-                    <input
-                      className={inputClassName}
-                      disabled={isSubmitting || isConfigLoading}
-                      id="mcp-server-bearer-token-env-var"
-                      placeholder="MCP_BEARER_TOKEN"
-                      {...register('bearerTokenEnvVar')}
-                    />
-                  </Field>
-                  <RepeatableField
-                    addLabel={t('mcp.addHeader')}
-                    disabled={isSubmitting || isConfigLoading}
-                    label={t('mcp.headers')}
-                    message={formErrorMessage(errors.headers)}
-                    onAdd={() => headerFields.append({ key: '', value: '' })}
-                  >
-                    {headerFields.fields.map((field, index) => (
-                      <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto]" key={field.id}>
-                        <input
-                          aria-label={t('mcp.headerName')}
-                          className={inputClassName}
-                          disabled={isSubmitting || isConfigLoading}
-                          placeholder="X-Workspace"
-                          {...register(`headers.${index}.key`)}
-                        />
-                        <input
-                          aria-label={t('mcp.headerValue')}
-                          className={inputClassName}
-                          disabled={isSubmitting || isConfigLoading}
-                          placeholder="jyowo"
-                          {...register(`headers.${index}.value`)}
-                        />
-                        <IconButton
-                          disabled={isSubmitting || isConfigLoading}
-                          label={t('mcp.removeHeader')}
-                          onClick={() => headerFields.remove(index)}
-                        />
-                      </div>
-                    ))}
-                  </RepeatableField>
-                  <div className="md:col-span-2">
-                    <RepeatableField
-                      addLabel={t('mcp.addHeaderFromEnv')}
-                      disabled={isSubmitting || isConfigLoading}
-                      label={t('mcp.headersFromEnv')}
-                      message={formErrorMessage(errors.headersFromEnv)}
-                      onAdd={() => headerEnvFields.append({ envVar: '', key: '' })}
+                    <Field
+                      fieldId="mcp-server-working-dir"
+                      label={t('mcp.workingDir')}
+                      message={errors.workingDir?.message}
                     >
-                      {headerEnvFields.fields.map((field, index) => (
-                        <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto]" key={field.id}>
+                      <input
+                        className={inputClassName}
+                        disabled={isSubmitting || isConfigLoading}
+                        id="mcp-server-working-dir"
+                        placeholder="."
+                        {...register('workingDir')}
+                      />
+                    </Field>
+                    <RepeatableField
+                      addLabel={t('mcp.addArgument')}
+                      disabled={isSubmitting || isConfigLoading}
+                      label={t('mcp.arguments')}
+                      message={formErrorMessage(errors.args)}
+                      onAdd={() => argumentFields.append({ value: '' })}
+                    >
+                      {argumentFields.fields.map((field, index) => (
+                        <div className="flex gap-2" key={field.id}>
                           <input
-                            aria-label={t('mcp.envHeaderName')}
+                            aria-label={t('mcp.argument')}
                             className={inputClassName}
                             disabled={isSubmitting || isConfigLoading}
-                            placeholder="X-Api-Key"
-                            {...register(`headersFromEnv.${index}.key`)}
-                          />
-                          <input
-                            aria-label={t('mcp.envHeaderVariable')}
-                            className={inputClassName}
-                            disabled={isSubmitting || isConfigLoading}
-                            placeholder="MCP_CONTEXT7_TOKEN"
-                            {...register(`headersFromEnv.${index}.envVar`)}
+                            placeholder="mcp-server"
+                            {...register(`args.${index}.value`)}
                           />
                           <IconButton
                             disabled={isSubmitting || isConfigLoading}
-                            label={t('mcp.removeHeaderFromEnv')}
-                            onClick={() => headerEnvFields.remove(index)}
+                            label={t('mcp.removeArgument')}
+                            onClick={() => argumentFields.remove(index)}
                           />
                         </div>
                       ))}
                     </RepeatableField>
+                    <RepeatableField
+                      addLabel={t('mcp.addInheritedEnv')}
+                      disabled={isSubmitting || isConfigLoading}
+                      label={t('mcp.inheritEnv')}
+                      message={formErrorMessage(errors.inheritEnv)}
+                      onAdd={() => inheritEnvFields.append({ value: '' })}
+                    >
+                      {inheritEnvFields.fields.map((field, index) => (
+                        <div className="flex gap-2" key={field.id}>
+                          <input
+                            aria-label={t('mcp.inheritedEnvVar')}
+                            className={inputClassName}
+                            disabled={isSubmitting || isConfigLoading}
+                            placeholder="GITHUB_TOKEN"
+                            {...register(`inheritEnv.${index}.value`)}
+                          />
+                          <IconButton
+                            disabled={isSubmitting || isConfigLoading}
+                            label={t('mcp.removeInheritedEnv')}
+                            onClick={() => inheritEnvFields.remove(index)}
+                          />
+                        </div>
+                      ))}
+                    </RepeatableField>
+                    <div className="md:col-span-2">
+                      <RepeatableField
+                        addLabel={t('mcp.addEnv')}
+                        disabled={isSubmitting || isConfigLoading}
+                        label={t('mcp.env')}
+                        message={formErrorMessage(errors.env)}
+                        onAdd={() => envFields.append({ key: '', value: '' })}
+                      >
+                        {envFields.fields.map((field, index) => (
+                          <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto]" key={field.id}>
+                            <input
+                              aria-label={t('mcp.envName')}
+                              className={inputClassName}
+                              disabled={isSubmitting || isConfigLoading}
+                              placeholder="LOG_LEVEL"
+                              {...register(`env.${index}.key`, {
+                                onChange: () => setValue(`env.${index}.preserveExisting`, false),
+                              })}
+                            />
+                            <input
+                              aria-label={t('mcp.envValue')}
+                              className={inputClassName}
+                              disabled={isSubmitting || isConfigLoading}
+                              placeholder="info"
+                              {...register(`env.${index}.value`, {
+                                onChange: () => setValue(`env.${index}.preserveExisting`, false),
+                              })}
+                            />
+                            <IconButton
+                              disabled={isSubmitting || isConfigLoading}
+                              label={t('mcp.removeEnv')}
+                              onClick={() => envFields.remove(index)}
+                            />
+                          </div>
+                        ))}
+                      </RepeatableField>
+                    </div>
                   </div>
-                </div>
-              )}
+                ) : (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="md:col-span-2">
+                      <Field
+                        fieldId="mcp-server-url"
+                        label={t('mcp.url')}
+                        message={errors.url?.message}
+                      >
+                        <input
+                          className={inputClassName}
+                          disabled={isSubmitting || isConfigLoading}
+                          id="mcp-server-url"
+                          placeholder="https://mcp.example.com/mcp"
+                          {...register('url')}
+                        />
+                      </Field>
+                    </div>
+                    <Field
+                      fieldId="mcp-server-bearer-token-env-var"
+                      label={t('mcp.bearerTokenEnvVar')}
+                      message={errors.bearerTokenEnvVar?.message}
+                    >
+                      <input
+                        className={inputClassName}
+                        disabled={isSubmitting || isConfigLoading}
+                        id="mcp-server-bearer-token-env-var"
+                        placeholder="MCP_BEARER_TOKEN"
+                        {...register('bearerTokenEnvVar')}
+                      />
+                    </Field>
+                    <RepeatableField
+                      addLabel={t('mcp.addHeader')}
+                      disabled={isSubmitting || isConfigLoading}
+                      label={t('mcp.headers')}
+                      message={formErrorMessage(errors.headers)}
+                      onAdd={() => headerFields.append({ key: '', value: '' })}
+                    >
+                      {headerFields.fields.map((field, index) => (
+                        <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto]" key={field.id}>
+                          <input
+                            aria-label={t('mcp.headerName')}
+                            className={inputClassName}
+                            disabled={isSubmitting || isConfigLoading}
+                            placeholder="X-Workspace"
+                            {...register(`headers.${index}.key`, {
+                              onChange: () => setValue(`headers.${index}.preserveExisting`, false),
+                            })}
+                          />
+                          <input
+                            aria-label={t('mcp.headerValue')}
+                            className={inputClassName}
+                            disabled={isSubmitting || isConfigLoading}
+                            placeholder="jyowo"
+                            {...register(`headers.${index}.value`, {
+                              onChange: () => setValue(`headers.${index}.preserveExisting`, false),
+                            })}
+                          />
+                          <IconButton
+                            disabled={isSubmitting || isConfigLoading}
+                            label={t('mcp.removeHeader')}
+                            onClick={() => headerFields.remove(index)}
+                          />
+                        </div>
+                      ))}
+                    </RepeatableField>
+                    <div className="md:col-span-2">
+                      <RepeatableField
+                        addLabel={t('mcp.addHeaderFromEnv')}
+                        disabled={isSubmitting || isConfigLoading}
+                        label={t('mcp.headersFromEnv')}
+                        message={formErrorMessage(errors.headersFromEnv)}
+                        onAdd={() => headerEnvFields.append({ envVar: '', key: '' })}
+                      >
+                        {headerEnvFields.fields.map((field, index) => (
+                          <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto]" key={field.id}>
+                            <input
+                              aria-label={t('mcp.envHeaderName')}
+                              className={inputClassName}
+                              disabled={isSubmitting || isConfigLoading}
+                              placeholder="X-Api-Key"
+                              {...register(`headersFromEnv.${index}.key`)}
+                            />
+                            <input
+                              aria-label={t('mcp.envHeaderVariable')}
+                              className={inputClassName}
+                              disabled={isSubmitting || isConfigLoading}
+                              placeholder="MCP_CONTEXT7_TOKEN"
+                              {...register(`headersFromEnv.${index}.envVar`)}
+                            />
+                            <IconButton
+                              disabled={isSubmitting || isConfigLoading}
+                              label={t('mcp.removeHeaderFromEnv')}
+                              onClick={() => headerEnvFields.remove(index)}
+                            />
+                          </div>
+                        ))}
+                      </RepeatableField>
+                    </div>
+                  </div>
+                )}
 
-              {isConfigLoading ? (
-                <div className="rounded-md border border-border bg-background px-3 py-2 text-muted-foreground text-sm">
-                  {t('mcp.loadingConfig')}
-                </div>
-              ) : null}
+                {isConfigLoading ? (
+                  <div className="rounded-md border border-border bg-background px-3 py-2 text-muted-foreground text-sm">
+                    {t('mcp.loadingConfig')}
+                  </div>
+                ) : null}
 
-              {configLoadError ? <ErrorMessage>{t('mcp.configLoadError')}</ErrorMessage> : null}
+                {configLoadError ? <ErrorMessage>{t('mcp.configLoadError')}</ErrorMessage> : null}
 
-              {saveErrorMessage ? (
-                <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
-                  {saveErrorMessage}
-                </div>
-              ) : null}
+                {saveErrorMessage ? (
+                  <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
+                    {saveErrorMessage}
+                  </div>
+                ) : null}
 
-              <DialogFooter>
-                <Button
-                  disabled={isSubmitting || isConfigLoading}
-                  onClick={() => setDialogOpen(false)}
-                  type="button"
-                  variant="outline"
-                >
-                  {t('mcp.cancel')}
-                </Button>
-                <Button disabled={isSubmitting || isConfigLoading || configLoadError} type="submit">
-                  <Save className="size-4" />
-                  {isSubmitting ? t('mcp.saving') : t('mcp.save')}
-                </Button>
-              </DialogFooter>
-            </form>
-          </DialogContent>
-        </Dialog>
+                <DialogFooter>
+                  <Button
+                    disabled={isSubmitting || isConfigLoading}
+                    onClick={() => setDialogOpen(false)}
+                    type="button"
+                    variant="outline"
+                  >
+                    {t('mcp.cancel')}
+                  </Button>
+                  <Button
+                    disabled={isSubmitting || isConfigLoading || configLoadError}
+                    type="submit"
+                  >
+                    <Save className="size-4" />
+                    {isSubmitting ? t('mcp.saving') : t('mcp.save')}
+                  </Button>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
+        ) : null}
       </div>
 
       {serversQuery.isError ? <ErrorMessage>{t('mcp.loadError')}</ErrorMessage> : null}
@@ -768,6 +801,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           <div className="flex items-center gap-2">
             <Activity className="size-4 text-muted-foreground" />
             <h3 className="font-semibold text-sm">{t('mcp.diagnostics.title')}</h3>
+            <Badge variant="outline">{t('scope.runtimeDiagnostics')}</Badge>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <select
@@ -1049,14 +1083,21 @@ function singleValueRows(rows: Array<{ value: string }>): string[] {
   return rows.map((row) => row.value.trim()).filter(Boolean)
 }
 
-function nameValueRows(
-  rows: Array<{ key: string; value: string }>,
-): { ok: true; values: Array<{ key: string; value: string }> } | { ok: false } {
-  const values: Array<{ key: string; value: string }> = []
+function nameValueRows(rows: Array<{ key: string; preserveExisting?: boolean; value: string }>):
+  | {
+      ok: true
+      values: Array<{ key: string; preserveExisting: true } | { key: string; value: string }>
+    }
+  | { ok: false } {
+  const values: Array<{ key: string; preserveExisting: true } | { key: string; value: string }> = []
   for (const row of rows) {
     const key = row.key.trim()
     const value = row.value.trim()
     if (!key && !value) {
+      continue
+    }
+    if (key && !value && row.preserveExisting) {
+      values.push({ key, preserveExisting: true })
       continue
     }
     if (!key || !value) {
@@ -1091,7 +1132,11 @@ function mcpFormValuesFromConfig(server: McpServerConfig): MCPServerFormValues {
       ...defaultFormValues,
       bearerTokenEnvVar: server.transport.bearerTokenEnvVar ?? '',
       displayName: server.displayName,
-      headers: server.transport.headers.map((header) => ({ ...header })),
+      headers: server.transport.headers.map((header) => ({
+        key: header.key,
+        preserveExisting: header.hasValue && header.value == null,
+        value: header.value ?? '',
+      })),
       headersFromEnv: server.transport.headersFromEnv.map((header) => ({ ...header })),
       scope: server.scope,
       transportKind: 'http',
@@ -1104,7 +1149,11 @@ function mcpFormValuesFromConfig(server: McpServerConfig): MCPServerFormValues {
     args: server.transport.args.map((value) => ({ value })),
     command: server.transport.command,
     displayName: server.displayName,
-    env: server.transport.env.map((item) => ({ ...item })),
+    env: server.transport.env.map((item) => ({
+      key: item.key,
+      preserveExisting: item.hasValue && item.value == null,
+      value: item.value ?? '',
+    })),
     inheritEnv: server.transport.inheritEnv.map((value) => ({ value })),
     scope: server.scope,
     transportKind: 'stdio',

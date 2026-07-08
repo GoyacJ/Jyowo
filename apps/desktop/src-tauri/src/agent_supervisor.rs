@@ -6,16 +6,18 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    AgentToolPolicy, BackgroundAgentId, BackgroundAgentState, BackgroundAgentToolSessionSnapshot,
-    ConversationTurnInput, InteractivityLevel, ModelProtocol, PermissionActorSource,
-    PermissionMode, RedactPatternSet, RedactRules, RedactScope, TeamId, ToolProfile,
-    ToolSearchMode,
+    AgentProfile, AgentToolPolicy, BackgroundAgentId, BackgroundAgentState,
+    BackgroundAgentToolSessionSnapshot, ConversationTurnInput, InteractivityLevel, ModelProtocol,
+    PermissionActorSource, PermissionMode, RedactPatternSet, RedactRules, RedactScope, Redactor,
+    TeamId, ToolProfile, ToolSearchMode,
 };
 use jyowo_harness_sdk::builtin::{DefaultRedactor, JsonlEventStore};
-use jyowo_harness_sdk::ext::{EventStore, Redactor, SessionId, TenantId};
+use jyowo_harness_sdk::ext::{EventStore, SessionId, TenantId};
 use jyowo_harness_sdk::{
+    builtin_agent_profiles, resolve_agent_runtime_policy, AgentCapabilitiesInput,
     AgentRuntimeStore, BackgroundAgentManager, BackgroundAgentRecord, ConversationRunOptions,
-    ConversationTurnRequest, Harness, SessionOptions, StreamPermissionRuntime,
+    ConversationTurnRequest, ExecutionSettingsAgentInput, Harness, SessionOptions,
+    StreamPermissionRuntime,
 };
 use parking_lot::Mutex as ParkingMutex;
 use serde::{Deserialize, Serialize};
@@ -31,11 +33,96 @@ const SUPERVISOR_TOKEN_FILE: &str = "agent-supervisor.token";
 const SUPERVISOR_TOKEN_ENV: &str = "JYOWO_AGENT_SUPERVISOR_TOKEN";
 const SUPERVISOR_TOKEN_EPOCH_ENV: &str = "JYOWO_AGENT_SUPERVISOR_TOKEN_EPOCH";
 const SIDECAR_NAME: &str = "jyowo-agent-supervisor";
+const SIDECAR_RUNTIME_ARG: &str = "--runtime-root";
 const SIDECAR_WORKSPACE_ARG: &str = "--workspace-root";
+const SIDECAR_CONVERSATION_ARG: &str = "--conversation-id";
 const CONTROL_READ_LIMIT: usize = 8192;
 const SIDECAR_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 pub const DEFAULT_HEARTBEAT_STALE_AFTER: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSupervisorScope {
+    runtime_root: PathBuf,
+    workspace_root: Option<PathBuf>,
+    conversation_id: Option<SessionId>,
+}
+
+impl AgentSupervisorScope {
+    #[must_use]
+    pub fn project(workspace_root: impl Into<PathBuf>) -> Self {
+        let workspace_root = workspace_root.into();
+        let workspace_root = workspace_root.canonicalize().unwrap_or(workspace_root);
+        Self {
+            runtime_root: workspace_root.join(".jyowo").join("runtime"),
+            workspace_root: Some(workspace_root),
+            conversation_id: None,
+        }
+    }
+
+    #[must_use]
+    pub fn runtime(runtime_root: impl Into<PathBuf>) -> Self {
+        Self {
+            runtime_root: runtime_root.into(),
+            workspace_root: None,
+            conversation_id: None,
+        }
+    }
+
+    #[must_use]
+    pub fn runtime_conversation(
+        runtime_root: impl Into<PathBuf>,
+        conversation_id: SessionId,
+    ) -> Self {
+        Self {
+            runtime_root: runtime_root.into(),
+            workspace_root: None,
+            conversation_id: Some(conversation_id),
+        }
+    }
+
+    #[must_use]
+    pub fn runtime_root(&self) -> &Path {
+        &self.runtime_root
+    }
+
+    #[must_use]
+    pub fn workspace_root(&self) -> Option<&Path> {
+        self.workspace_root.as_deref()
+    }
+
+    #[must_use]
+    pub fn conversation_id(&self) -> Option<SessionId> {
+        self.conversation_id
+    }
+
+    fn control_cwd(&self) -> &Path {
+        self.workspace_root
+            .as_deref()
+            .unwrap_or_else(|| self.runtime_root.as_path())
+    }
+
+    fn session_cwd(&self, session_id: SessionId) -> PathBuf {
+        self.workspace_root.clone().unwrap_or_else(|| {
+            self.runtime_root
+                .join("workdir")
+                .join(session_id.to_string())
+        })
+    }
+
+    fn identity(&self) -> String {
+        let scope = match &self.workspace_root {
+            Some(workspace_root) => format!("project:{}", workspace_root.display()),
+            None => match self.conversation_id {
+                Some(conversation_id) => {
+                    format!("runtime:{}:{conversation_id}", self.runtime_root.display())
+                }
+                None => format!("runtime:{}", self.runtime_root.display()),
+            },
+        };
+        blake3::hash(scope.as_bytes()).to_hex().to_string()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,6 +183,7 @@ struct SupervisorBackend {
     store: Arc<AgentRuntimeStore>,
     harness: Arc<Harness>,
     active_runs: Arc<ParkingMutex<HashMap<String, ActiveBackgroundRun>>>,
+    scope: AgentSupervisorScope,
     _runtime_state: crate::commands::DesktopRuntimeState,
 }
 
@@ -169,10 +257,15 @@ impl BackgroundSupervisorSession {
         }
     }
 
-    fn into_session_options(self, workspace_root: &Path) -> SessionOptions {
-        let mut options = SessionOptions::new(workspace_root);
+    fn into_session_options(self, scope: &AgentSupervisorScope) -> SessionOptions {
+        let session_id = self.session_id;
+        let mut options = SessionOptions::new(scope.session_cwd(session_id));
+        options.agent_runtime_root = Some(scope.runtime_root().to_path_buf());
+        if let Some(workspace_root) = scope.workspace_root() {
+            options.project_workspace_root = Some(workspace_root.to_path_buf());
+        }
         options.tenant_id = self.tenant_id;
-        options.session_id = self.session_id;
+        options.session_id = session_id;
         options.tool_search = self.tool_search;
         options.tool_profile = self.tool_profile;
         options.model_id = self.model_id;
@@ -195,12 +288,12 @@ fn default_background_supervisor_interactivity() -> InteractivityLevel {
 }
 
 impl BackgroundSupervisorExecution {
-    fn session_options_for_workspace(
+    fn session_options_for_scope(
         &self,
-        workspace_root: &Path,
+        scope: &AgentSupervisorScope,
     ) -> Result<SessionOptions, AgentSupervisorError> {
         if let Some(session) = self.session.clone() {
-            return Ok(session.into_session_options(workspace_root));
+            return Ok(session.into_session_options(scope));
         }
         Err(AgentSupervisorError::Runtime(
             "background supervisor session missing".to_owned(),
@@ -259,8 +352,8 @@ pub enum AgentSupervisorError {
 pub async fn start_agent_supervisor(
     workspace_root: PathBuf,
 ) -> Result<AgentSupervisorHandle, AgentSupervisorError> {
-    start_agent_supervisor_with_timing(
-        workspace_root,
+    start_agent_supervisor_with_scope_timing(
+        AgentSupervisorScope::project(workspace_root),
         DEFAULT_HEARTBEAT_INTERVAL,
         DEFAULT_HEARTBEAT_STALE_AFTER,
     )
@@ -272,25 +365,38 @@ pub async fn start_agent_supervisor_with_timing(
     heartbeat_interval: Duration,
     stale_after: Duration,
 ) -> Result<AgentSupervisorHandle, AgentSupervisorError> {
-    let token = create_supervisor_token(&workspace_root)?;
-    start_agent_supervisor_with_token(workspace_root, heartbeat_interval, stale_after, token).await
+    start_agent_supervisor_with_scope_timing(
+        AgentSupervisorScope::project(workspace_root),
+        heartbeat_interval,
+        stale_after,
+    )
+    .await
+}
+
+pub async fn start_agent_supervisor_with_scope_timing(
+    scope: AgentSupervisorScope,
+    heartbeat_interval: Duration,
+    stale_after: Duration,
+) -> Result<AgentSupervisorHandle, AgentSupervisorError> {
+    let token = create_supervisor_token_scope(&scope)?;
+    start_agent_supervisor_with_token(scope, heartbeat_interval, stale_after, token).await
 }
 
 async fn start_agent_supervisor_with_token(
-    workspace_root: PathBuf,
+    scope: AgentSupervisorScope,
     heartbeat_interval: Duration,
     stale_after: Duration,
     token: SupervisorToken,
 ) -> Result<AgentSupervisorHandle, AgentSupervisorError> {
-    let backend = open_supervisor_backend(&workspace_root).await?;
-    recover_if_stale(&workspace_root, stale_after).await?;
+    let backend = open_supervisor_backend_for_scope(&scope).await?;
+    recover_if_stale_scope(&scope, stale_after).await?;
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let control_addr = listener.local_addr()?;
-    let lock_path = supervisor_lock_path(&workspace_root);
+    let lock_path = supervisor_lock_path_for_scope(&scope);
     let lock = AgentSupervisorLockFile {
         status: "running".to_owned(),
-        workspace_id: workspace_id(&workspace_root),
+        workspace_id: scope.identity(),
         token_hash: token.token_hash.clone(),
         token_epoch: token.token_epoch,
         pid: std::process::id(),
@@ -302,7 +408,7 @@ async fn start_agent_supervisor_with_token(
 
     let (shutdown, shutdown_rx) = watch::channel(false);
     tokio::spawn(run_supervisor_loop(
-        workspace_root,
+        scope,
         lock_path.clone(),
         lock,
         listener,
@@ -322,12 +428,18 @@ async fn start_agent_supervisor_with_token(
 }
 
 pub async fn run_supervisor_process(workspace_root: PathBuf) -> Result<(), AgentSupervisorError> {
-    let token = match supervisor_token_from_env(&workspace_root)? {
+    run_supervisor_process_for_scope(AgentSupervisorScope::project(workspace_root)).await
+}
+
+pub async fn run_supervisor_process_for_scope(
+    scope: AgentSupervisorScope,
+) -> Result<(), AgentSupervisorError> {
+    let token = match supervisor_token_from_env_scope(&scope)? {
         Some(token) => token,
-        None => create_supervisor_token(&workspace_root)?,
+        None => create_supervisor_token_scope(&scope)?,
     };
     let handle = start_agent_supervisor_with_token(
-        workspace_root,
+        scope,
         DEFAULT_HEARTBEAT_INTERVAL,
         DEFAULT_HEARTBEAT_STALE_AFTER,
         token,
@@ -343,19 +455,27 @@ pub async fn launch_agent_supervisor_sidecar<R: Runtime>(
     app: &tauri::AppHandle<R>,
     workspace_root: PathBuf,
 ) -> Result<(), AgentSupervisorError> {
-    if reconnect_to_existing_supervisor(&workspace_root, DEFAULT_HEARTBEAT_STALE_AFTER).await? {
+    launch_agent_supervisor_sidecar_for_scope(app, AgentSupervisorScope::project(workspace_root))
+        .await
+}
+
+pub async fn launch_agent_supervisor_sidecar_for_scope<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    scope: AgentSupervisorScope,
+) -> Result<(), AgentSupervisorError> {
+    if reconnect_to_existing_supervisor_scope(&scope, DEFAULT_HEARTBEAT_STALE_AFTER).await? {
         return Ok(());
     }
 
-    let token = create_supervisor_token(&workspace_root)?;
+    let token = create_supervisor_token_scope(&scope)?;
     let command = app
         .shell()
         .sidecar(SIDECAR_NAME)
         .map_err(|error| AgentSupervisorError::Sidecar(error.to_string()))?
-        .args(supervisor_sidecar_args(&workspace_root))
+        .args(supervisor_sidecar_args_for_scope(&scope))
         .env(SUPERVISOR_TOKEN_ENV, &token.token)
         .env(SUPERVISOR_TOKEN_EPOCH_ENV, token.token_epoch.to_string())
-        .current_dir(&workspace_root);
+        .current_dir(scope.control_cwd());
     let (mut events, child) = command
         .spawn()
         .map_err(|error| AgentSupervisorError::Sidecar(error.to_string()))?;
@@ -376,39 +496,59 @@ pub async fn launch_agent_supervisor_sidecar<R: Runtime>(
         }
     });
 
-    wait_for_supervisor_lock(&workspace_root, &token.token_hash, SIDECAR_STARTUP_TIMEOUT).await
+    wait_for_supervisor_lock_scope(&scope, &token.token_hash, SIDECAR_STARTUP_TIMEOUT).await
 }
 
 pub fn supervisor_sidecar_args(workspace_root: &Path) -> Vec<String> {
+    supervisor_sidecar_args_for_scope(&AgentSupervisorScope::project(workspace_root.to_path_buf()))
+}
+
+pub fn supervisor_sidecar_args_for_scope(scope: &AgentSupervisorScope) -> Vec<String> {
+    let mut args = vec![
+        SIDECAR_RUNTIME_ARG.to_owned(),
+        scope.runtime_root().display().to_string(),
+    ];
+    if let Some(workspace_root) = scope.workspace_root() {
+        args.push(SIDECAR_WORKSPACE_ARG.to_owned());
+        args.push(workspace_root.display().to_string());
+    } else if let Some(conversation_id) = scope.conversation_id() {
+        args.push(SIDECAR_CONVERSATION_ARG.to_owned());
+        args.push(conversation_id.to_string());
+    }
+    args
+}
+
+pub fn supervisor_lock_path(workspace_root: &Path) -> PathBuf {
+    supervisor_lock_path_for_scope(&AgentSupervisorScope::project(workspace_root.to_path_buf()))
+}
+
+fn supervisor_lock_path_for_scope(scope: &AgentSupervisorScope) -> PathBuf {
+    scope.runtime_root().join(SUPERVISOR_LOCK_FILE)
+}
+
+fn supervisor_token_path_for_scope(scope: &AgentSupervisorScope) -> PathBuf {
+    scope.runtime_root().join(SUPERVISOR_TOKEN_FILE)
+}
+
+pub fn legacy_supervisor_sidecar_args(workspace_root: &Path) -> Vec<String> {
     vec![
         SIDECAR_WORKSPACE_ARG.to_owned(),
         workspace_root.display().to_string(),
     ]
 }
 
-pub fn supervisor_lock_path(workspace_root: &Path) -> PathBuf {
-    workspace_root
-        .join(".jyowo")
-        .join("runtime")
-        .join(SUPERVISOR_LOCK_FILE)
-}
-
-fn supervisor_token_path(workspace_root: &Path) -> PathBuf {
-    workspace_root
-        .join(".jyowo")
-        .join("runtime")
-        .join(SUPERVISOR_TOKEN_FILE)
-}
-
 pub fn read_supervisor_lock(
     workspace_root: &Path,
 ) -> Result<Option<AgentSupervisorLockFile>, AgentSupervisorError> {
-    let path = supervisor_lock_path(workspace_root);
-    if !path.is_file() {
-        return Ok(None);
-    }
-    let contents = std::fs::read_to_string(path)?;
-    Ok(Some(serde_json::from_str(&contents)?))
+    read_supervisor_lock_scope(&AgentSupervisorScope::project(workspace_root.to_path_buf()))
+}
+
+pub fn read_supervisor_lock_scope(
+    scope: &AgentSupervisorScope,
+) -> Result<Option<AgentSupervisorLockFile>, AgentSupervisorError> {
+    let path = supervisor_lock_path_for_scope(scope);
+    crate::commands::stores::read_json_file(&path, "agent supervisor lock")
+        .map_err(agent_supervisor_store_error)
 }
 
 pub fn supervisor_lock_is_fresh(lock: &AgentSupervisorLockFile, stale_after: Duration) -> bool {
@@ -425,35 +565,56 @@ pub async fn recover_if_stale(
     workspace_root: &Path,
     stale_after: Duration,
 ) -> Result<(), AgentSupervisorError> {
-    let Some(lock) = read_supervisor_lock(workspace_root)? else {
+    recover_if_stale_scope(
+        &AgentSupervisorScope::project(workspace_root.to_path_buf()),
+        stale_after,
+    )
+    .await
+}
+
+pub async fn recover_if_stale_scope(
+    scope: &AgentSupervisorScope,
+    stale_after: Duration,
+) -> Result<(), AgentSupervisorError> {
+    let Some(lock) = read_supervisor_lock_scope(scope)? else {
         return Ok(());
     };
     if supervisor_lock_is_fresh(&lock, stale_after) {
         return Ok(());
     }
-    mark_running_agents_interrupted(workspace_root, "agent supervisor heartbeat missed").await
+    mark_running_agents_interrupted_scope(scope, "agent supervisor heartbeat missed").await
 }
 
 pub async fn reconnect_to_existing_supervisor(
     workspace_root: &Path,
     stale_after: Duration,
 ) -> Result<bool, AgentSupervisorError> {
-    let Some(lock) = read_supervisor_lock(workspace_root)? else {
+    reconnect_to_existing_supervisor_scope(
+        &AgentSupervisorScope::project(workspace_root.to_path_buf()),
+        stale_after,
+    )
+    .await
+}
+
+pub async fn reconnect_to_existing_supervisor_scope(
+    scope: &AgentSupervisorScope,
+    stale_after: Duration,
+) -> Result<bool, AgentSupervisorError> {
+    let Some(lock) = read_supervisor_lock_scope(scope)? else {
         return Ok(false);
     };
     if !supervisor_lock_is_fresh(&lock, stale_after) {
-        mark_running_agents_interrupted(workspace_root, "agent supervisor heartbeat missed")
-            .await?;
+        mark_running_agents_interrupted_scope(scope, "agent supervisor heartbeat missed").await?;
         return Ok(false);
     }
-    let Some(token) = read_supervisor_token(workspace_root)? else {
+    let Some(token) = read_supervisor_token_scope(scope)? else {
         return Ok(false);
     };
     if token.workspace_id != lock.workspace_id
         || token.token_epoch != lock.token_epoch
         || token.token_hash != lock.token_hash
         || hash_token(&token.token) != lock.token_hash
-        || lock.workspace_id != workspace_id(workspace_root)
+        || lock.workspace_id != scope.identity()
     {
         return Ok(false);
     }
@@ -467,8 +628,8 @@ pub async fn reconnect_to_existing_supervisor(
     {
         Ok(response) if response.ok && response.status == "running" => Ok(true),
         Ok(_) | Err(_) => {
-            mark_running_agents_interrupted(
-                workspace_root,
+            mark_running_agents_interrupted_scope(
+                scope,
                 "agent supervisor control channel unavailable",
             )
             .await?;
@@ -481,13 +642,25 @@ pub async fn mark_running_agents_interrupted(
     workspace_root: &Path,
     reason: &str,
 ) -> Result<(), AgentSupervisorError> {
+    mark_running_agents_interrupted_scope(
+        &AgentSupervisorScope::project(workspace_root.to_path_buf()),
+        reason,
+    )
+    .await
+}
+
+pub async fn mark_running_agents_interrupted_scope(
+    scope: &AgentSupervisorScope,
+    reason: &str,
+) -> Result<(), AgentSupervisorError> {
+    let runtime_dir = scope.runtime_root();
     let store = Arc::new(
-        AgentRuntimeStore::open(workspace_root)
+        AgentRuntimeStore::open_runtime_dir(runtime_dir)
             .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?,
     );
     let event_store = Arc::new(
         JsonlEventStore::open(
-            workspace_root.join(".jyowo").join("runtime").join("events"),
+            runtime_dir.join("events"),
             Arc::new(DefaultRedactor::default()),
         )
         .await
@@ -523,25 +696,41 @@ pub async fn mark_running_agents_interrupted(
     Ok(())
 }
 
-async fn open_supervisor_backend(
-    workspace_root: &Path,
+async fn open_supervisor_backend_for_scope(
+    scope: &AgentSupervisorScope,
 ) -> Result<SupervisorBackend, AgentSupervisorError> {
+    let runtime_dir = scope.runtime_root();
     let store = Arc::new(
-        AgentRuntimeStore::open(workspace_root)
+        AgentRuntimeStore::open_runtime_dir(runtime_dir)
             .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?,
     );
     let stream_permission_runtime = Arc::new(StreamPermissionRuntime::default());
-    let runtime_state = crate::commands::runtime_state_from_stream_permission_runtime(
-        workspace_root.to_path_buf(),
-        stream_permission_runtime,
-    )
-    .await
-    .map_err(|error| AgentSupervisorError::Runtime(error.message))?;
+    let runtime_state = if let Some(workspace_root) = scope.workspace_root() {
+        crate::commands::runtime_state_from_stream_permission_runtime(
+            workspace_root.to_path_buf(),
+            stream_permission_runtime,
+        )
+        .await
+        .map_err(|error| AgentSupervisorError::Runtime(error.message))?
+    } else {
+        let conversation_id = scope.conversation_id().ok_or_else(|| {
+            AgentSupervisorError::Runtime(
+                "runtime supervisor scope missing conversation id".to_owned(),
+            )
+        })?;
+        crate::commands::runtime_state_for_global_conversation_with_runtime_root(
+            conversation_id,
+            runtime_dir.to_path_buf(),
+            stream_permission_runtime,
+        )
+        .await
+        .map_err(|error| AgentSupervisorError::Runtime(error.message))?
+    };
     let harness = runtime_state.harness().ok_or_else(|| {
         AgentSupervisorError::Runtime("agent supervisor SDK harness is unavailable".to_owned())
     })?;
     JsonlEventStore::open(
-        workspace_root.join(".jyowo").join("runtime").join("events"),
+        runtime_dir.join("events"),
         Arc::new(DefaultRedactor::default()),
     )
     .await
@@ -550,12 +739,13 @@ async fn open_supervisor_backend(
         store,
         harness,
         active_runs: Arc::new(ParkingMutex::new(HashMap::new())),
+        scope: scope.clone(),
         _runtime_state: runtime_state,
     })
 }
 
 async fn run_supervisor_loop(
-    workspace_root: PathBuf,
+    scope: AgentSupervisorScope,
     lock_path: PathBuf,
     mut lock: AgentSupervisorLockFile,
     listener: TcpListener,
@@ -570,7 +760,7 @@ async fn run_supervisor_loop(
             _ = heartbeat.tick() => {
                 lock.heartbeat_at = Utc::now();
                 let _ = write_supervisor_lock(&lock_path, &lock);
-                run_background_supervisor_scan(&workspace_root, &backend).await;
+                run_background_supervisor_scan(&scope, &backend).await;
             }
             accepted = listener.accept() => {
                 if let Ok((stream, peer)) = accepted {
@@ -578,14 +768,14 @@ async fn run_supervisor_loop(
                         stream,
                         peer,
                         token_hash.clone(),
-                        workspace_root.clone(),
+                        scope.clone(),
                         backend.clone(),
                     ));
                 }
             }
             changed = shutdown.changed() => {
                 if changed.is_ok() && *shutdown.borrow() {
-                    let _ = write_stopped_lock(&workspace_root, &lock_path, &mut lock);
+                    let _ = write_stopped_lock_scope(&scope, &lock_path, &mut lock);
                     break;
                 }
             }
@@ -597,7 +787,7 @@ async fn handle_control_connection(
     mut stream: TcpStream,
     peer: SocketAddr,
     token_hash: String,
-    workspace_root: PathBuf,
+    scope: AgentSupervisorScope,
     backend: SupervisorBackend,
 ) {
     if !peer.ip().is_loopback() {
@@ -620,7 +810,7 @@ async fn handle_control_connection(
     let status = match request.request {
         SupervisorControlRequestKind::Status => "running",
         SupervisorControlRequestKind::Wake => {
-            run_background_supervisor_scan(&workspace_root, &backend).await;
+            run_background_supervisor_scan(&scope, &backend).await;
             "running"
         }
         SupervisorControlRequestKind::CancelBackgroundAgent {
@@ -643,13 +833,19 @@ async fn handle_control_connection(
 }
 
 pub async fn wake_agent_supervisor(workspace_root: &Path) -> Result<bool, AgentSupervisorError> {
-    let Some(lock) = read_supervisor_lock(workspace_root)? else {
+    wake_agent_supervisor_scope(&AgentSupervisorScope::project(workspace_root.to_path_buf())).await
+}
+
+pub async fn wake_agent_supervisor_scope(
+    scope: &AgentSupervisorScope,
+) -> Result<bool, AgentSupervisorError> {
+    let Some(lock) = read_supervisor_lock_scope(scope)? else {
         return Ok(false);
     };
-    let Some(token) = read_supervisor_token(workspace_root)? else {
+    let Some(token) = read_supervisor_token_scope(scope)? else {
         return Ok(false);
     };
-    if lock.workspace_id != workspace_id(workspace_root)
+    if lock.workspace_id != scope.identity()
         || token.workspace_id != lock.workspace_id
         || token.token_epoch != lock.token_epoch
         || token.token_hash != lock.token_hash
@@ -670,12 +866,40 @@ pub async fn wake_agent_supervisor(workspace_root: &Path) -> Result<bool, AgentS
     }
 }
 
+pub fn agent_supervisor_available_for_scope(scope: &AgentSupervisorScope) -> bool {
+    let Ok(Some(lock)) = read_supervisor_lock_scope(scope) else {
+        return false;
+    };
+    if !supervisor_lock_is_fresh(&lock, DEFAULT_HEARTBEAT_STALE_AFTER) {
+        return false;
+    }
+    let Ok(Some(token)) = read_supervisor_token_scope(scope) else {
+        return false;
+    };
+    token.workspace_id == lock.workspace_id
+        && token.token_epoch == lock.token_epoch
+        && token.token_hash == lock.token_hash
+        && hash_token(&token.token) == lock.token_hash
+        && lock.workspace_id == scope.identity()
+}
+
 pub async fn cancel_background_agent_run(
     workspace_root: &Path,
     background_agent_id: &str,
 ) -> Result<bool, AgentSupervisorError> {
-    send_background_agent_control(
-        workspace_root,
+    cancel_background_agent_run_scope(
+        &AgentSupervisorScope::project(workspace_root.to_path_buf()),
+        background_agent_id,
+    )
+    .await
+}
+
+pub async fn cancel_background_agent_run_scope(
+    scope: &AgentSupervisorScope,
+    background_agent_id: &str,
+) -> Result<bool, AgentSupervisorError> {
+    send_background_agent_control_scope(
+        scope,
         SupervisorControlRequestKind::CancelBackgroundAgent {
             background_agent_id: background_agent_id.to_owned(),
         },
@@ -687,8 +911,19 @@ pub async fn pause_background_agent_run(
     workspace_root: &Path,
     background_agent_id: &str,
 ) -> Result<bool, AgentSupervisorError> {
-    send_background_agent_control(
-        workspace_root,
+    pause_background_agent_run_scope(
+        &AgentSupervisorScope::project(workspace_root.to_path_buf()),
+        background_agent_id,
+    )
+    .await
+}
+
+pub async fn pause_background_agent_run_scope(
+    scope: &AgentSupervisorScope,
+    background_agent_id: &str,
+) -> Result<bool, AgentSupervisorError> {
+    send_background_agent_control_scope(
+        scope,
         SupervisorControlRequestKind::PauseBackgroundAgent {
             background_agent_id: background_agent_id.to_owned(),
         },
@@ -700,7 +935,17 @@ pub fn requeue_background_agent_supervisor_payload(
     workspace_root: &Path,
     background_agent_id: &str,
 ) -> Result<bool, AgentSupervisorError> {
-    let store = AgentRuntimeStore::open(workspace_root)
+    requeue_background_agent_supervisor_payload_scope(
+        &AgentSupervisorScope::project(workspace_root.to_path_buf()),
+        background_agent_id,
+    )
+}
+
+pub fn requeue_background_agent_supervisor_payload_scope(
+    scope: &AgentSupervisorScope,
+    background_agent_id: &str,
+) -> Result<bool, AgentSupervisorError> {
+    let store = AgentRuntimeStore::open_runtime_dir(scope.runtime_root())
         .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?;
     let Some(record) = store
         .get_background_agent(background_agent_id)
@@ -723,17 +968,17 @@ pub fn requeue_background_agent_supervisor_payload(
     Ok(true)
 }
 
-async fn send_background_agent_control(
-    workspace_root: &Path,
+async fn send_background_agent_control_scope(
+    scope: &AgentSupervisorScope,
     request: SupervisorControlRequestKind,
 ) -> Result<bool, AgentSupervisorError> {
-    let Some(lock) = read_supervisor_lock(workspace_root)? else {
+    let Some(lock) = read_supervisor_lock_scope(scope)? else {
         return Ok(false);
     };
-    let Some(token) = read_supervisor_token(workspace_root)? else {
+    let Some(token) = read_supervisor_token_scope(scope)? else {
         return Ok(false);
     };
-    if lock.workspace_id != workspace_id(workspace_root)
+    if lock.workspace_id != scope.identity()
         || token.workspace_id != lock.workspace_id
         || token.token_epoch != lock.token_epoch
         || token.token_hash != lock.token_hash
@@ -771,7 +1016,7 @@ async fn cancel_active_background_run(
     Ok(true)
 }
 
-async fn run_background_supervisor_scan(workspace_root: &Path, backend: &SupervisorBackend) {
+async fn run_background_supervisor_scan(scope: &AgentSupervisorScope, backend: &SupervisorBackend) {
     let Ok(records) = backend.store.list_background_agents(false) else {
         return;
     };
@@ -787,15 +1032,15 @@ async fn run_background_supervisor_scan(workspace_root: &Path, backend: &Supervi
             continue;
         }
         let backend = backend.clone();
-        let workspace_root = workspace_root.to_path_buf();
+        let scope = scope.clone();
         tokio::spawn(async move {
-            let _ = execute_background_record(&workspace_root, backend, record).await;
+            let _ = execute_background_record(&scope, backend, record).await;
         });
     }
 }
 
 async fn execute_background_record(
-    workspace_root: &Path,
+    scope: &AgentSupervisorScope,
     backend: SupervisorBackend,
     record: BackgroundAgentRecord,
 ) -> Result<(), AgentSupervisorError> {
@@ -828,7 +1073,7 @@ async fn execute_background_record(
     if execution.status != "queued" {
         return Ok(());
     }
-    let session_options = match execution.session_options_for_workspace(workspace_root) {
+    let session_options = match execution.session_options_for_scope(scope) {
         Ok(options) => options,
         Err(_) => {
             fail_background_record(
@@ -894,11 +1139,23 @@ async fn run_claimed_background_record(
         .ok_or_else(|| {
             AgentSupervisorError::Runtime("agent supervisor runtime is unavailable".to_owned())
         })?;
+    let session_id = session_options.session_id;
+    let agent_tool_policy =
+        resolve_background_supervisor_agent_tool_policy(backend, &execution, session_id)?;
+    let layout = if let Some(workspace_root) = backend.scope.workspace_root() {
+        crate::commands::project_runtime_layout(workspace_root)
+    } else {
+        crate::commands::global_conversation_runtime_layout_with_runtime_root(
+            session_id,
+            backend.scope.runtime_root().to_path_buf(),
+        )
+    };
     let (harness, model_id, protocol) = crate::commands::build_desktop_harness(
-        backend._runtime_state.workspace_root(),
+        &layout,
         Arc::clone(stream_permission_runtime),
         Some(&execution.model_config_id),
         Arc::clone(&backend._runtime_state.provider_capability_routes),
+        Some(Arc::clone(&backend._runtime_state.provider_settings_store)),
     )
     .await
     .map_err(|error| AgentSupervisorError::Runtime(error.message))?;
@@ -906,6 +1163,7 @@ async fn run_claimed_background_record(
     let mut session_options = session_options;
     session_options.model_id = Some(model_id.clone());
     session_options.protocol = Some(protocol);
+    session_options.agent_profiles = background_agent_profiles(backend)?;
     harness
         .open_or_create_conversation_session(session_options.clone())
         .await
@@ -923,7 +1181,7 @@ async fn run_claimed_background_record(
         .with_model_id(model_id)
         .with_protocol(protocol)
         .with_permission_mode(execution.permission_mode);
-    run_options.agent_tool_policy = Some(execution.agent_tool_policy);
+    run_options.agent_tool_policy = Some(agent_tool_policy);
     let after_event_id =
         crate::commands::conversation_tail_event_id(&harness, session_options.clone())
             .await
@@ -1023,6 +1281,72 @@ async fn run_claimed_background_record(
         .await
         .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))?;
     Ok(())
+}
+
+fn resolve_background_supervisor_agent_tool_policy(
+    backend: &SupervisorBackend,
+    execution: &BackgroundSupervisorExecution,
+    conversation_id: SessionId,
+) -> Result<AgentToolPolicy, AgentSupervisorError> {
+    let settings = backend
+        ._runtime_state
+        .effective_execution_settings(None)
+        .map_err(|error| AgentSupervisorError::Runtime(error.message))?;
+    let capabilities_payload =
+        if let Some(project_workspace_root) = backend._runtime_state.project_workspace_root() {
+            crate::commands::agent_capabilities_payload(
+                &settings,
+                project_workspace_root,
+                Some(&backend._runtime_state.agent_capability_resolution_context()),
+            )
+        } else {
+            crate::commands::no_workspace_agent_capabilities_payload_for_conversation(
+                &settings,
+                backend._runtime_state.runtime_root(),
+                Some(conversation_id),
+                Some(&backend._runtime_state.agent_capability_resolution_context()),
+            )
+        };
+    let capabilities = AgentCapabilitiesInput {
+        subagents_available: capabilities_payload.subagents_available,
+        agent_teams_available: capabilities_payload.agent_teams_available,
+        background_agents_available: capabilities_payload.background_agents_available,
+    };
+    let settings_input = ExecutionSettingsAgentInput {
+        subagents_enabled: settings.subagents_enabled,
+        agent_teams_enabled: settings.agent_teams_enabled,
+        background_agents_enabled: settings.background_agents_enabled,
+    };
+    let profiles = background_agent_profiles(backend)?;
+    let profile_ids: Vec<String> = profiles.into_iter().map(|profile| profile.id).collect();
+    let policy_root = backend
+        ._runtime_state
+        .project_workspace_root()
+        .unwrap_or_else(|| backend._runtime_state.conversation_cwd());
+    resolve_agent_runtime_policy(
+        policy_root,
+        &settings_input,
+        Some(&execution.agent_tool_policy),
+        &capabilities,
+        &profile_ids,
+        &conversation_id.to_string(),
+    )
+    .map(|resolved| resolved.options)
+    .map_err(|error| AgentSupervisorError::Runtime(error.to_string()))
+}
+
+fn background_agent_profiles(
+    backend: &SupervisorBackend,
+) -> Result<Vec<AgentProfile>, AgentSupervisorError> {
+    let mut profiles = builtin_agent_profiles();
+    if let Some(global_config_store) = backend._runtime_state.global_config_store.as_ref() {
+        profiles.extend(
+            global_config_store
+                .load_global_agent_profiles()
+                .map_err(|error| AgentSupervisorError::Runtime(error.message))?,
+        );
+    }
+    Ok(profiles)
 }
 
 fn background_agent_can_finish(
@@ -1166,14 +1490,14 @@ async fn send_control_request(
     Ok(serde_json::from_slice(&buffer[..read])?)
 }
 
-fn write_stopped_lock(
-    workspace_root: &Path,
+fn write_stopped_lock_scope(
+    scope: &AgentSupervisorScope,
     lock_path: &Path,
     lock: &mut AgentSupervisorLockFile,
 ) -> Result<(), AgentSupervisorError> {
     lock.status = "stopped".to_owned();
     lock.heartbeat_at = Utc::now();
-    lock.workspace_id = workspace_id(workspace_root);
+    lock.workspace_id = scope.identity();
     write_supervisor_lock(lock_path, lock)
 }
 
@@ -1181,41 +1505,23 @@ fn write_supervisor_lock(
     lock_path: &Path,
     lock: &AgentSupervisorLockFile,
 ) -> Result<(), AgentSupervisorError> {
-    if let Some(parent) = lock_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let bytes = serde_json::to_vec_pretty(lock)?;
-    write_non_secret_file_atomic(lock_path, &bytes)?;
-    Ok(())
+    crate::commands::stores::write_json_file_atomic(lock_path, "agent supervisor lock", lock)
+        .map_err(agent_supervisor_store_error)
 }
 
-fn write_non_secret_file_atomic(path: &Path, bytes: &[u8]) -> Result<(), AgentSupervisorError> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("agent-supervisor-file");
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let tmp_path = parent.join(format!(".{name}.{}.{}.tmp", std::process::id(), nonce));
-    std::fs::write(&tmp_path, bytes)?;
-    std::fs::rename(&tmp_path, path)?;
-    Ok(())
-}
-
-fn create_supervisor_token(workspace_root: &Path) -> Result<SupervisorToken, AgentSupervisorError> {
+fn create_supervisor_token_scope(
+    scope: &AgentSupervisorScope,
+) -> Result<SupervisorToken, AgentSupervisorError> {
     let token = new_local_token();
     let token_hash = hash_token(&token);
     let token_epoch = Utc::now().timestamp_millis().max(0) as u64;
-    write_supervisor_token(
-        workspace_root,
+    write_supervisor_token_scope(
+        scope,
         &AgentSupervisorTokenFile {
             token: token.clone(),
             token_hash: token_hash.clone(),
             token_epoch,
-            workspace_id: workspace_id(workspace_root),
+            workspace_id: scope.identity(),
             created_at: Utc::now(),
         },
     )?;
@@ -1226,8 +1532,8 @@ fn create_supervisor_token(workspace_root: &Path) -> Result<SupervisorToken, Age
     })
 }
 
-fn supervisor_token_from_env(
-    workspace_root: &Path,
+fn supervisor_token_from_env_scope(
+    scope: &AgentSupervisorScope,
 ) -> Result<Option<SupervisorToken>, AgentSupervisorError> {
     let Some(token) =
         std::env::var_os(SUPERVISOR_TOKEN_ENV).map(|value| value.to_string_lossy().to_string())
@@ -1238,13 +1544,13 @@ fn supervisor_token_from_env(
         .and_then(|value| value.to_string_lossy().parse::<u64>().ok())
         .unwrap_or_else(|| Utc::now().timestamp_millis().max(0) as u64);
     let token_hash = hash_token(&token);
-    write_supervisor_token(
-        workspace_root,
+    write_supervisor_token_scope(
+        scope,
         &AgentSupervisorTokenFile {
             token: token.clone(),
             token_hash: token_hash.clone(),
             token_epoch,
-            workspace_id: workspace_id(workspace_root),
+            workspace_id: scope.identity(),
             created_at: Utc::now(),
         },
     )?;
@@ -1255,60 +1561,55 @@ fn supervisor_token_from_env(
     }))
 }
 
+#[cfg(test)]
 fn read_supervisor_token(
     workspace_root: &Path,
 ) -> Result<Option<AgentSupervisorTokenFile>, AgentSupervisorError> {
-    let path = supervisor_token_path(workspace_root);
-    if !path.is_file() {
-        return Ok(None);
-    }
-    let contents = std::fs::read_to_string(path)?;
-    Ok(Some(serde_json::from_str(&contents)?))
+    read_supervisor_token_scope(&AgentSupervisorScope::project(workspace_root.to_path_buf()))
 }
 
+fn read_supervisor_token_scope(
+    scope: &AgentSupervisorScope,
+) -> Result<Option<AgentSupervisorTokenFile>, AgentSupervisorError> {
+    let path = supervisor_token_path_for_scope(scope);
+    crate::commands::stores::read_secret_json_file(&path, "agent supervisor token")
+        .map_err(agent_supervisor_store_error)
+}
+
+#[cfg(test)]
 fn write_supervisor_token(
     workspace_root: &Path,
     token: &AgentSupervisorTokenFile,
 ) -> Result<(), AgentSupervisorError> {
-    let path = supervisor_token_path(workspace_root);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let bytes = serde_json::to_vec_pretty(token)?;
-    write_owner_only_file(&path, &bytes)?;
-    Ok(())
+    write_supervisor_token_scope(
+        &AgentSupervisorScope::project(workspace_root.to_path_buf()),
+        token,
+    )
 }
 
-#[cfg(unix)]
-fn write_owner_only_file(path: &Path, bytes: &[u8]) -> Result<(), AgentSupervisorError> {
-    use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(bytes)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    Ok(())
+fn write_supervisor_token_scope(
+    scope: &AgentSupervisorScope,
+    token: &AgentSupervisorTokenFile,
+) -> Result<(), AgentSupervisorError> {
+    let path = supervisor_token_path_for_scope(scope);
+    crate::commands::stores::write_secret_json_file_atomic(&path, "agent supervisor token", token)
+        .map_err(agent_supervisor_store_error)
 }
 
-#[cfg(not(unix))]
-fn write_owner_only_file(path: &Path, bytes: &[u8]) -> Result<(), AgentSupervisorError> {
-    std::fs::write(path, bytes)?;
-    Ok(())
+fn agent_supervisor_store_error(
+    error: crate::commands::CommandErrorPayload,
+) -> AgentSupervisorError {
+    AgentSupervisorError::Runtime(error.message)
 }
 
-async fn wait_for_supervisor_lock(
-    workspace_root: &Path,
+async fn wait_for_supervisor_lock_scope(
+    scope: &AgentSupervisorScope,
     token_hash: &str,
     timeout: Duration,
 ) -> Result<(), AgentSupervisorError> {
     let started = std::time::Instant::now();
     while started.elapsed() <= timeout {
-        if let Some(lock) = read_supervisor_lock(workspace_root)? {
+        if let Some(lock) = read_supervisor_lock_scope(scope)? {
             if lock.token_hash == token_hash
                 && supervisor_lock_is_fresh(&lock, DEFAULT_HEARTBEAT_STALE_AFTER)
             {
@@ -1360,6 +1661,7 @@ fn hash_token(token: &str) -> String {
     blake3::hash(token.as_bytes()).to_hex().to_string()
 }
 
+#[cfg(test)]
 fn workspace_id(workspace_root: &Path) -> String {
     blake3::hash(workspace_root.display().to_string().as_bytes())
         .to_hex()
@@ -1387,10 +1689,35 @@ mod tests {
     }
 
     #[test]
-    fn supervisor_sidecar_args_only_include_workspace_root_arg() {
+    fn supervisor_sidecar_args_include_runtime_and_workspace_roots_for_project_scope() {
         let args = supervisor_sidecar_args(Path::new("/tmp/workspace"));
-        assert_eq!(args[0], "--workspace-root");
-        assert_eq!(args.len(), 2);
+        assert_eq!(
+            args,
+            vec![
+                "--runtime-root".to_owned(),
+                "/tmp/workspace/.jyowo/runtime".to_owned(),
+                "--workspace-root".to_owned(),
+                "/tmp/workspace".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn supervisor_sidecar_args_include_conversation_for_runtime_scope() {
+        let conversation_id = SessionId::new();
+        let args = supervisor_sidecar_args_for_scope(&AgentSupervisorScope::runtime_conversation(
+            "/tmp/jyowo/runtime/global-conversations",
+            conversation_id,
+        ));
+        assert_eq!(
+            args,
+            vec![
+                "--runtime-root".to_owned(),
+                "/tmp/jyowo/runtime/global-conversations".to_owned(),
+                "--conversation-id".to_owned(),
+                conversation_id.to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -1399,5 +1726,185 @@ mod tests {
         let redacted =
             redact_supervisor_output(&redactor, b"Authorization: Bearer abcdef1234567890abcdef");
         assert!(!redacted.contains("abcdef1234567890abcdef"));
+    }
+
+    #[tokio::test]
+    async fn background_supervisor_revalidates_current_agent_policy_before_execution() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let scope = AgentSupervisorScope::project(workspace_root);
+        let backend = open_supervisor_backend_for_scope(&scope)
+            .await
+            .expect("supervisor backend");
+        backend
+            ._runtime_state
+            .execution_settings_store
+            .save_record(
+                &harness_contracts::ExecutionDefaultsRecord {
+                    permission_mode: PermissionMode::Default,
+                    tool_profile: ToolProfile::Full,
+                    context_compression_trigger_ratio: 0.8,
+                    subagents_enabled: false,
+                    agent_teams_enabled: false,
+                    background_agents_enabled: false,
+                },
+                Some(&backend._runtime_state.agent_capability_resolution_context()),
+            )
+            .expect("save current settings");
+        let execution = BackgroundSupervisorExecution {
+            status: "queued".to_owned(),
+            session: None,
+            input: ConversationTurnInput::ask("queued background work"),
+            model_config_id: "test-model-config".to_owned(),
+            permission_mode: PermissionMode::Default,
+            agent_tool_policy: AgentToolPolicy {
+                subagents: harness_contracts::AgentUsePolicy::Off,
+                agent_team: harness_contracts::AgentUsePolicy::Off,
+                background_agents: harness_contracts::AgentUsePolicy::Allowed,
+                team_config: None,
+                workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
+                max_depth: 1,
+                max_concurrent_subagents: 1,
+                max_team_members: 1,
+            },
+        };
+
+        let error =
+            resolve_background_supervisor_agent_tool_policy(&backend, &execution, SessionId::new())
+                .expect_err("queued payload must be revalidated against current settings");
+
+        assert!(
+            error.to_string().contains("backgroundAgents"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supervisor_lock_read_rejects_symlink_file() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let runtime_dir = workspace.path().join(".jyowo").join("runtime");
+        std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
+        let external = tempfile::tempdir().expect("external");
+        let external_lock = external.path().join("agent-supervisor.lock");
+        std::fs::write(
+            &external_lock,
+            serde_json::to_string(&AgentSupervisorLockFile {
+                status: "running".to_owned(),
+                workspace_id: workspace_id(workspace.path()),
+                token_hash: hash_token("external-token"),
+                token_epoch: 1,
+                pid: 1,
+                control_addr: "127.0.0.1:1".to_owned(),
+                started_at: Utc::now(),
+                heartbeat_at: Utc::now(),
+            })
+            .expect("lock json"),
+        )
+        .expect("external lock");
+        std::os::unix::fs::symlink(&external_lock, runtime_dir.join("agent-supervisor.lock"))
+            .expect("symlink");
+
+        let error =
+            read_supervisor_lock(workspace.path()).expect_err("symlink lock must be rejected");
+
+        assert!(error.to_string().contains("symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supervisor_lock_write_rejects_symlink_file_without_overwriting_target() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let runtime_dir = workspace.path().join(".jyowo").join("runtime");
+        std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
+        let external = tempfile::tempdir().expect("external");
+        let external_lock = external.path().join("agent-supervisor.lock");
+        std::fs::write(&external_lock, "sentinel").expect("external lock");
+        let lock_path = runtime_dir.join("agent-supervisor.lock");
+        std::os::unix::fs::symlink(&external_lock, &lock_path).expect("symlink");
+
+        let error = write_supervisor_lock(
+            &lock_path,
+            &AgentSupervisorLockFile {
+                status: "running".to_owned(),
+                workspace_id: workspace_id(workspace.path()),
+                token_hash: hash_token("new-token"),
+                token_epoch: 1,
+                pid: 1,
+                control_addr: "127.0.0.1:1".to_owned(),
+                started_at: Utc::now(),
+                heartbeat_at: Utc::now(),
+            },
+        )
+        .expect_err("symlink lock must be rejected");
+
+        assert!(error.to_string().contains("symlink"));
+        assert_eq!(
+            std::fs::read_to_string(external_lock).expect("external lock contents"),
+            "sentinel"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supervisor_token_read_rejects_symlink_file() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let runtime_dir = workspace.path().join(".jyowo").join("runtime");
+        std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
+        let external = tempfile::tempdir().expect("external");
+        let external_token = external.path().join("agent-supervisor.token");
+        std::fs::write(
+            &external_token,
+            serde_json::to_string(&AgentSupervisorTokenFile {
+                token: "external-token".to_owned(),
+                token_hash: hash_token("external-token"),
+                token_epoch: 1,
+                workspace_id: workspace_id(workspace.path()),
+                created_at: Utc::now(),
+            })
+            .expect("token json"),
+        )
+        .expect("external token");
+        std::os::unix::fs::symlink(&external_token, runtime_dir.join("agent-supervisor.token"))
+            .expect("symlink");
+
+        let error =
+            read_supervisor_token(workspace.path()).expect_err("symlink token must be rejected");
+
+        assert!(error.to_string().contains("symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supervisor_token_write_rejects_symlink_file_without_overwriting_target() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let runtime_dir = workspace.path().join(".jyowo").join("runtime");
+        std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
+        let external = tempfile::tempdir().expect("external");
+        let external_token = external.path().join("agent-supervisor.token");
+        std::fs::write(&external_token, "sentinel").expect("external token");
+        std::os::unix::fs::symlink(&external_token, runtime_dir.join("agent-supervisor.token"))
+            .expect("symlink");
+
+        let error = write_supervisor_token(
+            workspace.path(),
+            &AgentSupervisorTokenFile {
+                token: "new-token".to_owned(),
+                token_hash: hash_token("new-token"),
+                token_epoch: 1,
+                workspace_id: workspace_id(workspace.path()),
+                created_at: Utc::now(),
+            },
+        )
+        .expect_err("symlink token must be rejected");
+
+        assert!(error.to_string().contains("symlink"));
+        assert_eq!(
+            std::fs::read_to_string(external_token).expect("external token contents"),
+            "sentinel"
+        );
     }
 }

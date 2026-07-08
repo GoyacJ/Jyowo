@@ -48,11 +48,15 @@ type ComposerProps = {
   onCancelRun?: () => Promise<void> | void
   onRetry?: () => void
   onPickAttachmentPath?: (modalities: AttachmentInputModality[]) => Promise<string | null>
-  onCreateAttachmentFromPath?: (path: string) => Promise<{ attachment: AttachmentReference }>
+  onCreateAttachmentFromPath?: (
+    path: string,
+    conversationId?: string,
+  ) => Promise<{ attachment: AttachmentReference }>
   onListReferenceCandidates?: () => Promise<ListReferenceCandidatesResponse>
   modelCapability?: ConversationModelCapability | null
   modelConfigDisabled?: boolean
   modelConfigId?: string
+  submitModelConfigId?: string
   modelConfigs?: Array<{ id: string; label: string }>
   onModelConfigChange?: (modelConfigId: string) => void
   permissionMode?: PermissionMode
@@ -91,6 +95,7 @@ export function Composer({
   modelCapability,
   modelConfigDisabled = false,
   modelConfigId,
+  submitModelConfigId,
   modelConfigs = [],
   onModelConfigChange,
   permissionMode,
@@ -113,10 +118,11 @@ export function Composer({
   const [localPermissionMode, setLocalPermissionMode] = useState<PermissionMode>('default')
   const selectedPermissionMode = permissionMode ?? localPermissionMode
   const selectedModelConfigId = modelConfigId ?? ''
+  const selectedSubmitModelConfigId = submitModelConfigId ?? selectedModelConfigId
   const effectiveMode = mode ?? fallbackComposerMode(pending, disabled)
   const isDisabled =
     disabled || effectiveMode.kind === 'submitting' || effectiveMode.kind === 'running-disabled'
-  const canSubmit = draft.text.trim().length > 0 && selectedModelConfigId.length > 0 && !isDisabled
+  const canSubmit = draft.text.trim().length > 0 && !isDisabled
   const visibleError = composerError ?? errorMessage
   const canCancelRun =
     effectiveMode.kind === 'running-disabled' &&
@@ -150,9 +156,11 @@ export function Composer({
     const payload: ComposerSubmitPayload = {
       attachments: draft.attachments,
       contextReferences: draft.contextReferences,
-      modelConfigId: selectedModelConfigId,
       permissionMode: selectedPermissionMode,
       prompt: submittedText,
+    }
+    if (selectedSubmitModelConfigId.length > 0) {
+      payload.modelConfigId = selectedSubmitModelConfigId
     }
 
     try {
@@ -181,7 +189,7 @@ export function Composer({
       if (!path) {
         return
       }
-      const { attachment } = await onCreateAttachmentFromPath(path)
+      const { attachment } = await onCreateAttachmentFromPath(path, conversationId)
       setDraft((currentDraft) => ({
         ...currentDraft,
         attachments: addUniqueAttachment(currentDraft.attachments, attachment),

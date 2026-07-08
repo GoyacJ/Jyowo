@@ -2902,6 +2902,7 @@ dependencies = [
  "blake3",
  "bytes",
  "chrono",
+ "fs2",
  "futures",
  "iana-time-zone",
  "image",
@@ -2918,11 +2919,13 @@ dependencies = [
  "jyowo-harness-sdk",
  "jyowo-harness-skill",
  "jyowo-harness-tool",
+ "libc",
  "log",
  "oxideav-avif",
  "parking_lot",
  "reqwest 0.13.4",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "tauri",
@@ -2949,11 +2952,14 @@ dependencies = [
  "chrono",
  "futures",
  "jyowo-harness-contracts",
+ "jyowo-harness-fs",
  "jyowo-harness-journal",
  "jyowo-harness-permission",
  "jyowo-harness-subagent",
  "jyowo-harness-team",
+ "libc",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",
@@ -3068,6 +3074,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "jyowo-harness-fs"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "libc",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "jyowo-harness-hook"
 version = "0.1.0"
 dependencies = [
@@ -3095,6 +3114,7 @@ dependencies = [
  "fs2",
  "futures",
  "jyowo-harness-contracts",
+ "jyowo-harness-fs",
  "rusqlite",
  "serde",
  "serde_json",
@@ -3216,13 +3236,17 @@ dependencies = [
  "bytes",
  "chrono",
  "dashmap",
+ "fs2",
  "futures",
  "jyowo-harness-contracts",
+ "jyowo-harness-fs",
  "jyowo-harness-model",
+ "libc",
  "notify",
  "parking_lot",
  "regex",
  "ring",
+ "rustix",
  "serde",
  "serde_json",
  "strip-ansi-escapes",
@@ -3255,6 +3279,7 @@ dependencies = [
  "parking_lot",
  "regex",
  "ring",
+ "rustix",
  "semver",
  "serde",
  "serde_json",
@@ -3270,7 +3295,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "fs2",
  "jyowo-harness-contracts",
+ "jyowo-harness-fs",
+ "libc",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

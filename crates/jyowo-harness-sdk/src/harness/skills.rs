@@ -138,15 +138,56 @@ impl Harness {
         &self,
         enabled_dir: impl AsRef<Path>,
     ) -> Result<(), HarnessError> {
+        self.reload_workspace_managed_skills_with_allowed_package_ids(enabled_dir, None)
+            .await
+    }
+
+    pub async fn reload_workspace_managed_skills_with_allowed_package_ids(
+        &self,
+        enabled_dir: impl AsRef<Path>,
+        allowed_package_ids: Option<std::collections::BTreeSet<String>>,
+    ) -> Result<(), HarnessError> {
         let enabled_dir = enabled_dir.as_ref().to_path_buf();
         let source = SkillSource::Workspace(enabled_dir.clone());
         let loader = SkillLoader::default().with_source(SkillSourceConfig::DirectoryPackages {
             path: enabled_dir,
             source_kind: DirectorySourceKind::Workspace,
+            allowed_package_ids,
         });
         let report = loader.load_all().await.map_err(|error| {
             HarnessError::Other(format!("load workspace skills failed: {error}"))
         })?;
+        self.replace_workspace_managed_skills(source, report.loaded)
+    }
+
+    /// Reload user-managed (global) skills from the given directory.
+    ///
+    /// Skills are loaded with [`DirectorySourceKind::User`] and stored under
+    /// [`SkillSource::User`] so they coexist with workspace-managed skills.
+    pub async fn reload_user_managed_skills(
+        &self,
+        enabled_dir: impl AsRef<Path>,
+    ) -> Result<(), HarnessError> {
+        self.reload_user_managed_skills_with_allowed_package_ids(enabled_dir, None)
+            .await
+    }
+
+    pub async fn reload_user_managed_skills_with_allowed_package_ids(
+        &self,
+        enabled_dir: impl AsRef<Path>,
+        allowed_package_ids: Option<std::collections::BTreeSet<String>>,
+    ) -> Result<(), HarnessError> {
+        let enabled_dir = enabled_dir.as_ref().to_path_buf();
+        let source = SkillSource::User(enabled_dir.clone());
+        let loader = SkillLoader::default().with_source(SkillSourceConfig::DirectoryPackages {
+            path: enabled_dir,
+            source_kind: DirectorySourceKind::User,
+            allowed_package_ids,
+        });
+        let report = loader
+            .load_all()
+            .await
+            .map_err(|error| HarnessError::Other(format!("load user skills failed: {error}")))?;
         self.replace_workspace_managed_skills(source, report.loaded)
     }
 

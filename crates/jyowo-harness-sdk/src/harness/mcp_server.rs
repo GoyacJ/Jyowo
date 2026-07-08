@@ -597,7 +597,9 @@ impl Harness {
             user_id: turn_options.user_id.clone(),
             #[cfg(feature = "memory-provider-registry")]
             team_id: turn_options.team_id,
-            workspace_root: turn_options.workspace_root.clone(),
+            project_workspace_root: turn_options.project_workspace_root.clone(),
+            #[cfg(feature = "memory-provider-registry")]
+            memory_database_path: self.inner.memory_database_path.clone(),
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
             deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),

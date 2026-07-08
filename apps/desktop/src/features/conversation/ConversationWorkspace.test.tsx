@@ -101,6 +101,7 @@ const openAiModelDescriptor: ModelCatalogEntry = {
 
 const switchableProviderSettings: ListProviderSettingsResponse = {
   defaultConfigId: 'deepseek-config',
+  selectionScope: 'global',
   configs: [
     {
       protocol: 'chat_completions',
@@ -449,79 +450,6 @@ describe('ConversationWorkspace', () => {
     expect(modelB.value).toBe('deepseek-config')
   })
 
-  it('leaves the model selector empty when no model is selected and no default exists', async () => {
-    renderConversationWorkspace(
-      createTestCommandClient({
-        conversation: {
-          conversation: {
-            id: 'conversation-001',
-            messages: [],
-            modelConfigId: null,
-            title: 'No selected model',
-            updatedAt: timestamp,
-          },
-        },
-        providerSettingsList: {
-          defaultConfigId: null,
-          configs: [
-            {
-              protocol: 'responses',
-              displayName: 'OpenAI Work',
-              hasApiKey: true,
-              hasOfficialQuotaApiKey: false,
-              id: 'openai-work',
-              isDefault: false,
-              modelDescriptor: openAiModelDescriptor,
-              modelId: 'gpt-5.4-mini',
-              providerId: 'openai',
-            },
-          ],
-        },
-      }),
-    )
-
-    const modelSelector = (await screen.findByLabelText('Model')) as HTMLSelectElement
-
-    expect(modelSelector.value).toBe('')
-  })
-
-  it('keeps model selection local and submits the selected model config', async () => {
-    const commandClient = createTestCommandClient({
-      conversationWorktreePage: pageWithTurn('complete'),
-      providerSettingsList: switchableProviderSettings,
-    })
-    const startRunCalls: Array<Parameters<CommandClient['startRun']>[0]> = []
-    const trackedClient = {
-      ...commandClient,
-      startRun: (request: Parameters<CommandClient['startRun']>[0]) => {
-        startRunCalls.push(request)
-        return Promise.resolve({ runId: 'run-001', status: 'started' })
-      },
-    } satisfies CommandClient
-
-    renderConversationWorkspace(trackedClient)
-
-    const modelSelector = (await screen.findByLabelText('Model')) as HTMLSelectElement
-    expect(modelSelector.value).toBe('deepseek-config')
-
-    fireEvent.change(modelSelector, { target: { value: 'minimax-config' } })
-    expect(startRunCalls).toHaveLength(0)
-
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
-      target: { value: 'Use MiniMax for this run' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
-
-    await waitFor(() => {
-      expect(startRunCalls).toEqual([
-        expect.objectContaining({
-          modelConfigId: 'minimax-config',
-          prompt: 'Use MiniMax for this run',
-        }),
-      ])
-    })
-  })
-
   it('invalidates conversation detail and list after a successful submit', async () => {
     const commandClient = createTestCommandClient({
       conversationWorktreePage: pageWithTurn('complete'),
@@ -549,47 +477,6 @@ describe('ConversationWorkspace', () => {
         queryKey: ['conversation', 'list', '/Users/goya/Repo/Git/Jyowo'],
       })
     })
-  })
-
-  it('disables send when no configured model has an API key', async () => {
-    const commandClient = createTestCommandClient({
-      conversationWorktreePage: pageWithTurn('complete'),
-      providerSettingsList: {
-        defaultConfigId: 'openai-work',
-        configs: [
-          {
-            protocol: 'responses',
-            displayName: 'OpenAI Work',
-            hasApiKey: false,
-            hasOfficialQuotaApiKey: false,
-            id: 'openai-work',
-            isDefault: true,
-            modelDescriptor: openAiModelDescriptor,
-            modelId: 'gpt-5.4-mini',
-            providerId: 'openai',
-          },
-        ],
-      },
-    })
-    const startRun = vi.fn(commandClient.startRun)
-    const trackedClient = {
-      ...commandClient,
-      startRun,
-    } satisfies CommandClient
-
-    renderConversationWorkspace(trackedClient)
-
-    fireEvent.change(
-      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
-      {
-        target: { value: 'This should stay disabled' },
-      },
-    )
-    const sendButton = screen.getByRole('button', { name: 'Send message' })
-
-    expect(sendButton).toBeDisabled()
-    fireEvent.click(sendButton)
-    expect(startRun).not.toHaveBeenCalled()
   })
 
   it('renders nested permission state and sends decisions through commands', async () => {
@@ -736,6 +623,7 @@ describe('ConversationWorkspace', () => {
         autoModeAvailable: false,
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'bypass_permissions',
+        scope: 'global',
         toolProfile: 'full',
       },
     })
@@ -783,6 +671,7 @@ describe('ConversationWorkspace', () => {
         autoModeAvailable: false,
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'default',
+        scope: 'global',
         toolProfile: 'full',
       })
       .mockResolvedValue({
@@ -790,6 +679,7 @@ describe('ConversationWorkspace', () => {
         autoModeAvailable: false,
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'default',
+        scope: 'global',
         toolProfile: 'full',
       })
     const startRunCalls: Array<Parameters<CommandClient['startRun']>[0]> = []

@@ -448,6 +448,7 @@ describe('CommandClient', () => {
       autoModeAvailable: false,
       contextCompressionTriggerRatio: 0.8,
       permissionMode: 'default',
+      scope: 'global',
       toolProfile: 'coding',
     })
     const client = createInvokeCommandClient(invoke)
@@ -457,6 +458,7 @@ describe('CommandClient', () => {
       autoModeAvailable: false,
       contextCompressionTriggerRatio: 0.8,
       permissionMode: 'default',
+      scope: 'global',
       toolProfile: 'coding',
     })
     expect(invoke).toHaveBeenCalledWith('get_execution_settings')
@@ -477,6 +479,7 @@ describe('CommandClient', () => {
       autoModeAvailable: false,
       contextCompressionTriggerRatio: 0.8,
       permissionMode: 'default',
+      scope: 'global',
       toolProfile: 'full',
     })
     const client = createInvokeCommandClient(invoke)
@@ -2973,6 +2976,11 @@ describe('CommandClient', () => {
       attachment: { id: validAttachmentId, name: 'notes.txt' },
     })
     await expect(
+      createAttachmentFromPath('/tmp/draft-notes.txt', 'conversation-001', client),
+    ).resolves.toMatchObject({
+      attachment: { id: validAttachmentId, name: 'notes.txt' },
+    })
+    await expect(
       listReferenceCandidates({ conversationId: 'conversation-001' }, client),
     ).resolves.toEqual({
       artifacts: [],
@@ -2986,6 +2994,10 @@ describe('CommandClient', () => {
 
     expect(invoke).toHaveBeenCalledWith('create_attachment_from_path', {
       path: '/tmp/notes.txt',
+    })
+    expect(invoke).toHaveBeenCalledWith('create_attachment_from_path', {
+      conversationId: 'conversation-001',
+      path: '/tmp/draft-notes.txt',
     })
     expect(invoke).toHaveBeenCalledWith('list_reference_candidates', {
       conversationId: 'conversation-001',
@@ -3714,6 +3726,7 @@ describe('CommandClient', () => {
 
       return {
         defaultConfigId: 'openai',
+        selectionScope: 'global',
         configs: [
           {
             protocol: 'responses',
@@ -3803,6 +3816,7 @@ describe('CommandClient', () => {
   it('rejects provider configs without model descriptors', async () => {
     const invoke = vi.fn().mockResolvedValue({
       defaultConfigId: 'openai',
+      selectionScope: 'global',
       configs: [
         {
           protocol: 'responses',
@@ -4445,7 +4459,7 @@ describe('CommandClient', () => {
             transport: {
               args: ['mcp-server'],
               command: 'node',
-              env: [{ key: 'LOG_LEVEL', value: 'info' }],
+              env: [{ hasValue: true, key: 'LOG_LEVEL' }],
               inheritEnv: ['GITHUB_TOKEN'],
               kind: 'stdio',
             },
@@ -4512,7 +4526,7 @@ describe('CommandClient', () => {
         transport: {
           args: ['mcp-server'],
           command: 'node',
-          env: [{ key: 'LOG_LEVEL', value: 'info' }],
+          env: [{ hasValue: true, key: 'LOG_LEVEL' }],
           inheritEnv: ['GITHUB_TOKEN'],
           kind: 'stdio',
         },
@@ -4715,6 +4729,54 @@ describe('CommandClient', () => {
       id: 'github',
     })
     expect(invoke).toHaveBeenCalledWith('restart_mcp_server', { id: 'github' })
+  })
+
+  it('accepts MCP save requests that preserve existing redacted inline values', async () => {
+    const invoke = vi.fn(async () => ({
+      server: {
+        displayName: 'Workspace GitHub',
+        enabled: true,
+        exposedToolCount: 0,
+        id: 'github',
+        manageable: true,
+        origin: 'workspace',
+        scope: 'global',
+        status: 'configured',
+        transport: 'stdio',
+      },
+    }))
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      saveMcpServer(
+        {
+          displayName: 'Workspace GitHub',
+          id: 'github',
+          scope: 'global',
+          transport: {
+            command: 'node',
+            env: [{ key: 'LOG_LEVEL', preserveExisting: true }],
+            kind: 'stdio',
+          },
+        },
+        client,
+      ),
+    ).resolves.toHaveProperty('server.status', 'configured')
+
+    expect(invoke).toHaveBeenCalledWith('save_mcp_server', {
+      displayName: 'Workspace GitHub',
+      enabled: true,
+      id: 'github',
+      scope: 'global',
+      transport: {
+        args: [],
+        command: 'node',
+        env: [{ key: 'LOG_LEVEL', preserveExisting: true }],
+        inheritEnv: [],
+        kind: 'stdio',
+      },
+    })
+    expect(JSON.stringify(invoke.mock.calls)).not.toContain('info')
   })
 
   it('rejects raw secret MCP headers and stdio env before invoking Tauri', async () => {

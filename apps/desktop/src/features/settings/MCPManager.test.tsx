@@ -88,6 +88,21 @@ describe('MCPManager', () => {
     expect(screen.queryByRole('navigation', { name: /mcp/i })).not.toBeInTheDocument()
   })
 
+  it('renders runtime diagnostics without project write controls when no project is active', async () => {
+    renderMCPManager(
+      createTestCommandClient({
+        browserMcpPresets: { presets: [] },
+        mcpDiagnostics: { events: [] },
+        mcpServers: { servers: [] },
+        projects: { activePath: null, projects: [] },
+      }),
+    )
+
+    expect(await screen.findAllByText('Runtime diagnostics')).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: 'Add server' })).not.toBeInTheDocument()
+    expect(await screen.findByText('No MCP servers configured.')).toBeInTheDocument()
+  })
+
   it('shows server status, origin, tool count, scope, and transport', async () => {
     renderMCPManager(
       createTestCommandClient({
@@ -267,7 +282,7 @@ describe('MCPManager', () => {
 
     renderMCPManager(client)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add server' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add server' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Save MCP server' }))
 
     expect(await screen.findByText('Server name is required.')).toBeInTheDocument()
@@ -286,7 +301,7 @@ describe('MCPManager', () => {
 
     renderMCPManager(client)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add server' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add server' }))
     fireEvent.change(await screen.findByLabelText('Server name'), {
       target: { value: 'Workspace GitHub' },
     })
@@ -318,7 +333,7 @@ describe('MCPManager', () => {
 
     renderMCPManager(client)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add server' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add server' }))
     fireEvent.change(await screen.findByLabelText('Server name'), {
       target: { value: 'Workspace GitHub' },
     })
@@ -402,7 +417,7 @@ describe('MCPManager', () => {
 
     renderMCPManager(client)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add server' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add server' }))
     fireEvent.change(await screen.findByLabelText('Server name'), {
       target: { value: 'Workspace GitHub' },
     })
@@ -455,7 +470,7 @@ describe('MCPManager', () => {
 
     renderMCPManager(client)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add server' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add server' }))
     fireEvent.change(await screen.findByLabelText('Server name'), {
       target: { value: 'Remote Context' },
     })
@@ -504,7 +519,7 @@ describe('MCPManager', () => {
         transport: {
           args: ['mcp-server'],
           command: 'node',
-          env: [{ key: 'LOG_LEVEL', value: 'info' }],
+          env: [{ hasValue: true, key: 'LOG_LEVEL' }],
           inheritEnv: ['GITHUB_TOKEN'],
           kind: 'stdio',
           workingDir: '.',
@@ -528,7 +543,9 @@ describe('MCPManager', () => {
     await waitFor(() => expect(getMcpServerConfig).toHaveBeenCalledWith('github'))
     expect(await screen.findByDisplayValue('mcp-server')).toBeInTheDocument()
     expect(screen.getByDisplayValue('LOG_LEVEL')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('info')).not.toBeInTheDocument()
     expect(screen.getByDisplayValue('GITHUB_TOKEN')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Inline env value'), { target: { value: 'info' } })
 
     fireEvent.click(screen.getByRole('button', { name: 'Save MCP server' }))
 
@@ -544,6 +561,54 @@ describe('MCPManager', () => {
         }),
       ),
     )
+  })
+
+  it('preserves redacted inline env values when saving unchanged config details', async () => {
+    const getMcpServerConfig = vi.fn().mockResolvedValue({
+      server: {
+        displayName: 'Workspace GitHub',
+        enabled: true,
+        id: 'github',
+        scope: 'global',
+        transport: {
+          args: ['mcp-server'],
+          command: 'node',
+          env: [{ hasValue: true, key: 'LOG_LEVEL' }],
+          inheritEnv: [],
+          kind: 'stdio',
+        },
+      },
+    })
+    const saveMcpServer = vi.fn().mockResolvedValue({ server: mcpServer({ status: 'configured' }) })
+    const client = {
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [] },
+        mcpServers: { servers: [mcpServer()] },
+      }),
+      getMcpServerConfig,
+      saveMcpServer,
+    }
+
+    renderMCPManager(client)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Configure Workspace GitHub' }))
+    await waitFor(() => expect(getMcpServerConfig).toHaveBeenCalledWith('github'))
+    expect(screen.getByDisplayValue('LOG_LEVEL')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('info')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save MCP server' }))
+
+    await waitFor(() =>
+      expect(saveMcpServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'github',
+          transport: expect.objectContaining({
+            env: [{ key: 'LOG_LEVEL', preserveExisting: true }],
+          }),
+        }),
+      ),
+    )
+    expect(JSON.stringify(saveMcpServer.mock.calls)).not.toContain('info')
   })
 
   it('renders live diagnostics without leaking raw payload details', async () => {

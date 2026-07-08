@@ -157,19 +157,27 @@ pub(crate) async fn build_conversation_turn_input(
         .await?,
         attachments: validate_attachment_references(
             request.attachments.as_deref().unwrap_or_default(),
-            state.workspace_root(),
+            state.runtime_root(),
+            state
+                .project_workspace_root()
+                .is_none()
+                .then_some(session_id),
         )?,
     })
 }
 
 pub(crate) fn resolve_start_run_permission_mode(
     requested: Option<PermissionMode>,
-    store: &DesktopExecutionSettingsStore,
+    state: &DesktopRuntimeState,
 ) -> Result<PermissionMode, CommandErrorPayload> {
-    let permission_mode = match requested {
-        Some(permission_mode) => permission_mode,
-        None => effective_execution_settings_permission_mode(store.load_record()?.permission_mode),
-    };
+    if let Some(permission_mode) = requested {
+        ensure_start_run_permission_mode(permission_mode)?;
+    }
+    let permission_mode = effective_execution_settings_permission_mode(
+        state
+            .effective_execution_settings(requested)?
+            .permission_mode,
+    );
     ensure_start_run_permission_mode(permission_mode)?;
     Ok(permission_mode)
 }
@@ -338,19 +346,21 @@ pub(crate) async fn validate_context_references(
     for reference in references {
         validated.push(match reference {
             ContextReferencePayload::WorkspaceFile { path, label } => {
-                let absolute_path = state.workspace_root().join(path);
+                let Some(workspace_root) = state.project_workspace_root() else {
+                    return Err(invalid_payload(
+                        "workspace file references require an active project workspace".to_owned(),
+                    ));
+                };
+                let absolute_path = workspace_root.join(path);
                 let canonical_path = absolute_path.canonicalize().map_err(|error| {
                     invalid_payload(format!("workspace file reference is invalid: {error}"))
                 })?;
-                let relative_path = workspace_relative_path(
-                    &canonical_path,
-                    state.workspace_root(),
-                )
-                .ok_or_else(|| {
-                    invalid_payload(
-                        "workspace file reference must stay inside the workspace".to_owned(),
-                    )
-                })?;
+                let relative_path = workspace_relative_path(&canonical_path, workspace_root)
+                    .ok_or_else(|| {
+                        invalid_payload(
+                            "workspace file reference must stay inside the workspace".to_owned(),
+                        )
+                    })?;
                 ConversationContextReference::WorkspaceFile {
                     path: relative_path,
                     label: label.clone(),
@@ -407,12 +417,24 @@ pub(crate) async fn validate_context_references(
 
 pub(crate) fn validate_attachment_references(
     attachments: &[AttachmentReferencePayload],
-    workspace_root: &Path,
+    runtime_root: &Path,
+    no_workspace_session_id: Option<SessionId>,
 ) -> Result<Vec<ConversationAttachmentReference>, CommandErrorPayload> {
     let mut validated = Vec::with_capacity(attachments.len());
 
     for attachment in attachments {
-        let record = read_attachment_record(workspace_root, &attachment.id)?;
+        if let Some(session_id) = no_workspace_session_id {
+            if !no_workspace_attachment_belongs_to_conversation(
+                runtime_root,
+                session_id,
+                &attachment.id,
+            )? {
+                return Err(invalid_payload(
+                    "attachment reference does not belong to conversation".to_owned(),
+                ));
+            }
+        }
+        let record = read_attachment_record(runtime_root, &attachment.id)?;
         if record.attachment != *attachment {
             return Err(invalid_payload(
                 "attachment reference does not match stored metadata".to_owned(),
@@ -625,7 +647,7 @@ pub(crate) fn ensure_mcp_server_request(
     ensure_non_empty("displayName", &request.display_name)?;
     ensure_mcp_server_id(&request.id)?;
     ensure_mcp_server_scope(&request.scope)?;
-    ensure_mcp_server_transport(&request.transport)
+    ensure_save_mcp_server_transport(&request.transport)
 }
 
 pub(crate) fn ensure_mcp_server_record(
@@ -740,6 +762,139 @@ pub(crate) fn ensure_mcp_server_transport(
     Ok(())
 }
 
+pub(crate) fn ensure_save_mcp_server_transport(
+    transport: &SaveMcpServerTransportConfig,
+) -> Result<(), CommandErrorPayload> {
+    match transport {
+        SaveMcpServerTransportConfig::Stdio {
+            command,
+            args,
+            env,
+            inherit_env,
+            working_dir,
+        } => {
+            ensure_non_empty("transport.command", command)?;
+            if args.iter().any(|arg| arg.trim().is_empty()) {
+                return Err(invalid_payload(
+                    "transport.args must not contain empty values".to_owned(),
+                ));
+            }
+            if args.len() > 64 {
+                return Err(invalid_payload(
+                    "transport.args must contain at most 64 values".to_owned(),
+                ));
+            }
+            if env.len() > 64 {
+                return Err(invalid_payload(
+                    "transport.env must contain at most 64 values".to_owned(),
+                ));
+            }
+            for item in env {
+                ensure_env_var_name("transport.env.key", &item.key)?;
+                ensure_save_mcp_name_value("transport.env", item, 4096)?;
+                if mcp_env_key_looks_secret_bearing(&item.key) {
+                    return Err(invalid_payload(
+                        "transport.env must not contain secret-bearing values".to_owned(),
+                    ));
+                }
+                if item
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| looks_like_raw_secret(value))
+                {
+                    return Err(invalid_payload(
+                        "transport.env must not contain secret-bearing values".to_owned(),
+                    ));
+                }
+            }
+            if inherit_env.len() > 128 {
+                return Err(invalid_payload(
+                    "transport.inheritEnv must contain at most 128 values".to_owned(),
+                ));
+            }
+            for item in inherit_env {
+                ensure_env_var_name("transport.inheritEnv", item)?;
+                if mcp_env_key_looks_secret_bearing(item) {
+                    return Err(invalid_payload(
+                        "transport.inheritEnv must not contain secret-bearing env names".to_owned(),
+                    ));
+                }
+            }
+            if let Some(working_dir) = working_dir {
+                ensure_non_empty("transport.workingDir", working_dir)?;
+                ensure_max_bytes("transport.workingDir", working_dir, 4096)?;
+            }
+        }
+        SaveMcpServerTransportConfig::Http {
+            url,
+            bearer_token_env_var,
+            headers,
+            headers_from_env,
+        } => {
+            ensure_mcp_http_url(url)?;
+            if let Some(env_var) = bearer_token_env_var {
+                ensure_env_var_name("transport.bearerTokenEnvVar", env_var)?;
+            }
+            if headers.len() > 64 || headers_from_env.len() > 64 {
+                return Err(invalid_payload(
+                    "transport.headers must contain at most 64 values".to_owned(),
+                ));
+            }
+            for header in headers {
+                ensure_http_header_name("transport.headers.key", &header.key)?;
+                ensure_save_mcp_name_value("transport.headers", header, 8192)?;
+                if mcp_http_header_is_sensitive(&header.key)
+                    || header.value.as_deref().is_some_and(|value| {
+                        looks_like_raw_secret(value) || mcp_header_value_looks_secret_bearing(value)
+                    })
+                {
+                    return Err(invalid_payload(
+                        "transport.headers must not contain secret-bearing values".to_owned(),
+                    ));
+                }
+            }
+            for header in headers_from_env {
+                ensure_http_header_name("transport.headersFromEnv.key", &header.key)?;
+                ensure_env_var_name("transport.headersFromEnv.envVar", &header.env_var)?;
+                if mcp_http_header_is_sensitive(&header.key) {
+                    return Err(invalid_payload(
+                        "transport.headersFromEnv must not contain sensitive header names"
+                            .to_owned(),
+                    ));
+                }
+            }
+        }
+        SaveMcpServerTransportConfig::InProcess => {
+            return Err(invalid_payload(
+                "transport.kind must be stdio or http for workspace MCP servers".to_owned(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_save_mcp_name_value(
+    field: &'static str,
+    record: &McpNameValueSaveRecord,
+    max_bytes: usize,
+) -> Result<(), CommandErrorPayload> {
+    match (record.value.as_deref(), record.preserve_existing) {
+        (Some(value), false) => {
+            ensure_max_bytes(field, value, max_bytes)?;
+            if value.trim().is_empty() {
+                return Err(invalid_payload(format!("{field}.value must not be empty")));
+            }
+            Ok(())
+        }
+        (None, true) => Ok(()),
+        (Some(_), true) => Err(invalid_payload(format!(
+            "{field}.preserveExisting must not include a replacement value"
+        ))),
+        (None, false) => Err(invalid_payload(format!("{field}.value must not be empty"))),
+    }
+}
+
 pub(crate) fn ensure_env_var_name(
     field: &'static str,
     value: &str,
@@ -804,6 +959,7 @@ pub(crate) fn mcp_http_header_is_sensitive(value: &str) -> bool {
 pub(crate) fn mcp_header_value_looks_secret_bearing(value: &str) -> bool {
     let normalized = value.trim().to_ascii_lowercase();
     normalized.starts_with("bearer ")
+        || normalized.starts_with("oauth ")
         || normalized.contains(" token")
         || normalized.contains("secret")
         || normalized.contains("password")

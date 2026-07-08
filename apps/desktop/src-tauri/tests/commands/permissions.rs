@@ -33,7 +33,7 @@ async fn start_run_with_runtime_state_exposes_runtime_permission_request_to_acti
                 attachments: None,
                 context_references: None,
                 conversation_id: conversation_id.clone(),
-                model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+                model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
                 permission_mode: None,
                 prompt: "Run a command".to_owned(),
             },
@@ -54,7 +54,9 @@ async fn start_run_with_runtime_state_exposes_runtime_permission_request_to_acti
         .expect("runtime state should retain the configured harness");
     let page = harness
         .page_conversation_events(ConversationEventsPageRequest {
-            options: state.conversation_session_options(session_id),
+            options: state
+                .conversation_session_options(session_id)
+                .expect("session options"),
             after_event_id: None,
             limit: 20,
         })
@@ -718,7 +720,7 @@ async fn list_activity_with_runtime_state_reads_journaled_permission_requests_by
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             permission_mode: None,
             prompt: "Run a command".to_owned(),
         },
@@ -802,7 +804,7 @@ async fn start_run_permission_mode_override_wins_over_saved_default() {
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             prompt: "Run a command".to_owned(),
             permission_mode: Some(PermissionMode::Default),
         },
@@ -839,7 +841,7 @@ async fn start_run_rejects_auto_without_runtime_support() {
             attachments: None,
             context_references: None,
             conversation_id: SessionId::new().to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             prompt: "Run a command".to_owned(),
             permission_mode: Some(PermissionMode::Auto),
         },
@@ -875,7 +877,7 @@ async fn start_run_bypass_permission_mode_finishes_without_pending_permission() 
             attachments: None,
             context_references: None,
             conversation_id: session_id.to_string(),
-            model_config_id: TEST_MODEL_CONFIG_ID.to_owned(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
             prompt: "Run a command".to_owned(),
             permission_mode: Some(PermissionMode::BypassPermissions),
         },

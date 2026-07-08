@@ -53,7 +53,7 @@ export const fixtureMcpServerConfig: GetMcpServerConfigResponse = {
     transport: {
       args: ['mcp-server'],
       command: 'node',
-      env: [{ key: 'LOG_LEVEL', value: 'info' }],
+      env: [{ hasValue: true, key: 'LOG_LEVEL' }],
       inheritEnv: ['GITHUB_TOKEN'],
       kind: 'stdio',
     },

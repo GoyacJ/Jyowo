@@ -23,6 +23,7 @@ fn session_lifecycle_hooks_are_triggered() {
             .expect("hook registry should build");
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -74,6 +75,7 @@ fn default_session_uses_config_snapshot_hashes() {
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -115,6 +117,7 @@ fn run_started_uses_non_zero_config_snapshot() {
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default().with_events(vec![
                 ModelStreamEvent::ContentBlockDelta {
                     index: 0,
@@ -194,6 +197,7 @@ fn mcp_tools_are_injected_into_default_session() {
         ]));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
             .with_sandbox(NoopSandbox::new())
@@ -235,6 +239,8 @@ fn mcp_tools_are_injected_into_default_session() {
 #[test]
 fn mcp_metrics_are_forwarded_to_observer() {
     block_on(async {
+        let workspace = unique_workspace("sdk-mcp-metrics");
+        std::fs::create_dir_all(&workspace).unwrap();
         let session_id = SessionId::new();
         let server_id = McpServerId("fixture-metrics".into());
         let mcp_registry = McpRegistry::new();
@@ -262,6 +268,7 @@ fn mcp_metrics_are_forwarded_to_observer() {
         );
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -301,6 +308,8 @@ fn mcp_metrics_are_forwarded_to_observer() {
 #[test]
 fn mcp_sampling_provider_invokes_model_without_session_turn() {
     block_on(async {
+        let workspace = unique_workspace("sdk-mcp-sampling");
+        std::fs::create_dir_all(&workspace).unwrap();
         let session_id = SessionId::new();
         let run_id = RunId::new();
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
@@ -326,6 +335,7 @@ fn mcp_sampling_provider_invokes_model_without_session_turn() {
             ModelStreamEvent::MessageStop,
         ]));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -453,6 +463,7 @@ fn tool_search_pending_mcp_servers_reflect_registry_state_and_retains_deferred_d
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -522,8 +533,11 @@ fn tool_search_pending_mcp_servers_reflect_registry_state_and_retains_deferred_d
 #[test]
 fn sdk_installs_default_stream_elicitation_handler() {
     tokio_runtime().block_on(async {
+        let workspace = unique_workspace("sdk-stream-elicitation");
+        std::fs::create_dir_all(&workspace).unwrap();
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -590,6 +604,7 @@ fn default_session_exposes_tracer_to_runtime() {
         let tracer = Arc::new(RecordingTracer::default());
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default().with_events(vec![
                 ModelStreamEvent::ContentBlockDelta {
                     index: 0,

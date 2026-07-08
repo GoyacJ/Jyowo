@@ -80,13 +80,12 @@ pub async fn save_mcp_server_with_store(
     store: &dyn McpServerStore,
 ) -> Result<SaveMcpServerResponse, CommandErrorPayload> {
     ensure_mcp_server_request(&request)?;
-    let record = McpServerConfigRecord {
-        enabled: request.enabled,
-        display_name: request.display_name.trim().to_owned(),
-        id: request.id.trim().to_owned(),
-        scope: request.scope,
-        transport: request.transport,
-    };
+    let id = request.id.trim().to_owned();
+    let existing = store
+        .load_records()?
+        .into_iter()
+        .find(|record| record.id == id);
+    let record = mcp_server_record_from_save_request(request, existing.as_ref())?;
 
     store.save_record(&record)?;
 
@@ -100,15 +99,27 @@ pub async fn save_mcp_server_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<SaveMcpServerResponse, CommandErrorPayload> {
     ensure_mcp_server_request(&request)?;
-    let record = McpServerConfigRecord {
-        enabled: request.enabled,
-        display_name: request.display_name.trim().to_owned(),
-        id: request.id.trim().to_owned(),
-        scope: request.scope,
-        transport: request.transport,
-    };
+    let id = request.id.trim().to_owned();
+    let existing = state
+        .mcp_server_store
+        .load_records()?
+        .into_iter()
+        .find(|record| record.id == id);
+    let record = mcp_server_record_from_save_request(request, existing.as_ref())?;
 
-    let _ = mcp_server_spec_from_record(&record, state.workspace_root())?;
+    save_mcp_server_record_with_runtime_state(record, state).await
+}
+
+async fn save_mcp_server_record_with_runtime_state(
+    record: McpServerConfigRecord,
+    state: &DesktopRuntimeState,
+) -> Result<SaveMcpServerResponse, CommandErrorPayload> {
+    let Some(workspace_root) = state.project_workspace_root() else {
+        return Err(invalid_payload(
+            "custom MCP servers require an active project workspace".to_owned(),
+        ));
+    };
+    let _ = mcp_server_spec_from_record(&record, workspace_root)?;
     state.mcp_server_store.save_record(&record)?;
 
     let Some(harness) = state.harness() else {
@@ -127,6 +138,118 @@ pub async fn save_mcp_server_with_runtime_state(
             .await?;
 
     Ok(SaveMcpServerResponse { server })
+}
+
+fn mcp_server_record_from_save_request(
+    request: SaveMcpServerRequest,
+    existing: Option<&McpServerConfigRecord>,
+) -> Result<McpServerConfigRecord, CommandErrorPayload> {
+    let record = McpServerConfigRecord {
+        enabled: request.enabled,
+        display_name: request.display_name.trim().to_owned(),
+        id: request.id.trim().to_owned(),
+        scope: request.scope,
+        transport: mcp_transport_from_save_transport(request.transport, existing)?,
+    };
+    ensure_mcp_server_record(&record)?;
+    Ok(record)
+}
+
+fn mcp_transport_from_save_transport(
+    transport: SaveMcpServerTransportConfig,
+    existing: Option<&McpServerConfigRecord>,
+) -> Result<McpServerTransportConfig, CommandErrorPayload> {
+    match transport {
+        SaveMcpServerTransportConfig::Stdio {
+            command,
+            args,
+            env,
+            inherit_env,
+            working_dir,
+        } => {
+            let existing_env = match existing.map(|record| &record.transport) {
+                Some(McpServerTransportConfig::Stdio { env, .. }) => Some(env.as_slice()),
+                _ => None,
+            };
+            Ok(McpServerTransportConfig::Stdio {
+                command,
+                args,
+                env: mcp_name_values_from_save_records("transport.env", env, existing_env)?,
+                inherit_env,
+                working_dir,
+            })
+        }
+        SaveMcpServerTransportConfig::Http {
+            url,
+            bearer_token_env_var,
+            headers,
+            headers_from_env,
+        } => {
+            let existing_headers = match existing.map(|record| &record.transport) {
+                Some(McpServerTransportConfig::Http { headers, .. }) => Some(headers.as_slice()),
+                _ => None,
+            };
+            Ok(McpServerTransportConfig::Http {
+                url,
+                bearer_token_env_var,
+                headers: mcp_name_values_from_save_records(
+                    "transport.headers",
+                    headers,
+                    existing_headers,
+                )?,
+                headers_from_env,
+            })
+        }
+        SaveMcpServerTransportConfig::InProcess => Ok(McpServerTransportConfig::InProcess),
+    }
+}
+
+fn mcp_name_values_from_save_records(
+    field: &'static str,
+    records: Vec<McpNameValueSaveRecord>,
+    existing: Option<&[McpNameValueRecord]>,
+) -> Result<Vec<McpNameValueRecord>, CommandErrorPayload> {
+    records
+        .into_iter()
+        .map(|record| mcp_name_value_from_save_record(field, record, existing))
+        .collect()
+}
+
+fn mcp_name_value_from_save_record(
+    field: &'static str,
+    record: McpNameValueSaveRecord,
+    existing: Option<&[McpNameValueRecord]>,
+) -> Result<McpNameValueRecord, CommandErrorPayload> {
+    let key = record.key.trim().to_owned();
+    if record.preserve_existing {
+        if record.value.is_some() {
+            return Err(invalid_payload(format!(
+                "{field}.preserveExisting must not include a replacement value"
+            )));
+        }
+        let Some(existing_value) = existing
+            .unwrap_or_default()
+            .iter()
+            .find(|existing| existing.key == key)
+            .map(|existing| existing.value.clone())
+        else {
+            return Err(invalid_payload(format!(
+                "{field}.preserveExisting could not find an existing value"
+            )));
+        };
+        return Ok(McpNameValueRecord {
+            key,
+            value: existing_value,
+        });
+    }
+
+    let Some(value) = record.value else {
+        return Err(invalid_payload(format!("{field}.value must not be empty")));
+    };
+    if value.trim().is_empty() {
+        return Err(invalid_payload(format!("{field}.value must not be empty")));
+    }
+    Ok(McpNameValueRecord { key, value })
 }
 
 pub async fn list_browser_mcp_presets_with_store(
@@ -167,17 +290,8 @@ pub async fn save_browser_mcp_preset_with_runtime_state(
 ) -> Result<SaveBrowserMcpPresetResponse, CommandErrorPayload> {
     let record = browser_mcp_preset_record(request.preset_id, request.enabled);
     let preset_id = request.preset_id;
-    let response = save_mcp_server_with_runtime_state(
-        SaveMcpServerRequest {
-            enabled: record.enabled,
-            display_name: record.display_name,
-            id: record.id,
-            scope: record.scope,
-            transport: record.transport,
-        },
-        state,
-    )
-    .await?;
+    ensure_mcp_server_record(&record)?;
+    let response = save_mcp_server_record_with_runtime_state(record, state).await?;
 
     Ok(SaveBrowserMcpPresetResponse {
         preset: browser_mcp_preset_summary_from_enabled(preset_id, response.server.enabled),
@@ -198,7 +312,9 @@ pub async fn get_mcp_server_config_with_store(
         .ok_or_else(|| not_found(format!("mcp server not found: {id}")))?;
     ensure_mcp_server_record(&record)?;
 
-    Ok(GetMcpServerConfigResponse { server: record })
+    Ok(GetMcpServerConfigResponse {
+        server: mcp_server_config_payload_from_record(&record),
+    })
 }
 
 pub async fn get_mcp_server_config_with_runtime_state(
@@ -502,10 +618,17 @@ pub(crate) async fn mcp_config_from_records(
     default_agent_id: AgentId,
     diagnostic_store: Arc<dyn McpDiagnosticStore>,
     authorization_service: Arc<harness_execution::AuthorizationService>,
-    workspace_root: &Path,
+    workspace_root: Option<&Path>,
 ) -> Result<McpConfig, CommandErrorPayload> {
     let registry = McpRegistry::new();
     let mut server_ids_to_inject = Vec::new();
+
+    let Some(workspace_root) = workspace_root else {
+        return Ok(McpConfig {
+            registry,
+            server_ids_to_inject,
+        });
+    };
 
     for record in records {
         ensure_mcp_server_record(&record)?;
@@ -546,6 +669,11 @@ pub(crate) async fn register_mcp_record_with_harness(
     let Some(config) = harness.mcp_config() else {
         return Ok(mcp_server_summary_from_record(record));
     };
+    let Some(workspace_root) = state.project_workspace_root() else {
+        return Err(invalid_payload(
+            "custom MCP servers require an active project workspace".to_owned(),
+        ));
+    };
     let server_id = register_mcp_record_with_registry(
         record,
         &config.registry,
@@ -553,7 +681,7 @@ pub(crate) async fn register_mcp_record_with_harness(
         AgentId::new(),
         Arc::clone(&state.mcp_diagnostic_store),
         harness.authorization_service(),
-        state.workspace_root(),
+        workspace_root,
         InteractivityLevel::FullyInteractive,
     )
     .await?;
@@ -1068,6 +1196,56 @@ pub(crate) fn browser_mcp_preset_summary_from_enabled(
         enabled,
         id: preset_id,
         server_id: browser_mcp_preset_server_id(preset_id),
+    }
+}
+
+fn mcp_server_config_payload_from_record(record: &McpServerConfigRecord) -> McpServerConfigPayload {
+    McpServerConfigPayload {
+        enabled: record.enabled,
+        display_name: record.display_name.clone(),
+        id: record.id.clone(),
+        scope: record.scope.clone(),
+        transport: mcp_server_config_transport_payload(&record.transport),
+    }
+}
+
+fn mcp_server_config_transport_payload(
+    transport: &McpServerTransportConfig,
+) -> McpServerConfigTransportPayload {
+    match transport {
+        McpServerTransportConfig::Stdio {
+            command,
+            args,
+            env,
+            inherit_env,
+            working_dir,
+        } => McpServerConfigTransportPayload::Stdio {
+            command: command.clone(),
+            args: args.clone(),
+            env: env.iter().map(mcp_name_value_config_payload).collect(),
+            inherit_env: inherit_env.clone(),
+            working_dir: working_dir.clone(),
+        },
+        McpServerTransportConfig::Http {
+            url,
+            bearer_token_env_var,
+            headers,
+            headers_from_env,
+        } => McpServerConfigTransportPayload::Http {
+            url: url.clone(),
+            bearer_token_env_var: bearer_token_env_var.clone(),
+            headers: headers.iter().map(mcp_name_value_config_payload).collect(),
+            headers_from_env: headers_from_env.clone(),
+        },
+        McpServerTransportConfig::InProcess => McpServerConfigTransportPayload::InProcess,
+    }
+}
+
+fn mcp_name_value_config_payload(record: &McpNameValueRecord) -> McpNameValueConfigPayload {
+    McpNameValueConfigPayload {
+        has_value: !record.value.is_empty(),
+        key: record.key.clone(),
+        value: None,
     }
 }
 

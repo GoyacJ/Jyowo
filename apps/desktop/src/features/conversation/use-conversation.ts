@@ -35,7 +35,7 @@ export function useConversation(options: UseConversationOptions = {}) {
   const workspaceKey = workspacePath ?? 'none'
 
   const conversationsQuery = useQuery({
-    enabled: Boolean(workspacePath),
+    enabled: !activeProjectPathQuery.isLoading,
     queryFn: () => listConversations(commandClient),
     queryKey: conversationQueryKeys.list(workspaceKey),
   })
@@ -52,7 +52,6 @@ export function useConversation(options: UseConversationOptions = {}) {
   )
   const shouldLoadDetail =
     includeDetail &&
-    Boolean(workspacePath) &&
     Boolean(selectedConversationId) &&
     (!options.conversationId || selectedConversationListed)
 
@@ -106,5 +105,6 @@ export function useConversation(options: UseConversationOptions = {}) {
     submitError: startRunMutation.error,
     submitPrompt: startRunMutation.mutateAsync,
     workspacePath,
+    workspacePathReady: !activeProjectPathQuery.isLoading,
   }
 }

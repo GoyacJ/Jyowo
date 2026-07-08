@@ -20,6 +20,7 @@ export const fixtureExecutionSettings: GetExecutionSettingsResponse = {
   autoModeAvailable: false,
   contextCompressionTriggerRatio: 0.8,
   permissionMode: 'default',
+  scope: 'global',
   toolProfile: 'full',
 }
 
@@ -28,6 +29,7 @@ export const fixtureSetExecutionSettings: SetExecutionSettingsResponse = {
   autoModeAvailable: false,
   contextCompressionTriggerRatio: 0.8,
   permissionMode: 'default',
+  scope: 'global',
   toolProfile: 'full',
 }
 

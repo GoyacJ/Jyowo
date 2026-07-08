@@ -306,6 +306,7 @@ fn tool_ctx(agent_id: AgentId, cap_registry: CapabilityRegistry) -> ToolContext 
         agent_id,
         subagent_depth: 0,
         workspace_root: std::env::temp_dir(),
+        project_workspace_root: None,
         sandbox: None,
         cap_registry: Arc::new(cap_registry),
         redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),

@@ -3,6 +3,18 @@ use rusqlite::{Connection, OptionalExtension};
 pub const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 pub(crate) fn migrate(connection: &Connection) -> Result<(), rusqlite::Error> {
+    connection.execute_batch("BEGIN IMMEDIATE TRANSACTION;")?;
+    let result = migrate_in_transaction(connection);
+    match result {
+        Ok(()) => connection.execute_batch("COMMIT;"),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_in_transaction(connection: &Connection) -> Result<(), rusqlite::Error> {
     connection.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS schema_version (

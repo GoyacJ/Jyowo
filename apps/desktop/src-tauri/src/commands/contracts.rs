@@ -147,7 +147,7 @@ pub struct RequestProviderConfigApiKeyRevealRequest {
     pub config_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestProviderConfigApiKeyRevealResponse {
     pub config_id: String,
@@ -156,21 +156,50 @@ pub struct RequestProviderConfigApiKeyRevealResponse {
     pub status: &'static str,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+impl std::fmt::Debug for RequestProviderConfigApiKeyRevealResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestProviderConfigApiKeyRevealResponse")
+            .field("config_id", &self.config_id)
+            .field("expires_in_seconds", &self.expires_in_seconds)
+            .field("reveal_token", &"[REDACTED]")
+            .field("status", &self.status)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetProviderConfigApiKeyRequest {
     pub config_id: String,
     pub reveal_token: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+impl std::fmt::Debug for GetProviderConfigApiKeyRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GetProviderConfigApiKeyRequest")
+            .field("config_id", &self.config_id)
+            .field("reveal_token", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetProviderConfigApiKeyResponse {
     pub api_key: String,
     pub config_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+impl std::fmt::Debug for GetProviderConfigApiKeyResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GetProviderConfigApiKeyResponse")
+            .field("api_key", &"[REDACTED]")
+            .field("config_id", &self.config_id)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ProviderConfigRecord {
     pub api_key: String,
@@ -184,6 +213,25 @@ pub struct ProviderConfigRecord {
     pub official_quota_api_key: Option<String>,
     pub provider_id: String,
     pub model_descriptor: ProviderModelDescriptorRecord,
+}
+
+impl std::fmt::Debug for ProviderConfigRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfigRecord")
+            .field("api_key", &"[REDACTED]")
+            .field("protocol", &self.protocol)
+            .field("base_url", &self.base_url)
+            .field("display_name", &self.display_name)
+            .field("id", &self.id)
+            .field("model_id", &self.model_id)
+            .field(
+                "official_quota_api_key",
+                &self.official_quota_api_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("provider_id", &self.provider_id)
+            .field("model_descriptor", &self.model_descriptor)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -232,12 +280,21 @@ pub enum ProviderModelModalityRecord {
     Embedding,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSettingsRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_config_id: Option<String>,
     pub configs: Vec<ProviderConfigRecord>,
+}
+
+impl std::fmt::Debug for ProviderSettingsRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderSettingsRecord")
+            .field("default_config_id", &self.default_config_id)
+            .field("configs", &self.configs)
+            .finish()
+    }
 }
 
 impl<'de> Deserialize<'de> for ProviderSettingsRecord {
@@ -318,10 +375,18 @@ pub struct ProviderConfigPayload {
     pub model_descriptor: ModelCatalogEntry,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SettingsScope {
+    Global,
+    Project,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListProviderSettingsResponse {
     pub default_config_id: Option<String>,
+    pub selection_scope: SettingsScope,
     pub configs: Vec<ProviderConfigPayload>,
 }
 
@@ -417,7 +482,7 @@ pub(crate) fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SaveMcpServerRequest {
     #[serde(default = "default_true")]
@@ -425,14 +490,55 @@ pub struct SaveMcpServerRequest {
     pub display_name: String,
     pub id: String,
     pub scope: String,
-    pub transport: McpServerTransportConfig,
+    pub transport: SaveMcpServerTransportConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+impl std::fmt::Debug for SaveMcpServerRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SaveMcpServerRequest")
+            .field("enabled", &self.enabled)
+            .field("display_name", &self.display_name)
+            .field("id", &self.id)
+            .field("scope", &self.scope)
+            .field("transport", &self.transport)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct McpNameValueRecord {
     pub key: String,
     pub value: String,
+}
+
+impl std::fmt::Debug for McpNameValueRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpNameValueRecord")
+            .field("key", &self.key)
+            .field("value", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct McpNameValueSaveRecord {
+    pub key: String,
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub preserve_existing: bool,
+}
+
+impl std::fmt::Debug for McpNameValueSaveRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpNameValueSaveRecord")
+            .field("key", &self.key)
+            .field("value", &self.value.as_ref().map(|_| "[REDACTED]"))
+            .field("preserve_existing", &self.preserve_existing)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -442,7 +548,7 @@ pub struct McpHeaderEnvRecord {
     pub env_var: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, tag = "kind", rename_all = "camelCase")]
 pub enum McpServerTransportConfig {
     Stdio {
@@ -468,7 +574,101 @@ pub enum McpServerTransportConfig {
     InProcess,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "camelCase")]
+pub enum SaveMcpServerTransportConfig {
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: Vec<McpNameValueSaveRecord>,
+        #[serde(default)]
+        inherit_env: Vec<String>,
+        #[serde(default)]
+        working_dir: Option<String>,
+    },
+    Http {
+        url: String,
+        #[serde(default)]
+        bearer_token_env_var: Option<String>,
+        #[serde(default)]
+        headers: Vec<McpNameValueSaveRecord>,
+        #[serde(default)]
+        headers_from_env: Vec<McpHeaderEnvRecord>,
+    },
+    InProcess,
+}
+
+impl std::fmt::Debug for SaveMcpServerTransportConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stdio {
+                command,
+                args,
+                env,
+                inherit_env,
+                working_dir,
+            } => f
+                .debug_struct("Stdio")
+                .field("command", command)
+                .field("args", args)
+                .field("env", env)
+                .field("inherit_env", inherit_env)
+                .field("working_dir", working_dir)
+                .finish(),
+            Self::Http {
+                url,
+                bearer_token_env_var,
+                headers,
+                headers_from_env,
+            } => f
+                .debug_struct("Http")
+                .field("url", url)
+                .field("bearer_token_env_var", bearer_token_env_var)
+                .field("headers", headers)
+                .field("headers_from_env", headers_from_env)
+                .finish(),
+            Self::InProcess => f.write_str("InProcess"),
+        }
+    }
+}
+
+impl std::fmt::Debug for McpServerTransportConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stdio {
+                command,
+                args,
+                env,
+                inherit_env,
+                working_dir,
+            } => f
+                .debug_struct("Stdio")
+                .field("command", command)
+                .field("args", args)
+                .field("env", env)
+                .field("inherit_env", inherit_env)
+                .field("working_dir", working_dir)
+                .finish(),
+            Self::Http {
+                url,
+                bearer_token_env_var,
+                headers,
+                headers_from_env,
+            } => f
+                .debug_struct("Http")
+                .field("url", url)
+                .field("bearer_token_env_var", bearer_token_env_var)
+                .field("headers", headers)
+                .field("headers_from_env", headers_from_env)
+                .finish(),
+            Self::InProcess => f.write_str("InProcess"),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct McpServerConfigRecord {
     #[serde(default = "default_true")]
@@ -477,6 +677,63 @@ pub struct McpServerConfigRecord {
     pub id: String,
     pub scope: String,
     pub transport: McpServerTransportConfig,
+}
+
+impl std::fmt::Debug for McpServerConfigRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpServerConfigRecord")
+            .field("enabled", &self.enabled)
+            .field("display_name", &self.display_name)
+            .field("id", &self.id)
+            .field("scope", &self.scope)
+            .field("transport", &self.transport)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpNameValueConfigPayload {
+    pub has_value: bool,
+    pub key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum McpServerConfigTransportPayload {
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: Vec<McpNameValueConfigPayload>,
+        #[serde(default)]
+        inherit_env: Vec<String>,
+        #[serde(default)]
+        working_dir: Option<String>,
+    },
+    Http {
+        url: String,
+        #[serde(default)]
+        bearer_token_env_var: Option<String>,
+        #[serde(default)]
+        headers: Vec<McpNameValueConfigPayload>,
+        #[serde(default)]
+        headers_from_env: Vec<McpHeaderEnvRecord>,
+    },
+    InProcess,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerConfigPayload {
+    pub enabled: bool,
+    pub display_name: String,
+    pub id: String,
+    pub scope: String,
+    pub transport: McpServerConfigTransportPayload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -589,7 +846,7 @@ pub struct SaveMcpServerResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetMcpServerConfigResponse {
-    pub server: McpServerConfigRecord,
+    pub server: McpServerConfigPayload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1156,6 +1413,10 @@ pub trait PermissionResolver: Send + Sync {
 }
 
 pub trait ProviderSettingsStore: Send + Sync {
+    fn selection_scope(&self) -> SettingsScope {
+        SettingsScope::Global
+    }
+
     fn load_record(&self) -> Result<Option<ProviderSettingsRecord>, CommandErrorPayload>;
     fn save_record(&self, record: &ProviderSettingsRecord) -> Result<(), CommandErrorPayload>;
 }
@@ -1172,6 +1433,10 @@ pub(crate) mod provider_capability_route_store_seal {
 pub trait ProviderCapabilityRouteStore:
     provider_capability_route_store_seal::Sealed + Send + Sync
 {
+    fn project_scope_available(&self) -> bool {
+        true
+    }
+
     fn load_record(&self) -> Result<Option<ProviderCapabilityRouteSettings>, CommandErrorPayload>;
     fn save_record(
         &self,
@@ -1247,7 +1512,7 @@ pub trait SkillStore: Send + Sync {
         id: &str,
         enabled: bool,
         source_path: &Path,
-    ) -> Result<(), CommandErrorPayload>;
+    ) -> Result<String, CommandErrorPayload>;
     fn read_skill_entry_file(
         &self,
         record: &SkillStoreRecord,
@@ -1275,7 +1540,7 @@ pub trait PluginStore: Send + Sync {
         &self,
         package_dir: &str,
         source_path: &Path,
-    ) -> Result<(), CommandErrorPayload>;
+    ) -> Result<String, CommandErrorPayload>;
     fn delete_plugin_package(&self, package_dir: &str) -> Result<(), CommandErrorPayload>;
 }
 
@@ -1358,7 +1623,8 @@ pub struct StartRunRequest {
     #[serde(default)]
     pub context_references: Option<Vec<ContextReferencePayload>>,
     pub conversation_id: String,
-    pub model_config_id: String,
+    #[serde(default)]
+    pub model_config_id: Option<String>,
     #[serde(default)]
     pub permission_mode: Option<PermissionMode>,
     pub prompt: String,
@@ -1482,6 +1748,8 @@ pub struct BackgroundAgentDeleteResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateAttachmentFromPathRequest {
+    #[serde(default)]
+    pub conversation_id: Option<String>,
     pub path: String,
 }
 
@@ -2056,6 +2324,7 @@ pub struct GetExecutionSettingsResponse {
     pub permission_mode: PermissionMode,
     pub tool_profile: ToolProfile,
     pub context_compression_trigger_ratio: f32,
+    pub scope: SettingsScope,
     pub auto_mode_available: bool,
     pub agent_capabilities: AgentCapabilitiesPayload,
 }
@@ -2083,6 +2352,7 @@ pub struct SetExecutionSettingsResponse {
     pub permission_mode: PermissionMode,
     pub tool_profile: ToolProfile,
     pub context_compression_trigger_ratio: f32,
+    pub scope: SettingsScope,
     pub auto_mode_available: bool,
     pub agent_capabilities: AgentCapabilitiesPayload,
 }
@@ -2582,4 +2852,125 @@ pub trait ProviderQuotaCacheStore: Send + Sync {
 pub struct DeleteAgentProfileResponse {
     pub id: String,
     pub status: &'static str,
+}
+
+#[cfg(test)]
+mod debug_redaction_tests {
+    use super::*;
+
+    fn provider_config() -> ProviderConfigRecord {
+        ProviderConfigRecord {
+            api_key: "provider-secret-token".to_owned(),
+            protocol: ModelProtocol::Responses,
+            base_url: Some("https://gateway.example.com".to_owned()),
+            display_name: "OpenAI Work".to_owned(),
+            id: "openai-work".to_owned(),
+            model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: Some("quota-secret-token".to_owned()),
+            provider_id: "openai".to_owned(),
+            model_descriptor: ProviderModelDescriptorRecord {
+                protocol: ModelProtocol::Responses,
+                conversation_capability: ConversationModelCapabilityRecord {
+                    input_modalities: vec![ProviderModelModalityRecord::Text],
+                    output_modalities: vec![ProviderModelModalityRecord::Text],
+                    context_window: 128_000,
+                    max_output_tokens: 16_384,
+                    streaming: true,
+                    tool_calling: true,
+                    reasoning: true,
+                    prompt_cache: true,
+                    structured_output: true,
+                },
+                context_window: 128_000,
+                display_name: "GPT".to_owned(),
+                lifecycle: ProviderModelLifecycleRecord::Stable,
+                max_output_tokens: 16_384,
+                model_id: "gpt-5.4-mini".to_owned(),
+                provider_id: "openai".to_owned(),
+            },
+        }
+    }
+
+    #[test]
+    fn provider_settings_debug_redacts_secret_fields() {
+        let settings = ProviderSettingsRecord {
+            default_config_id: Some("openai-work".to_owned()),
+            configs: vec![provider_config()],
+        };
+
+        let debug = format!("{settings:?}");
+
+        assert!(!debug.contains("provider-secret-token"));
+        assert!(!debug.contains("quota-secret-token"));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn provider_reveal_debug_redacts_tokens_and_raw_secret() {
+        let reveal_response = RequestProviderConfigApiKeyRevealResponse {
+            config_id: "openai-work".to_owned(),
+            expires_in_seconds: 30,
+            reveal_token: "reveal-token-secret".to_owned(),
+            status: "ready",
+        };
+        let get_request = GetProviderConfigApiKeyRequest {
+            config_id: "openai-work".to_owned(),
+            reveal_token: "reveal-token-secret".to_owned(),
+        };
+        let get_response = GetProviderConfigApiKeyResponse {
+            api_key: "provider-secret-token".to_owned(),
+            config_id: "openai-work".to_owned(),
+        };
+
+        let debug = format!("{reveal_response:?}\n{get_request:?}\n{get_response:?}");
+
+        assert!(!debug.contains("reveal-token-secret"));
+        assert!(!debug.contains("provider-secret-token"));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn mcp_debug_redacts_inline_env_and_headers() {
+        let request = SaveMcpServerRequest {
+            enabled: true,
+            display_name: "Server".to_owned(),
+            id: "server".to_owned(),
+            scope: "workspace".to_owned(),
+            transport: SaveMcpServerTransportConfig::Http {
+                url: "https://mcp.example.com".to_owned(),
+                bearer_token_env_var: Some("MCP_TOKEN".to_owned()),
+                headers: vec![McpNameValueSaveRecord {
+                    key: "Authorization".to_owned(),
+                    value: Some("Bearer leaked-token".to_owned()),
+                    preserve_existing: false,
+                }],
+                headers_from_env: vec![McpHeaderEnvRecord {
+                    key: "X-Api-Key".to_owned(),
+                    env_var: "MCP_API_KEY".to_owned(),
+                }],
+            },
+        };
+        let record = McpServerConfigRecord {
+            enabled: request.enabled,
+            display_name: request.display_name.clone(),
+            id: request.id.clone(),
+            scope: request.scope.clone(),
+            transport: McpServerTransportConfig::Stdio {
+                command: "node".to_owned(),
+                args: vec!["server.js".to_owned()],
+                env: vec![McpNameValueRecord {
+                    key: "TOKEN".to_owned(),
+                    value: "stdio-secret-token".to_owned(),
+                }],
+                inherit_env: vec!["PATH".to_owned()],
+                working_dir: None,
+            },
+        };
+
+        let debug = format!("{request:?}\n{record:?}");
+
+        assert!(!debug.contains("Bearer leaked-token"));
+        assert!(!debug.contains("stdio-secret-token"));
+        assert!(debug.contains("[REDACTED]"));
+    }
 }

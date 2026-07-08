@@ -17,9 +17,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::{
-    apply_cursor, journal_error, session_end_reason, AppendMetadata, CompactionLineage,
-    EventEnvelope, EventEnvelopePage, EventStore, JournalRedaction, PrunePolicy, PruneReport,
-    ReplayCursor, SchemaVersion, SessionFilter, SessionSnapshot, SessionSummary,
+    app_controlled_path, apply_cursor, journal_error, session_end_reason, AppendMetadata,
+    CompactionLineage, EventEnvelope, EventEnvelopePage, EventStore, JournalRedaction, PrunePolicy,
+    PruneReport, ReplayCursor, SchemaVersion, SessionFilter, SessionSnapshot, SessionSummary,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
@@ -84,8 +84,8 @@ impl JsonlEventStore {
         redactor: Arc<dyn Redactor>,
         options: JsonlOptions,
     ) -> Result<Self, JournalError> {
-        let root = root.as_ref().to_path_buf();
-        fs::create_dir_all(&root).map_err(journal_error)?;
+        let root = app_controlled_path(root.as_ref()).map_err(journal_error)?;
+        harness_fs::ensure_app_dir_no_symlink(&root).map_err(journal_error)?;
         Ok(Self {
             root,
             options,
@@ -155,6 +155,7 @@ impl JsonlEventStore {
     ) -> Result<Vec<EventEnvelope>, JournalError> {
         let mut envelopes = Vec::new();
         for path in self.segment_paths(tenant, session_id)? {
+            harness_fs::ensure_no_symlink_components(&path).map_err(journal_error)?;
             let file = match File::open(&path) {
                 Ok(file) => file,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,

@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -26,8 +25,8 @@ pub struct FileBlobStore {
 
 impl FileBlobStore {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, BlobError> {
-        let root = root.as_ref().to_path_buf();
-        fs::create_dir_all(&root)?;
+        let root = crate::app_controlled_path(root.as_ref()).map_err(blob_error)?;
+        harness_fs::ensure_app_dir_no_symlink(&root).map_err(blob_error)?;
         Ok(Self {
             root,
             store_id: "file".to_owned(),
@@ -56,14 +55,16 @@ impl FileBlobStore {
         content_hash: [u8; 32],
     ) -> Result<Option<(BlobId, BlobMeta)>, BlobError> {
         let tenant_dir = self.root.join(tenant.to_string());
+        harness_fs::ensure_no_symlink_components(&tenant_dir).map_err(blob_error)?;
         let Ok(prefixes) = fs::read_dir(tenant_dir) else {
             return Ok(None);
         };
         for prefix in prefixes {
-            let prefix = prefix?.path();
-            if !prefix.is_dir() {
+            let prefix = prefix?;
+            if !prefix.file_type()?.is_dir() {
                 continue;
             }
+            let prefix = prefix.path();
             for entry in fs::read_dir(prefix)? {
                 let path = entry?.path();
                 if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
@@ -75,8 +76,11 @@ impl FileBlobStore {
                 let Some(id) = name.strip_suffix(".meta.json") else {
                     continue;
                 };
-                let meta: BlobMeta =
-                    serde_json::from_slice(&fs::read(&path)?).map_err(blob_error)?;
+                let Some(bytes) = harness_fs::read_file_no_follow(&path).map_err(blob_error)?
+                else {
+                    continue;
+                };
+                let meta: BlobMeta = serde_json::from_slice(&bytes).map_err(blob_error)?;
                 if meta.content_hash == content_hash {
                     return Ok(Some((id.parse().map_err(blob_error)?, meta)));
                 }
@@ -87,15 +91,17 @@ impl FileBlobStore {
 
     pub fn inventory(&self, tenant: TenantId) -> Result<Vec<(BlobRef, BlobMeta)>, BlobError> {
         let tenant_dir = self.root.join(tenant.to_string());
+        harness_fs::ensure_no_symlink_components(&tenant_dir).map_err(blob_error)?;
         let Ok(prefixes) = fs::read_dir(tenant_dir) else {
             return Ok(Vec::new());
         };
         let mut blobs = Vec::new();
         for prefix in prefixes {
-            let prefix = prefix?.path();
-            if !prefix.is_dir() {
+            let prefix = prefix?;
+            if !prefix.file_type()?.is_dir() {
                 continue;
             }
+            let prefix = prefix.path();
             for entry in fs::read_dir(prefix)? {
                 let path = entry?.path();
                 let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
@@ -105,8 +111,11 @@ impl FileBlobStore {
                     continue;
                 };
                 let id: BlobId = id.parse().map_err(blob_error)?;
-                let meta: BlobMeta =
-                    serde_json::from_slice(&fs::read(&path)?).map_err(blob_error)?;
+                let Some(bytes) = harness_fs::read_file_no_follow(&path).map_err(blob_error)?
+                else {
+                    continue;
+                };
+                let meta: BlobMeta = serde_json::from_slice(&bytes).map_err(blob_error)?;
                 blobs.push((
                     BlobRef {
                         id,
@@ -132,16 +141,17 @@ impl FileBlobStore {
     ) -> Result<BlobRef, BlobError> {
         let (body, meta_path) = self.paths(tenant, id);
         if let Some(dir) = body.parent() {
-            fs::create_dir_all(dir)?;
+            harness_fs::ensure_app_dir_no_symlink(dir).map_err(blob_error)?;
         }
-        let body_temp = body.with_extension("bin.tmp");
-        let meta_temp = meta_path.with_extension("json.tmp");
 
         let result = (|| {
-            fs::write(&body_temp, &bytes)?;
-            fs::rename(&body_temp, &body)?;
-            fs::write(&meta_temp, serde_json::to_vec(&meta).map_err(blob_error)?)?;
-            fs::rename(&meta_temp, &meta_path)?;
+            harness_fs::write_bytes_file_atomic(&body, &bytes, true).map_err(blob_error)?;
+            harness_fs::write_bytes_file_atomic(
+                &meta_path,
+                &serde_json::to_vec(&meta).map_err(blob_error)?,
+                true,
+            )
+            .map_err(blob_error)?;
             Ok(BlobRef {
                 id,
                 size: meta.size,
@@ -153,8 +163,7 @@ impl FileBlobStore {
         match result {
             Ok(blob_ref) => Ok(blob_ref),
             Err(error) => {
-                let cleanup_error =
-                    cleanup_blob_write_paths([&body_temp, &meta_temp, &body, &meta_path]);
+                let cleanup_error = cleanup_blob_write_paths([&body, &meta_path]);
                 if let Some(cleanup_error) = cleanup_error {
                     return Err(BlobError::Backend(format!(
                         "blob write failed: {error}; cleanup failed: {cleanup_error}"
@@ -210,12 +219,10 @@ impl BlobStore for FileBlobStore {
         blob: &BlobRef,
     ) -> Result<BoxStream<'static, Bytes>, BlobError> {
         let (body, _) = self.paths(tenant, blob.id);
-        let bytes = fs::read(body)
+        let bytes = harness_fs::read_file_no_follow(&body)
+            .map_err(blob_error)?
             .map(Bytes::from)
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::NotFound => BlobError::NotFound(blob.id),
-                _ => BlobError::from(error),
-            })?;
+            .ok_or(BlobError::NotFound(blob.id))?;
         Ok(Box::pin(stream::once(async move { bytes })))
     }
 
@@ -236,24 +243,25 @@ impl BlobStore for FileBlobStore {
         }
 
         let (body, _) = self.paths(tenant, blob.id);
-        let mut file = fs::File::open(body).map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => BlobError::NotFound(blob.id),
-            _ => BlobError::from(error),
-        })?;
-        file.seek(SeekFrom::Start(offset))?;
+        let bytes = harness_fs::read_file_no_follow(&body)
+            .map_err(blob_error)?
+            .ok_or(BlobError::NotFound(blob.id))?;
         let bytes_to_read = limit.min(blob.size.saturating_sub(offset));
-        let mut bytes = Vec::with_capacity(bytes_to_read.min(8192) as usize);
-        file.take(bytes_to_read).read_to_end(&mut bytes)?;
-        Ok(Box::pin(stream::once(async move { Bytes::from(bytes) })))
+        let start = offset as usize;
+        let end = start
+            .saturating_add(bytes_to_read as usize)
+            .min(bytes.len());
+        Ok(Box::pin(stream::once(async move {
+            Bytes::from(bytes[start..end].to_vec())
+        })))
     }
 
     async fn head(&self, tenant: TenantId, blob: &BlobRef) -> Result<Option<BlobMeta>, BlobError> {
         let (_, meta_path) = self.paths(tenant, blob.id);
-        match fs::read(meta_path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(blob_error),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error.into()),
-        }
+        harness_fs::read_file_no_follow(&meta_path)
+            .map_err(blob_error)?
+            .map(|bytes| serde_json::from_slice(&bytes).map_err(blob_error))
+            .transpose()
     }
 
     async fn delete(&self, tenant: TenantId, blob: &BlobRef) -> Result<(), BlobError> {

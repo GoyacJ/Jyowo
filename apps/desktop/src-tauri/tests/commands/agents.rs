@@ -20,11 +20,24 @@ fn sample_user_profile(id: &str) -> AgentProfile {
 
 #[tokio::test]
 async fn agent_profile_commands_list_save_and_delete_user_profile() {
+    let _lock = HOME_ENV_LOCK.lock().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let canonical_home = home.path().canonicalize().unwrap();
+    let _home = EnvVarGuard::set(HOME_ENV, canonical_home.as_os_str());
     let workspace = unique_workspace("agent-profile-commands");
     std::fs::create_dir_all(&workspace).unwrap();
     let state = runtime_state_for_workspace(workspace.clone())
         .await
         .unwrap();
+    let global_profiles_path = home
+        .path()
+        .join(".jyowo")
+        .join("config")
+        .join("agent-profiles.json");
+    let old_profiles_path = workspace
+        .join(".jyowo")
+        .join("runtime")
+        .join("agent-profiles.json");
 
     let listed = list_agent_profiles_with_runtime_state(&state)
         .await
@@ -40,6 +53,8 @@ async fn agent_profile_commands_list_save_and_delete_user_profile() {
         .unwrap();
     assert_eq!(saved.status, "saved");
     assert_eq!(saved.profile.id, "custom_worker");
+    assert!(global_profiles_path.is_file());
+    assert!(!old_profiles_path.exists());
 
     let listed_after_save = list_agent_profiles_with_runtime_state(&state)
         .await
@@ -70,6 +85,10 @@ async fn agent_profile_commands_list_save_and_delete_user_profile() {
 
 #[tokio::test]
 async fn agent_profile_commands_reject_invalid_profile_id() {
+    let _lock = HOME_ENV_LOCK.lock().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let canonical_home = home.path().canonicalize().unwrap();
+    let _home = EnvVarGuard::set(HOME_ENV, canonical_home.as_os_str());
     let workspace = unique_workspace("agent-profile-invalid-id");
     std::fs::create_dir_all(&workspace).unwrap();
     let state = runtime_state_for_workspace(workspace).await.unwrap();
@@ -83,6 +102,10 @@ async fn agent_profile_commands_reject_invalid_profile_id() {
 
 #[tokio::test]
 async fn agent_profile_commands_reject_builtin_delete() {
+    let _lock = HOME_ENV_LOCK.lock().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let canonical_home = home.path().canonicalize().unwrap();
+    let _home = EnvVarGuard::set(HOME_ENV, canonical_home.as_os_str());
     let workspace = unique_workspace("agent-profile-builtin-delete");
     std::fs::create_dir_all(&workspace).unwrap();
     let state = runtime_state_for_workspace(workspace).await.unwrap();
@@ -100,13 +123,21 @@ async fn agent_profile_commands_reject_builtin_delete() {
 }
 
 #[tokio::test]
-async fn agent_profile_commands_quarantine_invalid_profile_file() {
+async fn agent_profile_commands_reject_invalid_global_profile_file() {
+    let _lock = HOME_ENV_LOCK.lock().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let canonical_home = home.path().canonicalize().unwrap();
+    let _home = EnvVarGuard::set(HOME_ENV, canonical_home.as_os_str());
     let workspace = unique_workspace("agent-profile-quarantine");
     std::fs::create_dir_all(&workspace).unwrap();
     let state = runtime_state_for_workspace(workspace.clone())
         .await
         .unwrap();
-    let profile_path = workspace.join(".jyowo/runtime/agent-profiles.json");
+    let profile_path = home
+        .path()
+        .join(".jyowo")
+        .join("config")
+        .join("agent-profiles.json");
     std::fs::create_dir_all(profile_path.parent().unwrap()).unwrap();
     std::fs::write(&profile_path, "{not-json").unwrap();
 
@@ -114,5 +145,4 @@ async fn agent_profile_commands_quarantine_invalid_profile_file() {
         .await
         .expect_err("invalid profile file");
     assert_eq!(error.code, "INVALID_PAYLOAD");
-    assert!(profile_path.with_extension("json.invalid").exists());
 }

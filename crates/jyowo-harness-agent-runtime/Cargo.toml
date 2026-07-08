@@ -20,13 +20,16 @@ agents-team = ["agents-subagent", "dep:jyowo-harness-team"]
 
 [dependencies]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+jyowo-harness-fs = { path = "../jyowo-harness-fs" }
 jyowo-harness-journal = { path = "../jyowo-harness-journal" }
 jyowo-harness-subagent = { path = "../jyowo-harness-subagent", optional = true }
 jyowo-harness-team = { path = "../jyowo-harness-team", optional = true }
 async-trait = { workspace = true }
 blake3 = { workspace = true }
 chrono = { workspace = true }
+libc = { workspace = true }
 rusqlite = { workspace = true }
+rustix = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

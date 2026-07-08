@@ -85,8 +85,9 @@ pub async fn pause_background_agent_with_runtime_state(
         Box::pin(async move { manager.pause(&background_agent_id, "paused by user").await })
     })
     .await?;
-    let _ = crate::agent_supervisor::pause_background_agent_run(
-        state.workspace_root(),
+    let supervisor_scope = agent_supervisor_scope_for_state(state);
+    let _ = crate::agent_supervisor::pause_background_agent_run_scope(
+        &supervisor_scope,
         &background_agent_id,
     )
     .await;
@@ -106,11 +107,12 @@ pub async fn resume_background_agent_with_runtime_state(
         })
     })
     .await?;
-    let _ = crate::agent_supervisor::requeue_background_agent_supervisor_payload(
-        state.workspace_root(),
+    let supervisor_scope = agent_supervisor_scope_for_state(state);
+    let _ = crate::agent_supervisor::requeue_background_agent_supervisor_payload_scope(
+        &supervisor_scope,
         &background_agent_id,
     );
-    let _ = crate::agent_supervisor::wake_agent_supervisor(state.workspace_root()).await;
+    let _ = crate::agent_supervisor::wake_agent_supervisor_scope(&supervisor_scope).await;
     Ok(response)
 }
 
@@ -127,8 +129,9 @@ pub async fn cancel_background_agent_with_runtime_state(
         })
     })
     .await?;
-    let _ = crate::agent_supervisor::cancel_background_agent_run(
-        state.workspace_root(),
+    let supervisor_scope = agent_supervisor_scope_for_state(state);
+    let _ = crate::agent_supervisor::cancel_background_agent_run_scope(
+        &supervisor_scope,
         &background_agent_id,
     )
     .await;
@@ -154,11 +157,12 @@ pub async fn send_background_agent_input_with_runtime_state(
         .send_input(&request.background_agent_id, request_id, &request.input)
         .await
         .map_err(map_background_agent_error)?;
-    let _ = crate::agent_supervisor::requeue_background_agent_supervisor_payload(
-        state.workspace_root(),
+    let supervisor_scope = agent_supervisor_scope_for_state(state);
+    let _ = crate::agent_supervisor::requeue_background_agent_supervisor_payload_scope(
+        &supervisor_scope,
         &request.background_agent_id,
     );
-    let _ = crate::agent_supervisor::wake_agent_supervisor(state.workspace_root()).await;
+    let _ = crate::agent_supervisor::wake_agent_supervisor_scope(&supervisor_scope).await;
 
     Ok(BackgroundAgentActionResponse {
         agent: background_agent_payload(agent),
@@ -242,7 +246,7 @@ fn background_manager_for_session(
         runtime_unavailable("Background agent commands require the runtime conversation facade.")
     })?;
     let store = Arc::new(
-        AgentRuntimeStore::open(state.workspace_root()).map_err(|error| {
+        AgentRuntimeStore::open_runtime_dir(state.runtime_root()).map_err(|error| {
             runtime_operation_failed(format!("background store open failed: {error}"))
         })?,
     );
@@ -260,7 +264,7 @@ fn get_background_agent_record(
     state: &DesktopRuntimeState,
     background_agent_id: &str,
 ) -> Result<jyowo_harness_sdk::BackgroundAgentRecord, CommandErrorPayload> {
-    let store = AgentRuntimeStore::open(state.workspace_root()).map_err(|error| {
+    let store = AgentRuntimeStore::open_runtime_dir(state.runtime_root()).map_err(|error| {
         runtime_operation_failed(format!("background store open failed: {error}"))
     })?;
     store
@@ -275,10 +279,14 @@ fn get_background_agent_record(
 fn ensure_background_agents_enabled(
     state: &DesktopRuntimeState,
 ) -> Result<(), CommandErrorPayload> {
-    let settings = state.execution_settings_store.load_record()?;
-    let context = state.agent_capability_resolution_context();
-    let capabilities =
-        agent_capabilities_payload(&settings, state.workspace_root(), Some(&context));
+    let settings = state.effective_execution_settings(None)?;
+    let capabilities = if let Some(workspace_root) = state.project_workspace_root() {
+        let context = state.agent_capability_resolution_context();
+        agent_capabilities_payload(&settings, workspace_root, Some(&context))
+    } else {
+        let context = state.agent_capability_resolution_context();
+        no_workspace_agent_capabilities_payload(&settings, state.runtime_root(), Some(&context))
+    };
     if !capabilities.background_agents_available {
         return Err(invalid_payload(
             "background agents are unavailable in this desktop runtime".to_owned(),
