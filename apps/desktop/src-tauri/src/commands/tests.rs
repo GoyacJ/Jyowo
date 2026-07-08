@@ -1077,12 +1077,15 @@ exit 0
     fn message_content_display_redacts_private_absolute_paths() {
         let body = message_content_display(
             &MessageContent::Text(
-                "read /Users/goya/.ssh/config and C:\\Users\\goya\\.ssh\\config".to_owned(),
+                "read /Users/goya/.ssh/config and C:\\Users\\goya\\.ssh\\config\nDesktop: Tauri 2 (plugin-autostart / dialog / shell / store)\nREADME.md / README.zh-CN.md".to_owned(),
             ),
             &DefaultRedactor::default(),
         );
 
-        assert_eq!(body, "read [REDACTED] and [REDACTED]");
+        assert_eq!(
+            body,
+            "read [REDACTED] and [REDACTED]\nDesktop: Tauri 2 (plugin-autostart / dialog / shell / store)\nREADME.md / README.zh-CN.md"
+        );
     }
 
     #[tokio::test]

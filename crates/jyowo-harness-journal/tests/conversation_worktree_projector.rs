@@ -1551,7 +1551,7 @@ fn public_segments_redact_urls_and_blob_paths() {
             "run-1",
             "assistant.thinking.delta",
             json!({
-                "safeSummaryDelta": "Checked https://provider.example/image，链接https://provider.example/tight and 路径：.jyowo/runtime/blobs/blob-001 log/tmp/provider-output",
+                "safeSummaryDelta": "Checked https://provider.example/image，链接https://provider.example/tight and 路径：.jyowo/runtime/blobs/blob-001 log/tmp/provider-output\nDesktop: Tauri 2 (plugin-autostart / dialog / shell / store)\nREADME.md / README.zh-CN.md",
                 "status": "running",
             }),
         ),
@@ -1630,7 +1630,7 @@ fn public_segments_redact_urls_and_blob_paths() {
 
     assert_eq!(
         process.steps[0].body.as_ref().unwrap().as_str(),
-        "Checked [REDACTED]，链接[REDACTED] and 路径：[REDACTED] log[REDACTED]"
+        "Checked [REDACTED]，链接[REDACTED] and 路径：[REDACTED] log[REDACTED]\nDesktop: Tauri 2 (plugin-autostart / dialog / shell / store)\nREADME.md / README.zh-CN.md"
     );
     assert_eq!(artifact.title.as_str(), "Image at [REDACTED] [REDACTED]。");
     assert_eq!(

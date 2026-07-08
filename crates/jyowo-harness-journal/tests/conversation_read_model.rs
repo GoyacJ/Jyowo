@@ -1193,7 +1193,7 @@ async fn sqlite_conversation_read_model_redacts_urls_and_blob_paths_from_public_
                 message_id,
                 delta: DeltaChunk::ReasoningSummary(ReasoningSummaryChunk {
                     text:
-                        "Checked https://provider.example/image，链接https://provider.example/tight and 路径：.jyowo/runtime/blobs/blob-001 log/tmp/provider-output"
+                        "Checked https://provider.example/image，链接https://provider.example/tight and 路径：.jyowo/runtime/blobs/blob-001 log/tmp/provider-output\nDesktop: Tauri 2 (plugin-autostart / dialog / shell / store)\nREADME.md / README.zh-CN.md"
                             .to_owned(),
                     provider_id: "test".to_owned(),
                     provider_native: None,
@@ -1296,7 +1296,7 @@ async fn sqlite_conversation_read_model_redacts_urls_and_blob_paths_from_public_
 
     assert_eq!(
         page.events[0].payload["safeSummaryDelta"],
-        "Checked [REDACTED]，链接[REDACTED] and 路径：[REDACTED] log[REDACTED]"
+        "Checked [REDACTED]，链接[REDACTED] and 路径：[REDACTED] log[REDACTED]\nDesktop: Tauri 2 (plugin-autostart / dialog / shell / store)\nREADME.md / README.zh-CN.md"
     );
     assert_eq!(
         page.events[1].payload["title"],

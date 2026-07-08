@@ -4188,7 +4188,8 @@ fn local_unsafe_path_starts_at(value: &str, index: usize) -> bool {
     {
         return true;
     }
-    token_starts_at(value, index) && (tail.starts_with('/') || is_windows_absolute_path(tail))
+    token_starts_at(value, index)
+        && (is_probable_unix_absolute_path(tail) || is_windows_absolute_path(tail))
 }
 
 fn starts_with_jyowo_path(value: &str) -> bool {
@@ -4207,6 +4208,23 @@ fn is_windows_absolute_path(value: &str) -> bool {
         && bytes[0].is_ascii_alphabetic()
         && bytes[1] == b':'
         && matches!(bytes[2], b'\\' | b'/')
+}
+
+fn is_probable_unix_absolute_path(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix('/') else {
+        return false;
+    };
+    let Some(first) = rest.chars().next() else {
+        return false;
+    };
+    if first.is_whitespace() || matches!(first, '/' | '\\') {
+        return false;
+    }
+
+    value[..unsafe_token_end(value, 0)]
+        .as_bytes()
+        .get(1..)
+        .is_some_and(|bytes| bytes.contains(&b'/') || bytes.contains(&b'\\'))
 }
 
 fn starts_with_known_unix_absolute_root(value: &str) -> bool {
