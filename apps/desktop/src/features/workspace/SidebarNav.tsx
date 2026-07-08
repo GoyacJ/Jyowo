@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
+import { motion } from 'framer-motion'
 import {
   ChevronDown,
   ChevronRight,
@@ -659,13 +660,20 @@ function ProjectHeaderRow({
   return (
     <div
       className={cn(
-        'group relative grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-md pr-1 text-muted-foreground hover:bg-background/45 hover:text-foreground',
-        isActive && 'bg-background/65 text-foreground shadow-[inset_0_1px_0_rgb(255_255_255/0.04)]',
+        'group relative grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-md pr-1 text-muted-foreground hover:bg-background/45 hover:text-foreground data-[active=true]:text-foreground',
+        isActive && 'text-foreground',
       )}
       data-active={isActive}
       data-depth="project"
       data-sidebar-row="true"
     >
+      {isActive && (
+        <motion.div
+          layoutId="activeSidebarIndicator"
+          className="absolute inset-0 bg-background/55 rounded-md -z-10 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_1px_2px_rgba(0,0,0,0.05)]"
+          transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+        />
+      )}
       <button
         aria-label={
           isExpanded
@@ -980,6 +988,13 @@ function ProjectConversationRow({
         data-depth="conversation"
         data-sidebar-row="true"
       >
+        {isActive && (
+          <motion.div
+            layoutId="activeSidebarIndicator"
+            className="absolute inset-0 bg-background/55 rounded-md -z-10 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_1px_2px_rgba(0,0,0,0.05)]"
+            transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+          />
+        )}
         <button
           aria-current={isActive ? 'page' : undefined}
           className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_3.5rem] items-center gap-2 overflow-hidden rounded-md py-1 pr-2 pl-9 text-left text-xs"
@@ -1065,6 +1080,13 @@ function DefaultConversationRow({
         data-depth="conversation"
         data-sidebar-row="true"
       >
+        {isActive && (
+          <motion.div
+            layoutId="activeSidebarIndicator"
+            className="absolute inset-0 bg-background/55 rounded-md -z-10 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_1px_2px_rgba(0,0,0,0.05)]"
+            transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+          />
+        )}
         <button
           aria-current={isActive ? 'page' : undefined}
           className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_3.5rem] items-center gap-2 overflow-hidden rounded-md py-1 pr-2 pl-5 text-left text-xs"

@@ -1,4 +1,4 @@
-import { FlaskConical, Play, TriangleAlert } from 'lucide-react'
+import { FlaskConical, Loader2, Play, TriangleAlert } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { cn } from '@/shared/lib/utils'
@@ -75,21 +75,38 @@ export function EvalLab({ cases, errorMessage, onRunCase, unavailable = false }:
         <div className="space-y-3">
           {cases.map((evalCase) => {
             const status = evalCase.lastRun?.status ?? 'unavailable'
+            const isRunning = status === 'running'
 
             return (
               <article
                 aria-label={evalCase.title}
-                className="rounded-md border border-border bg-background px-4 py-3"
+                className={cn(
+                  'rounded-lg border border-border bg-background/50 hover:bg-background px-4 py-3 shadow-sm hover:shadow-card hover:-translate-y-[0.5px] transition-all duration-200',
+                  isRunning && 'border-warning/45 bg-warning/5 ring-1 ring-warning/15',
+                )}
                 key={evalCase.id}
               >
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="font-medium text-sm">{evalCase.title}</h3>
-                      <span className={cn('text-xs', statusStyles[status])}>{status}</span>
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <h3 className="font-semibold text-sm text-foreground/90">{evalCase.title}</h3>
+                      <span
+                        className={cn(
+                          'text-xs flex items-center gap-1.5 font-medium',
+                          statusStyles[status],
+                        )}
+                      >
+                        {isRunning && (
+                          <span className="relative flex size-1.5 items-center justify-center">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-warning/50 opacity-75"></span>
+                            <span className="relative inline-flex size-1.5 rounded-full bg-warning"></span>
+                          </span>
+                        )}
+                        {status}
+                      </span>
                     </div>
                     {evalCase.lastRun ? (
-                      <div className="mt-2 flex flex-wrap gap-3 text-muted-foreground text-xs">
+                      <div className="mt-2 flex flex-wrap gap-3 text-muted-foreground text-xs font-medium">
                         <span>{t('passed', { count: evalCase.lastRun.passed })}</span>
                         <span>{t('failed', { count: evalCase.lastRun.failed })}</span>
                         {evalCase.lastRun.completedAt ? (
@@ -102,13 +119,18 @@ export function EvalLab({ cases, errorMessage, onRunCase, unavailable = false }:
                   </div>
 
                   <Button
-                    disabled={!onRunCase || unavailable}
+                    disabled={!onRunCase || unavailable || isRunning}
                     onClick={() => onRunCase?.(evalCase.id)}
                     size="sm"
                     type="button"
                     variant="outline"
+                    className="min-w-[90px]"
                   >
-                    <Play className="size-4" />
+                    {isRunning ? (
+                      <Loader2 className="size-3.5 animate-spin text-warning" />
+                    ) : (
+                      <Play className="size-3.5" />
+                    )}
                     {t('runCase', { title: evalCase.title })}
                   </Button>
                 </div>

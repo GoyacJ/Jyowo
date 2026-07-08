@@ -137,7 +137,7 @@ function ThemeSettings() {
   const setTheme = useUiStore((state) => state.setTheme)
 
   return (
-    <section className="space-y-5 rounded-md border border-border bg-surface p-5">
+    <section className="space-y-5 rounded-lg border border-border bg-surface p-5 shadow-sm hover:shadow-card transition-all duration-300">
       <div className="flex items-start gap-3">
         <div className="rounded-md border border-border bg-background p-2 text-muted-foreground">
           <Sun className="size-4" />
@@ -154,10 +154,10 @@ function ThemeSettings() {
           <button
             aria-pressed={theme === value}
             className={cn(
-              'inline-flex h-9 items-center gap-2 rounded-sm border border-border px-3 font-medium text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              'inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 font-medium text-sm transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-95',
               theme === value
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
+                ? 'bg-primary text-primary-foreground shadow-sm shadow-primary/15'
+                : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground hover:shadow-sm',
             )}
             key={value}
             onClick={() => setTheme(value)}
@@ -178,7 +178,7 @@ function LanguageSettings() {
   const setLocale = useUiStore((state) => state.setLocale)
 
   return (
-    <section className="space-y-5 rounded-md border border-border bg-surface p-5">
+    <section className="space-y-5 rounded-lg border border-border bg-surface p-5 shadow-sm hover:shadow-card transition-all duration-300">
       <div className="flex items-start gap-3">
         <div className="rounded-md border border-border bg-background p-2 text-muted-foreground">
           <Languages className="size-4" />
@@ -192,7 +192,7 @@ function LanguageSettings() {
       <label className="block max-w-sm space-y-2 text-sm">
         <span className="font-medium">{t('language.label')}</span>
         <select
-          className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none transition-[border-color,box-shadow] duration-200 focus:border-ring/60 focus:ring-2 focus:ring-ring/10"
           onChange={(event) => setLocale(event.target.value as AppLocale)}
           value={locale}
         >

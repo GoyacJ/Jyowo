@@ -21,7 +21,7 @@ export function TabsTrigger({ className, ...props }: ComponentProps<typeof TabsP
   return (
     <TabsPrimitive.Trigger
       className={cn(
-        'inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1 font-medium text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-surface data-[state=active]:text-foreground data-[state=active]:shadow-sm',
+        'inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-1 font-medium text-sm outline-none transition-all duration-200 focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 hover:text-foreground/90 data-[state=active]:bg-surface data-[state=active]:text-foreground data-[state=active]:shadow-sm',
         className,
       )}
       {...props}
@@ -32,7 +32,10 @@ export function TabsTrigger({ className, ...props }: ComponentProps<typeof TabsP
 export function TabsContent({ className, ...props }: ComponentProps<typeof TabsPrimitive.Content>) {
   return (
     <TabsPrimitive.Content
-      className={cn('mt-2 outline-none focus-visible:ring-2 focus-visible:ring-ring', className)}
+      className={cn(
+        'mt-2 outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=active]:animate-fade-in-quick',
+        className,
+      )}
       {...props}
     />
   )

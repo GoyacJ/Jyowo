@@ -384,7 +384,7 @@ export function Composer({
 
   return (
     <form
-      className="rounded-md border border-border bg-surface px-3 py-2 shadow-sm"
+      className="rounded-md border border-border bg-surface px-3 py-2 shadow-sm focus-within:border-ring/60 focus-within:ring-2 focus-within:ring-ring/10 transition-[border-color,box-shadow] duration-300"
       onSubmit={(event) => {
         event.preventDefault()
         void submitDraft()
@@ -500,7 +500,7 @@ export function Composer({
           {canCancelRun ? (
             <button
               aria-label={t('conversation:composer.cancelRun')}
-              className="rounded-md border border-border p-2 text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-md border border-border p-2 text-muted-foreground transition-all duration-200 hover:bg-muted hover:text-foreground hover:shadow-sm active:scale-95 disabled:scale-100 disabled:opacity-50 disabled:pointer-events-none"
               disabled={cancelPending}
               onClick={() => {
                 void handleCancelRun()
@@ -512,7 +512,7 @@ export function Composer({
           ) : null}
           <button
             aria-label={t('conversation:composer.sendMessage')}
-            className="rounded-md bg-primary p-2 text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-md bg-primary p-2 text-primary-foreground shadow-sm transition-all duration-200 hover:brightness-[1.05] hover:shadow-md active:scale-95 disabled:scale-100 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none disabled:pointer-events-none"
             disabled={!canSubmit}
             type="submit"
           >
