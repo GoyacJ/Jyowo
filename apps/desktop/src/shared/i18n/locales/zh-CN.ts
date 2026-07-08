@@ -417,6 +417,16 @@ export const zhCN = {
       zhCN: '中文',
       enUS: '英文',
     },
+    theme: {
+      title: '主题',
+      description: '选择这个桌面工作区的界面配色。',
+      label: '应用主题',
+      options: {
+        light: '浅色',
+        dark: '深色',
+        system: '跟随系统',
+      },
+    },
     execution: {
       title: '默认授权模式',
       description: '选择发送框新运行默认使用的授权模式。',

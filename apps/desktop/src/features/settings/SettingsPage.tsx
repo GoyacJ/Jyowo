@@ -1,8 +1,9 @@
-import { Languages } from 'lucide-react'
+import { Languages, Monitor, Moon, Sun } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { APP_LOCALES, type AppLocale } from '@/shared/i18n/locales'
+import { cn } from '@/shared/lib/utils'
 import { useUiStore } from '@/shared/state/ui-store'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 import { AboutSettings } from './AboutSettings'
@@ -58,6 +59,7 @@ export function SettingsPage() {
 
           <TabsContent className="space-y-5 pt-3" value="general">
             <LanguageSettings />
+            <ThemeSettings />
             <ExecutionSettings />
           </TabsContent>
           <TabsContent className="space-y-5 pt-3" value="skills">
@@ -84,6 +86,53 @@ export function SettingsPage() {
           </TabsContent>
         </Tabs>
       </div>
+    </section>
+  )
+}
+
+const themeOptions = [
+  { value: 'light', icon: Sun },
+  { value: 'dark', icon: Moon },
+  { value: 'system', icon: Monitor },
+] as const
+
+function ThemeSettings() {
+  const { t } = useTranslation('settings')
+  const theme = useUiStore((state) => state.theme)
+  const setTheme = useUiStore((state) => state.setTheme)
+
+  return (
+    <section className="space-y-5 rounded-md border border-border bg-surface p-5">
+      <div className="flex items-start gap-3">
+        <div className="rounded-md border border-border bg-background p-2 text-muted-foreground">
+          <Sun className="size-4" />
+        </div>
+        <div>
+          <h2 className="font-semibold text-base">{t('theme.title')}</h2>
+          <p className="mt-1 text-muted-foreground text-sm">{t('theme.description')}</p>
+        </div>
+      </div>
+
+      <fieldset className="flex w-fit flex-wrap gap-2">
+        <legend className="sr-only">{t('theme.label')}</legend>
+        {themeOptions.map(({ icon: Icon, value }) => (
+          <button
+            aria-pressed={theme === value}
+            className={cn(
+              'inline-flex h-9 items-center gap-2 rounded-sm border border-border px-3 font-medium text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              theme === value
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
+            )}
+            key={value}
+            onClick={() => setTheme(value)}
+            type="button"
+          >
+            <Icon aria-hidden="true" className="size-4" data-icon />
+            {t(`theme.options.${value}`)}
+          </button>
+        ))}
+      </fieldset>
     </section>
   )
 }

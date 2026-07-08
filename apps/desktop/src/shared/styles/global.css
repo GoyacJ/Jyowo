@@ -29,6 +29,12 @@
   --color-info-foreground: var(--info-foreground);
   --color-code-background: var(--code-background);
   --color-terminal-background: var(--terminal-background);
+  --color-terminal-foreground: var(--terminal-foreground);
+  --color-terminal-muted: var(--terminal-muted);
+  --color-terminal-border: var(--terminal-border);
+  --color-terminal-control: var(--terminal-control);
+  --color-terminal-warning: var(--terminal-warning);
+  --color-terminal-error: var(--terminal-error);
   --color-badge: var(--badge);
   --color-badge-foreground: var(--badge-foreground);
   --radius-sm: var(--radius-sm);
@@ -70,6 +76,12 @@
   --badge-foreground: #097fe8;
   --code-background: #f6f5f4;
   --terminal-background: #2b2926;
+  --terminal-foreground: #f6f5f4;
+  --terminal-muted: #a39e98;
+  --terminal-border: rgba(255, 255, 255, 0.1);
+  --terminal-control: rgba(255, 255, 255, 0.1);
+  --terminal-warning: #f0c36a;
+  --terminal-error: #f2a8a8;
   --radius: 8px;
   --radius-sm: 4px;
   --radius-md: 8px;
@@ -125,6 +137,12 @@
   --badge-foreground: #62aef0;
   --code-background: #242320;
   --terminal-background: #141310;
+  --terminal-foreground: #f6f5f4;
+  --terminal-muted: #a39e98;
+  --terminal-border: rgba(255, 255, 255, 0.1);
+  --terminal-control: rgba(255, 255, 255, 0.1);
+  --terminal-warning: #f0c36a;
+  --terminal-error: #f2a8a8;
   --shadow-card:
     rgba(0, 0, 0, 0.36) 0px 4px 18px 0px, rgba(0, 0, 0, 0.24) 0px 2px 7px 0px,
     rgba(0, 0, 0, 0.18) 0px 0.8px 2.93px 0px;

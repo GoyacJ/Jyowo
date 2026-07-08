@@ -77,6 +77,17 @@ describe('CommandExecutionView', () => {
     expect(writeText).not.toHaveBeenCalledWith(expect.stringContaining('exit 0'))
   })
 
+  it('uses terminal semantic token classes instead of hardcoded terminal colors', () => {
+    const { container } = renderCommandExecutionView()
+
+    const classNames = Array.from(container.querySelectorAll('[class]'))
+      .map((element) => element.getAttribute('class') ?? '')
+      .join(' ')
+
+    expect(classNames).toContain('text-terminal-foreground')
+    expect(classNames).not.toMatch(/\b(?:bg|border|text|hover:bg|hover:text)-(?:red|white|yellow)/)
+  })
+
   it('shows an error when output page fetch fails', async () => {
     const getConversationCommandOutput = vi.fn().mockRejectedValue(new Error('fetch failed'))
 

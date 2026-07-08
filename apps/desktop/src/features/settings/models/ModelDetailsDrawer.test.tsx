@@ -101,6 +101,17 @@ describe('ModelDetailsDrawer', () => {
     expect(within(dialog).getAllByText('Not saved')).toHaveLength(1)
   })
 
+  it('uses semantic status token classes instead of hardcoded product colors', () => {
+    renderDrawer({ row: sharedUsageRow })
+
+    const classNames = Array.from(document.body.querySelectorAll('[class]'))
+      .map((element) => element.getAttribute('class') ?? '')
+      .join(' ')
+
+    expect(classNames).toContain('text-success')
+    expect(classNames).not.toMatch(/\b(?:emerald|amber)-/)
+  })
+
   it('renders official quota states with scope labels', () => {
     for (const [status, scope, label] of [
       ['supported', 'account', 'Account quota'],

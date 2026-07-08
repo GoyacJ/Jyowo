@@ -26,7 +26,7 @@ export function ChangeSetSummary({
           <span className="truncate font-medium text-sm">{changeSet.summary}</span>
           <span className="shrink-0 font-mono text-success text-xs">+{totals.added}</span>
           <span className="shrink-0 font-mono text-destructive text-xs">-{totals.removed}</span>
-          {hasRiskFlags ? <AlertTriangle className="size-3 shrink-0 text-yellow-500" /> : null}
+          {hasRiskFlags ? <AlertTriangle className="size-3 shrink-0 text-warning" /> : null}
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-muted-foreground text-xs">
           <span>{t('diff.fileCount', { count: changeSet.files.length })}</span>

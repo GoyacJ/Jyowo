@@ -521,7 +521,7 @@ function SavedStateBadge({ children, saved }: { children: ReactNode; saved: bool
       className={[
         'inline-flex shrink-0 items-center gap-1 rounded-sm border px-1.5 py-0.5 font-medium text-[11px]',
         saved
-          ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+          ? 'border-success/25 bg-success/10 text-success'
           : 'border-border bg-muted text-muted-foreground',
       ].join(' ')}
     >
@@ -707,10 +707,10 @@ function connectivityToneClass(
   status: ModelAssetRow['connectivity']['status'],
 ): string | undefined {
   if (status === 'online') {
-    return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+    return 'border-success/25 bg-success/10 text-success'
   }
   if (status === 'loading' || status === 'never_checked') {
-    return 'border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+    return 'border-warning/25 bg-warning/10 text-warning'
   }
   if (status === 'unavailable' || status === 'unsupported') {
     return 'border-border bg-muted text-muted-foreground'

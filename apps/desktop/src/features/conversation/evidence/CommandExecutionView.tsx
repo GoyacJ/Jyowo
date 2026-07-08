@@ -81,18 +81,18 @@ export function CommandExecutionView({
   }
 
   return (
-    <section className="overflow-hidden rounded-md border border-border bg-terminal-background text-white">
+    <section className="overflow-hidden rounded-md border border-border bg-terminal-background text-terminal-foreground">
       {/* Header */}
-      <div className="flex h-8 items-center justify-between gap-3 border-white/10 border-b px-3">
+      <div className="flex h-8 items-center justify-between gap-3 border-terminal-border border-b px-3">
         <div className="flex items-center gap-2">
           <span className="font-medium text-xs">{t('timeline.commandEvidence.shell')}</span>
           {command.sandbox ? (
-            <span className="rounded bg-white/10 px-1 py-0 text-muted-foreground text-xs">
+            <span className="rounded bg-terminal-control px-1 py-0 text-terminal-muted text-xs">
               {command.sandbox}
             </span>
           ) : null}
           {command.redactionState !== 'clean' ? (
-            <span className="rounded bg-yellow-500/20 px-1 py-0 text-yellow-400 text-xs">
+            <span className="rounded bg-terminal-warning/20 px-1 py-0 text-terminal-warning text-xs">
               {command.redactionState}
             </span>
           ) : null}
@@ -129,40 +129,44 @@ export function CommandExecutionView({
         </div>
       </div>
       {copyFailed ? (
-        <div className="border-white/10 border-b px-3 py-1 text-red-300 text-xs">
+        <div className="border-terminal-border border-b px-3 py-1 text-terminal-error text-xs">
           {t('timeline.commandEvidence.copyFailed', 'Copy failed')}
         </div>
       ) : null}
       {fetchFailed ? (
-        <div className="border-white/10 border-b px-3 py-1 text-red-300 text-xs">
+        <div className="border-terminal-border border-b px-3 py-1 text-terminal-error text-xs">
           {t('timeline.commandEvidence.fetchFailed', 'Failed to load output page')}
         </div>
       ) : null}
 
       {/* Command line */}
-      <div className="border-white/10 border-b px-3 py-2 font-mono text-xs text-white/90">
+      <div className="border-terminal-border border-b px-3 py-2 font-mono text-terminal-foreground text-xs">
         $ {command.command}
       </div>
 
       {/* Metadata bar */}
-      <div className="flex min-h-7 flex-wrap items-center gap-x-3 gap-y-1 border-white/10 border-b px-3 py-1 text-xs">
-        {command.cwd ? <span className="text-white/55">{command.cwd}</span> : null}
-        {command.shell ? <span className="text-white/55">shell: {command.shell}</span> : null}
+      <div className="flex min-h-7 flex-wrap items-center gap-x-3 gap-y-1 border-terminal-border border-b px-3 py-1 text-xs">
+        {command.cwd ? <span className="text-terminal-muted">{command.cwd}</span> : null}
+        {command.shell ? <span className="text-terminal-muted">shell: {command.shell}</span> : null}
         {command.durationMs ? (
-          <span className="text-white/55">
+          <span className="text-terminal-muted">
             {t('timeline.commandEvidence.duration', { duration: command.durationMs })}
           </span>
         ) : null}
         {command.exitCode !== undefined ? (
-          <span className={cn(command.exitCode === 0 ? 'text-white/65' : 'text-red-400')}>
+          <span
+            className={cn(
+              command.exitCode === 0 ? 'text-terminal-foreground' : 'text-terminal-error',
+            )}
+          >
             {t('timeline.commandEvidence.exitCode', { code: command.exitCode })}
           </span>
         ) : null}
         {command.truncated ? (
-          <span className="text-yellow-400/80">{t('timeline.commandEvidence.truncated')}</span>
+          <span className="text-terminal-warning">{t('timeline.commandEvidence.truncated')}</span>
         ) : null}
         {activeFetchedOutput?.truncated ? (
-          <span className="text-yellow-400/80">
+          <span className="text-terminal-warning">
             {t('timeline.commandEvidence.pageTruncated', 'Output page truncated')}
           </span>
         ) : null}
@@ -248,7 +252,7 @@ function FullOutputFetchButton({
 
   return (
     <button
-      className="rounded px-2 py-0.5 text-white/60 text-xs hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-ring"
+      className="rounded px-2 py-0.5 text-terminal-muted text-xs hover:bg-terminal-control hover:text-terminal-foreground focus-visible:ring-2 focus-visible:ring-ring"
       disabled={fetchingPage}
       onClick={handleFetchPage}
       type="button"
@@ -266,7 +270,7 @@ function CopyButton({ label, onClick }: { label: string; onClick: () => void }) 
   return (
     <button
       aria-label={label}
-      className="inline-flex size-6 items-center justify-center rounded text-white/60 hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-ring"
+      className="inline-flex size-6 items-center justify-center rounded text-terminal-muted hover:bg-terminal-control hover:text-terminal-foreground focus-visible:ring-2 focus-visible:ring-ring"
       onClick={onClick}
       type="button"
     >

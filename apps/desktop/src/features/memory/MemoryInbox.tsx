@@ -117,7 +117,7 @@ export function MemoryInbox() {
 
   return (
     <div className="space-y-4 p-4">
-      {message && <div className="rounded bg-green-50 p-2 text-sm text-green-700">{message}</div>}
+      {message && <div className="rounded bg-success/10 p-2 text-sm text-success">{message}</div>}
       <div className="flex items-center justify-between gap-3">
         <p className="text-muted-foreground text-sm">
           {t('selectedCandidates', { count: selectedCount })}

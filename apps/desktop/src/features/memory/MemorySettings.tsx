@@ -153,7 +153,7 @@ export function MemorySettings() {
         </CardContent>
       </Card>
 
-      {saved && <div className="text-sm text-green-600">{t('settingsSaved')}</div>}
+      {saved && <div className="text-sm text-success">{t('settingsSaved')}</div>}
 
       <Button
         onClick={() =>

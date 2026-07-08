@@ -417,6 +417,16 @@ export const enUS = {
       zhCN: 'Chinese',
       enUS: 'English',
     },
+    theme: {
+      title: 'Theme',
+      description: 'Choose the interface color theme for this desktop workspace.',
+      label: 'Application theme',
+      options: {
+        light: 'Light',
+        dark: 'Dark',
+        system: 'System',
+      },
+    },
     execution: {
       title: 'Default Permission Mode',
       description: 'Choose the default authorization mode used by new composer runs.',

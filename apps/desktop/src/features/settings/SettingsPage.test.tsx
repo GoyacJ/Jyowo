@@ -46,6 +46,7 @@ function renderSettingsPage(options: TestCommandClientOptions = {}) {
 describe('SettingsPage', () => {
   afterEach(() => {
     uiStore.getState().setLocale('zh-CN')
+    uiStore.getState().setTheme('light')
   })
 
   it('switches the app language from local settings', () => {
@@ -59,6 +60,23 @@ describe('SettingsPage', () => {
     expect(uiStore.getState().locale).toBe('en-US')
     expect(screen.getByRole('region', { name: 'Settings' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Language' })).toBeInTheDocument()
+  })
+
+  it('switches the app theme from local settings', () => {
+    renderSettingsPage()
+
+    expect(screen.getByRole('heading', { name: '主题' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '浅色' })).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: '深色' }))
+
+    expect(uiStore.getState().theme).toBe('dark')
+    expect(screen.getByRole('button', { name: '深色' })).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: '跟随系统' }))
+
+    expect(uiStore.getState().theme).toBe('system')
+    expect(screen.getByRole('button', { name: '跟随系统' })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('renders settings sections as top-level tabs', async () => {
