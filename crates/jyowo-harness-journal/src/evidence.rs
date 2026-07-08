@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "sqlite")]
 use tokio::sync::Mutex;
 
-use crate::{app_controlled_path, EventStore, ReplayCursor};
+#[cfg(feature = "sqlite")]
+use crate::app_controlled_path;
+use crate::{EventStore, ReplayCursor};
 
 /// A durable registry record for an evidence ref.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -280,6 +282,29 @@ impl EvidenceRefStore {
         Ok(id)
     }
 
+    /// Register existing blob-backed evidence using the blob's retained metadata.
+    pub async fn store_existing_blob_evidence_with_blob_retention(
+        &self,
+        tenant: TenantId,
+        record: EvidenceRefRecord,
+    ) -> Result<EvidenceRefId, JournalError> {
+        validate_redaction_provenance(&record.redaction_provenance)?;
+        let EvidenceRefSource::Blob { blob_ref } = &record.source else {
+            return Err(JournalError::Message(
+                "existing blob evidence must use a blob source".to_owned(),
+            ));
+        };
+        let meta = self
+            .matching_blob_ref_metadata(tenant, &record, blob_ref)
+            .await?;
+        let mut record = record;
+        record.retention = meta.retention;
+        validate_evidence_retention(&record)?;
+        let id = record.id.clone();
+        self.registry.insert(tenant, record).await?;
+        Ok(id)
+    }
+
     /// Read evidence content, validating ownership, kind, and redaction.
     pub async fn read_evidence(
         &self,
@@ -512,6 +537,23 @@ impl EvidenceRefStore {
         record: &EvidenceRefRecord,
         blob_ref: &BlobRef,
     ) -> Result<(), JournalError> {
+        let meta = self
+            .matching_blob_ref_metadata(tenant, record, blob_ref)
+            .await?;
+        if meta.retention != record.retention {
+            return Err(JournalError::Message(
+                "evidence blob retention mismatch".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn matching_blob_ref_metadata(
+        &self,
+        tenant: TenantId,
+        record: &EvidenceRefRecord,
+        blob_ref: &BlobRef,
+    ) -> Result<BlobMeta, JournalError> {
         if blob_ref.size != record.byte_length {
             return Err(JournalError::Message(
                 "evidence blob length metadata mismatch".to_owned(),
@@ -541,12 +583,7 @@ impl EvidenceRefStore {
                 "evidence blob hash mismatch".to_owned(),
             ));
         }
-        if meta.retention != record.retention {
-            return Err(JournalError::Message(
-                "evidence blob retention mismatch".to_owned(),
-            ));
-        }
-        Ok(())
+        Ok(meta)
     }
 
     async fn journal_payload_bytes(

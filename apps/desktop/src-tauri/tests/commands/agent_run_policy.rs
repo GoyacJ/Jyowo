@@ -8,7 +8,7 @@ use super::support::*;
 use super::*;
 
 fn write_test_supervisor_lock(workspace: &Path) -> TestSupervisorControl {
-    use std::io::{Read, Write};
+    use std::io::Write;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("control bind");
@@ -18,7 +18,7 @@ fn write_test_supervisor_lock(workspace: &Path) -> TestSupervisorControl {
     std::fs::create_dir_all(&runtime_dir).unwrap();
     let token = "test-background-supervisor-token";
     let token_hash = blake3::hash(token.as_bytes()).to_hex().to_string();
-    let workspace_id = blake3::hash(workspace.display().to_string().as_bytes())
+    let workspace_id = blake3::hash(format!("project:{}", workspace.display()).as_bytes())
         .to_hex()
         .to_string();
     std::fs::write(
@@ -54,12 +54,7 @@ fn write_test_supervisor_lock(workspace: &Path) -> TestSupervisorControl {
         while !thread_stop.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((mut stream, peer)) => {
-                    let mut buffer = [0_u8; 8192];
-                    let Ok(read) = stream.read(&mut buffer) else {
-                        continue;
-                    };
-                    let request = serde_json::from_slice::<serde_json::Value>(&buffer[..read])
-                        .unwrap_or_else(|_| serde_json::json!({}));
+                    let request = read_test_supervisor_json_request(&mut stream);
                     let ok = peer.ip().is_loopback()
                         && request.get("token").and_then(Value::as_str) == Some(token)
                         && request.get("request").and_then(Value::as_str).is_some();
@@ -80,6 +75,42 @@ fn write_test_supervisor_lock(workspace: &Path) -> TestSupervisorControl {
         stop,
         thread: Some(thread),
     }
+}
+
+fn read_test_supervisor_json_request(stream: &mut std::net::TcpStream) -> serde_json::Value {
+    use std::io::Read;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(50)));
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 1024];
+
+    while buffer.len() < 8192 {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                buffer.extend_from_slice(&chunk[..read]);
+                if let Ok(request) = serde_json::from_slice::<serde_json::Value>(&buffer) {
+                    return request;
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(_) => break,
+        }
+    }
+
+    serde_json::json!({})
 }
 
 struct TestSupervisorControl {

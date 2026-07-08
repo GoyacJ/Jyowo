@@ -1,6 +1,11 @@
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::Duration;
 
 use chrono::Utc;
 use harness_agent_runtime::{
@@ -153,6 +158,27 @@ fn background_agents_unavailable_when_fresh_supervisor_lock_has_no_live_control_
         reason,
         AgentCapabilityUnavailableReason::BackgroundSupervisorUnavailable { .. }
     )));
+}
+
+#[test]
+fn background_agents_available_with_live_sidecar_supervisor_lock() {
+    let workspace = tempdir().expect("tempdir");
+    let workspace_root = canonical_temp_root(&workspace);
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
+    let _supervisor = write_live_sidecar_supervisor_token_and_lock(&workspace_root);
+
+    let policy = AgentCapabilityResolver::resolve(&workspace_root, compiled_environment(true));
+
+    assert!(policy.background_agents_available);
+    assert!(
+        !policy.unavailable_reasons.iter().any(|reason| matches!(
+            reason,
+            AgentCapabilityUnavailableReason::BackgroundSupervisorUnavailable { .. }
+        )),
+        "{:?}",
+        policy.unavailable_reasons
+    );
 }
 
 #[test]
@@ -521,7 +547,7 @@ fn write_test_supervisor_token_and_lock(workspace: &std::path::Path) {
     std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
     let token = "test-background-supervisor-token";
     let token_hash = blake3::hash(token.as_bytes()).to_hex().to_string();
-    let workspace_id = blake3::hash(workspace.display().to_string().as_bytes())
+    let workspace_id = blake3::hash(format!("project:{}", workspace.display()).as_bytes())
         .to_hex()
         .to_string();
     std::fs::write(
@@ -551,6 +577,124 @@ fn write_test_supervisor_token_and_lock(workspace: &std::path::Path) {
         .to_string(),
     )
     .expect("supervisor lock");
+}
+
+fn write_live_sidecar_supervisor_token_and_lock(workspace: &std::path::Path) -> TestSupervisor {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("control bind");
+    listener.set_nonblocking(true).expect("control nonblocking");
+    let control_addr = listener.local_addr().expect("control addr");
+    let runtime_dir = workspace.join(".jyowo/runtime");
+    std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
+    let token = "test-background-supervisor-token";
+    let token_hash = blake3::hash(token.as_bytes()).to_hex().to_string();
+    let workspace_id = blake3::hash(format!("project:{}", workspace.display()).as_bytes())
+        .to_hex()
+        .to_string();
+    std::fs::write(
+        runtime_dir.join("agent-supervisor.token"),
+        serde_json::json!({
+            "token": token,
+            "tokenHash": token_hash,
+            "tokenEpoch": 1,
+            "workspaceId": workspace_id,
+            "createdAt": Utc::now(),
+        })
+        .to_string(),
+    )
+    .expect("supervisor token");
+    std::fs::write(
+        runtime_dir.join("agent-supervisor.lock"),
+        serde_json::json!({
+            "status": "running",
+            "workspaceId": workspace_id,
+            "tokenHash": token_hash,
+            "tokenEpoch": 1,
+            "pid": std::process::id(),
+            "controlAddr": control_addr.to_string(),
+            "startedAt": Utc::now(),
+            "heartbeatAt": Utc::now(),
+        })
+        .to_string(),
+    )
+    .expect("supervisor lock");
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let thread = std::thread::spawn(move || {
+        while !thread_stop.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((mut stream, _peer)) => {
+                    let request = read_json_request(&mut stream);
+                    let ok = request.get("token").and_then(serde_json::Value::as_str)
+                        == Some(token)
+                        && request.get("request").and_then(serde_json::Value::as_str)
+                            == Some("status");
+                    let response = serde_json::json!({
+                        "ok": ok,
+                        "status": if ok { "running" } else { "unauthorized" },
+                    });
+                    let _ = stream.write_all(response.to_string().as_bytes());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    TestSupervisor {
+        stop,
+        thread: Some(thread),
+    }
+}
+
+fn read_json_request(stream: &mut std::net::TcpStream) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 1024];
+
+    while buffer.len() < 8192 {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                buffer.extend_from_slice(&chunk[..read]);
+                if let Ok(request) = serde_json::from_slice::<serde_json::Value>(&buffer) {
+                    return request;
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => break,
+        }
+    }
+
+    serde_json::json!({})
+}
+
+struct TestSupervisor {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for TestSupervisor {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 #[test]

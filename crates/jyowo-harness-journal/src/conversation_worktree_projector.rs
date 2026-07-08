@@ -435,7 +435,7 @@ async fn register_existing_blob_evidence(
         source: EvidenceRefSource::Blob { blob_ref },
     };
     evidence_store
-        .store_existing_blob_evidence(tenant_id, record)
+        .store_existing_blob_evidence_with_blob_retention(tenant_id, record)
         .await
 }
 

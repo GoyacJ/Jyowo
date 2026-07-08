@@ -1022,7 +1022,7 @@ async fn sqlite_worktree_projects_command_metadata_and_offloaded_output_from_eve
                 size: output.len() as u64,
                 content_hash: output_hash,
                 created_at: chrono::Utc::now(),
-                retention: BlobRetention::TenantScoped,
+                retention: BlobRetention::SessionScoped(session_id),
             },
         )
         .await

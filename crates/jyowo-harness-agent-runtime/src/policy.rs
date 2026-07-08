@@ -572,7 +572,7 @@ fn supervisor_control_channel_live(
 }
 
 fn workspace_id(workspace_root: &Path) -> String {
-    blake3::hash(workspace_root.display().to_string().as_bytes())
+    blake3::hash(format!("project:{}", workspace_root.display()).as_bytes())
         .to_hex()
         .to_string()
 }
