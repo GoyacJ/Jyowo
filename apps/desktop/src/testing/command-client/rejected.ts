@@ -61,6 +61,7 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     listAutomations: () => Promise.reject(error),
     listBackgroundAgents: () => Promise.reject(error),
     listConversations: () => Promise.reject(error),
+    listProjectConversationGroups: () => Promise.reject(error),
     listEvalCases: () => Promise.reject(error),
     listModelProviderCatalog: () => Promise.reject(error),
     listMcpDiagnostics: () => Promise.reject(error),

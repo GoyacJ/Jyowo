@@ -7,6 +7,7 @@ import type {
   ListAutomationsResponse,
   ListBackgroundAgentsResponse,
   ListConversationsResponse,
+  ListProjectConversationGroupsResponse,
   ListProjectsResponse,
   ListProviderCapabilityRouteOptionsResponse,
   ListProviderCapabilityRoutesResponse,
@@ -43,6 +44,7 @@ export type TestCommandClientState = {
   completionBatchFlushed: Promise<void>
   conversationDetailsById: Map<string, GetConversationResponse>
   conversations: ListConversationsResponse
+  projectConversationGroups: ListProjectConversationGroupsResponse
   createdConversationCounter: number
   emitCatalogInstallProgress: (
     request: InstallSkillFromCatalogRequest,
@@ -77,6 +79,9 @@ export function createTestCommandClientState(
     cloneResponse(options.conversationWorktreePage ?? fixtureConversationWorktreePage),
   )
 
+  const projects = cloneResponse(options.projects ?? testJyowoProject)
+  const conversations = cloneResponse(options.conversations ?? fixtureListConversations)
+
   const state: TestCommandClientState = {
     activeSubscription: null,
     automationRuns: cloneResponse(options.automationRuns ?? fixtureAutomationRuns),
@@ -87,7 +92,7 @@ export function createTestCommandClientState(
     clearPendingBatches: () => undefined,
     completionBatchFlushed: Promise.resolve(),
     conversationDetailsById,
-    conversations: cloneResponse(options.conversations ?? fixtureListConversations),
+    conversations,
     createdConversationCounter: 0,
     emitCatalogInstallProgress: () => undefined,
     fixtureEventState: {
@@ -98,7 +103,11 @@ export function createTestCommandClientState(
     },
     options,
     pendingBatchTimeouts: new Map(),
-    projects: options.projects ?? testJyowoProject,
+    projectConversationGroups: cloneResponse(
+      options.projectConversationGroups ??
+        buildProjectConversationGroups(projects, conversations),
+    ),
+    projects,
     providerCapabilityRouteOptions: cloneResponse(
       options.providerCapabilityRouteOptions ?? {
         options: [],
@@ -153,4 +162,17 @@ export function createTestCommandClientState(
   }
 
   return state
+}
+
+function buildProjectConversationGroups(
+  projects: ListProjectsResponse,
+  conversations: ListConversationsResponse,
+): ListProjectConversationGroupsResponse {
+  return {
+    activePath: projects.activePath,
+    groups: projects.projects.map((project) => ({
+      project,
+      conversations: project.path === projects.activePath ? conversations.conversations : [],
+    })),
+  }
 }

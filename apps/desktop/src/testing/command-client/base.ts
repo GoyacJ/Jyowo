@@ -34,6 +34,7 @@ import type {
   ListMemoryItemsResponse,
   ListOfficialQuotaSnapshotsResponse,
   ListPluginsResponse,
+  ListProjectConversationGroupsResponse,
   ListProjectsResponse,
   ListProviderCapabilityRouteOptionsResponse,
   ListProviderCapabilityRoutesResponse,
@@ -160,6 +161,7 @@ export interface TestCommandClientOptions {
     CommandClient['exportConversationEvidence']
   >
   conversations?: ListConversationsResponse
+  projectConversationGroups?: ListProjectConversationGroupsResponse
   executionSettings?: GetExecutionSettingsResponse
   healthcheck?: HarnessHealthcheck
   artifacts?: ListArtifactsResponse

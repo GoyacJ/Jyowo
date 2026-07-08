@@ -290,6 +290,7 @@ import {
   listBackgroundAgents,
   listBrowserMcpPresets,
   listConversations,
+  listProjectConversationGroups,
   listEvalCases,
   listenMcpDiagnosticBatches,
   listenSkillCatalogInstallProgress,
@@ -873,6 +874,54 @@ describe('CommandClient', () => {
         },
       ],
     })
+  })
+
+  it('parses project conversation groups', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      activePath: '/repo/alpha',
+      groups: [
+        {
+          project: {
+            path: '/repo/alpha',
+            name: 'alpha',
+            lastOpenedAt: '2026-07-08T07:00:00.000Z',
+          },
+          conversations: [
+            {
+              id: 'conversation-alpha-001',
+              isEmpty: false,
+              lastMessagePreview: 'Review the menu',
+              title: 'Sidebar redesign',
+              updatedAt: '2026-07-08T07:01:00.000Z',
+            },
+          ],
+        },
+      ],
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(listProjectConversationGroups(client)).resolves.toEqual({
+      activePath: '/repo/alpha',
+      groups: [
+        {
+          project: {
+            path: '/repo/alpha',
+            name: 'alpha',
+            lastOpenedAt: '2026-07-08T07:00:00.000Z',
+          },
+          conversations: [
+            {
+              id: 'conversation-alpha-001',
+              isEmpty: false,
+              lastMessagePreview: 'Review the menu',
+              title: 'Sidebar redesign',
+              updatedAt: '2026-07-08T07:01:00.000Z',
+            },
+          ],
+        },
+      ],
+    })
+    expect(invoke).toHaveBeenCalledWith('list_project_conversation_groups')
   })
 
   it('rejects unsafe conversation snapshot message bodies', async () => {

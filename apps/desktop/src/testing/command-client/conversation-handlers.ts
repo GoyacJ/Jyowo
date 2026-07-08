@@ -9,6 +9,7 @@ import type {
   GetConversationCommandOutputResponse,
   GetConversationDiffPatchResponse,
   GetConversationInspectorItemResponse,
+  ListProjectConversationGroupsResponse,
   PageConversationWorktreeResponse,
   ProcessStep,
   ResolvePermissionResponse,
@@ -157,6 +158,7 @@ type ConversationCommandKeys =
   | 'listenConversationEventBatches'
   | 'listActivity'
   | 'listConversations'
+  | 'listProjectConversationGroups'
   | 'pageConversationTimeline'
   | 'pageConversationWorktree'
   | 'resolvePermission'
@@ -185,6 +187,10 @@ export function createConversationCommandHandlers(
           ...state.conversations.conversations.filter((current) => current.id !== conversationId),
         ],
       }
+      state.projectConversationGroups = addConversationToActiveProjectGroup(
+        state.projectConversationGroups,
+        conversation,
+      )
       state.conversationDetailsById.set(conversationId, {
         conversation: {
           id: conversationId,
@@ -202,6 +208,15 @@ export function createConversationCommandHandlers(
     },
     async deleteConversation(conversationId) {
       await wait(state.options.delayMs)
+      state.conversations = {
+        conversations: state.conversations.conversations.filter(
+          (conversation) => conversation.id !== conversationId,
+        ),
+      }
+      state.projectConversationGroups = removeConversationFromActiveProjectGroup(
+        state.projectConversationGroups,
+        conversationId,
+      )
       return {
         conversationId,
         status: 'deleted',
@@ -324,6 +339,10 @@ export function createConversationCommandHandlers(
     async listConversations() {
       await wait(state.options.delayMs)
       return state.conversations
+    },
+    async listProjectConversationGroups() {
+      await wait(state.options.delayMs)
+      return state.projectConversationGroups
     },
     async pageConversationTimeline(request) {
       await wait(state.options.delayMs)
@@ -574,5 +593,52 @@ export function createConversationCommandHandlers(
         status: 'unsubscribed',
       } satisfies UnsubscribeConversationEventsResponse
     },
+  }
+}
+
+function addConversationToActiveProjectGroup(
+  current: ListProjectConversationGroupsResponse,
+  conversation: CreateConversationResponse['conversation'],
+): ListProjectConversationGroupsResponse {
+  if (!current.activePath) {
+    return current
+  }
+
+  return {
+    ...current,
+    groups: current.groups.map((group) =>
+      group.project.path === current.activePath
+        ? {
+            ...group,
+            conversations: [
+              conversation,
+              ...group.conversations.filter((current) => current.id !== conversation.id),
+            ],
+          }
+        : group,
+    ),
+  }
+}
+
+function removeConversationFromActiveProjectGroup(
+  current: ListProjectConversationGroupsResponse,
+  conversationId: string,
+): ListProjectConversationGroupsResponse {
+  if (!current.activePath) {
+    return current
+  }
+
+  return {
+    ...current,
+    groups: current.groups.map((group) =>
+      group.project.path === current.activePath
+        ? {
+            ...group,
+            conversations: group.conversations.filter(
+              (conversation) => conversation.id !== conversationId,
+            ),
+          }
+        : group,
+    ),
   }
 }

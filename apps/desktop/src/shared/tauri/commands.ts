@@ -226,6 +226,20 @@ const listConversationsResponseSchema = z
   })
   .strict()
 
+const projectConversationGroupSchema = z
+  .object({
+    project: z.lazy(() => projectRecordSchema),
+    conversations: z.array(conversationSummarySchema),
+  })
+  .strict()
+
+const listProjectConversationGroupsResponseSchema = z
+  .object({
+    activePath: z.string().min(1).nullable(),
+    groups: z.array(projectConversationGroupSchema),
+  })
+  .strict()
+
 const createConversationResponseSchema = z
   .object({
     conversation: conversationSummarySchema,
@@ -4062,6 +4076,9 @@ export type HarnessHealthcheck = z.infer<typeof harnessHealthcheckSchema>
 export type RuntimeExecutionStatus = z.infer<typeof runtimeExecutionStatusSchema>
 export type ToolRuntimeStatus = z.infer<typeof toolRuntimeStatusSchema>
 export type ListConversationsResponse = z.infer<typeof listConversationsResponseSchema>
+export type ListProjectConversationGroupsResponse = z.infer<
+  typeof listProjectConversationGroupsResponseSchema
+>
 export type ListProjectsResponse = z.infer<typeof listProjectsResponseSchema>
 export type SwitchProjectResponse = z.infer<typeof switchProjectResponseSchema>
 export type DeleteProjectResponse = z.infer<typeof deleteProjectResponseSchema>
@@ -4423,6 +4440,7 @@ export interface CommandClient {
     request: ListBackgroundAgentsRequest,
   ) => Promise<ListBackgroundAgentsResponse>
   listConversations: () => Promise<ListConversationsResponse>
+  listProjectConversationGroups: () => Promise<ListProjectConversationGroupsResponse>
   listEvalCases: () => Promise<ListEvalCasesResponse>
   listBrowserMcpPresets: () => Promise<ListBrowserMcpPresetsResponse>
   listModelProviderCatalog: () => Promise<ModelProviderCatalogResponse>
@@ -5006,6 +5024,14 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'list_conversations'
       return parsePayload(command, listConversationsResponseSchema, await invoke(command))
     },
+    async listProjectConversationGroups() {
+      const command = 'list_project_conversation_groups'
+      return parsePayload(
+        command,
+        listProjectConversationGroupsResponseSchema,
+        await invoke(command),
+      )
+    },
     async listAutomations() {
       const command = 'list_automations'
       return parsePayload(command, listAutomationsResponseSchema, await invoke(command))
@@ -5535,6 +5561,12 @@ export function listConversations(
   client: CommandClient = tauriCommandClient,
 ): Promise<ListConversationsResponse> {
   return client.listConversations()
+}
+
+export function listProjectConversationGroups(
+  client: CommandClient = tauriCommandClient,
+): Promise<ListProjectConversationGroupsResponse> {
+  return client.listProjectConversationGroups()
 }
 
 export function createConversation(

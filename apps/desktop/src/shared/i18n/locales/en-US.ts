@@ -52,6 +52,8 @@ export const enUS = {
     },
     conversations: {
       recent: 'Recent conversations',
+      search: 'Search conversations',
+      searchPlaceholder: 'Search projects or conversations',
       loading: 'Loading...',
       empty: 'No conversations',
       projectRequired: 'Open a project to view conversations.',
@@ -68,6 +70,9 @@ export const enUS = {
       switch: 'Switch project',
       open: 'Open project',
       new: 'New project',
+      collapseGroup: 'Collapse {{name}}',
+      expandGroup: 'Expand {{name}}',
+      showMoreConversations: 'Show {{count}} more',
       delete: 'Delete {{name}}',
       confirmDelete: 'Confirm remove project',
       confirmDeleteDescription: 'Remove {{name}} from Jyowo. The project folder stays on disk.',

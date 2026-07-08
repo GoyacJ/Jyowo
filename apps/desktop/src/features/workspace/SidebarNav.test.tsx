@@ -27,6 +27,12 @@ const routerSpy = vi.hoisted(() => ({
   ),
 }))
 
+const pickProjectDirectoryMock = vi.hoisted(() => vi.fn())
+
+vi.mock('@/shared/tauri/file-dialog', () => ({
+  pickProjectDirectory: pickProjectDirectoryMock,
+}))
+
 function renderSidebarNav(commandClient: CommandClient = createTestCommandClient()) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -84,6 +90,77 @@ function runtimeConversationClient() {
     async listConversations() {
       return { conversations: [...conversations] }
     },
+    async listProjectConversationGroups() {
+      return {
+        activePath: '/Users/goya/Repo/Git/Jyowo',
+        groups: [
+          {
+            project: {
+              path: '/Users/goya/Repo/Git/Jyowo',
+              name: 'Jyowo',
+              lastOpenedAt: '2026-06-17T00:00:00.000Z',
+            },
+            conversations: [...conversations],
+          },
+        ],
+      }
+    },
+  } satisfies CommandClient
+}
+
+function projectConversationGroupsClient(
+  overrides: Partial<CommandClient> = {},
+  activePath: string | null = '/repo/alpha',
+) {
+  const projects = {
+    activePath,
+    projects: [
+      {
+        path: '/repo/alpha',
+        name: 'alpha',
+        lastOpenedAt: '2026-07-08T07:00:00.000Z',
+      },
+      {
+        path: '/repo/beta',
+        name: 'beta',
+        lastOpenedAt: '2026-07-07T07:00:00.000Z',
+      },
+    ],
+  }
+  return {
+    ...createTestCommandClient({ projects }),
+    async listProjectConversationGroups() {
+      return {
+        activePath,
+        groups: [
+          {
+            project: projects.projects[0],
+            conversations: [
+              {
+                id: 'alpha-001',
+                isEmpty: false,
+                lastMessagePreview: 'Review the left menu',
+                title: 'Sidebar redesign',
+                updatedAt: '2026-07-08T07:01:00.000Z',
+              },
+            ],
+          },
+          {
+            project: projects.projects[1],
+            conversations: [
+              {
+                id: 'beta-001',
+                isEmpty: false,
+                lastMessagePreview: 'Deploy preview',
+                title: 'Release checklist',
+                updatedAt: '2026-07-07T07:01:00.000Z',
+              },
+            ],
+          },
+        ],
+      }
+    },
+    ...overrides,
   } satisfies CommandClient
 }
 
@@ -110,6 +187,7 @@ vi.mock('@tanstack/react-router', async () => ({
 describe('SidebarNav', () => {
   beforeEach(async () => {
     routerSpy.navigate.mockClear()
+    pickProjectDirectoryMock.mockReset()
     await appI18n.changeLanguage('en-US')
     window.history.pushState(null, '', '/')
   })
@@ -129,10 +207,11 @@ describe('SidebarNav', () => {
     const navigation = screen.getByRole('navigation', { name: 'Workspace' })
 
     expect(within(navigation).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
-    expect(within(navigation).getByRole('button', { name: 'Switch project' })).toBeInTheDocument()
-    expect(within(navigation).queryByRole('searchbox', { name: 'Search' })).not.toBeInTheDocument()
-    expect(within(navigation).getByText('Recent conversations')).toBeInTheDocument()
+    expect(within(navigation).queryByRole('button', { name: 'Switch project' })).not.toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: 'New project' })).toBeInTheDocument()
+    expect(within(navigation).getByRole('searchbox', { name: 'Search conversations' })).toBeInTheDocument()
     expect(within(navigation).getByRole('button', { name: 'New conversation' })).toBeInTheDocument()
+    expect(await within(navigation).findByText('Jyowo')).toBeInTheDocument()
     expect(
       (await within(navigation).findByText('Runtime session')).closest('button'),
     ).toHaveAttribute('aria-current', 'page')
@@ -141,6 +220,7 @@ describe('SidebarNav', () => {
       'group-hover:opacity-100',
     )
     expect(within(navigation).queryByText('Build the desktop foundation')).not.toBeInTheDocument()
+    expect(within(navigation).queryByText('Recent conversations')).not.toBeInTheDocument()
     expect(within(navigation).queryByTestId('sidebar-bottom-navigation')).not.toBeInTheDocument()
     expect(within(navigation).queryByText('Home')).not.toBeInTheDocument()
     expect(within(navigation).queryByText('Artifacts')).not.toBeInTheDocument()
@@ -152,6 +232,70 @@ describe('SidebarNav', () => {
     expect(within(navigation).queryByText('Memory')).not.toBeInTheDocument()
     expect(within(navigation).queryByText('Evals')).not.toBeInTheDocument()
     expect(within(navigation).queryByText('Models')).not.toBeInTheDocument()
+  })
+
+  it('shows conversations grouped under multiple projects and filters locally', async () => {
+    renderSidebarNav(projectConversationGroupsClient())
+
+    const navigation = screen.getByRole('navigation', { name: 'Workspace' })
+
+    expect(await within(navigation).findByText('alpha')).toBeInTheDocument()
+    expect(within(navigation).getByText('beta')).toBeInTheDocument()
+    expect(within(navigation).getByText('Sidebar redesign')).toBeInTheDocument()
+    expect(within(navigation).getByText('Release checklist')).toBeInTheDocument()
+
+    fireEvent.change(within(navigation).getByRole('searchbox', { name: 'Search conversations' }), {
+      target: { value: 'deploy' },
+    })
+
+    expect(within(navigation).getByText('Release checklist')).toBeInTheDocument()
+    expect(within(navigation).queryByText('Sidebar redesign')).not.toBeInTheDocument()
+  })
+
+  it('switches project before opening a conversation from another project', async () => {
+    const switchProject = vi.fn(async (path: string) => ({
+      project: {
+        path,
+        name: 'beta',
+        lastOpenedAt: '2026-07-08T07:02:00.000Z',
+      },
+    }))
+    renderSidebarNav(projectConversationGroupsClient({ switchProject }))
+
+    fireEvent.click((await screen.findByText('Release checklist')).closest('button')!)
+
+    await waitFor(() => {
+      expect(switchProject).toHaveBeenCalledWith('/repo/beta')
+    })
+    await waitFor(() => {
+      expect(routerSpy.navigate).toHaveBeenLastCalledWith({
+        search: { conversationId: 'beta-001' },
+        to: '/',
+      })
+    })
+  })
+
+  it('switches project before opening a conversation when no project is active', async () => {
+    const switchProject = vi.fn(async (path: string) => ({
+      project: {
+        path,
+        name: 'beta',
+        lastOpenedAt: '2026-07-08T07:02:00.000Z',
+      },
+    }))
+    renderSidebarNav(projectConversationGroupsClient({ switchProject }, null))
+
+    fireEvent.click((await screen.findByText('Release checklist')).closest('button')!)
+
+    await waitFor(() => {
+      expect(switchProject).toHaveBeenCalledWith('/repo/beta')
+    })
+    await waitFor(() => {
+      expect(routerSpy.navigate).toHaveBeenLastCalledWith({
+        search: { conversationId: 'beta-001' },
+        to: '/',
+      })
+    })
   })
 
   it('routes selected conversation ids from real sidebar data', async () => {
@@ -199,7 +343,7 @@ describe('SidebarNav', () => {
     const navigation = screen.getByRole('navigation', { name: 'Workspace' })
 
     expect(await within(navigation).findByText('No workspace conversation')).toBeInTheDocument()
-    fireEvent.click(within(navigation).getByRole('button', { name: 'New conversation' }))
+    fireEvent.click(within(navigation).getAllByRole('button', { name: 'New conversation' })[0])
 
     await waitFor(() => {
       expect(createConversation).toHaveBeenCalledTimes(1)
@@ -231,7 +375,8 @@ describe('SidebarNav', () => {
 
     const navigation = screen.getByRole('navigation', { name: '工作区' })
 
-    expect(await within(navigation).findByText('新建对话')).toBeInTheDocument()
+    expect(await within(navigation).findByText('Jyowo')).toBeInTheDocument()
+    expect((await within(navigation).findAllByText('新建对话')).length).toBeGreaterThan(0)
     expect(within(navigation).getByText('从输入框开始。')).toBeInTheDocument()
     expect(within(navigation).queryByText('New conversation')).not.toBeInTheDocument()
     expect(
@@ -449,41 +594,53 @@ describe('SidebarNav', () => {
       conversationId: 'conversation-runtime-002',
       status: 'deleted' as const,
     }))
-    const listConversations = vi
+    const listProjectConversationGroups = vi
       .fn()
       .mockResolvedValueOnce({
-        conversations: [
+        activePath: '/Users/goya/Repo/Git/Jyowo',
+        groups: [
           {
-            id: 'conversation-runtime-001',
-            isEmpty: false,
-            lastMessagePreview: 'Use the local journal',
-            title: 'Runtime session',
-            updatedAt: '2026-06-17T00:00:00.000Z',
-          },
-          {
-            id: 'conversation-runtime-002',
-            isEmpty: false,
-            lastMessagePreview: 'Auth runtime preview',
-            title: 'Auth runtime',
-            updatedAt: '2026-06-17T00:00:01.000Z',
+            project: testJyowoProject.projects[0],
+            conversations: [
+              {
+                id: 'conversation-runtime-001',
+                isEmpty: false,
+                lastMessagePreview: 'Use the local journal',
+                title: 'Runtime session',
+                updatedAt: '2026-06-17T00:00:00.000Z',
+              },
+              {
+                id: 'conversation-runtime-002',
+                isEmpty: false,
+                lastMessagePreview: 'Auth runtime preview',
+                title: 'Auth runtime',
+                updatedAt: '2026-06-17T00:00:01.000Z',
+              },
+            ],
           },
         ],
       })
       .mockResolvedValue({
-        conversations: [
+        activePath: '/Users/goya/Repo/Git/Jyowo',
+        groups: [
           {
-            id: 'conversation-runtime-001',
-            isEmpty: false,
-            lastMessagePreview: 'Use the local journal',
-            title: 'Runtime session',
-            updatedAt: '2026-06-17T00:00:00.000Z',
+            project: testJyowoProject.projects[0],
+            conversations: [
+              {
+                id: 'conversation-runtime-001',
+                isEmpty: false,
+                lastMessagePreview: 'Use the local journal',
+                title: 'Runtime session',
+                updatedAt: '2026-06-17T00:00:00.000Z',
+              },
+            ],
           },
         ],
       })
     const commandClient = {
       ...createTestCommandClient({ projects: testJyowoProject }),
       deleteConversation,
-      listConversations,
+      listProjectConversationGroups,
     }
 
     renderSidebarNav(commandClient)
@@ -495,7 +652,7 @@ describe('SidebarNav', () => {
       expect(deleteConversation).toHaveBeenCalledWith('conversation-runtime-002')
     })
     await waitFor(() => {
-      expect(listConversations).toHaveBeenCalledTimes(2)
+      expect(listProjectConversationGroups).toHaveBeenCalledTimes(2)
     })
     expect(screen.queryByText('Auth runtime')).not.toBeInTheDocument()
   })
@@ -520,39 +677,28 @@ describe('SidebarNav', () => {
     expect(screen.getByText('Auth runtime')).toBeInTheDocument()
   })
 
-  it('removes the active project from the project menu after confirmation', async () => {
-    const deleteProject = vi.fn(async () => ({
-      activePath: null,
-      path: '/Users/goya/Repo/Git/Jyowo',
-      status: 'deleted' as const,
+  it('adds a project from the sidebar action', async () => {
+    pickProjectDirectoryMock.mockResolvedValue('/Users/goya/Repo/Git/NextApp')
+    const addProject = vi.fn(async (path: string) => ({
+      project: {
+        lastOpenedAt: '2026-07-08T07:00:00.000Z',
+        name: 'NextApp',
+        path,
+      },
     }))
-    const listProjects = vi.fn().mockResolvedValueOnce(testJyowoProject).mockResolvedValue({
-      activePath: null,
-      projects: [],
-    })
     const commandClient = {
       ...createTestCommandClient({ projects: testJyowoProject }),
-      deleteProject,
-      listProjects,
+      addProject,
     }
 
     renderSidebarNav(commandClient)
 
     expect(await screen.findByText('Jyowo')).toBeInTheDocument()
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Switch project' }))
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete Jyowo' }))
-    expect(deleteProject).not.toHaveBeenCalled()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm remove project' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New project' }))
 
     await waitFor(() => {
-      expect(deleteProject).toHaveBeenCalledWith('/Users/goya/Repo/Git/Jyowo')
+      expect(addProject).toHaveBeenCalledWith('/Users/goya/Repo/Git/NextApp')
     })
-    await waitFor(() => {
-      expect(screen.getByText('No project selected')).toBeInTheDocument()
-    })
-    expect(screen.queryByText('Open a project to view conversations.')).not.toBeInTheDocument()
-    expect(screen.getByText('Build the desktop foundation')).toBeInTheDocument()
   })
 
   it('routes evals from the command palette', () => {
@@ -596,7 +742,9 @@ describe('SidebarNav', () => {
       'true',
     )
     expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Switch project' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New conversation' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New project' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Switch project' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Skills' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Agents' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()

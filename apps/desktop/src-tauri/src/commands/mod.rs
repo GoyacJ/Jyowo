@@ -203,9 +203,9 @@ pub use contracts::{
     ListBackgroundAgentsRequest, ListBackgroundAgentsResponse, ListBrowserMcpPresetsResponse,
     ListConversationsResponse, ListEvalCasesResponse, ListMcpDiagnosticsRequest,
     ListMcpDiagnosticsResponse, ListMcpServersResponse, ListMemoryItemsResponse,
-    ListOfficialQuotaSnapshotsResponse, ListPluginsResponse, ListProviderCapabilityRoutesResponse,
-    ListProviderProbeSnapshotsResponse, ListProviderSettingsResponse,
-    ListReferenceCandidatesRequest, ListReferenceCandidatesResponse,
+    ListOfficialQuotaSnapshotsResponse, ListPluginsResponse, ListProjectConversationGroupsResponse,
+    ListProviderCapabilityRoutesResponse, ListProviderProbeSnapshotsResponse,
+    ListProviderSettingsResponse, ListReferenceCandidatesRequest, ListReferenceCandidatesResponse,
     ListSkillCatalogInstallTasksResponse, ListSkillsResponse, McpDiagnosticBatchEmitter,
     McpDiagnosticBatchPayload, McpDiagnosticRecord, McpDiagnosticSeverity, McpDiagnosticStore,
     McpHeaderEnvRecord, McpNameValueRecord, McpNameValueSaveRecord, McpServerConfigRecord,
@@ -258,8 +258,9 @@ pub use conversations::{
     get_conversation_inspector_item_with_runtime_state, get_conversation_with_runtime_state,
     get_replay_timeline_with_runtime_state, list_activity_payload,
     list_activity_with_runtime_state, list_conversations_with_runtime_state,
-    list_reference_candidates_payload, list_reference_candidates_with_runtime_state,
-    page_conversation_timeline_with_runtime_state, page_conversation_worktree_with_runtime_state,
+    list_project_conversation_groups_payload, list_reference_candidates_payload,
+    list_reference_candidates_with_runtime_state, page_conversation_timeline_with_runtime_state,
+    page_conversation_worktree_with_runtime_state,
     resolve_permission_for_window_with_runtime_state, resolve_permission_payload,
     resolve_permission_with_runtime_state, resolve_start_run_agent_policy, start_run_payload,
     start_run_with_runtime_state, subscribe_conversation_events_for_window_with_runtime_state,
@@ -1554,6 +1555,13 @@ pub async fn list_conversations(
 ) -> Result<ListConversationsResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
     Ok(list_conversations_with_runtime_state(&*runtime_state).await)
+}
+
+#[tauri::command]
+pub async fn list_project_conversation_groups(
+    project_registry: tauri::State<'_, ProjectRegistry>,
+) -> Result<ListProjectConversationGroupsResponse, CommandErrorPayload> {
+    list_project_conversation_groups_payload(&project_registry).await
 }
 
 #[tauri::command]

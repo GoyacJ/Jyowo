@@ -1583,6 +1583,20 @@ pub struct ListConversationsResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProjectConversationGroupPayload {
+    pub project: crate::project_registry::ProjectRecord,
+    pub conversations: Vec<ConversationSummaryPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListProjectConversationGroupsResponse {
+    pub active_path: Option<String>,
+    pub groups: Vec<ProjectConversationGroupPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateConversationResponse {
     pub conversation: ConversationSummaryPayload,
 }

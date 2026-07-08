@@ -37,6 +37,7 @@ use harness_contracts::{
     SubagentStatus, SubagentTerminationReason, TeamId, TeamTerminationReason, TopologyKind,
     UiSafeText,
 };
+use harness_journal::SqliteConversationReadModelStore;
 use std::io::Write;
 
 pub async fn list_conversations_with_runtime_state(
@@ -73,6 +74,70 @@ pub async fn list_conversations_with_runtime_state(
     conversations.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
 
     ListConversationsResponse { conversations }
+}
+
+pub async fn list_project_conversation_groups_payload(
+    project_registry: &ProjectRegistry,
+) -> Result<ListProjectConversationGroupsResponse, CommandErrorPayload> {
+    let mut groups = Vec::new();
+    for project in project_registry.list_projects() {
+        let runtime_root = PathBuf::from(&project.path).join(".jyowo").join("runtime");
+        let conversations = list_project_conversations_from_runtime_root(runtime_root).await?;
+        groups.push(ProjectConversationGroupPayload {
+            project,
+            conversations,
+        });
+    }
+
+    Ok(ListProjectConversationGroupsResponse {
+        active_path: project_registry.active_path(),
+        groups,
+    })
+}
+
+async fn list_project_conversations_from_runtime_root(
+    runtime_root: PathBuf,
+) -> Result<Vec<ConversationSummaryPayload>, CommandErrorPayload> {
+    let read_model_path = runtime_root.join("conversation-read-model.sqlite");
+    let runtime_summaries = if read_model_path.exists() {
+        SqliteConversationReadModelStore::open(&read_model_path)
+            .await
+            .map_err(|error| {
+                runtime_operation_failed(format!("conversation read model open failed: {error}"))
+            })?
+            .list_summaries(TenantId::SINGLE, 50)
+            .await
+            .map_err(|error| {
+                runtime_operation_failed(format!("conversation summaries list failed: {error}"))
+            })?
+    } else {
+        Vec::new()
+    };
+
+    let mut conversations: Vec<_> = runtime_summaries
+        .into_iter()
+        .map(conversation_summary_payload_from_read_model)
+        .collect();
+    let mut seen = conversations
+        .iter()
+        .map(|conversation| conversation.id.clone())
+        .collect::<HashSet<_>>();
+    if let Ok(metadata) =
+        DesktopConversationMetadataStore::new_runtime_root(runtime_root).load_record()
+    {
+        conversations.extend(
+            metadata
+                .conversations
+                .into_values()
+                .filter(|record| record.state == ConversationMetadataState::Draft)
+                .filter(|record| SessionId::parse(&record.id).is_ok())
+                .filter(|record| seen.insert(record.id.clone()))
+                .map(conversation_summary_payload_from_metadata),
+        );
+    }
+    conversations.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    conversations.truncate(50);
+    Ok(conversations)
 }
 
 pub async fn create_conversation_with_runtime_state(

@@ -54,6 +54,8 @@ export const zhCN = {
     },
     conversations: {
       recent: '最近对话',
+      search: '搜索对话',
+      searchPlaceholder: '搜索项目或对话',
       loading: '加载中...',
       empty: '暂无对话',
       projectRequired: '打开项目后可查看对话。',
@@ -70,6 +72,9 @@ export const zhCN = {
       switch: '切换项目',
       open: '打开项目',
       new: '新建项目',
+      collapseGroup: '收起 {{name}}',
+      expandGroup: '展开 {{name}}',
+      showMoreConversations: '再显示 {{count}} 个',
       delete: '删除 {{name}}',
       confirmDelete: '确认移除项目',
       confirmDeleteDescription: '从 Jyowo 中移除 {{name}}。项目目录不会从磁盘删除。',

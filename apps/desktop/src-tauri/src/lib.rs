@@ -89,6 +89,7 @@ pub fn run() {
             commands::list_background_agents,
             commands::list_browser_mcp_presets,
             commands::list_conversations,
+            commands::list_project_conversation_groups,
             commands::list_eval_cases,
             commands::list_reference_candidates,
             commands::list_skill_catalog_entries,

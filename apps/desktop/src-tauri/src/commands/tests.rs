@@ -17,6 +17,7 @@ mod tests {
     };
     use crate::commands::stores::ensure_plugin_package_dir_name;
     use crate::commands::validation::ensure_mcp_server_transport;
+    use crate::project_registry::ProjectRegistry;
     use harness_contracts::{
         ActionPlanHash, DecisionLifetime, DecisionMatcherKind, DecisionMatcherSummary,
         ManifestOriginRef, MemoryGlobalSettings, MemoryThreadMode, MemoryThreadSettings,
@@ -26,6 +27,34 @@ mod tests {
         PluginRejectedEvent, PluginSourceKind, RedactRules, Redactor, RejectionReason, TeamId,
         TrustLevel,
     };
+    use harness_journal::SqliteConversationReadModelStore;
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct HomeEnvGuard {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl HomeEnvGuard {
+        fn set(home: &Path) -> Self {
+            let previous = std::env::var_os("HOME");
+            std::env::set_var("HOME", home.as_os_str());
+            Self { previous }
+        }
+    }
+
+    impl Drop for HomeEnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var("HOME", previous);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
+    }
 
     struct EmptyRedactor;
 
@@ -67,6 +96,91 @@ mod tests {
             ModelProtocol::ChatCompletions,
         );
         state
+    }
+
+    #[tokio::test]
+    async fn list_project_conversation_groups_reads_projects_without_creating_missing_runtime() {
+        let _lock = HOME_ENV_LOCK.lock().expect("home env lock");
+        let temp = tempfile::tempdir().expect("temp dir");
+        let temp_root = temp.path().canonicalize().expect("canonical temp root");
+        let home = temp_root.join("home");
+        let alpha = temp_root.join("alpha-project");
+        let beta = temp_root.join("beta-project");
+        std::fs::create_dir_all(&home).expect("home dir");
+        std::fs::create_dir_all(&alpha).expect("alpha dir");
+        std::fs::create_dir_all(&beta).expect("beta dir");
+        let _home = HomeEnvGuard::set(&home);
+        let registry = ProjectRegistry::load().expect("project registry");
+        registry
+            .upsert_and_activate(&alpha)
+            .expect("alpha registered");
+        registry
+            .upsert_and_activate(&beta)
+            .expect("beta registered");
+        registry.set_active(&alpha).expect("alpha active");
+
+        let alpha_runtime = alpha.join(".jyowo").join("runtime");
+        let read_model = SqliteConversationReadModelStore::open(
+            alpha_runtime.join("conversation-read-model.sqlite"),
+        )
+        .await
+        .expect("read model opens");
+        let alpha_session = SessionId::new();
+        read_model
+            .seed_empty_conversation(
+                TenantId::SINGLE,
+                alpha_session,
+                chrono::DateTime::parse_from_rfc3339("2026-07-07T08:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+                None,
+            )
+            .await
+            .expect("summary seeded");
+        let draft_id = SessionId::new().to_string();
+        let metadata = ConversationMetadataFile {
+            version: 1,
+            conversations: HashMap::from([(
+                draft_id.clone(),
+                ConversationMetadataRecord {
+                    id: draft_id.clone(),
+                    title: "Draft in alpha".to_owned(),
+                    created_at: "2026-07-08T07:00:00Z".to_owned(),
+                    updated_at: "2026-07-08T07:00:00Z".to_owned(),
+                    default_model_config_id: None,
+                    state: ConversationMetadataState::Draft,
+                },
+            )]),
+        };
+        DesktopConversationMetadataStore::new_runtime_root(alpha_runtime.clone())
+            .save_record(&metadata)
+            .expect("metadata saved");
+
+        let response = list_project_conversation_groups_payload(&registry)
+            .await
+            .expect("groups load");
+
+        assert_eq!(
+            response.active_path,
+            Some(alpha.to_string_lossy().to_string())
+        );
+        assert_eq!(response.groups.len(), 2);
+        let alpha_group = response
+            .groups
+            .iter()
+            .find(|group| group.project.path == alpha.to_string_lossy())
+            .expect("alpha group");
+        assert_eq!(alpha_group.conversations.len(), 2);
+        assert_eq!(alpha_group.conversations[0].id, draft_id);
+        assert_eq!(alpha_group.conversations[0].title, "Draft in alpha");
+        assert_eq!(alpha_group.conversations[1].id, alpha_session.to_string());
+        let beta_group = response
+            .groups
+            .iter()
+            .find(|group| group.project.path == beta.to_string_lossy())
+            .expect("beta group");
+        assert!(beta_group.conversations.is_empty());
+        assert!(!beta.join(".jyowo").join("runtime").exists());
     }
 
     #[test]
