@@ -670,7 +670,7 @@ function ProjectHeaderRow({
       {isActive && (
         <motion.div
           layoutId="activeSidebarIndicator"
-          className="absolute inset-0 bg-background/55 rounded-md -z-10 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_1px_2px_rgba(0,0,0,0.05)]"
+          className="absolute inset-0 rounded-md bg-background/55 -z-10 sidebar-active-indicator"
           transition={{ type: 'spring', stiffness: 380, damping: 30 }}
         />
       )}
@@ -991,7 +991,7 @@ function ProjectConversationRow({
         {isActive && (
           <motion.div
             layoutId="activeSidebarIndicator"
-            className="absolute inset-0 bg-background/55 rounded-md -z-10 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_1px_2px_rgba(0,0,0,0.05)]"
+            className="absolute inset-0 rounded-md bg-background/55 -z-10 sidebar-active-indicator"
             transition={{ type: 'spring', stiffness: 380, damping: 30 }}
           />
         )}
@@ -1083,7 +1083,7 @@ function DefaultConversationRow({
         {isActive && (
           <motion.div
             layoutId="activeSidebarIndicator"
-            className="absolute inset-0 bg-background/55 rounded-md -z-10 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_1px_2px_rgba(0,0,0,0.05)]"
+            className="absolute inset-0 rounded-md bg-background/55 -z-10 sidebar-active-indicator"
             transition={{ type: 'spring', stiffness: 380, damping: 30 }}
           />
         )}

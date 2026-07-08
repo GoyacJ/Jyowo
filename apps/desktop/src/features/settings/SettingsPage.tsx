@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next'
 import { APP_LOCALES, type AppLocale } from '@/shared/i18n/locales'
 import { cn } from '@/shared/lib/utils'
 import { useUiStore } from '@/shared/state/ui-store'
+import { Section, SectionDescription, SectionHeader, SectionTitle } from '@/shared/ui/section'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 import { AboutSettings } from './AboutSettings'
 import { AutomationSettings } from './AutomationSettings'
@@ -137,16 +138,16 @@ function ThemeSettings() {
   const setTheme = useUiStore((state) => state.setTheme)
 
   return (
-    <section className="space-y-5 rounded-lg border border-border bg-surface p-5 shadow-sm hover:shadow-card transition-all duration-300">
-      <div className="flex items-start gap-3">
+    <Section>
+      <SectionHeader className="flex items-start gap-3">
         <div className="rounded-md border border-border bg-background p-2 text-muted-foreground">
           <Sun className="size-4" />
         </div>
         <div>
-          <h2 className="font-semibold text-base">{t('theme.title')}</h2>
-          <p className="mt-1 text-muted-foreground text-sm">{t('theme.description')}</p>
+          <SectionTitle>{t('theme.title')}</SectionTitle>
+          <SectionDescription>{t('theme.description')}</SectionDescription>
         </div>
-      </div>
+      </SectionHeader>
 
       <fieldset className="flex w-fit flex-wrap gap-2">
         <legend className="sr-only">{t('theme.label')}</legend>
@@ -168,7 +169,7 @@ function ThemeSettings() {
           </button>
         ))}
       </fieldset>
-    </section>
+    </Section>
   )
 }
 
@@ -178,16 +179,16 @@ function LanguageSettings() {
   const setLocale = useUiStore((state) => state.setLocale)
 
   return (
-    <section className="space-y-5 rounded-lg border border-border bg-surface p-5 shadow-sm hover:shadow-card transition-all duration-300">
-      <div className="flex items-start gap-3">
+    <Section>
+      <SectionHeader className="flex items-start gap-3">
         <div className="rounded-md border border-border bg-background p-2 text-muted-foreground">
           <Languages className="size-4" />
         </div>
         <div>
-          <h2 className="font-semibold text-base">{t('language.title')}</h2>
-          <p className="mt-1 text-muted-foreground text-sm">{t('language.description')}</p>
+          <SectionTitle>{t('language.title')}</SectionTitle>
+          <SectionDescription>{t('language.description')}</SectionDescription>
         </div>
-      </div>
+      </SectionHeader>
 
       <label className="block max-w-sm space-y-2 text-sm">
         <span className="font-medium">{t('language.label')}</span>
@@ -203,6 +204,6 @@ function LanguageSettings() {
           ))}
         </select>
       </label>
-    </section>
+    </Section>
   )
 }

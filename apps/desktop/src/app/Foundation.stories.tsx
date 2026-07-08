@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { Info, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import { SystemStatusPage } from '@/features/system-status/SystemStatusPage'
@@ -47,9 +48,12 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/shared/ui/dropdown-menu'
+import { IconButton } from '@/shared/ui/icon-button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/ui/popover'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/shared/ui/resizable-panels'
 import { ScrollArea } from '@/shared/ui/scroll-area'
+import { Section, SectionDescription, SectionHeader, SectionTitle } from '@/shared/ui/section'
+import { StatusBadge } from '@/shared/ui/status-badge'
 import { Switch } from '@/shared/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/shared/ui/tooltip'
@@ -82,6 +86,51 @@ export const SystemStatus: Story = {}
 export const Primitives: Story = {
   render: () => (
     <div className="grid max-w-4xl gap-5 p-4">
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Design tokens</SectionTitle>
+          <SectionDescription>
+            Semantic color, typography, status, and action primitives.
+          </SectionDescription>
+        </SectionHeader>
+        <div className="grid gap-4 md:grid-cols-[1fr_1fr]">
+          <div className="grid gap-2">
+            <p className="text-caption">Color tokens</p>
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              {[
+                ['Background', 'bg-background text-foreground'],
+                ['Surface', 'bg-surface text-foreground'],
+                ['Primary', 'bg-primary text-primary-foreground'],
+                ['Success', 'bg-success text-success-foreground'],
+                ['Warning', 'bg-warning text-warning-foreground'],
+                ['Destructive', 'bg-destructive text-destructive-foreground'],
+              ].map(([label, className]) => (
+                <div
+                  className={`rounded-md border border-border px-3 py-2 ${className}`}
+                  key={label}
+                >
+                  {label}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="grid gap-3">
+            <p className="text-page-title">Page title</p>
+            <p className="text-section-title">Section title</p>
+            <p className="text-body-muted">Muted body copy uses a shared typography token.</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusBadge tone="neutral">idle</StatusBadge>
+              <StatusBadge tone="success">running</StatusBadge>
+              <StatusBadge tone="warning">warning</StatusBadge>
+              <StatusBadge tone="destructive">failed</StatusBadge>
+              <StatusBadge tone="info">checking</StatusBadge>
+              <IconButton icon={Info} label="Inspect token" variant="outline" />
+              <IconButton icon={Trash2} label="Remove token" variant="ghost" />
+            </div>
+          </div>
+        </div>
+      </Section>
+
       <div className="flex flex-wrap items-center gap-3">
         <Button variant="outline">Refresh</Button>
         <Badge variant="secondary">available</Badge>

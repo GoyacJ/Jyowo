@@ -3,6 +3,7 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  /* Semantic colors */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-surface: var(--surface);
@@ -27,6 +28,8 @@
   --color-warning-foreground: var(--warning-foreground);
   --color-info: var(--info);
   --color-info-foreground: var(--info-foreground);
+
+  /* Domain colors */
   --color-code-background: var(--code-background);
   --color-terminal-background: var(--terminal-background);
   --color-terminal-foreground: var(--terminal-foreground);
@@ -37,6 +40,8 @@
   --color-terminal-error: var(--terminal-error);
   --color-badge: var(--badge);
   --color-badge-foreground: var(--badge-foreground);
+
+  /* Shape, elevation, and font */
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);
   --radius-lg: var(--radius-lg);
@@ -190,6 +195,38 @@ select {
   overflow-wrap: anywhere;
 }
 
+.text-page-title {
+  font-weight: 600;
+  font-size: 1.5rem;
+  line-height: 2rem;
+  letter-spacing: 0;
+}
+
+.text-section-title {
+  font-weight: 600;
+  font-size: 1rem;
+  line-height: 1.5rem;
+  letter-spacing: 0;
+}
+
+.text-body-muted {
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+
+.text-caption {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+
+.sidebar-active-indicator {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
 .model-matrix-layout {
   container-type: inline-size;
 }
@@ -247,10 +284,10 @@ button:not(:disabled):hover,
 /* 玻璃拟态毛玻璃背景 */
 .glass-effect {
   backdrop-filter: blur(12px) saturate(180%);
-  background-color: rgba(var(--background), 0.7);
+  background-color: color-mix(in srgb, var(--background) 70%, transparent);
 }
 .dark .glass-effect {
-  background-color: rgba(var(--background), 0.65);
+  background-color: color-mix(in srgb, var(--background) 65%, transparent);
 }
 
 /* 页面切换淡入上升微动效 */
@@ -312,4 +349,3 @@ button:not(:disabled):hover,
 .animate-fade-in-quick {
   animation: fade-in-quick 0.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
-

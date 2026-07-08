@@ -11,8 +11,9 @@ import {
   downloadAndInstallUpdate,
   relaunchApp,
 } from '@/shared/tauri/updater'
-import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
+import { Section, SectionDescription, SectionHeader, SectionTitle } from '@/shared/ui/section'
+import { StatusBadge, type StatusBadgeProps } from '@/shared/ui/status-badge'
 
 type AboutUpdateState =
   | { kind: 'idle' }
@@ -94,17 +95,17 @@ export function AboutSettings() {
   }
 
   return (
-    <section className="space-y-5 rounded-md border border-border bg-surface p-5">
+    <Section>
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex items-start gap-3">
+        <SectionHeader className="flex items-start gap-3">
           <div className="rounded-md border border-border bg-background p-2 text-muted-foreground">
             <Info className="size-4" data-icon="inline-start" />
           </div>
           <div>
-            <h2 className="font-semibold text-base">{t('about.title')}</h2>
-            <p className="mt-1 text-muted-foreground text-sm">{t('about.description')}</p>
+            <SectionTitle>{t('about.title')}</SectionTitle>
+            <SectionDescription>{t('about.description')}</SectionDescription>
           </div>
-        </div>
+        </SectionHeader>
         <Button
           disabled={isChecking || isDownloading}
           onClick={() => {
@@ -132,9 +133,9 @@ export function AboutSettings() {
             {t('about.updateStatus')}
           </dt>
           <dd className="mt-2">
-            <Badge variant={updateState.kind === 'failed' ? 'destructive' : 'outline'}>
+            <StatusBadge tone={updateStatusTone(updateState.kind)}>
               {t(`about.status.${updateState.kind}`)}
-            </Badge>
+            </StatusBadge>
           </dd>
         </div>
         <div className="rounded-md border border-border bg-muted/35 p-4">
@@ -194,6 +195,19 @@ export function AboutSettings() {
           <p className="text-muted-foreground text-sm">{t('about.releaseNotesEmpty')}</p>
         )}
       </section>
-    </section>
+    </Section>
   )
+}
+
+function updateStatusTone(kind: AboutUpdateState['kind']): StatusBadgeProps['tone'] {
+  if (kind === 'failed') {
+    return 'destructive'
+  }
+  if (kind === 'available' || kind === 'installed') {
+    return 'success'
+  }
+  if (kind === 'checking' || kind === 'downloading') {
+    return 'info'
+  }
+  return 'neutral'
 }
