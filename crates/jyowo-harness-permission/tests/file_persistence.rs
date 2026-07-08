@@ -11,9 +11,9 @@ use harness_contracts::{
     SessionId, TenantId,
 };
 use harness_permission::{
-    canonical_bytes, migrate_legacy_no_workspace_permission_decisions, DecisionHistory,
-    DecisionLookup, DecisionPersistence, DecisionStore, FileDecisionPersistence,
-    IntegrityAlgorithm, PermissionTamperEventSink, PersistedDecision, StaticSignerStore,
+    canonical_bytes, DecisionHistory, DecisionLookup, DecisionPersistence, DecisionStore,
+    FileDecisionPersistence, IntegrityAlgorithm, PermissionTamperEventSink, PersistedDecision,
+    StaticSignerStore,
 };
 use parking_lot::Mutex;
 
@@ -81,60 +81,17 @@ async fn file_persistence_rejects_signed_decision_from_other_tenant() {
 }
 
 #[tokio::test]
-async fn file_persistence_loads_legacy_single_tenant_signed_decision() {
+async fn file_persistence_rejects_legacy_single_tenant_signed_decision() {
     let temp = tempfile::tempdir().unwrap();
     let path = canonical_temp_root(&temp).join("permissions.json");
     let decision = persisted_decision();
     write_legacy_signed_decision(&path, &decision).await;
     let persistence = FileDecisionPersistence::new(TenantId::SINGLE, &path, signer());
 
-    let loaded = persistence.load_decisions().await.unwrap();
+    let error = persistence.load_decisions().await.unwrap_err();
 
-    assert_eq!(loaded, vec![decision]);
-}
-
-#[tokio::test]
-async fn migrates_legacy_no_workspace_decisions_to_conversation_scope() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = canonical_temp_root(&temp).join("permission-decisions.json");
-    let conversation_id = SessionId::new();
-    let mut decision = persisted_decision();
-    decision.session_id = Some(conversation_id);
-    write_legacy_signed_decision(&path, &decision).await;
-
-    migrate_legacy_no_workspace_permission_decisions(&path, TenantId::SINGLE, signer())
-        .await
-        .unwrap();
-
-    let scoped = FileDecisionPersistence::new(TenantId::SINGLE, &path, signer())
-        .with_no_workspace_conversation_scope(conversation_id);
-    assert_eq!(scoped.load_decisions().await.unwrap(), vec![decision]);
-    let unscoped = FileDecisionPersistence::new(TenantId::SINGLE, &path, signer());
-    assert!(unscoped.load_decisions().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn quarantines_legacy_no_workspace_decision_without_session_id() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = canonical_temp_root(&temp).join("permission-decisions.json");
-    write_legacy_signed_decision(&path, &persisted_decision()).await;
-
-    let migrated =
-        migrate_legacy_no_workspace_permission_decisions(&path, TenantId::SINGLE, signer())
-            .await
-            .unwrap();
-
-    assert!(migrated);
-    assert!(
-        FileDecisionPersistence::new(TenantId::SINGLE, &path, signer())
-            .load_decisions()
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert!(path
-        .with_file_name("permission-decisions.json.unscoped-legacy.json")
-        .exists());
+    assert!(error.to_string().contains("integrity verification"));
+    assert!(!path.exists());
 }
 
 #[tokio::test]

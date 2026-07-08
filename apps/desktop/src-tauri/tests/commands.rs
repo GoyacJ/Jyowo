@@ -29,7 +29,6 @@ use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
 use harness_tool::BuiltinToolset;
 use image::codecs::{gif::GifEncoder, jpeg::JpegEncoder, webp::WebPEncoder};
 use image::{ExtendedColorType, ImageEncoder};
-use jyowo_desktop_shell::commands::stores::migration::{MigrationConflictKind, MigrationResult};
 use jyowo_desktop_shell::commands::{
     archive_background_agent_with_runtime_state, cancel_background_agent_with_runtime_state,
     cancel_run_payload, cancel_run_with_runtime_state,
@@ -61,18 +60,16 @@ use jyowo_desktop_shell::commands::{
     list_model_provider_catalog_payload, list_provider_capability_route_options_from_inputs,
     list_provider_capability_routes_with_store, list_provider_settings_with_store,
     list_reference_candidates_with_runtime_state, list_skills_with_runtime_state,
-    mcp_diagnostic_record_from_event, migrate_execution_settings,
-    migrate_provider_capability_routes, page_conversation_timeline_with_runtime_state,
+    mcp_diagnostic_record_from_event, page_conversation_timeline_with_runtime_state,
     page_conversation_worktree_with_runtime_state, pause_background_agent_with_runtime_state,
     request_provider_config_api_key_reveal_with_runtime_state,
-    request_provider_config_api_key_reveal_with_store,
-    reset_legacy_conversation_runtime_for_provider_continuations,
-    resolve_effective_execution_settings, resolve_permission_for_window_with_runtime_state,
-    resolve_permission_payload, resolve_permission_with_runtime_state,
-    resolve_start_run_agent_policy, restart_mcp_server_with_runtime_state,
-    resume_background_agent_with_runtime_state, run_automation_now_with_runtime_state,
-    run_due_automations_once_with_runtime_state, run_eval_case_payload,
-    run_eval_case_with_runtime_state, runtime_state_async, runtime_state_for_workspace,
+    request_provider_config_api_key_reveal_with_store, resolve_effective_execution_settings,
+    resolve_permission_for_window_with_runtime_state, resolve_permission_payload,
+    resolve_permission_with_runtime_state, resolve_start_run_agent_policy,
+    restart_mcp_server_with_runtime_state, resume_background_agent_with_runtime_state,
+    run_automation_now_with_runtime_state, run_due_automations_once_with_runtime_state,
+    run_eval_case_payload, run_eval_case_with_runtime_state, runtime_state_async,
+    runtime_state_for_workspace,
     runtime_state_from_stream_permission_runtime_with_provider_settings_store_for_test,
     save_agent_profile_with_runtime_state, save_automation_with_runtime_state,
     save_browser_mcp_preset_with_store, save_mcp_server_with_runtime_state,

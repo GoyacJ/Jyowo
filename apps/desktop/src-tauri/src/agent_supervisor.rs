@@ -530,13 +530,6 @@ fn supervisor_token_path_for_scope(scope: &AgentSupervisorScope) -> PathBuf {
     scope.runtime_root().join(SUPERVISOR_TOKEN_FILE)
 }
 
-pub fn legacy_supervisor_sidecar_args(workspace_root: &Path) -> Vec<String> {
-    vec![
-        SIDECAR_WORKSPACE_ARG.to_owned(),
-        workspace_root.display().to_string(),
-    ]
-}
-
 pub fn read_supervisor_lock(
     workspace_root: &Path,
 ) -> Result<Option<AgentSupervisorLockFile>, AgentSupervisorError> {

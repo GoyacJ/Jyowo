@@ -769,8 +769,10 @@ fn runtime_assembly_starts_run_scoped_agent_team_through_agent_runtime_store() {
             .await
             .expect("team turn should run");
 
-        let runtime_store =
-            harness_agent_runtime::AgentRuntimeStore::open(&workspace).expect("store opens");
+        let runtime_store = harness_agent_runtime::AgentRuntimeStore::open_runtime_dir(
+            workspace.join(".jyowo").join("runtime"),
+        )
+        .expect("store opens");
         let tasks = runtime_store
             .with_connection(|connection| {
                 let mut statement = connection.prepare(

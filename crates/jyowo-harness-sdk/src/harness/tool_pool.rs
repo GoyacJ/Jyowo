@@ -886,10 +886,12 @@ mod tests {
     use super::*;
     use futures::StreamExt;
     use harness_contracts::{
-        AuthorizationTicketId, CorrelationId, NoopRedactor, PermissionActorSource, ToolActionPlan,
-        ToolUseId,
+        CorrelationId, NoopRedactor, PermissionActorSource, ToolActionPlan, ToolUseId,
     };
-    use harness_tool::{AuthorizedTicketSummary, AuthorizedToolInput, InterruptToken};
+    use harness_tool::{
+        AuthorizationTicketClaims, AuthorizedTicketSummary, AuthorizedToolInput, InterruptToken,
+        TicketLedger,
+    };
     use std::sync::Mutex;
 
     #[test]
@@ -985,15 +987,20 @@ mod tests {
     }
 
     fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
-        AuthorizedTicketSummary {
-            ticket_id: AuthorizationTicketId::new(),
+        let ledger = TicketLedger::default();
+        let claims = AuthorizationTicketClaims {
             tenant_id: TenantId::SINGLE,
             session_id: SessionId::new(),
             run_id: RunId::new(),
             tool_use_id: plan.tool_use_id,
             tool_name: plan.tool_name.clone(),
             action_plan_hash: plan.plan_hash.clone(),
-            consumed_at: chrono::Utc::now(),
-        }
+        };
+        let ticket = ledger
+            .mint(claims.clone(), chrono::Utc::now())
+            .expect("test ticket should mint");
+        ledger
+            .consume(ticket.id, &claims, chrono::Utc::now())
+            .expect("test ticket should consume")
     }
 }

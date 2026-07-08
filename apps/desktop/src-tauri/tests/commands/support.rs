@@ -134,7 +134,7 @@ impl harness_contracts::BackgroundAgentStarterCap for TestBackgroundAgentStarter
         let event_store = Arc::clone(&self.event_store);
         Box::pin(async move {
             let store = Arc::new(
-                jyowo_harness_sdk::AgentRuntimeStore::open(&workspace_root)
+                agent_runtime_store_for_workspace(&workspace_root)
                     .map_err(|error| ToolError::Internal(error.to_string()))?,
             );
             let redactor = Arc::new(DefaultRedactor::default());
@@ -939,6 +939,14 @@ pub(crate) fn unique_workspace(name: &str) -> PathBuf {
     ))
 }
 
+pub(crate) fn agent_runtime_store_for_workspace(
+    workspace_root: &Path,
+) -> Result<jyowo_harness_sdk::AgentRuntimeStore, jyowo_harness_sdk::AgentRuntimeStoreError> {
+    jyowo_harness_sdk::AgentRuntimeStore::open_runtime_dir(
+        workspace_root.join(".jyowo").join("runtime"),
+    )
+}
+
 pub(crate) fn provider_settings_store_for_workspace(
     workspace: &Path,
 ) -> DesktopProviderSettingsStore {
@@ -977,7 +985,7 @@ pub(crate) fn use_test_provider_settings_store(state: &mut DesktopRuntimeState, 
     );
 }
 
-fn test_storage_layout_for_workspace(
+pub(crate) fn test_storage_layout_for_workspace(
     workspace: &Path,
 ) -> jyowo_desktop_shell::storage_layout::StorageLayout {
     jyowo_desktop_shell::storage_layout::StorageLayout::new(

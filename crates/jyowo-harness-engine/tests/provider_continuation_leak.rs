@@ -201,7 +201,12 @@ impl ProviderContinuationLeakHarness {
         let tenant_id = TenantId::SINGLE;
         let session_id = SessionId::new();
         let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
-        let store = Arc::new(FileProviderContinuationStore::open(workspace.path()).unwrap());
+        let store = Arc::new(
+            FileProviderContinuationStore::open_runtime_dir(
+                workspace.path().join(".jyowo").join("runtime"),
+            )
+            .unwrap(),
+        );
         let model = Arc::new(RecordingModel::events(response));
         let engine = Engine::builder()
             .with_engine_id(EngineId::new("provider-continuation-leak-test"))

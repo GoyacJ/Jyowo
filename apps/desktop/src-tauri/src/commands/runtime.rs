@@ -34,7 +34,6 @@ use super::*;
 use crate::agent_supervisor::BackgroundSupervisorSession;
 use crate::storage_layout::{ConfigScope, JyowoHome, RuntimeLayout, RuntimeScope, StorageLayout};
 use async_trait::async_trait;
-use harness_contracts::global_config::AgentProfileSelectionRecord;
 use harness_contracts::CapabilityRegistry;
 #[cfg(test)]
 use harness_contracts::NoopRedactor;
@@ -48,8 +47,6 @@ use harness_permission::{FileDecisionPersistence, IntegrityAlgorithm, Permission
 use harness_provider_state::FileProviderContinuationStore;
 use harness_sandbox::{ContainerLifecycle, DockerSandbox, RoutingSandboxBackend, VolumeMount};
 use harness_tool::ToolNetworkBrokerCap;
-
-const PROVIDER_CONTINUATION_RUNTIME_VERSION: &str = "1";
 
 #[derive(Clone)]
 struct DesktopBackgroundAgentStarter {
@@ -292,7 +289,10 @@ impl DesktopRuntimeState {
             )),
             permission_resolver: None,
             provider_api_key_reveal_tokens: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-            plugin_store: Arc::new(DesktopPluginStore::new(workspace_root.clone())),
+            plugin_store: Arc::new(DesktopPluginStore::project(
+                storage_layout.clone(),
+                workspace_root.clone(),
+            )),
             plugin_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             provider_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
             provider_settings_store: Arc::new(DesktopProviderSettingsStore::new_with_layout(
@@ -322,7 +322,10 @@ impl DesktopRuntimeState {
                 workspace_root.clone(),
             )),
             skill_catalog_install_tasks: Arc::new(RwLock::new(HashMap::new())),
-            skill_store: Arc::new(DesktopSkillStore::new(workspace_root.clone())),
+            skill_store: Arc::new(DesktopSkillStore::project(
+                storage_layout.clone(),
+                workspace_root.clone(),
+            )),
             skill_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             start_run_lock: Arc::new(tokio::sync::Mutex::new(())),
             stream_permission_runtime: None,
@@ -513,7 +516,8 @@ impl DesktopRuntimeState {
             permission_resolver: Some(permission_resolver),
             provider_api_key_reveal_tokens: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             plugin_store: Arc::new(if runtime_layout.workspace_root.is_some() {
-                DesktopPluginStore::new(
+                DesktopPluginStore::project(
+                    storage_layout_for_home(),
                     runtime_layout
                         .workspace_root
                         .clone()
@@ -548,7 +552,8 @@ impl DesktopRuntimeState {
             )),
             skill_catalog_install_tasks: Arc::new(RwLock::new(HashMap::new())),
             skill_store: Arc::new(if runtime_layout.workspace_root.is_some() {
-                DesktopSkillStore::new(
+                DesktopSkillStore::project(
+                    storage_layout_for_home(),
                     runtime_layout
                         .workspace_root
                         .clone()
@@ -568,52 +573,6 @@ impl DesktopRuntimeState {
             runtime_layout,
             workspace_root: state_workspace_root,
         };
-        if let Some(project_workspace_root) = state.runtime_layout.workspace_root.as_deref() {
-            // Migrate old provider-settings.json into global provider profiles/secrets and
-            // project provider selection before other config overlays read provider state.
-            crate::commands::providers::migrate_provider_settings_to_split_layout(&state)?;
-            // Migrate old execution-settings.json to project config overrides.
-            // Format handled by ExecutionDefaultsRecord serde aliases (snake_case → camelCase).
-            ensure_startup_migration(
-                "execution settings",
-                crate::commands::providers::migrate_execution_settings(project_workspace_root),
-            )?;
-            // Migrate old provider-capability-routes.json from runtime to project config.
-            ensure_startup_migration(
-                "provider capability routes",
-                crate::commands::providers::migrate_provider_capability_routes(
-                    project_workspace_root,
-                ),
-            )?;
-            // Migrate old runtime/skills/ to new skills/ location.
-            migrate_skills_on_startup(&state)?;
-            // Migrate old runtime/plugins/ to new plugins/ location.
-            migrate_plugins_on_startup(&state)?;
-            backfill_project_plugin_selection_if_missing(&state)?;
-            // Migrate old runtime/mcp-servers.json to project config.
-            ensure_startup_migration(
-                "mcp server settings",
-                migrate_mcp_servers_from_runtime(
-                    &storage_layout_for_home(),
-                    project_workspace_root,
-                ),
-            )?;
-            // Migrate old runtime/automations.json to project config.
-            ensure_startup_migration(
-                "automation settings",
-                migrate_automations_from_runtime(
-                    &storage_layout_for_home(),
-                    project_workspace_root,
-                ),
-            )?;
-            // Migrate old runtime/agent-profiles.json to global config.
-            migrate_agent_profiles_from_runtime(
-                project_workspace_root,
-                state.global_config_store.as_ref(),
-                state.project_config_store.as_ref(),
-            )?;
-        }
-        backfill_skill_selection_if_missing(&state)?;
         Ok(state)
     }
 
@@ -925,7 +884,6 @@ pub(crate) async fn runtime_state_for_global_conversation(
     conversation_id: SessionId,
 ) -> Result<DesktopRuntimeState, CommandErrorPayload> {
     let stream_permission_runtime = Arc::new(StreamPermissionRuntime::default());
-    migrate_legacy_unconfigured_runtime_to_global_conversations().await?;
     let layout = global_conversation_runtime_layout(conversation_id);
     runtime_state_for_global_conversation_layout(layout, stream_permission_runtime).await
 }
@@ -935,108 +893,9 @@ pub(crate) async fn runtime_state_for_global_conversation_with_runtime_root(
     runtime_root: PathBuf,
     stream_permission_runtime: Arc<StreamPermissionRuntime>,
 ) -> Result<DesktopRuntimeState, CommandErrorPayload> {
-    let default_global_runtime_root = storage_layout_for_home()
-        .global_runtime_root()
-        .join("global-conversations");
-    if runtime_root == default_global_runtime_root {
-        migrate_legacy_unconfigured_runtime_to_global_conversations().await?;
-    }
     let layout =
         global_conversation_runtime_layout_with_runtime_root(conversation_id, runtime_root);
     runtime_state_for_global_conversation_layout(layout, stream_permission_runtime).await
-}
-
-pub(crate) async fn migrate_legacy_unconfigured_runtime_to_global_conversations(
-) -> Result<MigrationResult, CommandErrorPayload> {
-    let source = crate::project_registry::unconfigured_workspace_root()
-        .join(".jyowo")
-        .join("runtime");
-    if !runtime_dir_has_data(&source)? {
-        return Ok(MigrationResult::NotNeeded);
-    }
-
-    let layout = storage_layout_for_home();
-    let target = layout.global_runtime_root().join("global-conversations");
-    if runtime_dir_has_data(&target)? {
-        return Err(runtime_init_failed(format!(
-            "legacy no-workspace runtime migration conflict: both {} and {} contain data",
-            source.display(),
-            target.display()
-        )));
-    }
-
-    ensure_no_symlink_components(&source, "legacy no-workspace runtime")?;
-    if let Some(parent) = target.parent() {
-        super::stores::ensure_app_dir_no_symlink(parent, "global conversations runtime parent")?;
-    }
-    if target.exists() {
-        ensure_no_symlink_components(&target, "global conversations runtime")?;
-        std::fs::remove_dir_all(&target).map_err(|error| {
-            runtime_init_failed(format!(
-                "legacy no-workspace runtime migration target cleanup failed: {error}"
-            ))
-        })?;
-    }
-    std::fs::rename(&source, &target).map_err(|error| {
-        runtime_init_failed(format!(
-            "legacy no-workspace runtime migration rename failed: {error}"
-        ))
-    })?;
-
-    let signer = desktop_integrity_signer(&target)?;
-    if let Err(error) = harness_permission::migrate_legacy_no_workspace_permission_decisions(
-        &target.join("permission-decisions.json"),
-        TenantId::SINGLE,
-        signer,
-    )
-    .await
-    {
-        let rollback_result = std::fs::rename(&target, &source);
-        return Err(runtime_init_failed(match rollback_result {
-            Ok(()) => format!(
-                "legacy no-workspace permission decision migration failed: {error}"
-            ),
-            Err(rollback_error) => format!(
-                "legacy no-workspace permission decision migration failed: {error}; rollback failed: {rollback_error}"
-            ),
-        }));
-    }
-
-    Ok(MigrationResult::Migrated)
-}
-
-fn runtime_dir_has_data(path: &Path) -> Result<bool, CommandErrorPayload> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            return Err(runtime_init_failed(format!(
-                "runtime path must not use symlinks: {}",
-                path.display()
-            )));
-        }
-        Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => {
-            return Err(runtime_init_failed(format!(
-                "runtime path is not a directory: {}",
-                path.display()
-            )));
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(runtime_init_failed(format!(
-                "runtime path metadata failed: {error}"
-            )));
-        }
-    }
-    ensure_no_symlink_components(path, "runtime directory")?;
-    let mut entries = std::fs::read_dir(path)
-        .map_err(|error| runtime_init_failed(format!("runtime directory read failed: {error}")))?;
-    Ok(entries
-        .next()
-        .transpose()
-        .map_err(|error| {
-            runtime_init_failed(format!("runtime directory entry read failed: {error}"))
-        })?
-        .is_some())
 }
 
 async fn runtime_state_for_global_conversation_layout(
@@ -1215,21 +1074,6 @@ pub(crate) async fn ensure_agent_supervisor_sidecar_for_state<R: tauri::Runtime>
         .map_err(|error| {
             runtime_init_failed(format!("agent supervisor sidecar startup failed: {error}"))
         })
-}
-
-fn ensure_startup_migration(
-    label: &str,
-    result: Result<MigrationResult, CommandErrorPayload>,
-) -> Result<(), CommandErrorPayload> {
-    match result? {
-        MigrationResult::NotNeeded
-        | MigrationResult::Migrated
-        | MigrationResult::AlreadyMigrated => Ok(()),
-        MigrationResult::Conflict(conflict) => Err(runtime_init_failed(format!(
-            "{label} migration conflict: {:?}: {}",
-            conflict.kind, conflict.detail
-        ))),
-    }
 }
 
 pub(crate) fn agent_supervisor_scope_for_state(
@@ -1449,7 +1293,6 @@ pub(crate) async fn build_desktop_harness(
     let execution_cwd = layout.conversation_cwd.as_path();
     let runtime_root = &layout.runtime_root;
 
-    reset_legacy_conversation_runtime_for_provider_continuations(runtime_root)?;
     ensure_desktop_runtime_store_paths(runtime_root)?;
     let provider_continuation_store = Arc::new(
         FileProviderContinuationStore::open_runtime_dir(runtime_root).map_err(|error| {
@@ -1500,28 +1343,27 @@ pub(crate) async fn build_desktop_harness(
     let storage_layout = storage_layout_for_home();
     let global_config_store = global_config_store_for_home();
     let global_skill_selection = global_config_store
-        .load_global_skill_selection()?
-        .enabled
-        .into_iter()
-        .collect();
+        .load_global_skill_selection_if_present()?
+        .map(|selection| selection.enabled.into_iter().collect());
     let global_skill_store = DesktopSkillStore::global(storage_layout);
     let mut skill_loader =
         SkillLoader::default().with_source(SkillSourceConfig::DirectoryPackages {
             path: global_skill_store.enabled_dir(),
             source_kind: DirectorySourceKind::User,
-            allowed_package_ids: Some(global_skill_selection),
+            allowed_package_ids: global_skill_selection,
         });
     if let Some(project_workspace_root) = layout.workspace_root.as_deref() {
-        let skill_store = DesktopSkillStore::new(project_workspace_root.to_path_buf());
+        let skill_store = DesktopSkillStore::project(
+            storage_layout_for_home(),
+            project_workspace_root.to_path_buf(),
+        );
         let project_skill_selection = project_config_store_for_workspace(project_workspace_root)
-            .load_project_skill_selection()?
-            .enabled
-            .into_iter()
-            .collect();
+            .load_project_skill_selection_if_present()?
+            .map(|selection| selection.enabled.into_iter().collect());
         skill_loader = skill_loader.with_source(SkillSourceConfig::DirectoryPackages {
             path: skill_store.enabled_dir(),
             source_kind: DirectorySourceKind::Workspace,
-            allowed_package_ids: Some(project_skill_selection),
+            allowed_package_ids: project_skill_selection,
         });
     }
     let blob_store: Arc<dyn harness_contracts::BlobStore> = Arc::new(
@@ -1552,7 +1394,8 @@ pub(crate) async fn build_desktop_harness(
     let global_plugin_store = DesktopPluginStore::global(storage_layout_for_home());
     let plugin_store: Arc<dyn PluginStore> =
         if let Some(project_workspace_root) = layout.workspace_root.as_deref() {
-            Arc::new(DesktopPluginStore::new(
+            Arc::new(DesktopPluginStore::project(
+                storage_layout_for_home(),
                 project_workspace_root.to_path_buf(),
             ))
         } else {
@@ -1795,88 +1638,6 @@ fn ensure_runtime_directory_no_symlink(
 fn ensure_runtime_path_no_symlink(path: &Path, label: &str) -> Result<(), CommandErrorPayload> {
     super::stores::ensure_no_symlink_components(path, label)
         .map_err(|error| runtime_init_failed(error.message))
-}
-
-pub fn reset_legacy_conversation_runtime_for_provider_continuations(
-    runtime_dir: &Path,
-) -> Result<(), CommandErrorPayload> {
-    let marker_path = runtime_dir.join("provider-continuation-runtime.version");
-
-    super::stores::ensure_no_symlink_components(&runtime_dir, "provider continuation runtime")?;
-    super::stores::ensure_no_symlink_components(
-        &marker_path,
-        "provider continuation runtime marker",
-    )?;
-
-    if std::fs::read_to_string(&marker_path)
-        .map(|value| value.trim() == PROVIDER_CONTINUATION_RUNTIME_VERSION)
-        .unwrap_or(false)
-    {
-        return Ok(());
-    }
-
-    for target in provider_continuation_dev_reset_targets(&runtime_dir) {
-        remove_provider_continuation_dev_reset_target(&target)?;
-    }
-
-    super::stores::ensure_app_dir_no_symlink(
-        &runtime_dir.join("events"),
-        "provider continuation runtime events directory",
-    )?;
-    super::stores::ensure_app_dir_no_symlink(
-        &runtime_dir.join("sessions"),
-        "provider continuation runtime sessions directory",
-    )?;
-
-    super::stores::write_atomic_runtime_file(
-        &marker_path,
-        "provider-continuation-runtime.version",
-        "provider continuation runtime marker",
-        format!("{PROVIDER_CONTINUATION_RUNTIME_VERSION}\n").as_bytes(),
-    )?;
-
-    Ok(())
-}
-
-fn provider_continuation_dev_reset_targets(runtime_dir: &Path) -> Vec<PathBuf> {
-    vec![
-        runtime_dir.join("events"),
-        runtime_dir.join("sessions"),
-        runtime_dir.join("conversation-read-model.sqlite"),
-        runtime_dir.join("conversation-read-model.sqlite-shm"),
-        runtime_dir.join("conversation-read-model.sqlite-wal"),
-        runtime_dir.join("conversation-metadata.json"),
-        runtime_dir.join("provider-continuations.jsonl"),
-    ]
-}
-
-fn remove_provider_continuation_dev_reset_target(target: &Path) -> Result<(), CommandErrorPayload> {
-    super::stores::ensure_no_symlink_components(target, "provider continuation reset target")?;
-    let metadata = match std::fs::symlink_metadata(target) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(runtime_init_failed(format!(
-                "provider continuation reset target metadata failed: {error}"
-            )));
-        }
-    };
-
-    if metadata.is_dir() {
-        std::fs::remove_dir_all(target).map_err(|error| {
-            runtime_init_failed(format!(
-                "provider continuation reset directory removal failed: {error}"
-            ))
-        })?;
-    } else {
-        std::fs::remove_file(target).map_err(|error| {
-            runtime_init_failed(format!(
-                "provider continuation reset file removal failed: {error}"
-            ))
-        })?;
-    }
-
-    Ok(())
 }
 
 pub(crate) fn desktop_integrity_signer(
@@ -2212,7 +1973,10 @@ pub(crate) fn build_plugin_registry(
         .map(PluginStore::load_record)
         .transpose()?;
     let project_selection = project_workspace_root
-        .map(load_project_plugin_selection_if_present)
+        .map(|project_workspace_root| {
+            project_config_store_for_workspace(project_workspace_root)
+                .load_project_plugin_selection_if_present()
+        })
         .transpose()?
         .flatten();
     let project_enabled_plugin_ids: BTreeSet<String> = if let Some(selection) = &project_selection {
@@ -2333,28 +2097,6 @@ pub(crate) fn build_plugin_registry(
     builder.build().map_err(|error| {
         runtime_init_failed(format!("plugin registry initialization failed: {error}"))
     })
-}
-
-fn load_project_plugin_selection_if_present(
-    project_workspace_root: &Path,
-) -> Result<Option<harness_contracts::PluginSelectionRecord>, CommandErrorPayload> {
-    let store = project_config_store_for_workspace(project_workspace_root);
-    let path = store.layout().project_plugins_file(store.workspace_root());
-    match std::fs::symlink_metadata(&path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Err(runtime_init_failed(format!(
-            "project plugin selection must not be a symlink: {}",
-            path.display()
-        ))),
-        Ok(metadata) if metadata.is_file() => store.load_project_plugin_selection().map(Some),
-        Ok(_) => Err(runtime_init_failed(format!(
-            "project plugin selection path is not a file: {}",
-            path.display()
-        ))),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(runtime_init_failed(format!(
-            "project plugin selection metadata failed: {error}"
-        ))),
-    }
 }
 
 fn collect_plugin_registry_records(
@@ -2499,171 +2241,18 @@ pub(crate) fn current_process_workspace_root() -> Result<PathBuf, CommandErrorPa
     canonical_workspace_root(current_dir, "current workspace root".to_owned())
 }
 
-/// Migrate agent profiles from the old runtime path to global config.
-///
-/// Old path: `<workspace>/.jyowo/runtime/agent-profiles.json`
-/// New global path: `~/.jyowo/config/agent-profiles.json`
-/// New project selection: `<workspace>/.jyowo/config/agent-profile-selection.json`
-///
-/// Migration rules:
-/// - Builtin profiles are skipped (never written to global).
-/// - User profiles migrate to global with their original id and `scope: User`.
-/// - Project profiles migrate to global as `<workspaceHash8>-<oldId>` and `scope: User`.
-/// - If the old file explicitly had a default profile, the project selection records it.
-/// - Id collisions with different profile content fail closed and leave the old file for retry.
-pub(crate) fn migrate_agent_profiles_from_runtime(
-    workspace_root: &Path,
-    global_config: Option<&GlobalConfigStore>,
-    project_config: Option<&ProjectConfigStore>,
-) -> Result<(), CommandErrorPayload> {
-    let old_path = workspace_root
-        .join(".jyowo")
-        .join("runtime")
-        .join("agent-profiles.json");
-
-    if !old_path.exists() {
-        return Ok(());
-    }
-
-    let Some(global_config) = global_config else {
-        return Ok(());
-    };
-
-    let old_bytes = match std::fs::read(&old_path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(runtime_operation_failed(format!(
-                "agent profiles read failed: {error}"
-            )));
-        }
-    };
-
-    let old_value: serde_json::Value = serde_json::from_slice(&old_bytes)
-        .map_err(|error| runtime_init_failed(format!("agent profiles parse failed: {error}")))?;
-
-    #[derive(serde::Deserialize)]
-    struct OldProfilesFile {
-        profiles: Vec<AgentProfile>,
-    }
-
-    let old_file: OldProfilesFile = serde_json::from_value(old_value.clone())
-        .map_err(|error| runtime_init_failed(format!("agent profiles parse failed: {error}")))?;
-    let explicit_default_profile_id = old_value
-        .get("defaultProfileId")
-        .or_else(|| old_value.get("default_profile_id"))
-        .map(|value| match value {
-            serde_json::Value::String(id) => Ok(Some(id.clone())),
-            serde_json::Value::Null => Ok(None),
-            _ => Err(runtime_init_failed(
-                "agent profiles default profile id must be a string".to_owned(),
-            )),
-        })
-        .transpose()?
-        .flatten();
-    let default_was_explicit = old_value.get("defaultProfileId").is_some()
-        || old_value.get("default_profile_id").is_some();
-
-    let workspace_hash8 = crate::commands::providers::workspace_hash_short(workspace_root);
-    let mut migrated: Vec<AgentProfile> = Vec::new();
-    let mut default_profile_id: Option<String> = None;
-    let mut old_default_seen = false;
-
-    for mut profile in old_file.profiles {
-        let old_id = profile.id.clone();
-        let old_scope = profile.scope;
-
-        let new_id = match old_scope {
-            AgentProfileScope::Builtin => old_id.clone(),
-            AgentProfileScope::User => old_id.clone(),
-            AgentProfileScope::Project => format!("{workspace_hash8}-{old_id}"),
-        };
-        if explicit_default_profile_id.as_deref() == Some(old_id.as_str()) {
-            old_default_seen = true;
-            default_profile_id = Some(new_id.clone());
-        }
-
-        if old_scope == AgentProfileScope::Builtin {
-            continue;
-        }
-
-        profile.id = new_id;
-        profile.scope = AgentProfileScope::User;
-
-        if let Some(existing) = migrated.iter().find(|p| p.id == profile.id) {
-            if *existing != profile {
-                return Err(runtime_init_failed(format!(
-                    "agent profile migration conflict: duplicate id {} with different content",
-                    profile.id
-                )));
-            }
-            continue;
-        }
-
-        migrated.push(profile);
-    }
-
-    if default_was_explicit && explicit_default_profile_id.is_some() && !old_default_seen {
-        return Err(runtime_init_failed(format!(
-            "agent profile migration conflict: default profile id {} was not found in old profiles",
-            explicit_default_profile_id.expect("guarded by is_some")
-        )));
-    }
-
-    if migrated.is_empty() {
-        crate::commands::stores::retire_existing_regular_file_no_follow(
-            &old_path,
-            "agent profiles old file",
-        )?;
-        return Ok(());
-    }
-
-    let mut global_profiles = global_config.load_global_agent_profiles()?;
-    for profile in &migrated {
-        if let Some(existing) = global_profiles.iter().find(|p| p.id == profile.id) {
-            if existing != profile {
-                return Err(runtime_init_failed(format!(
-                    "agent profile migration conflict: id {} exists in global config with different content",
-                    profile.id
-                )));
-            }
-            continue;
-        }
-        global_profiles.push(profile.clone());
-    }
-    global_config.save_global_agent_profiles(&global_profiles)?;
-
-    if let (Some(project_config), true, Some(default_id)) =
-        (project_config, default_was_explicit, default_profile_id)
-    {
-        project_config.save_project_agent_profile_selection(&AgentProfileSelectionRecord {
-            default_profile_id: Some(default_id),
-        })?;
-    }
-
-    crate::commands::stores::retire_existing_regular_file_no_follow(
-        &old_path,
-        "agent profiles old file",
-    )?;
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use harness_contracts::{
-        AgentProfileContextMode, AgentProfileMemoryScope, AgentProfileSandboxInheritance,
         AgentToolPolicy, AgentWorkspaceIsolationMode, AssistantSegment,
-        BackgroundAgentToolSessionSnapshot, Decision, DecisionId, DecisionScope, DeferPolicy,
-        DiagnosticsRunRequest, DiagnosticsRunnerKind, ExecFingerprint, MessageId, MessageMetadata,
-        NetworkAccess, PluginId, PluginSelectionRecord, ProcessStepDetail,
-        ProviderProfileDefinition, ProviderProfileModelDescriptor, ProviderProfileModelLifecycle,
-        ResourceLimits, RuleSource, SandboxPolicy, SandboxScope, ToolProperties, ToolResult,
-        ToolSearchMode, ToolUseCompletedEvent, ToolUseRequestedEvent, UserMessageAppendedEvent,
-        WorkspaceAccess,
+        BackgroundAgentToolSessionSnapshot, DeferPolicy, DiagnosticsRunRequest,
+        DiagnosticsRunnerKind, MessageId, MessageMetadata, NetworkAccess, PluginId,
+        PluginSelectionRecord, ProcessStepDetail, ProviderProfileDefinition,
+        ProviderProfileModelDescriptor, ProviderProfileModelLifecycle, ResourceLimits,
+        SandboxPolicy, SandboxScope, ToolProperties, ToolResult, ToolSearchMode,
+        ToolUseCompletedEvent, ToolUseRequestedEvent, UserMessageAppendedEvent, WorkspaceAccess,
     };
-    use harness_permission::IntegrityAlgorithm;
     use jyowo_harness_sdk::testing::InMemoryEventStore;
     use std::sync::Mutex;
 
@@ -2709,39 +2298,6 @@ mod tests {
             .prefix("home-")
             .tempdir_in(base)
             .expect("home tempdir")
-    }
-
-    fn runtime_test_agent_profile(id: &str, scope: AgentProfileScope, role: &str) -> AgentProfile {
-        AgentProfile {
-            id: id.to_owned(),
-            scope,
-            role: role.to_owned(),
-            description: format!("{role} profile"),
-            model_config_override: None,
-            tool_allowlist: None,
-            tool_blocklist: vec![],
-            sandbox_inheritance: AgentProfileSandboxInheritance::InheritParent,
-            memory_scope: AgentProfileMemoryScope::ReadOnly,
-            context_mode: AgentProfileContextMode::Focused,
-            max_turns: 8,
-            max_depth: 1,
-            default_workspace_isolation: AgentWorkspaceIsolationMode::ReadOnly,
-        }
-    }
-
-    fn write_old_agent_profiles_file(workspace_root: &Path, value: serde_json::Value) -> PathBuf {
-        let old_path = workspace_root
-            .join(".jyowo")
-            .join("runtime")
-            .join("agent-profiles.json");
-        std::fs::create_dir_all(old_path.parent().expect("old profiles parent"))
-            .expect("create old profiles parent");
-        std::fs::write(
-            &old_path,
-            serde_json::to_vec_pretty(&value).expect("serialize old profiles"),
-        )
-        .expect("write old profiles");
-        old_path
     }
 
     fn test_tool_use_requested_event(
@@ -2960,80 +2516,6 @@ mod tests {
         assert_eq!(mode, 0o600);
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn provider_continuation_runtime_marker_is_created_owner_only() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let workspace = tempfile::tempdir().expect("temp workspace");
-        let workspace_root = workspace
-            .path()
-            .canonicalize()
-            .expect("canonical workspace");
-
-        let runtime_dir = workspace_root.join(".jyowo").join("runtime");
-        reset_legacy_conversation_runtime_for_provider_continuations(&runtime_dir)
-            .expect("reset should succeed");
-
-        let marker_path = workspace_root
-            .join(".jyowo")
-            .join("runtime")
-            .join("provider-continuation-runtime.version");
-        assert_eq!(
-            std::fs::read_to_string(&marker_path).unwrap().trim(),
-            PROVIDER_CONTINUATION_RUNTIME_VERSION
-        );
-        let mode = std::fs::metadata(marker_path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn provider_continuation_runtime_rejects_symlink_runtime_parent() {
-        let workspace = tempfile::tempdir().expect("temp workspace");
-        let workspace_root = workspace
-            .path()
-            .canonicalize()
-            .expect("canonical workspace");
-        let external = tempfile::tempdir().expect("external tempdir");
-        std::os::unix::fs::symlink(external.path(), workspace_root.join(".jyowo"))
-            .expect("symlink");
-
-        let error = reset_legacy_conversation_runtime_for_provider_continuations(
-            &workspace_root.join(".jyowo").join("runtime"),
-        )
-        .expect_err("symlink runtime parent should fail");
-
-        assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
-        assert!(error.message.contains("symlink"));
-        assert!(!external.path().join("runtime").exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn provider_continuation_runtime_rejects_symlink_marker_file() {
-        let workspace = tempfile::tempdir().expect("temp workspace");
-        let workspace_root = workspace
-            .path()
-            .canonicalize()
-            .expect("canonical workspace");
-        let external = tempfile::NamedTempFile::new().expect("external file");
-        let runtime_dir = workspace_root.join(".jyowo").join("runtime");
-        std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
-        std::os::unix::fs::symlink(
-            external.path(),
-            runtime_dir.join("provider-continuation-runtime.version"),
-        )
-        .expect("symlink");
-
-        let error = reset_legacy_conversation_runtime_for_provider_continuations(&runtime_dir)
-            .expect_err("symlink marker should fail");
-
-        assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
-        assert!(error.message.contains("symlink"));
-        assert!(external.path().exists());
-    }
-
     #[tokio::test]
     async fn background_agent_starter_rejects_when_settings_disable_capability() {
         let workspace = tempfile::tempdir().expect("temp workspace");
@@ -3092,7 +2574,9 @@ mod tests {
             matches!(error, ToolError::Validation(ref message) if message.contains("backgroundAgents")),
             "unexpected error: {error:?}"
         );
-        let store = AgentRuntimeStore::open(&workspace_root).expect("runtime store opens");
+        let store =
+            AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+                .expect("runtime store opens");
         assert!(
             store
                 .list_background_agents(true)
@@ -3405,92 +2889,6 @@ esac
         );
     }
 
-    #[test]
-    fn project_runtime_backfills_global_skill_selection_when_missing() {
-        let workspace = tempfile::tempdir().expect("temp workspace");
-        let workspace_root = workspace
-            .path()
-            .canonicalize()
-            .expect("canonical workspace");
-        let state = DesktopRuntimeState::with_workspace_for_test(workspace_root)
-            .expect("desktop runtime state");
-        let global_config = state.global_config_store.as_ref().expect("global config");
-        let global_skill_store = DesktopSkillStore::global(global_config.layout().clone());
-        global_skill_store
-            .save_records(&[SkillStoreRecord {
-                id: "global-enabled".to_owned(),
-                name: "global-enabled".to_owned(),
-                description: "Global enabled skill".to_owned(),
-                enabled: true,
-                content_hash: "hash".to_owned(),
-                package_dir: "global-enabled".to_owned(),
-                file_name: String::new(),
-                imported_at: now().to_rfc3339(),
-                updated_at: now().to_rfc3339(),
-                tags: Vec::new(),
-                category: None,
-                last_validation_error: None,
-                origin: None,
-            }])
-            .expect("save global skill index");
-
-        backfill_skill_selection_if_missing(&state).expect("backfill skill selection");
-
-        let selection = global_config
-            .load_global_skill_selection()
-            .expect("global skill selection");
-        assert_eq!(selection.enabled, vec!["global-enabled".to_owned()]);
-    }
-
-    #[test]
-    fn project_plugin_selection_backfill_uses_project_index_only() {
-        let workspace = tempfile::tempdir().expect("temp workspace");
-        let workspace_root = workspace
-            .path()
-            .canonicalize()
-            .expect("canonical workspace");
-        let state = DesktopRuntimeState::with_workspace_for_test(workspace_root)
-            .expect("desktop runtime state");
-        let global_plugin_id = PluginId("global-tools@0.1.0".to_owned());
-        let global_plugin_store = DesktopPluginStore::global(
-            state
-                .global_config_store
-                .as_ref()
-                .expect("global config")
-                .layout()
-                .clone(),
-        );
-        global_plugin_store
-            .save_record(&PluginSettingsRecord {
-                records: vec![PluginStoreRecord {
-                    plugin_id: global_plugin_id.clone(),
-                    name: "global-tools".to_owned(),
-                    version: "0.1.0".to_owned(),
-                    enabled: true,
-                    package_dir: "global-tools_0.1.0".to_owned(),
-                    source_path: "<local-plugin>".to_owned(),
-                    content_hash: "hash".to_owned(),
-                    imported_at: "2026-01-01T00:00:00Z".to_owned(),
-                    updated_at: "2026-01-01T00:00:00Z".to_owned(),
-                    config: Value::Null,
-                    last_validation_error: None,
-                }],
-                ..PluginSettingsRecord::default()
-            })
-            .expect("save global plugin index");
-
-        backfill_project_plugin_selection_if_missing(&state)
-            .expect("backfill project plugin selection");
-
-        let selection_path = state
-            .project_config_store
-            .as_ref()
-            .expect("project config")
-            .layout()
-            .project_plugins_file(state.project_workspace_root().expect("project root"));
-        assert!(!selection_path.exists());
-    }
-
     #[tokio::test]
     async fn project_selection_cannot_enable_globally_disabled_plugin() {
         let workspace = tempfile::tempdir().expect("temp workspace");
@@ -3552,90 +2950,6 @@ esac
     }
 
     #[tokio::test]
-    async fn legacy_unconfigured_runtime_moves_to_global_conversations() {
-        let _lock = lock_home_env();
-        let home = temp_home_dir();
-        let _home_guard = HomeEnvGuard::set(home.path());
-        let source = crate::project_registry::unconfigured_workspace_root()
-            .join(".jyowo")
-            .join("runtime");
-        std::fs::create_dir_all(&source).expect("legacy runtime dir");
-        std::fs::write(source.join("provider-continuations.jsonl"), b"{}\n").expect("legacy data");
-
-        let result = migrate_legacy_unconfigured_runtime_to_global_conversations()
-            .await
-            .expect("migration");
-
-        assert!(matches!(result, MigrationResult::Migrated));
-        let target = home
-            .path()
-            .join(".jyowo")
-            .join("runtime")
-            .join("global-conversations");
-        assert!(target.join("provider-continuations.jsonl").exists());
-        assert!(!source.exists());
-    }
-
-    #[tokio::test]
-    async fn explicit_default_global_runtime_root_migrates_legacy_unconfigured_runtime() {
-        let _lock = lock_home_env();
-        let home = temp_home_dir();
-        let _home_guard = HomeEnvGuard::set(home.path());
-        let source = crate::project_registry::unconfigured_workspace_root()
-            .join(".jyowo")
-            .join("runtime");
-        std::fs::create_dir_all(&source).expect("legacy runtime dir");
-        std::fs::write(source.join("legacy-extra.txt"), b"legacy").expect("legacy data");
-        let target = storage_layout_for_home()
-            .global_runtime_root()
-            .join("global-conversations");
-
-        let state = runtime_state_for_global_conversation_with_runtime_root(
-            SessionId::new(),
-            target.clone(),
-            Arc::new(StreamPermissionRuntime::default()),
-        )
-        .await
-        .expect("global runtime state");
-
-        assert_eq!(state.runtime_root(), target.as_path());
-        assert!(target.join("legacy-extra.txt").exists());
-        assert!(!source.exists());
-    }
-
-    #[tokio::test]
-    async fn legacy_unconfigured_runtime_migration_fails_when_target_has_data() {
-        let _lock = lock_home_env();
-        let home = temp_home_dir();
-        let _home_guard = HomeEnvGuard::set(home.path());
-        let source = crate::project_registry::unconfigured_workspace_root()
-            .join(".jyowo")
-            .join("runtime");
-        std::fs::create_dir_all(&source).expect("legacy runtime dir");
-        std::fs::write(source.join("provider-continuations.jsonl"), b"legacy\n")
-            .expect("legacy data");
-        let target = home
-            .path()
-            .join(".jyowo")
-            .join("runtime")
-            .join("global-conversations");
-        std::fs::create_dir_all(&target).expect("target runtime dir");
-        std::fs::write(target.join("provider-continuations.jsonl"), b"target\n")
-            .expect("target data");
-
-        let error = migrate_legacy_unconfigured_runtime_to_global_conversations()
-            .await
-            .expect_err("conflict must fail");
-
-        assert_eq!(error.code, "RUNTIME_INIT_FAILED");
-        assert!(source.join("provider-continuations.jsonl").exists());
-        assert_eq!(
-            std::fs::read_to_string(target.join("provider-continuations.jsonl")).unwrap(),
-            "target\n"
-        );
-    }
-
-    #[tokio::test]
     async fn network_broker_runtime_assembly_uses_same_instance() {
         use harness_execution::ReqwestToolNetworkBroker;
         use harness_tool::ToolNetworkBrokerCap;
@@ -3669,89 +2983,6 @@ esac
         // CapabilityRegistry[ToolCapability::NetworkBroker] hold the same Arc.
         // This is verified at construction time — no assertion needed beyond
         // successful construction without panics.
-    }
-
-    #[tokio::test]
-    async fn legacy_unconfigured_runtime_migration_quarantines_unscoped_permissions() {
-        let _lock = lock_home_env();
-        let home = temp_home_dir();
-        let _home_guard = HomeEnvGuard::set(home.path());
-        let source = crate::project_registry::unconfigured_workspace_root()
-            .join(".jyowo")
-            .join("runtime");
-        std::fs::create_dir_all(&source).expect("legacy runtime dir");
-        write_legacy_permission_decision_without_session_id(
-            &source.join("permission-decisions.json"),
-            desktop_integrity_signer(&source).expect("signer"),
-        )
-        .await;
-        let target = home
-            .path()
-            .join(".jyowo")
-            .join("runtime")
-            .join("global-conversations");
-
-        let result = migrate_legacy_unconfigured_runtime_to_global_conversations()
-            .await
-            .expect("permission migration should quarantine unscoped decisions");
-
-        assert!(matches!(result, MigrationResult::Migrated));
-        assert!(!source.exists());
-        assert!(target.join("permission-decisions.json").exists());
-        assert!(target
-            .join("permission-decisions.json.unscoped-legacy.json")
-            .exists());
-    }
-
-    async fn write_legacy_permission_decision_without_session_id(
-        path: &Path,
-        signer: Arc<dyn harness_permission::IntegritySigner>,
-    ) {
-        let decision_id = DecisionId::new();
-        let decision = Decision::AllowPermanent;
-        let scope = DecisionScope::ToolName("read_blob".to_owned());
-        let source = RuleSource::Workspace;
-        let fingerprint = ExecFingerprint([9; 32]);
-        let recorded_at = harness_contracts::now();
-        let unsigned = serde_json::json!({
-            "decision_id": decision_id,
-            "decision": decision,
-            "scope": scope,
-            "source": source,
-            "session_id": null,
-            "fingerprint": fingerprint,
-            "recorded_at": recorded_at,
-        });
-        let payload = harness_permission::canonical_bytes(&unsigned).expect("canonical payload");
-        let signature = signer.sign(&payload).await.expect("signature");
-        let algorithm = match signature.algorithm {
-            IntegrityAlgorithm::HmacSha256 => "hmac_sha256",
-            IntegrityAlgorithm::HmacSha512 => "hmac_sha512",
-        };
-        let record = serde_json::json!([{
-            "decision_id": decision_id,
-            "decision": decision,
-            "scope": scope,
-            "source": source,
-            "session_id": null,
-            "fingerprint": fingerprint,
-            "recorded_at": recorded_at,
-            "signature": {
-                "algorithm": algorithm,
-                "key_id": signature.key_id,
-                "mac_hex": hex_bytes(&signature.mac),
-                "signed_at": signature.signed_at,
-            }
-        }]);
-        std::fs::write(
-            path,
-            serde_json::to_vec_pretty(&record).expect("record json"),
-        )
-        .expect("write legacy record");
-    }
-
-    fn hex_bytes(bytes: &[u8]) -> String {
-        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
     #[cfg(unix)]
@@ -3818,13 +3049,6 @@ esac
             .join("runtime")
             .join("global-conversations");
         std::fs::create_dir_all(&runtime_root).expect("runtime root");
-        super::stores::write_atomic_runtime_file(
-            &runtime_root.join("provider-continuation-runtime.version"),
-            "provider-continuation-runtime.version",
-            "provider continuation runtime marker",
-            format!("{PROVIDER_CONTINUATION_RUNTIME_VERSION}\n").as_bytes(),
-        )
-        .expect("marker");
         let external = tempfile::NamedTempFile::new().expect("external sqlite");
         std::os::unix::fs::symlink(
             external.path(),
@@ -3964,204 +3188,6 @@ esac
             .join("config")
             .join("execution-overrides.json")
             .exists());
-    }
-
-    #[test]
-    fn project_runtime_state_fails_closed_when_provider_settings_migration_fails() {
-        let _lock = lock_home_env();
-        let home = temp_home_dir();
-        let _home_guard = HomeEnvGuard::set(home.path());
-        let workspace = tempfile::tempdir().expect("temp workspace");
-        let workspace_root = workspace
-            .path()
-            .canonicalize()
-            .expect("canonical workspace");
-        let old_provider_settings_path = workspace_root
-            .join(".jyowo")
-            .join("runtime")
-            .join("provider-settings.json");
-        std::fs::create_dir_all(old_provider_settings_path.parent().expect("parent"))
-            .expect("create old runtime dir");
-        std::fs::write(&old_provider_settings_path, "{ not valid json")
-            .expect("write invalid old provider settings");
-
-        let error = match tauri::async_runtime::block_on(runtime_state_for_workspace(
-            workspace_root.clone(),
-        )) {
-            Ok(_) => panic!("provider migration failure must prevent runtime startup"),
-            Err(error) => error,
-        };
-
-        assert_eq!(error.code, "INVALID_PAYLOAD");
-        assert!(error.message.contains("provider settings"));
-        assert!(
-            old_provider_settings_path.exists(),
-            "failed migration must leave old provider settings for retry"
-        );
-    }
-
-    #[test]
-    fn provider_capability_routes_migration_conflict_fails_runtime_startup() {
-        for result in [
-            MigrationResult::NotNeeded,
-            MigrationResult::Migrated,
-            MigrationResult::AlreadyMigrated,
-        ] {
-            ensure_startup_migration("provider capability routes", Ok(result))
-                .expect("non-conflict migration result should not fail startup");
-        }
-
-        let error = ensure_startup_migration(
-            "provider capability routes",
-            Ok(MigrationResult::Conflict(MigrationConflict {
-                kind: MigrationConflictKind::IdCollision,
-                old_path: PathBuf::from("old.json"),
-                new_path: PathBuf::from("new.json"),
-                detail: "old and new routes differ".to_owned(),
-            })),
-        )
-        .expect_err("provider route migration conflict must fail startup");
-
-        assert_eq!(error.code, "RUNTIME_INIT_FAILED");
-        assert!(error.message.contains("provider capability routes"));
-        assert!(error.message.contains("old and new routes differ"));
-    }
-
-    #[test]
-    fn agent_profile_migration_mints_project_ids_and_preserves_explicit_default() {
-        let _lock = lock_home_env();
-        let home = temp_home_dir();
-        let _home_guard = HomeEnvGuard::set(home.path());
-        let workspace = tempfile::tempdir().expect("temp workspace");
-        let workspace_root = workspace
-            .path()
-            .canonicalize()
-            .expect("canonical workspace");
-        let project_profile =
-            runtime_test_agent_profile("planner", AgentProfileScope::Project, "Planner");
-        let user_profile =
-            runtime_test_agent_profile("reviewer_local", AgentProfileScope::User, "Reviewer");
-        let old_path = write_old_agent_profiles_file(
-            &workspace_root,
-            json!({
-                "profiles": [project_profile, user_profile],
-                "defaultProfileId": "planner",
-            }),
-        );
-        let global = global_config_store_for_home();
-        let project = project_config_store_for_workspace(&workspace_root);
-        let expected_project_id = format!(
-            "{}-planner",
-            crate::commands::providers::workspace_hash_short(&workspace_root)
-        );
-
-        migrate_agent_profiles_from_runtime(&workspace_root, Some(&global), Some(&project))
-            .expect("migrate agent profiles");
-
-        let profiles = global
-            .load_global_agent_profiles()
-            .expect("load global profiles");
-        let migrated_project = profiles
-            .iter()
-            .find(|profile| profile.id == expected_project_id)
-            .expect("project profile migrated with workspace-prefixed id");
-        assert_eq!(migrated_project.scope, AgentProfileScope::User);
-        assert!(profiles
-            .iter()
-            .any(|profile| profile.id == "reviewer_local"));
-        let selection = project
-            .load_project_agent_profile_selection()
-            .expect("load project selection");
-        assert_eq!(selection.default_profile_id, Some(expected_project_id));
-        assert!(!old_path.exists(), "old profile file must be retired");
-    }
-
-    #[test]
-    fn agent_profile_migration_does_not_invent_default_selection() {
-        let _lock = lock_home_env();
-        let home = temp_home_dir();
-        let _home_guard = HomeEnvGuard::set(home.path());
-        let workspace = tempfile::tempdir().expect("temp workspace");
-        let workspace_root = workspace
-            .path()
-            .canonicalize()
-            .expect("canonical workspace");
-        write_old_agent_profiles_file(
-            &workspace_root,
-            json!({
-                "profiles": [
-                    runtime_test_agent_profile("worker_local", AgentProfileScope::User, "Worker")
-                ],
-            }),
-        );
-        let global = global_config_store_for_home();
-        let project = project_config_store_for_workspace(&workspace_root);
-        let selection_path = workspace_root
-            .join(".jyowo")
-            .join("config")
-            .join("agent-profile-selection.json");
-
-        migrate_agent_profiles_from_runtime(&workspace_root, Some(&global), Some(&project))
-            .expect("migrate agent profiles");
-
-        assert!(
-            !selection_path.exists(),
-            "migration must not create project selection when old file has no explicit default"
-        );
-        assert!(global
-            .load_global_agent_profiles()
-            .expect("load global profiles")
-            .iter()
-            .any(|profile| profile.id == "worker_local"));
-    }
-
-    #[test]
-    fn agent_profile_migration_conflict_fails_without_partial_write() {
-        let _lock = lock_home_env();
-        let home = temp_home_dir();
-        let _home_guard = HomeEnvGuard::set(home.path());
-        let workspace = tempfile::tempdir().expect("temp workspace");
-        let workspace_root = workspace
-            .path()
-            .canonicalize()
-            .expect("canonical workspace");
-        let old_profile =
-            runtime_test_agent_profile("existing", AgentProfileScope::User, "Old Existing");
-        let existing_profile =
-            runtime_test_agent_profile("existing", AgentProfileScope::User, "New Existing");
-        let old_path = write_old_agent_profiles_file(
-            &workspace_root,
-            json!({
-                "profiles": [old_profile.clone()],
-                "defaultProfileId": "existing",
-            }),
-        );
-        let global = global_config_store_for_home();
-        let project = project_config_store_for_workspace(&workspace_root);
-        global
-            .save_global_agent_profiles(&[existing_profile.clone()])
-            .expect("seed global profiles");
-        let error =
-            migrate_agent_profiles_from_runtime(&workspace_root, Some(&global), Some(&project))
-                .expect_err("conflicting agent profile must fail migration");
-
-        assert_eq!(error.code, "RUNTIME_INIT_FAILED");
-        assert!(error.message.contains("agent profile migration conflict"));
-        assert!(old_path.exists(), "old profile file must remain for retry");
-        assert_eq!(
-            global
-                .load_global_agent_profiles()
-                .expect("load global profiles"),
-            vec![existing_profile]
-        );
-        let selection_path = workspace_root
-            .join(".jyowo")
-            .join("config")
-            .join("agent-profile-selection.json");
-        assert!(
-            !selection_path.exists(),
-            "conflict must not write project selection"
-        );
     }
 
     #[test]

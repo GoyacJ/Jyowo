@@ -4,10 +4,10 @@
 //! with optional embedding vector storage for semantic retrieval.
 
 pub mod embedding;
-pub mod migrations;
 pub mod provider;
 pub mod ranking;
 pub mod schema;
+pub mod schema_init;
 
 pub use embedding::MemoryEmbeddingProvider;
 pub use provider::{LocalMemoryOptions, LocalMemoryProvider};

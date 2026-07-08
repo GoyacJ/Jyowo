@@ -334,7 +334,9 @@ pub fn build_team_spec(prepared: &PreparedRunScopedTeam) -> TeamSpec {
 }
 
 pub fn open_runtime_store(workspace_root: &Path) -> Result<AgentRuntimeStore, TeamRuntimeError> {
-    Ok(AgentRuntimeStore::open(workspace_root)?)
+    Ok(AgentRuntimeStore::open_runtime_dir(
+        workspace_root.join(".jyowo").join("runtime"),
+    )?)
 }
 
 fn member_profile_id_map(prepared: &PreparedRunScopedTeam) -> HashMap<AgentId, String> {

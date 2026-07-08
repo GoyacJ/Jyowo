@@ -785,13 +785,18 @@ mod tests {
         assert!(response.allow_project_plugins);
         assert!(
             state
-                .project_config_store
-                .as_ref()
-                .unwrap()
-                .load_project_plugin_selection()
+                .plugin_store
+                .load_record()
                 .unwrap()
                 .allow_project_plugins
         );
+        assert!(state
+            .project_config_store
+            .as_ref()
+            .unwrap()
+            .load_project_plugin_selection_if_present()
+            .unwrap()
+            .is_none());
         assert!(
             list_plugins_with_runtime_state(&state)
                 .await
@@ -978,7 +983,10 @@ exit 0
     fn plugin_store_rejects_tampered_package_dir_in_index() {
         let workspace = tempfile::tempdir().unwrap();
         let workspace = workspace.path().canonicalize().unwrap();
-        let store = DesktopPluginStore::new(workspace);
+        let layout = crate::storage_layout::StorageLayout::new(
+            crate::storage_layout::JyowoHome::new(workspace.join(".jyowo-home")),
+        );
+        let store = DesktopPluginStore::project(layout, workspace);
         let index_path = store.index_path();
         std::fs::create_dir_all(index_path.parent().unwrap()).unwrap();
         let record = serde_json::json!({
@@ -1019,6 +1027,47 @@ exit 0
         assert!(response.plugins.iter().any(|plugin| {
             plugin.id == PluginId("standalone-tools@0.1.0".to_owned())
                 && plugin.source == PluginSourceKind::CargoExtension
+        }));
+    }
+
+    #[tokio::test]
+    async fn missing_plugin_selection_uses_current_index_enabled_state() {
+        let workspace = tempfile::tempdir().unwrap();
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        let plugin_id = PluginId("current-tools@0.1.0".to_owned());
+        let source = tempfile::tempdir().unwrap();
+        write_desktop_plugin_package(source.path(), "current-tools");
+        let package_dir = plugin_package_dir_name(&plugin_id);
+        let content_hash = state
+            .plugin_store
+            .write_plugin_package(&package_dir, &source.path().canonicalize().unwrap())
+            .expect("write project plugin package");
+        state
+            .plugin_store
+            .save_record(&PluginSettingsRecord {
+                records: vec![PluginStoreRecord {
+                    plugin_id: plugin_id.clone(),
+                    name: "current-tools".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    enabled: true,
+                    package_dir,
+                    source_path: "<local-plugin>".to_owned(),
+                    content_hash,
+                    imported_at: "2026-01-01T00:00:00Z".to_owned(),
+                    updated_at: "2026-01-01T00:00:00Z".to_owned(),
+                    config: Value::Null,
+                    last_validation_error: None,
+                }],
+                ..PluginSettingsRecord::default()
+            })
+            .expect("save project plugin index");
+
+        let listed = list_plugins_with_runtime_state(&state).await.unwrap();
+
+        assert!(!workspace.path().join(".jyowo/config/plugins.json").exists());
+        assert!(listed.plugins.iter().any(|plugin| {
+            plugin.id == plugin_id && plugin.name == "current-tools" && plugin.enabled
         }));
     }
 

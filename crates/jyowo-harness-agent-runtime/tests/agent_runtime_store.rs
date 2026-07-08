@@ -11,7 +11,8 @@ use tempfile::{tempdir, TempDir};
 fn store_open_creates_runtime_directory_and_sqlite_file() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
 
     assert!(store.runtime_dir().exists());
     assert!(store.db_path().is_file());
@@ -32,7 +33,7 @@ fn store_open_resolves_symlink_runtime_parent_via_canonical_path() {
 
     // The store should resolve the symlink via canonical prefix and operate
     // at the canonical (real) location — not follow the symlink blindly.
-    let store = AgentRuntimeStore::open(&workspace_root)
+    let store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
         .expect("store open should resolve symlink prefix via canonical path");
 
     // Database and profiles should be created at the canonical target.
@@ -55,10 +56,11 @@ fn store_open_rejects_symlink_sqlite_file_without_opening_target() {
     let db_path = runtime_dir.join(AGENT_RUNTIME_DB_FILENAME);
     std::os::unix::fs::symlink(external.path(), &db_path).expect("sqlite symlink");
 
-    let error = match AgentRuntimeStore::open(&workspace_root) {
-        Ok(_) => panic!("store open should reject sqlite symlink"),
-        Err(error) => error,
-    };
+    let error =
+        match AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime")) {
+            Ok(_) => panic!("store open should reject sqlite symlink"),
+            Err(error) => error,
+        };
 
     assert!(error.to_string().contains("symlink"));
     assert_eq!(
@@ -77,13 +79,15 @@ fn store_open_rejects_symlink_sqlite_file_without_opening_target() {
 fn store_reopen_is_idempotent() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let first = AgentRuntimeStore::open(&workspace_root).expect("first open");
+    let first = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("first open");
     assert_eq!(
         first.schema_version().expect("schema version"),
         CURRENT_SCHEMA_VERSION
     );
 
-    let second = AgentRuntimeStore::open(&workspace_root).expect("second open");
+    let second = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("second open");
     assert_eq!(
         second.schema_version().expect("schema version"),
         CURRENT_SCHEMA_VERSION
@@ -94,7 +98,8 @@ fn store_reopen_is_idempotent() {
 fn store_open_enables_wal_journal_mode() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let journal_mode: String = store
         .with_connection(|connection| {
             connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -105,10 +110,11 @@ fn store_open_enables_wal_journal_mode() {
 }
 
 #[test]
-fn migration_creates_required_tables() {
+fn schema_initialization_creates_required_tables() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
 
     for table in [
         "agent_profile_cache",
@@ -130,7 +136,8 @@ fn migration_creates_required_tables() {
 fn unsupported_schema_version_is_rejected() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     store
         .with_connection(|connection| {
             connection.execute("UPDATE schema_version SET version = 999", [])?;
@@ -139,16 +146,17 @@ fn unsupported_schema_version_is_rejected() {
         .expect("force unsupported schema");
 
     assert!(matches!(
-        AgentRuntimeStore::open(&workspace_root),
+        AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime")),
         Err(harness_agent_runtime::AgentRuntimeStoreError::UnsupportedSchema(_))
     ));
 }
 
 #[test]
-fn current_schema_version_constant_matches_migration() {
+fn current_schema_version_constant_matches_schema_initialization() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
 
     assert_eq!(
         store.schema_version().expect("schema version"),
@@ -157,7 +165,7 @@ fn current_schema_version_constant_matches_migration() {
 }
 
 #[test]
-fn migration_v2_adds_background_attempt_prior_attempt_link() {
+fn legacy_schema_version_is_rejected_instead_of_upgraded() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
     let runtime_dir = workspace_root.join(".jyowo/runtime");
@@ -186,34 +194,49 @@ fn migration_v2_adds_background_attempt_prior_attempt_link() {
         .expect("seed v1 schema");
     drop(connection);
 
-    let store = AgentRuntimeStore::open(&workspace_root).expect("store migrates");
-    let has_prior_attempt_id = store
-        .with_connection(|connection| {
-            let mut statement =
-                connection.prepare("PRAGMA table_info(background_agent_attempts)")?;
-            let mut rows = statement.query([])?;
-            while let Some(row) = rows.next()? {
-                let name: String = row.get(1)?;
-                if name == "prior_attempt_id" {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        })
-        .expect("read columns");
+    assert!(matches!(
+        AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime")),
+        Err(harness_agent_runtime::AgentRuntimeStoreError::UnsupportedSchema(_))
+    ));
+}
 
-    assert_eq!(
-        store.schema_version().expect("schema version"),
-        CURRENT_SCHEMA_VERSION
-    );
-    assert!(has_prior_attempt_id);
+#[test]
+fn schema_without_version_but_existing_tables_is_rejected() {
+    let workspace = tempdir().expect("tempdir");
+    let workspace_root = canonical_temp_root(&workspace);
+    let runtime_dir = workspace_root.join(".jyowo/runtime");
+    std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
+    let db_path = runtime_dir.join(AGENT_RUNTIME_DB_FILENAME);
+    let connection = Connection::open(&db_path).expect("open db");
+    connection
+        .execute_batch(
+            "
+            CREATE TABLE background_agent_attempts (
+                attempt_id TEXT PRIMARY KEY NOT NULL,
+                background_agent_id TEXT NOT NULL,
+                attempt_number INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                payload_json TEXT NOT NULL
+            );
+            ",
+        )
+        .expect("seed partial schema");
+    drop(connection);
+
+    assert!(matches!(
+        AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime")),
+        Err(harness_agent_runtime::AgentRuntimeStoreError::UnsupportedSchema(_))
+    ));
 }
 
 #[test]
 fn workspace_isolation_lease_survives_store_reopen() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let lease = harness_agent_runtime::WorkspaceIsolationLease {
         lease_id: "lease-1".to_owned(),
         conversation_id: "conversation-1".to_owned(),
@@ -234,7 +257,9 @@ fn workspace_isolation_lease_survives_store_reopen() {
         .insert_workspace_isolation_lease(&lease)
         .expect("lease insert");
 
-    let reopened = AgentRuntimeStore::open(&workspace_root).expect("store reopens");
+    let reopened =
+        AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+            .expect("store reopens");
     let loaded = reopened
         .get_workspace_isolation_lease("lease-1")
         .expect("lease lookup")
@@ -249,7 +274,8 @@ fn workspace_isolation_lease_survives_store_reopen() {
 fn background_agent_payload_claim_is_atomic_by_prior_payload() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let original_payload = r#"{"supervisorExecution":{"status":"queued"}}"#;
     let running_payload = r#"{"supervisorExecution":{"status":"running"}}"#;
     let duplicate_payload = r#"{"supervisorExecution":{"status":"duplicate"}}"#;
@@ -295,7 +321,8 @@ fn background_agent_payload_claim_is_atomic_by_prior_payload() {
 fn delete_background_agents_for_conversation_removes_registry_and_attempts_only_for_session() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
 
     for (background_agent_id, conversation_id) in [
         ("background-delete", "conversation-delete"),
@@ -372,19 +399,19 @@ fn open_runtime_dir_uses_explicit_runtime_root() {
 }
 
 #[test]
-fn open_runtime_dir_and_open_produce_same_schema_for_workspace() {
+fn open_runtime_dir_reopen_produces_same_schema_for_workspace() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
     let runtime_root = workspace_root.join(".jyowo/runtime");
 
-    let store_via_open = AgentRuntimeStore::open(&workspace_root).expect("open succeeds");
-    let store_via_dir =
-        AgentRuntimeStore::open_runtime_dir(&runtime_root).expect("open_runtime_dir succeeds");
+    let first = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("open succeeds");
+    let second = AgentRuntimeStore::open_runtime_dir(&runtime_root).expect("reopen succeeds");
 
-    assert_eq!(store_via_open.runtime_dir(), store_via_dir.runtime_dir());
+    assert_eq!(first.runtime_dir(), second.runtime_dir());
     assert_eq!(
-        store_via_open.schema_version().expect("schema version"),
-        store_via_dir.schema_version().expect("schema version")
+        first.schema_version().expect("schema version"),
+        second.schema_version().expect("schema version")
     );
 }
 

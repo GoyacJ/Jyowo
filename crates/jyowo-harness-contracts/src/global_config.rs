@@ -99,26 +99,20 @@ pub struct ProviderSelectionRecord {
 }
 
 /// Global execution defaults. Stored in `~/.jyowo/config/execution-defaults.json`.
-///
-/// Fields carry `#[serde(alias)]` annotations so old workspace `execution-settings.json` files
-/// (previously snake_case) are accepted during migration reads without a separate intermediate type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ExecutionDefaultsRecord {
-    #[serde(default = "default_permission_mode", alias = "permission_mode")]
+    #[serde(default = "default_permission_mode")]
     pub permission_mode: crate::PermissionMode,
-    #[serde(default, alias = "tool_profile")]
+    #[serde(default)]
     pub tool_profile: crate::ToolProfile,
-    #[serde(
-        default = "default_context_compression_trigger_ratio",
-        alias = "context_compression_trigger_ratio"
-    )]
+    #[serde(default = "default_context_compression_trigger_ratio")]
     pub context_compression_trigger_ratio: f32,
-    #[serde(default, alias = "subagents_enabled")]
+    #[serde(default)]
     pub subagents_enabled: bool,
-    #[serde(default, alias = "agent_teams_enabled")]
+    #[serde(default)]
     pub agent_teams_enabled: bool,
-    #[serde(default, alias = "background_agents_enabled")]
+    #[serde(default)]
     pub background_agents_enabled: bool,
 }
 
@@ -149,41 +143,17 @@ impl Default for ExecutionDefaultsRecord {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ExecutionOverridesRecord {
-    #[serde(
-        default,
-        alias = "permission_mode",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<crate::PermissionMode>,
-    #[serde(
-        default,
-        alias = "tool_profile",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_profile: Option<crate::ToolProfile>,
-    #[serde(
-        default,
-        alias = "context_compression_trigger_ratio",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_compression_trigger_ratio: Option<f32>,
-    #[serde(
-        default,
-        alias = "subagents_enabled",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagents_enabled: Option<bool>,
-    #[serde(
-        default,
-        alias = "agent_teams_enabled",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_teams_enabled: Option<bool>,
-    #[serde(
-        default,
-        alias = "background_agents_enabled",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_agents_enabled: Option<bool>,
 }
 

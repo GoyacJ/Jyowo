@@ -15,7 +15,7 @@ use harness_contracts::{
 };
 use rusqlite::Connection;
 
-use crate::local::{migrations, schema};
+use crate::local::{schema, schema_init};
 
 /// Builder for constructing a `MemoryRecallTrace` incrementally during recall.
 #[derive(Debug)]
@@ -312,7 +312,7 @@ fn initialize_connection(conn: &Connection) -> Result<(), String> {
         conn.execute_batch(pragma)
             .map_err(|e| format!("set sqlite pragma: {e}"))?;
     }
-    migrations::run(conn).map_err(|e| format!("run migrations: {e}"))
+    schema_init::initialize(conn).map_err(|e| format!("initialize schema: {e}"))
 }
 
 fn insert_trace(conn: &Connection, trace: &MemoryRecallTrace) -> Result<(), String> {

@@ -49,7 +49,7 @@ impl From<AgentProfileRegistryError> for AgentRuntimeFacadeError {
 pub fn list_agent_profiles(
     workspace_root: impl AsRef<Path>,
 ) -> Result<Vec<AgentProfile>, AgentRuntimeFacadeError> {
-    let store = AgentRuntimeStore::open(workspace_root)?;
+    let store = AgentRuntimeStore::open_runtime_dir(agent_runtime_dir(workspace_root.as_ref()))?;
     Ok(AgentProfileRegistry::new(&store).list()?)
 }
 
@@ -64,7 +64,7 @@ pub fn save_agent_profile(
     workspace_root: impl AsRef<Path>,
     profile: AgentProfile,
 ) -> Result<AgentProfile, AgentRuntimeFacadeError> {
-    let store = AgentRuntimeStore::open(workspace_root)?;
+    let store = AgentRuntimeStore::open_runtime_dir(agent_runtime_dir(workspace_root.as_ref()))?;
     Ok(AgentProfileRegistry::new(&store).save(profile)?)
 }
 
@@ -72,9 +72,13 @@ pub fn delete_agent_profile(
     workspace_root: impl AsRef<Path>,
     profile_id: &str,
 ) -> Result<(), AgentRuntimeFacadeError> {
-    let store = AgentRuntimeStore::open(workspace_root)?;
+    let store = AgentRuntimeStore::open_runtime_dir(agent_runtime_dir(workspace_root.as_ref()))?;
     AgentProfileRegistry::new(&store).delete(profile_id)?;
     Ok(())
+}
+
+fn agent_runtime_dir(workspace_root: &Path) -> std::path::PathBuf {
+    workspace_root.join(".jyowo").join("runtime")
 }
 
 #[must_use]

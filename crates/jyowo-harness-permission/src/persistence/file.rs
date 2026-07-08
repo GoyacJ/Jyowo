@@ -300,19 +300,8 @@ impl FileDecisionPersistence {
                 record.runtime_scope.as_ref(),
                 record.recorded_at,
             ),
-            Some(_) => return Err(IntegrityError::Mismatch),
-            None if self.tenant_id == TenantId::SINGLE && record.runtime_scope.is_none() => {
-                legacy_unsigned_record_value(
-                    record.decision_id,
-                    &record.decision,
-                    &record.scope,
-                    record.source,
-                    record.session_id,
-                    record.fingerprint,
-                    record.recorded_at,
-                )
-            }
             None => return Err(IntegrityError::Mismatch),
+            Some(_) => return Err(IntegrityError::Mismatch),
         };
         let payload = canonical_bytes(&unsigned)?;
         self.signer.verify(&payload, &signature).await
@@ -466,85 +455,6 @@ impl DecisionHistory for FileDecisionPersistence {
     }
 }
 
-pub async fn migrate_legacy_no_workspace_permission_decisions(
-    path: &Path,
-    tenant_id: TenantId,
-    signer: Arc<dyn IntegritySigner>,
-) -> Result<bool, PermissionError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => {}
-        Ok(_) => {
-            return Err(PermissionError::Message(
-                "migrate permission decisions: path is not a file".to_owned(),
-            ));
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(PermissionError::Message(format!(
-                "migrate permission decisions metadata: {error}"
-            )));
-        }
-    }
-
-    let persistence = FileDecisionPersistence::new(tenant_id, path, Arc::clone(&signer));
-    let records = persistence.load_records().await?;
-    if records.is_empty() {
-        return Ok(false);
-    }
-
-    let mut migrated = Vec::with_capacity(records.len());
-    let mut quarantined = Vec::new();
-    for mut record in records {
-        if record.runtime_scope.is_some() {
-            return Err(PermissionError::Message(
-                "migrate permission decisions: legacy record already has runtime_scope".to_owned(),
-            ));
-        }
-        let Some(conversation_id) = record.session_id else {
-            quarantined.push(record);
-            continue;
-        };
-        let runtime_scope = DecisionRuntimeScope::NoWorkspaceConversation { conversation_id };
-        let unsigned = unsigned_record_value(
-            tenant_id,
-            record.decision_id,
-            &record.decision,
-            &record.scope,
-            record.source,
-            record.session_id,
-            record.fingerprint,
-            Some(&runtime_scope),
-            record.recorded_at,
-        );
-        let payload = canonical_bytes(&unsigned)
-            .map_err(|err| PermissionError::Message(format!("canonicalize decision: {err}")))?;
-        let signature = signer.sign(&payload).await?;
-        record.tenant_id = Some(tenant_id);
-        record.runtime_scope = Some(runtime_scope);
-        record.signature = StoredSignature::from_signature(signature);
-        migrated.push(record);
-    }
-
-    if !quarantined.is_empty() {
-        harness_fs::write_json_file_atomic(
-            legacy_no_workspace_permission_quarantine_path(path).as_path(),
-            &quarantined,
-            true,
-        )
-        .map_err(fs_err)?;
-    }
-    harness_fs::write_json_file_atomic(path, &migrated, true).map_err(fs_err)?;
-    Ok(true)
-}
-
-fn legacy_no_workspace_permission_quarantine_path(path: &Path) -> PathBuf {
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("permission-decisions.json");
-    path.with_file_name(format!("{file_name}.unscoped-legacy.json"))
-}
-
 fn record_to_persisted_decision(record: SignedDecisionRecord) -> PersistedDecision {
     PersistedDecision {
         decision_id: record.decision_id,
@@ -623,26 +533,6 @@ fn unsigned_record_value(
             .insert("runtime_scope".to_owned(), json!(runtime_scope));
     }
     value
-}
-
-fn legacy_unsigned_record_value(
-    decision_id: DecisionId,
-    decision: &Decision,
-    scope: &DecisionScope,
-    source: RuleSource,
-    session_id: Option<harness_contracts::SessionId>,
-    fingerprint: Option<ExecFingerprint>,
-    recorded_at: DateTime<Utc>,
-) -> Value {
-    json!({
-        "decision_id": decision_id,
-        "decision": decision,
-        "scope": scope,
-        "source": source,
-        "session_id": session_id,
-        "fingerprint": fingerprint,
-        "recorded_at": recorded_at,
-    })
 }
 
 fn tamper_reason(err: &IntegrityError) -> PersistenceTamperReason {

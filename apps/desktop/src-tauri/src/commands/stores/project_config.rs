@@ -102,6 +102,13 @@ impl ProjectConfigStore {
         )
     }
 
+    pub fn load_project_skill_selection_if_present(
+        &self,
+    ) -> Result<Option<SkillSelectionRecord>, CommandErrorPayload> {
+        let path = self.layout.project_skills_file(&self.workspace_root);
+        read_json_file::<SkillSelectionRecord>(&path, "project skill selection")
+    }
+
     pub fn save_project_skill_selection(
         &self,
         record: &SkillSelectionRecord,
@@ -122,6 +129,13 @@ impl ProjectConfigStore {
             read_json_file::<PluginSelectionRecord>(&path, "project plugin selection")?
                 .unwrap_or_default(),
         )
+    }
+
+    pub fn load_project_plugin_selection_if_present(
+        &self,
+    ) -> Result<Option<PluginSelectionRecord>, CommandErrorPayload> {
+        let path = self.layout.project_plugins_file(&self.workspace_root);
+        read_json_file::<PluginSelectionRecord>(&path, "project plugin selection")
     }
 
     pub fn save_project_plugin_selection(

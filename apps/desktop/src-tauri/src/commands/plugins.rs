@@ -80,18 +80,15 @@ fn global_plugin_store_for_project_state(
         .map(|store| DesktopPluginStore::global(store.layout().clone()))
 }
 
-fn plugin_selection_file_exists(path: &Path) -> bool {
-    matches!(std::fs::symlink_metadata(path), Ok(metadata) if metadata.is_file())
-}
-
 fn project_plugin_selection_for_state(
     state: &DesktopRuntimeState,
 ) -> Result<Option<PluginSelectionRecord>, CommandErrorPayload> {
     state
         .project_config_store
         .as_ref()
-        .map(ProjectConfigStore::load_project_plugin_selection)
+        .map(ProjectConfigStore::load_project_plugin_selection_if_present)
         .transpose()
+        .map(Option::flatten)
 }
 
 fn save_project_plugin_selection_for_state(
@@ -102,35 +99,6 @@ fn save_project_plugin_selection_for_state(
         runtime_operation_failed("project plugin selection config store is unavailable".to_owned())
     })?;
     project_config.save_project_plugin_selection(selection)
-}
-
-pub(crate) fn backfill_project_plugin_selection_if_missing(
-    state: &DesktopRuntimeState,
-) -> Result<(), CommandErrorPayload> {
-    let Some(project_config) = &state.project_config_store else {
-        return Ok(());
-    };
-    let selection_path = project_config
-        .layout()
-        .project_plugins_file(project_config.workspace_root());
-    if plugin_selection_file_exists(&selection_path) {
-        return Ok(());
-    }
-    let settings = state.plugin_store.load_record()?;
-    if settings.records.is_empty() && !settings.allow_project_plugins {
-        return Ok(());
-    }
-    let enabled = settings
-        .records
-        .iter()
-        .filter(|record| record.enabled)
-        .map(|record| record.plugin_id.0.clone())
-        .collect::<Vec<_>>();
-    let selection = PluginSelectionRecord {
-        allow_project_plugins: settings.allow_project_plugins,
-        enabled,
-    };
-    project_config.save_project_plugin_selection(&selection)
 }
 
 pub async fn get_plugin_detail_with_runtime_state(
@@ -1233,62 +1201,5 @@ pub(crate) fn skill_source_plugin_id(
     match source {
         jyowo_harness_sdk::ext::SkillSourceKind::Plugin(plugin_id) => Some(plugin_id.0.clone()),
         _ => None,
-    }
-}
-
-/// Run plugin migration on startup: move old `<workspace>/.jyowo/runtime/plugins/`
-/// to `<workspace>/.jyowo/plugins/` and persist enabled selection as project config.
-pub(crate) fn migrate_plugins_on_startup(
-    state: &DesktopRuntimeState,
-) -> Result<(), CommandErrorPayload> {
-    let (result, enabled_ids) = migrate_plugins_from_runtime(&state.workspace_root)?;
-    if let MigrationResult::Conflict(conflict) = result {
-        return Err(runtime_init_failed(format!(
-            "plugin migration conflict: {:?}: {}",
-            conflict.kind, conflict.detail
-        )));
-    }
-
-    if matches!(result, MigrationResult::Migrated) {
-        if !enabled_ids.is_empty() {
-            let save_result = (|| {
-                let project_config = state.project_config_store.as_ref().ok_or_else(|| {
-                    runtime_init_failed(
-                        "project config store is unavailable for plugin migration".to_owned(),
-                    )
-                })?;
-                let settings = state.plugin_store.load_record()?;
-                let selection = PluginSelectionRecord {
-                    allow_project_plugins: settings.allow_project_plugins,
-                    enabled: enabled_ids,
-                };
-                project_config.save_project_plugin_selection(&selection)
-            })();
-            if let Err(error) = save_result {
-                cleanup_migrated_plugin_store(&state.workspace_root);
-                return Err(error);
-            }
-        }
-        remove_legacy_plugin_runtime_store(&state.workspace_root)?;
-    }
-
-    Ok(())
-}
-
-fn cleanup_migrated_plugin_store(workspace_root: &Path) {
-    let _ = std::fs::remove_dir_all(workspace_root.join(".jyowo").join("plugins"));
-}
-
-fn remove_legacy_plugin_runtime_store(workspace_root: &Path) -> Result<(), CommandErrorPayload> {
-    let old_root = workspace_root
-        .join(".jyowo")
-        .join("runtime")
-        .join("plugins");
-    match std::fs::remove_dir_all(&old_root) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(runtime_operation_failed(format!(
-            "old runtime plugin store cleanup failed: {error}"
-        ))),
     }
 }

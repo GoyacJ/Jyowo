@@ -49,7 +49,8 @@ fn subagents_unavailable_when_not_compiled() {
 fn agent_teams_unavailable_when_not_compiled() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let policy = AgentCapabilityResolver::resolve(
         &workspace_root,
         AgentCapabilityEnvironment {
@@ -72,7 +73,8 @@ fn agent_teams_unavailable_when_not_compiled() {
 fn subagents_unavailable_without_stream_permission_runtime() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let policy = AgentCapabilityResolver::resolve(&workspace_root, compiled_environment(false));
 
     assert!(!policy.subagents_available);
@@ -88,7 +90,8 @@ fn subagents_unavailable_without_stream_permission_runtime() {
 fn invalid_agent_profiles_mark_subagents_unavailable() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     fs::write(store.profiles_file_path(), b"{not-json").expect("invalid profiles should write");
 
     let policy = AgentCapabilityResolver::resolve(&workspace_root, compiled_environment(true));
@@ -124,7 +127,8 @@ fn runtime_store_unavailable_marks_all_capabilities_unavailable() {
 fn background_agents_unavailable_when_supervisor_missing() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let policy = AgentCapabilityResolver::resolve(&workspace_root, compiled_environment(true));
 
     assert!(!policy.background_agents_available);
@@ -138,7 +142,8 @@ fn background_agents_unavailable_when_supervisor_missing() {
 fn background_agents_unavailable_when_fresh_supervisor_lock_has_no_live_control_channel() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     write_test_supervisor_token_and_lock(&workspace_root);
 
     let policy = AgentCapabilityResolver::resolve(&workspace_root, compiled_environment(true));
@@ -154,7 +159,8 @@ fn background_agents_unavailable_when_fresh_supervisor_lock_has_no_live_control_
 fn write_isolation_unavailable_is_reported_without_hiding_read_only_agent_capabilities() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let worktrees_dir = workspace_root
         .join(".jyowo")
         .join("runtime")
@@ -188,7 +194,8 @@ fn write_isolation_unavailable_is_reported_without_hiding_read_only_agent_capabi
 fn merge_rejects_write_capable_isolation_when_write_isolation_store_cannot_open() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let worktrees_dir = workspace_root
         .join(".jyowo")
         .join("runtime")
@@ -217,7 +224,8 @@ fn merge_rejects_write_capable_isolation_when_write_isolation_store_cannot_open(
 fn subagents_and_teams_available_with_compiled_runtime_and_stream_permission() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let policy = AgentCapabilityResolver::resolve(&workspace_root, compiled_environment(true));
 
     assert!(policy.subagents_available);
@@ -280,7 +288,8 @@ fn sample_team_options() -> AgentToolPolicy {
 fn merge_defaults_agent_capabilities_from_settings_when_agent_tool_policy_omitted() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let policy = AgentRuntimePolicyResolver::merge(
         &enabled_settings(),
         None,
@@ -301,7 +310,8 @@ fn merge_defaults_agent_capabilities_from_settings_when_agent_tool_policy_omitte
 fn merge_rejects_subagents_allowed_when_settings_disabled() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let error = AgentRuntimePolicyResolver::merge(
         &ExecutionSettingsAgentInput {
             subagents_enabled: false,
@@ -326,7 +336,8 @@ fn merge_rejects_subagents_allowed_when_settings_disabled() {
 fn merge_rejects_subagents_allowed_when_runtime_unavailable() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let error = AgentRuntimePolicyResolver::merge(
         &enabled_settings(),
         Some(&sample_subagent_options()),
@@ -351,7 +362,8 @@ fn merge_rejects_subagents_allowed_when_runtime_unavailable() {
 fn merge_rejects_invalid_numeric_limits() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let mut options = sample_subagent_options();
     options.max_concurrent_subagents = 0;
 
@@ -377,7 +389,8 @@ fn merge_rejects_invalid_numeric_limits() {
 fn merge_allows_agent_team_without_team_config_for_model_visible_team_tool() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let mut options = sample_subagent_options();
     options.agent_team = AgentUsePolicy::Allowed;
 
@@ -399,7 +412,8 @@ fn merge_allows_agent_team_without_team_config_for_model_visible_team_tool() {
 fn merge_rejects_team_config_when_team_use_is_off() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let mut options = sample_team_options();
     options.agent_team = AgentUsePolicy::Off;
 
@@ -425,7 +439,8 @@ fn merge_rejects_team_config_when_team_use_is_off() {
 fn merge_rejects_unknown_lead_profile_id() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let mut options = sample_team_options();
     options.team_config.as_mut().unwrap().lead_profile_id = "missing".to_owned();
 
@@ -451,7 +466,8 @@ fn merge_rejects_unknown_lead_profile_id() {
 fn merge_rejects_empty_member_profile_list() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let mut options = sample_team_options();
     options
         .team_config
@@ -480,7 +496,8 @@ fn merge_rejects_empty_member_profile_list() {
 fn merge_allows_background_agent_tool_when_requested() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     write_test_supervisor_token_and_lock(&workspace_root);
 
     let mut options = sample_subagent_options();
@@ -540,7 +557,8 @@ fn write_test_supervisor_token_and_lock(workspace: &std::path::Path) {
 fn merge_rejects_git_worktree_in_non_git_workspace() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let mut options = sample_subagent_options();
     options.workspace_isolation = AgentWorkspaceIsolationMode::GitWorktree;
 
@@ -561,7 +579,8 @@ fn merge_rejects_git_worktree_in_non_git_workspace() {
 fn merge_allows_patch_only_without_git_repository() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_temp_root(&workspace);
-    let _store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let _store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let mut options = sample_subagent_options();
     options.workspace_isolation = AgentWorkspaceIsolationMode::PatchOnly;
 

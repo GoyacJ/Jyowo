@@ -429,8 +429,12 @@ fn execution_settings_store_open(workspace_root: &Path) -> bool {
     std::fs::create_dir_all(workspace_root.join(".jyowo/runtime")).is_ok()
 }
 
+fn runtime_dir(workspace_root: &Path) -> std::path::PathBuf {
+    workspace_root.join(".jyowo").join("runtime")
+}
+
 fn profile_registry_status(workspace_root: &Path) -> ProfileRegistryStatus {
-    match AgentRuntimeStore::open(workspace_root) {
+    match AgentRuntimeStore::open_runtime_dir(runtime_dir(workspace_root)) {
         Ok(store) => match AgentProfileRegistry::new(&store).list() {
             Ok(_) => ProfileRegistryStatus {
                 valid: true,
@@ -449,7 +453,7 @@ fn profile_registry_status(workspace_root: &Path) -> ProfileRegistryStatus {
 }
 
 fn background_registry_open(workspace_root: &Path) -> bool {
-    AgentRuntimeStore::open(workspace_root).is_ok()
+    AgentRuntimeStore::open_runtime_dir(runtime_dir(workspace_root)).is_ok()
 }
 
 fn write_isolation_status(workspace_root: &Path) -> WorkspaceIsolationStatus {
@@ -468,7 +472,7 @@ fn write_isolation_status(workspace_root: &Path) -> WorkspaceIsolationStatus {
 }
 
 fn restart_recovery_ok(workspace_root: &Path) -> bool {
-    match AgentRuntimeStore::open(workspace_root) {
+    match AgentRuntimeStore::open_runtime_dir(runtime_dir(workspace_root)) {
         Ok(store) => store
             .table_exists("restart_recovery_markers")
             .unwrap_or(false),

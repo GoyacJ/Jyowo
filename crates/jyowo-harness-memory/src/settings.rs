@@ -11,7 +11,7 @@ use harness_contracts::{
 };
 use rusqlite::Connection;
 
-use crate::local::{migrations, schema};
+use crate::local::{schema, schema_init};
 
 #[derive(Debug)]
 pub struct MemorySettingsStore {
@@ -208,7 +208,7 @@ fn initialize_connection(conn: &Connection) -> Result<(), String> {
         conn.execute_batch(pragma)
             .map_err(|e| format!("set sqlite pragma: {e}"))?;
     }
-    migrations::run(conn).map_err(|e| format!("run migrations: {e}"))
+    schema_init::initialize(conn).map_err(|e| format!("initialize schema: {e}"))
 }
 
 fn decode_global_settings_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryGlobalSettings> {

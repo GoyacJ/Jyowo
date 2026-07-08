@@ -31,8 +31,6 @@ use super::validation::*;
 use super::*;
 use harness_contracts::SkillSelectionRecord;
 use std::collections::BTreeSet;
-use std::path::Path;
-
 pub async fn list_skills_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<ListSkillsResponse, CommandErrorPayload> {
@@ -47,20 +45,35 @@ pub async fn list_skills_with_runtime_state(
     })
 }
 
-fn skill_selection_file_exists(path: &Path) -> bool {
-    matches!(std::fs::symlink_metadata(path), Ok(metadata) if metadata.is_file())
-}
-
 fn load_skill_selection_for_state(
     state: &DesktopRuntimeState,
 ) -> Result<SkillSelectionRecord, CommandErrorPayload> {
     if let Some(project_config) = &state.project_config_store {
-        return project_config.load_project_skill_selection();
+        if let Some(selection) = project_config.load_project_skill_selection_if_present()? {
+            return Ok(selection);
+        }
+        return skill_selection_from_store_records(state.skill_store.as_ref());
     }
     if let Some(global_config) = &state.global_config_store {
-        return global_config.load_global_skill_selection();
+        if let Some(selection) = global_config.load_global_skill_selection_if_present()? {
+            return Ok(selection);
+        }
+        return skill_selection_from_store_records(state.skill_store.as_ref());
     }
     Ok(SkillSelectionRecord::default())
+}
+
+fn skill_selection_from_store_records(
+    skill_store: &dyn SkillStore,
+) -> Result<SkillSelectionRecord, CommandErrorPayload> {
+    let mut enabled = skill_store
+        .load_records()?
+        .into_iter()
+        .filter(|record| record.enabled)
+        .map(|record| record.id)
+        .collect::<Vec<_>>();
+    enabled.sort();
+    Ok(SkillSelectionRecord { enabled })
 }
 
 fn save_skill_selection_for_state(
@@ -83,51 +96,6 @@ pub(crate) fn enabled_skill_ids_for_state(
         .enabled
         .into_iter()
         .collect())
-}
-
-pub(crate) fn backfill_skill_selection_if_missing(
-    state: &DesktopRuntimeState,
-) -> Result<(), CommandErrorPayload> {
-    if let Some(global_config) = &state.global_config_store {
-        let global_skill_store = DesktopSkillStore::global(global_config.layout().clone());
-        backfill_skill_selection_file_if_missing(
-            &global_config.layout().global_skills_file(),
-            &global_skill_store,
-            |selection| global_config.save_global_skill_selection(selection),
-        )?;
-    }
-    if let Some(project_config) = &state.project_config_store {
-        return backfill_skill_selection_file_if_missing(
-            &project_config
-                .layout()
-                .project_skills_file(project_config.workspace_root()),
-            state.skill_store.as_ref(),
-            |selection| project_config.save_project_skill_selection(selection),
-        );
-    }
-    Ok(())
-}
-
-fn backfill_skill_selection_file_if_missing(
-    selection_path: &Path,
-    skill_store: &dyn SkillStore,
-    save: impl FnOnce(&SkillSelectionRecord) -> Result<(), CommandErrorPayload>,
-) -> Result<(), CommandErrorPayload> {
-    if skill_selection_file_exists(selection_path) {
-        return Ok(());
-    }
-    let records = skill_store.load_records()?;
-    if records.is_empty() {
-        return Ok(());
-    }
-    let selection = SkillSelectionRecord {
-        enabled: records
-            .iter()
-            .filter(|record| record.enabled)
-            .map(|record| record.id.clone())
-            .collect(),
-    };
-    save(&selection)
 }
 
 pub async fn list_skill_catalog_sources_with_runtime_state(
@@ -876,11 +844,16 @@ pub(crate) async fn reload_managed_skills(
 ) -> Result<(), CommandErrorPayload> {
     // Reload project-managed (workspace) skills only for project runtimes.
     if state.project_workspace_root().is_some() {
-        let project_allowed = enabled_skill_ids_for_state(state)?;
+        let project_allowed = match &state.project_config_store {
+            Some(store) => store
+                .load_project_skill_selection_if_present()?
+                .map(|selection| selection.enabled.into_iter().collect()),
+            None => None,
+        };
         harness
             .reload_workspace_managed_skills_with_allowed_package_ids(
                 state.skill_store.enabled_dir(),
-                Some(project_allowed),
+                project_allowed,
             )
             .await
             .map_err(|error| runtime_operation_failed(format!("skill reload failed: {error}")))?;
@@ -890,14 +863,12 @@ pub(crate) async fn reload_managed_skills(
     if let Some(global_config) = &state.global_config_store {
         let global_skill_store = DesktopSkillStore::global(global_config.layout().clone());
         let global_allowed = global_config
-            .load_global_skill_selection()?
-            .enabled
-            .into_iter()
-            .collect();
+            .load_global_skill_selection_if_present()?
+            .map(|selection| selection.enabled.into_iter().collect());
         harness
             .reload_user_managed_skills_with_allowed_package_ids(
                 global_skill_store.enabled_dir(),
-                Some(global_allowed),
+                global_allowed,
             )
             .await
             .map_err(|error| {
@@ -906,56 +877,4 @@ pub(crate) async fn reload_managed_skills(
     }
 
     Ok(())
-}
-
-/// Run skill migration on startup: move old `<workspace>/.jyowo/runtime/skills/`
-/// to `<workspace>/.jyowo/skills/` and persist enabled selection as project config.
-pub(crate) fn migrate_skills_on_startup(
-    state: &DesktopRuntimeState,
-) -> Result<(), CommandErrorPayload> {
-    let (result, enabled_ids) = migrate_skills_from_runtime(&state.workspace_root)?;
-    if let MigrationResult::Conflict(conflict) = result {
-        return Err(runtime_init_failed(format!(
-            "skill migration conflict: {:?}: {}",
-            conflict.kind, conflict.detail
-        )));
-    }
-
-    if matches!(result, MigrationResult::Migrated) {
-        if !enabled_ids.is_empty() {
-            let save_result = (|| {
-                let project_config = state.project_config_store.as_ref().ok_or_else(|| {
-                    runtime_init_failed(
-                        "project config store is unavailable for skill migration".to_owned(),
-                    )
-                })?;
-                let selection = SkillSelectionRecord {
-                    enabled: enabled_ids,
-                };
-                project_config.save_project_skill_selection(&selection)
-            })();
-            if let Err(error) = save_result {
-                cleanup_migrated_skill_store(&state.workspace_root);
-                return Err(error);
-            }
-        }
-        remove_legacy_skill_runtime_store(&state.workspace_root)?;
-    }
-
-    Ok(())
-}
-
-fn cleanup_migrated_skill_store(workspace_root: &Path) {
-    let _ = std::fs::remove_dir_all(workspace_root.join(".jyowo").join("skills"));
-}
-
-fn remove_legacy_skill_runtime_store(workspace_root: &Path) -> Result<(), CommandErrorPayload> {
-    let old_root = workspace_root.join(".jyowo").join("runtime").join("skills");
-    match std::fs::remove_dir_all(&old_root) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(runtime_operation_failed(format!(
-            "old runtime skill store cleanup failed: {error}"
-        ))),
-    }
 }

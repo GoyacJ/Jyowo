@@ -16,7 +16,10 @@ fn canonical_temp_root(temp: &TempDir) -> PathBuf {
 }
 
 fn open_store(temp: &TempDir) -> FileProviderContinuationStore {
-    FileProviderContinuationStore::open(canonical_temp_root(temp)).unwrap()
+    FileProviderContinuationStore::open_runtime_dir(
+        canonical_temp_root(temp).join(".jyowo").join("runtime"),
+    )
+    .unwrap()
 }
 
 fn continuation_log_path(temp: &TempDir) -> PathBuf {
@@ -399,8 +402,14 @@ async fn concurrent_appends_are_serialized_without_dropping_records() {
 async fn concurrent_appends_from_distinct_store_instances_do_not_drop_records() {
     let temp = TempDir::new().unwrap();
     let temp_root = canonical_temp_root(&temp);
-    let first_store = Arc::new(FileProviderContinuationStore::open(&temp_root).unwrap());
-    let second_store = Arc::new(FileProviderContinuationStore::open(&temp_root).unwrap());
+    let first_store = Arc::new(
+        FileProviderContinuationStore::open_runtime_dir(temp_root.join(".jyowo").join("runtime"))
+            .unwrap(),
+    );
+    let second_store = Arc::new(
+        FileProviderContinuationStore::open_runtime_dir(temp_root.join(".jyowo").join("runtime"))
+            .unwrap(),
+    );
     let tenant_id = TenantId::SINGLE;
     let session_id = SessionId::new();
     let mut message_ids = Vec::new();
@@ -503,8 +512,9 @@ fn file_store_open_resolves_symlink_runtime_parent_via_canonical_path() {
 
     // The store should resolve the symlink via canonical prefix and operate
     // at the canonical (real) location.
-    let _store = FileProviderContinuationStore::open(&temp_root)
-        .expect("store open should resolve symlink prefix via canonical path");
+    let _store =
+        FileProviderContinuationStore::open_runtime_dir(temp_root.join(".jyowo").join("runtime"))
+            .expect("store open should resolve symlink prefix via canonical path");
 
     // The runtime directory should be created at the canonical target, not
     // the symlink source. (The jsonl log is created lazily on first write.)
@@ -725,9 +735,10 @@ async fn open_runtime_dir_and_open_produce_equivalent_stores() {
     let session_id = SessionId::new();
     let message_id = MessageId::new();
 
-    let store_via_open =
-        harness_provider_state::FileProviderContinuationStore::open(&workspace_root)
-            .expect("open succeeds");
+    let store_via_open = harness_provider_state::FileProviderContinuationStore::open_runtime_dir(
+        workspace_root.join(".jyowo").join("runtime"),
+    )
+    .expect("open succeeds");
     let store_via_dir =
         harness_provider_state::FileProviderContinuationStore::open_runtime_dir(&runtime_root)
             .expect("open_runtime_dir succeeds");

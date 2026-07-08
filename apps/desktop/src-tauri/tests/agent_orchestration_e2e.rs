@@ -45,6 +45,14 @@ use tokio::sync::Mutex as AsyncMutex;
 static WORKSPACE_COUNTER: Mutex<u64> = Mutex::new(0);
 const TEST_MODEL_CONFIG_ID: &str = "test-model-config";
 
+fn agent_runtime_store_for_workspace(
+    workspace_root: &Path,
+) -> Result<jyowo_harness_sdk::AgentRuntimeStore, jyowo_harness_sdk::AgentRuntimeStoreError> {
+    jyowo_harness_sdk::AgentRuntimeStore::open_runtime_dir(
+        workspace_root.join(".jyowo").join("runtime"),
+    )
+}
+
 struct TestBackgroundAgentStarter {
     workspace_root: PathBuf,
     event_store: Arc<dyn EventStore>,
@@ -62,7 +70,7 @@ impl harness_contracts::BackgroundAgentStarterCap for TestBackgroundAgentStarter
         let event_store = Arc::clone(&self.event_store);
         Box::pin(async move {
             let store = Arc::new(
-                jyowo_harness_sdk::AgentRuntimeStore::open(&workspace_root)
+                agent_runtime_store_for_workspace(&workspace_root)
                     .map_err(|error| ToolError::Internal(error.to_string()))?,
             );
             let redactor = Arc::new(jyowo_harness_sdk::builtin::DefaultRedactor::default());
@@ -385,7 +393,7 @@ async fn agent_orchestration_e2e_real_background_agent_commands_and_recovery() {
     .expect("background cancel succeeds");
     assert_eq!(cancelled.agent.state, BackgroundAgentState::Cancelled);
 
-    let store = jyowo_harness_sdk::AgentRuntimeStore::open(state.workspace_root())
+    let store = agent_runtime_store_for_workspace(state.workspace_root())
         .expect("agent runtime store opens");
     let manager = jyowo_harness_sdk::BackgroundAgentManager::new(
         Arc::new(store),

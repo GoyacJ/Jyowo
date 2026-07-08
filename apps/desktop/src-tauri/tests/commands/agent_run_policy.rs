@@ -442,7 +442,7 @@ async fn background_agent_tool_creates_durable_record() {
     assert_eq!(listed.agents.len(), 1);
     assert_eq!(listed.agents[0].title, "Background investigation");
 
-    let store = jyowo_harness_sdk::AgentRuntimeStore::open(state.workspace_root())
+    let store = agent_runtime_store_for_workspace(state.workspace_root())
         .expect("agent runtime store opens");
     let record = store
         .get_background_agent(&listed.agents[0].background_agent_id)

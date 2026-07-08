@@ -347,7 +347,7 @@ async fn background_agent_tool_persists_record_without_copying_parent_context() 
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
-    let store = jyowo_harness_sdk::AgentRuntimeStore::open(state.workspace_root())
+    let store = agent_runtime_store_for_workspace(state.workspace_root())
         .expect("agent runtime store opens");
     let listed = store
         .list_background_agents(false)
@@ -418,7 +418,7 @@ async fn background_agent_manager_rejects_recovered_permission_without_live_pend
     let conversation_id = SessionId::new();
     let request_id = RequestId::new();
     let store = Arc::new(
-        jyowo_harness_sdk::AgentRuntimeStore::open(state.workspace_root())
+        agent_runtime_store_for_workspace(state.workspace_root())
             .expect("agent runtime store opens"),
     );
     let harness = state.harness().expect("harness exists");
@@ -642,7 +642,7 @@ fn background_manager(
     conversation_id: SessionId,
 ) -> jyowo_harness_sdk::BackgroundAgentManager {
     let store = Arc::new(
-        jyowo_harness_sdk::AgentRuntimeStore::open(state.workspace_root())
+        agent_runtime_store_for_workspace(state.workspace_root())
             .expect("agent runtime store opens"),
     );
     jyowo_harness_sdk::BackgroundAgentManager::new(
