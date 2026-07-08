@@ -53,7 +53,8 @@ pub struct WorkspaceIsolationManager {
 impl WorkspaceIsolationManager {
     pub fn open(workspace_root: impl AsRef<Path>) -> Result<Self, WorkspaceIsolationError> {
         let workspace_root = workspace_root.as_ref().to_path_buf();
-        let store = AgentRuntimeStore::open(&workspace_root)?;
+        let store =
+            AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))?;
         std::fs::create_dir_all(Self::worktrees_dir(&workspace_root)).map_err(|error| {
             WorkspaceIsolationError::Unavailable {
                 message: format!("failed to create agent worktrees directory: {error}"),

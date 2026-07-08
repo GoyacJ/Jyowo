@@ -52,7 +52,10 @@ async fn agent_orchestration_background_permission_recovery_allows_pending_decis
 {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = workspace.path().canonicalize().expect("canonical");
-    let store = Arc::new(AgentRuntimeStore::open(&workspace_root).expect("store opens"));
+    let store = Arc::new(
+        AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+            .expect("store opens"),
+    );
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let manager = manager(
@@ -117,7 +120,10 @@ async fn agent_orchestration_background_permission_recovery_allows_pending_decis
 async fn agent_orchestration_background_live_permission_resolves_and_denies() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = workspace.path().canonicalize().expect("canonical");
-    let store = Arc::new(AgentRuntimeStore::open(&workspace_root).expect("store opens"));
+    let store = Arc::new(
+        AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+            .expect("store opens"),
+    );
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let manager = manager(

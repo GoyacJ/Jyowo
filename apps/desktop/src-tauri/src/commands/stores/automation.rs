@@ -61,31 +61,6 @@ fn default_jyowo_home() -> PathBuf {
     home.join(".jyowo")
 }
 
-/// Migrate automations from the old runtime path to the new project config path.
-///
-/// Old path: `<workspace>/.jyowo/runtime/automations.json`
-/// New path: `<workspace>/.jyowo/config/automations.json`
-///
-/// Automation run logs stay under runtime and are not touched.
-pub(crate) fn migrate_automations_from_runtime(
-    layout: &StorageLayout,
-    workspace_root: &Path,
-) -> Result<MigrationResult, CommandErrorPayload> {
-    let old_path = workspace_root
-        .join(".jyowo")
-        .join("runtime")
-        .join("automations.json");
-    let new_path = layout.project_automations_file(workspace_root);
-
-    migrate_secret_json_file_with::<Vec<AutomationSpec>, _>(
-        &old_path,
-        &new_path,
-        "automation settings",
-        true,
-        |old, new| old == new,
-    )
-}
-
 impl AutomationStore for DesktopAutomationStore {
     fn load_automations(&self) -> Result<Vec<AutomationSpec>, CommandErrorPayload> {
         let automations_path = self.automations_path();

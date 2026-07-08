@@ -8,9 +8,9 @@
 
 mod background;
 mod isolation;
-mod migrations;
 mod policy;
 mod profiles;
+mod schema;
 mod store;
 #[cfg(feature = "agents-subagent")]
 mod subagents;
@@ -25,7 +25,6 @@ pub use isolation::{
     CreateWorkspaceIsolationLeaseRequest, GitDiscovery, WorkspaceIsolationCleanupResult,
     WorkspaceIsolationError, WorkspaceIsolationManager, AGENT_WORKTREES_DIR_NAME,
 };
-pub use migrations::CURRENT_SCHEMA_VERSION;
 pub use policy::{
     default_agent_capability_environment, AgentCapabilitiesInput, AgentCapabilityEnvironment,
     AgentCapabilityResolver, AgentRuntimePolicyError, AgentRuntimePolicyResolver,
@@ -37,6 +36,7 @@ pub use profiles::{
     builtin_agent_profiles, quarantine_invalid_profile_file, AgentProfileRegistry,
     AgentProfileRegistryError, AgentProfilesFile,
 };
+pub use schema::CURRENT_SCHEMA_VERSION;
 pub use store::{
     AgentRuntimeStore, AgentRuntimeStoreError, AgentTeamMailboxRecord, AgentTeamTaskRecord,
     BackgroundAgentAttemptRecord, BackgroundAgentStoreRecord, WorkspaceIsolationLease,

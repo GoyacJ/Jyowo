@@ -671,7 +671,6 @@ impl std::fmt::Debug for McpServerTransportConfig {
 #[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct McpServerConfigRecord {
-    #[serde(default = "default_true")]
     pub enabled: bool,
     pub display_name: String,
     pub id: String,

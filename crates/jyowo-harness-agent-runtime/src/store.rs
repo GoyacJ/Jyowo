@@ -5,10 +5,9 @@ use harness_contracts::BackgroundAgentState;
 use rusqlite::Connection;
 use thiserror::Error;
 
-use crate::migrations;
+use crate::schema;
 
 pub const AGENT_RUNTIME_DB_FILENAME: &str = "agent-runtime.sqlite";
-const RUNTIME_DIR: &str = ".jyowo/runtime";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceIsolationLease {
@@ -109,7 +108,7 @@ impl AgentRuntimeStore {
         ensure_sqlite_file_no_symlink(&db_path)?;
         let connection = Connection::open(&db_path)?;
         enable_wal_journal_mode(&connection)?;
-        migrations::migrate(&connection).map_err(|error| match error {
+        schema::initialize(&connection).map_err(|error| match error {
             rusqlite::Error::InvalidParameterName(message) => {
                 AgentRuntimeStoreError::UnsupportedSchema(message)
             }
@@ -120,16 +119,6 @@ impl AgentRuntimeStore {
             db_path,
             connection: Mutex::new(connection),
         })
-    }
-
-    /// Open the agent runtime store from a workspace root, appending
-    /// `.jyowo/runtime` internally.
-    ///
-    /// This is a compatibility wrapper. Prefer `open_runtime_dir` when a
-    /// resolved runtime root is available from `RuntimeLayout`.
-    pub fn open(workspace_root: impl AsRef<Path>) -> Result<Self, AgentRuntimeStoreError> {
-        let runtime_dir = workspace_root.as_ref().join(RUNTIME_DIR);
-        Self::open_runtime_dir(runtime_dir)
     }
 
     #[must_use]

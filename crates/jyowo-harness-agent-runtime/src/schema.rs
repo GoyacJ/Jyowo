@@ -2,9 +2,9 @@ use rusqlite::{Connection, OptionalExtension};
 
 pub const CURRENT_SCHEMA_VERSION: i64 = 2;
 
-pub(crate) fn migrate(connection: &Connection) -> Result<(), rusqlite::Error> {
+pub(crate) fn initialize(connection: &Connection) -> Result<(), rusqlite::Error> {
     connection.execute_batch("BEGIN IMMEDIATE TRANSACTION;")?;
-    let result = migrate_in_transaction(connection);
+    let result = initialize_in_transaction(connection);
     match result {
         Ok(()) => connection.execute_batch("COMMIT;"),
         Err(error) => {
@@ -14,7 +14,7 @@ pub(crate) fn migrate(connection: &Connection) -> Result<(), rusqlite::Error> {
     }
 }
 
-fn migrate_in_transaction(connection: &Connection) -> Result<(), rusqlite::Error> {
+fn initialize_in_transaction(connection: &Connection) -> Result<(), rusqlite::Error> {
     connection.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS schema_version (
@@ -31,33 +31,36 @@ fn migrate_in_transaction(connection: &Connection) -> Result<(), rusqlite::Error
 
     match version {
         None => {
-            apply_v1(connection)?;
-            apply_v2(connection)?;
+            if has_existing_runtime_tables(connection)? {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "unsupported agent runtime schema without version".to_owned(),
+                ));
+            }
+            create_current_schema(connection)
         }
-        Some(1) => apply_v2(connection)?,
-        Some(existing) if existing == CURRENT_SCHEMA_VERSION => {}
-        Some(existing) => {
-            return Err(rusqlite::Error::InvalidParameterName(format!(
-                "unsupported agent runtime schema version {existing}"
-            )));
-        }
+        Some(CURRENT_SCHEMA_VERSION) => Ok(()),
+        Some(existing) => Err(rusqlite::Error::InvalidParameterName(format!(
+            "unsupported agent runtime schema version {existing}"
+        ))),
     }
-
-    Ok(())
 }
 
-fn apply_v2(connection: &Connection) -> Result<(), rusqlite::Error> {
-    connection.execute_batch(
+fn has_existing_runtime_tables(connection: &Connection) -> Result<bool, rusqlite::Error> {
+    let count: i64 = connection.query_row(
         "
-        ALTER TABLE background_agent_attempts ADD COLUMN prior_attempt_id TEXT;
-
-        DELETE FROM schema_version;
-        INSERT INTO schema_version(version) VALUES (2);
+        SELECT COUNT(*)
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name != 'schema_version'
+          AND name NOT LIKE 'sqlite_%'
         ",
-    )
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
 }
 
-fn apply_v1(connection: &Connection) -> Result<(), rusqlite::Error> {
+fn create_current_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
     connection.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS agent_profile_cache (
@@ -82,6 +85,7 @@ fn apply_v1(connection: &Connection) -> Result<(), rusqlite::Error> {
         CREATE TABLE IF NOT EXISTS background_agent_attempts (
             attempt_id TEXT PRIMARY KEY NOT NULL,
             background_agent_id TEXT NOT NULL,
+            prior_attempt_id TEXT,
             attempt_number INTEGER NOT NULL,
             state TEXT NOT NULL,
             started_at TEXT NOT NULL,
@@ -134,7 +138,7 @@ fn apply_v1(connection: &Connection) -> Result<(), rusqlite::Error> {
         );
 
         DELETE FROM schema_version;
-        INSERT INTO schema_version(version) VALUES (1);
+        INSERT INTO schema_version(version) VALUES (2);
         ",
     )
 }

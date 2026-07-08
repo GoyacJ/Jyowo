@@ -204,6 +204,13 @@ impl GlobalConfigStore {
         Ok(read_json_file::<SkillSelectionRecord>(&path, "skill selection")?.unwrap_or_default())
     }
 
+    pub fn load_global_skill_selection_if_present(
+        &self,
+    ) -> Result<Option<SkillSelectionRecord>, CommandErrorPayload> {
+        let path = self.layout.global_skills_file();
+        read_json_file::<SkillSelectionRecord>(&path, "skill selection")
+    }
+
     pub fn save_global_skill_selection(
         &self,
         record: &SkillSelectionRecord,

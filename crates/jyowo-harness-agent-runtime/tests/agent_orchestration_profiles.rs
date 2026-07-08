@@ -36,7 +36,8 @@ fn sample_user_profile(id: &str) -> AgentProfile {
 fn list_includes_builtin_profiles_and_user_profiles() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_workspace(&workspace);
-    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let registry = AgentProfileRegistry::new(&store);
 
     registry
@@ -52,7 +53,8 @@ fn list_includes_builtin_profiles_and_user_profiles() {
 fn save_list_delete_user_profile_roundtrip() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_workspace(&workspace);
-    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let registry = AgentProfileRegistry::new(&store);
 
     registry
@@ -79,7 +81,8 @@ fn saved_user_profile_file_is_owner_only() {
 
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_workspace(&workspace);
-    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let registry = AgentProfileRegistry::new(&store);
 
     registry
@@ -98,7 +101,8 @@ fn saved_user_profile_file_is_owner_only() {
 fn builtin_profile_delete_is_rejected() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_workspace(&workspace);
-    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let registry = AgentProfileRegistry::new(&store);
 
     let error = registry.delete("reviewer").expect_err("delete builtin");
@@ -109,7 +113,8 @@ fn builtin_profile_delete_is_rejected() {
 fn invalid_profile_file_is_quarantined() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_workspace(&workspace);
-    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let path = store.profiles_file_path();
     fs::write(&path, "{not-json").expect("write invalid profile file");
 
@@ -126,7 +131,8 @@ fn invalid_profile_file_is_quarantined() {
 fn semantically_invalid_profile_file_is_quarantined() {
     let workspace = tempdir().expect("tempdir");
     let workspace_root = canonical_workspace(&workspace);
-    let store = AgentRuntimeStore::open(&workspace_root).expect("store opens");
+    let store = AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))
+        .expect("store opens");
     let path = store.profiles_file_path();
     fs::write(
         &path,

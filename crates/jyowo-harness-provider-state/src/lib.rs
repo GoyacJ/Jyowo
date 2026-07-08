@@ -23,7 +23,6 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 const STORE_LABEL: &str = "provider-continuations.jsonl";
-const RUNTIME_DIR: &str = ".jyowo/runtime";
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -177,16 +176,6 @@ impl FileProviderContinuationStore {
             path,
             lock: Mutex::new(()),
         })
-    }
-
-    /// Open the continuation store from a workspace root, appending
-    /// `.jyowo/runtime` internally.
-    ///
-    /// This is a compatibility wrapper. Prefer `open_runtime_dir` when a
-    /// resolved runtime root is available from `RuntimeLayout`.
-    pub fn open(workspace_root: impl AsRef<Path>) -> Result<Self, ProviderContinuationStoreError> {
-        let runtime_dir = workspace_root.as_ref().join(RUNTIME_DIR);
-        Self::open_runtime_dir(runtime_dir)
     }
 
     #[cfg(not(unix))]

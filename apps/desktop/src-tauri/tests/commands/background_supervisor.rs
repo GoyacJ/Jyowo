@@ -140,7 +140,7 @@ async fn background_supervisor_rejects_live_lock_for_different_workspace_id() {
 #[tokio::test]
 async fn background_supervisor_reconnects_to_existing_live_supervisor() {
     let workspace = tempfile::tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let store = Arc::new(agent_runtime_store_for_workspace(workspace.path()).expect("store opens"));
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let manager = BackgroundAgentManager::new(
@@ -184,7 +184,7 @@ async fn background_supervisor_reconnects_to_existing_live_supervisor() {
 #[tokio::test]
 async fn background_supervisor_executes_queued_background_record() {
     let workspace = tempfile::tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let store = Arc::new(agent_runtime_store_for_workspace(workspace.path()).expect("store opens"));
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let manager = BackgroundAgentManager::new(
@@ -261,7 +261,7 @@ async fn background_supervisor_executes_queued_background_record() {
 async fn background_supervisor_wake_executes_queued_background_record_without_waiting_for_heartbeat(
 ) {
     let workspace = tempfile::tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let store = Arc::new(agent_runtime_store_for_workspace(workspace.path()).expect("store opens"));
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let manager = BackgroundAgentManager::new(
@@ -363,7 +363,7 @@ async fn background_supervisor_wake_executes_queued_background_record_without_wa
 #[tokio::test]
 async fn background_supervisor_invalid_queued_payload_fails_record() {
     let workspace = tempfile::tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let store = Arc::new(agent_runtime_store_for_workspace(workspace.path()).expect("store opens"));
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let manager = BackgroundAgentManager::new(
@@ -433,7 +433,7 @@ async fn background_supervisor_invalid_queued_payload_fails_record() {
 #[tokio::test]
 async fn background_supervisor_rejects_legacy_start_run_source() {
     let workspace = tempfile::tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let store = Arc::new(agent_runtime_store_for_workspace(workspace.path()).expect("store opens"));
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let manager = BackgroundAgentManager::new(
@@ -506,7 +506,7 @@ async fn background_supervisor_rejects_legacy_start_run_source() {
 #[tokio::test]
 async fn background_supervisor_startup_marks_agents_interrupted_after_stale_heartbeat() {
     let workspace = tempfile::tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let store = Arc::new(agent_runtime_store_for_workspace(workspace.path()).expect("store opens"));
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let manager = BackgroundAgentManager::new(
@@ -604,7 +604,7 @@ async fn background_supervisor_startup_marks_agents_interrupted_after_stale_hear
 #[tokio::test]
 async fn background_supervisor_marks_agents_interrupted_when_fresh_lock_cannot_reconnect() {
     let workspace = tempfile::tempdir().expect("tempdir");
-    let store = Arc::new(AgentRuntimeStore::open(workspace.path()).expect("store opens"));
+    let store = Arc::new(agent_runtime_store_for_workspace(workspace.path()).expect("store opens"));
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let conversation_id = SessionId::new();
     let manager = BackgroundAgentManager::new(

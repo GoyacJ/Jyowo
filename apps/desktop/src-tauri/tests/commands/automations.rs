@@ -416,8 +416,8 @@ fn get_execution_settings_defaults_to_standard_mode() {
 }
 
 #[test]
-fn get_execution_settings_reads_legacy_permission_only_record() {
-    let workspace = unique_workspace("execution-settings-legacy-record");
+fn get_execution_settings_ignores_runtime_record() {
+    let workspace = unique_workspace("execution-settings-ignore-runtime-record");
     std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
     let state = DesktopRuntimeState::with_workspace_for_test(workspace)
         .expect("runtime state should initialize");
@@ -429,20 +429,15 @@ fn get_execution_settings_reads_legacy_permission_only_record() {
     std::fs::create_dir_all(settings_path.parent().unwrap())
         .expect("settings directory should exist");
     std::fs::write(&settings_path, r#"{"permission_mode":"auto"}"#)
-        .expect("legacy execution settings should write");
+        .expect("runtime execution settings should write");
 
     let settings = get_execution_settings_with_store(
         &DesktopExecutionSettingsStore::new(workspace.to_path_buf()),
         None,
     )
-    .expect("legacy execution settings should load");
+    .expect("execution settings should load");
 
-    let expected_permission_mode = if cfg!(feature = "auto-mode") {
-        PermissionMode::Auto
-    } else {
-        PermissionMode::Default
-    };
-    assert_eq!(settings.permission_mode, expected_permission_mode);
+    assert_eq!(settings.permission_mode, PermissionMode::Default);
     assert!(!settings.agent_capabilities.subagents_enabled);
     assert!(!settings.agent_capabilities.agent_teams_enabled);
     assert!(!settings.agent_capabilities.background_agents_enabled);

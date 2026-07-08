@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
 
-use crate::local::{migrations, schema};
+use crate::local::{schema, schema_init};
 
 /// Job identifier.
 pub type JobId = String;
@@ -245,7 +245,7 @@ fn initialize_connection(conn: &Connection) -> Result<(), String> {
         conn.execute_batch(pragma)
             .map_err(|e| format!("set sqlite pragma: {e}"))?;
     }
-    migrations::run(conn).map_err(|e| format!("run migrations: {e}"))
+    schema_init::initialize(conn).map_err(|e| format!("initialize schema: {e}"))
 }
 
 fn find_job_by_idempotency_key(

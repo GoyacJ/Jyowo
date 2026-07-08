@@ -119,7 +119,12 @@ impl MiniMaxReplayHarness {
         let tenant_id = TenantId::SINGLE;
         let session_id = SessionId::new();
         let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
-        let store = Arc::new(FileProviderContinuationStore::open(workspace.path()).unwrap());
+        let store = Arc::new(
+            FileProviderContinuationStore::open_runtime_dir(
+                workspace.path().join(".jyowo").join("runtime"),
+            )
+            .unwrap(),
+        );
         let model = Arc::new(ScriptedMiniMaxProvider::new(responses));
         let tool_calls = Arc::new(AtomicUsize::new(0));
         let tools = tool_pool(

@@ -123,6 +123,7 @@ impl Tool for CaptureProjectWorkspaceTool {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
+            ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
 

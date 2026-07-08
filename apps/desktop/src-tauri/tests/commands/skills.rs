@@ -49,6 +49,54 @@ async fn import_skill_persists_enabled_skill_without_exposing_source_path() {
 }
 
 #[tokio::test]
+async fn missing_skill_selection_uses_current_index_enabled_state() {
+    let workspace = unique_workspace("skill-missing-selection-current-index");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let skill_id = "current-skill";
+    let package_root = workspace.join(".jyowo/skills/packages");
+    write_skill_package(
+        &package_root,
+        skill_id,
+        "current-skill",
+        "Current package skill",
+        None,
+    );
+    let index_path = workspace.join(".jyowo/skills/index.json");
+    std::fs::create_dir_all(index_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &index_path,
+        serde_json::to_vec_pretty(&vec![SkillStoreRecord {
+            id: skill_id.to_owned(),
+            name: "current-skill".to_owned(),
+            description: "Current package skill".to_owned(),
+            enabled: true,
+            content_hash: "test-hash".to_owned(),
+            package_dir: skill_id.to_owned(),
+            file_name: String::new(),
+            imported_at: now().to_rfc3339(),
+            updated_at: now().to_rfc3339(),
+            tags: Vec::new(),
+            category: None,
+            last_validation_error: None,
+            origin: None,
+        }])
+        .unwrap(),
+    )
+    .unwrap();
+
+    let state = runtime_state_for_workspace(workspace.clone())
+        .await
+        .unwrap();
+    let listed = list_skills_with_runtime_state(&state).await.unwrap();
+
+    assert!(!workspace.join(".jyowo/config/skills.json").exists());
+    assert!(listed
+        .skills
+        .iter()
+        .any(|skill| skill.id == skill_id && skill.enabled && skill.status == "ready"));
+}
+
+#[tokio::test]
 async fn import_skill_rejects_single_markdown_files() {
     let workspace = unique_workspace("skill-import-reject-file");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -212,6 +260,7 @@ async fn enabling_skill_rejects_runtime_duplicate_name() {
         origin: None,
     };
     let index_path = workspace.join(".jyowo/skills/index.json");
+    std::fs::create_dir_all(index_path.parent().unwrap()).unwrap();
     std::fs::write(
         &index_path,
         serde_json::to_vec_pretty(&vec![record]).unwrap(),
@@ -239,11 +288,12 @@ async fn enabling_skill_rejects_runtime_duplicate_name() {
         .join(disabled_id)
         .join("SKILL.md")
         .exists());
-    let selection: harness_contracts::SkillSelectionRecord = serde_json::from_str(
-        &std::fs::read_to_string(workspace.join(".jyowo/config/skills.json")).unwrap(),
-    )
-    .unwrap();
-    assert!(!selection.enabled.iter().any(|id| id == disabled_id));
+    let selection_path = workspace.join(".jyowo/config/skills.json");
+    if selection_path.exists() {
+        let selection: harness_contracts::SkillSelectionRecord =
+            serde_json::from_str(&std::fs::read_to_string(selection_path).unwrap()).unwrap();
+        assert!(!selection.enabled.iter().any(|id| id == disabled_id));
+    }
 }
 
 #[tokio::test]
@@ -339,103 +389,6 @@ async fn delete_skill_keeps_record_and_package_when_selection_write_fails() {
     )
     .unwrap();
     assert!(records.iter().any(|record| record.id == imported.skill.id));
-}
-
-#[tokio::test]
-async fn startup_skill_migration_keeps_legacy_store_when_selection_write_fails() {
-    let workspace = unique_workspace("skill-migration-selection-fails");
-    let old_skills = workspace.join(".jyowo/runtime/skills");
-    let old_package = old_skills.join("enabled/legacy-skill");
-    std::fs::create_dir_all(&old_package).unwrap();
-    std::fs::write(
-        old_package.join("SKILL.md"),
-        skill_markdown("legacy-skill", "Legacy skill"),
-    )
-    .unwrap();
-    let records = vec![SkillStoreRecord {
-        id: "legacy-skill".to_owned(),
-        name: "Legacy Skill".to_owned(),
-        description: "Migrated from runtime".to_owned(),
-        enabled: true,
-        content_hash: "abc".to_owned(),
-        package_dir: "legacy-skill".to_owned(),
-        file_name: String::new(),
-        imported_at: "2024-01-01T00:00:00Z".to_owned(),
-        updated_at: "2024-01-01T00:00:00Z".to_owned(),
-        tags: Vec::new(),
-        category: None,
-        last_validation_error: None,
-        origin: None,
-    }];
-    std::fs::write(
-        old_skills.join("index.json"),
-        serde_json::to_vec_pretty(&records).unwrap(),
-    )
-    .unwrap();
-    let selection_path = workspace.join(".jyowo/config/skills.json");
-    std::fs::create_dir_all(selection_path.parent().unwrap()).unwrap();
-    std::fs::create_dir(&selection_path).unwrap();
-
-    let error = match runtime_state_for_workspace(workspace.clone()).await {
-        Ok(_) => panic!("startup migration should fail"),
-        Err(error) => error,
-    };
-
-    assert!(error.code.starts_with("RUNTIME_"));
-    assert!(old_skills.exists());
-    assert!(old_package.join("SKILL.md").exists());
-    assert!(!workspace.join(".jyowo/skills/index.json").exists());
-    assert!(!workspace
-        .join(".jyowo/skills/packages/legacy-skill/SKILL.md")
-        .exists());
-}
-
-#[tokio::test]
-async fn startup_plugin_migration_keeps_legacy_store_when_selection_write_fails() {
-    let workspace = unique_workspace("plugin-migration-selection-fails");
-    let old_plugins = workspace.join(".jyowo/runtime/plugins");
-    let old_package = old_plugins.join("user/legacy-plugin");
-    std::fs::create_dir_all(&old_package).unwrap();
-    std::fs::write(old_package.join("plugin.json"), "{}").unwrap();
-    std::fs::write(
-        old_plugins.join("index.json"),
-        serde_json::to_vec_pretty(&json!({
-            "allowProjectPlugins": true,
-            "records": [
-                {
-                    "pluginId": "legacy-plugin",
-                    "name": "Legacy Plugin",
-                    "description": "Migrated from runtime",
-                    "enabled": true,
-                    "packageDir": "legacy-plugin",
-                    "sourcePath": "",
-                    "contentHash": "abc",
-                    "importedAt": "2024-01-01T00:00:00Z",
-                    "updatedAt": "2024-01-01T00:00:00Z",
-                    "config": {},
-                    "lastValidationError": null
-                }
-            ]
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    let selection_path = workspace.join(".jyowo/config/plugins.json");
-    std::fs::create_dir_all(selection_path.parent().unwrap()).unwrap();
-    std::fs::create_dir(&selection_path).unwrap();
-
-    let error = match runtime_state_for_workspace(workspace.clone()).await {
-        Ok(_) => panic!("startup migration should fail"),
-        Err(error) => error,
-    };
-
-    assert!(error.code.starts_with("RUNTIME_"));
-    assert!(old_plugins.exists());
-    assert!(old_package.join("plugin.json").exists());
-    assert!(!workspace.join(".jyowo/plugins/index.json").exists());
-    assert!(!workspace
-        .join(".jyowo/plugins/packages/legacy-plugin/plugin.json")
-        .exists());
 }
 
 #[tokio::test]
@@ -581,7 +534,8 @@ fn desktop_skill_store_rejects_symlink_index_file() {
     std::fs::create_dir_all(&external).unwrap();
     std::fs::write(external.join("index.json"), "[]").unwrap();
     std::os::unix::fs::symlink(external.join("index.json"), &index_path).unwrap();
-    let store = DesktopSkillStore::new(workspace);
+    let store =
+        DesktopSkillStore::project(test_storage_layout_for_workspace(&workspace), workspace);
 
     let error = store.load_records().unwrap_err();
 

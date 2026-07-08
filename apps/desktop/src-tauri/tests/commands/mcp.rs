@@ -27,8 +27,8 @@ async fn save_mcp_server_payload_rejects_invalid_config_fail_closed() {
 }
 
 #[test]
-fn mcp_server_config_record_defaults_legacy_stdio_records_to_enabled() {
-    let record = serde_json::from_value::<McpServerConfigRecord>(json!({
+fn mcp_server_config_record_rejects_missing_enabled() {
+    let error = serde_json::from_value::<McpServerConfigRecord>(json!({
         "displayName": "Workspace GitHub",
         "id": "github",
         "scope": "global",
@@ -38,10 +38,9 @@ fn mcp_server_config_record_defaults_legacy_stdio_records_to_enabled() {
             "args": ["server.js"]
         }
     }))
-    .unwrap();
+    .unwrap_err();
 
-    assert!(record.enabled);
-    assert_eq!(record.display_name, "Workspace GitHub");
+    assert!(error.to_string().contains("missing field `enabled`"));
 }
 
 #[tokio::test]

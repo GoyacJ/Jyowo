@@ -494,7 +494,7 @@ async fn fts_triggers_update_indexed_text_after_update() {
 }
 
 #[tokio::test]
-async fn migration_creates_fts_sync_triggers() {
+async fn schema_initialization_creates_fts_sync_triggers() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("test.sqlite3");
     let provider = open_provider_at(&db_path);
@@ -516,10 +516,9 @@ async fn migration_creates_fts_sync_triggers() {
 }
 
 #[tokio::test]
-async fn migration_repairs_old_database_missing_fts_triggers() {
+async fn legacy_schema_version_is_rejected_instead_of_repaired() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("test.sqlite3");
-    let record = make_record(MemoryId::new(), TenantId::SINGLE, "legacy indexed content");
 
     {
         let db = rusqlite::Connection::open(&db_path).expect("open db");
@@ -576,47 +575,15 @@ async fn migration_repairs_old_database_missing_fts_triggers() {
             ",
         )
         .expect("old schema");
-        db.execute(
-            "INSERT INTO memory_records (
-                id, tenant_id, kind, visibility, content, metadata_json, content_hash,
-                source_kind, evidence_json, confidence, access_count, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            rusqlite::params![
-                record.id.to_string(),
-                record.tenant_id.to_string(),
-                "project_fact",
-                serde_json::to_string(&record.visibility).expect("visibility json"),
-                record.content,
-                serde_json::to_string(&record.metadata).expect("metadata json"),
-                blake3::hash(record.content.as_bytes()).to_hex().to_string(),
-                "user_input",
-                "{}",
-                record.metadata.confidence,
-                record.metadata.access_count,
-                record.created_at.to_rfc3339(),
-                record.updated_at.to_rfc3339(),
-            ],
-        )
-        .expect("insert old record");
     }
 
-    let provider = open_provider_at(&db_path);
-    let results = provider
-        .recall(make_query(TenantId::SINGLE, "legacy"))
-        .await
-        .expect("recall");
-    assert!(results.iter().any(|candidate| candidate.id == record.id));
-    drop(provider);
-
-    let db = rusqlite::Connection::open(&db_path).expect("reopen db");
-    let trigger_count: i64 = db
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'memory_records' AND name LIKE 'memory_records_fts_%'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("trigger count");
-    assert_eq!(trigger_count, 3);
+    let error = match LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE) {
+        Ok(_) => panic!("old schema should be rejected"),
+        Err(error) => error,
+    };
+    assert!(error
+        .to_string()
+        .contains("unsupported memory schema version 2"));
 }
 
 // ── Tombstone / deletion FTS cleanup ──
@@ -721,19 +688,17 @@ async fn tombstone_rejects_regenerating_from_same_evidence() {
     assert!(matches!(record_err, MemoryError::NotFound(_)));
 }
 
-// ── Migrations ──
+// ── Schema initialization ──
 
 #[tokio::test]
-async fn migrations_create_schema_version_and_tables() {
+async fn schema_initialization_creates_schema_version_and_tables() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("test.sqlite3");
 
-    // Opening should trigger migrations
     let provider =
         LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE).expect("open");
     let _ = provider; // hold reference to keep DB alive
 
-    // Verify the schema_version table exists
     let db = rusqlite::Connection::open(&db_path).expect("open for verification");
     let version: i64 = db
         .query_row(
@@ -742,9 +707,8 @@ async fn migrations_create_schema_version_and_tables() {
             |row| row.get(0),
         )
         .expect("schema_version should exist");
-    assert!(version > 0, "should have at least one migration");
+    assert_eq!(version, 4);
 
-    // Verify key tables exist
     let table_count: i64 = db
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('memory_records', 'memory_embeddings', 'memory_tombstones', 'memory_records_fts')",

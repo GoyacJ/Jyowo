@@ -21,9 +21,9 @@ use tokio::sync::Mutex;
 use crate::local::embedding::{
     cosine_similarity, deserialize_vector_le, serialize_vector_le, MemoryEmbeddingProvider,
 };
-use crate::local::migrations;
 use crate::local::ranking::{self, RankScore};
 use crate::local::schema;
+use crate::local::schema_init;
 use crate::{
     content_preview, visibility_matches, MemoryKindFilter, MemoryLifecycle, MemoryListScope,
     MemoryMetadata, MemoryQuery, MemoryRecord, MemoryStore, MemorySummary, MemoryVisibilityFilter,
@@ -65,7 +65,7 @@ pub struct LocalMemoryProvider {
 impl LocalMemoryProvider {
     /// Open a local memory provider at the given SQLite path.
     ///
-    /// Runs refinery migrations on open. If the database file does not exist,
+    /// Creates the current schema on open. If the database file does not exist,
     /// it will be created.
     pub fn open(db_path: &str, tenant_id: TenantId) -> Result<Self, MemoryError> {
         Self::open_with_options(db_path, tenant_id, LocalMemoryOptions::default())
@@ -100,9 +100,8 @@ impl LocalMemoryProvider {
         ensure_wal_journal_mode(&conn)
             .map_err(|e| MemoryError::Message(format!("failed to set sqlite journal mode: {e}")))?;
 
-        // Run migrations
-        retry_sqlite_init(|| migrations::run(&conn))
-            .map_err(|e| MemoryError::Message(format!("migration failed: {e}")))?;
+        retry_sqlite_init(|| schema_init::initialize(&conn))
+            .map_err(|e| MemoryError::Message(format!("schema initialization failed: {e}")))?;
 
         Ok(Self {
             conn: Mutex::new(conn),

@@ -97,10 +97,6 @@ impl<'store> AgentProfileRegistry<'store> {
     }
 
     /// Load user profiles from an explicit file path.
-    ///
-    /// This is used after migration to read profiles from the global config
-    /// location (`~/.jyowo/config/agent-profiles.json`) instead of the
-    /// legacy runtime directory.
     pub fn load_user_profiles_from_path(
         path: &Path,
     ) -> Result<Vec<AgentProfile>, AgentProfileRegistryError> {

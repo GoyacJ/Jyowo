@@ -9,13 +9,12 @@ use std::sync::Mutex;
 
 use chrono::Utc;
 use harness_contracts::{
-    ContentHash, MemoryCandidate, MemoryCandidateId, MemoryCandidateOperation,
-    MemoryCandidateState, MemoryEvidence, MemoryEvidenceOrigin, MemoryKind, MemoryMetadata,
-    MemoryRecordDraft, MemorySource, MemoryVisibility, TenantId,
+    MemoryCandidate, MemoryCandidateId, MemoryCandidateOperation, MemoryCandidateState,
+    MemoryEvidence, MemoryRecordDraft, TenantId,
 };
 use rusqlite::Connection;
 
-use crate::local::{migrations, schema};
+use crate::local::{schema, schema_init};
 
 /// SQLite-backed candidate inbox for a single tenant.
 #[derive(Debug)]
@@ -144,7 +143,7 @@ impl MemoryInbox {
         list_candidates(&conn, self.tenant_id, state)
     }
 
-    /// Import a candidate with a specific state (used for DREAMS.md migration).
+    /// Import a candidate as a proposed inbox item.
     pub fn import(
         &self,
         draft: MemoryRecordDraft,
@@ -233,7 +232,7 @@ fn initialize_connection(conn: &Connection) -> Result<(), String> {
         conn.execute_batch(pragma)
             .map_err(|e| format!("set sqlite pragma: {e}"))?;
     }
-    migrations::run(conn).map_err(|e| format!("run migrations: {e}"))
+    schema_init::initialize(conn).map_err(|e| format!("initialize schema: {e}"))
 }
 
 fn upsert_candidate(conn: &Connection, candidate: &MemoryCandidate) -> Result<(), String> {
@@ -338,49 +337,4 @@ fn state_to_db(state: MemoryCandidateState) -> String {
         .unwrap_or_else(|_| "\"proposed\"".to_owned())
         .trim_matches('"')
         .to_owned()
-}
-
-/// Migrate content from an old DREAMS.md file into inbox candidates.
-///
-/// Each paragraph becomes a separate candidate with source `Imported`.
-pub fn migrate_dreams_to_inbox(
-    inbox: &MemoryInbox,
-    dreams_content: &str,
-) -> Result<Vec<MemoryCandidate>, String> {
-    let mut imported = Vec::new();
-    // Split by double newlines (paragraph boundaries)
-    for paragraph in dreams_content.split("\n\n") {
-        let trimmed = paragraph.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let draft = MemoryRecordDraft {
-            kind: MemoryKind::AgentSelfNote,
-            visibility: MemoryVisibility::User {
-                user_id: "imported".to_owned(),
-            },
-            content: trimmed.to_owned(),
-            metadata: MemoryMetadata {
-                ttl: None,
-                tags: vec!["dreams-migration".to_owned()],
-                source_trust: 0.3,
-            },
-            expires_at: None,
-        };
-        let evidence = MemoryEvidence {
-            source: MemorySource::Imported,
-            origin: MemoryEvidenceOrigin::Imported {
-                importer: "dreams-migration".to_owned(),
-                import_id: MemoryCandidateId::new().to_string(),
-            },
-            content_hash: ContentHash([0u8; 32]),
-            session_id: None,
-            run_id: None,
-            message_id: None,
-            tool_use_id: None,
-        };
-        let candidate = inbox.propose(draft, evidence)?;
-        imported.push(candidate);
-    }
-    Ok(imported)
 }

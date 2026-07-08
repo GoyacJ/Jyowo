@@ -89,8 +89,8 @@ fn get_execution_settings_defaults_to_standard_mode() {
 }
 
 #[test]
-fn get_execution_settings_reads_legacy_permission_only_record() {
-    let workspace = unique_workspace("execution-settings-legacy-record");
+fn get_execution_settings_ignores_legacy_runtime_record() {
+    let workspace = unique_workspace("execution-settings-ignore-legacy-runtime");
     std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
     let state = DesktopRuntimeState::with_workspace_for_test(workspace)
         .expect("runtime state should initialize");
@@ -108,27 +108,23 @@ fn get_execution_settings_reads_legacy_permission_only_record() {
         &DesktopExecutionSettingsStore::new(workspace.to_path_buf()),
         None,
     )
-    .expect("legacy execution settings should load");
+    .expect("execution settings should load");
 
-    let expected_permission_mode = if cfg!(feature = "auto-mode") {
-        PermissionMode::Auto
-    } else {
-        PermissionMode::Default
-    };
-    assert_eq!(settings.permission_mode, expected_permission_mode);
+    assert_eq!(settings.permission_mode, PermissionMode::Default);
     assert!(!settings.agent_capabilities.subagents_enabled);
     assert!(!settings.agent_capabilities.agent_teams_enabled);
     assert!(!settings.agent_capabilities.background_agents_enabled);
+    assert!(settings_path.exists());
 }
 
 #[test]
 fn get_execution_settings_normalizes_unavailable_auto_default() {
     let workspace = unique_workspace("execution-settings-stale-auto");
-    let settings_dir = workspace.join(".jyowo").join("runtime");
+    let settings_dir = workspace.join(".jyowo").join("config");
     std::fs::create_dir_all(&settings_dir).expect("settings directory should exist");
     std::fs::write(
-        settings_dir.join("execution-settings.json"),
-        br#"{"permission_mode":"auto"}"#,
+        settings_dir.join("execution-overrides.json"),
+        br#"{"permissionMode":"auto"}"#,
     )
     .expect("stale settings file should be written");
     let state = DesktopRuntimeState::with_workspace_for_test(workspace)
@@ -349,7 +345,7 @@ fn set_execution_settings_rejects_invalid_context_compression_trigger_ratio() {
 }
 
 #[test]
-fn invalid_execution_settings_file_resets_agent_capabilities() {
+fn invalid_execution_settings_file_is_rejected() {
     let workspace = unique_workspace("execution-settings-invalid-reset");
     std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
     let state = DesktopRuntimeState::with_workspace_for_test(workspace)
@@ -357,8 +353,8 @@ fn invalid_execution_settings_file_resets_agent_capabilities() {
     let workspace = state.workspace_root().to_path_buf();
     let settings_path = workspace
         .join(".jyowo")
-        .join("runtime")
-        .join("execution-settings.json");
+        .join("config")
+        .join("execution-overrides.json");
     std::fs::create_dir_all(settings_path.parent().unwrap())
         .expect("settings directory should exist");
     std::fs::write(
@@ -367,20 +363,14 @@ fn invalid_execution_settings_file_resets_agent_capabilities() {
     )
     .expect("invalid execution settings should write");
 
-    let settings = get_execution_settings_with_store(
+    let error = get_execution_settings_with_store(
         &DesktopExecutionSettingsStore::new(workspace.to_path_buf()),
         None,
     )
-    .expect("invalid execution settings should reset");
+    .expect_err("old snake_case settings should be rejected");
 
-    assert_eq!(settings.permission_mode, PermissionMode::Default);
-    assert!(!settings.agent_capabilities.subagents_enabled);
-    assert!(!settings.agent_capabilities.agent_teams_enabled);
-    assert!(!settings.agent_capabilities.background_agents_enabled);
-    assert!(
-        settings_path.exists(),
-        "production execution settings load must not read or delete legacy runtime file"
-    );
+    assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+    assert!(error.message.contains("execution settings"));
 }
 
 #[test]
@@ -643,111 +633,4 @@ fn resolve_effective_execution_settings_missing_everything_falls_back_to_contrac
     assert_eq!(effective.permission_mode, PermissionMode::Default);
     assert_eq!(effective.tool_profile, ToolProfile::Full);
     assert!(!effective.subagents_enabled);
-}
-
-// ── Migration ───────────────────────────────────────────────────────
-
-#[test]
-fn migrate_execution_settings_moves_old_snake_case_file() {
-    use serde_json::Value;
-
-    let workspace = unique_workspace("execution-migration");
-    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
-    let workspace = workspace.canonicalize().expect("canonical workspace");
-
-    // Create old runtime execution-settings.json with snake_case format.
-    let old_dir = workspace.join(".jyowo").join("runtime");
-    std::fs::create_dir_all(&old_dir).expect("create old runtime dir");
-    let old_path = old_dir.join("execution-settings.json");
-    std::fs::write(
-        &old_path,
-        r#"{"permission_mode":"auto","tool_profile":"coding","context_compression_trigger_ratio":0.72,"subagents_enabled":true,"agent_teams_enabled":false,"background_agents_enabled":false}"#,
-    )
-    .expect("write old settings");
-
-    let result = migrate_execution_settings(&workspace).expect("migration should succeed");
-    assert!(
-        matches!(result, MigrationResult::Migrated),
-        "expected Migrated, got {result:?}"
-    );
-
-    // Old file should still exist (migration framework does not delete source).
-    // New file should exist with camelCase format.
-    let new_path = workspace
-        .join(".jyowo")
-        .join("config")
-        .join("execution-overrides.json");
-    assert!(new_path.exists(), "new file should exist");
-
-    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&new_path).expect("read new"))
-        .expect("parse new");
-    assert_eq!(saved["permissionMode"], "auto");
-    assert_eq!(saved["toolProfile"], "coding");
-    assert!((saved["contextCompressionTriggerRatio"].as_f64().unwrap() - 0.72).abs() < 0.001);
-    assert_eq!(saved["subagentsEnabled"], true);
-}
-
-#[test]
-fn migrate_execution_settings_returns_not_needed_when_old_file_missing() {
-    let workspace = unique_workspace("execution-migration-not-needed");
-    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
-    let workspace = workspace.canonicalize().expect("canonical workspace");
-
-    let result = migrate_execution_settings(&workspace).expect("migration should succeed");
-    assert!(
-        matches!(result, MigrationResult::NotNeeded),
-        "expected NotNeeded, got {result:?}"
-    );
-}
-
-#[test]
-fn migrate_execution_settings_does_not_seed_global_defaults() {
-    // The old workspace execution-settings.json should migrate to project
-    // overrides, NOT global defaults.
-    let workspace = unique_workspace("execution-migration-no-global-seed");
-    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
-    let workspace = workspace.canonicalize().expect("canonical workspace");
-
-    let old_dir = workspace.join(".jyowo").join("runtime");
-    std::fs::create_dir_all(&old_dir).expect("create old runtime dir");
-    std::fs::write(
-        old_dir.join("execution-settings.json"),
-        r#"{"permission_mode":"bypass_permissions","tool_profile":"full","context_compression_trigger_ratio":0.8,"subagents_enabled":false,"agent_teams_enabled":false,"background_agents_enabled":false}"#,
-    )
-    .expect("write old settings");
-
-    let result = migrate_execution_settings(&workspace).expect("migration should succeed");
-    assert!(matches!(result, MigrationResult::Migrated));
-
-    // Project config overrides should exist.
-    let project_path = workspace
-        .join(".jyowo")
-        .join("config")
-        .join("execution-overrides.json");
-    assert!(project_path.exists(), "project overrides file must exist");
-
-    // Global execution-defaults.json must NOT be created from old workspace data.
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".jyowo");
-    let global_path = home.join("config").join("execution-defaults.json");
-    // Since HOME maps to the real user home in tests that don't override it,
-    // this assertion verifies we're not writing to a global-defaults path
-    // that matches the test workspace (they are separate).
-    // The migration target is the project config path, not global.
-    let new_path = workspace
-        .join(".jyowo")
-        .join("config")
-        .join("execution-overrides.json");
-    assert_ne!(
-        new_path, global_path,
-        "migration target must not be the global execution defaults file"
-    );
-    // The project overrides path should NOT be under ~/.jyowo/config/
-    // (it's under the workspace).
-    assert!(
-        !new_path.starts_with(&home),
-        "migration target is project config, not global config"
-    );
 }
