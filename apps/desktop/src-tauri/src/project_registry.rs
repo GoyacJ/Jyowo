@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -31,16 +30,11 @@ pub struct ProjectRegistry {
 impl ProjectRegistry {
     pub fn load() -> Result<Self, CommandErrorPayload> {
         let path = registry_file_path()?;
-        let data = if path.exists() {
-            let contents = fs::read_to_string(&path).map_err(|error| {
-                registry_io_failed(format!("failed to read project registry: {error}"))
-            })?;
-            serde_json::from_str(&contents).map_err(|error| {
-                registry_io_failed(format!("failed to parse project registry: {error}"))
-            })?
-        } else {
-            ProjectRegistryFile::default()
-        };
+        let data = crate::commands::stores::read_json_file::<ProjectRegistryFile>(
+            &path,
+            "project registry",
+        )?
+        .unwrap_or_default();
 
         Ok(Self {
             path,
@@ -154,23 +148,17 @@ impl ProjectRegistry {
 
     fn persist(&self) -> Result<(), CommandErrorPayload> {
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                registry_io_failed(format!(
-                    "failed to create project registry directory: {error}"
-                ))
-            })?;
+            crate::commands::stores::ensure_app_dir_no_symlink(
+                parent,
+                "project registry directory",
+            )?;
         }
 
         let data = self
             .data
             .lock()
             .expect("project registry lock should not be poisoned");
-        let serialized = serde_json::to_string_pretty(&*data).map_err(|error| {
-            registry_io_failed(format!("failed to serialize project registry: {error}"))
-        })?;
-        fs::write(&self.path, serialized).map_err(|error| {
-            registry_io_failed(format!("failed to write project registry: {error}"))
-        })
+        crate::commands::stores::write_json_file_atomic(&self.path, "project registry", &*data)
     }
 }
 
@@ -217,7 +205,32 @@ fn registry_not_found(path: String) -> CommandErrorPayload {
 mod tests {
     use super::*;
     use std::env;
+    use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct HomeEnvGuard {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl HomeEnvGuard {
+        fn set(home: &Path) -> Self {
+            let previous = std::env::var_os("HOME");
+            std::env::set_var("HOME", home.as_os_str());
+            Self { previous }
+        }
+    }
+
+    impl Drop for HomeEnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var("HOME", previous);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
+    }
 
     #[test]
     fn upsert_and_activate_persists_project_record() {
@@ -227,6 +240,7 @@ mod tests {
             .as_nanos();
         let temp_dir = env::temp_dir().join(format!("jyowo-project-registry-{suffix}"));
         fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+        let temp_dir = temp_dir.canonicalize().expect("canonical temp dir");
         let registry_path = temp_dir.join("projects.json");
         let registry = ProjectRegistry {
             path: registry_path.clone(),
@@ -254,6 +268,8 @@ mod tests {
             .expect("clock should be valid")
             .as_nanos();
         let temp_dir = env::temp_dir().join(format!("jyowo-project-registry-remove-{suffix}"));
+        fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+        let temp_dir = temp_dir.canonicalize().expect("canonical temp dir");
         let workspace_root = temp_dir.join("workspace");
         fs::create_dir_all(&workspace_root).expect("workspace should be created");
         let registry_path = temp_dir.join("projects.json");
@@ -274,6 +290,54 @@ mod tests {
         assert!(registry.list_projects().is_empty());
         assert_eq!(registry.active_path(), None);
 
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_rejects_symlink_registry_file() {
+        let _lock = HOME_ENV_LOCK.lock().expect("home env lock");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let home = temp_dir.path().join("home");
+        let external = temp_dir.path().join("external-projects.json");
+        fs::create_dir_all(home.join(".jyowo")).expect("home config dir");
+        fs::write(&external, br#"{"projects":[],"activePath":null}"#).expect("external file");
+        std::os::unix::fs::symlink(&external, home.join(".jyowo").join("projects.json"))
+            .expect("registry symlink");
+        let _home_guard = HomeEnvGuard::set(&home);
+
+        let error = match ProjectRegistry::load() {
+            Ok(_) => panic!("symlink registry must fail"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+        assert!(error.message.contains("symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persist_rejects_symlink_parent_directory() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        let temp_dir = env::temp_dir().join(format!("jyowo-project-registry-symlink-{suffix}"));
+        let external = temp_dir.join("external");
+        let link = temp_dir.join("link");
+        fs::create_dir_all(&external).expect("external dir");
+        std::os::unix::fs::symlink(&external, &link).expect("symlink");
+        let registry = ProjectRegistry {
+            path: link.join("projects.json"),
+            data: Arc::new(Mutex::new(ProjectRegistryFile::default())),
+        };
+
+        let error = registry
+            .upsert_and_activate(&temp_dir)
+            .expect_err("symlink parent must fail");
+
+        assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+        assert!(!external.join("projects.json").exists());
         let _ = fs::remove_dir_all(temp_dir);
     }
 }

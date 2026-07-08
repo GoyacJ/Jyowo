@@ -25,7 +25,7 @@ type HealthFilter = 'all' | 'online' | 'failing' | 'never_checked' | 'unavailabl
 export function ModelSettingsPage() {
   const { t } = useTranslation('settings')
   const activeProjectPathQuery = useActiveProjectPath()
-  const hasProjectScope = activeProjectPathQuery.data != null
+  const routeHasProjectScope = activeProjectPathQuery.data != null
   const {
     isAnySetDefaultPending,
     isProbePending,
@@ -99,13 +99,17 @@ export function ModelSettingsPage() {
   const providerOptions = buildProviderOptions(pageState.viewModel.rows)
   const detailsRow =
     pageState.viewModel.rows.find((row) => row.configId === detailsConfigId) ?? null
+  const scopeLabelKey =
+    pageState.viewModel.selectionScope === 'project'
+      ? 'scope.projectOverrides'
+      : 'scope.globalDefaults'
 
   return (
     <section className="space-y-4" data-testid="model-settings-page">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="font-semibold text-xl">{t('models.title')}</h1>
-          <Badge variant="outline">{t('scope.globalDefaults')}</Badge>
+          <Badge variant="outline">{t(scopeLabelKey)}</Badge>
         </div>
         <Button onClick={() => setCreateConfigOpen(true)} type="button">
           <Plus aria-hidden="true" className="size-4" data-icon />
@@ -213,7 +217,7 @@ export function ModelSettingsPage() {
 
         <TabsContent value="capabilityRoutes">
           <CapabilityRoutesPanel
-            hasProjectScope={hasProjectScope}
+            hasProjectScope={routeHasProjectScope}
             onConfigure={setRouteEditorRoute}
             routeSection={pageState.viewModel.capabilityRoutes}
           />

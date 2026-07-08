@@ -10,6 +10,7 @@ import App from './App'
 
 const emptyProviderSettingsList = {
   defaultConfigId: null,
+  selectionScope: 'global' as const,
   configs: [],
 }
 

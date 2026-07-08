@@ -200,3 +200,76 @@ async fn memory_commands_list_inspect_update_delete_and_export_visible_items() {
     let list_after_delete = list_memory_items_with_runtime_state(&state).await.unwrap();
     assert!(list_after_delete.items.is_empty());
 }
+
+#[tokio::test]
+async fn no_workspace_memory_export_uses_global_runtime_exports() {
+    let _lock = HOME_ENV_LOCK.lock().unwrap();
+    let home = unique_workspace("no-workspace-memory-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let _home_guard = EnvVarGuard::set(HOME_ENV, home.as_os_str());
+    let session_id = SessionId::new();
+    let provider = Arc::new(InMemoryMemoryProvider::new("test"));
+    let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
+        default_timeout: Some(Duration::from_secs(5)),
+        heartbeat_interval: None,
+        max_pending: 16,
+    }));
+    let runtime_root = home
+        .join(".jyowo")
+        .join("runtime")
+        .join("global-conversations");
+    let conversation_cwd = runtime_root.join("workdir").join(session_id.to_string());
+    std::fs::create_dir_all(&conversation_cwd).unwrap();
+    let harness = Arc::new(
+        Harness::builder()
+            .with_options(test_harness_options(&conversation_cwd))
+            .with_model(TestModelProvider::default())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .with_stream_permission_broker_arc(
+                stream_permission_runtime.broker(),
+                stream_permission_runtime.resolver_handle(),
+            )
+            .with_memory_provider_arc(Arc::new(RawExportMemoryProvider::new(provider.clone())))
+            .build()
+            .await
+            .expect("harness should build with memory provider"),
+    );
+    let state =
+        DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_global_conversation(
+            runtime_root,
+            session_id,
+            harness,
+            stream_permission_runtime,
+        )
+        .expect("state should use the harness permission broker");
+    provider
+        .upsert(test_memory_record(session_id, "Global conversation memory"))
+        .await
+        .unwrap();
+
+    let exported = export_memory_items_with_runtime_state(
+        ExportMemoryItemsRequest {
+            session_id: Some(session_id),
+            scope: ExportMemoryItemsScope::Visible,
+            format: ExportMemoryItemsFormat::Json,
+            include_raw_content: false,
+            include_metadata: true,
+            include_hashes: true,
+            explicit_user_action: true,
+        },
+        &state,
+    )
+    .await
+    .expect("memory export should succeed");
+
+    assert!(exported.path.starts_with(&format!("exports/{session_id}/")));
+    assert!(state.runtime_root().join(&exported.path).is_file());
+    assert!(!state
+        .conversation_cwd()
+        .join(".jyowo")
+        .join("runtime")
+        .join("exports")
+        .exists());
+}

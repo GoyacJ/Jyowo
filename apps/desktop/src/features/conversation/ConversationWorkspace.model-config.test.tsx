@@ -45,6 +45,7 @@ const openAiModelDescriptor: ModelCatalogEntry = {
 
 const switchableProviderSettings: ListProviderSettingsResponse = {
   defaultConfigId: 'deepseek-config',
+  selectionScope: 'global',
   configs: [
     {
       protocol: 'chat_completions',
@@ -117,6 +118,7 @@ describe('ConversationWorkspace model config selection', () => {
         },
         providerSettingsList: {
           defaultConfigId: null,
+          selectionScope: 'global',
           configs: [
             {
               protocol: 'responses',
@@ -179,7 +181,7 @@ describe('ConversationWorkspace model config selection', () => {
   it('submits review continue without forcing a model config', async () => {
     const commandClient = createTestCommandClient({
       conversationWorktreePage: pageWithReviewRequest(),
-      providerSettingsList: { defaultConfigId: null, configs: [] },
+      providerSettingsList: { defaultConfigId: null, selectionScope: 'global', configs: [] },
     })
     const startRunCalls: Array<Parameters<CommandClient['startRun']>[0]> = []
     const trackedClient = {
@@ -211,6 +213,7 @@ describe('ConversationWorkspace model config selection', () => {
       conversationWorktreePage: pageWithTurn('complete'),
       providerSettingsList: {
         defaultConfigId: null,
+        selectionScope: 'global',
         configs: [
           {
             protocol: 'responses',

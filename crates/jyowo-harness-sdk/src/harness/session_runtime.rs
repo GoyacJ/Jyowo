@@ -624,6 +624,7 @@ impl Harness {
                     &mut tools,
                     agent_tool_policy,
                     options.workspace_bootstrap.clone(),
+                    options.agent_profiles.clone(),
                 );
             }
         }
@@ -955,6 +956,9 @@ fn apply_non_default_session_options(options: &mut SessionOptions, defaults: &Se
     if defaults.system_prompt_addendum.is_some() {
         options.system_prompt_addendum = defaults.system_prompt_addendum.clone();
     }
+    if !defaults.agent_profiles.is_empty() {
+        options.agent_profiles = defaults.agent_profiles.clone();
+    }
     if defaults.max_iterations > 0 {
         options.max_iterations = defaults.max_iterations;
     }
@@ -1008,6 +1012,9 @@ fn apply_explicit_session_options(options: &mut SessionOptions, explicit: &Sessi
     }
     if explicit.system_prompt_addendum.is_some() {
         options.system_prompt_addendum = explicit.system_prompt_addendum.clone();
+    }
+    if !explicit.agent_profiles.is_empty() {
+        options.agent_profiles = explicit.agent_profiles.clone();
     }
     if explicit.max_iterations > 0 {
         options.max_iterations = explicit.max_iterations;

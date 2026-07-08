@@ -92,6 +92,7 @@ const catalog: ModelProviderCatalogResponse = {
 
 const settings: ListProviderSettingsResponse = {
   defaultConfigId: 'cfg-openai',
+  selectionScope: 'global',
   configs: [
     {
       id: 'cfg-openai',
@@ -354,7 +355,9 @@ describe('ModelSettingsPage', () => {
     unmount()
 
     renderModelSettingsPage(
-      readyClient({ providerSettingsList: { defaultConfigId: null, configs: [] } }),
+      readyClient({
+        providerSettingsList: { defaultConfigId: null, selectionScope: 'global', configs: [] },
+      }),
     )
     expect(await screen.findByText('No configured models')).toBeInTheDocument()
     unmount()
@@ -365,6 +368,19 @@ describe('ModelSettingsPage', () => {
     } satisfies CommandClient
     renderModelSettingsPage(errorClient)
     expect(await screen.findByRole('alert')).toHaveTextContent('Safe backend error')
+  })
+
+  it('renders project scope badge when provider selection is project scoped', async () => {
+    renderModelSettingsPage(
+      readyClient({
+        providerSettingsList: {
+          ...settings,
+          selectionScope: 'project',
+        },
+      }),
+    )
+
+    expect(await screen.findByText('Project overrides')).toBeInTheDocument()
   })
 
   it('renders summary band and matrix rows with backend usage, connectivity, and quota state', async () => {

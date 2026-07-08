@@ -226,6 +226,7 @@ struct SdkAgentTeamRunner {
     harness: Harness,
     agent_tool_policy: harness_contracts::AgentToolPolicy,
     workspace_bootstrap: Option<WorkspaceBootstrap>,
+    agent_profiles: Vec<harness_contracts::AgentProfile>,
 }
 
 #[cfg(feature = "agents-team")]
@@ -240,11 +241,15 @@ impl AgentTeamRunnerCap for SdkAgentTeamRunner {
                 "an agent team is already active for this run".to_owned(),
             ));
         }
-        let profiles = match request.agent_runtime_root.as_ref() {
-            Some(runtime_root) => crate::list_agent_profiles_from_runtime_dir(runtime_root),
-            None => crate::list_agent_profiles(&request.workspace_root),
-        }
-        .map_err(|error| ToolError::Internal(error.to_string()))?;
+        let profiles = if self.agent_profiles.is_empty() {
+            match request.agent_runtime_root.as_ref() {
+                Some(runtime_root) => crate::list_agent_profiles_from_runtime_dir(runtime_root),
+                None => crate::list_agent_profiles(&request.workspace_root),
+            }
+            .map_err(|error| ToolError::Internal(error.to_string()))?
+        } else {
+            self.agent_profiles.clone()
+        };
         let mut agent_tool_policy = self.agent_tool_policy.clone();
         agent_tool_policy.agent_team = harness_contracts::AgentUsePolicy::Allowed;
         agent_tool_policy.team_config = Some(harness_contracts::AgentTeamRunConfig {
@@ -280,6 +285,7 @@ pub(super) fn install_agent_team_tool_for_run(
     tools: &mut ToolPool,
     agent_tool_policy: &harness_contracts::AgentToolPolicy,
     workspace_bootstrap: Option<WorkspaceBootstrap>,
+    agent_profiles: Vec<harness_contracts::AgentProfile>,
 ) {
     cap_registry.install::<dyn AgentTeamRunnerCap>(
         ToolCapability::Custom(AGENT_TEAM_RUNNER_CAPABILITY.to_owned()),
@@ -287,6 +293,7 @@ pub(super) fn install_agent_team_tool_for_run(
             harness,
             agent_tool_policy: agent_tool_policy.clone(),
             workspace_bootstrap,
+            agent_profiles,
         }),
     );
     tools.append_runtime_tool(Arc::new(AgentTeamTool::default()));

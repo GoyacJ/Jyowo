@@ -59,13 +59,8 @@ impl DesktopSkillStore {
         self.root_dir().join("packages").join("disabled")
     }
 
-    fn skill_dir(&self, id: &str, enabled: bool) -> PathBuf {
-        let dir = if enabled {
-            self.enabled_dir()
-        } else {
-            self.disabled_dir()
-        };
-        dir.join(id)
+    fn skill_dir(&self, id: &str, _enabled: bool) -> PathBuf {
+        self.enabled_dir().join(id)
     }
 
     fn legacy_skill_file_path(&self, id: &str, enabled: bool) -> PathBuf {
@@ -80,7 +75,7 @@ impl DesktopSkillStore {
 
 impl SkillStore for DesktopSkillStore {
     fn enabled_dir(&self) -> PathBuf {
-        self.root_dir().join("packages").join("enabled")
+        self.root_dir().join("packages")
     }
 
     fn load_records(&self) -> Result<Vec<SkillStoreRecord>, CommandErrorPayload> {
@@ -179,18 +174,13 @@ impl SkillStore for DesktopSkillStore {
 
     fn move_skill_package(&self, id: &str, enabled: bool) -> Result<(), CommandErrorPayload> {
         ensure_skill_id(id)?;
-        let from = self.skill_dir(id, !enabled);
-        let to = self.skill_dir(id, enabled);
-        let parent = to.parent().ok_or_else(|| {
+        let package = self.skill_dir(id, enabled);
+        let parent = package.parent().ok_or_else(|| {
             runtime_operation_failed("skill package path has no parent".to_owned())
         })?;
         ensure_app_dir_no_symlink(parent, "skill directory")?;
-        ensure_no_symlink_components(&from, "skill package")?;
-        ensure_no_symlink_components(&to, "skill package")?;
-        if from.exists() {
-            std::fs::rename(&from, &to).map_err(|error| {
-                runtime_operation_failed(format!("skill package move failed: {error}"))
-            })?;
+        ensure_no_symlink_components(&package, "skill package")?;
+        if package.exists() {
             return Ok(());
         }
         let from = self.legacy_skill_file_path(id, !enabled);
@@ -207,18 +197,18 @@ impl SkillStore for DesktopSkillStore {
 
     fn delete_skill_package(&self, id: &str) -> Result<(), CommandErrorPayload> {
         ensure_skill_id(id)?;
-        for enabled in [true, false] {
-            let path = self.skill_dir(id, enabled);
-            ensure_no_symlink_components(&path, "skill package")?;
-            match std::fs::remove_dir_all(&path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(runtime_operation_failed(format!(
-                        "skill package delete failed: {error}"
-                    )));
-                }
+        let path = self.skill_dir(id, true);
+        ensure_no_symlink_components(&path, "skill package")?;
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(runtime_operation_failed(format!(
+                    "skill package delete failed: {error}"
+                )));
             }
+        }
+        for enabled in [true, false] {
             let legacy_path = self.legacy_skill_file_path(id, enabled);
             ensure_no_symlink_components(&legacy_path, "legacy skill file")?;
             match std::fs::remove_file(&legacy_path) {
@@ -300,9 +290,10 @@ pub(crate) fn migrate_skills_from_runtime(
         .map(|r| r.id.clone())
         .collect();
 
-    // Create new target directories.
-    let new_packages = new_root.join("packages");
-    ensure_app_dir_no_symlink(&new_packages, "new skill packages")?;
+    let staging_root = new_root.with_file_name("skills.migration-staging");
+    let _ = std::fs::remove_dir_all(&staging_root);
+    let staging_packages = staging_root.join("packages");
+    ensure_app_dir_no_symlink(&staging_packages, "new skill packages")?;
 
     // Migrate packages from old enabled/ and disabled/ dirs.
     for old_subdir_name in &["enabled", "disabled"] {
@@ -332,26 +323,31 @@ pub(crate) fn migrate_skills_from_runtime(
             ensure_no_symlink_components(&old_path, "old skill entry")?;
 
             if old_path.is_dir() {
-                // Package directory: move to packages/<enabled_or_disabled>/<name>/
-                let new_pkg = new_packages.join(old_subdir_name).join(name);
+                // Package directory: copy to packages/<name>/.
+                let new_pkg = staging_packages.join(name);
                 let new_pkg_parent = new_pkg.parent().ok_or_else(|| {
                     runtime_operation_failed("new skill package path has no parent".to_owned())
                 })?;
                 ensure_app_dir_no_symlink(new_pkg_parent, "new skill package dir")?;
                 ensure_no_symlink_components(&new_pkg, "new skill package")?;
-                std::fs::rename(&old_path, &new_pkg).map_err(|error| {
-                    runtime_operation_failed(format!("skill package move failed ({name}): {error}"))
+                copy_skill_package(&old_path, &new_pkg).map_err(|error| {
+                    let _ = std::fs::remove_dir_all(&staging_root);
+                    runtime_operation_failed(format!(
+                        "skill package copy failed ({name}): {}",
+                        error.message
+                    ))
                 })?;
             } else if old_path.extension().and_then(|e| e.to_str()) == Some("md") {
-                // Legacy .md file: wrap in package directory under packages/<enabled_or_disabled>/
+                // Legacy .md file: wrap in package directory under packages/<id>/.
                 let stem = name.trim_end_matches(".md");
-                let new_pkg = new_packages.join(old_subdir_name).join(stem);
+                let new_pkg = staging_packages.join(stem);
                 ensure_app_dir_no_symlink(&new_pkg, "new skill package dir")?;
                 let new_entry = new_pkg.join("SKILL.md");
                 ensure_no_symlink_components(&new_entry, "new skill entry file")?;
-                std::fs::rename(&old_path, &new_entry).map_err(|error| {
+                std::fs::copy(&old_path, &new_entry).map_err(|error| {
+                    let _ = std::fs::remove_dir_all(&staging_root);
                     runtime_operation_failed(format!(
-                        "legacy skill file move failed ({stem}): {error}"
+                        "legacy skill file copy failed ({stem}): {error}"
                     ))
                 })?;
             }
@@ -359,17 +355,11 @@ pub(crate) fn migrate_skills_from_runtime(
     }
 
     // Write index.json to new location.
-    write_skill_records(&new_root.join("index.json"), &records)?;
-
-    // Remove old runtime skills directory.
-    match std::fs::remove_dir_all(&old_root) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_error) => {
-            // Not fatal — the old data is still there but the new store is set up.
-            return Ok((MigrationResult::Migrated, enabled_ids));
-        }
-    }
+    write_skill_records(&staging_root.join("index.json"), &records)?;
+    std::fs::rename(&staging_root, &new_root).map_err(|error| {
+        let _ = std::fs::remove_dir_all(&staging_root);
+        runtime_operation_failed(format!("skill migration commit failed: {error}"))
+    })?;
 
     Ok((MigrationResult::Migrated, enabled_ids))
 }
@@ -390,7 +380,7 @@ mod tests {
         assert_eq!(store.root_dir(), Path::new("/home/alice/.jyowo/skills"));
         assert_eq!(
             store.enabled_dir(),
-            Path::new("/home/alice/.jyowo/skills/packages/enabled")
+            Path::new("/home/alice/.jyowo/skills/packages")
         );
         assert_eq!(
             store.index_path(),
@@ -410,7 +400,7 @@ mod tests {
         );
         assert_eq!(
             store.enabled_dir(),
-            Path::new("/workspaces/jyowo/.jyowo/skills/packages/enabled")
+            Path::new("/workspaces/jyowo/.jyowo/skills/packages")
         );
     }
 
@@ -455,15 +445,21 @@ mod tests {
         assert_eq!(result, MigrationResult::Migrated);
         assert_eq!(enabled_ids, vec!["my-skill".to_owned()]);
 
-        // Old path should be gone.
-        assert!(!old_skills.exists(), "old runtime/skills should be removed");
+        // Store migration stages the new store but leaves old runtime data for startup commit.
+        assert!(
+            old_skills.exists(),
+            "old runtime/skills should be preserved"
+        );
+        assert!(
+            pkg_dir.join("SKILL.md").exists(),
+            "old package should be preserved"
+        );
 
-        // New path should exist with packages under packages/enabled/.
+        // New path should exist with packages under flat packages/<id>/.
         let new_pkg = workspace
             .join(".jyowo")
             .join("skills")
             .join("packages")
-            .join("enabled")
             .join("my-skill");
         assert!(
             new_pkg.join("SKILL.md").exists(),

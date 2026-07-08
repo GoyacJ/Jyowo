@@ -412,7 +412,7 @@ fn set_execution_settings_rejects_auto_without_runtime_support() {
 
 #[test]
 fn resolve_effective_execution_settings_applies_global_defaults() {
-    use harness_contracts::ExecutionDefaultsRecord;
+    use harness_contracts::{ExecutionDefaultsRecord, ExecutionOverridesRecord};
     use jyowo_desktop_shell::commands::stores::GlobalConfigStore;
     use jyowo_desktop_shell::storage_layout::{JyowoHome, StorageLayout};
 
@@ -476,14 +476,17 @@ fn resolve_effective_execution_settings_project_overrides_global() {
 
     // Project overrides: permission_mode=BypassPermissions
     project
-        .save_execution_overrides(&ExecutionDefaultsRecord {
-            permission_mode: PermissionMode::BypassPermissions,
-            tool_profile: ToolProfile::Coding,
-            context_compression_trigger_ratio: 0.75,
-            subagents_enabled: false,
-            agent_teams_enabled: false,
-            background_agents_enabled: false,
-        })
+        .save_execution_overrides(
+            &ExecutionDefaultsRecord {
+                permission_mode: PermissionMode::BypassPermissions,
+                tool_profile: ToolProfile::Coding,
+                context_compression_trigger_ratio: 0.75,
+                subagents_enabled: false,
+                agent_teams_enabled: false,
+                background_agents_enabled: false,
+            }
+            .into(),
+        )
         .expect("save project");
 
     let effective = resolve_effective_execution_settings(Some(&global), Some(&project), None, None)
@@ -493,6 +496,49 @@ fn resolve_effective_execution_settings_project_overrides_global() {
     assert_eq!(effective.permission_mode, PermissionMode::BypassPermissions);
     assert_eq!(effective.tool_profile, ToolProfile::Coding);
     assert!((effective.context_compression_trigger_ratio - 0.75).abs() < f32::EPSILON);
+}
+
+#[test]
+fn resolve_effective_execution_settings_partial_project_override_preserves_global_fields() {
+    use harness_contracts::{ExecutionDefaultsRecord, ExecutionOverridesRecord};
+    use jyowo_desktop_shell::commands::stores::{GlobalConfigStore, ProjectConfigStore};
+    use jyowo_desktop_shell::storage_layout::{JyowoHome, StorageLayout};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical");
+    let home = root.join(".jyowo");
+    let layout = StorageLayout::new(JyowoHome::new(&home));
+    let global = GlobalConfigStore::new(layout.clone());
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace");
+    let project = ProjectConfigStore::new(layout.clone(), workspace.clone());
+
+    global
+        .save_execution_defaults(&ExecutionDefaultsRecord {
+            permission_mode: PermissionMode::BypassPermissions,
+            tool_profile: ToolProfile::Minimal,
+            context_compression_trigger_ratio: 0.8,
+            subagents_enabled: true,
+            agent_teams_enabled: true,
+            background_agents_enabled: false,
+        })
+        .expect("save global");
+
+    let override_path = layout.project_execution_overrides_file(&workspace);
+    std::fs::create_dir_all(override_path.parent().expect("config parent"))
+        .expect("create project config");
+    std::fs::write(&override_path, r#"{"contextCompressionTriggerRatio":0.7}"#)
+        .expect("write partial override");
+
+    let effective = resolve_effective_execution_settings(Some(&global), Some(&project), None, None)
+        .expect("resolve");
+
+    assert_eq!(effective.permission_mode, PermissionMode::BypassPermissions);
+    assert_eq!(effective.tool_profile, ToolProfile::Minimal);
+    assert!((effective.context_compression_trigger_ratio - 0.7).abs() < f32::EPSILON);
+    assert!(effective.subagents_enabled);
+    assert!(effective.agent_teams_enabled);
+    assert!(!effective.background_agents_enabled);
 }
 
 #[test]
@@ -522,14 +568,17 @@ fn resolve_effective_execution_settings_run_params_override_all() {
         .expect("save global");
 
     project
-        .save_execution_overrides(&ExecutionDefaultsRecord {
-            permission_mode: PermissionMode::Auto,
-            tool_profile: ToolProfile::Coding,
-            context_compression_trigger_ratio: 0.8,
-            subagents_enabled: false,
-            agent_teams_enabled: false,
-            background_agents_enabled: false,
-        })
+        .save_execution_overrides(
+            &ExecutionDefaultsRecord {
+                permission_mode: PermissionMode::Auto,
+                tool_profile: ToolProfile::Coding,
+                context_compression_trigger_ratio: 0.8,
+                subagents_enabled: false,
+                agent_teams_enabled: false,
+                background_agents_enabled: false,
+            }
+            .into(),
+        )
         .expect("save project");
 
     // Run explicitly requests BypassPermissions

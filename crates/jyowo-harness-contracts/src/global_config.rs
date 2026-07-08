@@ -100,7 +100,6 @@ pub struct ProviderSelectionRecord {
 
 /// Global execution defaults. Stored in `~/.jyowo/config/execution-defaults.json`.
 ///
-/// Also used for project execution overrides at `<workspace>/.jyowo/config/execution-overrides.json`.
 /// Fields carry `#[serde(alias)]` annotations so old workspace `execution-settings.json` files
 /// (previously snake_case) are accepted during migration reads without a separate intermediate type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -140,6 +139,63 @@ impl Default for ExecutionDefaultsRecord {
             subagents_enabled: false,
             agent_teams_enabled: false,
             background_agents_enabled: false,
+        }
+    }
+}
+
+/// Project execution overrides. Stored in `<workspace>/.jyowo/config/execution-overrides.json`.
+///
+/// Missing fields inherit from global defaults. `Some` fields explicitly override.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ExecutionOverridesRecord {
+    #[serde(
+        default,
+        alias = "permission_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub permission_mode: Option<crate::PermissionMode>,
+    #[serde(
+        default,
+        alias = "tool_profile",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tool_profile: Option<crate::ToolProfile>,
+    #[serde(
+        default,
+        alias = "context_compression_trigger_ratio",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub context_compression_trigger_ratio: Option<f32>,
+    #[serde(
+        default,
+        alias = "subagents_enabled",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subagents_enabled: Option<bool>,
+    #[serde(
+        default,
+        alias = "agent_teams_enabled",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agent_teams_enabled: Option<bool>,
+    #[serde(
+        default,
+        alias = "background_agents_enabled",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub background_agents_enabled: Option<bool>,
+}
+
+impl From<ExecutionDefaultsRecord> for ExecutionOverridesRecord {
+    fn from(record: ExecutionDefaultsRecord) -> Self {
+        Self {
+            permission_mode: Some(record.permission_mode),
+            tool_profile: Some(record.tool_profile),
+            context_compression_trigger_ratio: Some(record.context_compression_trigger_ratio),
+            subagents_enabled: Some(record.subagents_enabled),
+            agent_teams_enabled: Some(record.agent_teams_enabled),
+            background_agents_enabled: Some(record.background_agents_enabled),
         }
     }
 }
@@ -196,6 +252,8 @@ pub struct SkillSelectionRecord {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct PluginSelectionRecord {
+    #[serde(default)]
+    pub allow_project_plugins: bool,
     #[serde(default)]
     pub enabled: Vec<String>,
 }

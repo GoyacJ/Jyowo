@@ -1664,9 +1664,12 @@ const providerConfigSchema = z
   })
   .strict()
 
+const settingsScopeSchema = z.enum(['global', 'project'])
+
 const listProviderSettingsResponseSchema = z
   .object({
     defaultConfigId: z.string().min(1).nullable(),
+    selectionScope: settingsScopeSchema,
     configs: z.array(providerConfigSchema),
   })
   .strict()
@@ -1910,6 +1913,7 @@ const getExecutionSettingsResponseSchema = z
     autoModeAvailable: z.boolean(),
     contextCompressionTriggerRatio: contextCompressionTriggerRatioSchema,
     permissionMode: permissionModeSchema,
+    scope: settingsScopeSchema,
     toolProfile: toolProfileSchema,
   })
   .strict()
@@ -1937,6 +1941,7 @@ const setExecutionSettingsResponseSchema = z
     autoModeAvailable: z.boolean(),
     contextCompressionTriggerRatio: contextCompressionTriggerRatioSchema,
     permissionMode: permissionModeSchema,
+    scope: settingsScopeSchema,
     toolProfile: toolProfileSchema,
   })
   .strict()

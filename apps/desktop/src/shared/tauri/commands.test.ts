@@ -365,6 +365,7 @@ describe('CommandClient', () => {
       autoModeAvailable: false,
       contextCompressionTriggerRatio: 0.8,
       permissionMode: 'default',
+      scope: 'global',
       toolProfile: 'coding',
     })
     const client = createInvokeCommandClient(invoke)
@@ -374,6 +375,7 @@ describe('CommandClient', () => {
       autoModeAvailable: false,
       contextCompressionTriggerRatio: 0.8,
       permissionMode: 'default',
+      scope: 'global',
       toolProfile: 'coding',
     })
     expect(invoke).toHaveBeenCalledWith('get_execution_settings')
@@ -394,6 +396,7 @@ describe('CommandClient', () => {
       autoModeAvailable: false,
       contextCompressionTriggerRatio: 0.8,
       permissionMode: 'default',
+      scope: 'global',
       toolProfile: 'full',
     })
     const client = createInvokeCommandClient(invoke)
@@ -3287,6 +3290,7 @@ describe('CommandClient', () => {
 
       return {
         defaultConfigId: 'openai',
+        selectionScope: 'global',
         configs: [
           {
             protocol: 'responses',
@@ -3376,6 +3380,7 @@ describe('CommandClient', () => {
   it('rejects provider configs without model descriptors', async () => {
     const invoke = vi.fn().mockResolvedValue({
       defaultConfigId: 'openai',
+      selectionScope: 'global',
       configs: [
         {
           protocol: 'responses',

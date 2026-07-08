@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use harness_contracts::{
-    AgentProfileSelectionRecord, ExecutionDefaultsRecord, PluginSelectionRecord,
+    AgentProfileSelectionRecord, ExecutionOverridesRecord, PluginSelectionRecord,
     ProviderSelectionRecord, SkillSelectionRecord,
 };
 
@@ -65,20 +65,22 @@ impl ProjectConfigStore {
 
     // ── Execution overrides (project) ───────────────────────────────────
 
-    pub fn load_execution_overrides(&self) -> Result<ExecutionDefaultsRecord, CommandErrorPayload> {
+    pub fn load_execution_overrides(
+        &self,
+    ) -> Result<ExecutionOverridesRecord, CommandErrorPayload> {
         let path = self
             .layout
             .project_execution_overrides_file(&self.workspace_root);
         ensure_config_dir(&path, "execution overrides")?;
         Ok(
-            read_json_file::<ExecutionDefaultsRecord>(&path, "execution overrides")?
+            read_json_file::<ExecutionOverridesRecord>(&path, "execution overrides")?
                 .unwrap_or_default(),
         )
     }
 
     pub fn save_execution_overrides(
         &self,
-        record: &ExecutionDefaultsRecord,
+        record: &ExecutionOverridesRecord,
     ) -> Result<(), CommandErrorPayload> {
         let path = self
             .layout

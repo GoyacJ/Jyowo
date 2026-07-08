@@ -329,14 +329,31 @@ impl Harness {
         let audit_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
         let exported_at = harness_contracts::now();
         let audit_hash_prefix = audit_hash.get(..16).unwrap_or(&audit_hash);
-        let relative_path = std::path::PathBuf::from(".jyowo")
-            .join("runtime")
-            .join("exports")
-            .join(format!(
-                "memory-{}-{audit_hash_prefix}.json",
-                exported_at.format("%Y%m%dT%H%M%S%.3fZ"),
-            ));
-        let export_path = options.workspace_root.join(&relative_path);
+        let export_file_name = format!(
+            "memory-{}-{audit_hash_prefix}.json",
+            exported_at.format("%Y%m%dT%H%M%S%.3fZ"),
+        );
+        let (relative_path, export_path) = if options.project_workspace_root.is_some() {
+            let relative_path = std::path::PathBuf::from(".jyowo")
+                .join("runtime")
+                .join("exports")
+                .join(&export_file_name);
+            let export_path = options.workspace_root.join(&relative_path);
+            (relative_path, export_path)
+        } else if let Some(agent_runtime_root) = options.agent_runtime_root.as_ref() {
+            let relative_path = std::path::PathBuf::from("exports")
+                .join(options.session_id.to_string())
+                .join(&export_file_name);
+            let export_path = agent_runtime_root.join(&relative_path);
+            (relative_path, export_path)
+        } else {
+            let relative_path = std::path::PathBuf::from(".jyowo")
+                .join("runtime")
+                .join("exports")
+                .join(&export_file_name);
+            let export_path = options.workspace_root.join(&relative_path);
+            (relative_path, export_path)
+        };
         let mut event = preparation.event;
         event.path = Some(relative_path.to_string_lossy().into_owned());
         event.audit_hash = Some(audit_hash.clone());

@@ -314,6 +314,13 @@ impl DesktopProviderSettingsStore {
 }
 
 impl ProviderSettingsStore for DesktopProviderSettingsStore {
+    fn selection_scope(&self) -> SettingsScope {
+        match self.selection_scope {
+            ProviderSettingsSelectionScope::Project { .. } => SettingsScope::Project,
+            ProviderSettingsSelectionScope::GlobalOnly => SettingsScope::Global,
+        }
+    }
+
     fn load_record(&self) -> Result<Option<ProviderSettingsRecord>, CommandErrorPayload> {
         let global_config = self.global_config_store();
         let profiles = global_config.load_provider_profiles()?;
@@ -610,17 +617,33 @@ impl DesktopExecutionSettingsStore {
         &self,
     ) -> Result<harness_contracts::ExecutionDefaultsRecord, CommandErrorPayload> {
         let settings_path = self.settings_path();
-        let Some(record) = read_json_file::<harness_contracts::ExecutionDefaultsRecord>(
+        if self.is_global_only() {
+            let Some(record) = read_json_file::<harness_contracts::ExecutionDefaultsRecord>(
+                &settings_path,
+                "execution settings",
+            )?
+            else {
+                return Ok(harness_contracts::ExecutionDefaultsRecord::default());
+            };
+            if ensure_execution_defaults_structure(&record).is_err() {
+                remove_invalid_json_file(&settings_path, "execution settings")?;
+                return Ok(harness_contracts::ExecutionDefaultsRecord::default());
+            }
+            return Ok(record);
+        }
+        let Some(overrides) = read_json_file::<harness_contracts::ExecutionOverridesRecord>(
             &settings_path,
             "execution settings",
         )?
         else {
             return Ok(harness_contracts::ExecutionDefaultsRecord::default());
         };
-        if ensure_execution_defaults_structure(&record).is_err() {
+        if ensure_execution_overrides_structure(&overrides).is_err() {
             remove_invalid_json_file(&settings_path, "execution settings")?;
             return Ok(harness_contracts::ExecutionDefaultsRecord::default());
         }
+        let mut record = harness_contracts::ExecutionDefaultsRecord::default();
+        apply_execution_overrides(&mut record, &overrides);
         Ok(record)
     }
 
@@ -631,11 +654,14 @@ impl DesktopExecutionSettingsStore {
     ) -> Result<(), CommandErrorPayload> {
         if self.is_global_only() {
             ensure_no_workspace_execution_defaults_record(record, self.workspace_root(), context)?;
+            let settings_path = self.settings_path();
+            return write_json_file_atomic(&settings_path, "execution settings", record);
         } else {
             ensure_execution_defaults_record(record, self.workspace_root(), context)?;
         }
         let settings_path = self.settings_path();
-        write_json_file_atomic(&settings_path, "execution settings", record)
+        let overrides = harness_contracts::ExecutionOverridesRecord::from(record.clone());
+        write_json_file_atomic(&settings_path, "execution settings", &overrides)
     }
 }
 
@@ -663,6 +689,30 @@ pub(crate) fn ensure_execution_defaults_structure(
         return Err(invalid_payload(
             "contextCompressionTriggerRatio must be between 0.5 and 0.95".to_owned(),
         ));
+    }
+
+    Ok(())
+}
+
+pub(crate) fn ensure_execution_overrides_structure(
+    record: &harness_contracts::ExecutionOverridesRecord,
+) -> Result<(), CommandErrorPayload> {
+    if let Some(permission_mode) = record.permission_mode {
+        match permission_mode {
+            PermissionMode::Default | PermissionMode::Auto | PermissionMode::BypassPermissions => {
+                Ok(())
+            }
+            _ => Err(invalid_payload(
+                "permissionMode must be default, auto, or bypass_permissions".to_owned(),
+            )),
+        }?;
+    }
+    if let Some(ratio) = record.context_compression_trigger_ratio {
+        if !(0.5..=0.95).contains(&ratio) || !ratio.is_finite() {
+            return Err(invalid_payload(
+                "contextCompressionTriggerRatio must be between 0.5 and 0.95".to_owned(),
+            ));
+        }
     }
 
     Ok(())
@@ -1182,9 +1232,18 @@ fn execution_settings_response_from_record(
         permission_mode,
         tool_profile: record.tool_profile.clone(),
         context_compression_trigger_ratio: record.context_compression_trigger_ratio,
+        scope: execution_settings_scope(global_only),
         auto_mode_available: auto_mode_available(),
         agent_capabilities,
     })
+}
+
+fn execution_settings_scope(global_only: bool) -> SettingsScope {
+    if global_only {
+        SettingsScope::Global
+    } else {
+        SettingsScope::Project
+    }
 }
 
 pub fn get_execution_settings_for_state_request(
@@ -1278,6 +1337,7 @@ pub fn set_execution_settings_with_store(
         permission_mode: record.permission_mode,
         tool_profile: record.tool_profile.clone(),
         context_compression_trigger_ratio: record.context_compression_trigger_ratio,
+        scope: execution_settings_scope(store.is_global_only()),
         auto_mode_available: auto_mode_available(),
         agent_capabilities,
     })
@@ -1302,7 +1362,7 @@ pub fn migrate_execution_settings(
     let new_path = layout.project_execution_overrides_file(workspace_root);
 
     crate::commands::stores::migration::migrate_json_file::<
-        harness_contracts::ExecutionDefaultsRecord,
+        harness_contracts::ExecutionOverridesRecord,
     >(&old_path, &new_path, "execution settings", true)
 }
 
@@ -1368,17 +1428,8 @@ pub fn resolve_effective_execution_settings(
     //    explicit non-default values).
     if let Some(project) = project_config {
         let overrides = project.load_execution_overrides()?;
-        // A project override file that serializes as the contract default
-        // should not overwrite more-specific global defaults.
-        if overrides != harness_contracts::ExecutionDefaultsRecord::default() {
-            effective.permission_mode = overrides.permission_mode;
-            effective.tool_profile = overrides.tool_profile;
-            effective.context_compression_trigger_ratio =
-                overrides.context_compression_trigger_ratio;
-            effective.subagents_enabled = overrides.subagents_enabled;
-            effective.agent_teams_enabled = overrides.agent_teams_enabled;
-            effective.background_agents_enabled = overrides.background_agents_enabled;
-        }
+        ensure_execution_overrides_structure(&overrides)?;
+        apply_execution_overrides(&mut effective, &overrides);
     }
 
     // 4. Apply run explicit params.
@@ -1392,6 +1443,30 @@ pub fn resolve_effective_execution_settings(
     Ok(effective)
 }
 
+fn apply_execution_overrides(
+    effective: &mut harness_contracts::ExecutionDefaultsRecord,
+    overrides: &harness_contracts::ExecutionOverridesRecord,
+) {
+    if let Some(permission_mode) = overrides.permission_mode {
+        effective.permission_mode = permission_mode;
+    }
+    if let Some(tool_profile) = &overrides.tool_profile {
+        effective.tool_profile = tool_profile.clone();
+    }
+    if let Some(context_compression_trigger_ratio) = overrides.context_compression_trigger_ratio {
+        effective.context_compression_trigger_ratio = context_compression_trigger_ratio;
+    }
+    if let Some(subagents_enabled) = overrides.subagents_enabled {
+        effective.subagents_enabled = subagents_enabled;
+    }
+    if let Some(agent_teams_enabled) = overrides.agent_teams_enabled {
+        effective.agent_teams_enabled = agent_teams_enabled;
+    }
+    if let Some(background_agents_enabled) = overrides.background_agents_enabled {
+        effective.background_agents_enabled = background_agents_enabled;
+    }
+}
+
 pub async fn list_provider_settings_with_store(
     store: &dyn ProviderSettingsStore,
 ) -> Result<ListProviderSettingsResponse, CommandErrorPayload> {
@@ -1399,6 +1474,7 @@ pub async fn list_provider_settings_with_store(
 
     Ok(ListProviderSettingsResponse {
         default_config_id: record.default_config_id.clone(),
+        selection_scope: store.selection_scope(),
         configs: provider_config_payloads(&record)?,
     })
 }

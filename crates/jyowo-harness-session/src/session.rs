@@ -6,11 +6,12 @@ use async_trait::async_trait;
 #[cfg(feature = "recall-memory")]
 use harness_contracts::MemoryThreadSettings;
 use harness_contracts::{
-    ConfigHash, ContextPatchRequest, ContextPatchSinkCap, ConversationAttachmentReference,
-    DeferredToolsDeltaAttachment, EndReason, Event, InteractivityLevel, Message, MessageId,
-    MessagePart, ModelProtocol, PermissionActorSource, PermissionMode, RunId, RunModelSnapshot,
-    SessionCreatedEvent, SessionEndedEvent, SessionError, SessionId, SnapshotId, TeamId, TenantId,
-    ToolProfile, ToolSearchMode, UsageSnapshot, WorkspaceId,
+    AgentProfile, ConfigHash, ContextPatchRequest, ContextPatchSinkCap,
+    ConversationAttachmentReference, DeferredToolsDeltaAttachment, EndReason, Event,
+    InteractivityLevel, Message, MessageId, MessagePart, ModelProtocol, PermissionActorSource,
+    PermissionMode, RunId, RunModelSnapshot, SessionCreatedEvent, SessionEndedEvent, SessionError,
+    SessionId, SnapshotId, TeamId, TenantId, ToolProfile, ToolSearchMode, UsageSnapshot,
+    WorkspaceId,
 };
 use harness_journal::EventStore;
 use harness_skill::SkillRegistration;
@@ -122,6 +123,8 @@ pub struct SessionOptions {
     pub team_id: Option<TeamId>,
     #[serde(default)]
     pub system_prompt_addendum: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_profiles: Vec<AgentProfile>,
     #[serde(default)]
     pub max_iterations: u32,
     #[serde(default = "default_context_compression_trigger_ratio")]
@@ -151,6 +154,7 @@ impl SessionOptions {
             user_id: None,
             team_id: None,
             system_prompt_addendum: None,
+            agent_profiles: Vec::new(),
             max_iterations: 0,
             context_compression_trigger_ratio: default_context_compression_trigger_ratio(),
             #[cfg(feature = "recall-memory")]
@@ -251,6 +255,12 @@ impl SessionOptions {
     #[must_use]
     pub fn with_system_prompt_addendum(mut self, addendum: impl Into<String>) -> Self {
         self.system_prompt_addendum = Some(addendum.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_agent_profiles(mut self, profiles: Vec<AgentProfile>) -> Self {
+        self.agent_profiles = profiles;
         self
     }
 

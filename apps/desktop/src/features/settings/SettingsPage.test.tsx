@@ -14,6 +14,7 @@ import { SettingsPage } from './SettingsPage'
 
 const emptyProviderSettingsList = {
   defaultConfigId: null,
+  selectionScope: 'global' as const,
   configs: [],
 }
 

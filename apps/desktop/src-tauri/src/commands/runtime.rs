@@ -361,6 +361,39 @@ impl DesktopRuntimeState {
         )
     }
 
+    #[doc(hidden)]
+    pub fn with_harness_and_stream_permission_runtime_for_global_conversation(
+        runtime_root: PathBuf,
+        conversation_id: SessionId,
+        harness: Arc<Harness>,
+        stream_permission_runtime: Arc<StreamPermissionRuntime>,
+    ) -> Result<Self, CommandErrorPayload> {
+        let provider = harness.model_provider();
+        let mut default_model_id = harness.options().model_id.clone();
+        let supported_models = provider.supported_models();
+        if !supported_models
+            .iter()
+            .any(|model| model.model_id == default_model_id)
+        {
+            if let Some(model) = supported_models.first() {
+                default_model_id = model.model_id.clone();
+            }
+        }
+        let default_protocol = provider
+            .snapshot_for_model(&default_model_id)
+            .map_err(|error| runtime_init_failed(error.to_string()))?
+            .protocol;
+        let runtime_layout =
+            global_conversation_runtime_layout_with_runtime_root(conversation_id, runtime_root);
+        Self::with_harness_stream_permission_runtime_and_model_for_layout(
+            runtime_layout,
+            harness,
+            stream_permission_runtime,
+            default_model_id,
+            default_protocol,
+        )
+    }
+
     fn with_harness_stream_permission_runtime_for_workspace(
         workspace_root: PathBuf,
         harness: Arc<Harness>,
@@ -549,6 +582,7 @@ impl DesktopRuntimeState {
             migrate_skills_on_startup(&state)?;
             // Migrate old runtime/plugins/ to new plugins/ location.
             migrate_plugins_on_startup(&state)?;
+            backfill_project_plugin_selection_if_missing(&state)?;
             // Migrate old runtime/mcp-servers.json to project config.
             ensure_startup_migration(
                 "mcp server settings",
@@ -572,6 +606,7 @@ impl DesktopRuntimeState {
                 state.project_config_store.as_ref(),
             )?;
         }
+        backfill_skill_selection_if_missing(&state)?;
         Ok(state)
     }
 
@@ -750,6 +785,11 @@ impl DesktopRuntimeState {
             .with_context_compression_trigger_ratio(
                 execution_settings.context_compression_trigger_ratio,
             );
+        if let Some(global_config) = &self.global_config_store {
+            let mut profiles = jyowo_harness_sdk::builtin_agent_profiles();
+            profiles.extend(global_config.load_global_agent_profiles()?);
+            options = options.with_agent_profiles(profiles);
+        }
         if let Some(project_workspace_root) = self.runtime_layout.workspace_root.as_ref() {
             options = options.with_project_workspace_root(project_workspace_root.clone());
         }
@@ -878,6 +918,7 @@ pub(crate) async fn runtime_state_for_global_conversation(
     conversation_id: SessionId,
 ) -> Result<DesktopRuntimeState, CommandErrorPayload> {
     let stream_permission_runtime = Arc::new(StreamPermissionRuntime::default());
+    migrate_legacy_unconfigured_runtime_to_global_conversations().await?;
     let layout = global_conversation_runtime_layout(conversation_id);
     runtime_state_for_global_conversation_layout(layout, stream_permission_runtime).await
 }
@@ -887,9 +928,108 @@ pub(crate) async fn runtime_state_for_global_conversation_with_runtime_root(
     runtime_root: PathBuf,
     stream_permission_runtime: Arc<StreamPermissionRuntime>,
 ) -> Result<DesktopRuntimeState, CommandErrorPayload> {
+    let default_global_runtime_root = storage_layout_for_home()
+        .global_runtime_root()
+        .join("global-conversations");
+    if runtime_root == default_global_runtime_root {
+        migrate_legacy_unconfigured_runtime_to_global_conversations().await?;
+    }
     let layout =
         global_conversation_runtime_layout_with_runtime_root(conversation_id, runtime_root);
     runtime_state_for_global_conversation_layout(layout, stream_permission_runtime).await
+}
+
+pub(crate) async fn migrate_legacy_unconfigured_runtime_to_global_conversations(
+) -> Result<MigrationResult, CommandErrorPayload> {
+    let source = crate::project_registry::unconfigured_workspace_root()
+        .join(".jyowo")
+        .join("runtime");
+    if !runtime_dir_has_data(&source)? {
+        return Ok(MigrationResult::NotNeeded);
+    }
+
+    let layout = storage_layout_for_home();
+    let target = layout.global_runtime_root().join("global-conversations");
+    if runtime_dir_has_data(&target)? {
+        return Err(runtime_init_failed(format!(
+            "legacy no-workspace runtime migration conflict: both {} and {} contain data",
+            source.display(),
+            target.display()
+        )));
+    }
+
+    ensure_no_symlink_components(&source, "legacy no-workspace runtime")?;
+    if let Some(parent) = target.parent() {
+        super::stores::ensure_app_dir_no_symlink(parent, "global conversations runtime parent")?;
+    }
+    if target.exists() {
+        ensure_no_symlink_components(&target, "global conversations runtime")?;
+        std::fs::remove_dir_all(&target).map_err(|error| {
+            runtime_init_failed(format!(
+                "legacy no-workspace runtime migration target cleanup failed: {error}"
+            ))
+        })?;
+    }
+    std::fs::rename(&source, &target).map_err(|error| {
+        runtime_init_failed(format!(
+            "legacy no-workspace runtime migration rename failed: {error}"
+        ))
+    })?;
+
+    let signer = desktop_integrity_signer(&target)?;
+    if let Err(error) = harness_permission::migrate_legacy_no_workspace_permission_decisions(
+        &target.join("permission-decisions.json"),
+        TenantId::SINGLE,
+        signer,
+    )
+    .await
+    {
+        let rollback_result = std::fs::rename(&target, &source);
+        return Err(runtime_init_failed(match rollback_result {
+            Ok(()) => format!(
+                "legacy no-workspace permission decision migration failed: {error}"
+            ),
+            Err(rollback_error) => format!(
+                "legacy no-workspace permission decision migration failed: {error}; rollback failed: {rollback_error}"
+            ),
+        }));
+    }
+
+    Ok(MigrationResult::Migrated)
+}
+
+fn runtime_dir_has_data(path: &Path) -> Result<bool, CommandErrorPayload> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(runtime_init_failed(format!(
+                "runtime path must not use symlinks: {}",
+                path.display()
+            )));
+        }
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(runtime_init_failed(format!(
+                "runtime path is not a directory: {}",
+                path.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(runtime_init_failed(format!(
+                "runtime path metadata failed: {error}"
+            )));
+        }
+    }
+    ensure_no_symlink_components(path, "runtime directory")?;
+    let mut entries = std::fs::read_dir(path)
+        .map_err(|error| runtime_init_failed(format!("runtime directory read failed: {error}")))?;
+    Ok(entries
+        .next()
+        .transpose()
+        .map_err(|error| {
+            runtime_init_failed(format!("runtime directory entry read failed: {error}"))
+        })?
+        .is_some())
 }
 
 async fn runtime_state_for_global_conversation_layout(
@@ -1183,17 +1323,30 @@ pub(crate) async fn build_desktop_harness(
                 )
             });
     let storage_layout = storage_layout_for_home();
+    let global_config_store = global_config_store_for_home();
+    let global_skill_selection = global_config_store
+        .load_global_skill_selection()?
+        .enabled
+        .into_iter()
+        .collect();
     let global_skill_store = DesktopSkillStore::global(storage_layout);
     let mut skill_loader =
         SkillLoader::default().with_source(SkillSourceConfig::DirectoryPackages {
             path: global_skill_store.enabled_dir(),
             source_kind: DirectorySourceKind::User,
+            allowed_package_ids: Some(global_skill_selection),
         });
     if let Some(project_workspace_root) = layout.workspace_root.as_deref() {
         let skill_store = DesktopSkillStore::new(project_workspace_root.to_path_buf());
+        let project_skill_selection = project_config_store_for_workspace(project_workspace_root)
+            .load_project_skill_selection()?
+            .enabled
+            .into_iter()
+            .collect();
         skill_loader = skill_loader.with_source(SkillSourceConfig::DirectoryPackages {
             path: skill_store.enabled_dir(),
             source_kind: DirectorySourceKind::Workspace,
+            allowed_package_ids: Some(project_skill_selection),
         });
     }
     let blob_store: Arc<dyn harness_contracts::BlobStore> = Arc::new(
@@ -1839,24 +1992,85 @@ pub(crate) fn build_plugin_registry(
     global_plugin_store: Option<&DesktopPluginStore>,
 ) -> Result<PluginRegistry, CommandErrorPayload> {
     let settings = plugin_store.load_record()?;
+    let global_settings = global_plugin_store
+        .map(PluginStore::load_record)
+        .transpose()?;
+    let project_selection = project_workspace_root
+        .map(load_project_plugin_selection_if_present)
+        .transpose()?
+        .flatten();
+    let project_enabled_plugin_ids: BTreeSet<String> = if let Some(selection) = &project_selection {
+        selection.enabled.iter().cloned().collect()
+    } else {
+        settings
+            .records
+            .iter()
+            .filter(|record| record.enabled)
+            .map(|record| record.plugin_id.0.clone())
+            .collect()
+    };
+    let global_enabled_plugin_ids: BTreeSet<String> = if let Some(selection) = &project_selection {
+        selection.enabled.iter().cloned().collect()
+    } else {
+        global_settings
+            .as_ref()
+            .map(|settings| {
+                settings
+                    .records
+                    .iter()
+                    .filter(|record| record.enabled)
+                    .map(|record| record.plugin_id.0.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let global_plugin_ids: BTreeSet<String> = global_settings
+        .as_ref()
+        .map(|settings| {
+            settings
+                .records
+                .iter()
+                .map(|record| record.plugin_id.0.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let allow_project_plugins = project_selection
+        .as_ref()
+        .map(|selection| selection.allow_project_plugins)
+        .unwrap_or(settings.allow_project_plugins);
     let (sidecar_sandbox, sidecar_sandbox_mode) = desktop_plugin_sidecar_sandbox(execution_cwd);
     let mut entries = BTreeMap::new();
-    let mut disabled_plugins = BTreeSet::new();
-    for record in &settings.records {
-        if record.enabled {
-            verify_installed_plugin_content_hash(record, plugin_store)?;
-        }
-        let name = PluginName::new(record.name.clone())
-            .map_err(|error| runtime_init_failed(format!("plugin record invalid: {error}")))?;
-        entries.insert(name.clone(), record.config.clone());
-        if !record.enabled {
-            disabled_plugins.insert(name);
-        }
+    let mut plugin_enabled_by_name = BTreeMap::<PluginName, bool>::new();
+    if let (Some(global_store), Some(global_settings)) = (global_plugin_store, &global_settings) {
+        collect_plugin_registry_records(
+            &global_settings.records,
+            global_store,
+            &global_enabled_plugin_ids,
+            project_selection.is_some(),
+            true,
+            &BTreeSet::new(),
+            &mut entries,
+            &mut plugin_enabled_by_name,
+        )?;
     }
+    collect_plugin_registry_records(
+        &settings.records,
+        plugin_store,
+        &project_enabled_plugin_ids,
+        project_selection.is_some(),
+        false,
+        &global_plugin_ids,
+        &mut entries,
+        &mut plugin_enabled_by_name,
+    )?;
+    let disabled_plugins = plugin_enabled_by_name
+        .into_iter()
+        .filter_map(|(name, enabled)| (!enabled).then_some(name))
+        .collect();
 
     let mut builder = PluginRegistry::builder()
-        .with_config(plugin_config_from_settings(
-            &settings,
+        .with_config(plugin_config_from_parts(
+            allow_project_plugins,
             disabled_plugins,
             entries,
             project_workspace_root,
@@ -1893,7 +2107,7 @@ pub(crate) fn build_plugin_registry(
         )));
 
     if let Some(project_workspace_root) = project_workspace_root {
-        if settings.allow_project_plugins {
+        if allow_project_plugins && project_selection.is_none() {
             builder = builder.with_source(DiscoverySource::Project(
                 project_workspace_root.to_path_buf(),
             ));
@@ -1903,6 +2117,64 @@ pub(crate) fn build_plugin_registry(
     builder.build().map_err(|error| {
         runtime_init_failed(format!("plugin registry initialization failed: {error}"))
     })
+}
+
+fn load_project_plugin_selection_if_present(
+    project_workspace_root: &Path,
+) -> Result<Option<harness_contracts::PluginSelectionRecord>, CommandErrorPayload> {
+    let store = project_config_store_for_workspace(project_workspace_root);
+    let path = store.layout().project_plugins_file(store.workspace_root());
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(runtime_init_failed(format!(
+            "project plugin selection must not be a symlink: {}",
+            path.display()
+        ))),
+        Ok(metadata) if metadata.is_file() => store.load_project_plugin_selection().map(Some),
+        Ok(_) => Err(runtime_init_failed(format!(
+            "project plugin selection path is not a file: {}",
+            path.display()
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(runtime_init_failed(format!(
+            "project plugin selection metadata failed: {error}"
+        ))),
+    }
+}
+
+fn collect_plugin_registry_records(
+    records: &[PluginStoreRecord],
+    store: &dyn PluginStore,
+    enabled_plugin_ids: &BTreeSet<String>,
+    use_selection: bool,
+    require_record_enabled: bool,
+    record_enabled_required_ids: &BTreeSet<String>,
+    entries: &mut BTreeMap<PluginName, Value>,
+    plugin_enabled_by_name: &mut BTreeMap<PluginName, bool>,
+) -> Result<(), CommandErrorPayload> {
+    for record in records {
+        let mut enabled = if use_selection {
+            enabled_plugin_ids.contains(&record.plugin_id.0)
+        } else {
+            record.enabled
+        };
+        if require_record_enabled {
+            enabled &= record.enabled;
+        }
+        if record_enabled_required_ids.contains(&record.plugin_id.0) {
+            enabled &= record.enabled;
+        }
+        if enabled {
+            verify_installed_plugin_content_hash(record, store)?;
+        }
+        let name = PluginName::new(record.name.clone())
+            .map_err(|error| runtime_init_failed(format!("plugin record invalid: {error}")))?;
+        entries.insert(name.clone(), record.config.clone());
+        plugin_enabled_by_name
+            .entry(name)
+            .and_modify(|current| *current &= enabled)
+            .or_insert(enabled);
+    }
+    Ok(())
 }
 
 pub(crate) fn desktop_plugin_sidecar_sandbox(
@@ -1923,15 +2195,15 @@ pub(crate) fn local_isolation_tag(isolation: LocalIsolation) -> LocalIsolationTa
     }
 }
 
-pub(crate) fn plugin_config_from_settings(
-    settings: &PluginSettingsRecord,
+pub(crate) fn plugin_config_from_parts(
+    allow_project_plugins: bool,
     disabled_plugins: BTreeSet<PluginName>,
     entries: BTreeMap<PluginName, Value>,
     project_workspace_root: Option<&Path>,
 ) -> PluginConfig {
     let allowed_user_plugins = entries.keys().cloned().collect();
     PluginConfig {
-        allow_project_plugins: settings.allow_project_plugins,
+        allow_project_plugins,
         allowed_user_plugins: Some(allowed_user_plugins),
         disabled_plugins,
         entries,
@@ -2167,11 +2439,13 @@ mod tests {
     use harness_contracts::{
         AgentProfileContextMode, AgentProfileMemoryScope, AgentProfileSandboxInheritance,
         AgentToolPolicy, AgentWorkspaceIsolationMode, AssistantSegment,
-        BackgroundAgentToolSessionSnapshot, DeferPolicy, MessageId, MessageMetadata,
+        BackgroundAgentToolSessionSnapshot, Decision, DecisionId, DecisionScope, DeferPolicy,
+        ExecFingerprint, MessageId, MessageMetadata, PluginId, PluginSelectionRecord,
         ProcessStepDetail, ProviderProfileDefinition, ProviderProfileModelDescriptor,
-        ProviderProfileModelLifecycle, ToolProperties, ToolResult, ToolSearchMode,
+        ProviderProfileModelLifecycle, RuleSource, ToolProperties, ToolResult, ToolSearchMode,
         ToolUseCompletedEvent, ToolUseRequestedEvent, UserMessageAppendedEvent,
     };
+    use harness_permission::IntegrityAlgorithm;
     use jyowo_harness_sdk::testing::InMemoryEventStore;
     use std::sync::Mutex;
 
@@ -2647,16 +2921,325 @@ mod tests {
         );
         assert_eq!(
             state.skill_store.enabled_dir(),
-            home.path()
-                .join(".jyowo")
-                .join("skills")
-                .join("packages")
-                .join("enabled")
+            home.path().join(".jyowo").join("skills").join("packages")
         );
         assert_eq!(
             state.plugin_store.package_root(),
             home.path().join(".jyowo").join("plugins").join("packages")
         );
+    }
+
+    #[test]
+    fn project_runtime_backfills_global_skill_selection_when_missing() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let state = DesktopRuntimeState::with_workspace_for_test(workspace_root)
+            .expect("desktop runtime state");
+        let global_config = state.global_config_store.as_ref().expect("global config");
+        let global_skill_store = DesktopSkillStore::global(global_config.layout().clone());
+        global_skill_store
+            .save_records(&[SkillStoreRecord {
+                id: "global-enabled".to_owned(),
+                name: "global-enabled".to_owned(),
+                description: "Global enabled skill".to_owned(),
+                enabled: true,
+                content_hash: "hash".to_owned(),
+                package_dir: "global-enabled".to_owned(),
+                file_name: String::new(),
+                imported_at: now().to_rfc3339(),
+                updated_at: now().to_rfc3339(),
+                tags: Vec::new(),
+                category: None,
+                last_validation_error: None,
+                origin: None,
+            }])
+            .expect("save global skill index");
+
+        backfill_skill_selection_if_missing(&state).expect("backfill skill selection");
+
+        let selection = global_config
+            .load_global_skill_selection()
+            .expect("global skill selection");
+        assert_eq!(selection.enabled, vec!["global-enabled".to_owned()]);
+    }
+
+    #[test]
+    fn project_plugin_selection_backfill_uses_project_index_only() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let state = DesktopRuntimeState::with_workspace_for_test(workspace_root)
+            .expect("desktop runtime state");
+        let global_plugin_id = PluginId("global-tools@0.1.0".to_owned());
+        let global_plugin_store = DesktopPluginStore::global(
+            state
+                .global_config_store
+                .as_ref()
+                .expect("global config")
+                .layout()
+                .clone(),
+        );
+        global_plugin_store
+            .save_record(&PluginSettingsRecord {
+                records: vec![PluginStoreRecord {
+                    plugin_id: global_plugin_id.clone(),
+                    name: "global-tools".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    enabled: true,
+                    package_dir: "global-tools_0.1.0".to_owned(),
+                    source_path: "<local-plugin>".to_owned(),
+                    content_hash: "hash".to_owned(),
+                    imported_at: "2026-01-01T00:00:00Z".to_owned(),
+                    updated_at: "2026-01-01T00:00:00Z".to_owned(),
+                    config: Value::Null,
+                    last_validation_error: None,
+                }],
+                ..PluginSettingsRecord::default()
+            })
+            .expect("save global plugin index");
+
+        backfill_project_plugin_selection_if_missing(&state)
+            .expect("backfill project plugin selection");
+
+        let selection_path = state
+            .project_config_store
+            .as_ref()
+            .expect("project config")
+            .layout()
+            .project_plugins_file(state.project_workspace_root().expect("project root"));
+        assert!(!selection_path.exists());
+    }
+
+    #[tokio::test]
+    async fn project_selection_cannot_enable_globally_disabled_plugin() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let state = DesktopRuntimeState::with_workspace_for_test(workspace_root)
+            .expect("desktop runtime state");
+        let global_plugin_id = PluginId("global-disabled@0.1.0".to_owned());
+        let global_plugin_store = DesktopPluginStore::global(
+            state
+                .global_config_store
+                .as_ref()
+                .expect("global config")
+                .layout()
+                .clone(),
+        );
+        global_plugin_store
+            .save_record(&PluginSettingsRecord {
+                records: vec![PluginStoreRecord {
+                    plugin_id: global_plugin_id.clone(),
+                    name: "global-disabled".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    enabled: false,
+                    package_dir: "global-disabled_0.1.0".to_owned(),
+                    source_path: "<local-plugin>".to_owned(),
+                    content_hash: "hash".to_owned(),
+                    imported_at: "2026-01-01T00:00:00Z".to_owned(),
+                    updated_at: "2026-01-01T00:00:00Z".to_owned(),
+                    config: Value::Null,
+                    last_validation_error: None,
+                }],
+                ..PluginSettingsRecord::default()
+            })
+            .expect("save global plugin index");
+        state
+            .project_config_store
+            .as_ref()
+            .expect("project config")
+            .save_project_plugin_selection(&PluginSelectionRecord {
+                allow_project_plugins: false,
+                enabled: Vec::new(),
+            })
+            .expect("save project selection");
+
+        let error = set_plugin_enabled_with_runtime_state(
+            SetPluginEnabledRequest {
+                plugin_id: global_plugin_id,
+                enabled: true,
+            },
+            &state,
+        )
+        .await
+        .expect_err("global disabled plugin must not be enabled from project selection");
+
+        assert_eq!(error.code, "INVALID_PAYLOAD");
+        assert!(error.message.contains("disabled globally"));
+    }
+
+    #[tokio::test]
+    async fn legacy_unconfigured_runtime_moves_to_global_conversations() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let source = crate::project_registry::unconfigured_workspace_root()
+            .join(".jyowo")
+            .join("runtime");
+        std::fs::create_dir_all(&source).expect("legacy runtime dir");
+        std::fs::write(source.join("provider-continuations.jsonl"), b"{}\n").expect("legacy data");
+
+        let result = migrate_legacy_unconfigured_runtime_to_global_conversations()
+            .await
+            .expect("migration");
+
+        assert!(matches!(result, MigrationResult::Migrated));
+        let target = home
+            .path()
+            .join(".jyowo")
+            .join("runtime")
+            .join("global-conversations");
+        assert!(target.join("provider-continuations.jsonl").exists());
+        assert!(!source.exists());
+    }
+
+    #[tokio::test]
+    async fn explicit_default_global_runtime_root_migrates_legacy_unconfigured_runtime() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let source = crate::project_registry::unconfigured_workspace_root()
+            .join(".jyowo")
+            .join("runtime");
+        std::fs::create_dir_all(&source).expect("legacy runtime dir");
+        std::fs::write(source.join("legacy-extra.txt"), b"legacy").expect("legacy data");
+        let target = storage_layout_for_home()
+            .global_runtime_root()
+            .join("global-conversations");
+
+        let state = runtime_state_for_global_conversation_with_runtime_root(
+            SessionId::new(),
+            target.clone(),
+            Arc::new(StreamPermissionRuntime::default()),
+        )
+        .await
+        .expect("global runtime state");
+
+        assert_eq!(state.runtime_root(), target.as_path());
+        assert!(target.join("legacy-extra.txt").exists());
+        assert!(!source.exists());
+    }
+
+    #[tokio::test]
+    async fn legacy_unconfigured_runtime_migration_fails_when_target_has_data() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let source = crate::project_registry::unconfigured_workspace_root()
+            .join(".jyowo")
+            .join("runtime");
+        std::fs::create_dir_all(&source).expect("legacy runtime dir");
+        std::fs::write(source.join("provider-continuations.jsonl"), b"legacy\n")
+            .expect("legacy data");
+        let target = home
+            .path()
+            .join(".jyowo")
+            .join("runtime")
+            .join("global-conversations");
+        std::fs::create_dir_all(&target).expect("target runtime dir");
+        std::fs::write(target.join("provider-continuations.jsonl"), b"target\n")
+            .expect("target data");
+
+        let error = migrate_legacy_unconfigured_runtime_to_global_conversations()
+            .await
+            .expect_err("conflict must fail");
+
+        assert_eq!(error.code, "RUNTIME_INIT_FAILED");
+        assert!(source.join("provider-continuations.jsonl").exists());
+        assert_eq!(
+            std::fs::read_to_string(target.join("provider-continuations.jsonl")).unwrap(),
+            "target\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_unconfigured_runtime_migration_quarantines_unscoped_permissions() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let source = crate::project_registry::unconfigured_workspace_root()
+            .join(".jyowo")
+            .join("runtime");
+        std::fs::create_dir_all(&source).expect("legacy runtime dir");
+        write_legacy_permission_decision_without_session_id(
+            &source.join("permission-decisions.json"),
+            desktop_integrity_signer(&source).expect("signer"),
+        )
+        .await;
+        let target = home
+            .path()
+            .join(".jyowo")
+            .join("runtime")
+            .join("global-conversations");
+
+        let result = migrate_legacy_unconfigured_runtime_to_global_conversations()
+            .await
+            .expect("permission migration should quarantine unscoped decisions");
+
+        assert!(matches!(result, MigrationResult::Migrated));
+        assert!(!source.exists());
+        assert!(target.join("permission-decisions.json").exists());
+        assert!(target
+            .join("permission-decisions.json.unscoped-legacy.json")
+            .exists());
+    }
+
+    async fn write_legacy_permission_decision_without_session_id(
+        path: &Path,
+        signer: Arc<dyn harness_permission::IntegritySigner>,
+    ) {
+        let decision_id = DecisionId::new();
+        let decision = Decision::AllowPermanent;
+        let scope = DecisionScope::ToolName("read_blob".to_owned());
+        let source = RuleSource::Workspace;
+        let fingerprint = ExecFingerprint([9; 32]);
+        let recorded_at = harness_contracts::now();
+        let unsigned = serde_json::json!({
+            "decision_id": decision_id,
+            "decision": decision,
+            "scope": scope,
+            "source": source,
+            "session_id": null,
+            "fingerprint": fingerprint,
+            "recorded_at": recorded_at,
+        });
+        let payload = harness_permission::canonical_bytes(&unsigned).expect("canonical payload");
+        let signature = signer.sign(&payload).await.expect("signature");
+        let algorithm = match signature.algorithm {
+            IntegrityAlgorithm::HmacSha256 => "hmac_sha256",
+            IntegrityAlgorithm::HmacSha512 => "hmac_sha512",
+        };
+        let record = serde_json::json!([{
+            "decision_id": decision_id,
+            "decision": decision,
+            "scope": scope,
+            "source": source,
+            "session_id": null,
+            "fingerprint": fingerprint,
+            "recorded_at": recorded_at,
+            "signature": {
+                "algorithm": algorithm,
+                "key_id": signature.key_id,
+                "mac_hex": hex_bytes(&signature.mac),
+                "signed_at": signature.signed_at,
+            }
+        }]);
+        std::fs::write(
+            path,
+            serde_json::to_vec_pretty(&record).expect("record json"),
+        )
+        .expect("write legacy record");
+    }
+
+    fn hex_bytes(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
     #[cfg(unix)]

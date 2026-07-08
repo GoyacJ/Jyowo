@@ -202,9 +202,10 @@ pub(crate) fn migrate_plugins_from_runtime(
         .map(|r| r.plugin_id.0.clone())
         .collect();
 
-    // Create new target directories.
-    let new_packages = new_root.join("packages");
-    ensure_app_dir_no_symlink(&new_packages, "new plugin packages")?;
+    let staging_root = new_root.with_file_name("plugins.migration-staging");
+    let _ = std::fs::remove_dir_all(&staging_root);
+    let staging_packages = staging_root.join("packages");
+    ensure_app_dir_no_symlink(&staging_packages, "new plugin packages")?;
 
     // Migrate packages from old user/ dir.
     let old_user = old_root.join("user");
@@ -225,11 +226,13 @@ pub(crate) fn migrate_plugins_from_runtime(
             };
             ensure_no_symlink_components(&old_path, "old plugin package")?;
             if old_path.is_dir() {
-                let new_pkg = new_packages.join(name);
+                let new_pkg = staging_packages.join(name);
                 ensure_no_symlink_components(&new_pkg, "new plugin package")?;
-                std::fs::rename(&old_path, &new_pkg).map_err(|error| {
+                copy_plugin_package(&old_path, &new_pkg).map_err(|error| {
+                    let _ = std::fs::remove_dir_all(&staging_root);
                     runtime_operation_failed(format!(
-                        "plugin package move failed ({name}): {error}"
+                        "plugin package copy failed ({name}): {}",
+                        error.message
                     ))
                 })?;
             }
@@ -237,16 +240,11 @@ pub(crate) fn migrate_plugins_from_runtime(
     }
 
     // Write index.json to new location.
-    write_plugin_settings_record(&new_root.join("index.json"), &record)?;
-
-    // Remove old runtime plugins directory.
-    match std::fs::remove_dir_all(&old_root) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_error) => {
-            return Ok((MigrationResult::Migrated, enabled_ids));
-        }
-    }
+    write_plugin_settings_record(&staging_root.join("index.json"), &record)?;
+    std::fs::rename(&staging_root, &new_root).map_err(|error| {
+        let _ = std::fs::remove_dir_all(&staging_root);
+        runtime_operation_failed(format!("plugin migration commit failed: {error}"))
+    })?;
 
     Ok((MigrationResult::Migrated, enabled_ids))
 }
@@ -334,10 +332,14 @@ mod tests {
         assert_eq!(result, MigrationResult::Migrated);
         assert_eq!(enabled_ids, vec!["my-plugin".to_owned()]);
 
-        // Old path should be gone.
+        // Store migration stages the new store but leaves old runtime data for startup commit.
         assert!(
-            !old_plugins.exists(),
-            "old runtime/plugins should be removed"
+            old_plugins.exists(),
+            "old runtime/plugins should be preserved"
+        );
+        assert!(
+            pkg_dir.join("manifest.json").exists(),
+            "old package should be preserved"
         );
 
         // New path should exist with packages under packages/.

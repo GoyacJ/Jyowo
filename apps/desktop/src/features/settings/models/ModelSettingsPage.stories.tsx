@@ -57,7 +57,7 @@ export const Empty: Story = {
     withClient(() =>
       createTestCommandClient({
         modelProviderCatalog: catalog,
-        providerSettingsList: { defaultConfigId: null, configs: [] },
+        providerSettingsList: { defaultConfigId: null, selectionScope: 'global', configs: [] },
       }),
     ),
   ],
@@ -226,6 +226,7 @@ const catalog: ModelProviderCatalogResponse = {
 
 const settings: ListProviderSettingsResponse = {
   defaultConfigId: 'cfg-openai',
+  selectionScope: 'global',
   configs: [
     {
       id: 'cfg-openai',

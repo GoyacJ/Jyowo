@@ -34,6 +34,7 @@ function createExecutionSettings(
     autoModeAvailable: false,
     contextCompressionTriggerRatio: 0.8,
     permissionMode: 'default' as const,
+    scope: 'global' as const,
     toolProfile: 'full' as const,
   }
 }
@@ -66,6 +67,7 @@ describe('ExecutionSettings', () => {
       autoModeAvailable: false,
       contextCompressionTriggerRatio: 0.8,
       permissionMode: 'bypass_permissions' as const,
+      scope: 'global' as const,
       toolProfile: 'full' as const,
     }))
     const commandClient = {
@@ -75,6 +77,7 @@ describe('ExecutionSettings', () => {
         autoModeAvailable: false,
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'default' as const,
+        scope: 'global' as const,
         toolProfile: 'full' as const,
       }),
       setExecutionSettings,
@@ -105,6 +108,7 @@ describe('ExecutionSettings', () => {
       autoModeAvailable: false,
       contextCompressionTriggerRatio: 0.75,
       permissionMode: 'default' as const,
+      scope: 'global' as const,
       toolProfile: 'full' as const,
     }))
     const commandClient = {
@@ -114,6 +118,7 @@ describe('ExecutionSettings', () => {
         autoModeAvailable: false,
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'default' as const,
+        scope: 'global' as const,
         toolProfile: 'full' as const,
       }),
       setExecutionSettings,
@@ -147,6 +152,7 @@ describe('ExecutionSettings', () => {
       autoModeAvailable: false,
       contextCompressionTriggerRatio: 0.8,
       permissionMode: 'default' as const,
+      scope: 'global' as const,
       toolProfile: 'minimal' as const,
     }))
     const commandClient = {
@@ -156,6 +162,7 @@ describe('ExecutionSettings', () => {
         autoModeAvailable: false,
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'default' as const,
+        scope: 'global' as const,
         toolProfile: 'full' as const,
       }),
       setExecutionSettings,
@@ -189,6 +196,7 @@ describe('ExecutionSettings', () => {
           autoModeAvailable: false,
           contextCompressionTriggerRatio: 0.8,
           permissionMode: 'default',
+          scope: 'global',
           toolProfile: 'full',
         },
       }),
@@ -209,6 +217,21 @@ describe('ExecutionSettings', () => {
     )
 
     expect(screen.getByText('Loading default permission mode...')).toBeInTheDocument()
+  })
+
+  it('renders project scope badge when execution settings are project scoped', async () => {
+    uiStore.getState().setLocale('en-US')
+
+    renderExecutionSettings(
+      createTestCommandClient({
+        executionSettings: {
+          ...createExecutionSettings(availableAgentCapabilities),
+          scope: 'project',
+        },
+      }),
+    )
+
+    expect(await screen.findByText('Project overrides')).toBeInTheDocument()
   })
 
   it('renders available agent switches off', async () => {
@@ -385,6 +408,7 @@ describe('ExecutionSettings', () => {
           autoModeAvailable: false,
           contextCompressionTriggerRatio: 0.8,
           permissionMode: 'default',
+          scope: 'global',
           toolProfile: 'full',
         },
       }),

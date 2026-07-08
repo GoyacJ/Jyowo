@@ -785,8 +785,10 @@ mod tests {
         assert!(response.allow_project_plugins);
         assert!(
             state
-                .plugin_store
-                .load_record()
+                .project_config_store
+                .as_ref()
+                .unwrap()
+                .load_project_plugin_selection()
                 .unwrap()
                 .allow_project_plugins
         );
@@ -1018,6 +1020,199 @@ exit 0
             plugin.id == PluginId("standalone-tools@0.1.0".to_owned())
                 && plugin.source == PluginSourceKind::CargoExtension
         }));
+    }
+
+    #[tokio::test]
+    async fn project_plugin_selection_blocks_unselected_project_source_plugins() {
+        let workspace = tempfile::tempdir().unwrap();
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        let project_plugin_dir = workspace.path().join("plugin");
+        std::fs::create_dir_all(&project_plugin_dir).unwrap();
+        write_desktop_plugin_package(&project_plugin_dir, "project-rogue");
+        state
+            .project_config_store
+            .as_ref()
+            .expect("project config")
+            .save_project_plugin_selection(&harness_contracts::PluginSelectionRecord {
+                allow_project_plugins: true,
+                enabled: Vec::new(),
+            })
+            .expect("save project plugin selection");
+
+        let listed = list_plugins_with_runtime_state(&state).await.unwrap();
+
+        assert!(listed
+            .plugins
+            .iter()
+            .all(|plugin| plugin.name != "project-rogue"));
+    }
+
+    #[tokio::test]
+    async fn global_plugin_selection_id_does_not_enable_project_record_collision() {
+        let workspace = tempfile::tempdir().unwrap();
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        let plugin_id = PluginId("shared-collision@0.1.0".to_owned());
+        let global_store = DesktopPluginStore::global(
+            state
+                .global_config_store
+                .as_ref()
+                .expect("global config")
+                .layout()
+                .clone(),
+        );
+        let global_source = tempfile::tempdir().unwrap();
+        write_desktop_plugin_package(global_source.path(), "shared-collision");
+        let package_dir = plugin_package_dir_name(&plugin_id);
+        let global_content_hash = global_store
+            .write_plugin_package(&package_dir, &global_source.path().canonicalize().unwrap())
+            .expect("write global plugin package");
+        global_store
+            .save_record(&PluginSettingsRecord {
+                records: vec![PluginStoreRecord {
+                    plugin_id: plugin_id.clone(),
+                    name: "shared-collision".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    enabled: true,
+                    package_dir: package_dir.clone(),
+                    source_path: "<local-plugin>".to_owned(),
+                    content_hash: global_content_hash,
+                    imported_at: "2026-01-01T00:00:00Z".to_owned(),
+                    updated_at: "2026-01-01T00:00:00Z".to_owned(),
+                    config: Value::Null,
+                    last_validation_error: None,
+                }],
+                ..PluginSettingsRecord::default()
+            })
+            .expect("save global plugin index");
+        let project_source = tempfile::tempdir().unwrap();
+        write_desktop_plugin_package(project_source.path(), "shared-collision");
+        let project_content_hash = state
+            .plugin_store
+            .write_plugin_package(&package_dir, &project_source.path().canonicalize().unwrap())
+            .expect("write project plugin package");
+        state
+            .plugin_store
+            .save_record(&PluginSettingsRecord {
+                records: vec![PluginStoreRecord {
+                    plugin_id: plugin_id.clone(),
+                    name: "shared-collision".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    enabled: false,
+                    package_dir,
+                    source_path: "<local-plugin>".to_owned(),
+                    content_hash: project_content_hash,
+                    imported_at: "2026-01-01T00:00:00Z".to_owned(),
+                    updated_at: "2026-01-01T00:00:00Z".to_owned(),
+                    config: Value::Null,
+                    last_validation_error: None,
+                }],
+                ..PluginSettingsRecord::default()
+            })
+            .expect("save project plugin index");
+        state
+            .project_config_store
+            .as_ref()
+            .expect("project config")
+            .save_project_plugin_selection(&harness_contracts::PluginSelectionRecord {
+                allow_project_plugins: false,
+                enabled: vec![plugin_id.0],
+            })
+            .expect("save project plugin selection");
+
+        let listed = list_plugins_with_runtime_state(&state).await.unwrap();
+        let plugin = listed
+            .plugins
+            .iter()
+            .find(|plugin| plugin.name == "shared-collision")
+            .expect("shared plugin should be discovered");
+
+        assert!(!plugin.enabled);
+        assert!(matches!(plugin.state, PluginProductState::Disabled { .. }));
+    }
+
+    #[tokio::test]
+    async fn project_record_cannot_override_global_disabled_plugin_name() {
+        let workspace = tempfile::tempdir().unwrap();
+        let state =
+            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        let global_plugin_id = PluginId("shared-tools@0.1.0".to_owned());
+        let project_plugin_id = PluginId("shared-tools@0.1.1".to_owned());
+        let global_store = DesktopPluginStore::global(
+            state
+                .global_config_store
+                .as_ref()
+                .expect("global config")
+                .layout()
+                .clone(),
+        );
+        global_store
+            .save_record(&PluginSettingsRecord {
+                records: vec![PluginStoreRecord {
+                    plugin_id: global_plugin_id,
+                    name: "shared-tools".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    enabled: false,
+                    package_dir: "shared-tools_0.1.0".to_owned(),
+                    source_path: "<local-plugin>".to_owned(),
+                    content_hash: "hash".to_owned(),
+                    imported_at: "2026-01-01T00:00:00Z".to_owned(),
+                    updated_at: "2026-01-01T00:00:00Z".to_owned(),
+                    config: Value::Null,
+                    last_validation_error: None,
+                }],
+                ..PluginSettingsRecord::default()
+            })
+            .expect("save global plugin index");
+        let project_source = tempfile::tempdir().unwrap();
+        write_desktop_plugin_package(project_source.path(), "shared-tools");
+        let project_package_dir = "shared-tools_0.1.1".to_owned();
+        let project_content_hash = state
+            .plugin_store
+            .write_plugin_package(
+                &project_package_dir,
+                &project_source.path().canonicalize().unwrap(),
+            )
+            .expect("write project plugin package");
+        state
+            .plugin_store
+            .save_record(&PluginSettingsRecord {
+                records: vec![PluginStoreRecord {
+                    plugin_id: project_plugin_id.clone(),
+                    name: "shared-tools".to_owned(),
+                    version: "0.1.1".to_owned(),
+                    enabled: true,
+                    package_dir: project_package_dir,
+                    source_path: "<local-plugin>".to_owned(),
+                    content_hash: project_content_hash,
+                    imported_at: "2026-01-01T00:00:00Z".to_owned(),
+                    updated_at: "2026-01-01T00:00:00Z".to_owned(),
+                    config: Value::Null,
+                    last_validation_error: None,
+                }],
+                ..PluginSettingsRecord::default()
+            })
+            .expect("save project plugin index");
+        state
+            .project_config_store
+            .as_ref()
+            .expect("project config")
+            .save_project_plugin_selection(&harness_contracts::PluginSelectionRecord {
+                allow_project_plugins: false,
+                enabled: vec![project_plugin_id.0],
+            })
+            .expect("save project plugin selection");
+
+        let listed = list_plugins_with_runtime_state(&state).await.unwrap();
+        let plugin = listed
+            .plugins
+            .iter()
+            .find(|plugin| plugin.name == "shared-tools")
+            .expect("shared plugin should be discovered");
+
+        assert!(!plugin.enabled);
+        assert!(matches!(plugin.state, PluginProductState::Disabled { .. }));
     }
 
     #[tokio::test]

@@ -186,11 +186,12 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
       : activeConversation.title
   const configuredModelProfiles =
     providerSettingsQuery.data?.configs.filter((profile) => profile.hasApiKey) ?? []
-  const selectedModelConfigId =
+  const submitModelConfigId =
     modelConfigOverridesByConversation[renderedConversationId] ??
     activeConversation.modelConfigId ??
-    providerSettingsQuery.data?.defaultConfigId ??
     ''
+  const selectedModelConfigId =
+    submitModelConfigId || providerSettingsQuery.data?.defaultConfigId || ''
   const currentModelProfile =
     configuredModelProfiles.find((profile) => profile.id === selectedModelConfigId) ?? null
   const modelConfigs = configuredModelProfiles.map((profile) => ({
@@ -217,7 +218,7 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
       emptySubmit(
         prompt,
         composerPermissionMode,
-        selectedModelConfigId.length > 0 ? selectedModelConfigId : undefined,
+        submitModelConfigId.length > 0 ? submitModelConfigId : undefined,
       ),
     )
   }
@@ -293,6 +294,7 @@ export function ConversationWorkspace({ conversationId }: ConversationWorkspaceP
               timeline.isSubmitting || timeline.composerMode.kind === 'running-disabled'
             }
             modelConfigId={selectedModelConfigId}
+            submitModelConfigId={submitModelConfigId}
             modelConfigs={modelConfigs}
             mode={timeline.composerMode}
             onCreateAttachmentFromPath={commandClient.createAttachmentFromPath}

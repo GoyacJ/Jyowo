@@ -107,7 +107,7 @@ pub(crate) fn migrate_mcp_servers_from_runtime(
             &old_path,
             "old mcp server settings",
         )? {
-            let secret_ids = find_mcp_records_with_inline_secrets(&old_records);
+            let secret_ids = find_mcp_records_with_inline_secrets(&old_records, workspace_root);
             if !secret_ids.is_empty() {
                 return Ok(MigrationResult::Conflict(MigrationConflict {
                     kind: MigrationConflictKind::SecretMaterialRequiresUserAction,
@@ -163,18 +163,27 @@ fn mcp_records_content_eq(old: &[McpServerConfigRecord], new: &[McpServerConfigR
 /// secret-like values).
 pub(crate) fn find_mcp_records_with_inline_secrets(
     records: &[McpServerConfigRecord],
+    workspace_root: &Path,
 ) -> Vec<String> {
     let mut secret_bearing_ids = Vec::new();
+    let workspace_root = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
 
     for record in records {
         match &record.transport {
-            McpServerTransportConfig::Stdio { env, .. } => {
+            McpServerTransportConfig::Stdio {
+                env, working_dir, ..
+            } => {
                 let has_secret_env = env.iter().any(|nv| {
                     mcp_env_key_looks_secret_bearing(&nv.key)
                         || nv.value.len() >= 16
                             && crate::commands::validation::looks_like_raw_secret(&nv.value)
                 });
-                if has_secret_env {
+                let has_private_working_dir = working_dir.as_deref().is_some_and(|path| {
+                    mcp_working_dir_is_private_absolute_path(path, &workspace_root)
+                });
+                if has_secret_env || has_private_working_dir {
                     secret_bearing_ids.push(record.id.clone());
                     continue;
                 }
@@ -189,8 +198,8 @@ pub(crate) fn find_mcp_records_with_inline_secrets(
 
                 // Check inline headers for secret-bearing values.
                 let has_sensitive_header = headers.iter().any(|nv| {
-                    (mcp_http_header_is_sensitive(&nv.key)
-                        && mcp_header_value_looks_secret_bearing(&nv.value))
+                    mcp_http_header_is_sensitive(&nv.key)
+                        || mcp_header_value_looks_secret_bearing(&nv.value)
                         || crate::commands::validation::looks_like_raw_secret(&nv.value)
                 });
                 if has_sensitive_header {
@@ -202,6 +211,20 @@ pub(crate) fn find_mcp_records_with_inline_secrets(
     }
 
     secret_bearing_ids
+}
+
+fn mcp_working_dir_is_private_absolute_path(path: &str, workspace_root: &Path) -> bool {
+    let candidate = Path::new(path);
+    if !candidate.is_absolute() {
+        return false;
+    }
+    if candidate.strip_prefix(workspace_root).is_ok() {
+        return false;
+    }
+    match candidate.canonicalize() {
+        Ok(canonical) => canonical.strip_prefix(workspace_root).is_err(),
+        Err(_) => true,
+    }
 }
 
 #[derive(Clone)]
@@ -292,6 +315,14 @@ mod tests {
     }
 
     fn make_stdio_record(id: &str, env: Vec<(String, String)>) -> McpServerConfigRecord {
+        make_stdio_record_with_working_dir(id, env, None)
+    }
+
+    fn make_stdio_record_with_working_dir(
+        id: &str,
+        env: Vec<(String, String)>,
+        working_dir: Option<String>,
+    ) -> McpServerConfigRecord {
         McpServerConfigRecord {
             id: id.to_owned(),
             enabled: true,
@@ -305,7 +336,7 @@ mod tests {
                     .map(|(key, value)| McpNameValueRecord { key, value })
                     .collect(),
                 inherit_env: vec![],
-                working_dir: None,
+                working_dir,
             },
         }
     }
@@ -334,7 +365,9 @@ mod tests {
             "s1",
             vec![("API_KEY".to_owned(), "sk-secret-value-1234".to_owned())],
         )];
-        let ids = find_mcp_records_with_inline_secrets(&records);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = make_workspace(&temp);
+        let ids = find_mcp_records_with_inline_secrets(&records, &workspace);
         assert_eq!(ids, vec!["s1"]);
     }
 
@@ -347,8 +380,54 @@ mod tests {
                 "Bearer secret-token-1234".to_owned(),
             )],
         )];
-        let ids = find_mcp_records_with_inline_secrets(&records);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = make_workspace(&temp);
+        let ids = find_mcp_records_with_inline_secrets(&records, &workspace);
         assert_eq!(ids, vec!["h1"]);
+    }
+
+    #[test]
+    fn find_mcp_records_with_inline_secrets_detects_sensitive_header_key() {
+        let records = vec![make_http_record(
+            "h1",
+            vec![("Cookie".to_owned(), "sessionid".to_owned())],
+        )];
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = make_workspace(&temp);
+        let ids = find_mcp_records_with_inline_secrets(&records, &workspace);
+        assert_eq!(ids, vec!["h1"]);
+    }
+
+    #[test]
+    fn find_mcp_records_with_inline_secrets_detects_oauth_header_value() {
+        let records = vec![make_http_record(
+            "h1",
+            vec![("X-Auth".to_owned(), "OAuth abc123".to_owned())],
+        )];
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = make_workspace(&temp);
+        let ids = find_mcp_records_with_inline_secrets(&records, &workspace);
+        assert_eq!(ids, vec!["h1"]);
+    }
+
+    #[test]
+    fn find_mcp_records_with_inline_secrets_detects_private_absolute_working_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = make_workspace(&temp);
+        let records = vec![make_stdio_record_with_working_dir(
+            "s1",
+            Vec::new(),
+            Some(
+                workspace
+                    .parent()
+                    .unwrap()
+                    .join("private")
+                    .display()
+                    .to_string(),
+            ),
+        )];
+        let ids = find_mcp_records_with_inline_secrets(&records, &workspace);
+        assert_eq!(ids, vec!["s1"]);
     }
 
     #[test]
@@ -360,7 +439,9 @@ mod tests {
                 ("DEBUG".to_owned(), "true".to_owned()),
             ],
         )];
-        let ids = find_mcp_records_with_inline_secrets(&records);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = make_workspace(&temp);
+        let ids = find_mcp_records_with_inline_secrets(&records, &workspace);
         assert!(ids.is_empty());
     }
 

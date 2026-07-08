@@ -704,6 +704,62 @@ pub(crate) async fn runtime_state_with_harness_for_workspace(
     state
 }
 
+pub(crate) async fn runtime_state_with_harness_for_global_conversation(
+    runtime_root: PathBuf,
+    conversation_id: SessionId,
+) -> DesktopRuntimeState {
+    std::fs::create_dir_all(&runtime_root).unwrap();
+    let conversation_cwd = runtime_root
+        .join("workdir")
+        .join(conversation_id.to_string());
+    std::fs::create_dir_all(&conversation_cwd).unwrap();
+    write_test_provider_settings(&conversation_cwd);
+    let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
+        default_timeout: Some(Duration::from_secs(5)),
+        heartbeat_interval: None,
+        max_pending: 16,
+    }));
+    let blob_store: Arc<dyn BlobStore> = Arc::new(
+        FileBlobStore::open(runtime_root.join("blobs")).expect("test blob store should open"),
+    );
+    let evidence_registry = Arc::new(
+        SqliteEvidenceRefRegistry::open(runtime_root.join("conversation-read-model.sqlite"))
+            .await
+            .expect("test evidence registry should open"),
+    );
+    let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let event_store_for_evidence = Arc::clone(&event_store) as Arc<dyn harness_journal::EventStore>;
+    let evidence_ref_store = Arc::new(EvidenceRefStore::new_with_event_store(
+        evidence_registry,
+        Arc::clone(&blob_store),
+        event_store_for_evidence,
+    ));
+    let harness = Arc::new(
+        Harness::builder()
+            .with_options(test_harness_options(&conversation_cwd))
+            .with_model(TestModelProvider::default())
+            .with_store(event_store)
+            .with_sandbox(NoopSandbox::new())
+            .with_blob_store_arc(blob_store)
+            .with_evidence_ref_store_arc(evidence_ref_store)
+            .with_stream_permission_broker_arc(
+                stream_permission_runtime.broker(),
+                stream_permission_runtime.resolver_handle(),
+            )
+            .build()
+            .await
+            .expect("harness should build with stream permission runtime"),
+    );
+
+    DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_global_conversation(
+        runtime_root,
+        conversation_id,
+        harness,
+        stream_permission_runtime,
+    )
+    .expect("state should use the harness permission broker")
+}
+
 pub(crate) async fn runtime_state_with_memory_provider(
     provider: Arc<dyn MemoryProvider>,
 ) -> DesktopRuntimeState {

@@ -3153,6 +3153,17 @@ fn record_no_workspace_attachment_owner(
     write_attachment_conversation_index(&index_path, &index)
 }
 
+pub(crate) fn no_workspace_attachment_belongs_to_conversation(
+    runtime_root: &Path,
+    session_id: SessionId,
+    attachment_id: &str,
+) -> Result<bool, CommandErrorPayload> {
+    ensure_attachment_id(attachment_id)?;
+    let index_path = attachment_conversation_index_path(runtime_root, session_id);
+    let index = read_attachment_conversation_index(&index_path)?;
+    Ok(index.attachment_ids.contains(attachment_id))
+}
+
 fn cleanup_no_workspace_attachment_records(
     runtime_root: &Path,
     session_id: SessionId,

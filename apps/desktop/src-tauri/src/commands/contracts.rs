@@ -375,10 +375,18 @@ pub struct ProviderConfigPayload {
     pub model_descriptor: ModelCatalogEntry,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SettingsScope {
+    Global,
+    Project,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListProviderSettingsResponse {
     pub default_config_id: Option<String>,
+    pub selection_scope: SettingsScope,
     pub configs: Vec<ProviderConfigPayload>,
 }
 
@@ -1405,6 +1413,10 @@ pub trait PermissionResolver: Send + Sync {
 }
 
 pub trait ProviderSettingsStore: Send + Sync {
+    fn selection_scope(&self) -> SettingsScope {
+        SettingsScope::Global
+    }
+
     fn load_record(&self) -> Result<Option<ProviderSettingsRecord>, CommandErrorPayload>;
     fn save_record(&self, record: &ProviderSettingsRecord) -> Result<(), CommandErrorPayload>;
 }
@@ -2312,6 +2324,7 @@ pub struct GetExecutionSettingsResponse {
     pub permission_mode: PermissionMode,
     pub tool_profile: ToolProfile,
     pub context_compression_trigger_ratio: f32,
+    pub scope: SettingsScope,
     pub auto_mode_available: bool,
     pub agent_capabilities: AgentCapabilitiesPayload,
 }
@@ -2339,6 +2352,7 @@ pub struct SetExecutionSettingsResponse {
     pub permission_mode: PermissionMode,
     pub tool_profile: ToolProfile,
     pub context_compression_trigger_ratio: f32,
+    pub scope: SettingsScope,
     pub auto_mode_available: bool,
     pub agent_capabilities: AgentCapabilitiesPayload,
 }

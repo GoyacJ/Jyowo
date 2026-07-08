@@ -164,6 +164,7 @@ export type ModelSettingsViewModel = {
   rows: ModelAssetRow[]
   catalog: ModelProviderCatalogResponse
   configs: ProviderConfig[]
+  selectionScope: ListProviderSettingsResponse['selectionScope']
   capabilityRoutes: SectionState<CapabilityRouteRow[]>
 }
 
@@ -275,6 +276,7 @@ export function buildModelSettingsViewModel(
     rows: rowsWithRouteBindings,
     catalog,
     configs: settings.configs,
+    selectionScope: settings.selectionScope,
     capabilityRoutes,
   }
 }
@@ -290,6 +292,7 @@ function emptyModelSettingsViewModel(): ModelSettingsViewModel {
     rows: [],
     catalog: { providers: [] },
     configs: [],
+    selectionScope: 'global',
     capabilityRoutes: { status: 'unavailable' },
   }
 }

@@ -56,6 +56,7 @@ type ComposerProps = {
   modelCapability?: ConversationModelCapability | null
   modelConfigDisabled?: boolean
   modelConfigId?: string
+  submitModelConfigId?: string
   modelConfigs?: Array<{ id: string; label: string }>
   onModelConfigChange?: (modelConfigId: string) => void
   permissionMode?: PermissionMode
@@ -94,6 +95,7 @@ export function Composer({
   modelCapability,
   modelConfigDisabled = false,
   modelConfigId,
+  submitModelConfigId,
   modelConfigs = [],
   onModelConfigChange,
   permissionMode,
@@ -116,6 +118,7 @@ export function Composer({
   const [localPermissionMode, setLocalPermissionMode] = useState<PermissionMode>('default')
   const selectedPermissionMode = permissionMode ?? localPermissionMode
   const selectedModelConfigId = modelConfigId ?? ''
+  const selectedSubmitModelConfigId = submitModelConfigId ?? selectedModelConfigId
   const effectiveMode = mode ?? fallbackComposerMode(pending, disabled)
   const isDisabled =
     disabled || effectiveMode.kind === 'submitting' || effectiveMode.kind === 'running-disabled'
@@ -156,8 +159,8 @@ export function Composer({
       permissionMode: selectedPermissionMode,
       prompt: submittedText,
     }
-    if (selectedModelConfigId.length > 0) {
-      payload.modelConfigId = selectedModelConfigId
+    if (selectedSubmitModelConfigId.length > 0) {
+      payload.modelConfigId = selectedSubmitModelConfigId
     }
 
     try {

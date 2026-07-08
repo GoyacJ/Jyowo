@@ -32,15 +32,20 @@ async fn import_skill_persists_enabled_skill_without_exposing_source_path() {
     assert_eq!(imported.skill.source_kind, "workspace");
     assert!(!serialized.contains(&source_dir.to_string_lossy().to_string()));
     assert!(workspace
-        .join(".jyowo/skills/packages/enabled")
+        .join(".jyowo/skills/packages")
         .join(&imported.skill.id)
         .join("SKILL.md")
         .exists());
     assert!(workspace
-        .join(".jyowo/skills/packages/enabled")
+        .join(".jyowo/skills/packages")
         .join(&imported.skill.id)
         .join("references/style.md")
         .exists());
+    let selection: harness_contracts::SkillSelectionRecord = serde_json::from_str(
+        &std::fs::read_to_string(workspace.join(".jyowo/config/skills.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(selection.enabled, vec![imported.skill.id.clone()]);
 }
 
 #[tokio::test]
@@ -137,10 +142,15 @@ async fn disabling_skill_moves_file_and_removes_it_from_runtime_list() {
     assert!(!disabled.skill.enabled);
     assert_eq!(disabled.skill.status, "disabled");
     assert!(workspace
-        .join(".jyowo/skills/packages/disabled")
+        .join(".jyowo/skills/packages")
         .join(&imported.skill.id)
         .join("SKILL.md")
         .exists());
+    let selection: harness_contracts::SkillSelectionRecord = serde_json::from_str(
+        &std::fs::read_to_string(workspace.join(".jyowo/config/skills.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(selection.enabled.is_empty());
     assert!(listed
         .skills
         .iter()
@@ -164,7 +174,7 @@ async fn disabling_skill_moves_file_and_removes_it_from_runtime_list() {
     assert!(enabled.skill.enabled);
     assert_eq!(enabled.skill.status, "ready");
     assert!(workspace
-        .join(".jyowo/skills/packages/enabled")
+        .join(".jyowo/skills/packages")
         .join(&imported.skill.id)
         .join("SKILL.md")
         .exists());
@@ -179,9 +189,7 @@ async fn enabling_skill_rejects_runtime_duplicate_name() {
     let workspace = unique_workspace("skill-enable-duplicate-runtime");
     std::fs::create_dir_all(&workspace).unwrap();
     let disabled_id = "managed-disabled";
-    let disabled_dir = workspace
-        .join(".jyowo/skills/packages/disabled")
-        .join(disabled_id);
+    let disabled_dir = workspace.join(".jyowo/skills/packages").join(disabled_id);
     std::fs::create_dir_all(&disabled_dir).unwrap();
     std::fs::write(
         disabled_dir.join("SKILL.md"),
@@ -227,14 +235,15 @@ async fn enabling_skill_rejects_runtime_duplicate_name() {
         .message
         .contains("active skill name already exists: shared-name"));
     assert!(workspace
-        .join(".jyowo/skills/packages/disabled")
+        .join(".jyowo/skills/packages")
         .join(disabled_id)
         .join("SKILL.md")
         .exists());
-    assert!(!workspace
-        .join(".jyowo/skills/packages/enabled")
-        .join(disabled_id)
-        .exists());
+    let selection: harness_contracts::SkillSelectionRecord = serde_json::from_str(
+        &std::fs::read_to_string(workspace.join(".jyowo/config/skills.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(!selection.enabled.iter().any(|id| id == disabled_id));
 }
 
 #[tokio::test]
@@ -274,13 +283,159 @@ async fn delete_skill_removes_managed_record_and_file() {
     assert_eq!(deleted.id, imported.skill.id);
     assert_eq!(deleted.status, "deleted");
     assert!(!workspace
-        .join(".jyowo/skills/packages/enabled")
+        .join(".jyowo/skills/packages")
         .join(&imported.skill.id)
         .exists());
     assert!(listed
         .skills
         .iter()
         .all(|skill| skill.id != imported.skill.id));
+}
+
+#[tokio::test]
+async fn delete_skill_keeps_record_and_package_when_selection_write_fails() {
+    let workspace = unique_workspace("skill-delete-selection-fails");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let source_dir = unique_workspace("skill-delete-selection-fails-source");
+    let source_path = write_skill_package(
+        &source_dir,
+        "keep-on-failure",
+        "keep-on-failure",
+        "Keep package when config write fails",
+        None,
+    );
+    let state = runtime_state_for_workspace(workspace.clone())
+        .await
+        .unwrap();
+    let imported = import_skill_with_runtime_state(
+        ImportSkillRequest {
+            source_path: source_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let selection_path = workspace.join(".jyowo/config/skills.json");
+    std::fs::remove_file(&selection_path).unwrap();
+    std::fs::create_dir(&selection_path).unwrap();
+
+    let error = delete_skill_with_runtime_state(
+        DeleteSkillRequest {
+            id: imported.skill.id.clone(),
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.code.starts_with("RUNTIME_"));
+    assert!(workspace
+        .join(".jyowo/skills/packages")
+        .join(&imported.skill.id)
+        .join("SKILL.md")
+        .exists());
+    let records: Vec<SkillStoreRecord> = serde_json::from_str(
+        &std::fs::read_to_string(workspace.join(".jyowo/skills/index.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(records.iter().any(|record| record.id == imported.skill.id));
+}
+
+#[tokio::test]
+async fn startup_skill_migration_keeps_legacy_store_when_selection_write_fails() {
+    let workspace = unique_workspace("skill-migration-selection-fails");
+    let old_skills = workspace.join(".jyowo/runtime/skills");
+    let old_package = old_skills.join("enabled/legacy-skill");
+    std::fs::create_dir_all(&old_package).unwrap();
+    std::fs::write(
+        old_package.join("SKILL.md"),
+        skill_markdown("legacy-skill", "Legacy skill"),
+    )
+    .unwrap();
+    let records = vec![SkillStoreRecord {
+        id: "legacy-skill".to_owned(),
+        name: "Legacy Skill".to_owned(),
+        description: "Migrated from runtime".to_owned(),
+        enabled: true,
+        content_hash: "abc".to_owned(),
+        package_dir: "legacy-skill".to_owned(),
+        file_name: String::new(),
+        imported_at: "2024-01-01T00:00:00Z".to_owned(),
+        updated_at: "2024-01-01T00:00:00Z".to_owned(),
+        tags: Vec::new(),
+        category: None,
+        last_validation_error: None,
+        origin: None,
+    }];
+    std::fs::write(
+        old_skills.join("index.json"),
+        serde_json::to_vec_pretty(&records).unwrap(),
+    )
+    .unwrap();
+    let selection_path = workspace.join(".jyowo/config/skills.json");
+    std::fs::create_dir_all(selection_path.parent().unwrap()).unwrap();
+    std::fs::create_dir(&selection_path).unwrap();
+
+    let error = match runtime_state_for_workspace(workspace.clone()).await {
+        Ok(_) => panic!("startup migration should fail"),
+        Err(error) => error,
+    };
+
+    assert!(error.code.starts_with("RUNTIME_"));
+    assert!(old_skills.exists());
+    assert!(old_package.join("SKILL.md").exists());
+    assert!(!workspace.join(".jyowo/skills/index.json").exists());
+    assert!(!workspace
+        .join(".jyowo/skills/packages/legacy-skill/SKILL.md")
+        .exists());
+}
+
+#[tokio::test]
+async fn startup_plugin_migration_keeps_legacy_store_when_selection_write_fails() {
+    let workspace = unique_workspace("plugin-migration-selection-fails");
+    let old_plugins = workspace.join(".jyowo/runtime/plugins");
+    let old_package = old_plugins.join("user/legacy-plugin");
+    std::fs::create_dir_all(&old_package).unwrap();
+    std::fs::write(old_package.join("plugin.json"), "{}").unwrap();
+    std::fs::write(
+        old_plugins.join("index.json"),
+        serde_json::to_vec_pretty(&json!({
+            "allowProjectPlugins": true,
+            "records": [
+                {
+                    "pluginId": "legacy-plugin",
+                    "name": "Legacy Plugin",
+                    "description": "Migrated from runtime",
+                    "enabled": true,
+                    "packageDir": "legacy-plugin",
+                    "sourcePath": "",
+                    "contentHash": "abc",
+                    "importedAt": "2024-01-01T00:00:00Z",
+                    "updatedAt": "2024-01-01T00:00:00Z",
+                    "config": {},
+                    "lastValidationError": null
+                }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let selection_path = workspace.join(".jyowo/config/plugins.json");
+    std::fs::create_dir_all(selection_path.parent().unwrap()).unwrap();
+    std::fs::create_dir(&selection_path).unwrap();
+
+    let error = match runtime_state_for_workspace(workspace.clone()).await {
+        Ok(_) => panic!("startup migration should fail"),
+        Err(error) => error,
+    };
+
+    assert!(error.code.starts_with("RUNTIME_"));
+    assert!(old_plugins.exists());
+    assert!(old_package.join("plugin.json").exists());
+    assert!(!workspace.join(".jyowo/plugins/index.json").exists());
+    assert!(!workspace
+        .join(".jyowo/plugins/packages/legacy-plugin/plugin.json")
+        .exists());
 }
 
 #[tokio::test]
@@ -329,7 +484,7 @@ async fn delete_skill_removes_disabled_managed_record_and_file() {
     assert_eq!(deleted.id, imported.skill.id);
     assert_eq!(deleted.status, "deleted");
     assert!(!workspace
-        .join(".jyowo/skills/packages/disabled")
+        .join(".jyowo/skills/packages")
         .join(&imported.skill.id)
         .exists());
     assert!(listed

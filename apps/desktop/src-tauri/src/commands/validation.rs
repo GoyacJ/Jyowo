@@ -158,6 +158,10 @@ pub(crate) async fn build_conversation_turn_input(
         attachments: validate_attachment_references(
             request.attachments.as_deref().unwrap_or_default(),
             state.runtime_root(),
+            state
+                .project_workspace_root()
+                .is_none()
+                .then_some(session_id),
         )?,
     })
 }
@@ -414,10 +418,22 @@ pub(crate) async fn validate_context_references(
 pub(crate) fn validate_attachment_references(
     attachments: &[AttachmentReferencePayload],
     runtime_root: &Path,
+    no_workspace_session_id: Option<SessionId>,
 ) -> Result<Vec<ConversationAttachmentReference>, CommandErrorPayload> {
     let mut validated = Vec::with_capacity(attachments.len());
 
     for attachment in attachments {
+        if let Some(session_id) = no_workspace_session_id {
+            if !no_workspace_attachment_belongs_to_conversation(
+                runtime_root,
+                session_id,
+                &attachment.id,
+            )? {
+                return Err(invalid_payload(
+                    "attachment reference does not belong to conversation".to_owned(),
+                ));
+            }
+        }
         let record = read_attachment_record(runtime_root, &attachment.id)?;
         if record.attachment != *attachment {
             return Err(invalid_payload(
@@ -943,6 +959,7 @@ pub(crate) fn mcp_http_header_is_sensitive(value: &str) -> bool {
 pub(crate) fn mcp_header_value_looks_secret_bearing(value: &str) -> bool {
     let normalized = value.trim().to_ascii_lowercase();
     normalized.starts_with("bearer ")
+        || normalized.starts_with("oauth ")
         || normalized.contains(" token")
         || normalized.contains("secret")
         || normalized.contains("password")

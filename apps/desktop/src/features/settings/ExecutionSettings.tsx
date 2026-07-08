@@ -75,6 +75,7 @@ export function ExecutionSettings() {
   const [contextCompressionTriggerPercent, setContextCompressionTriggerPercent] = useState(80)
   const [agentCapabilities, setAgentCapabilities] = useState(defaultAgentCapabilities)
   const [autoModeAvailable, setAutoModeAvailable] = useState(false)
+  const [scope, setScope] = useState<GetExecutionSettingsResponse['scope']>('global')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -85,6 +86,7 @@ export function ExecutionSettings() {
     setContextCompressionTriggerPercent(Math.round(settings.contextCompressionTriggerRatio * 100))
     setAgentCapabilities(settings.agentCapabilities)
     setAutoModeAvailable(settings.autoModeAvailable)
+    setScope(settings.scope)
   }, [])
 
   useEffect(() => {
@@ -132,6 +134,7 @@ export function ExecutionSettings() {
       autoModeAvailable,
       contextCompressionTriggerPercent,
       permissionMode,
+      scope,
       toolProfile,
     })
     setSaving(true)
@@ -159,6 +162,7 @@ export function ExecutionSettings() {
       setSaving(false)
     }
   }
+  const scopeLabelKey = scope === 'project' ? 'scope.projectOverrides' : 'scope.globalDefaults'
 
   return (
     <section className="space-y-5 rounded-md border border-border bg-surface p-5">
@@ -169,7 +173,7 @@ export function ExecutionSettings() {
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="font-semibold text-base">{t('execution.title')}</h2>
-            <Badge variant="outline">{t('scope.globalDefaults')}</Badge>
+            <Badge variant="outline">{t(scopeLabelKey)}</Badge>
           </div>
           <p className="mt-1 text-muted-foreground text-sm">{t('execution.description')}</p>
         </div>
@@ -387,12 +391,14 @@ function currentSettingsSnapshot({
   autoModeAvailable,
   contextCompressionTriggerPercent,
   permissionMode,
+  scope,
   toolProfile,
 }: {
   agentCapabilities: AgentCapabilities
   autoModeAvailable: boolean
   contextCompressionTriggerPercent: number
   permissionMode: PermissionMode
+  scope: GetExecutionSettingsResponse['scope']
   toolProfile: ToolProfile
 }): GetExecutionSettingsResponse {
   return {
@@ -400,6 +406,7 @@ function currentSettingsSnapshot({
     autoModeAvailable,
     contextCompressionTriggerRatio: contextCompressionTriggerPercent / 100,
     permissionMode,
+    scope,
     toolProfile,
   }
 }

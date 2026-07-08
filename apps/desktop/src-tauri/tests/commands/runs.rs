@@ -282,6 +282,55 @@ async fn start_run_with_runtime_state_rejects_untrusted_attachment_id_before_rec
 }
 
 #[tokio::test]
+async fn no_workspace_start_run_rejects_attachment_owned_by_another_conversation() {
+    let _lock = HOME_ENV_LOCK.lock().unwrap();
+    let home = unique_workspace("no-workspace-attachment-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let _home_guard = EnvVarGuard::set(HOME_ENV, home.as_os_str());
+    let owner_session_id = SessionId::new();
+    let other_session_id = SessionId::new();
+    let state = runtime_state_with_harness_for_global_conversation(
+        home.join(".jyowo")
+            .join("runtime")
+            .join("global-conversations"),
+        owner_session_id,
+    )
+    .await;
+    let attachment_path = state.conversation_cwd().join("notes.txt");
+    std::fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
+    std::fs::write(&attachment_path, "local notes").unwrap();
+    let attachment = create_attachment_from_path_with_runtime_state(
+        CreateAttachmentFromPathRequest {
+            conversation_id: Some(owner_session_id.to_string()),
+            path: attachment_path.to_string_lossy().to_string(),
+        },
+        &state,
+    )
+    .await
+    .expect("attachment should be stored")
+    .attachment;
+
+    let error = start_run_with_runtime_state(
+        StartRunRequest {
+            client_message_id: None,
+            attachments: Some(vec![attachment]),
+            context_references: None,
+            conversation_id: other_session_id.to_string(),
+            model_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
+            permission_mode: None,
+            prompt: "Use this attachment".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .expect_err("no-workspace attachment must stay scoped to its owning conversation");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("does not belong"));
+}
+
+#[tokio::test]
 async fn list_reference_candidates_includes_workspace_files() {
     let workspace = unique_workspace("reference-candidates");
     let file_path = workspace.join("apps/desktop/src-tauri/src/commands/mod.rs");

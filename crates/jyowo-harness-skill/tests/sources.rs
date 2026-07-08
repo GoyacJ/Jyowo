@@ -3,6 +3,7 @@ use harness_skill::{
     McpSkillRecord, McpSource, SkillFilter, SkillLoader, SkillPlatform, SkillRegistry, SkillSource,
     SkillSourceConfig, UserSource, WorkspaceSource,
 };
+use std::collections::BTreeSet;
 
 #[tokio::test]
 async fn workspace_source_loads_markdown_files() {
@@ -99,6 +100,7 @@ Package body
         .with_source(SkillSourceConfig::DirectoryPackages {
             path: root.clone(),
             source_kind: harness_skill::DirectorySourceKind::Workspace,
+            allowed_package_ids: None,
         })
         .with_runtime_platform(SkillPlatform::Macos)
         .load_all()
@@ -115,6 +117,123 @@ Package body
     );
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn skill_loader_package_source_honors_allowed_package_ids() {
+    let root = unique_temp_dir("package-allowlist-source");
+    for name in ["enabled-skill", "disabled-skill"] {
+        let package = root.join(name);
+        std::fs::create_dir_all(&package).expect("package dir");
+        std::fs::write(
+            package.join("SKILL.md"),
+            format!(
+                r"---
+name: {name}
+description: Test skill
+---
+Package body
+"
+            ),
+        )
+        .expect("write package skill");
+    }
+
+    let report = SkillLoader::default()
+        .with_source(SkillSourceConfig::DirectoryPackages {
+            path: root.clone(),
+            source_kind: harness_skill::DirectorySourceKind::Workspace,
+            allowed_package_ids: Some(BTreeSet::from(["enabled-skill".to_owned()])),
+        })
+        .with_runtime_platform(SkillPlatform::Macos)
+        .load_all()
+        .await
+        .expect("package source should load");
+
+    assert_eq!(
+        report
+            .loaded
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["enabled-skill"]
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn skill_loader_package_source_rejects_symlink_package_allowlist_bypass() {
+    let root = unique_temp_dir("package-allowlist-symlink");
+    let external = unique_temp_dir("package-allowlist-external");
+    let external_package = external.join("external-skill");
+    std::fs::create_dir_all(&external_package).expect("external package dir");
+    std::fs::write(
+        external_package.join("SKILL.md"),
+        r"---
+name: external-skill
+description: External skill
+---
+External body
+",
+    )
+    .expect("write external package skill");
+    std::fs::create_dir_all(&root).expect("root dir");
+    std::os::unix::fs::symlink(&external_package, root.join("enabled-skill"))
+        .expect("symlink package dir");
+
+    let error = SkillLoader::default()
+        .with_source(SkillSourceConfig::DirectoryPackages {
+            path: root.clone(),
+            source_kind: harness_skill::DirectorySourceKind::Workspace,
+            allowed_package_ids: Some(BTreeSet::from(["enabled-skill".to_owned()])),
+        })
+        .with_runtime_platform(SkillPlatform::Macos)
+        .load_all()
+        .await
+        .expect_err("symlink package must fail");
+
+    assert!(error.to_string().contains("symlink"));
+
+    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(external);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn skill_loader_package_source_rejects_symlink_root() {
+    let root = unique_temp_dir("package-root-symlink");
+    let external = unique_temp_dir("package-root-external");
+    let external_package = external.join("external-skill");
+    std::fs::create_dir_all(&external_package).expect("external package dir");
+    std::fs::write(
+        external_package.join("SKILL.md"),
+        r"---
+name: external-skill
+description: External skill
+---
+External body
+",
+    )
+    .expect("write external package skill");
+    std::os::unix::fs::symlink(&external, &root).expect("symlink package root");
+
+    let error = SkillLoader::default()
+        .with_source(SkillSourceConfig::DirectoryPackages {
+            path: root.clone(),
+            source_kind: harness_skill::DirectorySourceKind::Workspace,
+            allowed_package_ids: Some(BTreeSet::from(["external-skill".to_owned()])),
+        })
+        .with_runtime_platform(SkillPlatform::Macos)
+        .load_all()
+        .await
+        .expect_err("symlink package root must fail");
+
+    assert!(error.to_string().contains("symlink"));
+
+    let _ = std::fs::remove_file(root);
+    let _ = std::fs::remove_dir_all(external);
 }
 
 #[tokio::test]

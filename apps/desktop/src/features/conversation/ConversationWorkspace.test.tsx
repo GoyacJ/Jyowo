@@ -99,6 +99,7 @@ const openAiModelDescriptor: ModelCatalogEntry = {
 
 const switchableProviderSettings: ListProviderSettingsResponse = {
   defaultConfigId: 'deepseek-config',
+  selectionScope: 'global',
   configs: [
     {
       protocol: 'chat_completions',
@@ -613,6 +614,7 @@ describe('ConversationWorkspace', () => {
         autoModeAvailable: false,
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'bypass_permissions',
+        scope: 'global',
         toolProfile: 'full',
       },
     })
@@ -660,6 +662,7 @@ describe('ConversationWorkspace', () => {
         autoModeAvailable: false,
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'default',
+        scope: 'global',
         toolProfile: 'full',
       })
       .mockResolvedValue({
@@ -667,6 +670,7 @@ describe('ConversationWorkspace', () => {
         autoModeAvailable: false,
         contextCompressionTriggerRatio: 0.8,
         permissionMode: 'default',
+        scope: 'global',
         toolProfile: 'full',
       })
     const startRunCalls: Array<Parameters<CommandClient['startRun']>[0]> = []
