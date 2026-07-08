@@ -55,8 +55,3 @@ fn tool_profile_serializes_custom_filter_shape() {
         }
     );
 }
-
-#[test]
-fn tool_profile_defaults_to_full_for_legacy_payloads() {
-    assert_eq!(ToolProfile::default(), ToolProfile::Full);
-}

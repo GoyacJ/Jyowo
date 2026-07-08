@@ -79,7 +79,7 @@ describe('conversation components', () => {
     expect(screen.queryByRole('button', { name: 'Copy diff' })).not.toBeInTheDocument()
   })
 
-  it('keeps diff metadata lines neutral in legacy diff previews', () => {
+  it('keeps diff metadata lines neutral in old diff previews', () => {
     render(
       <DiffPreview
         addedLineCount={1}

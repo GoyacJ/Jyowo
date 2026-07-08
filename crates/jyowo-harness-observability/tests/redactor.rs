@@ -96,6 +96,6 @@ fn custom_patterns_can_use_pattern_specific_replacement() {
 
 #[test]
 fn redactor_contract_accepts_noop_for_non_secret_text() {
-    RedactorContractTest::assert_noop_compatible(&NoopRedactor);
-    RedactorContractTest::assert_noop_compatible(&DefaultRedactor::default());
+    RedactorContractTest::assert_noop_contract(&NoopRedactor);
+    RedactorContractTest::assert_noop_contract(&DefaultRedactor::default());
 }

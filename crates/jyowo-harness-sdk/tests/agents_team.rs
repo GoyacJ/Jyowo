@@ -24,7 +24,7 @@ use harness_engine::{Engine, EngineId};
 use harness_hook::{HookDispatcher, HookRegistry};
 use harness_journal::{
     AppendMetadata, EventEnvelope, EventStore, InMemoryBlobStore, PrunePolicy, PruneReport,
-    ReplayCursor, SchemaVersion, SessionFilter, SessionSnapshot, SessionSummary,
+    ReplayCursor, SessionFilter, SessionSnapshot, SessionSummary,
 };
 use harness_model::{
     ContentDelta, ConversationModelCapability, HealthStatus, InferContext, ModelDescriptor,
@@ -1016,7 +1016,6 @@ impl EventStore for RecordingEventStore {
                 run_id: metadata.run_id,
                 correlation_id: metadata.correlation_id,
                 causation_id: metadata.causation_id,
-                schema_version: SchemaVersion::CURRENT,
                 recorded_at: harness_contracts::now(),
                 payload: event.clone(),
             });

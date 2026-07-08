@@ -95,17 +95,6 @@ pub struct ThoughtChunk {
     pub signature: Option<String>,
 }
 
-impl From<String> for ThoughtChunk {
-    fn from(text: String) -> Self {
-        Self {
-            text: Some(text),
-            provider_id: "legacy".to_owned(),
-            provider_native: None,
-            signature: None,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ReasoningSummaryChunk {
     pub text: String,

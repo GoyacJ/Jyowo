@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use harness_contracts::SkillId;
 use harness_skill::{
-    parse_skill_markdown_with_options, Skill, SkillCompatMode, SkillConfigDecl, SkillError,
-    SkillParamType, SkillParameter, SkillPlatform, SkillSource,
+    parse_skill_markdown, Skill, SkillConfigDecl, SkillError, SkillParamType, SkillParameter,
+    SkillPlatform, SkillSource,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -42,7 +42,6 @@ pub struct LockedSkillPackFile {
 #[derive(Debug, Clone)]
 pub struct SkillPackLoaderAdapter {
     runtime_platform: SkillPlatform,
-    compat_mode: SkillCompatMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +55,6 @@ impl Default for SkillPackLoaderAdapter {
     fn default() -> Self {
         Self {
             runtime_platform: current_platform(),
-            compat_mode: SkillCompatMode::Lenient,
         }
     }
 }
@@ -65,12 +63,6 @@ impl SkillPackLoaderAdapter {
     #[must_use]
     pub fn with_runtime_platform(mut self, platform: SkillPlatform) -> Self {
         self.runtime_platform = platform;
-        self
-    }
-
-    #[must_use]
-    pub fn with_compat_mode(mut self, compat_mode: SkillCompatMode) -> Self {
-        self.compat_mode = compat_mode;
         self
     }
 
@@ -84,12 +76,11 @@ impl SkillPackLoaderAdapter {
         let skill_md = require_pack_file(snapshot, entry)?;
         let source_path = workspace_source_path(snapshot, entry);
         let source = SkillSource::Workspace(source_path.clone());
-        let mut skill = parse_skill_markdown_with_options(
+        let mut skill = parse_skill_markdown(
             &skill_md.content,
             source,
             Some(PathBuf::from(entry)),
             self.runtime_platform,
-            self.compat_mode,
         )
         .map_err(skill_parse_error)?;
 

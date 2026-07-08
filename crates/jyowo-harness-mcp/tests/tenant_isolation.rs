@@ -82,7 +82,7 @@ async fn strict_tenant_allows_matching_tenant() {
 }
 
 #[tokio::test]
-async fn single_tenant_mode_and_legacy_entrypoint_allow_calls() {
+async fn single_tenant_mode_and_old_entrypoint_allow_calls() {
     let executions = Arc::new(AtomicUsize::new(0));
     let server = adapter_for_tenant(
         TenantId::SINGLE,
@@ -103,14 +103,14 @@ async fn single_tenant_mode_and_legacy_entrypoint_allow_calls() {
         .await;
     assert!(response.error.is_none());
 
-    let legacy = server
+    let old = server
         .handle_request(JsonRpcRequest::new(
             json!(4),
             "tools/call",
             Some(json!({ "name": "tenant_echo", "arguments": {} })),
         ))
         .await;
-    assert!(legacy.error.is_none());
+    assert!(old.error.is_none());
     assert_eq!(executions.load(Ordering::SeqCst), 2);
 }
 

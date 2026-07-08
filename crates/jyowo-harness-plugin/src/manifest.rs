@@ -9,13 +9,9 @@ use serde_json::Value;
 
 use crate::PluginError;
 
-pub const SUPPORTED_MANIFEST_SCHEMA_VERSION: u32 = 1;
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PluginManifest {
-    #[serde(default = "default_manifest_schema_version")]
-    pub manifest_schema_version: u32,
     pub name: PluginName,
     #[serde(with = "semver_version_serde")]
     pub version: Version,
@@ -29,7 +25,7 @@ pub struct PluginManifest {
     pub capabilities: PluginCapabilities,
     #[serde(default)]
     pub dependencies: Vec<PluginDependency>,
-    #[serde(default = "default_version_req", with = "semver_version_req_serde")]
+    #[serde(with = "semver_version_req_serde")]
     pub min_harness_version: VersionReq,
 }
 
@@ -39,12 +35,6 @@ impl PluginManifest {
     }
 
     pub fn validate_basic(&self) -> Result<(), PluginError> {
-        if self.manifest_schema_version > SUPPORTED_MANIFEST_SCHEMA_VERSION {
-            return Err(PluginError::InvalidManifest(format!(
-                "unsupported manifest_schema_version {}",
-                self.manifest_schema_version
-            )));
-        }
         Ok(())
     }
 }
@@ -293,10 +283,6 @@ fn validate_plugin_name(value: &str) -> Result<(), PluginError> {
         ));
     }
     Ok(())
-}
-
-fn default_manifest_schema_version() -> u32 {
-    SUPPORTED_MANIFEST_SCHEMA_VERSION
 }
 
 fn default_version_req() -> VersionReq {

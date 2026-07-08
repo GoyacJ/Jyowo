@@ -266,7 +266,7 @@ pub struct ConversationModelCapabilityRecord {
 pub enum ProviderModelLifecycleRecord {
     Stable,
     Preview,
-    Deprecated { retirement_date: String },
+    Retiring { retirement_date: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

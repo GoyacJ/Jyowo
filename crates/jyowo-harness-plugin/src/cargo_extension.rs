@@ -40,6 +40,7 @@ use ring::digest;
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt as _;
 
+use crate::sources::validate_manifest_schema;
 use crate::{
     DiscoverySource, ManifestLoadReport, ManifestLoaderError, ManifestOrigin, ManifestRecord,
     ManifestSigner, ManifestValidationFailure, McpManifestEntry, Plugin, PluginActivationContext,
@@ -1094,6 +1095,45 @@ fn decode_manifest_metadata(
         })
         .unwrap_or_default();
     let manifest_value = value.get("manifest").cloned().unwrap_or(value);
+    let origin = ManifestOrigin::CargoExtension {
+        binary: binary.to_path_buf(),
+        package_metadata,
+    };
+    let partial_name = manifest_value
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let partial_version = manifest_value
+        .get("version")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    validate_manifest_schema(
+        &manifest_value,
+        &origin,
+        partial_name.as_ref(),
+        partial_version.as_ref(),
+        raw_hash,
+    )
+    .map_err(|error| match error {
+        ManifestLoaderError::Validation(mut failure) => {
+            failure.raw_bytes_hash = raw_hash;
+            failure
+        }
+        ManifestLoaderError::Io(details) => cargo_extension_failure(
+            binary.to_path_buf(),
+            bytes.to_vec(),
+            details,
+            partial_name.clone(),
+            partial_version.clone(),
+        ),
+        ManifestLoaderError::UnsupportedSource(details) => cargo_extension_failure(
+            binary.to_path_buf(),
+            bytes.to_vec(),
+            details,
+            partial_name.clone(),
+            partial_version.clone(),
+        ),
+    })?;
     let manifest = serde_json::from_value::<PluginManifest>(manifest_value).map_err(|error| {
         cargo_extension_failure(
             binary.to_path_buf(),
@@ -1103,10 +1143,6 @@ fn decode_manifest_metadata(
             None,
         )
     })?;
-    let origin = ManifestOrigin::CargoExtension {
-        binary: binary.to_path_buf(),
-        package_metadata,
-    };
     let canonical = ManifestSigner::canonical_payload(&manifest).map_err(|error| {
         cargo_extension_failure(
             binary.to_path_buf(),

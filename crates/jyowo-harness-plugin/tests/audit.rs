@@ -222,9 +222,9 @@ async fn plugin_metrics_records_signer_totals() {
 }
 
 #[tokio::test]
-async fn plugin_metrics_records_loaded_by_source_and_trust_level_legacy_hook() {
+async fn plugin_metrics_records_loaded_by_source_and_trust_level_old_hook() {
     let metrics = Arc::new(CollectingMetrics::default());
-    let record = record("metric-loaded-legacy");
+    let record = record("metric-loaded-old");
     let plugin = Arc::new(NoopPlugin {
         manifest: record.manifest.clone(),
     });
@@ -239,7 +239,7 @@ async fn plugin_metrics_records_loaded_by_source_and_trust_level_legacy_hook() {
 
     registry.discover().await.expect("discover");
     registry
-        .activate(&plugin_id("metric-loaded-legacy"))
+        .activate(&plugin_id("metric-loaded-old"))
         .await
         .expect("activate");
 
@@ -291,7 +291,6 @@ async fn plugin_metrics_records_manifest_validation_failure_by_source_and_failur
 fn record(name: &str) -> ManifestRecord {
     ManifestRecord::new(
         PluginManifest {
-            manifest_schema_version: 1,
             name: PluginName::new(name).unwrap(),
             version: semver::Version::parse("0.1.0").unwrap(),
             trust_level: TrustLevel::UserControlled,

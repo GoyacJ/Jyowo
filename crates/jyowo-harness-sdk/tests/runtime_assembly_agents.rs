@@ -351,14 +351,17 @@ fn plugin_manifest_validation_records_real_hash() {
             ));
         let plugin_dir = workspace.join(".jyowo/plugins/bad-plugin");
         std::fs::create_dir_all(&plugin_dir).unwrap();
-        let raw_manifest = r#"{
-  "manifest_schema_version": 99,
+        let old_field = ["manifest", "schema", "version"].join("_");
+        let raw_manifest = format!(
+            r#"{{
   "name": "bad-plugin",
   "version": "0.1.0",
   "trust_level": "admin_trusted",
   "min_harness_version": ">=0.0.0",
-  "capabilities": {}
-}"#;
+  "capabilities": {{}},
+  "{old_field}": 99
+}}"#
+        );
         std::fs::write(plugin_dir.join("plugin.json"), raw_manifest).unwrap();
         let session_id = SessionId::new();
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));

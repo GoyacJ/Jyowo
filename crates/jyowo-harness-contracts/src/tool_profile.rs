@@ -27,9 +27,3 @@ pub enum ToolProfile {
         plugin_included: bool,
     },
 }
-
-impl Default for ToolProfile {
-    fn default() -> Self {
-        Self::Full
-    }
-}

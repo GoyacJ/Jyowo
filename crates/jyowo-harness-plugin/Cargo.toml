@@ -16,8 +16,6 @@ workspace = true
 [features]
 default = []
 dynamic-load = []
-# Compatibility alias only. Manifest signature verification is always compiled.
-manifest-sign = []
 # Explicit unsupported boundary loader for M5; no Wasm runtime is linked.
 wasm-runtime = []
 

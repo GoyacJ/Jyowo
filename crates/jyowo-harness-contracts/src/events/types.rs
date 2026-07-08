@@ -626,7 +626,7 @@ pub enum RejectionReason {
     DependencyCycle {
         cycle: Vec<String>,
     },
-    HarnessVersionIncompatible {
+    HarnessVersionMismatch {
         required: String,
         actual: String,
     },
@@ -718,12 +718,6 @@ pub enum ToolPoolChangeSource {
     SkillHotReload { skill_id: String },
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-pub struct SchemaVersionRange {
-    pub min: u32,
-    pub max: u32,
-}
-
 #[non_exhaustive]
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -734,10 +728,6 @@ pub enum ManifestValidationFailure {
     SchemaViolation {
         json_pointer: String,
         details: String,
-    },
-    UnsupportedSchemaVersion {
-        found: u32,
-        supported: SchemaVersionRange,
     },
     CargoExtensionMetadataMalformed {
         details: String,

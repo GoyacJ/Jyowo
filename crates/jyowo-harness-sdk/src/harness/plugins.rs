@@ -282,13 +282,6 @@ fn manifest_validation_failure_for_event(
                 details: PLUGIN_EVENT_DETAILS_WITHHELD.to_owned(),
             }
         }
-        harness_contracts::ManifestValidationFailure::UnsupportedSchemaVersion {
-            found,
-            supported,
-        } => harness_contracts::ManifestValidationFailure::UnsupportedSchemaVersion {
-            found: *found,
-            supported: supported.clone(),
-        },
         harness_contracts::ManifestValidationFailure::CargoExtensionMetadataMalformed {
             ..
         } => harness_contracts::ManifestValidationFailure::CargoExtensionMetadataMalformed {
@@ -422,10 +415,10 @@ fn rejection_reason(error: &PluginError) -> RejectionReason {
         } => RejectionReason::AdmissionDenied {
             policy: format!("trust mismatch: declared {declared:?}, source withheld"),
         },
-        PluginError::HarnessVersionIncompatible { required, actual } => {
+        PluginError::HarnessVersionMismatch { required, actual } => {
             RejectionReason::AdmissionDenied {
                 policy: format!(
-                    "harness version incompatible: required {}, actual {}",
+                    "harness version mismatch: required {}, actual {}",
                     safe_nonempty(required),
                     safe_nonempty(actual)
                 ),

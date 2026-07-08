@@ -14,9 +14,6 @@ pub const TABLE_MEMORY_TOMBSTONES: &str = "memory_tombstones";
 /// `memory_records_fts` — FTS5 virtual table.
 pub const TABLE_MEMORY_RECORDS_FTS: &str = "memory_records_fts";
 
-/// `schema_version` — current schema marker.
-pub const TABLE_SCHEMA_VERSION: &str = "schema_version";
-
 /// All record columns (for SELECT), qualified with table alias `r`.
 pub const RECORD_COLUMNS: &str = "\
     r.id, r.tenant_id, r.kind, r.visibility, r.content, r.metadata_json, r.content_hash, \

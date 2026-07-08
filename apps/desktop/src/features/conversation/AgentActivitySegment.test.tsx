@@ -57,8 +57,8 @@ const baseTeamSegment: AgentActivitySegment = {
   order: 0,
   activityKind: 'agentTeam',
   agentId: 'team-1',
-  role: 'Migration team',
-  taskSummary: 'Coordinate the migration',
+  role: 'Transition team',
+  taskSummary: 'Coordinate the transition',
   status: 'running',
   team: baseTeamDetails,
 }

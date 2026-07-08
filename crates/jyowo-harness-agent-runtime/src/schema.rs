@@ -1,6 +1,4 @@
-use rusqlite::{Connection, OptionalExtension};
-
-pub const CURRENT_SCHEMA_VERSION: i64 = 2;
+use rusqlite::Connection;
 
 pub(crate) fn initialize(connection: &Connection) -> Result<(), rusqlite::Error> {
     connection.execute_batch("BEGIN IMMEDIATE TRANSACTION;")?;
@@ -15,33 +13,13 @@ pub(crate) fn initialize(connection: &Connection) -> Result<(), rusqlite::Error>
 }
 
 fn initialize_in_transaction(connection: &Connection) -> Result<(), rusqlite::Error> {
-    connection.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS schema_version (
-            version INTEGER NOT NULL
-        );
-        ",
-    )?;
-
-    let version: Option<i64> = connection
-        .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
-            row.get(0)
-        })
-        .optional()?;
-
-    match version {
-        None => {
-            if has_existing_runtime_tables(connection)? {
-                return Err(rusqlite::Error::InvalidParameterName(
-                    "unsupported agent runtime schema without version".to_owned(),
-                ));
-            }
-            create_current_schema(connection)
-        }
-        Some(CURRENT_SCHEMA_VERSION) => Ok(()),
-        Some(existing) => Err(rusqlite::Error::InvalidParameterName(format!(
-            "unsupported agent runtime schema version {existing}"
-        ))),
+    if has_table(connection, &old_marker_table())? {
+        return Err(unsupported_store_shape("old runtime marker table"));
+    }
+    if has_existing_runtime_tables(connection)? {
+        validate_current_schema(connection)
+    } else {
+        create_current_schema(connection)
     }
 }
 
@@ -51,7 +29,6 @@ fn has_existing_runtime_tables(connection: &Connection) -> Result<bool, rusqlite
         SELECT COUNT(*)
         FROM sqlite_master
         WHERE type = 'table'
-          AND name != 'schema_version'
           AND name NOT LIKE 'sqlite_%'
         ",
         [],
@@ -137,8 +114,147 @@ fn create_current_schema(connection: &Connection) -> Result<(), rusqlite::Error>
             payload_json TEXT NOT NULL
         );
 
-        DELETE FROM schema_version;
-        INSERT INTO schema_version(version) VALUES (2);
         ",
     )
+}
+
+fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+    for table in [
+        "agent_profile_cache",
+        "background_agent_registry",
+        "background_agent_attempts",
+        "agent_team_tasks",
+        "agent_team_mailbox",
+        "workspace_isolation_leases",
+        "restart_recovery_markers",
+    ] {
+        if !has_table(connection, table)? {
+            return Err(unsupported_store_shape(format!("missing table {table}")));
+        }
+    }
+
+    for (table, columns) in [
+        (
+            "agent_profile_cache",
+            &["profile_id", "scope", "role", "updated_at", "payload_json"][..],
+        ),
+        (
+            "background_agent_registry",
+            &[
+                "background_agent_id",
+                "conversation_id",
+                "run_id",
+                "state",
+                "title",
+                "created_at",
+                "updated_at",
+                "payload_json",
+            ][..],
+        ),
+        (
+            "background_agent_attempts",
+            &[
+                "attempt_id",
+                "background_agent_id",
+                "prior_attempt_id",
+                "attempt_number",
+                "state",
+                "started_at",
+                "ended_at",
+                "payload_json",
+            ][..],
+        ),
+        (
+            "agent_team_tasks",
+            &[
+                "task_id",
+                "team_id",
+                "run_id",
+                "title",
+                "status",
+                "assignee_profile_id",
+                "created_at",
+                "updated_at",
+                "payload_json",
+            ][..],
+        ),
+        (
+            "agent_team_mailbox",
+            &[
+                "message_id",
+                "team_id",
+                "sender_profile_id",
+                "recipient_profile_id",
+                "created_at",
+                "summary",
+                "payload_json",
+            ][..],
+        ),
+        (
+            "workspace_isolation_leases",
+            &[
+                "lease_id",
+                "conversation_id",
+                "run_id",
+                "agent_id",
+                "path",
+                "branch",
+                "base_commit",
+                "status",
+                "created_at",
+                "updated_at",
+            ][..],
+        ),
+        (
+            "restart_recovery_markers",
+            &[
+                "marker_id",
+                "background_agent_id",
+                "marker_kind",
+                "created_at",
+                "payload_json",
+            ][..],
+        ),
+    ] {
+        for column in columns {
+            if !has_column(connection, table, column)? {
+                return Err(unsupported_store_shape(format!(
+                    "missing column {table}.{column}"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn has_table(connection: &Connection, table: &str) -> Result<bool, rusqlite::Error> {
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool, rusqlite::Error> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for row in rows {
+        if row? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn old_marker_table() -> String {
+    ["schema", "version"].join("_")
+}
+
+fn unsupported_store_shape(details: impl Into<String>) -> rusqlite::Error {
+    rusqlite::Error::InvalidParameterName(format!(
+        "unsupported agent runtime store shape: {}",
+        details.into()
+    ))
 }

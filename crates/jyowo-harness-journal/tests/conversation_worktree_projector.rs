@@ -3237,7 +3237,7 @@ fn team_lifecycle_events_project_agent_team_activity_segment() {
             "event-user",
             "run-1",
             "user-1",
-            "Coordinate the migration",
+            "Coordinate the transition",
         ),
         event(
             2,
@@ -3246,7 +3246,7 @@ fn team_lifecycle_events_project_agent_team_activity_segment() {
             "team.created",
             json!({
                 "teamId": "team-1",
-                "name": "Migration team",
+                "name": "Transition team",
                 "topologyKind": "coordinator_worker",
             }),
         ),
@@ -3334,7 +3334,7 @@ fn team_lifecycle_events_project_agent_team_activity_segment() {
 
     assert_eq!(segment.activity_kind, AgentActivityKind::AgentTeam);
     assert_eq!(segment.agent_id, "team-1");
-    assert_eq!(segment.role.as_str(), "Migration team");
+    assert_eq!(segment.role.as_str(), "Transition team");
     assert_eq!(segment.status, AgentActivityStatus::Completed);
     assert_eq!(team.topology.as_str(), "coordinator_worker");
     assert_eq!(

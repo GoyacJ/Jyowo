@@ -19,7 +19,7 @@ use tokio::sync::Mutex;
 use crate::{
     app_controlled_path, apply_cursor, journal_error, session_end_reason, AppendMetadata,
     CompactionLineage, EventEnvelope, EventEnvelopePage, EventStore, JournalRedaction, PrunePolicy,
-    PruneReport, ReplayCursor, SchemaVersion, SessionFilter, SessionSnapshot, SessionSummary,
+    PruneReport, ReplayCursor, SessionFilter, SessionSnapshot, SessionSummary,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
@@ -142,7 +142,6 @@ impl JsonlEventStore {
             run_id: metadata.run_id,
             correlation_id: metadata.correlation_id,
             causation_id: metadata.causation_id,
-            schema_version: SchemaVersion::CURRENT,
             recorded_at: harness_contracts::now(),
             payload,
         }

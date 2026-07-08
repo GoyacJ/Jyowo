@@ -14,9 +14,8 @@ use harness_contracts::{
 use harness_memory::MemoryThreatScanner;
 
 use crate::{
-    parse_skill_markdown_with_options, McpSkillRecord, McpSource, Skill, SkillCompatMode,
-    SkillError, SkillHookTransport, SkillPlatform, SkillRegistration, SkillRejectReason,
-    SkillRejection, SkillSource,
+    parse_skill_markdown, McpSkillRecord, McpSource, Skill, SkillError, SkillHookTransport,
+    SkillPlatform, SkillRegistration, SkillRejectReason, SkillRejection, SkillSource,
 };
 
 pub const DEFAULT_SHELL_ALLOWLIST: &[&str] = &["pwd", "date", "whoami", "hostname", "uname"];
@@ -27,7 +26,6 @@ pub struct SkillLoader {
     runtime_platform: SkillPlatform,
     shell_allowlist: Vec<String>,
     max_shell_output: usize,
-    compat_mode: SkillCompatMode,
     event_sink: Option<Arc<dyn SkillEventSink>>,
     event_scope: SkillThreatEventScope,
     metrics_sink: Option<Arc<dyn SkillMetricsSink>>,
@@ -159,7 +157,6 @@ impl Default for SkillLoader {
             runtime_platform: current_platform(),
             shell_allowlist: policy.shell_allowlist,
             max_shell_output: policy.max_shell_output,
-            compat_mode: SkillCompatMode::Lenient,
             event_sink: None,
             event_scope: SkillThreatEventScope::default(),
             metrics_sink: None,
@@ -204,12 +201,6 @@ impl SkillLoader {
     #[must_use]
     pub fn with_max_shell_output(mut self, max_shell_output: usize) -> Self {
         self.max_shell_output = max_shell_output;
-        self
-    }
-
-    #[must_use]
-    pub fn with_compat_mode(mut self, compat_mode: SkillCompatMode) -> Self {
-        self.compat_mode = compat_mode;
         self
     }
 
@@ -272,12 +263,11 @@ impl SkillLoader {
                 SkillSourceConfig::BundledRecords { records } => {
                     for record in records {
                         let source = SkillSource::Bundled;
-                        let skill = parse_skill_markdown_with_options(
+                        let skill = parse_skill_markdown(
                             &record.to_markdown(),
                             source,
                             None,
                             self.runtime_platform,
-                            self.compat_mode,
                         )?;
                         let skill = self
                             .validate_loaded_skill(skill, None)
@@ -289,7 +279,7 @@ impl SkillLoader {
                 }
                 SkillSourceConfig::McpRecords { server_id, records } => {
                     let report = McpSource::new(server_id.clone(), records.clone())
-                        .load_with_options(self.runtime_platform, self.compat_mode)
+                        .load(self.runtime_platform)
                         .await?;
                     for rejection in report.rejected {
                         self.emit_rejected(&rejection).await;
@@ -315,12 +305,11 @@ impl SkillLoader {
                     for raw_path in directory_skill_paths(path, true)? {
                         let source = source_from_directory(path.clone(), source_kind);
                         let markdown = std::fs::read_to_string(&raw_path)?;
-                        match parse_skill_markdown_with_options(
+                        match parse_skill_markdown(
                             &markdown,
                             source.clone(),
                             Some(raw_path.clone()),
                             self.runtime_platform,
-                            self.compat_mode,
                         ) {
                             Ok(skill) => {
                                 match self.validate_loaded_skill(skill, Some(&raw_path)).await {
@@ -357,12 +346,11 @@ impl SkillLoader {
                     for raw_path in directory_package_skill_paths(path, allowed_package_ids)? {
                         let source = source_from_directory(path.clone(), source_kind);
                         let markdown = std::fs::read_to_string(&raw_path)?;
-                        match parse_skill_markdown_with_options(
+                        match parse_skill_markdown(
                             &markdown,
                             source.clone(),
                             Some(raw_path.clone()),
                             self.runtime_platform,
-                            self.compat_mode,
                         ) {
                             Ok(skill) => {
                                 match self.validate_loaded_skill(skill, Some(&raw_path)).await {
@@ -419,12 +407,11 @@ impl SkillLoader {
                         if !matches_hint(&record.name, hints) {
                             continue;
                         }
-                        let skill = parse_skill_markdown_with_options(
+                        let skill = parse_skill_markdown(
                             &record.to_markdown(),
                             SkillSource::Bundled,
                             None,
                             self.runtime_platform,
-                            self.compat_mode,
                         )?;
                         let skill = self
                             .validate_loaded_skill(skill, None)
@@ -450,12 +437,11 @@ impl SkillLoader {
                             yaml_quoted_scalar(&record.description),
                             record.body
                         );
-                        match parse_skill_markdown_with_options(
+                        match parse_skill_markdown(
                             &markdown,
                             source.clone(),
                             None,
                             self.runtime_platform,
-                            self.compat_mode,
                         ) {
                             Ok(skill) => match self.validate_loaded_skill(skill, None).await {
                                 Ok(skill) => {
@@ -489,12 +475,11 @@ impl SkillLoader {
                         }
                         let source = source_from_directory(path.clone(), source_kind);
                         let markdown = std::fs::read_to_string(&raw_path)?;
-                        match parse_skill_markdown_with_options(
+                        match parse_skill_markdown(
                             &markdown,
                             source.clone(),
                             Some(raw_path.clone()),
                             self.runtime_platform,
-                            self.compat_mode,
                         ) {
                             Ok(skill) => {
                                 if !matches_hint(&skill.name, hints) {
@@ -537,12 +522,11 @@ impl SkillLoader {
                         }
                         let source = source_from_directory(path.clone(), source_kind);
                         let markdown = std::fs::read_to_string(&raw_path)?;
-                        match parse_skill_markdown_with_options(
+                        match parse_skill_markdown(
                             &markdown,
                             source.clone(),
                             Some(raw_path.clone()),
                             self.runtime_platform,
-                            self.compat_mode,
                         ) {
                             Ok(skill) => {
                                 if !matches_hint(&skill.name, hints) {
@@ -690,12 +674,11 @@ impl SkillLoader {
     ) -> Result<PrefetchUnitOutcome, SkillError> {
         match unit {
             PrefetchLoadUnit::Bundled { record } => {
-                let skill = parse_skill_markdown_with_options(
+                let skill = parse_skill_markdown(
                     &record.to_markdown(),
                     SkillSource::Bundled,
                     None,
                     self.runtime_platform,
-                    self.compat_mode,
                 )?;
                 let skill = self
                     .validate_loaded_skill(skill, None)
@@ -713,13 +696,7 @@ impl SkillLoader {
                     yaml_quoted_scalar(&record.description),
                     record.body
                 );
-                match parse_skill_markdown_with_options(
-                    &markdown,
-                    source.clone(),
-                    None,
-                    self.runtime_platform,
-                    self.compat_mode,
-                ) {
+                match parse_skill_markdown(&markdown, source.clone(), None, self.runtime_platform) {
                     Ok(skill) => match self.validate_loaded_skill(skill, None).await {
                         Ok(skill) => {
                             self.emit_loaded(&skill).await;
@@ -743,12 +720,11 @@ impl SkillLoader {
             }
             PrefetchLoadUnit::Directory { raw_path, source } => {
                 let markdown = std::fs::read_to_string(&raw_path)?;
-                match parse_skill_markdown_with_options(
+                match parse_skill_markdown(
                     &markdown,
                     source.clone(),
                     Some(raw_path.clone()),
                     self.runtime_platform,
-                    self.compat_mode,
                 ) {
                     Ok(skill) => {
                         if !matches_hint(&skill.name, hints) {

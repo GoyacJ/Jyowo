@@ -147,7 +147,6 @@ fn registry_with(
 fn manifest() -> ManifestRecord {
     ManifestRecord::new(
         PluginManifest {
-            manifest_schema_version: 1,
             name: PluginName::new("rollback").unwrap(),
             version: semver::Version::parse("0.1.0").unwrap(),
             trust_level: TrustLevel::UserControlled,

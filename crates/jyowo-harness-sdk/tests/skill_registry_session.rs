@@ -217,6 +217,9 @@ description: Audited skill.
 hooks:
   - id: start
     events: [SessionStart]
+    transport:
+      type: builtin
+      kind: AuditLog
 ---
 unused body
 "#,

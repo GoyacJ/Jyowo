@@ -630,7 +630,6 @@ impl ConsolidationHook for RecordingConsolidationHook {
 pub fn plugin_manifest(name: &str) -> ManifestRecord {
     ManifestRecord::new(
         PluginManifest {
-            manifest_schema_version: 1,
             name: PluginName::new(name).unwrap(),
             version: semver::Version::parse("0.1.0").unwrap(),
             trust_level: TrustLevel::UserControlled,
@@ -663,7 +662,6 @@ pub fn plugin_manifest(name: &str) -> ManifestRecord {
 pub fn plugin_mcp_manifest(name: &str) -> ManifestRecord {
     ManifestRecord::new(
         PluginManifest {
-            manifest_schema_version: 1,
             name: PluginName::new(name).unwrap(),
             version: semver::Version::parse("0.1.0").unwrap(),
             trust_level: TrustLevel::UserControlled,

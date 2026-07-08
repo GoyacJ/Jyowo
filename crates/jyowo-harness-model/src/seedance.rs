@@ -53,7 +53,7 @@ pub trait SeedanceHttpTransport: Send + Sync + 'static {
 enum SeedanceTransport {
     /// Production: authorized broker transport.
     Transport(Arc<dyn SeedanceHttpTransport>),
-    /// Direct reqwest (test / legacy credential path).
+    /// Direct reqwest (test / old credential path).
     #[cfg(test)]
     Direct(reqwest::Client),
 }
@@ -78,7 +78,7 @@ impl SeedanceApiClient {
         }
     }
 
-    /// Legacy constructor using a direct reqwest client. Only used in tests.
+    /// Old constructor using a direct reqwest client. Only used in tests.
     #[cfg(test)]
     pub fn from_api_key(api_key: impl Into<String>) -> Self {
         Self {

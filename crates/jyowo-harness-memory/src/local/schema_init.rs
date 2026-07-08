@@ -1,6 +1,4 @@
-use rusqlite::{Connection, OptionalExtension};
-
-pub const CURRENT_SCHEMA_VERSION: i64 = 4;
+use rusqlite::Connection;
 
 pub fn initialize(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch("BEGIN IMMEDIATE")?;
@@ -13,27 +11,13 @@ pub fn initialize(conn: &Connection) -> Result<(), rusqlite::Error> {
 }
 
 fn initialize_locked(conn: &Connection) -> Result<(), rusqlite::Error> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS schema_version (
-            version INTEGER PRIMARY KEY,
-            applied_at TEXT NOT NULL
-        )",
-    )?;
-
-    let current_version: Option<i64> = conn
-        .query_row(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
-
-    match current_version {
-        None | Some(0) => create_current_schema(conn),
-        Some(CURRENT_SCHEMA_VERSION) => Ok(()),
-        Some(existing) => Err(rusqlite::Error::InvalidParameterName(format!(
-            "unsupported memory schema version {existing}"
-        ))),
+    if has_table(conn, &old_marker_table())? {
+        return Err(unsupported_store_shape("old memory marker table"));
+    }
+    if has_user_tables(conn)? {
+        validate_current_schema(conn)
+    } else {
+        create_current_schema(conn)
     }
 }
 
@@ -200,8 +184,194 @@ fn create_current_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
         CREATE INDEX idx_memory_model_request_previews_session_run
             ON memory_model_request_previews(tenant_id, session_id, run_id, at);
 
-        INSERT INTO schema_version (version, applied_at)
-        VALUES (4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
         ",
     )
+}
+
+fn validate_current_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
+    for table in [
+        "memory_records",
+        "memory_records_fts",
+        "memory_embeddings",
+        "memory_tombstones",
+        "memory_candidates",
+        "memory_extraction_jobs",
+        "memory_recall_traces",
+        "memory_global_settings",
+        "memory_thread_settings",
+        "memory_model_request_previews",
+    ] {
+        if !has_table(conn, table)? {
+            return Err(unsupported_store_shape(format!("missing table {table}")));
+        }
+    }
+
+    for (table, columns) in [
+        (
+            "memory_records",
+            &[
+                "id",
+                "tenant_id",
+                "kind",
+                "visibility",
+                "content",
+                "metadata_json",
+                "content_hash",
+                "source_kind",
+                "evidence_json",
+                "confidence",
+                "access_count",
+                "last_accessed_at",
+                "created_at",
+                "updated_at",
+                "expires_at",
+                "deleted_at",
+            ][..],
+        ),
+        (
+            "memory_records_fts",
+            &["content", "metadata_text", "memory_id", "tenant_id"][..],
+        ),
+        (
+            "memory_embeddings",
+            &[
+                "memory_id",
+                "embedding_state",
+                "dimension",
+                "vector_le_f32",
+                "model_id",
+                "updated_at",
+                "error_kind",
+            ][..],
+        ),
+        (
+            "memory_tombstones",
+            &[
+                "id",
+                "tenant_id",
+                "memory_id",
+                "content_hash",
+                "reason",
+                "evidence_json",
+                "created_at",
+            ][..],
+        ),
+        (
+            "memory_candidates",
+            &[
+                "id",
+                "tenant_id",
+                "state",
+                "candidate_json",
+                "created_at",
+                "updated_at",
+                "expires_at",
+            ][..],
+        ),
+        (
+            "memory_extraction_jobs",
+            &[
+                "job_id",
+                "tenant_id",
+                "session_id",
+                "run_id",
+                "evidence_hash",
+                "job_kind",
+                "state",
+                "attempt_count",
+                "lease_owner",
+                "lease_expires_at",
+                "next_attempt_at",
+                "blocked_reason",
+                "job_json",
+                "created_at",
+                "updated_at",
+            ][..],
+        ),
+        (
+            "memory_recall_traces",
+            &[
+                "trace_id",
+                "tenant_id",
+                "session_id",
+                "run_id",
+                "trace_json",
+                "at",
+            ][..],
+        ),
+        (
+            "memory_global_settings",
+            &["tenant_id", "settings_json", "updated_at"][..],
+        ),
+        (
+            "memory_thread_settings",
+            &["tenant_id", "session_id", "settings_json", "updated_at"][..],
+        ),
+        (
+            "memory_model_request_previews",
+            &[
+                "tenant_id",
+                "session_id",
+                "run_id",
+                "trace_id",
+                "preview_json",
+                "at",
+            ][..],
+        ),
+    ] {
+        for column in columns {
+            if !has_column(conn, table, column)? {
+                return Err(unsupported_store_shape(format!(
+                    "missing column {table}.{column}"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn has_user_tables(conn: &Connection) -> Result<bool, rusqlite::Error> {
+    let count: i64 = conn.query_row(
+        "
+        SELECT COUNT(*)
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name NOT LIKE 'sqlite_%'
+        ",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+fn has_table(conn: &Connection, table: &str) -> Result<bool, rusqlite::Error> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, rusqlite::Error> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for row in rows {
+        if row? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn old_marker_table() -> String {
+    ["schema", "version"].join("_")
+}
+
+fn unsupported_store_shape(details: impl Into<String>) -> rusqlite::Error {
+    rusqlite::Error::InvalidParameterName(format!(
+        "unsupported memory store shape: {}",
+        details.into()
+    ))
 }

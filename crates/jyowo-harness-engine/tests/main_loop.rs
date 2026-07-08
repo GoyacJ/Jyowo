@@ -303,7 +303,7 @@ async fn svg_typed_artifact_tool_result_does_not_create_image_artifact_event() {
 }
 
 #[tokio::test]
-async fn legacy_blob_tool_result_without_typed_artifact_does_not_create_artifact_event() {
+async fn old_blob_tool_result_without_typed_artifact_does_not_create_artifact_event() {
     let harness = TestHarness::new_response_with_tool(
         ModelResponse::Sequence(vec![
             tool_call_events("MiniMaxTextToImage", json!({ "prompt": "grass carp" })),

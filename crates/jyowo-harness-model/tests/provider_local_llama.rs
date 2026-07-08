@@ -50,7 +50,7 @@ fn local_llama_provider_metadata_is_stable() {
 }
 
 #[tokio::test]
-async fn local_llama_uses_openai_compatible_local_endpoint_without_auth_by_default() {
+async fn local_llama_uses_openai_protocol_local_endpoint_without_auth_by_default() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))

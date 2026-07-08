@@ -270,7 +270,7 @@ async fn automation_rejects_missing_permission_or_profile_snapshot() {
             .join("config")
             .join("automations.json"),
         r#"[{
-          "id":"legacy",
+          "id":"old",
           "enabled":true,
           "prompt":"Run checks",
           "schedule":{"intervalMinutes":30},
@@ -281,7 +281,7 @@ async fn automation_rejects_missing_permission_or_profile_snapshot() {
           "updatedAt":"2026-06-30T01:00:00Z"
         }]"#,
     )
-    .expect("legacy automation file should write");
+    .expect("old automation file should write");
     let state = DesktopRuntimeState::with_workspace_for_test(workspace)
         .expect("runtime state should initialize");
 
@@ -701,7 +701,7 @@ fn invalid_execution_settings_file_resets_agent_capabilities() {
     assert!(!settings.agent_capabilities.background_agents_enabled);
     assert!(
         settings_path.exists(),
-        "production execution settings load must not read or delete legacy runtime file"
+        "production execution settings load must not read or delete old runtime file"
     );
 }
 

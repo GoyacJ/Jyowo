@@ -126,7 +126,6 @@ fn record(name: &str, version: &str) -> ManifestRecord {
 
 fn manifest(name: &str, version: &str) -> PluginManifest {
     PluginManifest {
-        manifest_schema_version: 1,
         name: PluginName::new(name).unwrap(),
         version: semver::Version::parse(version).unwrap(),
         trust_level: TrustLevel::UserControlled,

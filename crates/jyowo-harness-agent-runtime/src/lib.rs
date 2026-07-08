@@ -36,7 +36,6 @@ pub use profiles::{
     builtin_agent_profiles, quarantine_invalid_profile_file, AgentProfileRegistry,
     AgentProfileRegistryError, AgentProfilesFile,
 };
-pub use schema::CURRENT_SCHEMA_VERSION;
 pub use store::{
     AgentRuntimeStore, AgentRuntimeStoreError, AgentTeamMailboxRecord, AgentTeamTaskRecord,
     BackgroundAgentAttemptRecord, BackgroundAgentStoreRecord, WorkspaceIsolationLease,

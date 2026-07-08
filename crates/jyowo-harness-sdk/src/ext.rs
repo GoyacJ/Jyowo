@@ -22,7 +22,7 @@ pub use harness_contracts::{
 pub use harness_hook::{HookEvent, HookHandler, HookOutcome, HookRegistry};
 pub use harness_journal::{
     AppendMetadata, EventEnvelope, EventStore, Projection, PrunePolicy, PruneReport, ReplayCursor,
-    SchemaVersion, SessionFilter, SessionSnapshot, SessionSummary,
+    SessionFilter, SessionSnapshot, SessionSummary,
 };
 #[cfg(feature = "mcp-http")]
 pub use harness_mcp::HttpTransport;
@@ -73,8 +73,8 @@ pub use harness_session::{
     BootstrapFileSpec, SessionOptions, Workspace, WorkspaceBootstrap, WorkspaceSpec,
 };
 pub use harness_skill::{
-    DirectorySourceKind, Skill, SkillCompatMode, SkillConfigResolver, SkillLoader, SkillParamType,
-    SkillPlatform, SkillSourceConfig,
+    DirectorySourceKind, Skill, SkillConfigResolver, SkillLoader, SkillParamType, SkillPlatform,
+    SkillSourceConfig,
 };
 pub use harness_tool::{
     BuiltinToolset, PermissionCheck, Tool, ToolContext, ToolEvent, ToolRegistry, ToolStream,

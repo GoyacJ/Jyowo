@@ -735,7 +735,7 @@ fn same_stable_evidence_metadata(left: &EvidenceRefRecord, right: &EvidenceRefRe
     stable_evidence_ref_metadata(left, right) && left.source_event_refs == right.source_event_refs
 }
 
-fn compatible_evidence_ref_metadata(left: &EvidenceRefRecord, right: &EvidenceRefRecord) -> bool {
+fn matching_evidence_ref_metadata(left: &EvidenceRefRecord, right: &EvidenceRefRecord) -> bool {
     stable_evidence_ref_metadata(left, right) && left.source == right.source
 }
 
@@ -838,7 +838,7 @@ impl EvidenceRefRegistry for InMemoryEvidenceRefRegistry {
             return Err(deleted_conversation_error(&record.conversation_id));
         }
         if let Some(existing) = state.records.iter().find(|r| r.id == record.id) {
-            if compatible_evidence_ref_metadata(existing, &record) {
+            if matching_evidence_ref_metadata(existing, &record) {
                 return Ok(());
             }
             return Err(JournalError::Message(format!(
@@ -1068,7 +1068,7 @@ impl EvidenceRefRegistry for SqliteEvidenceRefRegistry {
         if let Some(existing) =
             get_sqlite_record_from_transaction(&transaction, tenant, &record.id)?
         {
-            if compatible_evidence_ref_metadata(&existing, &record) {
+            if matching_evidence_ref_metadata(&existing, &record) {
                 return Ok(());
             }
             return Err(JournalError::Message(format!(

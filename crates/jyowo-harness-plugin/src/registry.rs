@@ -1658,7 +1658,7 @@ fn validate_semver_manifest(manifest: &PluginManifest) -> Result<(), PluginError
         PluginError::InvalidManifest(format!("invalid harness package version: {error}"))
     })?;
     if !manifest.min_harness_version.matches(&current) {
-        return Err(PluginError::HarnessVersionIncompatible {
+        return Err(PluginError::HarnessVersionMismatch {
             required: manifest.min_harness_version.to_string(),
             actual: current.to_string(),
         });
@@ -2228,13 +2228,6 @@ fn manifest_validation_failure_for_event(
                 details: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
             }
         }
-        harness_contracts::ManifestValidationFailure::UnsupportedSchemaVersion {
-            found,
-            supported,
-        } => harness_contracts::ManifestValidationFailure::UnsupportedSchemaVersion {
-            found: *found,
-            supported: supported.clone(),
-        },
         harness_contracts::ManifestValidationFailure::CargoExtensionMetadataMalformed {
             ..
         } => harness_contracts::ManifestValidationFailure::CargoExtensionMetadataMalformed {
@@ -2293,8 +2286,8 @@ fn rejection_reason(error: &PluginError) -> RejectionReason {
             declared: *declared,
             source: source_label.clone(),
         },
-        PluginError::HarnessVersionIncompatible { required, actual } => {
-            RejectionReason::HarnessVersionIncompatible {
+        PluginError::HarnessVersionMismatch { required, actual } => {
+            RejectionReason::HarnessVersionMismatch {
                 required: required.clone(),
                 actual: actual.clone(),
             }
@@ -2385,12 +2378,10 @@ fn product_rejection_reason(reason: &RejectionReason) -> RejectionReason {
         RejectionReason::DependencyCycle { .. } => {
             RejectionReason::DependencyCycle { cycle: vec![] }
         }
-        RejectionReason::HarnessVersionIncompatible { .. } => {
-            RejectionReason::HarnessVersionIncompatible {
-                required: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
-                actual: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
-            }
-        }
+        RejectionReason::HarnessVersionMismatch { .. } => RejectionReason::HarnessVersionMismatch {
+            required: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+            actual: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
+        },
         RejectionReason::SlotOccupied { .. } => RejectionReason::SlotOccupied {
             slot: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
             occupant: PRODUCT_REJECTION_DETAILS_WITHHELD.to_owned(),
@@ -2413,7 +2404,7 @@ fn rejection_reason_metric_label(reason: &RejectionReason) -> &'static str {
         RejectionReason::NamespaceConflict { .. } => "namespace_conflict",
         RejectionReason::DependencyUnsatisfied { .. } => "dependency_unsatisfied",
         RejectionReason::DependencyCycle { .. } => "dependency_cycle",
-        RejectionReason::HarnessVersionIncompatible { .. } => "harness_version_incompatible",
+        RejectionReason::HarnessVersionMismatch { .. } => "harness_version_mismatch",
         RejectionReason::SlotOccupied { .. } => "slot_occupied",
         RejectionReason::AdmissionDenied { .. } => "admission_denied",
         _ => "other",
@@ -2449,9 +2440,6 @@ fn manifest_failure_metric_label(
     match failure {
         harness_contracts::ManifestValidationFailure::SyntaxError { .. } => "syntax_error",
         harness_contracts::ManifestValidationFailure::SchemaViolation { .. } => "schema_violation",
-        harness_contracts::ManifestValidationFailure::UnsupportedSchemaVersion { .. } => {
-            "unsupported_schema_version"
-        }
         harness_contracts::ManifestValidationFailure::CargoExtensionMetadataMalformed {
             ..
         } => "cargo_extension_metadata_malformed",

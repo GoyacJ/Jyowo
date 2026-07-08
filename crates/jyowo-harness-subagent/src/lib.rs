@@ -45,7 +45,7 @@ use harness_tool::{
     action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
     ToolStream, ValidationError,
 };
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::time;
@@ -106,9 +106,7 @@ pub enum SubagentContextMode {
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnnounceMode {
-    #[serde(alias = "structured")]
     StructuredOnly,
-    #[serde(alias = "summary")]
     SummaryText,
     FullTranscript,
 }
@@ -205,60 +203,6 @@ impl From<&str> for McpServerRef {
     fn from(server_id: &str) -> Self {
         Self::new(server_id)
     }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
-pub struct SubagentMcpServerPattern {
-    pub pattern: String,
-    pub require_ready: bool,
-    pub allow_inline: bool,
-}
-
-impl SubagentMcpServerPattern {
-    #[must_use]
-    pub fn exact(server_id: impl Into<String>) -> Self {
-        Self {
-            pattern: server_id.into(),
-            require_ready: true,
-            allow_inline: true,
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for SubagentMcpServerPattern {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Compat {
-            Legacy(String),
-            Pattern(PatternFields),
-        }
-
-        #[derive(Deserialize)]
-        struct PatternFields {
-            pattern: String,
-            #[serde(default = "default_true")]
-            require_ready: bool,
-            #[serde(default = "default_true")]
-            allow_inline: bool,
-        }
-
-        match Compat::deserialize(deserializer)? {
-            Compat::Legacy(server_id) => Ok(Self::exact(server_id)),
-            Compat::Pattern(fields) => Ok(Self {
-                pattern: fields.pattern,
-                require_ready: fields.require_ready,
-                allow_inline: fields.allow_inline,
-            }),
-        }
-    }
-}
-
-const fn default_true() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -609,10 +553,10 @@ impl PermissionBroker for SubagentPermissionBridge {
                     }],
                     interactivity: ctx.interactivity,
                     auto_resolved,
-                    action_plan_hash: legacy_action_plan_hash(&request),
+                    action_plan_hash: permission_action_plan_hash(&request),
                     review: permission_review_from_request(&request),
                     effective_mode: ctx.permission_mode,
-                    sandbox_policy: legacy_sandbox_policy_summary(),
+                    sandbox_policy: permission_sandbox_policy_summary(),
                     actor_source: PermissionActorSource::Subagent {
                         subagent_id: self.subagent_id,
                         parent_session_id: self.parent_session_id,
@@ -694,7 +638,7 @@ impl PermissionBroker for SubagentPermissionBridge {
                 },
                 &[Event::PermissionResolved(PermissionResolvedEvent {
                     request_id: request.request_id,
-                    action_plan_hash: legacy_action_plan_hash(&request),
+                    action_plan_hash: permission_action_plan_hash(&request),
                     decision_id,
                     decision: decision.clone(),
                     decided_by: forwarded_decided_by.clone(),
@@ -763,7 +707,7 @@ impl PermissionBroker for SubagentPermissionBridge {
     }
 }
 
-fn legacy_action_plan_hash(request: &PermissionRequest) -> ActionPlanHash {
+fn permission_action_plan_hash(request: &PermissionRequest) -> ActionPlanHash {
     ActionPlanHash::from_bytes(canonical_permission_fingerprint(request).0)
 }
 
@@ -817,7 +761,7 @@ fn permission_subject_kind(subject: &harness_contracts::PermissionSubject) -> &'
     }
 }
 
-fn legacy_sandbox_policy_summary() -> SandboxPolicySummary {
+fn permission_sandbox_policy_summary() -> SandboxPolicySummary {
     SandboxPolicySummary {
         mode: harness_contracts::SandboxMode::None,
         scope: harness_contracts::SandboxScope::WorkspaceOnly,

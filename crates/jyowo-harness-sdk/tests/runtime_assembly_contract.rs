@@ -308,7 +308,7 @@ fn conversation_turn_permission_override_is_run_scoped() {
 #[test]
 fn session_hash_accepts_permission_mode_variant_payload() {
     block_on(async {
-        let workspace = unique_workspace("sdk-legacy-session-permission-hash");
+        let workspace = unique_workspace("sdk-old-session-permission-hash");
         std::fs::create_dir_all(&workspace).unwrap();
         let session_id = SessionId::new();
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
@@ -323,10 +323,10 @@ fn session_hash_accepts_permission_mode_variant_payload() {
             .build()
             .await
             .expect("harness should build");
-        let mut legacy_options = SessionOptions::new(&workspace)
+        let mut old_options = SessionOptions::new(&workspace)
             .with_session_id(session_id)
             .with_permission_mode(PermissionMode::BypassPermissions);
-        legacy_options.workspace_root = legacy_options
+        old_options.workspace_root = old_options
             .workspace_root
             .canonicalize()
             .expect("workspace root should canonicalize");
@@ -339,14 +339,14 @@ fn session_hash_accepts_permission_mode_variant_payload() {
                 &[Event::SessionCreated(SessionCreatedEvent {
                     session_id,
                     tenant_id: TenantId::SINGLE,
-                    options_hash: session_options_hash(&legacy_options),
+                    options_hash: session_options_hash(&old_options),
                     snapshot_id: SnapshotId::from_u128(1),
                     effective_config_hash: ConfigHash([1; 32]),
                     created_at: harness_contracts::now(),
                 })],
             )
             .await
-            .expect("legacy session should be written");
+            .expect("old session should be written");
         let receipt = harness
             .submit_conversation_turn(conversation_turn_request(
                 current_options,

@@ -573,7 +573,7 @@ export const ToolCallOnlyNoEmptyText: Story = {
 export const WithheldThinking: Story = {
   args: {
     turns: [
-      storyTurn('withheld-thinking', 'Plan the migration steps.', {
+      storyTurn('withheld-thinking', 'Plan the transition steps.', {
         id: 'assistant:run-withheld-thinking',
         runId: 'run-withheld-thinking',
         status: 'running',

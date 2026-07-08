@@ -3,9 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use harness_contracts::ModelError;
 
-use crate::openai_compatible::{
-    OpenAiChatDialect, OpenAiCompatibleClient, OpenAiCompatibleProviderExt,
-};
+use crate::openai_protocol::{OpenAiChatDialect, OpenAiProtocolClient, OpenAiProtocolProviderExt};
 use crate::{
     ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
     ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
@@ -17,13 +15,13 @@ pub const DOUBAO_API_KEY_ENV: &str = "DOUBAO_API_KEY";
 
 #[derive(Clone)]
 pub struct DoubaoProvider {
-    client: OpenAiCompatibleClient,
+    client: OpenAiProtocolClient,
 }
 
 impl DoubaoProvider {
     pub fn from_api_key(api_key: impl Into<String>) -> Self {
         Self {
-            client: OpenAiCompatibleClient::from_api_key(api_key, DEFAULT_BASE_URL)
+            client: OpenAiProtocolClient::from_api_key(api_key, DEFAULT_BASE_URL)
                 .with_provider_id(PROVIDER_ID)
                 .with_chat_dialect(OpenAiChatDialect::Doubao)
                 .with_chat_completions_path("/chat/completions"),
@@ -43,8 +41,8 @@ impl DoubaoProvider {
     }
 }
 
-impl OpenAiCompatibleProviderExt for DoubaoProvider {
-    fn client(&self) -> &OpenAiCompatibleClient {
+impl OpenAiProtocolProviderExt for DoubaoProvider {
+    fn client(&self) -> &OpenAiProtocolClient {
         &self.client
     }
 }
@@ -98,7 +96,7 @@ impl ModelProvider for DoubaoProvider {
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
-        self.infer_openai_compatible(req, ctx).await
+        self.infer_openai_protocol(req, ctx).await
     }
 
     fn default_protocol(&self) -> ModelProtocol {

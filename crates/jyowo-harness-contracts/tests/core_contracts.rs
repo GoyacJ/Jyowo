@@ -147,7 +147,7 @@ fn run_started_serializes_permission_mode_and_requires_model_snapshot() {
 }
 
 #[test]
-fn permission_requested_serializes_auto_resolved_and_defaults_legacy_events() {
+fn permission_requested_serializes_actor_source_and_rejects_missing_required_fields() {
     let event = PermissionRequestedEvent {
         request_id: RequestId::new(),
         run_id: RunId::new(),
@@ -189,17 +189,13 @@ fn permission_requested_serializes_auto_resolved_and_defaults_legacy_events() {
 
     let mut value = serde_json::to_value(&event).expect("permission requested serializes");
     assert_eq!(value["auto_resolved"], true);
-    assert!(value.get("actor_source").is_none());
+    assert_eq!(value["actor_source"]["type"], "parent_run");
 
     value
         .as_object_mut()
         .expect("permission requested serializes as object")
         .remove("auto_resolved");
-    let legacy = serde_json::from_value::<PermissionRequestedEvent>(value)
-        .expect("legacy permission requested loads");
-
-    assert!(!legacy.auto_resolved);
-    assert_eq!(legacy.actor_source, PermissionActorSource::ParentRun);
+    assert!(serde_json::from_value::<PermissionRequestedEvent>(value).is_err());
 }
 
 #[test]

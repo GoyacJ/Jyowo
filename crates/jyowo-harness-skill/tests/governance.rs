@@ -3,10 +3,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use harness_contracts::{Event, McpServerId, PluginId, TrustLevel};
 use harness_skill::{
-    BuiltinHookKind, DirectorySourceKind, SkillCompatMode, SkillConfigResolver, SkillEventSink,
-    SkillHookTransport, SkillLoader, SkillPlatform, SkillPrefetchStrategy, SkillPrefetcher,
-    SkillRegistration, SkillRegistry, SkillRejectReason, SkillSource, SkillSourceConfig,
-    SkillValidator,
+    BuiltinHookKind, DirectorySourceKind, SkillConfigResolver, SkillEventSink, SkillHookTransport,
+    SkillLoader, SkillPlatform, SkillPrefetchStrategy, SkillPrefetcher, SkillRegistration,
+    SkillRegistry, SkillRejectReason, SkillSource, SkillSourceConfig, SkillValidator,
 };
 use parking_lot::Mutex;
 use secrecy::{ExposeSecret, SecretString};
@@ -37,7 +36,8 @@ hooks:
       type: http
       url: https://hooks.example.test/audit
       timeout_ms: 3000
-      allowlist: ["hooks.example.test"]
+      security:
+        allowlist: ["hooks.example.test"]
 ---
 Body
 "##,
@@ -100,11 +100,11 @@ Body
 }
 
 #[test]
-fn strict_mode_rejects_legacy_http_allowlist_without_security() {
-    let error = harness_skill::parse_skill_markdown_with_options(
+fn frontmatter_rejects_http_allowlist_without_security() {
+    let error = harness_skill::parse_skill_markdown(
         r##"---
-name: strict-webhook
-description: Strict webhook
+name: webhook
+description: Webhook
 hooks:
   - id: webhook
     events: [PostToolUse]
@@ -118,9 +118,8 @@ Body
         SkillSource::Bundled,
         None,
         SkillPlatform::Macos,
-        SkillCompatMode::Strict,
     )
-    .expect_err("strict mode should require nested transport.security");
+    .expect_err("http hook should require nested transport.security");
 
     assert!(format!("{error}").contains("transport.security"));
 }
@@ -158,6 +157,9 @@ description: MCP hook
 hooks:
   - id: audit
     events: [SessionStart]
+    transport:
+      type: builtin
+      kind: AuditLog
 ---
 Body
 ",
@@ -328,6 +330,9 @@ description: Plugin skill
 hooks:
   - id: audit
     events: [SessionStart]
+    transport:
+      type: builtin
+      kind: AuditLog
 ---
 Body
 ",
@@ -348,11 +353,11 @@ Body
 }
 
 #[test]
-fn strict_compat_rejects_unknown_top_level_frontmatter() {
-    let error = harness_skill::parse_skill_markdown_with_options(
+fn frontmatter_rejects_unknown_top_level_field() {
+    let error = harness_skill::parse_skill_markdown(
         r##"---
-name: strict
-description: Strict skill
+name: rejected
+description: Rejected skill
 unknown_top_level: true
 ---
 Body
@@ -360,9 +365,8 @@ Body
         SkillSource::Workspace("data/skills".into()),
         None,
         SkillPlatform::Macos,
-        SkillCompatMode::Strict,
     )
-    .expect_err("strict mode should reject unknown top-level field");
+    .expect_err("unknown top-level field should reject");
 
     assert!(format!("{error}").contains("unknown top-level frontmatter field"));
 }
@@ -670,7 +674,8 @@ hooks:
     transport:
       type: http
       url: https://hooks.example.test/audit
-      allowlist: ["hooks.example.test"]
+      security:
+        allowlist: ["hooks.example.test"]
 ---
 Body
 "##

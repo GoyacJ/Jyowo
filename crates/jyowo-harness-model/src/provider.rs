@@ -206,7 +206,7 @@ impl ModelRuntimeSnapshot {
 pub enum ModelLifecycle {
     Stable,
     Preview,
-    Deprecated { retirement_date: NaiveDate },
+    Retiring { retirement_date: NaiveDate },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

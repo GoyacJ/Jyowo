@@ -7,7 +7,19 @@ use harness_model::{
     failed_snapshot, fetch_official_quota, unsupported_snapshot, AccountUsageError,
     ProviderAccountUsageRegistry, ProviderAccountUsageRequest, DEFAULT_QUOTA_CACHE_TTL,
 };
+#[cfg(any(
+    feature = "anthropic",
+    feature = "deepseek",
+    feature = "openai",
+    feature = "openrouter"
+))]
 use wiremock::matchers::{method, path_regex};
+#[cfg(any(
+    feature = "anthropic",
+    feature = "deepseek",
+    feature = "openai",
+    feature = "openrouter"
+))]
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn sample_request(provider_id: &str, api_key: &str) -> ProviderAccountUsageRequest {
@@ -47,6 +59,7 @@ fn missing_api_key_returns_not_configured() {
 }
 
 #[test]
+#[cfg(feature = "anthropic")]
 fn anthropic_returns_auth_required_without_network() {
     let registry = default_account_usage_registry();
     let request = sample_request("anthropic", "sk-ant-test");
@@ -60,6 +73,7 @@ fn anthropic_returns_auth_required_without_network() {
 }
 
 #[tokio::test]
+#[cfg(feature = "anthropic")]
 async fn anthropic_quota_rejects_non_official_base_url_before_sending_admin_key() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -82,6 +96,7 @@ async fn anthropic_quota_rejects_non_official_base_url_before_sending_admin_key(
 }
 
 #[test]
+#[cfg(feature = "openai")]
 fn openai_returns_auth_required_without_network() {
     let registry = default_account_usage_registry();
     let request = sample_request("openai", "sk-test");
@@ -95,6 +110,7 @@ fn openai_returns_auth_required_without_network() {
 }
 
 #[tokio::test]
+#[cfg(feature = "openai")]
 async fn openai_quota_rejects_non_official_base_url_before_sending_admin_key() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

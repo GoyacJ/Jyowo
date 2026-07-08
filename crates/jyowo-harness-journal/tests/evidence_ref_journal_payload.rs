@@ -10,7 +10,7 @@ use harness_journal::evidence::{
     InMemoryEvidenceRefRegistry, RedactionProvenance,
 };
 use harness_journal::{
-    EventEnvelope, EventStore, InMemoryBlobStore, SchemaVersion, SessionFilter, SessionSnapshot,
+    EventEnvelope, EventStore, InMemoryBlobStore, SessionFilter, SessionSnapshot,
 };
 
 #[tokio::test]
@@ -212,7 +212,6 @@ fn test_envelope(session_id: SessionId, payload: Event) -> EventEnvelope {
         run_id: None,
         correlation_id: CorrelationId::new(),
         causation_id: None,
-        schema_version: SchemaVersion::CURRENT,
         recorded_at: chrono::Utc::now(),
         payload,
     }

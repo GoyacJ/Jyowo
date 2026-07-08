@@ -149,12 +149,6 @@ pub struct SkillRegistration {
     pub force_allowlist: Option<Vec<AgentId>>,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum SkillCompatMode {
-    Lenient,
-    Strict,
-}
-
 impl SkillSource {
     #[must_use]
     pub fn to_kind(&self) -> SkillSourceKind {

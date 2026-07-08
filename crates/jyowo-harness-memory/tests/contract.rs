@@ -1,4 +1,4 @@
-#![cfg(any(feature = "builtin", feature = "provider-registry"))]
+#![cfg(all(feature = "provider-registry", feature = "testing"))]
 
 #[cfg(feature = "provider-registry")]
 use std::collections::BTreeSet;

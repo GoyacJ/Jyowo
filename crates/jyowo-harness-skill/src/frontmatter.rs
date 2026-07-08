@@ -6,10 +6,9 @@ use serde_json::{Map, Number, Value};
 use yaml_rust2::{Yaml, YamlLoader};
 
 use crate::{
-    BuiltinHookKind, Skill, SkillCompatMode, SkillConfigDecl, SkillError, SkillFrontmatter,
-    SkillHookDecl, SkillHookExecSpec, SkillHookHttpSecuritySpec, SkillHookHttpSpec,
-    SkillHookTransport, SkillParamType, SkillParameter, SkillPlatform, SkillPrerequisites,
-    SkillSource,
+    BuiltinHookKind, Skill, SkillConfigDecl, SkillError, SkillFrontmatter, SkillHookDecl,
+    SkillHookExecSpec, SkillHookHttpSecuritySpec, SkillHookHttpSpec, SkillHookTransport,
+    SkillParamType, SkillParameter, SkillPlatform, SkillPrerequisites, SkillSource,
 };
 
 pub fn parse_skill_markdown(
@@ -18,27 +17,11 @@ pub fn parse_skill_markdown(
     raw_path: Option<PathBuf>,
     runtime_platform: SkillPlatform,
 ) -> Result<Skill, SkillError> {
-    parse_skill_markdown_with_options(
-        markdown,
-        source,
-        raw_path,
-        runtime_platform,
-        SkillCompatMode::Lenient,
-    )
-}
-
-pub fn parse_skill_markdown_with_options(
-    markdown: &str,
-    source: SkillSource,
-    raw_path: Option<PathBuf>,
-    runtime_platform: SkillPlatform,
-    compat_mode: SkillCompatMode,
-) -> Result<Skill, SkillError> {
     let (frontmatter_yaml, body) = split_frontmatter(markdown)?;
     let docs = YamlLoader::load_from_str(frontmatter_yaml)
         .map_err(|error| SkillError::ParseFrontmatter(error.to_string()))?;
     let yaml = docs.first().unwrap_or(&Yaml::BadValue);
-    let frontmatter = parse_frontmatter(yaml, compat_mode)?;
+    let frontmatter = parse_frontmatter(yaml)?;
 
     if frontmatter.name.chars().count() > 64 {
         return Err(SkillError::NameTooLong(frontmatter.name.chars().count()));
@@ -82,13 +65,8 @@ fn split_frontmatter(markdown: &str) -> Result<(&str, &str), SkillError> {
     ))
 }
 
-fn parse_frontmatter(
-    yaml: &Yaml,
-    compat_mode: SkillCompatMode,
-) -> Result<SkillFrontmatter, SkillError> {
-    if matches!(compat_mode, SkillCompatMode::Strict) {
-        reject_unknown_top_level_fields(yaml)?;
-    }
+fn parse_frontmatter(yaml: &Yaml) -> Result<SkillFrontmatter, SkillError> {
+    reject_unknown_top_level_fields(yaml)?;
     let name = required_string(yaml, "name")?;
     let description = required_string(yaml, "description")?;
     let metadata = yaml_to_map(yaml_hash_get(yaml, "metadata").unwrap_or(&Yaml::BadValue));
@@ -111,7 +89,7 @@ fn parse_frontmatter(
         config: parse_config(yaml_hash_get(yaml, "config"))?,
         platforms: parse_platforms(yaml_hash_get(yaml, "platforms"))?,
         prerequisites: parse_prerequisites(yaml_hash_get(yaml, "prerequisites")),
-        hooks: parse_hooks(yaml_hash_get(yaml, "hooks"), compat_mode)?,
+        hooks: parse_hooks(yaml_hash_get(yaml, "hooks"))?,
         tags,
         category,
         metadata,
@@ -211,10 +189,7 @@ fn parse_prerequisites(yaml: Option<&Yaml>) -> SkillPrerequisites {
     }
 }
 
-fn parse_hooks(
-    yaml: Option<&Yaml>,
-    compat_mode: SkillCompatMode,
-) -> Result<Vec<SkillHookDecl>, SkillError> {
+fn parse_hooks(yaml: Option<&Yaml>) -> Result<Vec<SkillHookDecl>, SkillError> {
     let Some(Yaml::Array(items)) = yaml else {
         return Ok(Vec::new());
     };
@@ -229,7 +204,7 @@ fn parse_hooks(
                 )));
             }
             let id = required_string(item, "id")?;
-            let transport = parse_hook_transport(yaml_hash_get(item, "transport"), compat_mode)?;
+            let transport = parse_hook_transport(yaml_hash_get(item, "transport"))?;
             Ok(SkillHookDecl {
                 id,
                 events,
@@ -239,17 +214,11 @@ fn parse_hooks(
         .collect()
 }
 
-fn parse_hook_transport(
-    yaml: Option<&Yaml>,
-    compat_mode: SkillCompatMode,
-) -> Result<SkillHookTransport, SkillError> {
+fn parse_hook_transport(yaml: Option<&Yaml>) -> Result<SkillHookTransport, SkillError> {
     let Some(yaml) = yaml else {
-        if matches!(compat_mode, SkillCompatMode::Strict) {
-            return Err(SkillError::ParseFrontmatter(
-                "strict mode requires hook transport".to_owned(),
-            ));
-        }
-        return Ok(SkillHookTransport::Builtin(BuiltinHookKind::AuditLog));
+        return Err(SkillError::ParseFrontmatter(
+            "hook requires transport".to_owned(),
+        ));
     };
     let transport_type = optional_string(yaml_hash_get(yaml, "type"))
         .ok_or_else(|| SkillError::ParseFrontmatter("hook transport missing type".to_owned()))?;
@@ -274,7 +243,7 @@ fn parse_hook_transport(
             failure_mode: parse_failure_mode(yaml_hash_get(yaml, "failure_mode"))?,
         })),
         "http" => {
-            let security = parse_http_security(yaml, compat_mode)?;
+            let security = parse_http_security(yaml)?;
             Ok(SkillHookTransport::Http(SkillHookHttpSpec {
                 url: required_string(yaml, "url")?,
                 timeout_ms: optional_u64(yaml_hash_get(yaml, "timeout_ms")).unwrap_or(5_000),
@@ -289,33 +258,19 @@ fn parse_hook_transport(
     }
 }
 
-fn parse_http_security(
-    yaml: &Yaml,
-    compat_mode: SkillCompatMode,
-) -> Result<SkillHookHttpSecuritySpec, SkillError> {
-    let security_yaml = yaml_hash_get(yaml, "security");
-    if security_yaml.is_none() && matches!(compat_mode, SkillCompatMode::Strict) {
-        return Err(SkillError::ParseFrontmatter(
-            "strict mode requires transport.security for http hooks".to_owned(),
-        ));
-    }
-
+fn parse_http_security(yaml: &Yaml) -> Result<SkillHookHttpSecuritySpec, SkillError> {
+    let security_yaml = yaml_hash_get(yaml, "security").ok_or_else(|| {
+        SkillError::ParseFrontmatter("http hook requires transport.security".to_owned())
+    })?;
     let mut security = SkillHookHttpSecuritySpec::default();
-    if let Some(security_yaml) = security_yaml {
-        security.allowlist =
-            string_vec(yaml_hash_get(security_yaml, "allowlist")).unwrap_or_default();
-        security.ssrf_guard =
-            optional_bool(yaml_hash_get(security_yaml, "ssrf_guard")).unwrap_or(true);
-        security.max_redirects =
-            optional_u64(yaml_hash_get(security_yaml, "max_redirects")).unwrap_or(0) as usize;
-        security.max_body_bytes =
-            optional_u64(yaml_hash_get(security_yaml, "max_body_bytes")).unwrap_or(1024 * 1024);
-        security.mtls_required =
-            optional_bool(yaml_hash_get(security_yaml, "mtls_required")).unwrap_or(false);
-        return Ok(security);
-    }
-
-    security.allowlist = string_vec(yaml_hash_get(yaml, "allowlist")).unwrap_or_default();
+    security.allowlist = string_vec(yaml_hash_get(security_yaml, "allowlist")).unwrap_or_default();
+    security.ssrf_guard = optional_bool(yaml_hash_get(security_yaml, "ssrf_guard")).unwrap_or(true);
+    security.max_redirects =
+        optional_u64(yaml_hash_get(security_yaml, "max_redirects")).unwrap_or(0) as usize;
+    security.max_body_bytes =
+        optional_u64(yaml_hash_get(security_yaml, "max_body_bytes")).unwrap_or(1024 * 1024);
+    security.mtls_required =
+        optional_bool(yaml_hash_get(security_yaml, "mtls_required")).unwrap_or(false);
     Ok(security)
 }
 

@@ -76,7 +76,7 @@ fn desktop_provider_settings_store_writes_owner_only_file_permissions() {
 }
 
 #[test]
-fn desktop_provider_settings_store_ignores_malformed_legacy_json_and_preserves_file() {
+fn desktop_provider_settings_store_ignores_malformed_old_json_and_preserves_file() {
     let workspace = unique_workspace("provider-settings-malformed-json");
     let settings_dir = workspace.join(".jyowo").join("runtime");
     std::fs::create_dir_all(&settings_dir).unwrap();
@@ -89,11 +89,11 @@ fn desktop_provider_settings_store_ignores_malformed_legacy_json_and_preserves_f
 
     let loaded = provider_settings_store_for_workspace(&workspace)
         .load_record()
-        .expect("production provider settings load must ignore legacy runtime file");
+        .expect("production provider settings load must ignore old runtime file");
 
     assert!(
         loaded.is_none(),
-        "legacy runtime provider settings must not be used as production fallback"
+        "old runtime provider settings must not be used as production fallback"
     );
     assert!(settings_path.exists());
 }

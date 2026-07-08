@@ -16,7 +16,7 @@ fn deferred_tools_delta_attachment_is_stable() {
             "mcp__slack__post_message".to_owned(),
             "mcp__slack__list_channels".to_owned(),
         ],
-        removed_names: vec!["legacy_tool".to_owned()],
+        removed_names: vec!["old_tool".to_owned()],
         source: ToolPoolChangeSource::InitialClassification,
         at: Utc.with_ymd_and_hms(2026, 4, 25, 10, 32, 11).unwrap(),
         initial: false,
@@ -31,7 +31,7 @@ fn deferred_tools_delta_attachment_is_stable() {
             "    mcp__slack__list_channels\n",
             "  </added>\n",
             "  <removed>\n",
-            "    legacy_tool\n",
+            "    old_tool\n",
             "  </removed>\n",
             "</deferred-tools>"
         )

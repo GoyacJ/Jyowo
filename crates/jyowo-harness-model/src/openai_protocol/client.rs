@@ -16,13 +16,13 @@ use crate::{
 
 use super::chat_codec;
 use super::dialect::OpenAiChatDialect;
-use super::error::{map_response_error, map_transport_error, OpenAiCompatibleError};
+use super::error::{map_response_error, map_transport_error, OpenAiProtocolError};
 use super::{responses_codec, streaming};
 
 const DEFAULT_CREDENTIAL_RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
-pub(crate) struct OpenAiCompatibleClient {
+pub(crate) struct OpenAiProtocolClient {
     http: reqwest::Client,
     api_key: Option<SecretString>,
     credential_resolver: Option<Arc<dyn ModelCredentialResolver>>,
@@ -37,7 +37,7 @@ pub(crate) struct OpenAiCompatibleClient {
 }
 
 #[allow(dead_code)]
-impl OpenAiCompatibleClient {
+impl OpenAiProtocolClient {
     pub(crate) fn from_api_key(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
         Self::new(
             Some(api_key.into()),
@@ -66,7 +66,7 @@ impl OpenAiCompatibleClient {
             http: reqwest::Client::new(),
             api_key: api_key.map(|api_key| SecretString::new(api_key.into_boxed_str())),
             credential_resolver: None,
-            provider_id: "openai-compatible".to_owned(),
+            provider_id: "openai-protocol".to_owned(),
             base_url: base_url.into(),
             path: path.into(),
             protocol,
@@ -186,7 +186,7 @@ impl OpenAiCompatibleClient {
                             ModelProtocol::Responses => {
                                 responses_codec::response_to_stream(response)
                             }
-                            _ => unreachable!("validated OpenAI-compatible API mode"),
+                            _ => unreachable!("validated OpenAI protocol API mode"),
                         };
                         return Ok(wrap_stream_with_cancel_deadline(stream, &ctx));
                     }
@@ -202,7 +202,7 @@ impl OpenAiCompatibleClient {
                         ModelProtocol::Responses => {
                             responses_codec::json_response_to_stream(response)
                         }
-                        _ => unreachable!("validated OpenAI-compatible API mode"),
+                        _ => unreachable!("validated OpenAI protocol API mode"),
                     };
                 }
                 Err(err) => {
@@ -274,10 +274,10 @@ impl OpenAiCompatibleClient {
         &self,
         body: &Value,
         credential: Option<&CredentialValue>,
-    ) -> Result<reqwest::Response, OpenAiCompatibleError> {
+    ) -> Result<reqwest::Response, OpenAiProtocolError> {
         let _permit = match &self.concurrency {
             Some(semaphore) => Some(semaphore.clone().acquire_owned().await.map_err(|error| {
-                OpenAiCompatibleError {
+                OpenAiProtocolError {
                     error: ModelError::ProviderUnavailable(error.to_string()),
                     class: ErrorClass::Transient,
                     retry_after: None,
@@ -311,14 +311,14 @@ impl OpenAiCompatibleClient {
     fn headers(
         &self,
         credential: Option<&CredentialValue>,
-    ) -> Result<HeaderMap, OpenAiCompatibleError> {
+    ) -> Result<HeaderMap, OpenAiProtocolError> {
         let mut headers = HeaderMap::new();
         let api_key = credential
             .map(|credential| &credential.secret)
             .or(self.api_key.as_ref());
         if let Some(api_key) = api_key {
             let value = format!("Bearer {}", api_key.expose_secret());
-            let auth = HeaderValue::from_str(&value).map_err(|error| OpenAiCompatibleError {
+            let auth = HeaderValue::from_str(&value).map_err(|error| OpenAiProtocolError {
                 error: ModelError::AuthExpired(error.to_string()),
                 class: ErrorClass::AuthExpired,
                 retry_after: None,
@@ -332,13 +332,13 @@ impl OpenAiCompatibleClient {
     fn validate_request(&self, req: &ModelRequest) -> Result<(), ModelError> {
         if req.protocol != self.protocol {
             return Err(ModelError::InvalidRequest(format!(
-                "OpenAI-compatible provider expected {:?}, got {:?}",
+                "OpenAI protocol provider expected {:?}, got {:?}",
                 self.protocol, req.protocol
             )));
         }
         if !req.cache_breakpoints.is_empty() {
             return Err(ModelError::InvalidRequest(
-                "OpenAI-compatible providers do not accept explicit cache breakpoints".to_owned(),
+                "OpenAI protocol providers do not accept explicit cache breakpoints".to_owned(),
             ));
         }
         Ok(())
@@ -355,7 +355,7 @@ impl OpenAiCompatibleClient {
             }
             ModelProtocol::Responses => responses_codec::responses_request_body(req, ctx).await,
             _ => Err(ModelError::InvalidRequest(
-                "unsupported OpenAI-compatible API mode".to_owned(),
+                "unsupported OpenAI protocol API mode".to_owned(),
             )),
         }
     }
@@ -384,10 +384,10 @@ fn normalize_path(path: &str) -> String {
 }
 
 #[async_trait]
-pub(crate) trait OpenAiCompatibleProviderExt: Send + Sync + 'static {
-    fn client(&self) -> &OpenAiCompatibleClient;
+pub(crate) trait OpenAiProtocolProviderExt: Send + Sync + 'static {
+    fn client(&self) -> &OpenAiProtocolClient;
 
-    async fn infer_openai_compatible(
+    async fn infer_openai_protocol(
         &self,
         req: ModelRequest,
         ctx: InferContext,
@@ -687,7 +687,7 @@ mod credential_pool_tests {
     fn client(
         server: &MockServer,
         resolver: Arc<dyn ModelCredentialResolver>,
-    ) -> OpenAiCompatibleClient {
+    ) -> OpenAiProtocolClient {
         client_with_provider(server, resolver, "openai")
     }
 
@@ -695,7 +695,7 @@ mod credential_pool_tests {
         server: &MockServer,
         resolver: Arc<dyn ModelCredentialResolver>,
         provider_id: &'static str,
-    ) -> OpenAiCompatibleClient {
+    ) -> OpenAiProtocolClient {
         test_client_from_api_key("unused", server.uri())
             .with_provider_id(provider_id)
             .with_credential_resolver(resolver)
@@ -704,8 +704,8 @@ mod credential_pool_tests {
     fn test_client_from_api_key(
         api_key: impl Into<String>,
         base_url: impl Into<String>,
-    ) -> OpenAiCompatibleClient {
-        let mut client = OpenAiCompatibleClient::from_api_key(api_key, base_url);
+    ) -> OpenAiProtocolClient {
+        let mut client = OpenAiProtocolClient::from_api_key(api_key, base_url);
         client.http = reqwest::Client::builder()
             .no_proxy()
             .pool_max_idle_per_host(0)

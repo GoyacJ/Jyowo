@@ -724,14 +724,14 @@ minimax_tool!(
     MiniMaxAnthropicMessagesTool,
     "MiniMaxAnthropicMessages",
     "MiniMax Anthropic messages",
-    "Call MiniMax Anthropic-compatible messages endpoint.",
+    "Call MiniMax Anthropic protocol messages endpoint.",
     anthropic_messages
 );
 minimax_tool!(
     MiniMaxAnthropicCountTokensTool,
     "MiniMaxAnthropicCountTokens",
     "MiniMax Anthropic count tokens",
-    "Call MiniMax Anthropic-compatible count tokens endpoint.",
+    "Call MiniMax Anthropic protocol count tokens endpoint.",
     anthropic_count_tokens
 );
 
@@ -829,7 +829,7 @@ minimax_string_arg_tool!(
     MiniMaxAnthropicModelRetrieveTool,
     "MiniMaxAnthropicModelRetrieve",
     "MiniMax Anthropic model retrieve",
-    "Retrieve MiniMax Anthropic-compatible model metadata.",
+    "Retrieve MiniMax Anthropic protocol model metadata.",
     retrieve_anthropic_model,
     "model_id"
 );
@@ -959,7 +959,7 @@ impl Default for MiniMaxAnthropicModelsListTool {
             descriptor: descriptor(
                 "MiniMaxAnthropicModelsList",
                 "MiniMax Anthropic models list",
-                "List MiniMax Anthropic-compatible models.",
+                "List MiniMax Anthropic protocol models.",
                 None,
             ),
         }

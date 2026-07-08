@@ -31,7 +31,7 @@ pub(crate) enum MinimaxProviderClientError {
 enum MinimaxTransport {
     /// Production: authorized broker.
     Broker(Arc<dyn ToolNetworkBrokerCap>, AuthorizedNetworkPermit),
-    /// Direct reqwest (test / legacy credential path).
+    /// Direct reqwest (test / old credential path).
     #[cfg(test)]
     Direct(reqwest::Client),
 }
@@ -68,7 +68,7 @@ impl MinimaxApiClient {
         }
     }
 
-    /// Legacy constructor using a direct reqwest client. Only used in tests.
+    /// Old constructor using a direct reqwest client. Only used in tests.
     #[cfg(test)]
     pub(crate) fn from_api_key(api_key: impl Into<String>) -> Self {
         Self {

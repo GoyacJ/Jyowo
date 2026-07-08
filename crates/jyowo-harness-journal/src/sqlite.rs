@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 use crate::{
     apply_cursor, event_type, journal_error, session_end_reason, AppendMetadata, CompactionLineage,
     EventEnvelope, EventEnvelopePage, EventStore, JournalRedaction, PrunePolicy, PruneReport,
-    ReplayCursor, SchemaVersion, SessionFilter, SessionSnapshot, SessionSummary,
+    ReplayCursor, SessionFilter, SessionSnapshot, SessionSummary,
 };
 
 pub struct SqliteEventStore {
@@ -43,7 +43,6 @@ impl SqliteEventStore {
                     recorded_at TEXT NOT NULL,
                     correlation_id TEXT,
                     causation_id TEXT,
-                    schema_version INTEGER NOT NULL DEFAULT 1,
                     body TEXT NOT NULL,
                     PRIMARY KEY (tenant_id, session_id, offset)
                  ) STRICT;
@@ -105,7 +104,6 @@ impl SqliteEventStore {
             run_id: metadata.run_id,
             correlation_id: metadata.correlation_id,
             causation_id: metadata.causation_id,
-            schema_version: SchemaVersion::CURRENT,
             recorded_at: harness_contracts::now(),
             payload,
         }
@@ -213,9 +211,9 @@ impl EventStore for SqliteEventStore {
             tx.execute(
                 "INSERT INTO events (
                     tenant_id, session_id, offset, event_id, event_type, recorded_at,
-                    correlation_id, causation_id, schema_version, body
+                    correlation_id, causation_id, body
                  )
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     tenant.to_string(),
                     session_id.to_string(),
@@ -225,7 +223,6 @@ impl EventStore for SqliteEventStore {
                     envelope.recorded_at.to_rfc3339(),
                     envelope.correlation_id.to_string(),
                     envelope.causation_id.map(|id| id.to_string()),
-                    i64::from(envelope.schema_version.get()),
                     body
                 ],
             )

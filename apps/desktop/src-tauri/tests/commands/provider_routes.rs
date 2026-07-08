@@ -531,7 +531,7 @@ async fn provider_capability_route_saving_empty_routes_writes_empty_settings() {
 }
 
 #[tokio::test]
-async fn provider_capability_route_invalid_legacy_file_is_ignored_and_preserved() {
+async fn provider_capability_route_invalid_old_file_is_ignored_and_preserved() {
     let workspace = canonical_unique_workspace("provider-capability-route-invalid-file");
     let route_dir = workspace.join(".jyowo").join("runtime");
     std::fs::create_dir_all(&route_dir).unwrap();
@@ -558,7 +558,7 @@ async fn provider_capability_route_invalid_legacy_file_is_ignored_and_preserved(
 }
 
 #[tokio::test]
-async fn provider_capability_route_malformed_legacy_file_is_ignored_and_preserved() {
+async fn provider_capability_route_malformed_old_file_is_ignored_and_preserved() {
     let workspace = canonical_unique_workspace("provider-capability-route-malformed-file");
     let route_dir = workspace.join(".jyowo").join("runtime");
     std::fs::create_dir_all(&route_dir).unwrap();
@@ -644,7 +644,7 @@ async fn desktop_provider_capability_route_store_rejects_symlink_settings_file()
 }
 
 #[tokio::test]
-async fn provider_capability_routes_save_ignores_legacy_runtime_path() {
+async fn provider_capability_routes_save_ignores_old_runtime_path() {
     let workspace = canonical_unique_workspace("provider-route-save-ignores-runtime");
     let runtime_dir = workspace.join(".jyowo").join("runtime");
     std::fs::create_dir_all(&runtime_dir).unwrap();
@@ -680,7 +680,7 @@ async fn provider_capability_routes_save_ignores_legacy_runtime_path() {
         .join("config")
         .join("provider-capability-routes.json");
     assert!(config_path.exists(), "should write to config");
-    assert!(old_path.exists(), "legacy runtime file should be ignored");
+    assert!(old_path.exists(), "old runtime file should be ignored");
 
     let saved: harness_contracts::ProviderCapabilityRouteSettings =
         serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();

@@ -1120,7 +1120,7 @@ describe('CommandClient', () => {
       id: 'segment:text:token-counting',
       order: 3,
       messageId: 'assistant-message-token-counting',
-      body: 'Anthropic compatible API, model list, Token 计数, Token: 统计, and token authentication.',
+      body: 'Anthropic protocol API, model list, Token 计数, Token: 统计, and token authentication.',
     } as (typeof assistant.segments)[number])
 
     await expect(
@@ -1134,7 +1134,7 @@ describe('CommandClient', () => {
           assistant: {
             segments: expect.arrayContaining([
               expect.objectContaining({
-                body: 'Anthropic compatible API, model list, Token 计数, Token: 统计, and token authentication.',
+                body: 'Anthropic protocol API, model list, Token 计数, Token: 统计, and token authentication.',
               }),
             ]),
           },
@@ -2844,7 +2844,7 @@ describe('CommandClient', () => {
     })
   })
 
-  it('emits fixture permission requests with production-compatible ids', async () => {
+  it('emits fixture permission requests with production-shaped ids', async () => {
     const client = createTestCommandClient()
     const permissionRequest = new Promise<string>((resolve) => {
       void client.listenConversationEventBatches((batch) => {
@@ -6412,8 +6412,8 @@ describe('agent orchestration contracts', () => {
       order: 4,
       activityKind: 'agentTeam',
       agentId: 'team-001',
-      role: 'Migration team',
-      taskSummary: 'Coordinate the migration',
+      role: 'Transition team',
+      taskSummary: 'Coordinate the transition',
       status: 'completed',
       resultSummary: 'Team completed.',
       team: {
@@ -6491,8 +6491,8 @@ describe('agent orchestration contracts', () => {
       order: 4,
       activityKind: 'agentTeam',
       agentId: 'team-001',
-      role: 'Migration team',
-      taskSummary: 'Coordinate the migration',
+      role: 'Transition team',
+      taskSummary: 'Coordinate the transition',
       status: 'running',
       team: {
         topology: 'coordinator_worker',
