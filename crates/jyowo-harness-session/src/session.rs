@@ -1,17 +1,17 @@
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 #[cfg(feature = "recall-memory")]
 use harness_contracts::MemoryThreadSettings;
 use harness_contracts::{
-    AgentProfile, ConfigHash, ContextPatchRequest, ContextPatchSinkCap,
-    ConversationAttachmentReference, DeferredToolsDeltaAttachment, EndReason, Event,
-    InteractivityLevel, Message, MessageId, MessagePart, ModelProtocol, PermissionActorSource,
-    PermissionMode, RunId, RunModelSnapshot, SessionCreatedEvent, SessionEndedEvent, SessionError,
-    SessionId, SnapshotId, TeamId, TenantId, ToolProfile, ToolSearchMode, UsageSnapshot,
-    WorkspaceId,
+    AgentProfile, ConfigHash, ContextPatchRequest, ConversationAttachmentReference,
+    DeferredToolsDeltaAttachment, EndReason, Event, InteractivityLevel, Message, MessageId,
+    MessagePart, ModelProtocol, PermissionActorSource, PermissionMode, RunId, RunModelSnapshot,
+    SessionCreatedEvent, SessionEndedEvent, SessionError, SessionId, SnapshotId, TeamId, TenantId,
+    ToolProfile, ToolSearchMode, UsageSnapshot, WorkspaceId,
 };
 use harness_journal::EventStore;
 use harness_skill::SkillRegistration;
@@ -19,9 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{watch, Mutex};
 
-use crate::{
-    SessionBuilder, SessionPaths, SessionProjection, SessionTurnRuntime, WorkspaceBootstrap,
-};
+use crate::{SessionBuilder, SessionPaths, SessionProjection, WorkspaceBootstrap};
 #[cfg(feature = "steering")]
 use crate::{SteeringQueue, SynthesizedUserMessage};
 
@@ -70,7 +68,7 @@ pub trait SessionTurnRunner: Send + Sync + 'static {
     async fn run_turn(
         &self,
         ctx: SessionTurnContext,
-        prompt: String,
+        parts: Vec<MessagePart>,
     ) -> Result<Vec<Event>, SessionError>;
 
     async fn push_context_patch(&self, request: ContextPatchRequest) -> Result<(), SessionError> {
@@ -292,12 +290,20 @@ pub struct Session {
     event_store: Arc<dyn EventStore>,
     snapshot_tx: watch::Sender<SnapshotId>,
     snapshot_rx: watch::Receiver<SnapshotId>,
-    turn_runtime: Option<SessionTurnRuntime>,
     turn_runner: Option<Arc<dyn SessionTurnRunner>>,
     skill_reload_cap: Option<Arc<dyn SkillReloadCap>>,
     #[cfg(feature = "steering")]
     steering: SteeringQueue,
+    active_turn: AtomicBool,
     state: Mutex<SessionState>,
+}
+
+struct SessionActiveTurnGuard<'a>(&'a AtomicBool);
+
+impl Drop for SessionActiveTurnGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 impl fmt::Debug for Session {
@@ -324,7 +330,6 @@ impl Session {
         options: SessionOptions,
         paths: SessionPaths,
         event_store: Arc<dyn EventStore>,
-        turn_runtime: Option<SessionTurnRuntime>,
         turn_runner: Option<Arc<dyn SessionTurnRunner>>,
         turn_model_snapshot: Option<RunModelSnapshot>,
         turn_model_config_id: Option<String>,
@@ -351,11 +356,11 @@ impl Session {
             event_store,
             snapshot_tx,
             snapshot_rx,
-            turn_runtime,
             turn_runner,
             skill_reload_cap,
             #[cfg(feature = "steering")]
             steering: SteeringQueue::new(steering_policy),
+            active_turn: AtomicBool::new(false),
             state: Mutex::new(SessionState {
                 ended: false,
                 projection,
@@ -369,7 +374,6 @@ impl Session {
         options: SessionOptions,
         paths: SessionPaths,
         event_store: Arc<dyn EventStore>,
-        turn_runtime: Option<SessionTurnRuntime>,
         turn_runner: Option<Arc<dyn SessionTurnRunner>>,
         turn_model_snapshot: Option<RunModelSnapshot>,
         turn_model_config_id: Option<String>,
@@ -392,13 +396,13 @@ impl Session {
             event_store,
             snapshot_tx,
             snapshot_rx,
-            turn_runtime,
             turn_runner,
             turn_model_snapshot,
             turn_model_config_id,
             skill_reload_cap,
             #[cfg(feature = "steering")]
             steering: SteeringQueue::default(),
+            active_turn: AtomicBool::new(false),
             state: Mutex::new(SessionState {
                 ended: projection.end_reason.is_some(),
                 projection,
@@ -416,10 +420,6 @@ impl Session {
 
     pub(crate) fn event_store(&self) -> &Arc<dyn EventStore> {
         &self.event_store
-    }
-
-    pub(crate) fn turn_runtime(&self) -> Option<SessionTurnRuntime> {
-        self.turn_runtime.clone()
     }
 
     pub(crate) fn turn_runner(&self) -> Option<Arc<dyn SessionTurnRunner>> {
@@ -471,12 +471,12 @@ impl Session {
         &self.steering
     }
 
-    pub async fn run_turn(&self, prompt: impl Into<String>) -> Result<(), SessionError> {
+    pub async fn run_turn(&self, prompt: impl Into<String>) -> Result<RunId, SessionError> {
         self.run_turn_parts(vec![MessagePart::Text(prompt.into())])
             .await
     }
 
-    pub async fn run_turn_parts(&self, parts: Vec<MessagePart>) -> Result<(), SessionError> {
+    pub async fn run_turn_parts(&self, parts: Vec<MessagePart>) -> Result<RunId, SessionError> {
         self.run_turn_parts_with_client_message_id(parts, None)
             .await
     }
@@ -485,7 +485,7 @@ impl Session {
         &self,
         parts: Vec<MessagePart>,
         client_message_id: Option<String>,
-    ) -> Result<(), SessionError> {
+    ) -> Result<RunId, SessionError> {
         self.run_turn_parts_with_client_message_id_and_attachments(
             parts,
             client_message_id,
@@ -499,7 +499,7 @@ impl Session {
         parts: Vec<MessagePart>,
         client_message_id: Option<String>,
         attachments: Vec<ConversationAttachmentReference>,
-    ) -> Result<(), SessionError> {
+    ) -> Result<RunId, SessionError> {
         self.run_turn_parts_with_client_message_id_attachments_and_permission_mode(
             parts,
             client_message_id,
@@ -515,7 +515,7 @@ impl Session {
         client_message_id: Option<String>,
         attachments: Vec<ConversationAttachmentReference>,
         permission_mode_override: Option<PermissionMode>,
-    ) -> Result<(), SessionError> {
+    ) -> Result<RunId, SessionError> {
         self.run_turn_parts_with_client_message_id_attachments_permission_mode_and_actor_source(
             parts,
             client_message_id,
@@ -533,19 +533,34 @@ impl Session {
         attachments: Vec<ConversationAttachmentReference>,
         permission_mode_override: Option<PermissionMode>,
         permission_actor_source: PermissionActorSource,
-    ) -> Result<(), SessionError> {
+    ) -> Result<RunId, SessionError> {
+        self.run_turn_parts_with_client_message_id_attachments_permission_mode_actor_source_and_run_id(
+            parts,
+            client_message_id,
+            attachments,
+            permission_mode_override,
+            permission_actor_source,
+            RunId::new(),
+        )
+        .await
+    }
+
+    pub async fn run_turn_parts_with_client_message_id_attachments_permission_mode_actor_source_and_run_id(
+        &self,
+        parts: Vec<MessagePart>,
+        client_message_id: Option<String>,
+        attachments: Vec<ConversationAttachmentReference>,
+        permission_mode_override: Option<PermissionMode>,
+        permission_actor_source: PermissionActorSource,
+        run_id: RunId,
+    ) -> Result<RunId, SessionError> {
+        let _active_turn = self.acquire_turn()?;
         if self.state.lock().await.ended {
             return Err(SessionError::Message("session already ended".to_owned()));
         }
         let permission_mode = permission_mode_override.unwrap_or(self.options.permission_mode);
         if let Some(runner) = self.turn_runner() {
-            let Some(prompt) = text_only_parts(&parts) else {
-                return Err(SessionError::Message(
-                    "session turn runner does not support multimodal input".to_owned(),
-                ));
-            };
             let (projection, pending_deferred_tools_delta) = self.projection_for_turn().await;
-            let run_id = RunId::new();
             let message_id = MessageId::new();
             #[cfg(feature = "steering")]
             let steering_merge = self.drain_and_merge_into(run_id, Some(message_id)).await?;
@@ -577,30 +592,26 @@ impl Session {
                 #[cfg(feature = "steering")]
                 steering_merge,
             };
-            let events = runner.run_turn(ctx, prompt).await?;
+            let events = runner.run_turn(ctx, parts).await?;
             self.apply_projection_events(&events).await;
-            return Ok(());
+            return Ok(run_id);
         }
-        let runtime = self
-            .turn_runtime()
-            .ok_or_else(|| SessionError::Message("turn runtime missing".to_owned()))?;
-        let (_, pending_deferred_tools_delta) = self.projection_for_turn().await;
-        if let Some(delta) = pending_deferred_tools_delta {
-            runtime
-                .context
-                .push_deferred_tools_delta(self.tenant_id(), self.session_id(), delta)
-                .map_err(session_error)?;
-        }
-        crate::turn::run_turn(
-            self,
-            runtime,
-            parts,
+        let _ = (
             client_message_id,
             attachments,
             permission_mode,
             permission_actor_source,
-        )
-        .await
+        );
+        Err(SessionError::Message("turn runner missing".to_owned()))
+    }
+
+    fn acquire_turn(&self) -> Result<SessionActiveTurnGuard<'_>, SessionError> {
+        self.active_turn
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| SessionActiveTurnGuard(&self.active_turn))
+            .map_err(|_| {
+                SessionError::Message("conversation run already active for session".to_owned())
+            })
     }
 
     pub async fn interrupt(&self) -> Result<(), SessionError> {
@@ -627,15 +638,9 @@ impl Session {
         if let Some(runner) = self.turn_runner() {
             return runner.push_context_patch(request).await;
         }
-        let runtime = self
-            .turn_runtime()
-            .ok_or_else(|| SessionError::Message("context patch runtime missing".to_owned()))?;
-        runtime
-            .context
-            .push_patch(request)
-            .await
-            .map_err(session_error)?;
-        Ok(())
+        Err(SessionError::Message(
+            "context patch runtime missing".to_owned(),
+        ))
     }
 
     pub async fn end(&self, reason: EndReason) -> Result<(), SessionError> {
@@ -709,14 +714,6 @@ impl Session {
                     created_at: harness_contracts::now(),
                 })],
             )
-            .await
-            .map_err(session_error)?;
-        Ok(())
-    }
-
-    pub(crate) async fn append_events(&self, events: &[Event]) -> Result<(), SessionError> {
-        self.event_store
-            .append(self.options.tenant_id, self.options.session_id, events)
             .await
             .map_err(session_error)?;
         Ok(())
@@ -828,17 +825,6 @@ fn config_snapshot_id(hash: ConfigHash) -> SnapshotId {
 fn hash_json(value: &Value) -> [u8; 32] {
     let bytes = serde_json::to_vec(value).unwrap_or_default();
     blake3::hash(&bytes).into()
-}
-
-fn text_only_parts(parts: &[MessagePart]) -> Option<String> {
-    let mut text = String::new();
-    for part in parts {
-        match part {
-            MessagePart::Text(value) => text.push_str(value),
-            _ => return None,
-        }
-    }
-    Some(text)
 }
 
 fn default_workspace_root() -> PathBuf {

@@ -4518,6 +4518,17 @@ mod tests {
             Err(JournalError::Message("append failed".to_owned()))
         }
 
+        async fn append_with_metadata_expect_next_offset(
+            &self,
+            _tenant: TenantId,
+            _session_id: SessionId,
+            _metadata: AppendMetadata,
+            _expected_next_offset: JournalOffset,
+            _events: &[Event],
+        ) -> Result<JournalOffset, JournalError> {
+            Err(JournalError::Message("append failed".to_owned()))
+        }
+
         async fn read_envelopes(
             &self,
             _tenant: TenantId,

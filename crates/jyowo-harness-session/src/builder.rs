@@ -6,15 +6,13 @@ use harness_contracts::{ConfigHash, RunModelSnapshot, SessionError};
 use harness_journal::EventStore;
 
 use crate::{
-    Session, SessionOptions, SessionPaths, SessionProjection, SessionTurnRunner,
-    SessionTurnRuntime, SkillReloadCap,
+    Session, SessionOptions, SessionPaths, SessionProjection, SessionTurnRunner, SkillReloadCap,
 };
 
 #[derive(Default)]
 pub struct SessionBuilder {
     options: Option<SessionOptions>,
     event_store: Option<Arc<dyn EventStore>>,
-    turn_runtime: Option<SessionTurnRuntime>,
     turn_runner: Option<Arc<dyn SessionTurnRunner>>,
     turn_model_snapshot: Option<RunModelSnapshot>,
     turn_model_config_id: Option<String>,
@@ -37,12 +35,6 @@ impl SessionBuilder {
     #[must_use]
     pub fn with_event_store(mut self, event_store: Arc<dyn EventStore>) -> Self {
         self.event_store = Some(event_store);
-        self
-    }
-
-    #[must_use]
-    pub fn with_turn_runtime(mut self, turn_runtime: SessionTurnRuntime) -> Self {
-        self.turn_runtime = Some(turn_runtime);
         self
     }
 
@@ -136,7 +128,6 @@ impl SessionBuilder {
                 options,
                 paths,
                 event_store,
-                self.turn_runtime,
                 self.turn_runner,
                 self.turn_model_snapshot,
                 self.turn_model_config_id,
@@ -155,7 +146,6 @@ impl SessionBuilder {
                 options,
                 paths,
                 event_store,
-                self.turn_runtime,
                 self.turn_runner,
                 self.turn_model_snapshot,
                 self.turn_model_config_id,
@@ -173,7 +163,6 @@ impl SessionBuilder {
                 options,
                 paths,
                 event_store,
-                self.turn_runtime,
                 self.turn_runner,
                 self.turn_model_snapshot,
                 self.turn_model_config_id,

@@ -89,6 +89,7 @@ impl Harness {
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
                 engine: session_engine.engine,
                 active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
+                active_conversation_sessions: Arc::clone(&self.inner.active_conversation_sessions),
                 process_registry: self.run_scoped_process_registry(),
                 skill_registry: Some(self.inner.skill_registry.clone()),
                 skill_metrics_sink: self.skill_metrics_sink(),
@@ -351,6 +352,7 @@ impl Harness {
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
                 engine: session_engine.engine,
                 active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
+                active_conversation_sessions: Arc::clone(&self.inner.active_conversation_sessions),
                 process_registry: self.run_scoped_process_registry(),
                 skill_registry: Some(self.inner.skill_registry.clone()),
                 skill_metrics_sink: self.skill_metrics_sink(),
@@ -1055,13 +1057,13 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
     async fn run_turn(
         &self,
         ctx: SessionTurnContext,
-        prompt: String,
+        parts: Vec<MessagePart>,
     ) -> Result<Vec<Event>, SessionError> {
         let input = TurnInput {
             message: Message {
                 id: ctx.message_id,
                 role: MessageRole::User,
-                parts: vec![MessagePart::Text(prompt)],
+                parts,
                 created_at: harness_contracts::now(),
             },
             metadata: conversation_turn_metadata(
@@ -1073,12 +1075,13 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
         let cancellation = CancellationToken::new();
         let _active_run = ActiveConversationRunGuard::register(
             Arc::clone(&self.active_conversation_runs),
+            Arc::clone(&self.active_conversation_sessions),
             ctx.tenant_id,
             ctx.session_id,
             ctx.run_id,
             cancellation.clone(),
             self.process_registry.clone(),
-        );
+        )?;
         let run_ctx = RunContext::new(ctx.tenant_id, ctx.session_id, ctx.run_id)
             .with_cancellation(cancellation)
             .with_optional_user_id(ctx.user_id.clone())
@@ -1263,6 +1266,7 @@ mod run_scoped_process_cleanup_tests {
     #[tokio::test]
     async fn active_run_guard_drop_cleans_run_scoped_processes() {
         let active = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let active_sessions = Arc::new(parking_lot::Mutex::new(HashMap::new()));
         let registry = Arc::new(RecordingProcessRegistry::default());
         let tenant_id = TenantId::SINGLE;
         let session_id = SessionId::new();
@@ -1271,13 +1275,18 @@ mod run_scoped_process_cleanup_tests {
         {
             let _guard = ActiveConversationRunGuard::register(
                 Arc::clone(&active),
+                Arc::clone(&active_sessions),
                 tenant_id,
                 session_id,
                 run_id,
                 CancellationToken::new(),
                 Some(registry.clone()),
-            );
+            )
+            .unwrap();
             assert!(active.lock().contains_key(&run_id));
+            assert!(active_sessions
+                .lock()
+                .contains_key(&(tenant_id, session_id)));
         }
 
         tokio::time::timeout(
@@ -1287,10 +1296,50 @@ mod run_scoped_process_cleanup_tests {
         .await
         .unwrap();
         assert!(!active.lock().contains_key(&run_id));
+        assert!(!active_sessions
+            .lock()
+            .contains_key(&(tenant_id, session_id)));
         assert_eq!(
             *registry.cleaned.lock(),
             Some((tenant_id, session_id, run_id))
         );
+    }
+
+    #[test]
+    fn active_run_guard_rejects_reused_run_id_for_another_session() {
+        let active = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let active_sessions = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let tenant_id = TenantId::SINGLE;
+        let first_session = SessionId::new();
+        let second_session = SessionId::new();
+        let run_id = RunId::new();
+
+        let _first = ActiveConversationRunGuard::register(
+            Arc::clone(&active),
+            Arc::clone(&active_sessions),
+            tenant_id,
+            first_session,
+            run_id,
+            CancellationToken::new(),
+            None,
+        )
+        .unwrap();
+
+        let second = ActiveConversationRunGuard::register(
+            Arc::clone(&active),
+            Arc::clone(&active_sessions),
+            tenant_id,
+            second_session,
+            run_id,
+            CancellationToken::new(),
+            None,
+        );
+
+        assert!(
+            matches!(second, Err(SessionError::Message(message)) if message.contains("run already active"))
+        );
+        let recorded = active.lock().get(&run_id).cloned().unwrap();
+        assert_eq!(recorded.session_id, first_session);
     }
 
     #[derive(Default)]

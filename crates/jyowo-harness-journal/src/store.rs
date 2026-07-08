@@ -98,6 +98,15 @@ pub trait EventStore: Send + Sync + 'static {
         self.append(tenant, session_id, events).await
     }
 
+    async fn append_with_metadata_expect_next_offset(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        metadata: AppendMetadata,
+        expected_next_offset: JournalOffset,
+        events: &[Event],
+    ) -> Result<JournalOffset, JournalError>;
+
     async fn read(
         &self,
         tenant: TenantId,
@@ -220,6 +229,25 @@ where
     ) -> Result<JournalOffset, JournalError> {
         self.as_ref()
             .append_with_metadata(tenant, session_id, metadata, events)
+            .await
+    }
+
+    async fn append_with_metadata_expect_next_offset(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        metadata: AppendMetadata,
+        expected_next_offset: JournalOffset,
+        events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        self.as_ref()
+            .append_with_metadata_expect_next_offset(
+                tenant,
+                session_id,
+                metadata,
+                expected_next_offset,
+                events,
+            )
             .await
     }
 
@@ -352,6 +380,16 @@ impl JournalRedaction {
 
 pub(crate) fn journal_error(error: impl std::fmt::Display) -> JournalError {
     JournalError::Message(error.to_string())
+}
+
+pub(crate) fn expected_next_offset_mismatch(
+    expected: JournalOffset,
+    actual: JournalOffset,
+) -> JournalError {
+    journal_error(format!(
+        "expected next offset {}, got {}",
+        expected.0, actual.0
+    ))
 }
 
 #[allow(dead_code)]

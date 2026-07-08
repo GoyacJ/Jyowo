@@ -26,6 +26,33 @@ export const runEventContractTypeSchema = z.enum([
   'tool_use_failed',
   'permission_requested',
   'permission_resolved',
+  'subagent_spawned',
+  'subagent_announced',
+  'subagent_terminated',
+  'subagent_stalled',
+  'subagent_permission_forwarded',
+  'subagent_permission_resolved',
+  'team_created',
+  'team_member_joined',
+  'team_member_left',
+  'team_member_stalled',
+  'team_task_updated',
+  'agent_message_sent',
+  'agent_message_routed',
+  'team_turn_completed',
+  'team_terminated',
+  'background_started',
+  'background_state_changed',
+  'background_input_requested',
+  'background_input_submitted',
+  'background_permission_requested',
+  'background_permission_resolved',
+  'background_cancelled',
+  'background_completed',
+  'background_failed',
+  'background_interrupted',
+  'background_archived',
+  'background_deleted',
   'artifact_created',
   'artifact_updated',
   'assistant_review_requested',
@@ -352,6 +379,11 @@ const permissionActorSourceSchema = z.discriminatedUnion('type', [
             type: z.literal('remoteRegistry'),
           })
           .strict(),
+        z
+          .object({
+            type: z.literal('unknown'),
+          })
+          .strict(),
       ]),
       scope: z.discriminatedUnion('type', [
         z
@@ -369,6 +401,11 @@ const permissionActorSourceSchema = z.discriminatedUnion('type', [
           .object({
             agentId: z.string().min(1),
             type: z.literal('agent'),
+          })
+          .strict(),
+        z
+          .object({
+            type: z.literal('unknown'),
           })
           .strict(),
       ]),
@@ -409,6 +446,30 @@ const permissionReviewSchema = z
     details: z.array(permissionReviewDetailSchema),
     redacted: z.boolean().optional().default(false),
     summary: permissionDisplayTextSchema,
+  })
+  .strict()
+const permissionDecisionOptionSchema = z
+  .object({
+    decision: z.enum(['approve', 'deny']),
+    id: z.string().min(1),
+    label: permissionDisplayTextSchema,
+    lifetime: z.enum(['once', 'run', 'session', 'persisted']),
+    matcher: z
+      .object({
+        kind: z.enum([
+          'exactCommand',
+          'exactArgs',
+          'toolName',
+          'category',
+          'pathPrefix',
+          'globPattern',
+          'executeCodeScript',
+          'any',
+        ]),
+        label: permissionDisplayTextSchema,
+      })
+      .strict(),
+    requiresConfirmation: z.boolean(),
   })
   .strict()
 const sandboxPolicySummarySchema = z
@@ -460,6 +521,7 @@ const permissionRequestedPayloadSchema = z
     actorSource: permissionActorSourceSchema,
     actionPlanHash: actionPlanHashSchema.optional(),
     autoResolved: z.boolean().optional().default(false),
+    decisionOptions: z.array(permissionDecisionOptionSchema).optional(),
     decisionScope: permissionDisplayTextSchema,
     diffSummary: permissionDisplayTextSchema.optional(),
     effectiveMode: permissionModeSchema.optional(),
@@ -502,6 +564,203 @@ const backgroundPermissionResolvedPayloadSchema = z
     backgroundAgentId: z.string().min(1),
     decision: z.enum(['approve', 'deny']),
     requestId: requestIdSchema,
+  })
+  .strict()
+const backgroundAgentStateSchema = z.enum([
+  'queued',
+  'running',
+  'waiting_for_permission',
+  'waiting_for_input',
+  'paused',
+  'cancelling',
+  'cancelled',
+  'succeeded',
+  'failed',
+  'interrupted',
+  'recoverable',
+  'archived',
+])
+const backgroundStateChangedPayloadSchema = z
+  .object({
+    backgroundAgentId: z.string().min(1),
+    from: backgroundAgentStateSchema,
+    reason: permissionDisplayTextSchema.nullable().optional(),
+    to: backgroundAgentStateSchema,
+  })
+  .strict()
+const backgroundInputRequestedPayloadSchema = z
+  .object({
+    backgroundAgentId: z.string().min(1),
+    prompt: permissionDisplayTextSchema,
+    requestId: requestIdSchema,
+  })
+  .strict()
+const backgroundInputSubmittedPayloadSchema = z
+  .object({
+    backgroundAgentId: z.string().min(1),
+    requestId: requestIdSchema,
+  })
+  .strict()
+const backgroundCancelledPayloadSchema = z
+  .object({
+    backgroundAgentId: z.string().min(1),
+    reason: permissionDisplayTextSchema.nullable().optional(),
+  })
+  .strict()
+const backgroundCompletedPayloadSchema = z
+  .object({
+    backgroundAgentId: z.string().min(1),
+    summary: permissionDisplayTextSchema.nullable().optional(),
+  })
+  .strict()
+const backgroundFailedPayloadSchema = z
+  .object({
+    backgroundAgentId: z.string().min(1),
+    error: permissionDisplayTextSchema,
+  })
+  .strict()
+const backgroundInterruptedPayloadSchema = z
+  .object({
+    backgroundAgentId: z.string().min(1),
+    reason: permissionDisplayTextSchema,
+  })
+  .strict()
+const backgroundIdOnlyPayloadSchema = z
+  .object({
+    backgroundAgentId: z.string().min(1),
+  })
+  .strict()
+const subagentStatusSchema = z.enum([
+  'completed',
+  'cancelled',
+  'failed',
+  'stalled',
+  'max_iterations_reached',
+  'maxIterationsReached',
+  'max_budget',
+])
+const subagentTerminationReasonSchema = z.enum([
+  'natural_completion',
+  'naturalCompletion',
+  'parent_cancelled',
+  'parentCancelled',
+  'admin_interrupted',
+  'adminInterrupted',
+  'stalled',
+  'bridge_broken',
+  'bridgeBroken',
+  'failed',
+])
+const subagentSpawnedPayloadSchema = z
+  .object({
+    depth: z.number().int().nonnegative(),
+    role: permissionDisplayTextSchema,
+    subagentId: z.string().min(1),
+    taskSummary: permissionDisplayTextSchema,
+    triggerToolUseId: z.string().min(1).nullable().optional(),
+  })
+  .strict()
+const subagentAnnouncedPayloadSchema = z
+  .object({
+    redacted: z.boolean().optional().default(false),
+    resultSummary: permissionDisplayTextSchema,
+    status: subagentStatusSchema,
+    subagentId: z.string().min(1),
+  })
+  .strict()
+const subagentTerminatedPayloadSchema = z
+  .object({
+    reason: subagentTerminationReasonSchema,
+    subagentId: z.string().min(1),
+  })
+  .strict()
+const subagentIdOnlyPayloadSchema = z
+  .object({
+    subagentId: z.string().min(1),
+  })
+  .strict()
+const subagentPermissionForwardedPayloadSchema = z
+  .object({
+    reason: permissionDisplayTextSchema,
+    requestId: requestIdSchema,
+    subagentId: z.string().min(1),
+  })
+  .strict()
+const subagentPermissionResolvedPayloadSchema = z
+  .object({
+    decision: z.enum(['approve', 'deny']),
+    requestId: requestIdSchema,
+    subagentId: z.string().min(1),
+  })
+  .strict()
+const teamCreatedPayloadSchema = z
+  .object({
+    name: permissionDisplayTextSchema,
+    teamId: z.string().min(1),
+    topologyKind: z.enum(['coordinator_worker', 'peer_to_peer', 'role_routed', 'custom']),
+  })
+  .strict()
+const teamMemberJoinedPayloadSchema = z
+  .object({
+    agentId: z.string().min(1),
+    role: permissionDisplayTextSchema,
+    teamId: z.string().min(1),
+  })
+  .strict()
+const teamMemberLeftPayloadSchema = z
+  .object({
+    agentId: z.string().min(1),
+    reason: z.enum([
+      'goal_achieved',
+      'quota_exceeded',
+      'interrupted',
+      'error',
+      'removed',
+      'stalled_removed',
+    ]),
+    teamId: z.string().min(1),
+  })
+  .strict()
+const teamMemberStalledPayloadSchema = z
+  .object({
+    agentId: z.string().min(1),
+    teamId: z.string().min(1),
+  })
+  .strict()
+const teamTaskUpdatedPayloadSchema = z
+  .object({
+    assigneeProfileId: permissionDisplayTextSchema.nullable().optional(),
+    status: permissionDisplayTextSchema,
+    taskId: permissionDisplayTextSchema,
+    teamId: z.string().min(1),
+    title: permissionDisplayTextSchema,
+  })
+  .strict()
+const teamTerminatedPayloadSchema = z
+  .object({
+    reason: z.enum(['completed', 'cancelled', 'error', 'member_failed', 'idle_timeout', 'timeout']),
+    teamId: z.string().min(1),
+  })
+  .strict()
+const agentMessageSentPayloadSchema = z
+  .object({
+    messageId: z.string().min(1),
+    teamId: z.string().min(1),
+  })
+  .strict()
+const agentMessageRoutedPayloadSchema = z
+  .object({
+    messageId: z.string().min(1),
+    resolvedRecipients: z.array(z.string().min(1)),
+    routingPolicy: z.enum(['direct', 'role', 'broadcast', 'coordinator', 'custom']),
+    teamId: z.string().min(1),
+  })
+  .strict()
+const teamTurnCompletedPayloadSchema = z
+  .object({
+    participatingAgents: z.array(z.string().min(1)),
+    teamId: z.string().min(1),
+    turnId: z.string().min(1),
   })
   .strict()
 const safeArtifactMimeTypeSchema = z.enum([
@@ -680,9 +939,33 @@ export const runEventSchema = z
     eventSchema('tool.failed', toolFailedPayloadSchema),
     eventSchema('permission.requested', permissionRequestedPayloadSchema),
     eventSchema('permission.resolved', permissionResolvedPayloadSchema),
+    eventSchema('subagent.spawned', subagentSpawnedPayloadSchema),
+    eventSchema('subagent.announced', subagentAnnouncedPayloadSchema),
+    eventSchema('subagent.terminated', subagentTerminatedPayloadSchema),
+    eventSchema('subagent.stalled', subagentIdOnlyPayloadSchema),
+    eventSchema('subagent.permission.forwarded', subagentPermissionForwardedPayloadSchema),
+    eventSchema('subagent.permission.resolved', subagentPermissionResolvedPayloadSchema),
+    eventSchema('team.created', teamCreatedPayloadSchema),
+    eventSchema('team.member.joined', teamMemberJoinedPayloadSchema),
+    eventSchema('team.member.left', teamMemberLeftPayloadSchema),
+    eventSchema('team.member.stalled', teamMemberStalledPayloadSchema),
+    eventSchema('team.task.updated', teamTaskUpdatedPayloadSchema),
+    eventSchema('agent.message.sent', agentMessageSentPayloadSchema),
+    eventSchema('agent.message.routed', agentMessageRoutedPayloadSchema),
+    eventSchema('team.turn.completed', teamTurnCompletedPayloadSchema),
+    eventSchema('team.terminated', teamTerminatedPayloadSchema),
     eventSchema('background.started', backgroundStartedPayloadSchema),
+    eventSchema('background.state.changed', backgroundStateChangedPayloadSchema),
+    eventSchema('background.input.requested', backgroundInputRequestedPayloadSchema),
+    eventSchema('background.input.submitted', backgroundInputSubmittedPayloadSchema),
     eventSchema('background.permission.requested', backgroundPermissionRequestedPayloadSchema),
     eventSchema('background.permission.resolved', backgroundPermissionResolvedPayloadSchema),
+    eventSchema('background.cancelled', backgroundCancelledPayloadSchema),
+    eventSchema('background.completed', backgroundCompletedPayloadSchema),
+    eventSchema('background.failed', backgroundFailedPayloadSchema),
+    eventSchema('background.interrupted', backgroundInterruptedPayloadSchema),
+    eventSchema('background.archived', backgroundIdOnlyPayloadSchema),
+    eventSchema('background.deleted', backgroundIdOnlyPayloadSchema),
     eventSchema('artifact.created', artifactLifecyclePayloadSchema),
     eventSchema('artifact.updated', artifactLifecyclePayloadSchema),
     eventSchema('assistant.review.requested', assistantReviewRequestedPayloadSchema),
@@ -708,10 +991,57 @@ export const runEventSchema = z
       })
     }
 
-    if (event.type === 'background.started' && event.source !== 'background') {
+    if (
+      (event.type === 'background.started' ||
+        event.type === 'background.state.changed' ||
+        event.type === 'background.input.requested' ||
+        event.type === 'background.input.submitted' ||
+        event.type === 'background.cancelled' ||
+        event.type === 'background.completed' ||
+        event.type === 'background.failed' ||
+        event.type === 'background.interrupted' ||
+        event.type === 'background.archived' ||
+        event.type === 'background.deleted') &&
+      event.source !== 'background'
+    ) {
       context.addIssue({
         code: 'custom',
         message: 'background events must be emitted by background',
+        path: ['source'],
+      })
+    }
+
+    if (
+      (event.type === 'subagent.permission.forwarded' ||
+        event.type === 'subagent.permission.resolved') &&
+      event.source !== 'policy'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'subagent permission events must be emitted by policy',
+        path: ['source'],
+      })
+    }
+
+    if (
+      (event.type === 'subagent.spawned' ||
+        event.type === 'subagent.announced' ||
+        event.type === 'subagent.terminated' ||
+        event.type === 'subagent.stalled' ||
+        event.type === 'team.created' ||
+        event.type === 'team.member.joined' ||
+        event.type === 'team.member.left' ||
+        event.type === 'team.member.stalled' ||
+        event.type === 'team.task.updated' ||
+        event.type === 'agent.message.sent' ||
+        event.type === 'agent.message.routed' ||
+        event.type === 'team.turn.completed' ||
+        event.type === 'team.terminated') &&
+      event.source !== 'agent'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'agent events must be emitted by agent',
         path: ['source'],
       })
     }
@@ -831,6 +1161,60 @@ export function mapRunEventContractType(contractType: RunEventContractType): Run
       return 'permission.requested'
     case 'permission_resolved':
       return 'permission.resolved'
+    case 'subagent_spawned':
+      return 'subagent.spawned'
+    case 'subagent_announced':
+      return 'subagent.announced'
+    case 'subagent_terminated':
+      return 'subagent.terminated'
+    case 'subagent_stalled':
+      return 'subagent.stalled'
+    case 'subagent_permission_forwarded':
+      return 'subagent.permission.forwarded'
+    case 'subagent_permission_resolved':
+      return 'subagent.permission.resolved'
+    case 'team_created':
+      return 'team.created'
+    case 'team_member_joined':
+      return 'team.member.joined'
+    case 'team_member_left':
+      return 'team.member.left'
+    case 'team_member_stalled':
+      return 'team.member.stalled'
+    case 'team_task_updated':
+      return 'team.task.updated'
+    case 'agent_message_sent':
+      return 'agent.message.sent'
+    case 'agent_message_routed':
+      return 'agent.message.routed'
+    case 'team_turn_completed':
+      return 'team.turn.completed'
+    case 'team_terminated':
+      return 'team.terminated'
+    case 'background_started':
+      return 'background.started'
+    case 'background_state_changed':
+      return 'background.state.changed'
+    case 'background_input_requested':
+      return 'background.input.requested'
+    case 'background_input_submitted':
+      return 'background.input.submitted'
+    case 'background_permission_requested':
+      return 'background.permission.requested'
+    case 'background_permission_resolved':
+      return 'background.permission.resolved'
+    case 'background_cancelled':
+      return 'background.cancelled'
+    case 'background_completed':
+      return 'background.completed'
+    case 'background_failed':
+      return 'background.failed'
+    case 'background_interrupted':
+      return 'background.interrupted'
+    case 'background_archived':
+      return 'background.archived'
+    case 'background_deleted':
+      return 'background.deleted'
     case 'artifact_created':
       return 'artifact.created'
     case 'artifact_updated':
@@ -882,12 +1266,60 @@ export function getRunEventLabel(event: RunEvent): string {
       return 'Permission requested'
     case 'permission.resolved':
       return 'Permission resolved'
+    case 'subagent.spawned':
+      return 'Subagent spawned'
+    case 'subagent.announced':
+      return 'Subagent announced'
+    case 'subagent.terminated':
+      return 'Subagent terminated'
+    case 'subagent.stalled':
+      return 'Subagent stalled'
+    case 'subagent.permission.forwarded':
+      return 'Subagent permission forwarded'
+    case 'subagent.permission.resolved':
+      return 'Subagent permission resolved'
+    case 'team.created':
+      return 'Team created'
+    case 'team.member.joined':
+      return 'Team member joined'
+    case 'team.member.left':
+      return 'Team member left'
+    case 'team.member.stalled':
+      return 'Team member stalled'
+    case 'team.task.updated':
+      return 'Team task updated'
+    case 'agent.message.sent':
+      return 'Agent message sent'
+    case 'agent.message.routed':
+      return 'Agent message routed'
+    case 'team.turn.completed':
+      return 'Team turn completed'
+    case 'team.terminated':
+      return 'Team terminated'
     case 'background.started':
       return 'Background started'
+    case 'background.state.changed':
+      return 'Background state changed'
+    case 'background.input.requested':
+      return 'Background input requested'
+    case 'background.input.submitted':
+      return 'Background input submitted'
     case 'background.permission.requested':
       return 'Background permission requested'
     case 'background.permission.resolved':
       return 'Background permission resolved'
+    case 'background.cancelled':
+      return 'Background cancelled'
+    case 'background.completed':
+      return 'Background completed'
+    case 'background.failed':
+      return 'Background failed'
+    case 'background.interrupted':
+      return 'Background interrupted'
+    case 'background.archived':
+      return 'Background archived'
+    case 'background.deleted':
+      return 'Background deleted'
     case 'artifact.created':
       return 'Artifact created'
     case 'artifact.updated':

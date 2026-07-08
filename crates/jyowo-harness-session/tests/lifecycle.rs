@@ -1,39 +1,16 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use futures::{stream, StreamExt};
-use harness_context::ContextEngine;
 use harness_contracts::{
-    CapabilityRegistry, Decision, EndReason, Event, EventId, ForkReason, JournalError,
-    JournalOffset, ModelError, ModelProvider as ModelProviderId, RunId, SandboxError, SessionError,
-    SessionId, SnapshotId, TenantId, ToolProfile, ToolSearchMode,
+    EndReason, Event, EventId, ForkReason, JournalError, JournalOffset, SessionError, SessionId,
+    TenantId, ToolProfile, ToolSearchMode,
 };
-use harness_execution::{
-    AuthorizationEventSink, AuthorizationService, ExecutionError, ExecutionPreflightRegistry,
-    TicketLedger,
-};
-use harness_hook::{HookDispatcher, HookRegistry};
 use harness_journal::{
-    EventEnvelope, EventStore, PrunePolicy, PruneReport, ReplayCursor, SchemaVersion,
-    SessionFilter, SessionSnapshot, SessionSummary,
-};
-use harness_model::{
-    ContentDelta, ConversationModelCapability, HealthStatus, InferContext, ModelDescriptor,
-    ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
-};
-use harness_permission::{
-    NoopDecisionPersistence, PermissionAuthority, PermissionBroker, PermissionContext,
-    PermissionRequest,
-};
-use harness_sandbox::{
-    ExecContext, ExecSpec, NetworkPolicySupport, ProcessHandle, SandboxBackend,
-    SandboxCapabilities, SessionSnapshotFile, SnapshotSpec, WorkspacePolicySupport,
+    AppendMetadata, EventEnvelope, EventStore, PrunePolicy, PruneReport, ReplayCursor,
+    SchemaVersion, SessionFilter, SessionSnapshot, SessionSummary,
 };
 use harness_session::SessionProjection;
-use harness_session::{Session, SessionOptions, SessionTurnRuntime};
-use harness_tool::{
-    SchemaResolverContext, ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry,
-};
+use harness_session::{Session, SessionOptions};
 use tokio::sync::Mutex;
 
 #[tokio::test]
@@ -165,231 +142,6 @@ async fn session_options_hash_ignores_tool_profile() {
     );
 }
 
-#[tokio::test]
-async fn session_fallback_run_started_uses_config_hash() {
-    let root = tempfile::tempdir().unwrap();
-    let store = Arc::new(RecordingEventStore::default());
-    let session_id = SessionId::new();
-    let registry = ToolRegistry::builder().build().unwrap();
-    let tools = ToolPool::assemble(
-        &registry.snapshot(),
-        &ToolPoolFilter::default(),
-        &ToolSearchMode::Disabled,
-        &ToolPoolModelProfile {
-            provider: ModelProviderId("test".to_owned()),
-            max_context_tokens: Some(8_000),
-        },
-        &SchemaResolverContext {
-            run_id: RunId::new(),
-            session_id,
-            tenant_id: TenantId::SINGLE,
-        },
-    )
-    .await
-    .unwrap();
-    let runtime = SessionTurnRuntime {
-        context: ContextEngine::builder().build().unwrap(),
-        hooks: HookDispatcher::new(HookRegistry::builder().build().unwrap().snapshot()),
-        model: Arc::new(TextModelProvider),
-        tools,
-        authorization_service: test_authorization_service(Arc::new(AllowBroker)),
-        sandbox: None,
-        cap_registry: Arc::new(CapabilityRegistry::default()),
-        redactor: Arc::new(harness_contracts::NoopRedactor),
-        blob_store: None,
-        model_id: "test-model".to_owned(),
-        model_extra: serde_json::Value::Null,
-        protocol: ModelProtocol::Messages,
-        system_prompt: None,
-    };
-    let session = Session::builder()
-        .with_options(SessionOptions::new(root.path()).with_session_id(session_id))
-        .with_event_store(store.clone())
-        .with_turn_runtime(runtime)
-        .build()
-        .await
-        .unwrap();
-
-    session.run_turn("hello").await.unwrap();
-
-    let events = store.events().await;
-    let created_hash = events
-        .iter()
-        .find_map(|event| match event {
-            Event::SessionCreated(created) => Some(created.effective_config_hash),
-            _ => None,
-        })
-        .expect("session creation event should be emitted");
-    let run_started = events
-        .iter()
-        .find_map(|event| match event {
-            Event::RunStarted(started) => Some(started),
-            _ => None,
-        })
-        .expect("run start event should be emitted");
-
-    assert_ne!(run_started.snapshot_id, SnapshotId::from_u128(0));
-    assert_ne!(run_started.effective_config_hash.0, [0; 32]);
-    assert_eq!(run_started.effective_config_hash, created_hash);
-}
-
-struct TextModelProvider;
-
-#[async_trait]
-impl ModelProvider for TextModelProvider {
-    fn provider_id(&self) -> &str {
-        "test"
-    }
-
-    fn supported_models(&self) -> Vec<ModelDescriptor> {
-        vec![ModelDescriptor {
-            protocol: harness_model::ModelProtocol::Messages,
-            lifecycle: harness_model::ModelLifecycle::Stable,
-            provider_id: "test".to_owned(),
-            model_id: "test-model".to_owned(),
-            display_name: "Test model".to_owned(),
-            context_window: 8_000,
-            max_output_tokens: 1_000,
-            conversation_capability: ConversationModelCapability::default(),
-            runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
-                harness_model::ModelProtocol::Messages,
-            ),
-            pricing: None,
-        }]
-    }
-
-    async fn infer(
-        &self,
-        _req: ModelRequest,
-        _ctx: InferContext,
-    ) -> Result<ModelStream, ModelError> {
-        Ok(Box::pin(stream::iter([
-            ModelStreamEvent::ContentBlockDelta {
-                index: 0,
-                delta: ContentDelta::Text("ok".to_owned()),
-            },
-            ModelStreamEvent::MessageStop,
-        ])))
-    }
-
-    async fn health(&self) -> HealthStatus {
-        HealthStatus::Healthy
-    }
-}
-
-struct AllowBroker;
-
-#[async_trait]
-impl PermissionBroker for AllowBroker {
-    async fn decide(&self, _request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        Decision::AllowOnce
-    }
-
-    async fn persist(
-        &self,
-        _decision: harness_permission::PersistedDecision,
-    ) -> Result<(), harness_contracts::PermissionError> {
-        Ok(())
-    }
-}
-
-fn test_authorization_service(
-    policy_broker: Arc<dyn PermissionBroker>,
-) -> Arc<AuthorizationService> {
-    let authority = PermissionAuthority::builder()
-        .with_policy_broker(policy_broker)
-        .with_transient_decision_store(Arc::new(NoopDecisionPersistence))
-        .build()
-        .unwrap();
-    Arc::new(AuthorizationService::new(
-        Arc::new(authority),
-        ExecutionPreflightRegistry::new(
-            Arc::new(AllowPreflightSandbox),
-            None,
-            Arc::new(CapabilityRegistry::default()),
-        ),
-        Arc::new(NoopAuthorizationEventSink),
-        Arc::new(TicketLedger::default()),
-    ))
-}
-
-struct NoopAuthorizationEventSink;
-
-#[async_trait]
-impl AuthorizationEventSink for NoopAuthorizationEventSink {
-    async fn emit_batch(
-        &self,
-        _tenant_id: TenantId,
-        _session_id: SessionId,
-        _events: Vec<Event>,
-    ) -> Result<(), ExecutionError> {
-        Ok(())
-    }
-}
-
-struct AllowPreflightSandbox;
-
-#[async_trait]
-impl SandboxBackend for AllowPreflightSandbox {
-    fn backend_id(&self) -> &str {
-        "test"
-    }
-
-    fn capabilities(&self) -> SandboxCapabilities {
-        SandboxCapabilities {
-            network: NetworkPolicySupport {
-                none: true,
-                loopback_only: false,
-                allowlist: false,
-                unrestricted: true,
-            },
-            workspace: WorkspacePolicySupport {
-                read_write_all: true,
-                read_only: false,
-                writable_subpaths: false,
-            },
-            resource_limit_support: harness_sandbox::ResourceLimitSupport {
-                memory: true,
-                cpu: true,
-                pids: true,
-                wall_clock: true,
-                open_files: true,
-            },
-            ..SandboxCapabilities::default()
-        }
-    }
-
-    async fn execute(
-        &self,
-        _spec: ExecSpec,
-        _ctx: ExecContext,
-    ) -> Result<ProcessHandle, SandboxError> {
-        Err(SandboxError::Unavailable {
-            backend: "test".to_owned(),
-            detail: "test sandbox does not execute processes".to_owned(),
-        })
-    }
-
-    async fn snapshot_session(
-        &self,
-        _spec: &SnapshotSpec,
-    ) -> Result<SessionSnapshotFile, SandboxError> {
-        Err(SandboxError::SnapshotUnsupported {
-            kind: "test".to_owned(),
-        })
-    }
-
-    async fn restore_session(&self, _snapshot: &SessionSnapshotFile) -> Result<(), SandboxError> {
-        Err(SandboxError::SnapshotUnsupported {
-            kind: "test".to_owned(),
-        })
-    }
-
-    async fn shutdown(&self) -> Result<(), SandboxError> {
-        Ok(())
-    }
-}
-
 #[derive(Default)]
 struct RecordingEventStore {
     events: Mutex<Vec<Event>>,
@@ -410,6 +162,26 @@ impl EventStore for RecordingEventStore {
         events: &[Event],
     ) -> Result<JournalOffset, JournalError> {
         let mut guard = self.events.lock().await;
+        guard.extend_from_slice(events);
+        Ok(JournalOffset(guard.len().saturating_sub(1) as u64))
+    }
+
+    async fn append_with_metadata_expect_next_offset(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+        _metadata: AppendMetadata,
+        expected_next_offset: JournalOffset,
+        events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        let mut guard = self.events.lock().await;
+        let current_next_offset = JournalOffset(guard.len() as u64);
+        if current_next_offset != expected_next_offset {
+            return Err(JournalError::Message(format!(
+                "expected next offset {}, got {}",
+                expected_next_offset.0, current_next_offset.0
+            )));
+        }
         guard.extend_from_slice(events);
         Ok(JournalOffset(guard.len().saturating_sub(1) as u64))
     }

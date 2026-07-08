@@ -5,7 +5,7 @@ mod tests {
     use super::*;
     use crate::commands::conversations::{
         message_content_display, permission_requested_run_event, run_end_reason_display,
-        RunEventMapper,
+        run_event_type_label, RunEventMapper,
     };
     use crate::commands::error::runtime_operation_failed;
     use crate::commands::mcp::mcp_stdio_env;
@@ -18,13 +18,16 @@ mod tests {
     use crate::commands::stores::ensure_plugin_package_dir_name;
     use crate::commands::validation::ensure_mcp_server_transport;
     use harness_contracts::{
-        ActionPlanHash, DecisionLifetime, DecisionMatcherKind, DecisionMatcherSummary,
-        ManifestOriginRef, MemoryGlobalSettings, MemoryThreadMode, MemoryThreadSettings,
-        PermissionActorSource, PermissionDecisionOption, PermissionOptionId,
+        ActionPlanHash, AgentId, BackgroundAgentCompletedEvent, BackgroundAgentId,
+        BackgroundAgentStartedEvent, ConfigHash, CorrelationId, DecisionLifetime,
+        DecisionMatcherKind, DecisionMatcherSummary, ManifestOriginRef, MemberLeaveReason,
+        MemoryGlobalSettings, MemoryThreadMode, MemoryThreadSettings, Message, MessageId,
+        MessageRole, PermissionActorSource, PermissionDecisionOption, PermissionOptionId,
         PermissionRequestedEvent, PluginCapabilitiesSummary, PluginFailedEvent,
         PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginProductState,
-        PluginRejectedEvent, PluginSourceKind, RedactRules, Redactor, RejectionReason, TeamId,
-        TrustLevel,
+        PluginRejectedEvent, PluginSourceKind, RedactRules, Redactor, RejectionReason,
+        RunModelSnapshot, RunStartedEvent, SnapshotId, TeamCreatedEvent, TeamId,
+        TeamMemberLeftEvent, TopologyKind, TrustLevel, TurnInput, UiSafeText,
     };
 
     struct EmptyRedactor;
@@ -148,6 +151,267 @@ mod tests {
             "reviewer [REDACTED]"
         );
         assert!(!payload.payload.to_string().contains(secret));
+    }
+
+    #[test]
+    fn permission_requested_run_event_includes_decision_options_contract() {
+        let session_id = SessionId::new();
+        let run_id = RunId::new();
+        let secret = "sk-abcdefghijklmnopqrstuvwxyz";
+        let event = Event::PermissionRequested(PermissionRequestedEvent {
+            request_id: RequestId::new(),
+            run_id,
+            session_id,
+            tenant_id: TenantId::SINGLE,
+            tool_use_id: ToolUseId::new(),
+            tool_name: "Bash".to_owned(),
+            subject: PermissionSubject::ToolInvocation {
+                tool: "Bash".to_owned(),
+                input: serde_json::json!({}),
+            },
+            severity: Severity::Medium,
+            scope_hint: DecisionScope::ToolName("Bash".to_owned()),
+            fingerprint: None,
+            presented_options: vec![PermissionDecisionOption {
+                option_id: PermissionOptionId::new(),
+                decision: Decision::AllowSession,
+                scope: DecisionScope::ToolName("Bash".to_owned()),
+                lifetime: DecisionLifetime::Session,
+                matcher_summary: DecisionMatcherSummary {
+                    kind: DecisionMatcherKind::ExactCommand,
+                    label: format!("cargo publish --token {secret}"),
+                },
+                label: format!("Allow cargo publish --token {secret}"),
+                requires_confirmation: true,
+                action_plan_hash: ActionPlanHash::default(),
+                fingerprint: None,
+            }],
+            interactivity: InteractivityLevel::FullyInteractive,
+            auto_resolved: false,
+            actor_source: PermissionActorSource::ParentRun,
+            action_plan_hash: Default::default(),
+            review: Default::default(),
+            effective_mode: PermissionMode::Default,
+            sandbox_policy: Default::default(),
+            causation_id: EventId::new(),
+            at: now(),
+        });
+
+        let payload = permission_requested_run_event(
+            "evt-permission".to_owned(),
+            &event,
+            1,
+            &DefaultRedactor::default(),
+        );
+
+        assert_eq!(payload.event_type, "permission.requested");
+        assert_eq!(payload.payload["decisionOptions"][0]["decision"], "approve");
+        assert_eq!(payload.payload["decisionOptions"][0]["lifetime"], "session");
+        assert_eq!(
+            payload.payload["decisionOptions"][0]["matcher"]["kind"],
+            "exactCommand"
+        );
+        assert_eq!(
+            payload.payload["decisionOptions"][0]["matcher"]["label"],
+            "this exact command"
+        );
+        assert_eq!(
+            payload.payload["decisionOptions"][0]["label"],
+            "Approve for session"
+        );
+        assert_eq!(
+            payload.payload["decisionOptions"][0]["requiresConfirmation"],
+            true
+        );
+        assert!(!payload.payload.to_string().contains(secret));
+    }
+
+    #[test]
+    fn run_event_mapper_projects_run_started_model_contract() {
+        let session_id = SessionId::new();
+        let run_id = RunId::new();
+        let mut mapper = RunEventMapper::default();
+
+        let event = mapper
+            .map(
+                "evt-run-started".to_owned(),
+                Event::RunStarted(RunStartedEvent {
+                    run_id,
+                    session_id,
+                    tenant_id: TenantId::SINGLE,
+                    parent_run_id: None,
+                    model: RunModelSnapshot {
+                        model_config_id: Some("provider-config-001".to_owned()),
+                        provider_id: "openai".to_owned(),
+                        model_id: "gpt-5.4-mini".to_owned(),
+                        display_name: "GPT-5.4 mini".to_owned(),
+                        protocol: ModelProtocol::Responses,
+                        context_window: 128_000,
+                        max_output_tokens: 16_384,
+                        conversation_capability: ConversationModelCapability::default(),
+                    },
+                    input: TurnInput {
+                        message: Message {
+                            id: MessageId::new(),
+                            role: MessageRole::User,
+                            parts: vec![MessagePart::Text("run".to_owned())],
+                            created_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+                        },
+                        metadata: serde_json::Value::Null,
+                    },
+                    snapshot_id: SnapshotId::new(),
+                    effective_config_hash: ConfigHash([0; 32]),
+                    started_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+                    correlation_id: CorrelationId::new(),
+                    permission_mode: PermissionMode::BypassPermissions,
+                }),
+                session_id,
+                &DefaultRedactor::default(),
+            )
+            .expect("run started should be projected");
+
+        assert_eq!(event.event_type, "run.started");
+        assert_eq!(
+            event.payload["model"]["modelConfigId"],
+            "provider-config-001"
+        );
+        assert_eq!(event.payload["model"]["providerId"], "openai");
+        assert_eq!(event.payload["model"]["modelId"], "gpt-5.4-mini");
+        assert_eq!(event.payload["model"]["displayName"], "GPT-5.4 mini");
+        assert_eq!(event.payload["model"]["protocol"], "responses");
+    }
+
+    #[test]
+    fn run_event_type_label_accepts_background_runtime_contracts() {
+        for event_type in [
+            "background.input.requested",
+            "background.input.submitted",
+            "background.cancelled",
+            "background.completed",
+            "background.failed",
+            "background.interrupted",
+            "background.archived",
+            "background.deleted",
+        ] {
+            assert_eq!(run_event_type_label(event_type).unwrap(), event_type);
+        }
+    }
+
+    #[test]
+    fn run_event_mapper_projects_team_and_background_lifecycle_events() {
+        let session_id = SessionId::new();
+        let run_id = RunId::new();
+        let team_id = TeamId::new();
+        let agent_id = AgentId::new();
+        let background_agent_id = BackgroundAgentId::new();
+        let mut mapper = RunEventMapper::default();
+
+        mapper
+            .map(
+                "evt-run-started".to_owned(),
+                Event::RunStarted(RunStartedEvent {
+                    run_id,
+                    session_id,
+                    tenant_id: TenantId::SINGLE,
+                    parent_run_id: None,
+                    model: RunModelSnapshot {
+                        model_config_id: None,
+                        provider_id: "openai".to_owned(),
+                        model_id: "gpt-5.4-mini".to_owned(),
+                        display_name: "GPT-5.4 mini".to_owned(),
+                        protocol: ModelProtocol::Responses,
+                        context_window: 128_000,
+                        max_output_tokens: 16_384,
+                        conversation_capability: ConversationModelCapability::default(),
+                    },
+                    input: TurnInput {
+                        message: Message {
+                            id: MessageId::new(),
+                            role: MessageRole::User,
+                            parts: vec![MessagePart::Text("run".to_owned())],
+                            created_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+                        },
+                        metadata: serde_json::Value::Null,
+                    },
+                    snapshot_id: SnapshotId::new(),
+                    effective_config_hash: ConfigHash([0; 32]),
+                    started_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+                    correlation_id: CorrelationId::new(),
+                    permission_mode: PermissionMode::Default,
+                }),
+                session_id,
+                &DefaultRedactor::default(),
+            )
+            .expect("run started should seed mapper");
+
+        mapper
+            .map(
+                "evt-team-created".to_owned(),
+                Event::TeamCreated(TeamCreatedEvent {
+                    team_id,
+                    tenant_id: TenantId::SINGLE,
+                    name: "Research team".to_owned(),
+                    topology_kind: TopologyKind::CoordinatorWorker,
+                    member_specs_hash: [1; 32],
+                    created_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+                }),
+                session_id,
+                &DefaultRedactor::default(),
+            )
+            .expect("team created should seed mapper");
+
+        let left = mapper
+            .map(
+                "evt-team-left".to_owned(),
+                Event::TeamMemberLeft(TeamMemberLeftEvent {
+                    team_id,
+                    agent_id,
+                    reason: MemberLeaveReason::GoalAchieved,
+                    left_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+                }),
+                session_id,
+                &DefaultRedactor::default(),
+            )
+            .expect("team member left should be projected");
+
+        assert_eq!(left.event_type, "team.member.left");
+        assert_eq!(left.payload["agentId"], agent_id.to_string());
+        assert_eq!(left.payload["reason"], "goal_achieved");
+
+        mapper
+            .map(
+                "evt-background-started".to_owned(),
+                Event::BackgroundAgentStarted(BackgroundAgentStartedEvent {
+                    background_agent_id,
+                    conversation_id: session_id,
+                    attempt_id: run_id,
+                    title: UiSafeText::from_trusted_redacted("Background run"),
+                    at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+                }),
+                session_id,
+                &DefaultRedactor::default(),
+            )
+            .expect("background started should seed mapper");
+
+        let completed = mapper
+            .map(
+                "evt-background-completed".to_owned(),
+                Event::BackgroundAgentCompleted(BackgroundAgentCompletedEvent {
+                    background_agent_id,
+                    summary: Some(UiSafeText::from_trusted_redacted("Done")),
+                    at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+                }),
+                session_id,
+                &DefaultRedactor::default(),
+            )
+            .expect("background completed should be projected");
+
+        assert_eq!(completed.event_type, "background.completed");
+        assert_eq!(
+            completed.payload["backgroundAgentId"],
+            background_agent_id.to_string()
+        );
+        assert_eq!(completed.payload["summary"], "Done");
     }
 
     #[test]

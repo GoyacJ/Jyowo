@@ -468,7 +468,14 @@ impl Harness {
                 "cannot submit turn to ended session".to_owned(),
             )));
         }
-        let last_offset = projection.last_offset;
+        let run_id = RunId::new();
+        let _active_session = ActiveConversationSessionGuard::register(
+            Arc::clone(&self.inner.active_conversation_sessions),
+            options.tenant_id,
+            options.session_id,
+            run_id,
+        )
+        .map_err(HarnessError::Session)?;
         let model_id = run_options
             .model_id
             .clone()
@@ -499,8 +506,8 @@ impl Harness {
                 })
                 .await?;
         }
-        session
-            .run_turn_parts_with_client_message_id_attachments_permission_mode_and_actor_source(
+        let run_id = session
+            .run_turn_parts_with_client_message_id_attachments_permission_mode_actor_source_and_run_id(
                 parts,
                 hydrated.input.client_message_id.clone(),
                 hydrated.input.attachments.clone(),
@@ -508,31 +515,9 @@ impl Harness {
                 request
                     .permission_actor_source
                     .unwrap_or(harness_contracts::PermissionActorSource::ParentRun),
+                run_id,
             )
             .await?;
-        let new_events = self
-            .inner
-            .event_store
-            .read_envelopes(
-                options.tenant_id,
-                options.session_id,
-                ReplayCursor::FromOffset(last_offset),
-            )
-            .await
-            .map_err(HarnessError::Journal)?
-            .collect::<Vec<_>>()
-            .await;
-        let run_id = new_events
-            .iter()
-            .find_map(|envelope| match &envelope.payload {
-                Event::RunStarted(started) => Some(started.run_id),
-                _ => None,
-            })
-            .ok_or_else(|| {
-                HarnessError::Session(SessionError::Message(
-                    "run did not emit RunStarted".to_owned(),
-                ))
-            })?;
         let projection = session.projection().await;
         Ok(ConversationTurnReceipt {
             tenant_id: options.tenant_id,

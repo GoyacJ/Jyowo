@@ -23,16 +23,8 @@ recall-memory = ["jyowo-harness-context/recall-memory"]
 [dependencies]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
 jyowo-harness-context = { path = "../jyowo-harness-context" }
-jyowo-harness-execution = { path = "../jyowo-harness-execution" }
-jyowo-harness-hook = { path = "../jyowo-harness-hook" }
 jyowo-harness-journal = { path = "../jyowo-harness-journal" }
-jyowo-harness-mcp = { path = "../jyowo-harness-mcp" }
-jyowo-harness-memory = { path = "../jyowo-harness-memory" }
-jyowo-harness-model = { path = "../jyowo-harness-model" }
-jyowo-harness-permission = { path = "../jyowo-harness-permission" }
-jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox" }
 jyowo-harness-skill = { path = "../jyowo-harness-skill" }
-jyowo-harness-tool = { path = "../jyowo-harness-tool" }
 async-trait = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
@@ -46,4 +38,3 @@ parking_lot = "0.12.5"
 [dev-dependencies]
 tempfile = { workspace = true }
 jyowo-harness-journal = { path = "../jyowo-harness-journal", features = ["in-memory"] }
-jyowo-harness-tool = { path = "../jyowo-harness-tool", features = ["builtin-toolset"] }

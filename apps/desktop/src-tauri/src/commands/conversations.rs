@@ -30,12 +30,13 @@ use super::stores::*;
 use super::validation::*;
 use super::*;
 use harness_contracts::{
-    BackgroundAgentId, ConversationAttachmentReference, ConversationContextReference,
-    ConversationInspectorItemResponse, ManifestOriginRef, McpServerScope, PermissionActorSource,
-    PermissionConfirmation, PermissionMode, PermissionReview, RedactPatternSet, RedactRules,
-    RedactScope, Redactor, SandboxMode, SandboxPolicySummary, SandboxScope, SubagentId,
-    SubagentStatus, SubagentTerminationReason, TeamId, TeamTerminationReason, TopologyKind,
-    UiSafeText,
+    BackgroundAgentId, BackgroundAgentState, ConversationAttachmentReference,
+    ConversationContextReference, ConversationInspectorItemResponse, ManifestOriginRef,
+    McpServerScope, MemberLeaveReason, PermissionActorSource, PermissionConfirmation,
+    PermissionMode, PermissionReview, RedactPatternSet, RedactRules, RedactScope, Redactor,
+    RoutingPolicyKind, RunModelSnapshot, SandboxMode, SandboxPolicySummary, SandboxScope,
+    SubagentId, SubagentStatus, SubagentTerminationReason, TeamId, TeamTerminationReason,
+    TopologyKind, UiSafeText,
 };
 use std::io::Write;
 
@@ -2334,8 +2335,16 @@ pub(crate) fn run_event_type_label(value: &str) -> Result<&'static str, CommandE
         "team.terminated" => Ok("team.terminated"),
         "background.started" => Ok("background.started"),
         "background.state.changed" => Ok("background.state.changed"),
+        "background.input.requested" => Ok("background.input.requested"),
+        "background.input.submitted" => Ok("background.input.submitted"),
         "background.permission.requested" => Ok("background.permission.requested"),
         "background.permission.resolved" => Ok("background.permission.resolved"),
+        "background.cancelled" => Ok("background.cancelled"),
+        "background.completed" => Ok("background.completed"),
+        "background.failed" => Ok("background.failed"),
+        "background.interrupted" => Ok("background.interrupted"),
+        "background.archived" => Ok("background.archived"),
+        "background.deleted" => Ok("background.deleted"),
         "artifact.created" => Ok("artifact.created"),
         "artifact.updated" => Ok("artifact.updated"),
         "engine.failed" => Ok("engine.failed"),
@@ -2397,7 +2406,7 @@ pub(crate) fn permission_requested_run_event(
 
 fn permission_decision_options_run_event_payload(
     options: &[harness_contracts::PermissionDecisionOption],
-    redactor: &dyn Redactor,
+    _redactor: &dyn Redactor,
 ) -> Vec<Value> {
     options
         .iter()
@@ -2414,16 +2423,33 @@ fn permission_decision_options_run_event_payload(
             Some(json!({
                 "id": option.option_id.to_string(),
                 "decision": decision,
-                "label": public_text_display(option.label.clone(), redactor),
+                "label": permission_decision_option_label(option.decision.clone(), option.lifetime),
                 "lifetime": decision_lifetime_run_event_payload(option.lifetime),
                 "matcher": {
                     "kind": decision_matcher_kind_run_event_payload(option.matcher_summary.kind),
-                    "label": public_text_display(option.matcher_summary.label.clone(), redactor),
+                    "label": decision_matcher_label_run_event_payload(option.matcher_summary.kind),
                 },
                 "requiresConfirmation": option.requires_confirmation,
             }))
         })
         .collect()
+}
+
+fn permission_decision_option_label(
+    decision: Decision,
+    lifetime: harness_contracts::DecisionLifetime,
+) -> &'static str {
+    match (decision, lifetime) {
+        (Decision::AllowOnce, _) => "Approve once",
+        (Decision::AllowSession, _) => "Approve for session",
+        (Decision::AllowPermanent, _) => "Approve permanently",
+        (Decision::DenyOnce, _) => "Deny once",
+        (Decision::DenyPermanent, _) => "Deny permanently",
+        (_, harness_contracts::DecisionLifetime::Once) => "Decide once",
+        (_, harness_contracts::DecisionLifetime::Run) => "Decide for run",
+        (_, harness_contracts::DecisionLifetime::Session) => "Decide for session",
+        (_, harness_contracts::DecisionLifetime::Persisted) => "Decide persistently",
+    }
 }
 
 fn decision_lifetime_run_event_payload(
@@ -2449,6 +2475,21 @@ fn decision_matcher_kind_run_event_payload(
         harness_contracts::DecisionMatcherKind::GlobPattern => "globPattern",
         harness_contracts::DecisionMatcherKind::ExecuteCodeScript => "executeCodeScript",
         harness_contracts::DecisionMatcherKind::Any => "any",
+    }
+}
+
+fn decision_matcher_label_run_event_payload(
+    kind: harness_contracts::DecisionMatcherKind,
+) -> &'static str {
+    match kind {
+        harness_contracts::DecisionMatcherKind::ExactCommand => "this exact command",
+        harness_contracts::DecisionMatcherKind::ExactArgs => "these exact command arguments",
+        harness_contracts::DecisionMatcherKind::ToolName => "this tool",
+        harness_contracts::DecisionMatcherKind::Category => "this tool category",
+        harness_contracts::DecisionMatcherKind::PathPrefix => "this workspace path scope",
+        harness_contracts::DecisionMatcherKind::GlobPattern => "this workspace glob",
+        harness_contracts::DecisionMatcherKind::ExecuteCodeScript => "execute code script",
+        harness_contracts::DecisionMatcherKind::Any => "any matching operation",
     }
 }
 
@@ -3370,6 +3411,7 @@ impl RunEventMapper {
                     id: event_id,
                     conversation_sequence: 0,
                     payload: json!({
+                        "model": run_model_payload(&event.model, redactor),
                         "permissionMode": event.permission_mode,
                         "sessionId": event.session_id.to_string(),
                     }),
@@ -3933,6 +3975,115 @@ impl RunEventMapper {
                     visibility: "public",
                 })
             }
+            Event::TeamMemberJoined(event) => {
+                self.team_run_ids.get(&event.team_id).map(|run_id| RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "teamId": event.team_id.to_string(),
+                        "agentId": event.agent_id.to_string(),
+                        "role": public_text_display(event.role, redactor),
+                    }),
+                    run_id: run_id.to_string(),
+                    sequence: 0,
+                    source: "agent",
+                    timestamp: event.joined_at.to_rfc3339(),
+                    event_type: "team.member.joined",
+                    visibility: "public",
+                })
+            }
+            Event::TeamMemberLeft(event) => {
+                self.team_run_ids.get(&event.team_id).map(|run_id| RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "teamId": event.team_id.to_string(),
+                        "agentId": event.agent_id.to_string(),
+                        "reason": member_leave_reason_payload(&event.reason),
+                    }),
+                    run_id: run_id.to_string(),
+                    sequence: 0,
+                    source: "agent",
+                    timestamp: event.left_at.to_rfc3339(),
+                    event_type: "team.member.left",
+                    visibility: "public",
+                })
+            }
+            Event::TeamMemberStalled(event) => {
+                self.team_run_ids.get(&event.team_id).map(|run_id| RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "teamId": event.team_id.to_string(),
+                        "agentId": event.agent_id.to_string(),
+                    }),
+                    run_id: run_id.to_string(),
+                    sequence: 0,
+                    source: "agent",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "team.member.stalled",
+                    visibility: "public",
+                })
+            }
+            Event::AgentMessageSent(event) => {
+                self.team_run_ids.get(&event.team_id).map(|run_id| RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "teamId": event.team_id.to_string(),
+                        "messageId": event.message_id.to_string(),
+                    }),
+                    run_id: run_id.to_string(),
+                    sequence: 0,
+                    source: "agent",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "agent.message.sent",
+                    visibility: "public",
+                })
+            }
+            Event::AgentMessageRouted(event) => {
+                self.team_run_ids.get(&event.team_id).map(|run_id| RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "teamId": event.team_id.to_string(),
+                        "messageId": event.message_id.to_string(),
+                        "resolvedRecipients": event
+                            .resolved_recipients
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>(),
+                        "routingPolicy": routing_policy_payload(&event.routing_policy),
+                    }),
+                    run_id: run_id.to_string(),
+                    sequence: 0,
+                    source: "agent",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "agent.message.routed",
+                    visibility: "public",
+                })
+            }
+            Event::TeamTurnCompleted(event) => {
+                self.team_run_ids.get(&event.team_id).map(|run_id| RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "teamId": event.team_id.to_string(),
+                        "turnId": event.turn_id.to_string(),
+                        "participatingAgents": event
+                            .participating_agents
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>(),
+                    }),
+                    run_id: run_id.to_string(),
+                    sequence: 0,
+                    source: "agent",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "team.turn.completed",
+                    visibility: "public",
+                })
+            }
             Event::TeamTaskUpdated(event) => {
                 self.team_run_ids.get(&event.team_id).map(|run_id| RunEventPayload {
                     id: event_id,
@@ -3991,6 +4142,71 @@ impl RunEventMapper {
                     visibility: "public",
                 })
             }
+            Event::BackgroundAgentStateChanged(event) => {
+                let run_id = event.attempt_id.or_else(|| {
+                    self.background_agent_run_ids
+                        .get(&event.background_agent_id)
+                        .copied()
+                })?;
+                self.background_agent_run_ids
+                    .insert(event.background_agent_id, run_id);
+                Some(RunEventPayload {
+                    id: event_id,
+                    conversation_sequence: 0,
+                    payload: json!({
+                        "backgroundAgentId": event.background_agent_id.to_string(),
+                        "from": background_agent_state_payload(event.from),
+                        "to": background_agent_state_payload(event.to),
+                        "reason": event
+                            .reason
+                            .as_ref()
+                            .map(|reason| public_ui_safe_text_display(reason, redactor)),
+                    }),
+                    run_id: run_id.to_string(),
+                    sequence: 0,
+                    source: "background",
+                    timestamp: event.at.to_rfc3339(),
+                    event_type: "background.state.changed",
+                    visibility: "public",
+                })
+            }
+            Event::BackgroundAgentInputRequested(event) => {
+                self.background_agent_run_ids
+                    .get(&event.background_agent_id)
+                    .map(|run_id| RunEventPayload {
+                        id: event_id,
+                        conversation_sequence: 0,
+                        payload: json!({
+                            "backgroundAgentId": event.background_agent_id.to_string(),
+                            "requestId": event.request_id.to_string(),
+                            "prompt": public_ui_safe_text_display(&event.prompt, redactor),
+                        }),
+                        run_id: run_id.to_string(),
+                        sequence: 0,
+                        source: "background",
+                        timestamp: event.at.to_rfc3339(),
+                        event_type: "background.input.requested",
+                        visibility: "public",
+                    })
+            }
+            Event::BackgroundAgentInputSubmitted(event) => {
+                self.background_agent_run_ids
+                    .get(&event.background_agent_id)
+                    .map(|run_id| RunEventPayload {
+                        id: event_id,
+                        conversation_sequence: 0,
+                        payload: json!({
+                            "backgroundAgentId": event.background_agent_id.to_string(),
+                            "requestId": event.request_id.to_string(),
+                        }),
+                        run_id: run_id.to_string(),
+                        sequence: 0,
+                        source: "background",
+                        timestamp: event.at.to_rfc3339(),
+                        event_type: "background.input.submitted",
+                        visibility: "public",
+                    })
+            }
             Event::BackgroundAgentPermissionRequested(event) => {
                 let run_id = event.attempt_id.or_else(|| {
                     self.background_agent_run_ids
@@ -4042,6 +4258,118 @@ impl RunEventMapper {
                     event_type: "background.permission.resolved",
                     visibility: "public",
                 })
+            }
+            Event::BackgroundAgentCancelled(event) => {
+                self.background_agent_run_ids
+                    .get(&event.background_agent_id)
+                    .map(|run_id| RunEventPayload {
+                        id: event_id,
+                        conversation_sequence: 0,
+                        payload: json!({
+                            "backgroundAgentId": event.background_agent_id.to_string(),
+                            "reason": event
+                                .reason
+                                .as_ref()
+                                .map(|reason| public_ui_safe_text_display(reason, redactor)),
+                        }),
+                        run_id: run_id.to_string(),
+                        sequence: 0,
+                        source: "background",
+                        timestamp: event.at.to_rfc3339(),
+                        event_type: "background.cancelled",
+                        visibility: "public",
+                    })
+            }
+            Event::BackgroundAgentCompleted(event) => {
+                self.background_agent_run_ids
+                    .get(&event.background_agent_id)
+                    .map(|run_id| RunEventPayload {
+                        id: event_id,
+                        conversation_sequence: 0,
+                        payload: json!({
+                            "backgroundAgentId": event.background_agent_id.to_string(),
+                            "summary": event
+                                .summary
+                                .as_ref()
+                                .map(|summary| public_ui_safe_text_display(summary, redactor)),
+                        }),
+                        run_id: run_id.to_string(),
+                        sequence: 0,
+                        source: "background",
+                        timestamp: event.at.to_rfc3339(),
+                        event_type: "background.completed",
+                        visibility: "public",
+                    })
+            }
+            Event::BackgroundAgentFailed(event) => {
+                self.background_agent_run_ids
+                    .get(&event.background_agent_id)
+                    .map(|run_id| RunEventPayload {
+                        id: event_id,
+                        conversation_sequence: 0,
+                        payload: json!({
+                            "backgroundAgentId": event.background_agent_id.to_string(),
+                            "error": public_ui_safe_text_display(&event.error, redactor),
+                        }),
+                        run_id: run_id.to_string(),
+                        sequence: 0,
+                        source: "background",
+                        timestamp: event.at.to_rfc3339(),
+                        event_type: "background.failed",
+                        visibility: "public",
+                    })
+            }
+            Event::BackgroundAgentInterrupted(event) => {
+                self.background_agent_run_ids
+                    .get(&event.background_agent_id)
+                    .map(|run_id| RunEventPayload {
+                        id: event_id,
+                        conversation_sequence: 0,
+                        payload: json!({
+                            "backgroundAgentId": event.background_agent_id.to_string(),
+                            "reason": public_ui_safe_text_display(&event.reason, redactor),
+                        }),
+                        run_id: run_id.to_string(),
+                        sequence: 0,
+                        source: "background",
+                        timestamp: event.at.to_rfc3339(),
+                        event_type: "background.interrupted",
+                        visibility: "public",
+                    })
+            }
+            Event::BackgroundAgentArchived(event) => {
+                self.background_agent_run_ids
+                    .get(&event.background_agent_id)
+                    .map(|run_id| RunEventPayload {
+                        id: event_id,
+                        conversation_sequence: 0,
+                        payload: json!({
+                            "backgroundAgentId": event.background_agent_id.to_string(),
+                        }),
+                        run_id: run_id.to_string(),
+                        sequence: 0,
+                        source: "background",
+                        timestamp: event.at.to_rfc3339(),
+                        event_type: "background.archived",
+                        visibility: "public",
+                    })
+            }
+            Event::BackgroundAgentDeleted(event) => {
+                self.background_agent_run_ids
+                    .get(&event.background_agent_id)
+                    .map(|run_id| RunEventPayload {
+                        id: event_id,
+                        conversation_sequence: 0,
+                        payload: json!({
+                            "backgroundAgentId": event.background_agent_id.to_string(),
+                        }),
+                        run_id: run_id.to_string(),
+                        sequence: 0,
+                        source: "background",
+                        timestamp: event.at.to_rfc3339(),
+                        event_type: "background.deleted",
+                        visibility: "public",
+                    })
             }
             Event::PluginLoaded(event) => Some(RunEventPayload {
                 id: event_id,
@@ -4109,6 +4437,19 @@ impl RunEventMapper {
     }
 }
 
+fn run_model_payload(model: &RunModelSnapshot, redactor: &dyn Redactor) -> Value {
+    json!({
+        "modelConfigId": model
+            .model_config_id
+            .as_ref()
+            .map(|value| public_text_display(value.clone(), redactor)),
+        "providerId": public_text_display(model.provider_id.clone(), redactor),
+        "modelId": public_text_display(model.model_id.clone(), redactor),
+        "displayName": public_text_display(model.display_name.clone(), redactor),
+        "protocol": model.protocol,
+    })
+}
+
 pub(crate) fn tool_result_summary(_result: impl Serialize) -> String {
     "Output withheld from conversation timeline.".to_owned()
 }
@@ -4149,6 +4490,18 @@ pub(crate) fn topology_kind_payload(topology: &TopologyKind) -> String {
     }
 }
 
+pub(crate) fn member_leave_reason_payload(reason: &MemberLeaveReason) -> &'static str {
+    match reason {
+        MemberLeaveReason::GoalAchieved => "goal_achieved",
+        MemberLeaveReason::QuotaExceeded => "quota_exceeded",
+        MemberLeaveReason::Interrupted => "interrupted",
+        MemberLeaveReason::Error(_) => "error",
+        MemberLeaveReason::Removed => "removed",
+        MemberLeaveReason::StalledRemoved => "stalled_removed",
+        _ => "error",
+    }
+}
+
 pub(crate) fn team_termination_reason_payload(reason: &TeamTerminationReason) -> &'static str {
     match reason {
         TeamTerminationReason::Completed => "completed",
@@ -4158,6 +4511,34 @@ pub(crate) fn team_termination_reason_payload(reason: &TeamTerminationReason) ->
         TeamTerminationReason::IdleTimeout => "idle_timeout",
         TeamTerminationReason::Timeout => "timeout",
         _ => "error",
+    }
+}
+
+pub(crate) fn routing_policy_payload(policy: &RoutingPolicyKind) -> &'static str {
+    match policy {
+        RoutingPolicyKind::Direct => "direct",
+        RoutingPolicyKind::Role => "role",
+        RoutingPolicyKind::Broadcast => "broadcast",
+        RoutingPolicyKind::Coordinator => "coordinator",
+        RoutingPolicyKind::Custom(_) => "custom",
+        _ => "custom",
+    }
+}
+
+pub(crate) fn background_agent_state_payload(state: BackgroundAgentState) -> &'static str {
+    match state {
+        BackgroundAgentState::Queued => "queued",
+        BackgroundAgentState::Running => "running",
+        BackgroundAgentState::WaitingForPermission => "waiting_for_permission",
+        BackgroundAgentState::WaitingForInput => "waiting_for_input",
+        BackgroundAgentState::Paused => "paused",
+        BackgroundAgentState::Cancelling => "cancelling",
+        BackgroundAgentState::Cancelled => "cancelled",
+        BackgroundAgentState::Succeeded => "succeeded",
+        BackgroundAgentState::Failed => "failed",
+        BackgroundAgentState::Interrupted => "interrupted",
+        BackgroundAgentState::Recoverable => "recoverable",
+        BackgroundAgentState::Archived => "archived",
     }
 }
 

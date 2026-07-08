@@ -58,7 +58,6 @@ impl Session {
             child_options,
             child_paths,
             self.event_store().clone(),
-            self.turn_runtime(),
             self.turn_runner(),
             self.turn_model_snapshot(),
             self.turn_model_config_id(),

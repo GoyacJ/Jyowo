@@ -618,6 +618,7 @@ impl Harness {
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
                 engine: session_engine.engine,
                 active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
+                active_conversation_sessions: Arc::clone(&self.inner.active_conversation_sessions),
                 process_registry: self.run_scoped_process_registry(),
                 skill_registry: Some(self.inner.skill_registry.clone()),
                 skill_metrics_sink: self.skill_metrics_sink(),

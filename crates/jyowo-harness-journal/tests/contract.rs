@@ -101,10 +101,10 @@ impl EventStore for OffloadedBlobAuthorizerStore {
             .envelopes
             .lock()
             .map_err(|_| JournalError::Message("event store lock poisoned".to_owned()))?;
+        let mut offset = envelopes.len() as u64;
         for event in events {
-            let offset = JournalOffset(envelopes.len() as u64);
             envelopes.push(EventEnvelope {
-                offset,
+                offset: JournalOffset(offset),
                 event_id: EventId::new(),
                 session_id,
                 tenant_id: tenant,
@@ -115,12 +115,54 @@ impl EventStore for OffloadedBlobAuthorizerStore {
                 recorded_at: harness_contracts::now(),
                 payload: event.clone(),
             });
+            offset += 1;
         }
 
-        Ok(envelopes
-            .last()
+        Ok(JournalOffset(offset.saturating_sub(1)))
+    }
+
+    async fn append_with_metadata_expect_next_offset(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        _metadata: AppendMetadata,
+        expected_next_offset: JournalOffset,
+        events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        let mut envelopes = self
+            .envelopes
+            .lock()
+            .map_err(|_| JournalError::Message("event store lock poisoned".to_owned()))?;
+        let current_next_offset = envelopes
+            .iter()
+            .filter(|envelope| envelope.tenant_id == tenant && envelope.session_id == session_id)
             .map(|envelope| envelope.offset)
-            .unwrap_or(JournalOffset(0)))
+            .max_by_key(|offset| offset.0)
+            .map_or(JournalOffset(0), |offset| JournalOffset(offset.0 + 1));
+        if current_next_offset != expected_next_offset {
+            return Err(JournalError::Message(format!(
+                "expected next offset {}, got {}",
+                expected_next_offset.0, current_next_offset.0
+            )));
+        }
+        let mut offset = current_next_offset.0;
+        for event in events {
+            envelopes.push(EventEnvelope {
+                offset: JournalOffset(offset),
+                event_id: EventId::new(),
+                session_id,
+                tenant_id: tenant,
+                run_id: None,
+                correlation_id: CorrelationId::new(),
+                causation_id: None,
+                schema_version: SchemaVersion::CURRENT,
+                recorded_at: harness_contracts::now(),
+                payload: event.clone(),
+            });
+            offset += 1;
+        }
+
+        Ok(JournalOffset(offset.saturating_sub(1)))
     }
 
     async fn read_envelopes(

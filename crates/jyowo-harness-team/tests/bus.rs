@@ -8,8 +8,8 @@ use harness_contracts::{
     Recipient, SessionId, TenantId,
 };
 use harness_journal::{
-    EventEnvelope, EventStore, InMemoryBlobStore, InMemoryEventStore, PrunePolicy, PruneReport,
-    ReplayCursor, SessionFilter, SessionSnapshot, SessionSummary,
+    AppendMetadata, EventEnvelope, EventStore, InMemoryBlobStore, InMemoryEventStore, PrunePolicy,
+    PruneReport, ReplayCursor, SessionFilter, SessionSnapshot, SessionSummary,
 };
 use harness_team::{
     AgentMessage, BusBackpressure, BusPersistence, ContextVisibility, CoordinatorWorkerStrategy,
@@ -524,6 +524,17 @@ impl EventStore for FailingEventStore {
         &self,
         _tenant: TenantId,
         _session_id: SessionId,
+        _events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        Err(JournalError::Message("append failed".to_owned()))
+    }
+
+    async fn append_with_metadata_expect_next_offset(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+        _metadata: AppendMetadata,
+        _expected_next_offset: JournalOffset,
         _events: &[Event],
     ) -> Result<JournalOffset, JournalError> {
         Err(JournalError::Message("append failed".to_owned()))

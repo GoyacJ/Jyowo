@@ -95,11 +95,47 @@ function getActivityLabel(event: RunEvent): string {
     case 'permission.requested':
     case 'permission.resolved':
       return event.payload?.requestId ?? 'permission'
+    case 'subagent.spawned':
+      return event.payload?.role ?? event.payload?.subagentId ?? 'subagent'
+    case 'subagent.announced':
+    case 'subagent.terminated':
+    case 'subagent.stalled':
+      return event.payload?.subagentId ?? 'subagent'
+    case 'subagent.permission.forwarded':
+    case 'subagent.permission.resolved':
+      return event.payload?.requestId ?? 'subagent permission'
+    case 'team.created':
+      return event.payload?.name ?? event.payload?.teamId ?? 'team'
+    case 'team.member.joined':
+    case 'team.member.left':
+    case 'team.member.stalled':
+      return event.payload?.agentId ?? 'team member'
+    case 'team.task.updated':
+      return event.payload?.title ?? event.payload?.taskId ?? 'team task'
+    case 'agent.message.sent':
+    case 'agent.message.routed':
+      return event.payload?.messageId ?? 'agent message'
+    case 'team.turn.completed':
+      return event.payload?.turnId ?? 'team turn'
+    case 'team.terminated':
+      return event.payload?.teamId ?? 'team'
     case 'background.started':
       return event.payload?.title ?? event.payload?.backgroundAgentId ?? 'background'
+    case 'background.state.changed':
+      return event.payload?.backgroundAgentId ?? 'background'
+    case 'background.input.requested':
+    case 'background.input.submitted':
+      return event.payload?.requestId ?? 'background input'
     case 'background.permission.requested':
     case 'background.permission.resolved':
       return event.payload?.requestId ?? 'background permission'
+    case 'background.cancelled':
+    case 'background.completed':
+    case 'background.failed':
+    case 'background.interrupted':
+    case 'background.archived':
+    case 'background.deleted':
+      return event.payload?.backgroundAgentId ?? 'background'
     case 'artifact.created':
     case 'artifact.updated':
       return event.payload?.artifactId ?? 'artifact'
@@ -138,7 +174,34 @@ function getWithheldActivityLabel(event: RunEvent): string {
     case 'permission.requested':
     case 'permission.resolved':
       return 'permission'
+    case 'subagent.spawned':
+    case 'subagent.announced':
+    case 'subagent.terminated':
+    case 'subagent.stalled':
+      return 'subagent'
+    case 'subagent.permission.forwarded':
+    case 'subagent.permission.resolved':
+      return 'subagent permission'
+    case 'team.created':
+    case 'team.member.joined':
+    case 'team.member.left':
+    case 'team.member.stalled':
+    case 'team.task.updated':
+    case 'agent.message.sent':
+    case 'agent.message.routed':
+    case 'team.turn.completed':
+    case 'team.terminated':
+      return 'team'
     case 'background.started':
+    case 'background.state.changed':
+    case 'background.input.requested':
+    case 'background.input.submitted':
+    case 'background.cancelled':
+    case 'background.completed':
+    case 'background.failed':
+    case 'background.interrupted':
+    case 'background.archived':
+    case 'background.deleted':
       return 'background'
     case 'background.permission.requested':
     case 'background.permission.resolved':
@@ -172,10 +235,81 @@ function getActivityStatus(event: RunEvent): ActivityRailItem['status'] {
         return 'success'
       }
       return 'blocked'
+    case 'subagent.spawned':
+    case 'subagent.stalled':
+    case 'team.created':
+    case 'team.member.joined':
+    case 'team.task.updated':
+    case 'agent.message.sent':
+    case 'agent.message.routed':
+    case 'team.turn.completed':
+      return 'running'
+    case 'subagent.announced':
+      if (
+        event.payload?.status === 'failed' ||
+        event.payload?.status === 'stalled' ||
+        event.payload?.status === 'max_iterations_reached' ||
+        event.payload?.status === 'maxIterationsReached' ||
+        event.payload?.status === 'max_budget'
+      ) {
+        return 'failed'
+      }
+      return 'success'
+    case 'subagent.terminated':
+      return event.payload?.reason === 'failed' ||
+        event.payload?.reason === 'bridge_broken' ||
+        event.payload?.reason === 'bridgeBroken'
+        ? 'failed'
+        : 'success'
+    case 'subagent.permission.forwarded':
+      return 'blocked'
+    case 'subagent.permission.resolved':
+      return 'success'
+    case 'team.member.left':
+      return event.payload?.reason === 'error' || event.payload?.reason === 'stalled_removed'
+        ? 'failed'
+        : 'success'
+    case 'team.member.stalled':
+      return 'failed'
+    case 'team.terminated':
+      return event.payload?.reason === 'error' || event.payload?.reason === 'member_failed'
+        ? 'failed'
+        : 'success'
     case 'background.started':
       return 'running'
+    case 'background.state.changed':
+      if (event.payload?.to === 'failed' || event.payload?.to === 'interrupted') {
+        return 'failed'
+      }
+      if (
+        event.payload?.to === 'waiting_for_permission' ||
+        event.payload?.to === 'waiting_for_input' ||
+        event.payload?.to === 'paused'
+      ) {
+        return 'blocked'
+      }
+      if (
+        event.payload?.to === 'succeeded' ||
+        event.payload?.to === 'cancelled' ||
+        event.payload?.to === 'archived'
+      ) {
+        return 'success'
+      }
+      return 'running'
+    case 'background.input.requested':
+      return 'blocked'
+    case 'background.input.submitted':
+      return 'success'
     case 'background.permission.requested':
       return 'blocked'
+    case 'background.failed':
+    case 'background.interrupted':
+      return 'failed'
+    case 'background.cancelled':
+    case 'background.completed':
+    case 'background.archived':
+    case 'background.deleted':
+      return 'success'
     case 'tool.denied':
     case 'assistant.review.requested':
     case 'assistant.clarification.requested':
@@ -300,6 +434,30 @@ function getDetails(event: RunEvent): RunEventViewModel['details'] {
     case 'artifact.created':
     case 'artifact.updated':
     case 'background.started':
+    case 'background.state.changed':
+    case 'background.input.requested':
+    case 'background.input.submitted':
+    case 'background.cancelled':
+    case 'background.completed':
+    case 'background.failed':
+    case 'background.interrupted':
+    case 'background.archived':
+    case 'background.deleted':
+    case 'subagent.spawned':
+    case 'subagent.announced':
+    case 'subagent.terminated':
+    case 'subagent.stalled':
+    case 'subagent.permission.forwarded':
+    case 'subagent.permission.resolved':
+    case 'team.created':
+    case 'team.member.joined':
+    case 'team.member.left':
+    case 'team.member.stalled':
+    case 'team.task.updated':
+    case 'agent.message.sent':
+    case 'agent.message.routed':
+    case 'team.turn.completed':
+    case 'team.terminated':
     case 'engine.failed':
     case 'plugin.loaded':
     case 'plugin.rejected':

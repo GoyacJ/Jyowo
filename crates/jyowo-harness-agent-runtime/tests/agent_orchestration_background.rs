@@ -48,6 +48,17 @@ impl EventStore for FailingAppendEventStore {
         Err(JournalError::Message("forced append failure".to_owned()))
     }
 
+    async fn append_with_metadata_expect_next_offset(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+        _metadata: AppendMetadata,
+        _expected_next_offset: JournalOffset,
+        _events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        Err(JournalError::Message("forced append failure".to_owned()))
+    }
+
     async fn read_envelopes(
         &self,
         _tenant: TenantId,
@@ -146,6 +157,23 @@ impl EventStore for FailingInterruptedEventStore {
         events: &[Event],
     ) -> Result<JournalOffset, JournalError> {
         self.append(_tenant, _session_id, events).await
+    }
+
+    async fn append_with_metadata_expect_next_offset(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        _metadata: AppendMetadata,
+        expected_next_offset: JournalOffset,
+        events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        if expected_next_offset != JournalOffset(0) {
+            return Err(JournalError::Message(format!(
+                "expected next offset {}, got 0",
+                expected_next_offset.0
+            )));
+        }
+        self.append(tenant, session_id, events).await
     }
 
     async fn read_envelopes(
@@ -254,6 +282,23 @@ impl EventStore for FailSecondAppendEventStore {
         events: &[Event],
     ) -> Result<JournalOffset, JournalError> {
         self.append(_tenant, _session_id, events).await
+    }
+
+    async fn append_with_metadata_expect_next_offset(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        _metadata: AppendMetadata,
+        expected_next_offset: JournalOffset,
+        events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        if expected_next_offset != JournalOffset(0) {
+            return Err(JournalError::Message(format!(
+                "expected next offset {}, got 0",
+                expected_next_offset.0
+            )));
+        }
+        self.append(tenant, session_id, events).await
     }
 
     async fn read_envelopes(

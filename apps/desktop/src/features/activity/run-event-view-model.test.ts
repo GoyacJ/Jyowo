@@ -280,6 +280,67 @@ describe('run-event-view-model', () => {
     expect(viewModels[2]?.details).toBeUndefined()
   })
 
+  it('maps agent and team runtime events without exposing raw details', () => {
+    const events = runEventsSchema.parse([
+      {
+        id: 'evt-subagent-spawned',
+        conversationSequence: 24,
+        runId: 'run-agent',
+        sequence: 1,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'subagent.spawned',
+        source: 'agent',
+        visibility: 'public',
+        payload: {
+          depth: 1,
+          role: 'researcher',
+          subagentId: 'subagent-001',
+          taskSummary: 'Subagent task details withheld from conversation timeline.',
+          triggerToolUseId: null,
+        },
+      },
+      {
+        id: 'evt-team-task',
+        conversationSequence: 25,
+        runId: 'run-agent',
+        sequence: 2,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'team.task.updated',
+        source: 'agent',
+        visibility: 'public',
+        payload: {
+          assigneeProfileId: null,
+          status: 'running',
+          taskId: 'task-001',
+          teamId: 'team-001',
+          title: 'Inspect logs',
+        },
+      },
+      {
+        id: 'evt-background-state',
+        conversationSequence: 26,
+        runId: 'run-agent',
+        sequence: 3,
+        timestamp: '2026-06-17T00:00:00.000Z',
+        type: 'background.state.changed',
+        source: 'background',
+        visibility: 'public',
+        payload: {
+          backgroundAgentId: 'bg-agent-001',
+          from: 'queued',
+          reason: null,
+          to: 'running',
+        },
+      },
+    ])
+
+    expect(toRunEventViewModels(events).map((event) => event.activityItem)).toMatchObject([
+      { label: 'researcher', status: 'running' },
+      { label: 'Inspect logs', status: 'running' },
+      { label: 'bg-agent-001', status: 'running' },
+    ])
+  })
+
   it('merges permission resolved events into the matching requested details', () => {
     const events = runEventsSchema.parse([
       {
