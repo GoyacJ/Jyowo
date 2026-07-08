@@ -40,6 +40,8 @@ use harness_contracts::{
 use harness_journal::SqliteConversationReadModelStore;
 use std::io::Write;
 
+use crate::project_registry::ProjectRegistry;
+
 pub async fn list_conversations_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> ListConversationsResponse {
@@ -163,6 +165,32 @@ pub async fn create_conversation_with_runtime_state(
     Ok(CreateConversationResponse {
         conversation: conversation_summary_payload_from_metadata(record),
     })
+}
+
+pub async fn create_default_conversation_with_runtime_handle(
+    runtime_handle: &ManagedDesktopRuntime,
+    project_registry: &ProjectRegistry,
+) -> Result<CreateConversationResponse, CommandErrorPayload> {
+    let next_runtime = runtime_state_for_no_workspace().await?;
+    let response = create_conversation_with_runtime_state(&next_runtime).await?;
+    project_registry.clear_active()?;
+    *runtime_handle.write().await = next_runtime;
+    Ok(response)
+}
+
+pub async fn create_project_conversation_payload(
+    path: String,
+    project_registry: &ProjectRegistry,
+) -> Result<CreateConversationResponse, CommandErrorPayload> {
+    let workspace_root = canonical_workspace_root(PathBuf::from(path), "project path".to_owned())?;
+    if !project_registry.contains(&workspace_root) {
+        return Err(not_found(format!(
+            "project is not registered: {}",
+            workspace_root.to_string_lossy()
+        )));
+    }
+    let runtime_state = runtime_state_for_workspace(workspace_root).await?;
+    create_conversation_with_runtime_state(&runtime_state).await
 }
 
 pub(crate) async fn list_runtime_conversation_summaries(
@@ -602,6 +630,26 @@ pub async fn delete_conversation_with_runtime_state(
         conversation_id: request.conversation_id,
         status: "deleted",
     })
+}
+
+pub async fn delete_project_conversation_payload(
+    path: String,
+    conversation_id: String,
+    project_registry: &ProjectRegistry,
+) -> Result<DeleteConversationResponse, CommandErrorPayload> {
+    let workspace_root = canonical_workspace_root(PathBuf::from(path), "project path".to_owned())?;
+    if !project_registry.contains(&workspace_root) {
+        return Err(not_found(format!(
+            "project is not registered: {}",
+            workspace_root.to_string_lossy()
+        )));
+    }
+    let runtime_state = runtime_state_for_workspace(workspace_root).await?;
+    delete_conversation_with_runtime_state(
+        DeleteConversationRequest { conversation_id },
+        &runtime_state,
+    )
+    .await
 }
 
 async fn remove_conversation_metadata_record(

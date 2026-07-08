@@ -13,6 +13,12 @@ pub struct ProjectRecord {
     pub last_opened_at: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectMoveDirection {
+    Up,
+    Down,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProjectRegistryFile {
@@ -48,9 +54,7 @@ impl ProjectRegistry {
             .data
             .lock()
             .expect("project registry lock should not be poisoned");
-        let mut projects = data.projects.clone();
-        projects.sort_by(|left, right| right.last_opened_at.cmp(&left.last_opened_at));
-        projects
+        data.projects.clone()
     }
 
     #[must_use]
@@ -139,6 +143,57 @@ impl ProjectRegistry {
 
         self.persist()?;
         Ok(record)
+    }
+
+    pub fn clear_active(&self) -> Result<(), CommandErrorPayload> {
+        {
+            let mut data = self
+                .data
+                .lock()
+                .expect("project registry lock should not be poisoned");
+            data.active_path = None;
+        }
+
+        self.persist()
+    }
+
+    pub fn contains(&self, workspace_root: &Path) -> bool {
+        let path = workspace_root.to_string_lossy();
+        self.data
+            .lock()
+            .expect("project registry lock should not be poisoned")
+            .projects
+            .iter()
+            .any(|project| project.path == path)
+    }
+
+    pub fn move_project(
+        &self,
+        workspace_root: &Path,
+        direction: ProjectMoveDirection,
+    ) -> Result<(), CommandErrorPayload> {
+        let path = workspace_root.to_string_lossy().into_owned();
+        {
+            let mut data = self
+                .data
+                .lock()
+                .expect("project registry lock should not be poisoned");
+            let index = data
+                .projects
+                .iter()
+                .position(|project| project.path == path)
+                .ok_or_else(|| registry_not_found(path.clone()))?;
+            let target_index = match direction {
+                ProjectMoveDirection::Up if index > 0 => Some(index - 1),
+                ProjectMoveDirection::Down if index + 1 < data.projects.len() => Some(index + 1),
+                _ => None,
+            };
+            if let Some(target_index) = target_index {
+                data.projects.swap(index, target_index);
+            }
+        }
+
+        self.persist()
     }
 
     #[must_use]
@@ -290,6 +345,92 @@ mod tests {
         assert!(registry.list_projects().is_empty());
         assert_eq!(registry.active_path(), None);
 
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn set_active_preserves_project_list_order() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        let temp_dir = env::temp_dir().join(format!("jyowo-project-registry-order-{suffix}"));
+        fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+        let temp_dir = temp_dir.canonicalize().expect("canonical temp dir");
+        let alpha = temp_dir.join("alpha");
+        let beta = temp_dir.join("beta");
+        fs::create_dir_all(&alpha).expect("alpha should be created");
+        fs::create_dir_all(&beta).expect("beta should be created");
+        let registry = ProjectRegistry {
+            path: temp_dir.join("projects.json"),
+            data: Arc::new(Mutex::new(ProjectRegistryFile::default())),
+        };
+        registry
+            .upsert_and_activate(&alpha)
+            .expect("alpha registered");
+        registry
+            .upsert_and_activate(&beta)
+            .expect("beta registered");
+
+        registry.set_active(&alpha).expect("alpha active");
+
+        let paths = registry
+            .list_projects()
+            .into_iter()
+            .map(|project| project.path)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                alpha.to_string_lossy().to_string(),
+                beta.to_string_lossy().to_string()
+            ]
+        );
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn move_project_reorders_persisted_projects() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        let temp_dir = env::temp_dir().join(format!("jyowo-project-registry-move-{suffix}"));
+        fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+        let temp_dir = temp_dir.canonicalize().expect("canonical temp dir");
+        let alpha = temp_dir.join("alpha");
+        let beta = temp_dir.join("beta");
+        fs::create_dir_all(&alpha).expect("alpha should be created");
+        fs::create_dir_all(&beta).expect("beta should be created");
+        let registry_path = temp_dir.join("projects.json");
+        let registry = ProjectRegistry {
+            path: registry_path.clone(),
+            data: Arc::new(Mutex::new(ProjectRegistryFile::default())),
+        };
+        registry
+            .upsert_and_activate(&alpha)
+            .expect("alpha registered");
+        registry
+            .upsert_and_activate(&beta)
+            .expect("beta registered");
+
+        registry
+            .move_project(&beta, ProjectMoveDirection::Up)
+            .expect("beta moved");
+
+        let paths = registry
+            .list_projects()
+            .into_iter()
+            .map(|project| project.path)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                beta.to_string_lossy().to_string(),
+                alpha.to_string_lossy().to_string()
+            ]
+        );
+        assert!(registry_path.exists());
         let _ = fs::remove_dir_all(temp_dir);
     }
 

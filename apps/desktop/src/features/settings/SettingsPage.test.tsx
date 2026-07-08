@@ -3,7 +3,7 @@ import '@testing-library/jest-dom/vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { AppI18nProvider } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
@@ -11,6 +11,27 @@ import { CommandClientProvider } from '@/shared/tauri/react'
 import { createTestCommandClient, type TestCommandClientOptions } from '@/testing/command-client'
 
 import { SettingsPage } from './SettingsPage'
+
+const routerSpy = vi.hoisted(() => ({
+  navigate: vi.fn(async ({ search, to }: { search?: Record<string, string>; to: string }) => {
+    const nextSearch = search ? `?${new URLSearchParams(search).toString()}` : ''
+    window.history.pushState(null, '', `${to}${nextSearch}`)
+  }),
+}))
+
+vi.mock('@tanstack/react-router', async () => ({
+  useNavigate: () => routerSpy.navigate,
+  useRouterState: ({
+    select,
+  }: {
+    select: (state: { location: { search: Record<string, unknown> } }) => unknown
+  }) =>
+    select({
+      location: {
+        search: Object.fromEntries(new URLSearchParams(window.location.search)),
+      },
+    }),
+}))
 
 const emptyProviderSettingsList = {
   defaultConfigId: null,
@@ -44,6 +65,11 @@ function renderSettingsPage(options: TestCommandClientOptions = {}) {
 }
 
 describe('SettingsPage', () => {
+  beforeEach(() => {
+    routerSpy.navigate.mockClear()
+    window.history.pushState(null, '', '/settings')
+  })
+
   afterEach(() => {
     uiStore.getState().setLocale('zh-CN')
     uiStore.getState().setTheme('light')
@@ -124,6 +150,28 @@ describe('SettingsPage', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: '关于' }))
 
     expect(await screen.findByRole('heading', { name: '关于 Jyowo' })).toBeInTheDocument()
+  })
+
+  it('opens the requested settings tab from route search', async () => {
+    window.history.pushState(null, '', '/settings?tab=plugins')
+
+    renderSettingsPage()
+
+    expect(screen.getByRole('tab', { name: '插件' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByRole('heading', { name: '插件' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '语言' })).not.toBeInTheDocument()
+  })
+
+  it('writes selected settings tab to route search', async () => {
+    renderSettingsPage()
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '自动化' }))
+
+    expect(await screen.findByRole('heading', { name: '自动化任务' })).toBeInTheDocument()
+    expect(routerSpy.navigate).toHaveBeenCalledWith({
+      search: { tab: 'automations' },
+      to: '/settings',
+    })
   })
 
   it('renders backend-authored runtime execution status in the tools tab', async () => {

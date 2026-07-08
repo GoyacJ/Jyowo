@@ -20,7 +20,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const selectedConversationId =
     typeof currentSearch.conversationId === 'string' ? currentSearch.conversationId : undefined
   const selectedActiveRun = selectActiveRun(activeRunsByConversation, selectedConversationId)
-  const sidebarWidth = sidebarCollapsed || compactSidebar ? '48px' : '248px'
+  const sidebarWidth = sidebarCollapsed || compactSidebar ? '48px' : '300px'
 
   function openSettings() {
     void navigate({ to: '/settings' })

@@ -148,7 +148,10 @@ function artifactSegmentMatches(
 
 type ConversationCommandKeys =
   | 'createConversation'
+  | 'createDefaultConversation'
+  | 'createProjectConversation'
   | 'deleteConversation'
+  | 'deleteProjectConversation'
   | 'exportConversationEvidence'
   | 'getArtifactRevisionContent'
   | 'getConversation'
@@ -172,35 +175,47 @@ export function createConversationCommandHandlers(
   return {
     async createConversation() {
       await wait(state.options.delayMs)
-      state.createdConversationCounter += 1
-      const conversationId = `conversation-created-${String(state.createdConversationCounter).padStart(3, '0')}`
-      const conversation = {
-        id: conversationId,
-        isEmpty: true,
-        lastMessagePreview: 'Start from the composer when ready.',
-        title: 'New conversation',
-        updatedAt: new Date().toISOString(),
-      } satisfies CreateConversationResponse['conversation']
+      const conversation = createTestConversation(state)
       state.conversations = {
         conversations: [
           conversation,
-          ...state.conversations.conversations.filter((current) => current.id !== conversationId),
+          ...state.conversations.conversations.filter((current) => current.id !== conversation.id),
         ],
       }
       state.projectConversationGroups = addConversationToActiveProjectGroup(
         state.projectConversationGroups,
         conversation,
       )
-      state.conversationDetailsById.set(conversationId, {
-        conversation: {
-          id: conversationId,
-          messages: [],
-          modelConfigId: null,
-          title: conversation.title,
-          updatedAt: conversation.updatedAt,
-        },
-      })
-      state.worktreePagesByConversation.set(conversationId, emptyWorktreePage())
+      addConversationDetails(state, conversation)
+
+      return {
+        conversation,
+      } satisfies CreateConversationResponse
+    },
+    async createDefaultConversation() {
+      await wait(state.options.delayMs)
+      const conversation = createTestConversation(state)
+      state.conversations = {
+        conversations: [
+          conversation,
+          ...state.conversations.conversations.filter((current) => current.id !== conversation.id),
+        ],
+      }
+      addConversationDetails(state, conversation)
+
+      return {
+        conversation,
+      } satisfies CreateConversationResponse
+    },
+    async createProjectConversation(path) {
+      await wait(state.options.delayMs)
+      const conversation = createTestConversation(state)
+      state.projectConversationGroups = addConversationToProjectGroup(
+        state.projectConversationGroups,
+        path,
+        conversation,
+      )
+      addConversationDetails(state, conversation)
 
       return {
         conversation,
@@ -215,6 +230,18 @@ export function createConversationCommandHandlers(
       }
       state.projectConversationGroups = removeConversationFromActiveProjectGroup(
         state.projectConversationGroups,
+        conversationId,
+      )
+      return {
+        conversationId,
+        status: 'deleted',
+      } satisfies DeleteConversationResponse
+    },
+    async deleteProjectConversation(path, conversationId) {
+      await wait(state.options.delayMs)
+      state.projectConversationGroups = removeConversationFromProjectGroup(
+        state.projectConversationGroups,
+        path,
         conversationId,
       )
       return {
@@ -604,10 +631,18 @@ function addConversationToActiveProjectGroup(
     return current
   }
 
+  return addConversationToProjectGroup(current, current.activePath, conversation)
+}
+
+function addConversationToProjectGroup(
+  current: ListProjectConversationGroupsResponse,
+  projectPath: string,
+  conversation: CreateConversationResponse['conversation'],
+): ListProjectConversationGroupsResponse {
   return {
     ...current,
     groups: current.groups.map((group) =>
-      group.project.path === current.activePath
+      group.project.path === projectPath
         ? {
             ...group,
             conversations: [
@@ -628,10 +663,18 @@ function removeConversationFromActiveProjectGroup(
     return current
   }
 
+  return removeConversationFromProjectGroup(current, current.activePath, conversationId)
+}
+
+function removeConversationFromProjectGroup(
+  current: ListProjectConversationGroupsResponse,
+  projectPath: string,
+  conversationId: string,
+): ListProjectConversationGroupsResponse {
   return {
     ...current,
     groups: current.groups.map((group) =>
-      group.project.path === current.activePath
+      group.project.path === projectPath
         ? {
             ...group,
             conversations: group.conversations.filter(
@@ -641,4 +684,33 @@ function removeConversationFromActiveProjectGroup(
         : group,
     ),
   }
+}
+
+function createTestConversation(
+  state: TestCommandClientState,
+): CreateConversationResponse['conversation'] {
+  state.createdConversationCounter += 1
+  return {
+    id: `conversation-created-${String(state.createdConversationCounter).padStart(3, '0')}`,
+    isEmpty: true,
+    lastMessagePreview: 'Start from the composer when ready.',
+    title: 'New conversation',
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+function addConversationDetails(
+  state: TestCommandClientState,
+  conversation: CreateConversationResponse['conversation'],
+) {
+  state.conversationDetailsById.set(conversation.id, {
+    conversation: {
+      id: conversation.id,
+      messages: [],
+      modelConfigId: null,
+      title: conversation.title,
+      updatedAt: conversation.updatedAt,
+    },
+  })
+  state.worktreePagesByConversation.set(conversation.id, emptyWorktreePage())
 }

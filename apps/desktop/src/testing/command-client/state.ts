@@ -104,8 +104,7 @@ export function createTestCommandClientState(
     options,
     pendingBatchTimeouts: new Map(),
     projectConversationGroups: cloneResponse(
-      options.projectConversationGroups ??
-        buildProjectConversationGroups(projects, conversations),
+      options.projectConversationGroups ?? buildProjectConversationGroups(projects, conversations),
     ),
     projects,
     providerCapabilityRouteOptions: cloneResponse(

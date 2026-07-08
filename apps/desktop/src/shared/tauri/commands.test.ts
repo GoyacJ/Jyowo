@@ -243,7 +243,9 @@ import {
   clearMcpDiagnostics,
   createAttachmentFromPath,
   createConversation,
+  createDefaultConversation,
   createInvokeCommandClient,
+  createProjectConversation,
   type DeleteAgentProfileRequest,
   deleteAgentProfile,
   deleteAutomation,
@@ -252,6 +254,7 @@ import {
   deleteMcpServer,
   deleteMemoryItem,
   deleteProject,
+  deleteProjectConversation,
   deleteProviderCapabilityRoute,
   deleteSkill,
   exportMemoryItems,
@@ -290,7 +293,6 @@ import {
   listBackgroundAgents,
   listBrowserMcpPresets,
   listConversations,
-  listProjectConversationGroups,
   listEvalCases,
   listenMcpDiagnosticBatches,
   listenSkillCatalogInstallProgress,
@@ -302,6 +304,7 @@ import {
   listModelProviderCatalog,
   listOfficialQuotaSnapshots,
   listPlugins,
+  listProjectConversationGroups,
   listProviderCapabilityRouteOptions,
   listProviderCapabilityRoutes,
   listProviderProbeSnapshots,
@@ -312,6 +315,7 @@ import {
   listSkillCatalogSources,
   listSkills,
   mergeMemoryCandidate,
+  moveProject,
   type PageConversationWorktreeResponse,
   pageConversationWorktree,
   parseAgentCapabilities,
@@ -3660,6 +3664,101 @@ describe('CommandClient', () => {
       },
     })
     expect(invoke).toHaveBeenCalledWith('create_conversation')
+  })
+
+  it('creates default conversations through Tauri', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      conversation: {
+        id: 'conversation-default-001',
+        isEmpty: true,
+        lastMessagePreview: 'Start from the composer when ready.',
+        title: 'New conversation',
+        updatedAt: '2026-06-17T00:00:00.000Z',
+      },
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(createDefaultConversation(client)).resolves.toMatchObject({
+      conversation: {
+        id: 'conversation-default-001',
+      },
+    })
+    expect(invoke).toHaveBeenCalledWith('create_default_conversation')
+  })
+
+  it('creates project conversations through Tauri with a project path', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      conversation: {
+        id: 'conversation-project-001',
+        isEmpty: true,
+        lastMessagePreview: 'Start from the composer when ready.',
+        title: 'New conversation',
+        updatedAt: '2026-06-17T00:00:00.000Z',
+      },
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(createProjectConversation('/repo/beta', client)).resolves.toMatchObject({
+      conversation: {
+        id: 'conversation-project-001',
+      },
+    })
+    expect(invoke).toHaveBeenCalledWith('create_project_conversation', { path: '/repo/beta' })
+  })
+
+  it('deletes project conversations through Tauri with a project path', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      conversationId: 'conversation-project-001',
+      status: 'deleted',
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      deleteProjectConversation('/repo/beta', 'conversation-project-001', client),
+    ).resolves.toEqual({
+      conversationId: 'conversation-project-001',
+      status: 'deleted',
+    })
+    expect(invoke).toHaveBeenCalledWith('delete_project_conversation', {
+      conversationId: 'conversation-project-001',
+      path: '/repo/beta',
+    })
+  })
+
+  it('moves projects through Tauri with a direction', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      activePath: '/repo/alpha',
+      projects: [
+        {
+          path: '/repo/beta',
+          name: 'beta',
+          lastOpenedAt: '2026-07-07T07:00:00.000Z',
+        },
+        {
+          path: '/repo/alpha',
+          name: 'alpha',
+          lastOpenedAt: '2026-07-08T07:00:00.000Z',
+        },
+      ],
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(moveProject('/repo/beta', 'up', client)).resolves.toEqual({
+      activePath: '/repo/alpha',
+      projects: [
+        {
+          path: '/repo/beta',
+          name: 'beta',
+          lastOpenedAt: '2026-07-07T07:00:00.000Z',
+        },
+        {
+          path: '/repo/alpha',
+          name: 'alpha',
+          lastOpenedAt: '2026-07-08T07:00:00.000Z',
+        },
+      ],
+    })
+    expect(invoke).toHaveBeenCalledWith('move_project', { direction: 'up', path: '/repo/beta' })
   })
 
   it('rejects invalid command args before invoking Tauri', async () => {

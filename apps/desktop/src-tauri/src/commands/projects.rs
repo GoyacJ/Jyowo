@@ -1,13 +1,15 @@
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::error::CommandErrorPayload;
 use super::runtime::{
     canonical_workspace_root, runtime_state_for_no_workspace, runtime_state_for_workspace,
     ManagedDesktopRuntime,
 };
-use crate::project_registry::{ProjectRecord, ProjectRegistry};
+use crate::project_registry::{
+    ProjectMoveDirection as RegistryProjectMoveDirection, ProjectRecord, ProjectRegistry,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,6 +30,22 @@ pub struct DeleteProjectResponse {
     pub path: String,
     pub active_path: Option<String>,
     pub status: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectMoveDirection {
+    Up,
+    Down,
+}
+
+impl From<ProjectMoveDirection> for RegistryProjectMoveDirection {
+    fn from(value: ProjectMoveDirection) -> Self {
+        match value {
+            ProjectMoveDirection::Up => RegistryProjectMoveDirection::Up,
+            ProjectMoveDirection::Down => RegistryProjectMoveDirection::Down,
+        }
+    }
 }
 
 #[must_use]
@@ -85,4 +103,20 @@ pub async fn add_project_payload(
     let new_runtime = runtime_state_for_workspace(workspace_root).await?;
     *runtime_handle.write().await = new_runtime;
     Ok(SwitchProjectResponse { project })
+}
+
+pub fn move_project_payload(
+    path: String,
+    direction: ProjectMoveDirection,
+    project_registry: &ProjectRegistry,
+) -> Result<ListProjectsResponse, CommandErrorPayload> {
+    if path.trim().is_empty() {
+        return Err(CommandErrorPayload {
+            code: "INVALID_PAYLOAD",
+            message: "project path is required".to_owned(),
+        });
+    }
+
+    project_registry.move_project(&PathBuf::from(path), direction.into())?;
+    Ok(list_projects_payload(project_registry))
 }

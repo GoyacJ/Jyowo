@@ -44,6 +44,7 @@ type SettingsCommandKeys =
   | 'listProviderCapabilityRoutes'
   | 'listProviderProbeSnapshots'
   | 'listProviderSettings'
+  | 'moveProject'
   | 'probeProviderConfig'
   | 'refreshOfficialQuota'
   | 'requestProviderConfigApiKeyReveal'
@@ -360,6 +361,39 @@ export function createSettingsCommandHandlers(
         activePath: path,
       }
       return { project }
+    },
+    async moveProject(path, direction) {
+      await wait(state.options.delayMs)
+      const index = state.projects.projects.findIndex((entry) => entry.path === path)
+      if (index < 0) {
+        throw new Error(`Project not found: ${path}`)
+      }
+      const targetIndex =
+        direction === 'up'
+          ? Math.max(0, index - 1)
+          : Math.min(state.projects.projects.length - 1, index + 1)
+      const projects = [...state.projects.projects]
+      if (targetIndex !== index) {
+        const [project] = projects.splice(index, 1)
+        projects.splice(targetIndex, 0, project)
+      }
+      state.projects = {
+        ...state.projects,
+        projects,
+      }
+      state.projectConversationGroups = {
+        ...state.projectConversationGroups,
+        groups: projects
+          .map((project) =>
+            state.projectConversationGroups.groups.find(
+              (group) => group.project.path === project.path,
+            ),
+          )
+          .filter((group): group is (typeof state.projectConversationGroups.groups)[number] =>
+            Boolean(group),
+          ),
+      }
+      return state.projects
     },
     async validateProviderSettings() {
       await wait(state.options.delayMs)

@@ -1,5 +1,6 @@
+import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { Languages, Monitor, Moon, Sun } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { APP_LOCALES, type AppLocale } from '@/shared/i18n/locales'
@@ -27,8 +28,20 @@ type SettingsTab =
 
 export function SettingsPage() {
   const { t } = useTranslation('settings')
-  const [activeTab, setActiveTab] = useState<SettingsTab>('general')
+  const navigate = useNavigate()
+  const requestedTab = useRouterState({
+    select: (state) => state.location.search.tab,
+  })
+  const [activeTab, setActiveTab] = useState<SettingsTab>(
+    isSettingsTab(requestedTab) ? requestedTab : 'general',
+  )
   const [openPluginRequest, setOpenPluginRequest] = useState<PluginOpenRequest | null>(null)
+
+  useEffect(() => {
+    if (isSettingsTab(requestedTab) && requestedTab !== activeTab) {
+      setActiveTab(requestedTab)
+    }
+  }, [activeTab, requestedTab])
 
   function openPlugin(pluginId: string) {
     setOpenPluginRequest((current) => ({
@@ -38,12 +51,21 @@ export function SettingsPage() {
     setActiveTab('plugins')
   }
 
+  function selectTab(tab: SettingsTab) {
+    setActiveTab(tab)
+    void navigate({ search: { tab }, to: '/settings' })
+  }
+
   return (
     <section aria-label={t('pageTitle')} className="h-full min-h-0 overflow-y-auto pr-1">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 pb-6">
         <Tabs
           className="min-h-0"
-          onValueChange={(value) => setActiveTab(value as SettingsTab)}
+          onValueChange={(value) => {
+            if (isSettingsTab(value)) {
+              selectTab(value)
+            }
+          }}
           value={activeTab}
         >
           <TabsList aria-label={t('tabs.label')} className="flex h-auto w-fit flex-wrap">
@@ -87,6 +109,19 @@ export function SettingsPage() {
         </Tabs>
       </div>
     </section>
+  )
+}
+
+function isSettingsTab(value: unknown): value is SettingsTab {
+  return (
+    value === 'general' ||
+    value === 'skills' ||
+    value === 'tools' ||
+    value === 'automations' ||
+    value === 'mcp' ||
+    value === 'plugins' ||
+    value === 'models' ||
+    value === 'about'
   )
 }
 

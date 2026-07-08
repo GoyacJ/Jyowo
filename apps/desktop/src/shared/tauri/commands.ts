@@ -4051,6 +4051,19 @@ const switchProjectRequestSchema = z
   })
   .strict()
 
+const projectPathRequestSchema = z
+  .object({
+    path: z.string().min(1),
+  })
+  .strict()
+
+const moveProjectRequestSchema = z
+  .object({
+    direction: z.enum(['up', 'down']),
+    path: z.string().min(1),
+  })
+  .strict()
+
 const switchProjectResponseSchema = z
   .object({
     project: projectRecordSchema,
@@ -4059,6 +4072,13 @@ const switchProjectResponseSchema = z
 
 const deleteProjectRequestSchema = z
   .object({
+    path: z.string().min(1),
+  })
+  .strict()
+
+const deleteProjectConversationRequestSchema = z
+  .object({
+    conversationId: z.string().min(1),
     path: z.string().min(1),
   })
   .strict()
@@ -4080,6 +4100,7 @@ export type ListProjectConversationGroupsResponse = z.infer<
   typeof listProjectConversationGroupsResponseSchema
 >
 export type ListProjectsResponse = z.infer<typeof listProjectsResponseSchema>
+export type MoveProjectDirection = z.infer<typeof moveProjectRequestSchema>['direction']
 export type SwitchProjectResponse = z.infer<typeof switchProjectResponseSchema>
 export type DeleteProjectResponse = z.infer<typeof deleteProjectResponseSchema>
 export type CreateConversationResponse = z.infer<typeof createConversationResponseSchema>
@@ -4375,6 +4396,8 @@ export interface CommandClient {
     conversationId?: string,
   ) => Promise<CreateAttachmentFromPathResponse>
   createConversation: () => Promise<CreateConversationResponse>
+  createDefaultConversation: () => Promise<CreateConversationResponse>
+  createProjectConversation: (path: string) => Promise<CreateConversationResponse>
   deleteAutomation: (id: string) => Promise<DeleteAutomationResponse>
   deleteAgentProfile: (id: string) => Promise<DeleteAgentProfileResponse>
   deleteBackgroundAgent: (
@@ -4468,6 +4491,11 @@ export interface CommandClient {
   addProject: (path: string) => Promise<SwitchProjectResponse>
   switchProject: (path: string) => Promise<SwitchProjectResponse>
   deleteProject: (path: string) => Promise<DeleteProjectResponse>
+  deleteProjectConversation: (
+    path: string,
+    conversationId: string,
+  ) => Promise<DeleteConversationResponse>
+  moveProject: (path: string, direction: MoveProjectDirection) => Promise<ListProjectsResponse>
   pageConversationTimeline: (
     request: PageConversationTimelineRequest,
   ) => Promise<PageConversationTimelineResponse>
@@ -5052,10 +5080,27 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'create_conversation'
       return parsePayload(command, createConversationResponseSchema, await invoke(command))
     },
+    async createDefaultConversation() {
+      const command = 'create_default_conversation'
+      return parsePayload(command, createConversationResponseSchema, await invoke(command))
+    },
+    async createProjectConversation(path) {
+      const command = 'create_project_conversation'
+      const args = parseArgs(command, projectPathRequestSchema, { path })
+      return parsePayload(command, createConversationResponseSchema, await invoke(command, args))
+    },
     async deleteConversation(conversationId) {
       const command = 'delete_conversation'
       const args = parseArgs(command, deleteConversationRequestSchema, {
         conversationId,
+      })
+      return parsePayload(command, deleteConversationResponseSchema, await invoke(command, args))
+    },
+    async deleteProjectConversation(path, conversationId) {
+      const command = 'delete_project_conversation'
+      const args = parseArgs(command, deleteProjectConversationRequestSchema, {
+        conversationId,
+        path,
       })
       return parsePayload(command, deleteConversationResponseSchema, await invoke(command, args))
     },
@@ -5197,6 +5242,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'switch_project'
       const args = parseArgs(command, switchProjectRequestSchema, { path })
       return parsePayload(command, switchProjectResponseSchema, await invoke(command, args))
+    },
+    async moveProject(path, direction) {
+      const command = 'move_project'
+      const args = parseArgs(command, moveProjectRequestSchema, { direction, path })
+      return parsePayload(command, listProjectsResponseSchema, await invoke(command, args))
     },
     async deleteProject(path) {
       const command = 'delete_project'
@@ -5573,6 +5623,19 @@ export function createConversation(
   client: CommandClient = tauriCommandClient,
 ): Promise<CreateConversationResponse> {
   return client.createConversation()
+}
+
+export function createDefaultConversation(
+  client: CommandClient = tauriCommandClient,
+): Promise<CreateConversationResponse> {
+  return client.createDefaultConversation()
+}
+
+export function createProjectConversation(
+  path: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<CreateConversationResponse> {
+  return client.createProjectConversation(path)
 }
 
 export function listEvalCases(
@@ -6232,11 +6295,27 @@ export function switchProject(
   return client.switchProject(path)
 }
 
+export function moveProject(
+  path: string,
+  direction: MoveProjectDirection,
+  client: CommandClient = tauriCommandClient,
+): Promise<ListProjectsResponse> {
+  return client.moveProject(path, direction)
+}
+
 export function deleteProject(
   path: string,
   client: CommandClient = tauriCommandClient,
 ): Promise<DeleteProjectResponse> {
   return client.deleteProject(path)
+}
+
+export function deleteProjectConversation(
+  path: string,
+  conversationId: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<DeleteConversationResponse> {
+  return client.deleteProjectConversation(path, conversationId)
 }
 
 export function getExecutionSettings(

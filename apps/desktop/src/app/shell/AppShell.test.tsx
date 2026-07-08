@@ -92,6 +92,9 @@ describe('AppShell', () => {
 
     expect(container.firstElementChild).toHaveClass('h-screen')
     expect(container.firstElementChild).toHaveClass('overflow-hidden')
+    expect(container.firstElementChild?.firstElementChild).toHaveStyle({
+      gridTemplateColumns: '300px minmax(0,1fr)',
+    })
     expect(screen.getByRole('banner')).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Workspace' })).toBeInTheDocument()
     expect(screen.getByRole('main')).toContainElement(screen.getByText('Workbench content'))
@@ -99,10 +102,19 @@ describe('AppShell', () => {
 
     const workspaceNavigation = screen.getByRole('navigation', { name: 'Workspace' })
     expect(workspaceNavigation).not.toHaveClass('hidden')
-    expect(within(workspaceNavigation).getByText('Recent conversations')).toBeInTheDocument()
+    expect(within(workspaceNavigation).getByText('Projects')).toBeInTheDocument()
     expect(
-      within(workspaceNavigation).getByRole('button', { name: 'Switch project' }),
+      within(workspaceNavigation).getByRole('button', { name: 'New conversation' }),
     ).toBeInTheDocument()
+    expect(
+      within(workspaceNavigation).queryByRole('button', { name: 'Search' }),
+    ).not.toBeInTheDocument()
+    expect(
+      within(workspaceNavigation).queryByRole('button', { name: 'Scheduled' }),
+    ).not.toBeInTheDocument()
+    expect(
+      within(workspaceNavigation).queryByRole('button', { name: 'Plugins' }),
+    ).not.toBeInTheDocument()
     expect(within(workspaceNavigation).queryByText('Home')).not.toBeInTheDocument()
     expect(within(workspaceNavigation).queryByText('Artifacts')).not.toBeInTheDocument()
     expect(within(workspaceNavigation).queryByText('Skills')).not.toBeInTheDocument()

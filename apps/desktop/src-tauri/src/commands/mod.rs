@@ -250,10 +250,11 @@ pub use contracts::{
 pub use conversations::{
     cancel_run_payload, cancel_run_with_runtime_state, create_attachment_from_path_payload,
     create_attachment_from_path_with_runtime_state, create_conversation_with_runtime_state,
+    create_default_conversation_with_runtime_handle, create_project_conversation_payload,
     delete_conversation_payload, delete_conversation_with_runtime_state,
-    export_conversation_evidence_with_runtime_state, export_support_bundle_with_runtime_state,
-    get_artifact_revision_content_with_runtime_state, get_context_snapshot_with_runtime_state,
-    get_conversation_command_output_with_runtime_state,
+    delete_project_conversation_payload, export_conversation_evidence_with_runtime_state,
+    export_support_bundle_with_runtime_state, get_artifact_revision_content_with_runtime_state,
+    get_context_snapshot_with_runtime_state, get_conversation_command_output_with_runtime_state,
     get_conversation_diff_patch_with_runtime_state,
     get_conversation_inspector_item_with_runtime_state, get_conversation_with_runtime_state,
     get_replay_timeline_with_runtime_state, list_activity_payload,
@@ -311,8 +312,9 @@ pub use plugins::{
     validate_plugin_from_path_with_runtime_state,
 };
 pub use projects::{
-    add_project_payload, delete_project_payload, list_projects_payload, switch_project_payload,
-    DeleteProjectResponse, ListProjectsResponse, SwitchProjectResponse,
+    add_project_payload, delete_project_payload, list_projects_payload, move_project_payload,
+    switch_project_payload, DeleteProjectResponse, ListProjectsResponse, ProjectMoveDirection,
+    SwitchProjectResponse,
 };
 pub use providers::{
     delete_provider_capability_route_with_store, desktop_provider_credential_resolver_with_stores,
@@ -384,6 +386,15 @@ pub async fn get_runtime_execution_status(
 #[tauri::command]
 pub fn list_projects(project_registry: tauri::State<'_, ProjectRegistry>) -> ListProjectsResponse {
     list_projects_payload(&project_registry)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn move_project(
+    path: String,
+    direction: ProjectMoveDirection,
+    project_registry: tauri::State<'_, ProjectRegistry>,
+) -> Result<ListProjectsResponse, CommandErrorPayload> {
+    move_project_payload(path, direction, &project_registry)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1573,6 +1584,22 @@ pub async fn create_conversation(
 }
 
 #[tauri::command]
+pub async fn create_default_conversation(
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+    project_registry: tauri::State<'_, ProjectRegistry>,
+) -> Result<CreateConversationResponse, CommandErrorPayload> {
+    create_default_conversation_with_runtime_handle(&runtime_handle, &project_registry).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn create_project_conversation(
+    path: String,
+    project_registry: tauri::State<'_, ProjectRegistry>,
+) -> Result<CreateConversationResponse, CommandErrorPayload> {
+    create_project_conversation_payload(path, &project_registry).await
+}
+
+#[tauri::command]
 pub async fn list_eval_cases(
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListEvalCasesResponse, CommandErrorPayload> {
@@ -1740,6 +1767,15 @@ pub async fn delete_conversation(
         &*runtime_state,
     )
     .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn delete_project_conversation(
+    path: String,
+    conversation_id: String,
+    project_registry: tauri::State<'_, ProjectRegistry>,
+) -> Result<DeleteConversationResponse, CommandErrorPayload> {
+    delete_project_conversation_payload(path, conversation_id, &project_registry).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
