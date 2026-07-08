@@ -68,6 +68,19 @@ impl EventStore for StaticEventStore {
         ))
     }
 
+    async fn append_with_metadata_expect_next_offset(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+        _metadata: AppendMetadata,
+        _expected_next_offset: JournalOffset,
+        _events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        Err(JournalError::Message(
+            "static event store is read-only".to_owned(),
+        ))
+    }
+
     async fn read_envelopes(
         &self,
         tenant: TenantId,

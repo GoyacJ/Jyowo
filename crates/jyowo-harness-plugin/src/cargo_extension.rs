@@ -17,7 +17,7 @@ use harness_contracts::{
     McpServerSource, NetworkAccess, NoopRedactor, PermissionSubject, PluginRuntimeRpcError,
     PluginRuntimeRpcRequest, PluginRuntimeRpcResponse, ProviderRestriction, RedactRules,
     ResourceLimits, RunId, SandboxError, SandboxExitStatus, SandboxMode, SandboxPolicy,
-    SandboxScope, SessionId, TenantId, ToolActionPlan, ToolDescriptor, ToolError,
+    SandboxScope, SessionId, TenantId, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError,
     ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult, WorkspaceAccess,
 };
 use harness_hook::{
@@ -524,7 +524,9 @@ impl Tool for CargoExtensionToolProxy {
             Vec::new(),
             WorkspaceAccess::None,
             NetworkAccess::None,
-            ToolExecutionChannel::DirectAuthorizedRust,
+            ToolExecutionChannel::ExternalCapability {
+                capability: ToolCapability::Custom("plugin_sidecar".to_owned()),
+            },
         )
     }
 
@@ -1420,7 +1422,9 @@ mod tests {
 
     use async_trait::async_trait;
     use bytes::Bytes;
-    use harness_contracts::{KillScope, LocalIsolationTag};
+    use harness_contracts::{
+        CapabilityRegistry, KillScope, LocalIsolationTag, ToolCapability, ToolUseId, TrustLevel,
+    };
     use harness_sandbox::{
         ActivityHandle, ExecOutcome, NetworkPolicySupport, ProcessHandle, ResourceLimitSupport,
         SandboxCapabilities, SessionSnapshotFile, SnapshotSpec, WorkspacePolicySupport,
@@ -1545,6 +1549,47 @@ mod tests {
         assert_eq!(spec.policy.resource_limits.max_wall_clock_ms, Some(250));
     }
 
+    #[tokio::test]
+    async fn sidecar_tool_plan_uses_external_plugin_capability_channel() {
+        let manifest = PluginManifest {
+            manifest_schema_version: 1,
+            name: crate::PluginName::new("sidecar-plugin").unwrap(),
+            version: semver::Version::parse("1.0.0").unwrap(),
+            trust_level: TrustLevel::UserControlled,
+            description: None,
+            authors: Vec::new(),
+            repository: None,
+            signature: None,
+            capabilities: crate::PluginCapabilities::default(),
+            dependencies: Vec::new(),
+            min_harness_version: semver::VersionReq::parse(">=0.0.0").unwrap(),
+        };
+        let entry = ToolManifestEntry {
+            name: "sidecar_tool".to_owned(),
+            destructive: false,
+            input_schema: json!({ "type": "object" }),
+        };
+        let proxy = CargoExtensionToolProxy {
+            descriptor: tool_descriptor_for(&manifest, &entry),
+            client: CargoExtensionRuntimeClient {
+                binary: PathBuf::from("/tmp/jyowo-plugin-sidecar"),
+                sandbox: None,
+                sandbox_mode: None,
+                timeout: Duration::from_secs(1),
+                workspace_root: None,
+            },
+        };
+
+        let plan = proxy.plan(&json!({}), &tool_ctx()).await.unwrap();
+
+        assert_eq!(
+            plan.execution_channel,
+            ToolExecutionChannel::ExternalCapability {
+                capability: ToolCapability::Custom("plugin_sidecar".to_owned()),
+            }
+        );
+    }
+
     #[test]
     fn hook_outcome_rejects_plugin_allow_permission_override() {
         let pre_tool_use = hook_outcome_from_value(json!({
@@ -1579,6 +1624,29 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    fn tool_ctx() -> ToolContext {
+        ToolContext {
+            tool_use_id: ToolUseId::new(),
+            run_id: RunId::new(),
+            session_id: SessionId::new(),
+            tenant_id: TenantId::SINGLE,
+            correlation_id: CorrelationId::new(),
+            agent_id: harness_contracts::AgentId::from_u128(1),
+            subagent_depth: 0,
+            workspace_root: std::env::temp_dir(),
+            project_workspace_root: None,
+            sandbox: None,
+            cap_registry: Arc::new(CapabilityRegistry::default()),
+            redactor: Arc::new(NoopRedactor),
+            interrupt: harness_tool::InterruptToken::default(),
+            parent_run: None,
+            model: None,
+            model_config_id: None,
+            memory_thread_settings: None,
+            actor_source: harness_contracts::PermissionActorSource::ParentRun,
+        }
     }
 
     struct RecordingSandbox {

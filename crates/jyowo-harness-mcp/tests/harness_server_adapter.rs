@@ -37,7 +37,7 @@ impl HarnessMcpBackend for FakeBackend {
 }
 
 #[tokio::test]
-async fn harness_server_lists_9_plus_1_tools() {
+async fn harness_server_default_policy_lists_read_only_tools() {
     let server = HarnessMcpServer::new(Arc::new(FakeBackend::default()))
         .build()
         .expect("server");
@@ -58,12 +58,10 @@ async fn harness_server_lists_9_plus_1_tools() {
             "sessions_list",
             "session_get",
             "messages_read",
-            "messages_send",
             "attachments_fetch",
             "events_poll",
             "events_wait",
             "permissions_list_open",
-            "permissions_respond",
             "channels_list",
         ]
     );
@@ -71,7 +69,10 @@ async fn harness_server_lists_9_plus_1_tools() {
 
 #[tokio::test]
 async fn harness_server_permissions_respond_schema_requires_backend_option_and_session() {
+    let mut policy = McpServerPolicy::default();
+    policy.exposed_capabilities.permissions_respond = true;
     let server = HarnessMcpServer::new(Arc::new(FakeBackend::default()))
+        .with_policy(policy)
         .build()
         .expect("server");
 
@@ -140,7 +141,11 @@ async fn harness_server_routes_tool_calls_to_backend_with_resolved_tenant() {
 #[tokio::test]
 async fn harness_server_routes_each_9_plus_1_tool_over_jsonrpc() {
     let backend = Arc::new(FakeBackend::default());
+    let mut policy = McpServerPolicy::default();
+    policy.exposed_capabilities.messages_send = true;
+    policy.exposed_capabilities.permissions_respond = true;
     let server = HarnessMcpServer::new(Arc::clone(&backend))
+        .with_policy(policy)
         .build()
         .expect("server");
     let calls = [

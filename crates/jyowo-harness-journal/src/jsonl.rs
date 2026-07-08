@@ -17,9 +17,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::{
-    app_controlled_path, apply_cursor, journal_error, session_end_reason, AppendMetadata,
-    CompactionLineage, EventEnvelope, EventEnvelopePage, EventStore, JournalRedaction, PrunePolicy,
-    PruneReport, ReplayCursor, SchemaVersion, SessionFilter, SessionSnapshot, SessionSummary,
+    app_controlled_path, apply_cursor, expected_next_offset_mismatch, journal_error,
+    session_end_reason, AppendMetadata, CompactionLineage, EventEnvelope, EventEnvelopePage,
+    EventStore, JournalRedaction, PrunePolicy, PruneReport, ReplayCursor, SchemaVersion,
+    SessionFilter, SessionSnapshot, SessionSummary,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
@@ -146,6 +147,67 @@ impl JsonlEventStore {
             recorded_at: harness_contracts::now(),
             payload,
         }
+    }
+
+    async fn append_with_metadata_checked(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        metadata: AppendMetadata,
+        expected_next_offset: Option<JournalOffset>,
+        events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        let _guard = self.write_lock.lock().await;
+        let path = self.path(tenant, session_id);
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir).map_err(journal_error)?;
+        }
+        let lock_path = self.lock_path(tenant, session_id);
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(lock_path)
+            .map_err(journal_error)?;
+        lock_file.lock_exclusive().map_err(journal_error)?;
+        let mut offset = self
+            .load_envelopes(tenant, session_id)?
+            .last()
+            .map_or(0, |envelope| envelope.offset.0 + 1);
+        if let Some(expected) = expected_next_offset {
+            let actual = JournalOffset(offset);
+            if expected != actual {
+                return Err(expected_next_offset_mismatch(expected, actual));
+            }
+        }
+        let start_offset = offset;
+        let mut lines = Vec::new();
+        for event in events {
+            let envelope = Self::envelope(
+                tenant,
+                session_id,
+                metadata,
+                JournalOffset(offset),
+                self.redaction.redact_event(event)?,
+            );
+            serde_json::to_writer(&mut lines, &envelope).map_err(journal_error)?;
+            lines.write_all(b"\n").map_err(journal_error)?;
+            offset += 1;
+        }
+        let batch = self.batch_path(tenant, session_id, start_offset);
+        let temp = self.batch_temp_path(tenant, session_id, start_offset);
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp)
+            .map_err(journal_error)?;
+        file.write_all(&lines).map_err(journal_error)?;
+        if matches!(self.options.fsync, FsyncPolicy::Always) {
+            file.sync_all().map_err(journal_error)?;
+        }
+        drop(file);
+        fs::rename(&temp, &batch).map_err(journal_error)?;
+        Ok(JournalOffset(offset.saturating_sub(1)))
     }
 
     fn load_envelopes(
@@ -322,51 +384,26 @@ impl EventStore for JsonlEventStore {
         metadata: AppendMetadata,
         events: &[Event],
     ) -> Result<JournalOffset, JournalError> {
-        let _guard = self.write_lock.lock().await;
-        let path = self.path(tenant, session_id);
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir).map_err(journal_error)?;
-        }
-        let lock_path = self.lock_path(tenant, session_id);
-        let lock_file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(lock_path)
-            .map_err(journal_error)?;
-        lock_file.lock_exclusive().map_err(journal_error)?;
-        let mut offset = self
-            .load_envelopes(tenant, session_id)?
-            .last()
-            .map_or(0, |envelope| envelope.offset.0 + 1);
-        let start_offset = offset;
-        let mut lines = Vec::new();
-        for event in events {
-            let envelope = Self::envelope(
-                tenant,
-                session_id,
-                metadata,
-                JournalOffset(offset),
-                self.redaction.redact_event(event)?,
-            );
-            serde_json::to_writer(&mut lines, &envelope).map_err(journal_error)?;
-            lines.write_all(b"\n").map_err(journal_error)?;
-            offset += 1;
-        }
-        let batch = self.batch_path(tenant, session_id, start_offset);
-        let temp = self.batch_temp_path(tenant, session_id, start_offset);
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp)
-            .map_err(journal_error)?;
-        file.write_all(&lines).map_err(journal_error)?;
-        if matches!(self.options.fsync, FsyncPolicy::Always) {
-            file.sync_all().map_err(journal_error)?;
-        }
-        drop(file);
-        fs::rename(&temp, &batch).map_err(journal_error)?;
-        Ok(JournalOffset(offset.saturating_sub(1)))
+        self.append_with_metadata_checked(tenant, session_id, metadata, None, events)
+            .await
+    }
+
+    async fn append_with_metadata_expect_next_offset(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        metadata: AppendMetadata,
+        expected_next_offset: JournalOffset,
+        events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        self.append_with_metadata_checked(
+            tenant,
+            session_id,
+            metadata,
+            Some(expected_next_offset),
+            events,
+        )
+        .await
     }
 
     async fn read_envelopes(

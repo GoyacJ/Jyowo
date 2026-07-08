@@ -103,6 +103,53 @@ async fn assert_event_store_contract<S: EventStore>(store: &S) {
     );
 }
 
+async fn assert_event_store_rejects_stale_expected_next_offset<S: EventStore>(store: &S) {
+    let session = SessionId::new();
+    store
+        .append(TenantId::SINGLE, session, &[event("first")])
+        .await
+        .expect("initial append succeeds");
+
+    let error = store
+        .append_with_metadata_expect_next_offset(
+            TenantId::SINGLE,
+            session,
+            AppendMetadata::default(),
+            JournalOffset(0),
+            &[event("stale")],
+        )
+        .await
+        .expect_err("stale writer is rejected");
+    assert!(
+        error.to_string().contains("expected next offset"),
+        "unexpected error: {error}"
+    );
+
+    let offset = store
+        .append_with_metadata_expect_next_offset(
+            TenantId::SINGLE,
+            session,
+            AppendMetadata::default(),
+            JournalOffset(1),
+            &[event("second")],
+        )
+        .await
+        .expect("fresh writer appends");
+    assert_eq!(offset, JournalOffset(1));
+
+    let replayed: Vec<_> = store
+        .read(TenantId::SINGLE, session, ReplayCursor::FromStart)
+        .await
+        .expect("read succeeds")
+        .collect()
+        .await;
+    assert_eq!(replayed.len(), 2);
+    assert!(matches!(
+        &replayed[1],
+        Event::UnexpectedError(UnexpectedErrorEvent { error, .. }) if error == "second"
+    ));
+}
+
 #[cfg(feature = "jsonl")]
 fn read_session_jsonl(root: &Path, session: SessionId) -> String {
     let dir = root.join(TenantId::SINGLE.to_string());
@@ -145,6 +192,16 @@ async fn jsonl_store_redacts_and_replays() {
     assert!(!raw.contains("secret"));
     assert!(raw.contains("[REDACTED]"));
     assert_event_store_contract(&store).await;
+}
+
+#[cfg(feature = "jsonl")]
+#[tokio::test]
+async fn jsonl_store_rejects_stale_expected_next_offset() {
+    let root = temp_root("jsonl-expected-next-offset");
+    let store = JsonlEventStore::open(&root, Arc::new(NoopRedactor))
+        .await
+        .expect("store opens");
+    assert_event_store_rejects_stale_expected_next_offset(&store).await;
 }
 
 #[cfg(all(unix, feature = "jsonl"))]
@@ -337,6 +394,17 @@ async fn sqlite_store_satisfies_contract() {
 
 #[cfg(feature = "sqlite")]
 #[tokio::test]
+async fn sqlite_store_rejects_stale_expected_next_offset() {
+    let root = temp_root("sqlite-expected-next-offset");
+    std::fs::create_dir_all(&root).expect("root created");
+    let store = SqliteEventStore::open(root.join("events.db"), Arc::new(NoopRedactor))
+        .await
+        .expect("store opens");
+    assert_event_store_rejects_stale_expected_next_offset(&store).await;
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
 async fn sqlite_store_initializes_fts_and_filters_end_reason() {
     let root = temp_root("sqlite-fts");
     std::fs::create_dir_all(&root).expect("root created");
@@ -421,6 +489,13 @@ async fn memory_store_satisfies_contract_and_is_not_persistent() {
         .await
         .expect("list succeeds")
         .is_empty());
+}
+
+#[cfg(feature = "in-memory")]
+#[tokio::test]
+async fn memory_store_rejects_stale_expected_next_offset() {
+    let store = InMemoryEventStore::new(Arc::new(NoopRedactor));
+    assert_event_store_rejects_stale_expected_next_offset(&store).await;
 }
 
 #[tokio::test]

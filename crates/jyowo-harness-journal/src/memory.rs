@@ -11,8 +11,9 @@ use harness_contracts::{
 use tokio::sync::Mutex;
 
 use crate::{
-    apply_cursor, AppendMetadata, EventEnvelope, EventStore, JournalRedaction, PrunePolicy,
-    PruneReport, ReplayCursor, SchemaVersion, SessionFilter, SessionSnapshot, SessionSummary,
+    apply_cursor, expected_next_offset_mismatch, AppendMetadata, EventEnvelope, EventStore,
+    JournalRedaction, PrunePolicy, PruneReport, ReplayCursor, SchemaVersion, SessionFilter,
+    SessionSnapshot, SessionSummary,
 };
 
 type SessionKey = (TenantId, SessionId);
@@ -68,6 +69,37 @@ impl InMemoryEventStore {
         }
         Ok(())
     }
+
+    async fn append_with_metadata_locked(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        metadata: AppendMetadata,
+        expected_next_offset: Option<JournalOffset>,
+        events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        let mut guard = self.events.lock().await;
+        let entries = guard.entry((tenant, session_id)).or_default();
+        let mut offset = entries.len() as u64;
+        if let Some(expected) = expected_next_offset {
+            let actual = JournalOffset(offset);
+            if expected != actual {
+                return Err(expected_next_offset_mismatch(expected, actual));
+            }
+        }
+        for event in events {
+            let payload = self.redaction.redact_event(event)?;
+            entries.push(Self::envelope(
+                tenant,
+                session_id,
+                metadata,
+                JournalOffset(offset),
+                payload,
+            ));
+            offset += 1;
+        }
+        Ok(JournalOffset(offset.saturating_sub(1)))
+    }
 }
 
 #[async_trait]
@@ -89,21 +121,26 @@ impl EventStore for InMemoryEventStore {
         metadata: AppendMetadata,
         events: &[Event],
     ) -> Result<JournalOffset, JournalError> {
-        let mut guard = self.events.lock().await;
-        let entries = guard.entry((tenant, session_id)).or_default();
-        let mut offset = entries.len() as u64;
-        for event in events {
-            let payload = self.redaction.redact_event(event)?;
-            entries.push(Self::envelope(
-                tenant,
-                session_id,
-                metadata,
-                JournalOffset(offset),
-                payload,
-            ));
-            offset += 1;
-        }
-        Ok(JournalOffset(offset.saturating_sub(1)))
+        self.append_with_metadata_locked(tenant, session_id, metadata, None, events)
+            .await
+    }
+
+    async fn append_with_metadata_expect_next_offset(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        metadata: AppendMetadata,
+        expected_next_offset: JournalOffset,
+        events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        self.append_with_metadata_locked(
+            tenant,
+            session_id,
+            metadata,
+            Some(expected_next_offset),
+            events,
+        )
+        .await
     }
 
     async fn read_envelopes(

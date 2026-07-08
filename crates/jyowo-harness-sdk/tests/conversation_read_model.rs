@@ -124,6 +124,25 @@ impl EventStore for CountingEventStore {
             .await
     }
 
+    async fn append_with_metadata_expect_next_offset(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        metadata: AppendMetadata,
+        expected_next_offset: JournalOffset,
+        events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        self.inner
+            .append_with_metadata_expect_next_offset(
+                tenant,
+                session_id,
+                metadata,
+                expected_next_offset,
+                events,
+            )
+            .await
+    }
+
     async fn read_envelopes(
         &self,
         tenant: TenantId,

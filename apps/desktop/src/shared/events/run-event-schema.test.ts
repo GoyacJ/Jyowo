@@ -55,6 +55,33 @@ describe('RunEvent schema', () => {
       ['tool_use_failed', 'tool.failed'],
       ['permission_requested', 'permission.requested'],
       ['permission_resolved', 'permission.resolved'],
+      ['subagent_spawned', 'subagent.spawned'],
+      ['subagent_announced', 'subagent.announced'],
+      ['subagent_terminated', 'subagent.terminated'],
+      ['subagent_stalled', 'subagent.stalled'],
+      ['subagent_permission_forwarded', 'subagent.permission.forwarded'],
+      ['subagent_permission_resolved', 'subagent.permission.resolved'],
+      ['team_created', 'team.created'],
+      ['team_member_joined', 'team.member.joined'],
+      ['team_member_left', 'team.member.left'],
+      ['team_member_stalled', 'team.member.stalled'],
+      ['team_task_updated', 'team.task.updated'],
+      ['agent_message_sent', 'agent.message.sent'],
+      ['agent_message_routed', 'agent.message.routed'],
+      ['team_turn_completed', 'team.turn.completed'],
+      ['team_terminated', 'team.terminated'],
+      ['background_started', 'background.started'],
+      ['background_state_changed', 'background.state.changed'],
+      ['background_input_requested', 'background.input.requested'],
+      ['background_input_submitted', 'background.input.submitted'],
+      ['background_permission_requested', 'background.permission.requested'],
+      ['background_permission_resolved', 'background.permission.resolved'],
+      ['background_cancelled', 'background.cancelled'],
+      ['background_completed', 'background.completed'],
+      ['background_failed', 'background.failed'],
+      ['background_interrupted', 'background.interrupted'],
+      ['background_archived', 'background.archived'],
+      ['background_deleted', 'background.deleted'],
       ['artifact_created', 'artifact.created'],
       ['artifact_updated', 'artifact.updated'],
       ['assistant_review_requested', 'assistant.review.requested'],
@@ -198,6 +225,137 @@ describe('RunEvent schema', () => {
         type: 'teamMember',
       },
     })
+  })
+
+  it('accepts mapper permission decision options', () => {
+    const permissionPayload = runEventFixtures[9].payload as Record<string, unknown>
+    const event = runEventSchema.parse({
+      ...runEventFixtures[9],
+      payload: {
+        ...permissionPayload,
+        actionPlanHash: '0'.repeat(64),
+        decisionOptions: [
+          {
+            decision: 'approve',
+            id: 'option-001',
+            label: 'Allow for session',
+            lifetime: 'session',
+            matcher: {
+              kind: 'toolName',
+              label: 'Bash',
+            },
+            requiresConfirmation: true,
+          },
+        ],
+      },
+    })
+
+    expect(event.payload).toMatchObject({
+      decisionOptions: [
+        {
+          decision: 'approve',
+          lifetime: 'session',
+          matcher: { kind: 'toolName' },
+          requiresConfirmation: true,
+        },
+      ],
+    })
+  })
+
+  it.each([
+    [
+      'subagent.spawned',
+      'agent',
+      {
+        depth: 1,
+        role: 'researcher',
+        subagentId: 'subagent-001',
+        taskSummary: 'Subagent task details withheld from conversation timeline.',
+        triggerToolUseId: null,
+      },
+    ],
+    [
+      'subagent.announced',
+      'agent',
+      {
+        redacted: false,
+        resultSummary: 'Completed task',
+        status: 'completed',
+        subagentId: 'subagent-001',
+      },
+    ],
+    [
+      'subagent.permission.forwarded',
+      'policy',
+      {
+        reason: 'Subagent permission forwarded to parent.',
+        requestId: '01HZ0000000000000000000003',
+        subagentId: 'subagent-001',
+      },
+    ],
+    [
+      'team.created',
+      'agent',
+      {
+        name: 'Research team',
+        teamId: 'team-001',
+        topologyKind: 'coordinator_worker',
+      },
+    ],
+    [
+      'team.task.updated',
+      'agent',
+      {
+        assigneeProfileId: null,
+        status: 'running',
+        taskId: 'task-001',
+        teamId: 'team-001',
+        title: 'Inspect logs',
+      },
+    ],
+    [
+      'agent.message.routed',
+      'agent',
+      {
+        messageId: 'message-001',
+        resolvedRecipients: ['agent-001'],
+        routingPolicy: 'direct',
+        teamId: 'team-001',
+      },
+    ],
+    [
+      'background.state.changed',
+      'background',
+      {
+        backgroundAgentId: 'bg-agent-001',
+        from: 'queued',
+        reason: null,
+        to: 'running',
+      },
+    ],
+    [
+      'background.input.requested',
+      'background',
+      {
+        backgroundAgentId: 'bg-agent-001',
+        prompt: 'Provide credentials-free input.',
+        requestId: '01HZ0000000000000000000004',
+      },
+    ],
+  ])('accepts %s mapper events', (type, source, payload) => {
+    const event = runEventSchema.parse({
+      id: `evt-${type}`,
+      conversationSequence: 30,
+      runId: 'run-agent',
+      sequence: 1,
+      timestamp: '2026-06-17T00:00:00.000Z',
+      type,
+      source,
+      visibility: 'public',
+      payload,
+    })
+
+    expect(event.payload).toEqual(payload)
   })
 
   it.each([

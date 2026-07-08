@@ -10,7 +10,8 @@ use harness_journal::evidence::{
     InMemoryEvidenceRefRegistry, RedactionProvenance,
 };
 use harness_journal::{
-    EventEnvelope, EventStore, InMemoryBlobStore, SchemaVersion, SessionFilter, SessionSnapshot,
+    AppendMetadata, EventEnvelope, EventStore, InMemoryBlobStore, SchemaVersion, SessionFilter,
+    SessionSnapshot,
 };
 
 #[tokio::test]
@@ -234,6 +235,19 @@ impl EventStore for StaticEventStore {
         &self,
         _tenant: TenantId,
         _session_id: SessionId,
+        _events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        Err(JournalError::Message(
+            "static event store is read-only".to_owned(),
+        ))
+    }
+
+    async fn append_with_metadata_expect_next_offset(
+        &self,
+        _tenant: TenantId,
+        _session_id: SessionId,
+        _metadata: AppendMetadata,
+        _expected_next_offset: JournalOffset,
         _events: &[Event],
     ) -> Result<JournalOffset, JournalError> {
         Err(JournalError::Message(

@@ -144,6 +144,26 @@ impl EventStore for ConversationDeletionGuardEventStore {
             .await
     }
 
+    async fn append_with_metadata_expect_next_offset(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        metadata: AppendMetadata,
+        expected_next_offset: JournalOffset,
+        events: &[Event],
+    ) -> Result<JournalOffset, harness_contracts::JournalError> {
+        self.ensure_not_deleted(tenant, session_id)?;
+        self.inner
+            .append_with_metadata_expect_next_offset(
+                tenant,
+                session_id,
+                metadata,
+                expected_next_offset,
+                events,
+            )
+            .await
+    }
+
     async fn read_envelopes(
         &self,
         tenant: TenantId,
@@ -286,6 +306,45 @@ impl EventStore for LifecycleHookEventStore {
         let result = self
             .inner
             .append_with_metadata(tenant, session_id, metadata, &combined)
+            .await;
+        if result.is_ok()
+            && events
+                .iter()
+                .any(|event| matches!(event, Event::SessionEnded(_)))
+        {
+            self.session_limits.release();
+        }
+        result
+    }
+
+    async fn append_with_metadata_expect_next_offset(
+        &self,
+        tenant: TenantId,
+        session_id: harness_contracts::SessionId,
+        metadata: AppendMetadata,
+        expected_next_offset: JournalOffset,
+        events: &[Event],
+    ) -> Result<JournalOffset, harness_contracts::JournalError> {
+        if self
+            .deleted_conversation_sessions
+            .lock()
+            .contains(&(tenant, session_id))
+        {
+            return Err(harness_contracts::JournalError::Message(format!(
+                "conversation session was deleted: {session_id}"
+            )));
+        }
+        let mut combined = events.to_vec();
+        combined.extend(self.lifecycle_hook_events(events).await?);
+        let result = self
+            .inner
+            .append_with_metadata_expect_next_offset(
+                tenant,
+                session_id,
+                metadata,
+                expected_next_offset,
+                &combined,
+            )
             .await;
         if result.is_ok()
             && events
@@ -1020,6 +1079,25 @@ mod tests {
         ) -> Result<JournalOffset, harness_contracts::JournalError> {
             self.inner
                 .append_with_metadata(tenant, session_id, metadata, events)
+                .await
+        }
+
+        async fn append_with_metadata_expect_next_offset(
+            &self,
+            tenant: TenantId,
+            session_id: SessionId,
+            metadata: AppendMetadata,
+            expected_next_offset: JournalOffset,
+            events: &[Event],
+        ) -> Result<JournalOffset, harness_contracts::JournalError> {
+            self.inner
+                .append_with_metadata_expect_next_offset(
+                    tenant,
+                    session_id,
+                    metadata,
+                    expected_next_offset,
+                    events,
+                )
                 .await
         }
 

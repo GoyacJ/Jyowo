@@ -491,12 +491,12 @@ impl Default for ExposedCapabilities {
             sessions_list: true,
             session_get: true,
             messages_read: true,
-            messages_send: true,
+            messages_send: false,
             attachments_fetch: true,
             events_poll: true,
             events_wait: true,
             permissions_list_open: true,
-            permissions_respond: true,
+            permissions_respond: false,
             channels_list: true,
         }
     }

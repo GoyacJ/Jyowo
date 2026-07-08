@@ -13,9 +13,10 @@ use rusqlite::{params, Connection, TransactionBehavior};
 use tokio::sync::Mutex;
 
 use crate::{
-    apply_cursor, event_type, journal_error, session_end_reason, AppendMetadata, CompactionLineage,
-    EventEnvelope, EventEnvelopePage, EventStore, JournalRedaction, PrunePolicy, PruneReport,
-    ReplayCursor, SchemaVersion, SessionFilter, SessionSnapshot, SessionSummary,
+    apply_cursor, event_type, expected_next_offset_mismatch, journal_error, session_end_reason,
+    AppendMetadata, CompactionLineage, EventEnvelope, EventEnvelopePage, EventStore,
+    JournalRedaction, PrunePolicy, PruneReport, ReplayCursor, SchemaVersion, SessionFilter,
+    SessionSnapshot, SessionSummary,
 };
 
 pub struct SqliteEventStore {
@@ -111,6 +112,81 @@ impl SqliteEventStore {
         }
     }
 
+    async fn append_with_metadata_checked(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        metadata: AppendMetadata,
+        expected_next_offset: Option<JournalOffset>,
+        events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        let mut connection = self.connection.lock().await;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(journal_error)?;
+        let mut offset: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(offset), -1) + 1 FROM events
+                 WHERE tenant_id = ?1 AND session_id = ?2",
+                params![tenant.to_string(), session_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(journal_error)?;
+        if let Some(expected) = expected_next_offset {
+            let actual = JournalOffset(offset as u64);
+            if expected != actual {
+                return Err(expected_next_offset_mismatch(expected, actual));
+            }
+        }
+        for event in events {
+            let envelope = Self::envelope(
+                tenant,
+                session_id,
+                metadata,
+                JournalOffset(offset as u64),
+                self.redaction.redact_event(event)?,
+            );
+            let body = serde_json::to_string(&envelope).map_err(journal_error)?;
+            let kind = event_type(&envelope.payload)?;
+            tx.execute(
+                "INSERT INTO events (
+                    tenant_id, session_id, offset, event_id, event_type, recorded_at,
+                    correlation_id, causation_id, schema_version, body
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    tenant.to_string(),
+                    session_id.to_string(),
+                    offset,
+                    envelope.event_id.to_string(),
+                    kind,
+                    envelope.recorded_at.to_rfc3339(),
+                    envelope.correlation_id.to_string(),
+                    envelope.causation_id.map(|id| id.to_string()),
+                    i64::from(envelope.schema_version.get()),
+                    body
+                ],
+            )
+            .map_err(journal_error)?;
+            let rowid = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO events_fts (rowid, tenant_id, session_id, event_type, body)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    rowid,
+                    tenant.to_string(),
+                    session_id.to_string(),
+                    event_type(&envelope.payload)?,
+                    serde_json::to_string(&envelope.payload).map_err(journal_error)?
+                ],
+            )
+            .map_err(journal_error)?;
+            offset += 1;
+        }
+        tx.commit().map_err(journal_error)?;
+        Ok(JournalOffset(offset.saturating_sub(1) as u64))
+    }
+
     fn load_envelopes(
         connection: &Connection,
         tenant: TenantId,
@@ -188,65 +264,26 @@ impl EventStore for SqliteEventStore {
         metadata: AppendMetadata,
         events: &[Event],
     ) -> Result<JournalOffset, JournalError> {
-        let mut connection = self.connection.lock().await;
-        let tx = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(journal_error)?;
-        let mut offset: i64 = tx
-            .query_row(
-                "SELECT COALESCE(MAX(offset), -1) + 1 FROM events
-                 WHERE tenant_id = ?1 AND session_id = ?2",
-                params![tenant.to_string(), session_id.to_string()],
-                |row| row.get(0),
-            )
-            .map_err(journal_error)?;
-        for event in events {
-            let envelope = Self::envelope(
-                tenant,
-                session_id,
-                metadata,
-                JournalOffset(offset as u64),
-                self.redaction.redact_event(event)?,
-            );
-            let body = serde_json::to_string(&envelope).map_err(journal_error)?;
-            let kind = event_type(&envelope.payload)?;
-            tx.execute(
-                "INSERT INTO events (
-                    tenant_id, session_id, offset, event_id, event_type, recorded_at,
-                    correlation_id, causation_id, schema_version, body
-                 )
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                params![
-                    tenant.to_string(),
-                    session_id.to_string(),
-                    offset as i64,
-                    envelope.event_id.to_string(),
-                    kind,
-                    envelope.recorded_at.to_rfc3339(),
-                    envelope.correlation_id.to_string(),
-                    envelope.causation_id.map(|id| id.to_string()),
-                    i64::from(envelope.schema_version.get()),
-                    body
-                ],
-            )
-            .map_err(journal_error)?;
-            let rowid = tx.last_insert_rowid();
-            tx.execute(
-                "INSERT INTO events_fts (rowid, tenant_id, session_id, event_type, body)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    rowid,
-                    tenant.to_string(),
-                    session_id.to_string(),
-                    event_type(&envelope.payload)?,
-                    serde_json::to_string(&envelope.payload).map_err(journal_error)?
-                ],
-            )
-            .map_err(journal_error)?;
-            offset += 1;
-        }
-        tx.commit().map_err(journal_error)?;
-        Ok(JournalOffset(offset.saturating_sub(1) as u64))
+        self.append_with_metadata_checked(tenant, session_id, metadata, None, events)
+            .await
+    }
+
+    async fn append_with_metadata_expect_next_offset(
+        &self,
+        tenant: TenantId,
+        session_id: SessionId,
+        metadata: AppendMetadata,
+        expected_next_offset: JournalOffset,
+        events: &[Event],
+    ) -> Result<JournalOffset, JournalError> {
+        self.append_with_metadata_checked(
+            tenant,
+            session_id,
+            metadata,
+            Some(expected_next_offset),
+            events,
+        )
+        .await
     }
 
     async fn read_envelopes(

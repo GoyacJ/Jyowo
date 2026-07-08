@@ -210,7 +210,10 @@ use self::permissions::{permission_authority_runtime, PermissionAuthorityBroker}
 #[cfg(feature = "memory-provider-registry")]
 use self::redaction::default_hook_redactor;
 use self::redaction::redact_business_event_for_display;
-use self::run_state::{ActiveConversationRun, ActiveConversationRunGuard, EngineSessionTurnRunner};
+use self::run_state::{
+    ActiveConversationRun, ActiveConversationRunGuard, ActiveConversationSessionGuard,
+    EngineSessionTurnRunner,
+};
 use self::session_runtime::{sdk_session_not_found, snapshot_for_supported_model};
 use self::skills::SdkSkillReloadCap;
 use self::tool_pool::{apply_tenant_tool_filter, filter_unavailable_tools};
@@ -261,6 +264,7 @@ struct HarnessInner {
     session_limits: Arc<SessionLimitState>,
     workspace_registry: Arc<WorkspaceRegistry>,
     active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, ActiveConversationRun>>>,
+    active_conversation_sessions: Arc<parking_lot::Mutex<HashMap<(TenantId, SessionId), RunId>>>,
     #[cfg(feature = "agents-team")]
     active_run_teams: Arc<parking_lot::Mutex<HashMap<RunId, Arc<crate::team::Team>>>>,
     deleted_conversation_sessions: Arc<parking_lot::Mutex<HashSet<(TenantId, SessionId)>>>,
@@ -1435,6 +1439,7 @@ impl Harness {
                 session_limits,
                 workspace_registry: Arc::new(WorkspaceRegistry::new()),
                 active_conversation_runs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+                active_conversation_sessions: Arc::new(parking_lot::Mutex::new(HashMap::new())),
                 #[cfg(feature = "agents-team")]
                 active_run_teams: Arc::new(parking_lot::Mutex::new(HashMap::new())),
                 deleted_conversation_sessions: Arc::new(parking_lot::Mutex::new(HashSet::new())),
