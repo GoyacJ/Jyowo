@@ -1,7 +1,5 @@
 //! `EventStore` trait and redaction adapter.
 //!
-//! SPEC: docs/architecture/harness/api-contracts.md §3.1,
-//! docs/architecture/harness/crates/harness-journal.md §2.1
 
 use std::sync::Arc;
 use std::time::Duration;

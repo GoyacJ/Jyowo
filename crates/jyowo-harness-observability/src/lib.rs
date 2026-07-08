@@ -2,7 +2,6 @@
 //!
 //! Tracing, usage accounting, replay, and redaction.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-observability.md
 //! Status: M5 observability implementation.
 
 #![forbid(unsafe_code)]

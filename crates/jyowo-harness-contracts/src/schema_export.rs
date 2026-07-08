@@ -1,6 +1,5 @@
 //! JSON Schema export.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-contracts.md §3.9
 
 use std::collections::BTreeMap;
 

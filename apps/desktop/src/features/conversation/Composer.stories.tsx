@@ -31,8 +31,8 @@ const referenceCandidates = {
   conversations: [{ id: 'conversation-cleanup', label: 'Cleanup implementation thread' }],
   files: [
     {
-      label: 'docs/testing/test-inventory.md',
-      path: 'docs/testing/test-inventory.md',
+      label: 'apps/desktop/src/features/conversation/Composer.tsx',
+      path: 'apps/desktop/src/features/conversation/Composer.tsx',
     },
   ],
   memories: [{ id: 'memory-policy-boundary', label: 'Policy authority remains in Rust' }],
@@ -81,7 +81,8 @@ const meta = {
     onCancelRun: noopAction,
     onCreateAttachmentFromPath: async () => ({ attachment: markdownAttachment }),
     onListReferenceCandidates: async () => referenceCandidates,
-    onPickAttachmentPath: async () => '/Users/goya/Repo/Git/Jyowo/docs/testing/test-inventory.md',
+    onPickAttachmentPath: async () =>
+      '/Users/goya/Repo/Git/Jyowo/apps/desktop/src/features/conversation/Composer.tsx',
     onSubmit: noopSubmit,
   },
 } satisfies Meta<typeof Composer>

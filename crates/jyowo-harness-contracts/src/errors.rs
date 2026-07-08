@@ -1,6 +1,5 @@
 //! Error contracts.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-contracts.md §3.8
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

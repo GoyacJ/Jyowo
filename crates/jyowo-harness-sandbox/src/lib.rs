@@ -2,7 +2,6 @@
 //!
 //! Sandbox backend contracts and built-in local/noop backends.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-sandbox.md
 //! Status: M2 L1-C sandbox lane.
 
 #![forbid(unsafe_code)]

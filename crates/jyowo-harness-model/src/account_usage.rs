@@ -1,6 +1,4 @@
 //! Official provider account quota adapters and registry.
-//!
-//! SPEC: docs/superpowers/plans/2026-06-30-model-settings-redesign-implementation.md
 
 use std::collections::HashMap;
 use std::sync::Arc;

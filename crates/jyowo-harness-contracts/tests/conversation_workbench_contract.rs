@@ -1,7 +1,6 @@
 //! Contract tests for the conversation workbench projection.
 //!
-//! These tests assert the typed workbench projection shape required by
-//! docs/superpowers/plans/2026-07-04-agent-workbench-conversation-redesign.md.
+//! These tests assert the typed workbench projection shape used by the UI.
 
 use harness_contracts::*;
 use serde_json::json;

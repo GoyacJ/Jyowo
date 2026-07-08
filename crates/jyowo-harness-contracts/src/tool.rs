@@ -1,6 +1,5 @@
 //! Tool descriptor contracts shared across model and tool crates.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-contracts.md §3.4
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

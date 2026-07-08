@@ -1,6 +1,5 @@
 //! Projection traits and deterministic replay context.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-journal.md §2.3, §6.1-§6.3
 
 use std::{collections::HashMap, sync::Arc};
 

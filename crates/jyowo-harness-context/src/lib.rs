@@ -2,7 +2,6 @@
 //!
 //! Context assembly pipeline, providers, compaction, and prompt cache boundaries.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-context.md
 //! Status: context assembly, patch sink, memory recall, and compaction runtime.
 
 #![forbid(unsafe_code)]

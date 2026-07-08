@@ -2,7 +2,6 @@
 //!
 //! Single-agent loop, interruption, iteration budgets, and grace calls.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-engine.md
 //! Status: M5 engine runner and main loop.
 
 #![forbid(unsafe_code)]

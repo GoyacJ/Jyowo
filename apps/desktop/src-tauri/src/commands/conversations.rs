@@ -3098,7 +3098,7 @@ pub(crate) fn context_files_from_workspace(workspace_root: &Path) -> Vec<Context
         "apps/desktop/src/routes/index.tsx",
         "apps/desktop/src/shared/tauri/commands.ts",
         "apps/desktop/src-tauri/src/commands/mod.rs",
-        "docs/plans/2026-06-17-conversation-workspace-implementation.md",
+        "crates/jyowo-harness-sdk/src/lib.rs",
     ]
     .into_iter()
     .filter_map(|label| {

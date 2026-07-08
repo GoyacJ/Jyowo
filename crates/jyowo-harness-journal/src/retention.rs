@@ -1,6 +1,5 @@
 //! Retention policy and prune report types.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-journal.md §7
 
 use std::collections::HashSet;
 use std::time::Duration;

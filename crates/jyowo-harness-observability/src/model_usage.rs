@@ -1,6 +1,4 @@
 //! Restart-stable model usage aggregation for Settings > Models.
-//!
-//! SPEC: docs/superpowers/plans/2026-06-30-model-settings-redesign-implementation.md
 
 use std::collections::BTreeMap;
 

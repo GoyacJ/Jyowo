@@ -1,6 +1,5 @@
 //! Harness event contracts.
 //!
-//! SPEC: docs/architecture/harness/event-schema.md
 
 pub mod artifact;
 pub mod background_agent;

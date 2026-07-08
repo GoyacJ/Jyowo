@@ -48,7 +48,6 @@ test('ci workflow runs fast gates on pull requests', () => {
     ciJob('policy-fast'),
     /pnpm check:release-version && pnpm check:release-workflow && pnpm check:tauri-updater && pnpm check:agent-orchestration-no-fakes && pnpm check:agent-supervisor-sidecar/,
   )
-  assert.match(ciJob('docs'), /if:\s*github\.event_name == 'pull_request'[\s\S]*pnpm check:docs/)
   assert.match(ciJob('test-architecture'), /if:\s*github\.event_name == 'pull_request'[\s\S]*pnpm check:test-architecture/)
   assert.match(ciJob('frontend-fast'), /if:\s*github\.event_name == 'pull_request'[\s\S]*pnpm check:frontend:fast/)
   assert.match(ciJob('rust-fast'), /if:\s*github\.event_name == 'pull_request'[\s\S]*pnpm check:rust:fast/)
@@ -72,7 +71,6 @@ test('ci workflow runs full gates only on main pushes and manual dispatch', () =
 test('ci pnpm jobs install Node, pnpm, and dependencies', () => {
   const pnpmJobNames = [
     'policy-fast',
-    'docs',
     'test-architecture',
     'frontend-fast',
     'rust-fast',

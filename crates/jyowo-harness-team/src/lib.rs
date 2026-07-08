@@ -2,7 +2,6 @@
 //!
 //! Team topologies, message bus, and coordinator patterns.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-team.md
 //! This crate is intentionally single-process only. The message bus is built
 //! on in-process Tokio broadcast channels and does not provide cross-process
 //! ordering or delivery.

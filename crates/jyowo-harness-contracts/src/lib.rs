@@ -2,7 +2,6 @@
 //!
 //! Shared contract types, events, errors, and schemas.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-contracts.md
 
 #![forbid(unsafe_code)]
 

@@ -1,6 +1,5 @@
 //! Model and provider capability contracts.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-contracts.md
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

@@ -2,7 +2,6 @@
 //!
 //! Event store, snapshots, JSONL/SQLite adapters, and blob metadata.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-journal.md
 //! Status: M2 L1-B `EventStore` + builtin store implementations.
 
 #![forbid(unsafe_code)]

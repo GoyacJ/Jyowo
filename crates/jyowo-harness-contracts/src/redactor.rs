@@ -1,6 +1,5 @@
 //! Redaction contract.
 //!
-//! SPEC: docs/architecture/harness/api-contracts.md §18.2
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

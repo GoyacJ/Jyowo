@@ -2,7 +2,6 @@
 //!
 //! Tool traits, registry, execution pool, result budget, and built-in tools.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-tool.md
 //! Status: tool contracts, registry, orchestration, permissions, budgets, and builtins.
 
 #![forbid(unsafe_code)]

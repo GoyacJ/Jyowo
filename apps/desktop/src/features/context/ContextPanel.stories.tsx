@@ -94,7 +94,7 @@ export const LongFileList: Story = {
         { label: 'apps/desktop/src/features/conversation/ConversationWorkspace.tsx' },
         { label: 'apps/desktop/src/features/context/components/very-long-reference-name.tsx' },
         { label: 'crates/jyowo-harness-contracts/src/events/mod.rs' },
-        { label: 'docs/frontend/frontend-product-ux.md' },
+        { label: 'crates/jyowo-harness-sdk/src/lib.rs' },
       ],
     },
   },

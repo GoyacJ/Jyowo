@@ -1,6 +1,5 @@
 //! Desktop plugin product contracts.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-plugin.md §4
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

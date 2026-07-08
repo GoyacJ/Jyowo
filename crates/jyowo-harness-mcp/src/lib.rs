@@ -2,7 +2,6 @@
 //!
 //! MCP clients, transports, server adapter, OAuth, and elicitation.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-mcp.md
 //! Status: MCP client transports, registry injection, notifications, and server adapter.
 
 #![forbid(unsafe_code)]

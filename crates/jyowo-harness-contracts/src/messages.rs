@@ -1,6 +1,5 @@
 //! Message, turn input, and tool result contracts.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-contracts.md §3.5
 
 use std::path::PathBuf;
 

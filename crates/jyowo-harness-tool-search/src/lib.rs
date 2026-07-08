@@ -2,7 +2,6 @@
 //!
 //! Deferred tool loading, search backends, and scoring.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-tool-search.md
 //! Status: M4 L2-TS implementation.
 
 #![forbid(unsafe_code)]

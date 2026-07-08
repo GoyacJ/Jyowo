@@ -2,7 +2,6 @@
 //!
 //! Model provider traits, credentials, token counting, and middleware.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-model.md
 //! Status: model provider contracts, middleware, credentials, pricing, and providers.
 
 #![forbid(unsafe_code)]

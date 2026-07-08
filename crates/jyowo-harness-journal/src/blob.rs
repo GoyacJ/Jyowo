@@ -1,6 +1,5 @@
 //! Blob storage contracts and builtin local implementations.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-contracts.md §3.7
 
 use std::collections::HashMap;
 use std::fs;

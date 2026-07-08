@@ -2,7 +2,6 @@
 //!
 //! Permission brokers, rule providers, and decision handling.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-permission.md
 //! Status: permission brokers, rule checks, persistence, and fingerprints.
 
 #![forbid(unsafe_code)]

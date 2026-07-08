@@ -194,26 +194,6 @@ if (existsSync(cmdClientPath) && !allowlistedFiles.has('apps/desktop/src/testing
   errors.push('apps/desktop/src/testing/command-client.ts: monolithic fixture should be split (see Task 6)')
 }
 
-const agentsPath = join(repoRoot, 'AGENTS.md')
-if (!existsSync(agentsPath) || !read(agentsPath).includes('docs/testing/testing-strategy.md')) {
-  errors.push('AGENTS.md must reference docs/testing/testing-strategy.md')
-}
-
-const inventoryPath = join(repoRoot, 'docs/testing/test-inventory.md')
-if (!existsSync(inventoryPath)) {
-  errors.push('docs/testing/test-inventory.md does not exist')
-} else {
-  const inventory = read(inventoryPath)
-  const expectedInventory = execSync('node scripts/audit-tests.mjs', {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    maxBuffer: 1024 * 1024,
-  })
-  if (inventory !== expectedInventory) {
-    errors.push('docs/testing/test-inventory.md differs from node scripts/audit-tests.mjs output')
-  }
-}
-
 // ── Report ──
 
 if (warnings.length > 0) {

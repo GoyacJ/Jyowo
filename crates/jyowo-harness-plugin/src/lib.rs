@@ -2,7 +2,6 @@
 //!
 //! Plugin manifests, runtime loading, signer trust, and capability handles.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-plugin.md
 //! Status: M5 plugin implementation.
 
 #![forbid(unsafe_code)]

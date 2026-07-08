@@ -2,7 +2,6 @@
 //!
 //! Memory store and lifecycle primitives.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-memory.md
 //! Status: memory providers, stores, lifecycle, recall, and write-back contracts.
 
 #![forbid(unsafe_code)]

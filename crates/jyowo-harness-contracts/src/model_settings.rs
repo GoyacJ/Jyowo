@@ -1,6 +1,4 @@
 //! Model settings shared contracts for connectivity, usage, quota, and route health.
-//!
-//! SPEC: docs/superpowers/plans/2026-06-30-model-settings-redesign-implementation.md
 
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;

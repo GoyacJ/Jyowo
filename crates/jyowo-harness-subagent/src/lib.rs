@@ -2,7 +2,6 @@
 //!
 //! Agent tool delegation, blocklists, announcements, and concurrent pools.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-subagent.md
 
 #![forbid(unsafe_code)]
 

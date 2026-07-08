@@ -208,7 +208,7 @@ function walkDirectory(dir, repoRoot, files) {
     const rel = relative(repoRoot, absolutePath)
 
     if (entry.isDirectory()) {
-      if (EXCLUDED_PATH_SEGMENTS.includes(entry.name) || rel.startsWith('docs/')) {
+      if (EXCLUDED_PATH_SEGMENTS.includes(entry.name)) {
         continue
       }
       walkDirectory(absolutePath, repoRoot, files)
@@ -225,10 +225,6 @@ function walkDirectory(dir, repoRoot, files) {
  * @param {string} relPath
  */
 function shouldScanFile(relPath) {
-  if (relPath.startsWith('docs/')) {
-    return false
-  }
-
   for (const segment of EXCLUDED_PATH_SEGMENTS) {
     if (relPath.split('/').includes(segment)) {
       return false

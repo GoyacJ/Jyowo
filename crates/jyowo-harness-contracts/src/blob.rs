@@ -1,6 +1,5 @@
 //! Blob references and storage contracts.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-contracts.md §3.7
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};

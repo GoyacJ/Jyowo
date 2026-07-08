@@ -2,7 +2,6 @@
 //!
 //! Session lifecycle, projections, fork/reload behavior, and steering queue.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-session.md
 //! Status: session lifecycle, projection, fork/reload, steering, and engine delegation.
 
 #![forbid(unsafe_code)]

@@ -2,7 +2,6 @@
 //!
 //! Skill loading, source precedence, frontmatter, and skill tools.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-skill.md
 //! Status: M4 L2-SK implementation.
 
 #![forbid(unsafe_code)]

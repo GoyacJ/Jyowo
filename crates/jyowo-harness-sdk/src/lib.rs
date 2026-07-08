@@ -2,7 +2,6 @@
 //!
 //! Business-facing facade for the Jyowo Agent Harness SDK.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-sdk.md
 //! Status: M7 facade.
 //!
 //! ```compile_fail

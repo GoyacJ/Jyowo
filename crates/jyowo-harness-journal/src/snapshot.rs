@@ -1,6 +1,5 @@
 //! Snapshot types and storage abstraction.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-journal.md §2.4
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

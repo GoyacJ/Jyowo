@@ -1,6 +1,5 @@
 //! Event schema migration interfaces.
 //!
-//! SPEC: docs/architecture/harness/event-schema.md §7.2.1
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;

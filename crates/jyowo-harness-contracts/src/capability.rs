@@ -1,6 +1,5 @@
 //! Tool capability marker traits.
 //!
-//! SPEC: docs/architecture/harness/crates/harness-contracts.md §3.4
 
 use std::{any::Any, collections::HashMap, sync::Arc};
 
