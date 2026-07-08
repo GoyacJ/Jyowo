@@ -21,6 +21,8 @@ import {
 import { useCommandClient } from '@/shared/tauri/react'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
+import { Section, SectionDescription, SectionHeader, SectionTitle } from '@/shared/ui/section'
+import { StatusBadge, type StatusBadgeProps } from '@/shared/ui/status-badge'
 import { Switch } from '@/shared/ui/switch'
 
 const automationQueryKeys = {
@@ -171,21 +173,21 @@ export function AutomationSettings() {
   }
 
   return (
-    <section className="space-y-5 rounded-md border border-border bg-surface p-5">
-      <div className="flex items-start gap-3">
+    <Section>
+      <SectionHeader className="flex items-start gap-3">
         <div className="rounded-md border border-border bg-background p-2 text-muted-foreground">
           <AlarmClock className="size-4" />
         </div>
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="font-semibold text-base">{t('automation.title')}</h2>
+            <SectionTitle>{t('automation.title')}</SectionTitle>
             <Badge variant="outline">
               {hasProjectScope ? t('scope.projectOverrides') : t('scope.runtimeDiagnostics')}
             </Badge>
           </div>
-          <p className="mt-1 text-muted-foreground text-sm">{t('automation.description')}</p>
+          <SectionDescription>{t('automation.description')}</SectionDescription>
         </div>
-      </div>
+      </SectionHeader>
 
       {automationsQuery.isLoading ? (
         <p className="text-muted-foreground text-sm">{t('automation.loading')}</p>
@@ -334,7 +336,7 @@ export function AutomationSettings() {
                   <div className="space-y-1 rounded-sm border border-border p-3" key={run.id}>
                     <div className="flex items-center justify-between gap-2">
                       <span className="truncate font-medium text-sm">{run.automationId}</span>
-                      <Badge variant={runStatusBadgeVariant(run.status)}>{run.status}</Badge>
+                      <StatusBadge tone={runStatusTone(run.status)}>{run.status}</StatusBadge>
                     </div>
                     <p className="text-muted-foreground text-xs">{formatDate(run.startedAt)}</p>
                   </div>
@@ -344,7 +346,7 @@ export function AutomationSettings() {
           </aside>
         </div>
       ) : null}
-    </section>
+    </Section>
   )
 }
 
@@ -373,9 +375,9 @@ function AutomationCard({
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="truncate font-semibold text-sm">{automation.id}</h3>
-            <Badge variant={automation.enabled ? 'success' : 'outline'}>
+            <StatusBadge tone={automation.enabled ? 'success' : 'neutral'}>
               {automation.enabled ? t('automation.enabled') : t('automation.disabled')}
-            </Badge>
+            </StatusBadge>
           </div>
           <p className="line-clamp-2 text-muted-foreground text-sm">{promptPreview}</p>
         </div>
@@ -463,8 +465,8 @@ function simpleToolProfileLabel(toolProfile: ToolProfile, t: (key: string) => st
   return t('automation.toolProfile.custom')
 }
 
-function runStatusBadgeVariant(status: AutomationRunRecord['status']) {
-  return status === 'failed' ? 'destructive' : 'outline'
+function runStatusTone(status: AutomationRunRecord['status']): StatusBadgeProps['tone'] {
+  return status === 'failed' ? 'destructive' : 'neutral'
 }
 
 function formatDate(value: string) {

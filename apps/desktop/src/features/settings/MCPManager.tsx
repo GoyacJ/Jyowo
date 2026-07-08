@@ -36,6 +36,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/shared/ui/dialog'
+import { IconButton as SharedIconButton } from '@/shared/ui/icon-button'
+import { Section, SectionDescription, SectionHeader, SectionTitle } from '@/shared/ui/section'
 
 import { MCPServerCard } from './MCPServerCard'
 
@@ -353,20 +355,20 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     : null
 
   return (
-    <section className="space-y-5 rounded-md border border-border bg-surface p-5">
+    <Section>
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
+        <SectionHeader className="flex items-start gap-3">
           <div className="rounded-md border border-border bg-background p-2 text-muted-foreground">
             <Server className="size-4" />
           </div>
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="font-semibold text-base">{t('mcp.title')}</h2>
+              <SectionTitle>{t('mcp.title')}</SectionTitle>
               <Badge variant="outline">
                 {hasProjectScope ? t('scope.projectOverrides') : t('scope.runtimeDiagnostics')}
               </Badge>
             </div>
-            <p className="mt-1 text-muted-foreground text-sm">{t('mcp.description')}</p>
+            <SectionDescription>{t('mcp.description')}</SectionDescription>
             <a
               className="mt-2 inline-flex items-center gap-1 text-muted-foreground text-xs hover:text-foreground"
               href="https://modelcontextprotocol.io"
@@ -377,7 +379,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
               <ExternalLink className="size-3" />
             </a>
           </div>
-        </div>
+        </SectionHeader>
 
         {hasProjectScope ? (
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -491,10 +493,14 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                             placeholder="mcp-server"
                             {...register(`args.${index}.value`)}
                           />
-                          <IconButton
+                          <SharedIconButton
+                            className="shrink-0"
                             disabled={isSubmitting || isConfigLoading}
+                            icon={Trash2}
                             label={t('mcp.removeArgument')}
                             onClick={() => argumentFields.remove(index)}
+                            type="button"
+                            variant="outline"
                           />
                         </div>
                       ))}
@@ -515,10 +521,14 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                             placeholder="GITHUB_TOKEN"
                             {...register(`inheritEnv.${index}.value`)}
                           />
-                          <IconButton
+                          <SharedIconButton
+                            className="shrink-0"
                             disabled={isSubmitting || isConfigLoading}
+                            icon={Trash2}
                             label={t('mcp.removeInheritedEnv')}
                             onClick={() => inheritEnvFields.remove(index)}
+                            type="button"
+                            variant="outline"
                           />
                         </div>
                       ))}
@@ -551,10 +561,14 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                                 onChange: () => setValue(`env.${index}.preserveExisting`, false),
                               })}
                             />
-                            <IconButton
+                            <SharedIconButton
+                              className="shrink-0"
                               disabled={isSubmitting || isConfigLoading}
+                              icon={Trash2}
                               label={t('mcp.removeEnv')}
                               onClick={() => envFields.remove(index)}
+                              type="button"
+                              variant="outline"
                             />
                           </div>
                         ))}
@@ -618,10 +632,14 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                               onChange: () => setValue(`headers.${index}.preserveExisting`, false),
                             })}
                           />
-                          <IconButton
+                          <SharedIconButton
+                            className="shrink-0"
                             disabled={isSubmitting || isConfigLoading}
+                            icon={Trash2}
                             label={t('mcp.removeHeader')}
                             onClick={() => headerFields.remove(index)}
+                            type="button"
+                            variant="outline"
                           />
                         </div>
                       ))}
@@ -650,10 +668,14 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                               placeholder="MCP_CONTEXT7_TOKEN"
                               {...register(`headersFromEnv.${index}.envVar`)}
                             />
-                            <IconButton
+                            <SharedIconButton
+                              className="shrink-0"
                               disabled={isSubmitting || isConfigLoading}
+                              icon={Trash2}
                               label={t('mcp.removeHeaderFromEnv')}
                               onClick={() => headerEnvFields.remove(index)}
+                              type="button"
+                              variant="outline"
                             />
                           </div>
                         ))}
@@ -855,7 +877,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           </div>
         ) : null}
       </section>
-    </section>
+    </Section>
   )
 }
 
@@ -956,30 +978,6 @@ function RepeatableField({
       <div className="space-y-2">{children}</div>
       {message ? <span className="block text-destructive text-xs">{message}</span> : null}
     </div>
-  )
-}
-
-function IconButton({
-  disabled,
-  label,
-  onClick,
-}: {
-  disabled: boolean
-  label: string
-  onClick: () => void
-}) {
-  return (
-    <Button
-      aria-label={label}
-      className="shrink-0"
-      disabled={disabled}
-      onClick={onClick}
-      size="icon"
-      type="button"
-      variant="outline"
-    >
-      <Trash2 className="size-4" />
-    </Button>
   )
 }
 

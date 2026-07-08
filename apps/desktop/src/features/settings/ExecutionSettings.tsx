@@ -14,6 +14,7 @@ import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { useCommandClient } from '@/shared/tauri/react'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
+import { Section, SectionDescription, SectionHeader, SectionTitle } from '@/shared/ui/section'
 import { Switch } from '@/shared/ui/switch'
 
 const permissionModeOptions = [
@@ -165,19 +166,19 @@ export function ExecutionSettings() {
   const scopeLabelKey = scope === 'project' ? 'scope.projectOverrides' : 'scope.globalDefaults'
 
   return (
-    <section className="space-y-5 rounded-md border border-border bg-surface p-5">
-      <div className="flex items-start gap-3">
+    <Section>
+      <SectionHeader className="flex items-start gap-3">
         <div className="rounded-md border border-border bg-background p-2 text-muted-foreground">
           <Shield className="size-4" />
         </div>
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="font-semibold text-base">{t('execution.title')}</h2>
+            <SectionTitle>{t('execution.title')}</SectionTitle>
             <Badge variant="outline">{t(scopeLabelKey)}</Badge>
           </div>
-          <p className="mt-1 text-muted-foreground text-sm">{t('execution.description')}</p>
+          <SectionDescription>{t('execution.description')}</SectionDescription>
         </div>
-      </div>
+      </SectionHeader>
 
       {loading ? <p className="text-muted-foreground text-sm">{t('execution.loading')}</p> : null}
       {errorMessage ? <p className="text-destructive text-sm">{errorMessage}</p> : null}
@@ -358,7 +359,7 @@ export function ExecutionSettings() {
           {saving ? t('execution.saving') : t('execution.save')}
         </Button>
       </div>
-    </section>
+    </Section>
   )
 }
 
