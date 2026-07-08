@@ -430,8 +430,10 @@ export function createConversationCommandHandlers(
           fixtureTimelineEvent(
             'permission.resolved',
             {
+              actionPlanHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
               autoResolved: false,
               decision: request.decision,
+              decisionId: 'decision-fixture-001',
               requestId: request.requestId,
             },
             {
@@ -529,12 +531,32 @@ export function createConversationCommandHandlers(
           'permission.requested',
           {
             actorSource: { type: 'parentRun' },
+            actionPlanHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
             autoResolved: false,
             decisionScope: 'this run',
+            effectiveMode: request.permissionMode ?? 'default',
             exposure: 'workspace',
             operation: 'Run local verification',
             reason: 'Confirm the generated foundation before continuing.',
+            review: {
+              confirmation: { type: 'none' },
+              details: [],
+              redacted: true,
+              summary: 'Permission review unavailable.',
+            },
             requestId: '01HZ0000000000000000000001',
+            sandboxPolicy: {
+              mode: { osLevel: 'none' },
+              network: 'none',
+              resourceLimits: {
+                maxCpuCores: null,
+                maxMemoryBytes: null,
+                maxOpenFiles: null,
+                maxPids: null,
+                maxWallClockMs: null,
+              },
+              scope: 'workspace_only',
+            },
             severity: 'medium',
             target: 'local verification task',
             toolUseId: 'tool-fixture-read',

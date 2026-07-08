@@ -222,7 +222,7 @@ pub(crate) struct BackgroundSupervisorSession {
     session_id: SessionId,
     #[serde(default)]
     tool_search: ToolSearchMode,
-    #[serde(default)]
+    #[serde(default = "default_background_supervisor_tool_profile")]
     tool_profile: ToolProfile,
     #[serde(default)]
     model_id: Option<String>,
@@ -281,6 +281,10 @@ impl BackgroundSupervisorSession {
 
 fn default_background_supervisor_permission_mode() -> PermissionMode {
     PermissionMode::Default
+}
+
+fn default_background_supervisor_tool_profile() -> ToolProfile {
+    ToolProfile::Full
 }
 
 fn default_background_supervisor_interactivity() -> InteractivityLevel {

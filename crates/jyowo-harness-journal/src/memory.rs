@@ -12,8 +12,8 @@ use tokio::sync::Mutex;
 
 use crate::{
     apply_cursor, expected_next_offset_mismatch, AppendMetadata, EventEnvelope, EventStore,
-    JournalRedaction, PrunePolicy, PruneReport, ReplayCursor, SchemaVersion, SessionFilter,
-    SessionSnapshot, SessionSummary,
+    JournalRedaction, PrunePolicy, PruneReport, ReplayCursor, SessionFilter, SessionSnapshot,
+    SessionSummary,
 };
 
 type SessionKey = (TenantId, SessionId);
@@ -50,24 +50,9 @@ impl InMemoryEventStore {
             run_id: metadata.run_id,
             correlation_id: metadata.correlation_id,
             causation_id: metadata.causation_id,
-            schema_version: SchemaVersion::CURRENT,
             recorded_at: harness_contracts::now(),
             payload,
         }
-    }
-
-    pub async fn rewrite_schema_version_for_test(
-        &self,
-        tenant: TenantId,
-        session_id: SessionId,
-        schema_version: SchemaVersion,
-    ) -> Result<(), JournalError> {
-        if let Some(events) = self.events.lock().await.get_mut(&(tenant, session_id)) {
-            for envelope in events {
-                envelope.schema_version = schema_version;
-            }
-        }
-        Ok(())
     }
 
     async fn append_with_metadata_locked(

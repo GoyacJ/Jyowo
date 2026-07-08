@@ -5,9 +5,7 @@ use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
-use harness_contracts::{
-    ManifestValidationFailure as EventManifestValidationFailure, SchemaVersionRange,
-};
+use harness_contracts::ManifestValidationFailure as EventManifestValidationFailure;
 use ring::digest;
 use serde_json::{Map, Number, Value};
 use yaml_rust2::{Yaml, YamlLoader};
@@ -354,11 +352,14 @@ fn local_sidecar_binary(
     }
     candidates.sort();
     let expected_name = format!("jyowo-plugin-{plugin_name}");
-    let selected = candidates
+    let Some(selected) = candidates
         .iter()
         .find(|path| path.file_name().and_then(OsStr::to_str) == Some(expected_name.as_str()))
-        .or_else(|| candidates.first())
-        .expect("non-empty candidates");
+    else {
+        return Err(ManifestLoaderError::Io(format!(
+            "plugin sidecar binary must be named {expected_name}"
+        )));
+    };
     selected.canonicalize().map(Some).map_err(|error| {
         ManifestLoaderError::Io(format!("plugin sidecar path unavailable: {error}"))
     })
@@ -554,54 +555,6 @@ fn decode_manifest_value(
     partial_name: Option<String>,
     partial_version: Option<String>,
 ) -> Result<PluginManifest, ManifestLoaderError> {
-    match value.get("manifest_schema_version") {
-        Some(Value::Number(number)) => {
-            let Some(version) = number
-                .as_u64()
-                .and_then(|version| u32::try_from(version).ok())
-            else {
-                return Err(schema_violation(
-                    origin,
-                    partial_name,
-                    partial_version,
-                    raw_hash,
-                    "/manifest_schema_version",
-                    "manifest_schema_version must be a u32",
-                ));
-            };
-            if version > crate::SUPPORTED_MANIFEST_SCHEMA_VERSION {
-                return Err(validation_error(
-                    Some(origin),
-                    partial_name,
-                    partial_version,
-                    raw_hash,
-                    EventManifestValidationFailure::UnsupportedSchemaVersion {
-                        found: version,
-                        supported: SchemaVersionRange {
-                            min: 1,
-                            max: crate::SUPPORTED_MANIFEST_SCHEMA_VERSION,
-                        },
-                    },
-                    format!(
-                        "unsupported manifest_schema_version {version}; supported 1..={}",
-                        crate::SUPPORTED_MANIFEST_SCHEMA_VERSION
-                    ),
-                ));
-            }
-        }
-        Some(_) => {
-            return Err(schema_violation(
-                origin,
-                partial_name,
-                partial_version,
-                raw_hash,
-                "/manifest_schema_version",
-                "manifest_schema_version must be an integer",
-            ));
-        }
-        None => {}
-    }
-
     validate_manifest_schema(
         &value,
         &origin,
@@ -624,7 +577,7 @@ fn decode_manifest_value(
     })
 }
 
-fn validate_manifest_schema(
+pub(crate) fn validate_manifest_schema(
     value: &Value,
     origin: &ManifestOrigin,
     partial_name: Option<&String>,
@@ -670,7 +623,6 @@ fn manifest_schema() -> Value {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-            "manifest_schema_version": { "type": "integer", "minimum": 1 },
             "name": { "type": "string" },
             "version": { "type": "string" },
             "trust_level": { "type": "string", "enum": ["admin_trusted", "user_controlled"] },
@@ -699,7 +651,8 @@ fn manifest_schema() -> Value {
                             "additionalProperties": false,
                             "properties": {
                                 "name": { "type": "string" },
-                                "destructive": { "type": "boolean" }
+                                "destructive": { "type": "boolean" },
+                                "input_schema": {}
                             },
                             "required": ["name"]
                         }
@@ -718,7 +671,10 @@ fn manifest_schema() -> Value {
                         "items": {
                             "type": "object",
                             "additionalProperties": false,
-                            "properties": { "name": { "type": "string" } },
+                            "properties": {
+                                "name": { "type": "string" },
+                                "events": { "type": "array", "items": { "type": "string" } }
+                            },
                             "required": ["name"]
                         }
                     },
@@ -771,7 +727,7 @@ fn manifest_schema() -> Value {
             },
             "min_harness_version": { "type": "string" }
         },
-        "required": ["name", "version", "trust_level"]
+        "required": ["name", "version", "trust_level", "min_harness_version"]
     })
 }
 
@@ -822,28 +778,6 @@ fn validation_error(
         failure,
         details,
     })
-}
-
-fn schema_violation(
-    origin: ManifestOrigin,
-    partial_name: Option<String>,
-    partial_version: Option<String>,
-    raw_bytes_hash: [u8; 32],
-    json_pointer: impl Into<String>,
-    details: impl Into<String>,
-) -> ManifestLoaderError {
-    let details = details.into();
-    validation_error(
-        Some(origin),
-        partial_name,
-        partial_version,
-        raw_bytes_hash,
-        EventManifestValidationFailure::SchemaViolation {
-            json_pointer: json_pointer.into(),
-            details: details.clone(),
-        },
-        details,
-    )
 }
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {

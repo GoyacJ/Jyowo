@@ -22,6 +22,7 @@ fn tenant_policy_filters_tools_from_sdk_runtime() {
             .build()
             .unwrap();
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model_provider)
             .with_store(InMemoryEventStore::new(std::sync::Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -56,6 +57,7 @@ fn tenant_policy_rejects_disallowed_provider() {
         let workspace = unique_workspace("sdk-tenant-provider");
         std::fs::create_dir_all(&workspace).unwrap();
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(std::sync::Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -84,6 +86,7 @@ fn tenant_policy_enforces_max_concurrent_sessions() {
         let workspace = unique_workspace("sdk-tenant-session-limit");
         std::fs::create_dir_all(&workspace).unwrap();
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(std::sync::Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -122,6 +125,7 @@ fn tenant_policy_rejects_wrong_tenant_id() {
         let workspace = unique_workspace("sdk-tenant-id");
         std::fs::create_dir_all(&workspace).unwrap();
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(std::sync::Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -144,6 +148,7 @@ fn tenant_policy_can_allow_adapter_scoped_tenant_ids() {
         let workspace = unique_workspace("sdk-tenant-scoped");
         std::fs::create_dir_all(&workspace).unwrap();
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(std::sync::Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())

@@ -111,7 +111,6 @@ impl EventStore for OffloadedBlobAuthorizerStore {
                 run_id: None,
                 correlation_id: CorrelationId::new(),
                 causation_id: None,
-                schema_version: SchemaVersion::CURRENT,
                 recorded_at: harness_contracts::now(),
                 payload: event.clone(),
             });
@@ -155,7 +154,6 @@ impl EventStore for OffloadedBlobAuthorizerStore {
                 run_id: None,
                 correlation_id: CorrelationId::new(),
                 causation_id: None,
-                schema_version: SchemaVersion::CURRENT,
                 recorded_at: harness_contracts::now(),
                 payload: event.clone(),
             });

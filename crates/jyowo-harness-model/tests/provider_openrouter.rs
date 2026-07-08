@@ -186,7 +186,7 @@ async fn openrouter_posts_chat_completions_with_provider_auth() {
 }
 
 #[tokio::test]
-async fn openrouter_stream_response_uses_openai_compatible_mapping() {
+async fn openrouter_stream_response_uses_openai_protocol_mapping() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))

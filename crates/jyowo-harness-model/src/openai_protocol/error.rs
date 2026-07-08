@@ -7,22 +7,22 @@ use serde_json::Value;
 
 use crate::ErrorClass;
 
-pub(crate) struct OpenAiCompatibleError {
+pub(crate) struct OpenAiProtocolError {
     pub(crate) error: ModelError,
     pub(crate) class: ErrorClass,
     pub(crate) retry_after: Option<Duration>,
 }
 
-pub(crate) fn map_transport_error(error: reqwest::Error) -> OpenAiCompatibleError {
+pub(crate) fn map_transport_error(error: reqwest::Error) -> OpenAiProtocolError {
     if error.is_timeout() {
-        return OpenAiCompatibleError {
+        return OpenAiProtocolError {
             error: ModelError::DeadlineExceeded(Duration::ZERO),
             class: ErrorClass::Fatal,
             retry_after: None,
         };
     }
 
-    OpenAiCompatibleError {
+    OpenAiProtocolError {
         error: ModelError::ProviderUnavailable(error.to_string()),
         class: ErrorClass::Transient,
         retry_after: None,
@@ -32,7 +32,7 @@ pub(crate) fn map_transport_error(error: reqwest::Error) -> OpenAiCompatibleErro
 pub(crate) async fn map_response_error(
     response: reqwest::Response,
     credential_secret: Option<&str>,
-) -> OpenAiCompatibleError {
+) -> OpenAiProtocolError {
     let status = response.status();
     let retry_after = response
         .headers()
@@ -55,27 +55,27 @@ pub(crate) async fn map_response_error(
     let message = redact_credential(message, credential_secret);
 
     match status {
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => OpenAiCompatibleError {
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => OpenAiProtocolError {
             error: ModelError::AuthExpired(message),
             class: ErrorClass::AuthExpired,
             retry_after: None,
         },
-        StatusCode::TOO_MANY_REQUESTS => OpenAiCompatibleError {
+        StatusCode::TOO_MANY_REQUESTS => OpenAiProtocolError {
             error: ModelError::RateLimited(message),
             class: ErrorClass::RateLimited { retry_after },
             retry_after,
         },
-        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => OpenAiCompatibleError {
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => OpenAiProtocolError {
             error: ModelError::InvalidRequest(message),
             class: ErrorClass::Fatal,
             retry_after: None,
         },
-        status if status.is_server_error() => OpenAiCompatibleError {
+        status if status.is_server_error() => OpenAiProtocolError {
             error: ModelError::ProviderUnavailable(message),
             class: ErrorClass::Transient,
             retry_after: None,
         },
-        _ => OpenAiCompatibleError {
+        _ => OpenAiProtocolError {
             error: ModelError::UnexpectedResponse(message),
             class: ErrorClass::Fatal,
             retry_after: None,

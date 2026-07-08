@@ -103,7 +103,7 @@ pub struct SessionOptions {
     pub session_id: SessionId,
     #[serde(default)]
     pub tool_search: ToolSearchMode,
-    #[serde(default)]
+    #[serde(default = "default_tool_profile_full")]
     pub tool_profile: ToolProfile,
     #[serde(default)]
     pub model_id: Option<String>,
@@ -143,7 +143,7 @@ impl SessionOptions {
             tenant_id: TenantId::SINGLE,
             session_id: SessionId::new(),
             tool_search: ToolSearchMode::default(),
-            tool_profile: ToolProfile::default(),
+            tool_profile: ToolProfile::Full,
             model_id: None,
             protocol: None,
             model_extra: Value::Null,
@@ -841,6 +841,10 @@ fn default_permission_mode() -> PermissionMode {
 
 fn default_interactivity() -> InteractivityLevel {
     InteractivityLevel::NoInteractive
+}
+
+fn default_tool_profile_full() -> ToolProfile {
+    ToolProfile::Full
 }
 
 fn default_context_compression_trigger_ratio() -> f32 {

@@ -40,6 +40,7 @@ fn skill_config_resolver_missing_required_secret_blocks_session_before_model_inv
         });
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -101,6 +102,7 @@ fn skill_config_resolver_secret_values_do_not_enter_tool_receipts_or_events() {
             .with_secret("github.token", "super-secret-token");
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())

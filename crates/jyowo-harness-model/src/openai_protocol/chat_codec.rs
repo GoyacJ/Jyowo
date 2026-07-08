@@ -61,11 +61,11 @@ pub(super) fn chat_response_to_stream(
     let continuation_event =
         continuation::deepseek_chat_response_continuation_event(dialect, &response);
     let response: ChatCompletionResponse = serde_json::from_value(response).map_err(|error| {
-        ModelError::UnexpectedResponse(format!("invalid OpenAI-compatible response: {error}"))
+        ModelError::UnexpectedResponse(format!("invalid OpenAI protocol response: {error}"))
     })?;
     let usage = usage(response.usage.as_ref());
     let choice = response.choices.into_iter().next().ok_or_else(|| {
-        ModelError::UnexpectedResponse("OpenAI-compatible response had no choices".to_owned())
+        ModelError::UnexpectedResponse("OpenAI protocol response had no choices".to_owned())
     })?;
     let mut events = vec![ModelStreamEvent::MessageStart {
         message_id: response.id,

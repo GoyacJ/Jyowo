@@ -3,8 +3,8 @@ use std::fmt::Write as _;
 use harness_contracts::McpServerId;
 
 use crate::{
-    parse_skill_markdown_with_options, LoadReport, SkillCompatMode, SkillError, SkillPlatform,
-    SkillRejectReason, SkillRejection, SkillSource,
+    parse_skill_markdown, LoadReport, SkillError, SkillPlatform, SkillRejectReason, SkillRejection,
+    SkillSource,
 };
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -27,15 +27,6 @@ impl McpSource {
     }
 
     pub async fn load(&self, runtime_platform: SkillPlatform) -> Result<LoadReport, SkillError> {
-        self.load_with_options(runtime_platform, SkillCompatMode::Lenient)
-            .await
-    }
-
-    pub async fn load_with_options(
-        &self,
-        runtime_platform: SkillPlatform,
-        compat_mode: SkillCompatMode,
-    ) -> Result<LoadReport, SkillError> {
         let mut loaded = Vec::new();
         let mut rejected = Vec::new();
         for record in &self.records {
@@ -46,13 +37,7 @@ impl McpSource {
                 yaml_quoted_scalar(&record.description),
                 record.body
             );
-            match parse_skill_markdown_with_options(
-                &markdown,
-                source.clone(),
-                None,
-                runtime_platform,
-                compat_mode,
-            ) {
+            match parse_skill_markdown(&markdown, source.clone(), None, runtime_platform) {
                 Ok(skill) => loaded.push(skill),
                 Err(error) => rejected.push(SkillRejection {
                     source,

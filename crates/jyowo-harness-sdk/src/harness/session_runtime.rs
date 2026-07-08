@@ -934,6 +934,9 @@ fn apply_non_default_session_options(options: &mut SessionOptions, defaults: &Se
     if defaults.tool_search != ToolSearchMode::default() {
         options.tool_search = defaults.tool_search.clone();
     }
+    if defaults.tool_profile != harness_contracts::ToolProfile::Full {
+        options.tool_profile = defaults.tool_profile.clone();
+    }
     if defaults.model_id.is_some() {
         options.model_id = defaults.model_id.clone();
     }
@@ -990,6 +993,9 @@ fn apply_explicit_session_options(options: &mut SessionOptions, explicit: &Sessi
     }
     if explicit.tool_search != ToolSearchMode::default() {
         options.tool_search = explicit.tool_search.clone();
+    }
+    if explicit.tool_profile != harness_contracts::ToolProfile::Full {
+        options.tool_profile = explicit.tool_profile.clone();
     }
     if explicit.model_id.is_some() {
         options.model_id = explicit.model_id.clone();

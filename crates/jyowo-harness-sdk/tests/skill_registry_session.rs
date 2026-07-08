@@ -45,6 +45,7 @@ fn skill_registry_session_can_use_skill_tools_without_full_builtin_toolset() {
 fn skill_registry_session_two_sessions_using_same_loader_do_not_fail_duplicate_skill_registration()
 {
     block_on(async {
+        let runtime_root = unique_workspace("sdk-skill-duplicate-runtime");
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let loader = SkillLoader::default().with_source(SkillSourceConfig::BundledRecords {
             records: vec![BundledSkillRecord {
@@ -54,6 +55,7 @@ fn skill_registry_session_two_sessions_using_same_loader_do_not_fail_duplicate_s
             }],
         });
         let harness = Harness::builder()
+            .with_workspace_root(&runtime_root)
             .with_model(TestModelProvider::default())
             .with_store_arc(store)
             .with_sandbox(NoopSandbox::new())
@@ -115,6 +117,7 @@ fn skill_registry_session_skill_list_uses_turn_snapshot_after_registry_reload() 
             }],
         });
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -217,6 +220,9 @@ description: Audited skill.
 hooks:
   - id: start
     events: [SessionStart]
+    transport:
+      type: builtin
+      kind: AuditLog
 ---
 unused body
 "#,
@@ -228,6 +234,7 @@ unused body
             source_kind: harness_skill::DirectorySourceKind::Workspace,
         });
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())

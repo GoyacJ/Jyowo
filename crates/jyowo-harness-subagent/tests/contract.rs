@@ -48,7 +48,7 @@ fn delegation_policy_uses_safe_defaults() {
 }
 
 #[test]
-fn subagent_announce_mode_uses_spec_names_and_decodes_legacy_values() {
+fn subagent_announce_mode_uses_spec_names_and_rejects_old_values() {
     assert_eq!(
         serde_json::to_value(AnnounceMode::StructuredOnly).unwrap(),
         json!("structured_only")
@@ -62,14 +62,8 @@ fn subagent_announce_mode_uses_spec_names_and_decodes_legacy_values() {
         json!("full_transcript")
     );
 
-    assert_eq!(
-        serde_json::from_value::<AnnounceMode>(json!("structured")).unwrap(),
-        AnnounceMode::StructuredOnly
-    );
-    assert_eq!(
-        serde_json::from_value::<AnnounceMode>(json!("summary")).unwrap(),
-        AnnounceMode::SummaryText
-    );
+    assert!(serde_json::from_value::<AnnounceMode>(json!("structured")).is_err());
+    assert!(serde_json::from_value::<AnnounceMode>(json!("summary")).is_err());
 }
 
 #[test]
@@ -201,7 +195,7 @@ fn subagent_input_strategy_serializes_custom_selector() {
 }
 
 #[test]
-fn subagent_mcp_servers_use_typed_refs_with_string_serde_compatibility() {
+fn subagent_mcp_servers_use_typed_refs_with_string_serde() {
     let mut spec = SubagentSpec::minimal("worker", "inspect");
     spec.mcp_servers = vec![McpServerRef::new("srv-a")];
     spec.required_mcp_servers = vec![McpServerRef::new("srv-b")];

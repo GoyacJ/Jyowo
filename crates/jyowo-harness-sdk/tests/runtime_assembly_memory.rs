@@ -26,6 +26,7 @@ fn default_session_installs_memory_manager_into_context_engine() {
         ])]));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -174,6 +175,7 @@ fn builtin_memory_overflow_events_emit_when_threshold_exceeded() {
             ModelStreamEvent::MessageStop,
         ])]));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -232,6 +234,7 @@ fn default_session_freezes_builtin_memdir_into_system_prompt() {
         ]));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -295,6 +298,7 @@ fn default_session_truncates_oversized_memdir_snapshot_to_latest_sections() {
         ])]));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -350,6 +354,7 @@ fn default_session_degrades_extreme_memdir_snapshot_to_head_only_and_emits_overf
         ])]));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -408,6 +413,7 @@ fn default_session_initializes_memory_provider() {
         let memory = Arc::new(InitializingMemoryProvider::default());
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -443,6 +449,7 @@ fn default_session_end_passes_identity_and_real_summary_to_memory_provider() {
         let memory = Arc::new(EndingMemoryProvider::default());
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default().with_events(vec![
                 ModelStreamEvent::ContentBlockDelta {
                     index: 0,
@@ -498,6 +505,7 @@ fn default_session_records_external_memory_metrics_to_observer() {
         );
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default().with_events(vec![
                 ModelStreamEvent::ContentBlockDelta {
                     index: 0,
@@ -570,6 +578,7 @@ fn default_session_records_memdir_overflow_metric_to_observer() {
         );
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(
                 TestModelProvider::default().with_events(vec![ModelStreamEvent::MessageStop]),
             )
@@ -628,6 +637,7 @@ fn memory_metric_reason_is_redacted_and_bounded() {
         );
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(
                 TestModelProvider::default().with_events(vec![ModelStreamEvent::MessageStop]),
             )
@@ -686,6 +696,7 @@ fn default_session_uses_user_and_team_memory_actor() {
         ])]));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())

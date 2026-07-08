@@ -40,6 +40,7 @@ fn tenant_allowed_tools_filter_applies_to_runtime_agent_tools() {
         let allowed_tools = ["agent".to_owned()].into_iter().collect();
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())

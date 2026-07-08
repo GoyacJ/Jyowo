@@ -23,6 +23,7 @@ use jyowo_harness_sdk::{prelude::*, testing::*};
 #[cfg(all(feature = "agents-team", feature = "testing"))]
 #[tokio::test]
 async fn sdk_team_flow_dispatches_controls_members_and_terminates() {
+    let workspace = unique_workspace("sdk-team-flow");
     let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let model = Arc::new(TestModelProvider::default());
     let model_provider: Arc<dyn ModelProvider> = model.clone();
@@ -30,6 +31,7 @@ async fn sdk_team_flow_dispatches_controls_members_and_terminates() {
     let worker = AgentId::new();
     let late = AgentId::new();
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model_arc(model_provider)
         .with_store_arc(store.clone())
         .with_sandbox(NoopSandbox::new())
@@ -147,4 +149,11 @@ async fn sdk_team_flow_dispatches_controls_members_and_terminates() {
     assert!(all_events
         .iter()
         .any(|event| matches!(event.payload, Event::RunEnded(_))));
+}
+
+#[cfg(all(feature = "agents-team", feature = "testing"))]
+fn unique_workspace(name: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("{name}-{}", SessionId::new()));
+    std::fs::create_dir_all(&path).expect("workspace should be creatable");
+    path
 }

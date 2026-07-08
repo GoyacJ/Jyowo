@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use harness_contracts::{AgentId, Event, Recipient};
+use harness_contracts::{AgentId, Event, Recipient, SessionId};
 use harness_journal::{EventStore, ReplayCursor};
 use harness_team::{ContextVisibility, TeamBuilder, TeamMemberEngineConfig, Topology};
 use jyowo_harness_sdk::{testing, Harness};
@@ -17,7 +17,10 @@ async fn sdk_create_team_exposes_runtime_facade_and_journals_lifecycle() {
     let owner = AgentId::new();
     let worker = AgentId::new();
     let late = AgentId::new();
+    let workspace = unique_workspace("sdk-team-facade");
+    std::fs::create_dir_all(&workspace).expect("create workspace");
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model(testing::TestModelProvider::default())
         .with_store_arc(event_store)
         .with_sandbox(testing::NoopSandbox::new())
@@ -106,4 +109,12 @@ async fn sdk_create_team_exposes_runtime_facade_and_journals_lifecycle() {
     assert!(events
         .iter()
         .any(|event| matches!(event, Event::TeamTerminated(_))));
+}
+
+fn unique_workspace(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "jyowo-{name}-{}-{}",
+        std::process::id(),
+        SessionId::new()
+    ))
 }

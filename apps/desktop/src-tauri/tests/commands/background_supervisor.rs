@@ -338,12 +338,10 @@ async fn background_supervisor_wake_executes_queued_background_record_without_wa
             assert!(!stored
                 .payload_json
                 .contains(&workspace.path().to_string_lossy().to_string()));
+            assert!(!stored.payload_json.contains("sk-old-model-extra1234567890"));
             assert!(!stored
                 .payload_json
-                .contains("sk-legacy-model-extra1234567890"));
-            assert!(!stored
-                .payload_json
-                .contains("sk-legacy-system-addendum1234567890"));
+                .contains("sk-old-system-addendum1234567890"));
             assert!(payload["supervisorExecution"]["sessionOptions"].is_null());
             assert_eq!(
                 payload["supervisorExecution"]["session"]["sessionId"],
@@ -431,7 +429,7 @@ async fn background_supervisor_invalid_queued_payload_fails_record() {
 }
 
 #[tokio::test]
-async fn background_supervisor_rejects_legacy_start_run_source() {
+async fn background_supervisor_rejects_old_start_run_source() {
     let workspace = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(agent_runtime_store_for_workspace(workspace.path()).expect("store opens"));
     let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
@@ -451,7 +449,7 @@ async fn background_supervisor_rejects_legacy_start_run_source() {
         .start(BackgroundAgentStartRequest {
             background_agent_id: None,
             conversation_id,
-            title: "legacy start run payload".to_owned(),
+            title: "old start run payload".to_owned(),
             payload_json: serde_json::json!({
                 "conversationId": conversation_id.to_string(),
                 "source": "start_run",
@@ -497,7 +495,7 @@ async fn background_supervisor_rejects_legacy_start_run_source() {
         }
         if tokio::time::Instant::now() >= deadline {
             handle.shutdown().await;
-            panic!("legacy start_run payload did not fail the background record");
+            panic!("old start_run payload did not fail the background record");
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }

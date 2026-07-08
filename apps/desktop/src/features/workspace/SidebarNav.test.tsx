@@ -1045,7 +1045,7 @@ describe('SidebarNav', () => {
     expect(routerSpy.navigate).toHaveBeenCalledWith({ to: '/evals' })
   })
 
-  it('does not render a sidebar skills entry on the legacy skills route', () => {
+  it('does not render a sidebar skills entry on the old skills route', () => {
     window.history.pushState(null, '', '/skills')
 
     renderSidebarNav(runtimeConversationClient())

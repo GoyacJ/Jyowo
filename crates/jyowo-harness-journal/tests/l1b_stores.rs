@@ -405,6 +405,47 @@ async fn sqlite_store_rejects_stale_expected_next_offset() {
 
 #[cfg(feature = "sqlite")]
 #[tokio::test]
+async fn sqlite_store_rejects_old_journal_marker_column() {
+    let root = temp_root("sqlite-old-journal-marker");
+    std::fs::create_dir_all(&root).expect("root created");
+    let db = root.join("events.db");
+    {
+        let connection = rusqlite::Connection::open(&db).expect("old database opens");
+        let stale_marker_column = ["schema", "version"].join("_");
+        let create_sql = format!(
+            "CREATE TABLE events (
+                tenant_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                offset INTEGER NOT NULL,
+                event_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                recorded_at TEXT NOT NULL,
+                correlation_id TEXT,
+                causation_id TEXT,
+                {stale_marker_column} INTEGER NOT NULL DEFAULT 1,
+                body TEXT NOT NULL,
+                PRIMARY KEY (tenant_id, session_id, offset)
+             ) STRICT;"
+        );
+        connection
+            .execute_batch(&create_sql)
+            .expect("old events table is created");
+    }
+
+    let error = match SqliteEventStore::open(&db, Arc::new(NoopRedactor)).await {
+        Ok(_) => panic!("old journal marker column is rejected"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported journal store shape"),
+        "unexpected error: {error}"
+    );
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
 async fn sqlite_store_initializes_fts_and_filters_end_reason() {
     let root = temp_root("sqlite-fts");
     std::fs::create_dir_all(&root).expect("root created");

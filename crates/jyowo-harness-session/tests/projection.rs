@@ -242,7 +242,7 @@ async fn deferred_pool_change_generates_pending_delta_and_take_clears_it() {
                     name: "mcp__fixture__lookup".to_owned(),
                     hint: None,
                 }],
-                removed: vec!["legacy_tool".to_owned()],
+                removed: vec!["old_tool".to_owned()],
                 source: ToolPoolChangeSource::InitialClassification,
                 deferred_total: 1,
                 at: harness_contracts::now(),
@@ -256,7 +256,7 @@ async fn deferred_pool_change_generates_pending_delta_and_take_clears_it() {
         .pending_deferred_tools_delta()
         .expect("deferred pool change should queue a prompt delta");
     assert_eq!(pending.added_names, vec!["mcp__fixture__lookup".to_owned()]);
-    assert_eq!(pending.removed_names, vec!["legacy_tool".to_owned()]);
+    assert_eq!(pending.removed_names, vec!["old_tool".to_owned()]);
     assert!(pending.initial);
 
     let taken = projection

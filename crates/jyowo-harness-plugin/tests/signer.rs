@@ -466,9 +466,9 @@ fn rsa_trusted_signer(id: &str) -> TrustedSigner {
     }
 }
 
-const RSA_PUBLIC_KEY_B64: &str = "MIIBCgKCAQEA3ZSui7I5iE0i4aP7JTqU0WAEaeXnKmQncjShOmDtDF3Fjq57T3CwQQvhZ8qDD3GIrav6vChVi/+GCYoGVsk1OAsnh7xfuV+yKLSZNBFm2Y/imgjREI5ucnCwNuEKBGItqUAnFKq0d6/TCD/ssuw9Ep0L9IwB2V/aWcmWlXbZvfRqbursN5YePAOxvxtlKmKzxt+pt5WS4C0B3l357DnRjnaeveRbu8GVIEKe4YZGZ9s2LC0bQ/mDc5rl9L8PwnUGII8MZ1taUlvdkrOHY/EMxEdrFd4o3tzJpD8fUO/t+CIrTSPWpvps8//iMsnGH56wDRk4rVspEA+p2fCAbGnKtQIDAQAB";
+const RSA_PUBLIC_KEY_B64: &str = "MIIBCgKCAQEAkqC9D2WUiR1984HrLBKxWaNKsF3buix+bX+rEJtgUJaEKgzarVZRj8w7/v9Svpj2B3Af8iErapfERZJ0JyTgpwE3/g52FKZH/Fz1ko+fxKXAmt26CMANE0U9wocbv6xBDA/S5XJBHxp31vahw7rIujjH01IyflFmXApuTTzvQBugy530jVC8uAPFhiTadryCF2g8TazC/Ppseq0cK+pKI6H0J5iRtRrVUKA95auWxNR+rRRxNfABzpDMaaw65/796cEZH8cq9BY8pz1oCmvZZ3eyFt/MaznbCTjQbTGQV84AUBCkWxDPqodJUgqie/+IzPysKf/6MPXneI6mQNz3LQIDAQAB";
 
-const RSA_SIGNATURE_B64: &str = "D7tUsSHGcPxB3NFshtto67lvNQnhPfrMbhihR+DgncxLplO7lRCHbwXHb/5LZNbNA19rOi4n529OIgjiD+ELm5euN+ZUBC2ON1uo8iIjH0DOsIuXuQMLaIuSKTgf22s3u869qRx8xu1sjN1KoPJQy3QlYPbvONmhpf7H7haiR0l9pLFtoI+6sRvngkjb9QO/+aSh4EVI/oguw412KfakohdPvVMMb2o6jdF+bE4VOxFR54jBbgMbaOBY17iAQnaNPbyE/Ry2XyU7kjHVCVMlhp46eSyfcrTi8Hd8zAkGbw8m7/sBelFG/W3M96WSkwFneRE1tjjnTDFR5sxElRQSow==";
+const RSA_SIGNATURE_B64: &str = "XxH81o1di3vh4UnePsJ5KBulbLeWQJ8OK8DNQgmk0jjewF6OaCYhKoI8A+XNBwtEIvJFXiC7wXcL8ETV4IaZ9BItEOGz8qJUN5RBzOE9BlRcuRZTdsCMaS70JtPXuKF418JcVfjWHRfGFN25X/6IQrWJNT/Ix7a/jG0awNWIpFMJkyBdhR9CVEjgCX+aeq6cwolm6uLu+fMwmrbTbJZHd7r9rQYp0jCBLvX1i146aS8ic6lTQ40qp5BXWLQjVmjAfVTf7OCZ/sxruC32Djs1+TDvwy9buihPXoZVpcFtJwXZG6r1EFPWFtmpmjne0b22jfFB0oncbI2sDfbi39JgXQ==";
 
 fn record(manifest: PluginManifest) -> ManifestRecord {
     ManifestRecord::new(
@@ -483,7 +483,6 @@ fn record(manifest: PluginManifest) -> ManifestRecord {
 
 fn manifest(name: &str, trust_level: TrustLevel) -> PluginManifest {
     PluginManifest {
-        manifest_schema_version: 1,
         name: PluginName::new(name).unwrap(),
         version: semver::Version::parse("0.1.0").unwrap(),
         trust_level,

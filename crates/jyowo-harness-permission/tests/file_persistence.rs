@@ -81,11 +81,11 @@ async fn file_persistence_rejects_signed_decision_from_other_tenant() {
 }
 
 #[tokio::test]
-async fn file_persistence_rejects_legacy_single_tenant_signed_decision() {
+async fn file_persistence_rejects_old_single_tenant_signed_decision() {
     let temp = tempfile::tempdir().unwrap();
     let path = canonical_temp_root(&temp).join("permissions.json");
     let decision = persisted_decision();
-    write_legacy_signed_decision(&path, &decision).await;
+    write_old_signed_decision(&path, &decision).await;
     let persistence = FileDecisionPersistence::new(TenantId::SINGLE, &path, signer());
 
     let error = persistence.load_decisions().await.unwrap_err();
@@ -95,7 +95,7 @@ async fn file_persistence_rejects_legacy_single_tenant_signed_decision() {
 }
 
 #[tokio::test]
-async fn file_persistence_rejects_legacy_signed_decision_with_injected_runtime_scope() {
+async fn file_persistence_rejects_old_signed_decision_with_injected_runtime_scope() {
     let temp = tempfile::tempdir().unwrap();
     let path = canonical_temp_root(&temp)
         .join("global-conversations")
@@ -103,7 +103,7 @@ async fn file_persistence_rejects_legacy_signed_decision_with_injected_runtime_s
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let conversation_id = SessionId::new();
     let decision = persisted_decision();
-    write_legacy_signed_decision(&path, &decision).await;
+    write_old_signed_decision(&path, &decision).await;
     let mut records: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     records[0]["runtime_scope"] = serde_json::json!({
         "kind": "no_workspace_conversation",
@@ -120,10 +120,10 @@ async fn file_persistence_rejects_legacy_signed_decision_with_injected_runtime_s
 }
 
 #[tokio::test]
-async fn file_persistence_rejects_legacy_signed_decision_for_shared_tenant() {
+async fn file_persistence_rejects_old_signed_decision_for_shared_tenant() {
     let temp = tempfile::tempdir().unwrap();
     let path = canonical_temp_root(&temp).join("permissions.json");
-    write_legacy_signed_decision(&path, &persisted_decision()).await;
+    write_old_signed_decision(&path, &persisted_decision()).await;
     let persistence = FileDecisionPersistence::new(TenantId::SHARED, &path, signer());
 
     let error = persistence.load_decisions().await.unwrap_err();
@@ -285,7 +285,7 @@ async fn file_persistence_removes_no_workspace_conversation_scope() {
 }
 
 #[tokio::test]
-async fn file_persistence_no_workspace_ignores_legacy_record_without_conversation_scope() {
+async fn file_persistence_no_workspace_ignores_old_record_without_conversation_scope() {
     let temp = tempfile::tempdir().unwrap();
     let path = canonical_temp_root(&temp)
         .join("global-conversations")
@@ -518,7 +518,7 @@ fn lookup_fingerprint() -> ExecFingerprint {
     ExecFingerprint([7; 32])
 }
 
-async fn write_legacy_signed_decision(path: &std::path::Path, decision: &PersistedDecision) {
+async fn write_old_signed_decision(path: &std::path::Path, decision: &PersistedDecision) {
     let signer = signer();
     let recorded_at = harness_contracts::now();
     let unsigned = serde_json::json!({

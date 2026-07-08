@@ -403,14 +403,14 @@ async fn strict_plugin_only_policy_blocks_user_controlled_tool_manifests() {
 
 #[tokio::test]
 async fn registry_rejects_min_harness_version_mismatch_with_typed_reason() {
-    let mut incompatible = record("future-plugin", PluginCapabilities::default());
-    incompatible.manifest.min_harness_version = semver::VersionReq::parse(">=999.0.0").unwrap();
+    let mut mismatched = record("future-plugin", PluginCapabilities::default());
+    mismatched.manifest.min_harness_version = semver::VersionReq::parse(">=999.0.0").unwrap();
     let sink = Arc::new(CollectingSink::default());
     let registry = PluginRegistry::builder()
         .with_event_sink(sink.clone())
-        .with_manifest_loader(Arc::new(StaticManifestLoader::new(vec![
-            incompatible.clone()
-        ])))
+        .with_manifest_loader(Arc::new(StaticManifestLoader::new(
+            vec![mismatched.clone()],
+        )))
         .build()
         .unwrap();
 
@@ -418,20 +418,20 @@ async fn registry_rejects_min_harness_version_mismatch_with_typed_reason() {
 
     assert!(discovered.is_empty());
     assert!(matches!(
-        registry.state(&incompatible.manifest.plugin_id()),
+        registry.state(&mismatched.manifest.plugin_id()),
         Some(harness_plugin::PluginLifecycleState::Rejected(_))
     ));
     assert!(sink.events().iter().any(|event| matches!(
         event,
         Event::PluginRejected(rejected)
-            if rejected.plugin_id == incompatible.manifest.plugin_id()
-                && matches!(rejected.reason, RejectionReason::HarnessVersionIncompatible { .. })
+            if rejected.plugin_id == mismatched.manifest.plugin_id()
+                && matches!(rejected.reason, RejectionReason::HarnessVersionMismatch { .. })
     )));
     assert!(matches!(
         registry
-            .state_detail(&incompatible.manifest.plugin_id())
+            .state_detail(&mismatched.manifest.plugin_id())
             .and_then(|detail| detail.rejection_reason),
-        Some(RejectionReason::HarnessVersionIncompatible { .. })
+        Some(RejectionReason::HarnessVersionMismatch { .. })
     ));
 }
 
@@ -2094,7 +2094,6 @@ fn record_with_version(
 ) -> ManifestRecord {
     ManifestRecord::new(
         PluginManifest {
-            manifest_schema_version: 1,
             name: PluginName::new(name).unwrap(),
             version: semver::Version::parse(version).unwrap(),
             trust_level: TrustLevel::UserControlled,

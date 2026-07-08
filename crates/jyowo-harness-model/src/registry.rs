@@ -607,7 +607,7 @@ fn minimax_service_capabilities() -> Vec<ProviderServiceCapability> {
             ProviderServiceCostRisk::Low,
         ),
         service(
-            "minimax.anthropic_compatible",
+            "minimax.anthropic_protocol",
             ProviderServiceCategory::Conversation,
             vec![ModelModality::Text, ModelModality::Image],
             ModelModality::Text,
@@ -616,7 +616,7 @@ fn minimax_service_capabilities() -> Vec<ProviderServiceCapability> {
             ProviderServiceCostRisk::Medium,
         ),
         service(
-            "minimax.anthropic_compatible.count_tokens",
+            "minimax.anthropic_protocol.count_tokens",
             ProviderServiceCategory::Conversation,
             vec![ModelModality::Text, ModelModality::Image],
             ModelModality::Text,
@@ -625,7 +625,7 @@ fn minimax_service_capabilities() -> Vec<ProviderServiceCapability> {
             ProviderServiceCostRisk::Low,
         ),
         service(
-            "minimax.anthropic_compatible.models.list",
+            "minimax.anthropic_protocol.models.list",
             ProviderServiceCategory::Model,
             vec![ModelModality::Text],
             ModelModality::Text,
@@ -634,7 +634,7 @@ fn minimax_service_capabilities() -> Vec<ProviderServiceCapability> {
             ProviderServiceCostRisk::Low,
         ),
         service(
-            "minimax.anthropic_compatible.models.retrieve",
+            "minimax.anthropic_protocol.models.retrieve",
             ProviderServiceCategory::Model,
             vec![ModelModality::Text],
             ModelModality::Text,

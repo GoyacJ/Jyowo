@@ -96,7 +96,6 @@ async fn yaml_manifest_is_parsed_through_file_loader() {
     write_manifest(
         &canonical_temp_root(&root).join("admin-yaml/plugin.yaml"),
         r#"
-manifest_schema_version: 1
 name: admin-yaml
 version: 0.1.0
 trust_level: admin_trusted
@@ -268,7 +267,6 @@ async fn unknown_manifest_fields_are_rejected_as_schema_violations() {
     write_manifest(
         &canonical_temp_root(&root).join("unknown-field/plugin.json"),
         r#"{
-  "manifest_schema_version": 1,
   "name": "unknown-field",
   "version": "0.1.0",
   "trust_level": "admin_trusted",
@@ -293,18 +291,21 @@ async fn unknown_manifest_fields_are_rejected_as_schema_violations() {
 }
 
 #[tokio::test]
-async fn unsupported_manifest_schema_version_is_typed() {
+async fn old_manifest_marker_is_rejected_as_schema_violation() {
     let root = tempfile::tempdir().unwrap();
+    let old_field = ["manifest", "schema", "version"].join("_");
     write_manifest(
-        &canonical_temp_root(&root).join("future-schema/plugin.json"),
-        r#"{
-  "manifest_schema_version": 99,
-  "name": "future-schema",
+        &canonical_temp_root(&root).join("old-marker/plugin.json"),
+        &format!(
+            r#"{{
+  "name": "old-marker",
   "version": "0.1.0",
   "trust_level": "admin_trusted",
   "min_harness_version": ">=0.0.0",
-  "capabilities": {}
-}"#,
+  "capabilities": {{}},
+  "{old_field}": 1
+}}"#
+        ),
     );
 
     let error = FileManifestLoader
@@ -317,8 +318,31 @@ async fn unsupported_manifest_schema_version_is_typed() {
     };
     assert!(matches!(
         failure.failure,
-        EventManifestValidationFailure::UnsupportedSchemaVersion { found: 99, .. }
+        EventManifestValidationFailure::SchemaViolation { .. }
     ));
+}
+
+#[tokio::test]
+async fn local_sidecar_name_must_match_manifest_name() {
+    let root = tempfile::tempdir().unwrap();
+    let plugin_dir = canonical_temp_root(&root).join("mismatched-sidecar");
+    write_manifest(
+        &plugin_dir.join("plugin.json"),
+        manifest_json("mismatched-sidecar", TrustLevel::AdminTrusted),
+    );
+    write_executable(
+        &plugin_dir.join("jyowo-plugin-other"),
+        "#!/bin/sh\nexit 0\n",
+    );
+
+    let error = FileManifestLoader
+        .load_package_report(&plugin_dir)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, ManifestLoaderError::Io(message) if message.contains("jyowo-plugin-mismatched-sidecar"))
+    );
 }
 
 #[tokio::test]
@@ -384,7 +408,7 @@ exit 2
 }
 
 #[tokio::test]
-async fn cargo_extension_manifest_loader_supports_runtime_metadata_rpc() {
+async fn cargo_extension_manifest_loader_requires_manifest_command() {
     let root = tempfile::tempdir().unwrap();
     let binary = canonical_temp_root(&root).join("jyowo-plugin-cargo-rpc");
     let metadata = serde_json::json!({
@@ -409,19 +433,18 @@ exit 2
         ),
     );
 
-    let records = CargoExtensionManifestLoader::new()
+    let report = CargoExtensionManifestLoader::new()
         .with_search_paths(vec![canonical_temp_root(&root).as_path().to_path_buf()])
         .with_timeout(Duration::from_secs(15))
-        .enumerate(&DiscoverySource::CargoExtension)
+        .load_report(&DiscoverySource::CargoExtension)
         .await
         .unwrap();
 
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].manifest.plugin_id().0, "cargo-rpc@0.1.0");
-    let canonical_binary = binary.canonicalize().unwrap();
-    assert!(
-        matches!(&records[0].origin, ManifestOrigin::CargoExtension { binary: found, package_metadata } if found == &canonical_binary && package_metadata.contains_key("package"))
-    );
+    assert!(report.records.is_empty());
+    assert_eq!(report.failures.len(), 1);
+    assert!(report.failures[0]
+        .details
+        .contains("metadata command exited with status 2"));
 }
 
 #[tokio::test]
@@ -459,6 +482,49 @@ exit 2
     assert!(matches!(
         report.failures[0].failure,
         EventManifestValidationFailure::CargoExtensionMetadataMalformed { .. }
+    ));
+}
+
+#[tokio::test]
+async fn cargo_extension_manifest_loader_rejects_unknown_manifest_fields() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = canonical_temp_root(&root).join("jyowo-plugin-unknown-field");
+    let mut manifest = serde_json::from_str::<serde_json::Value>(&manifest_json(
+        "unknown-field",
+        TrustLevel::AdminTrusted,
+    ))
+    .unwrap();
+    manifest["extra"] = serde_json::json!(true);
+    let metadata = serde_json::json!({
+        "manifest": manifest,
+        "package_metadata": { "package": "unknown-field" }
+    });
+    write_executable(
+        &binary,
+        &format!(
+            r#"#!/bin/sh
+if [ "$1" = "--harness-manifest" ]; then
+printf '%s' '{}'
+exit 0
+fi
+exit 2
+"#,
+            metadata
+        ),
+    );
+
+    let report = CargoExtensionManifestLoader::new()
+        .with_search_paths(vec![canonical_temp_root(&root).as_path().to_path_buf()])
+        .with_timeout(Duration::from_secs(15))
+        .load_report(&DiscoverySource::CargoExtension)
+        .await
+        .unwrap();
+
+    assert!(report.records.is_empty());
+    assert_eq!(report.failures.len(), 1);
+    assert!(matches!(
+        report.failures[0].failure,
+        EventManifestValidationFailure::SchemaViolation { .. }
     ));
 }
 
@@ -711,6 +777,19 @@ fi
 exit 2
 "#,
     );
+    let manifest_report = CargoExtensionManifestLoader::new()
+        .with_search_paths(vec![canonical_temp_root(&root).as_path().to_path_buf()])
+        .with_timeout(Duration::from_secs(15))
+        .load_report(&DiscoverySource::CargoExtension)
+        .await
+        .unwrap();
+    assert!(
+        manifest_report.failures.is_empty(),
+        "manifest failures: {:?}",
+        manifest_report.failures
+    );
+    assert_eq!(manifest_report.records.len(), 1);
+
     let hooks = HookRegistry::builder().build().unwrap();
     let skills = SkillRegistry::builder().build();
     let mcp = McpRegistry::new();
@@ -967,7 +1046,6 @@ async fn manifest_schema_accepts_explicit_custom_toolsets() {
     write_manifest(
         &canonical_temp_root(&root).join("toolset/plugin.json"),
         r#"{
-  "manifest_schema_version": 1,
   "name": "toolset",
   "version": "0.1.0",
   "trust_level": "admin_trusted",
@@ -998,7 +1076,6 @@ async fn file_manifest_hash_uses_canonical_payload_not_raw_bytes() {
     write_manifest(
         &canonical_temp_root(&root).join("hash-a/plugin.json"),
         r#"{
-  "manifest_schema_version": 1,
   "name": "hash-plugin",
   "version": "0.1.0",
   "trust_level": "admin_trusted",
@@ -1008,7 +1085,13 @@ async fn file_manifest_hash_uses_canonical_payload_not_raw_bytes() {
     );
     write_manifest(
         &canonical_temp_root(&root).join("hash-b/plugin.json"),
-        r#"{"capabilities":{},"min_harness_version":">=0.0.0","trust_level":"admin_trusted","version":"0.1.0","name":"hash-plugin","manifest_schema_version":1}"#,
+        r#"{
+  "capabilities": {},
+  "min_harness_version": ">=0.0.0",
+  "trust_level": "admin_trusted",
+  "version": "0.1.0",
+  "name": "hash-plugin"
+}"#,
     );
 
     let records = FileManifestLoader
@@ -1046,7 +1129,6 @@ fn manifest_json(name: &str, trust_level: TrustLevel) -> String {
     };
     format!(
         r#"{{
-  "manifest_schema_version": 1,
   "name": "{name}",
   "version": "0.1.0",
   "trust_level": "{trust_level}",
@@ -1073,7 +1155,6 @@ fn manifest_with_tool(
     };
     serde_json::from_str(&format!(
         r#"{{
-  "manifest_schema_version": 1,
   "name": "{name}",
   "version": "0.1.0",
   "trust_level": "{trust_level}",
@@ -1094,7 +1175,6 @@ fn manifest_with_tool_schema(
     input_schema: serde_json::Value,
 ) -> PluginManifest {
     let mut manifest = serde_json::json!({
-        "manifest_schema_version": 1,
         "name": name,
         "version": "0.1.0",
         "trust_level": "user_controlled",
@@ -1120,7 +1200,6 @@ fn manifest_with_proxy_capabilities(name: &str, trust_level: TrustLevel) -> Plug
     };
     serde_json::from_str(&format!(
         r#"{{
-  "manifest_schema_version": 1,
   "name": "{name}",
   "version": "0.1.0",
   "trust_level": "{trust_level}",

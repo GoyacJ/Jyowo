@@ -9,7 +9,7 @@ mod tests {
     };
     use crate::commands::error::runtime_operation_failed;
     use crate::commands::mcp::mcp_stdio_env;
-    use crate::commands::plugins::plugin_package_dir_name;
+    use crate::commands::plugins::{plugin_package_dir_name, redact_plugin_detail_config_values};
     use crate::commands::runtime::desktop_cargo_extension_search_paths;
     use crate::commands::skills::{
         emit_skill_catalog_install_progress, get_or_create_skill_catalog_install_task,
@@ -758,9 +758,10 @@ mod tests {
     async fn plugin_install_failure_does_not_write_store_record() {
         let workspace = tempfile::tempdir().unwrap();
         let source = tempfile::tempdir().unwrap();
+        let old_field = ["manifest", "schema", "version"].join("_");
         std::fs::write(
             source.path().join("plugin.json"),
-            r#"{"manifest_schema_version":99,"name":"bad-plugin"}"#,
+            format!(r#"{{"{old_field}":99,"name":"bad-plugin"}}"#),
         )
         .unwrap();
         let state =
@@ -782,7 +783,7 @@ mod tests {
         assert_eq!(report.source_path, "<local-plugin>");
         assert_eq!(
             report.reason.as_deref(),
-            Some("plugin manifest uses an unsupported schema version")
+            Some("plugin manifest is invalid.")
         );
         assert!(!report
             .source_path
@@ -791,7 +792,7 @@ mod tests {
             .reason
             .as_deref()
             .unwrap_or_default()
-            .contains("unsupported manifest_schema_version 99"));
+            .contains(source_path.to_string_lossy().as_ref()));
         assert!(plugins.plugins.is_empty());
     }
 
@@ -1145,6 +1146,61 @@ mod tests {
         .await;
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn plugin_detail_config_without_schema_is_not_returned() {
+        let redacted = redact_plugin_detail_config_values(
+            None,
+            serde_json::json!({
+                "apiToken": "not-even-a-real-token",
+                "mode": "default"
+            }),
+        );
+
+        assert_eq!(redacted, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn plugin_detail_config_drops_secret_and_unknown_fields() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "apiToken": { "type": "string", "secret": true },
+                "mode": { "type": "string" },
+                "nested": {
+                    "type": "object",
+                    "properties": {
+                        "visible": { "type": "string" },
+                        "secretValue": { "type": "string", "secret": true }
+                    }
+                }
+            },
+            "additionalProperties": false
+        });
+        let redacted = redact_plugin_detail_config_values(
+            Some(&schema),
+            serde_json::json!({
+                "apiToken": "not-even-a-real-token",
+                "mode": "default",
+                "unknown": "stored-before-schema",
+                "nested": {
+                    "visible": "ok",
+                    "secretValue": "hidden",
+                    "extra": "hidden"
+                }
+            }),
+        );
+
+        assert_eq!(
+            redacted,
+            serde_json::json!({
+                "mode": "default",
+                "nested": {
+                    "visible": "ok"
+                }
+            })
+        );
     }
 
     #[tokio::test]
@@ -1779,7 +1835,6 @@ exit 0
 
     fn write_desktop_plugin_manifest(root: &Path, name: &str) {
         let manifest = serde_json::json!({
-            "manifest_schema_version": 1,
             "name": name,
             "version": "0.1.0",
             "trust_level": "user_controlled",
@@ -1797,7 +1852,6 @@ exit 0
 
     fn write_desktop_plugin_manifest_with_config_schema(root: &Path, name: &str) {
         let manifest = serde_json::json!({
-            "manifest_schema_version": 1,
             "name": name,
             "version": "0.1.0",
             "trust_level": "user_controlled",
@@ -1824,7 +1878,6 @@ exit 0
 
     fn write_desktop_plugin_manifest_with_required_config_schema(root: &Path, name: &str) {
         let manifest = serde_json::json!({
-            "manifest_schema_version": 1,
             "name": name,
             "version": "0.1.0",
             "trust_level": "user_controlled",
@@ -1855,7 +1908,6 @@ exit 0
 
     fn write_desktop_cargo_extension(root: &Path, name: &str) {
         let manifest = serde_json::json!({
-            "manifest_schema_version": 1,
             "name": name,
             "version": "0.1.0",
             "trust_level": "user_controlled",

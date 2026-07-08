@@ -147,14 +147,6 @@ impl AgentRuntimeStore {
         operation(&connection).map_err(AgentRuntimeStoreError::from)
     }
 
-    pub fn schema_version(&self) -> Result<i64, AgentRuntimeStoreError> {
-        self.with_connection(|connection| {
-            connection.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
-                row.get(0)
-            })
-        })
-    }
-
     pub fn table_exists(&self, table: &str) -> Result<bool, AgentRuntimeStoreError> {
         self.with_connection(|connection| {
             let count: i64 = connection.query_row(

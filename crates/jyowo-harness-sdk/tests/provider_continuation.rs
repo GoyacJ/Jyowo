@@ -51,6 +51,7 @@ async fn sdk_passes_provider_continuation_store_to_engine() {
     ]);
 
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model_arc(model)
         .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
         .with_sandbox(NoopSandbox::new())
@@ -88,6 +89,7 @@ async fn runtime_with_deepseek_semantics_requires_provider_continuation_store() 
     let model = DeepSeekSemanticsProvider::new(vec![ModelStreamEvent::MessageStop]);
 
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model_arc(model.clone())
         .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
         .with_sandbox(NoopSandbox::new())
@@ -128,6 +130,7 @@ async fn sdk_delete_conversation_session_prunes_provider_continuations() {
     let session_id = SessionId::new();
     let store = Arc::new(RecordingProviderContinuationStore::default());
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model_arc(DeepSeekSemanticsProvider::new(vec![
             ModelStreamEvent::MessageStop,
         ]))
@@ -167,6 +170,7 @@ async fn sdk_delete_conversation_session_returns_safe_error_when_prune_fails() {
         ..Default::default()
     });
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model_arc(DeepSeekSemanticsProvider::new(vec![
             ModelStreamEvent::MessageStop,
         ]))
@@ -205,6 +209,7 @@ async fn sdk_delete_conversation_session_keeps_session_when_prune_fails() {
         ..Default::default()
     });
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model_arc(DeepSeekSemanticsProvider::new(text_events("kept")))
         .with_store_arc(event_store.clone())
         .with_sandbox(NoopSandbox::new())

@@ -33,6 +33,7 @@ fn harness_builder_creates_testing_harness_and_session() {
         let model = Arc::new(TestModelProvider::default());
         let model_provider: Arc<dyn ModelProvider> = model.clone();
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model_provider)
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -189,6 +190,7 @@ fn harness_builder_injects_model_middlewares_into_session_engine() {
             calls: Arc::clone(&calls),
         });
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model_provider)
             .with_model_middleware(middleware)
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
@@ -677,6 +679,7 @@ fn session_push_context_patch_injects_knowledge_retrieval_before_turn() {
         let model = Arc::new(TestModelProvider::default());
         let session_id = SessionId::new();
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())

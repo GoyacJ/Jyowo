@@ -200,7 +200,9 @@ async fn test_harness_with_defaults(
     defaults: SessionOptions,
 ) -> Harness {
     let model_provider: Arc<dyn ModelProvider> = model;
+    let runtime_root = unique_workspace("sdk-workspace-session-runtime");
     Harness::builder()
+        .with_workspace_root(&runtime_root)
         .with_model_arc(model_provider)
         .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
         .with_sandbox(NoopSandbox::new())

@@ -204,7 +204,7 @@ describe('ModelConfigDialog', () => {
     const saveProviderSettings = vi.fn().mockResolvedValue({
       config: {
         ...existingProfile,
-        modelId: 'gpt-legacy',
+        modelId: 'gpt-old',
       },
       status: 'saved',
     })
@@ -215,23 +215,23 @@ describe('ModelConfigDialog', () => {
       },
       profile: {
         ...existingProfile,
-        modelId: 'gpt-legacy',
+        modelId: 'gpt-old',
       },
     })
 
     const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
-    expect(within(dialog).getByLabelText('Model')).toHaveValue('gpt-legacy')
+    expect(within(dialog).getByLabelText('Model')).toHaveValue('gpt-old')
 
     fireEvent.change(within(dialog).getByLabelText('Configuration name'), {
-      target: { value: 'Legacy OpenAI' },
+      target: { value: 'Old OpenAI' },
     })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
     expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
       configId: 'cfg-openai',
-      displayName: 'Legacy OpenAI',
-      modelId: 'gpt-legacy',
+      displayName: 'Old OpenAI',
+      modelId: 'gpt-old',
       providerId: 'openai',
     })
   })

@@ -48,6 +48,7 @@ async fn runtime_assembly_uses_session_injected_agent_profiles_for_run_scoped_te
     let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let event_store: Arc<dyn EventStore> = store.clone();
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model_arc(model)
         .with_store_arc(event_store)
         .with_sandbox(NoopSandbox::new())

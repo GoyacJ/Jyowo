@@ -40,6 +40,7 @@ use ring::digest;
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt as _;
 
+use crate::sources::validate_manifest_schema;
 use crate::{
     DiscoverySource, ManifestLoadReport, ManifestLoaderError, ManifestOrigin, ManifestRecord,
     ManifestSigner, ManifestValidationFailure, McpManifestEntry, Plugin, PluginActivationContext,
@@ -156,48 +157,24 @@ impl PluginManifestLoader for CargoExtensionManifestLoader {
                         Err(failure) => report.failures.push(failure),
                     }
                 }
-                Ok(output) => match load_runtime_metadata(
-                    &binary,
-                    self.timeout,
-                    self.sandbox.clone(),
-                    self.sandbox_mode.clone(),
-                    self.workspace_root.clone(),
-                )
-                .await
-                {
-                    Ok(record) => report.records.push(record),
-                    Err(failure) => report.failures.push(cargo_extension_failure(
+                Ok(output) => {
+                    report.failures.push(cargo_extension_failure(
                         binary,
                         output.stdout,
-                        format!(
-                            "metadata command exited with status {}; metadata rpc failed: {}",
-                            output.status_code, failure.details
-                        ),
+                        format!("metadata command exited with status {}", output.status_code),
                         None,
                         None,
-                    )),
-                },
-                Err(details) => match load_runtime_metadata(
-                    &binary,
-                    self.timeout,
-                    self.sandbox.clone(),
-                    self.sandbox_mode.clone(),
-                    self.workspace_root.clone(),
-                )
-                .await
-                {
-                    Ok(record) => report.records.push(record),
-                    Err(failure) => report.failures.push(cargo_extension_failure(
+                    ));
+                }
+                Err(details) => {
+                    report.failures.push(cargo_extension_failure(
                         binary,
                         Vec::new(),
-                        format!(
-                            "metadata command failed: {details}; metadata rpc failed: {}",
-                            failure.details
-                        ),
+                        format!("metadata command failed: {details}"),
                         None,
                         None,
-                    )),
-                },
+                    ));
+                }
             }
         }
 
@@ -1039,38 +1016,6 @@ fn is_world_writable(_metadata: &fs::Metadata) -> bool {
     false
 }
 
-async fn load_runtime_metadata(
-    binary: &Path,
-    timeout: Duration,
-    sandbox: Option<Arc<dyn SandboxBackend>>,
-    sandbox_mode: Option<SandboxMode>,
-    workspace_root: Option<PathBuf>,
-) -> Result<ManifestRecord, ManifestValidationFailure> {
-    let client = CargoExtensionRuntimeClient {
-        binary: binary.to_path_buf(),
-        sandbox,
-        sandbox_mode,
-        timeout,
-        workspace_root,
-    };
-    let metadata = client
-        .call("metadata", Value::Null)
-        .await
-        .map_err(|details| {
-            cargo_extension_failure(binary.to_path_buf(), Vec::new(), details, None, None)
-        })?;
-    let bytes = serde_json::to_vec(&metadata).map_err(|error| {
-        cargo_extension_failure(
-            binary.to_path_buf(),
-            Vec::new(),
-            format!("metadata rpc result encode failed: {error}"),
-            None,
-            None,
-        )
-    })?;
-    decode_manifest_metadata(binary, &bytes)
-}
-
 fn decode_manifest_metadata(
     binary: &Path,
     bytes: &[u8],
@@ -1096,6 +1041,45 @@ fn decode_manifest_metadata(
         })
         .unwrap_or_default();
     let manifest_value = value.get("manifest").cloned().unwrap_or(value);
+    let origin = ManifestOrigin::CargoExtension {
+        binary: binary.to_path_buf(),
+        package_metadata,
+    };
+    let partial_name = manifest_value
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let partial_version = manifest_value
+        .get("version")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    validate_manifest_schema(
+        &manifest_value,
+        &origin,
+        partial_name.as_ref(),
+        partial_version.as_ref(),
+        raw_hash,
+    )
+    .map_err(|error| match error {
+        ManifestLoaderError::Validation(mut failure) => {
+            failure.raw_bytes_hash = raw_hash;
+            failure
+        }
+        ManifestLoaderError::Io(details) => cargo_extension_failure(
+            binary.to_path_buf(),
+            bytes.to_vec(),
+            details,
+            partial_name.clone(),
+            partial_version.clone(),
+        ),
+        ManifestLoaderError::UnsupportedSource(details) => cargo_extension_failure(
+            binary.to_path_buf(),
+            bytes.to_vec(),
+            details,
+            partial_name.clone(),
+            partial_version.clone(),
+        ),
+    })?;
     let manifest = serde_json::from_value::<PluginManifest>(manifest_value).map_err(|error| {
         cargo_extension_failure(
             binary.to_path_buf(),
@@ -1105,10 +1089,6 @@ fn decode_manifest_metadata(
             None,
         )
     })?;
-    let origin = ManifestOrigin::CargoExtension {
-        binary: binary.to_path_buf(),
-        package_metadata,
-    };
     let canonical = ManifestSigner::canonical_payload(&manifest).map_err(|error| {
         cargo_extension_failure(
             binary.to_path_buf(),
@@ -1552,7 +1532,6 @@ mod tests {
     #[tokio::test]
     async fn sidecar_tool_plan_uses_external_plugin_capability_channel() {
         let manifest = PluginManifest {
-            manifest_schema_version: 1,
             name: crate::PluginName::new("sidecar-plugin").unwrap(),
             version: semver::Version::parse("1.0.0").unwrap(),
             trust_level: TrustLevel::UserControlled,

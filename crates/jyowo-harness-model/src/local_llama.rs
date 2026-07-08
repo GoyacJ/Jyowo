@@ -4,9 +4,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use harness_contracts::ModelError;
 
-use crate::openai_compatible::{
-    OpenAiChatDialect, OpenAiCompatibleClient, OpenAiCompatibleProviderExt,
-};
+use crate::openai_protocol::{OpenAiChatDialect, OpenAiProtocolClient, OpenAiProtocolProviderExt};
 use crate::{
     ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
     ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
@@ -17,7 +15,7 @@ const PROVIDER_ID: &str = "local-llama";
 
 #[derive(Clone)]
 pub struct LocalLlamaProvider {
-    client: OpenAiCompatibleClient,
+    client: OpenAiProtocolClient,
 }
 
 impl Default for LocalLlamaProvider {
@@ -29,7 +27,7 @@ impl Default for LocalLlamaProvider {
 impl LocalLlamaProvider {
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
-            client: OpenAiCompatibleClient::without_api_key(endpoint)
+            client: OpenAiProtocolClient::without_api_key(endpoint)
                 .with_provider_id(PROVIDER_ID)
                 .with_chat_dialect(OpenAiChatDialect::LocalLlama)
                 .with_chat_completions_path("/v1/chat/completions"),
@@ -67,8 +65,8 @@ impl LocalLlamaProvider {
     }
 }
 
-impl OpenAiCompatibleProviderExt for LocalLlamaProvider {
-    fn client(&self) -> &OpenAiCompatibleClient {
+impl OpenAiProtocolProviderExt for LocalLlamaProvider {
+    fn client(&self) -> &OpenAiProtocolClient {
         &self.client
     }
 }
@@ -87,7 +85,7 @@ impl ModelProvider for LocalLlamaProvider {
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
-        self.infer_openai_compatible(req, ctx).await
+        self.infer_openai_protocol(req, ctx).await
     }
 
     fn default_protocol(&self) -> ModelProtocol {

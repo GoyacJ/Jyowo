@@ -64,10 +64,20 @@ fn unique_workspace(name: &str) -> std::path::PathBuf {
 async fn harness_with_store(
     evidence_store: Option<Arc<EvidenceRefStore>>,
 ) -> jyowo_harness_sdk::Harness {
+    harness_with_store_for_workspace(evidence_store, None).await
+}
+
+async fn harness_with_store_for_workspace(
+    evidence_store: Option<Arc<EvidenceRefStore>>,
+    workspace: Option<&std::path::Path>,
+) -> jyowo_harness_sdk::Harness {
     let mut builder = Harness::builder()
         .with_model(TestModelProvider::default())
         .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
         .with_sandbox(NoopSandbox::new());
+    if let Some(workspace) = workspace {
+        builder = builder.with_workspace_root(workspace);
+    }
     if let Some(store) = evidence_store {
         builder = builder.with_evidence_ref_store_arc(store);
     }
@@ -155,7 +165,8 @@ async fn delete_conversation_session_removes_configured_evidence_refs() {
         .await
         .expect("evidence stores");
 
-    let harness = harness_with_store(Some(evidence_store.clone())).await;
+    let harness =
+        harness_with_store_for_workspace(Some(evidence_store.clone()), Some(&workspace)).await;
     let options = SessionOptions::new(&workspace).with_session_id(session_id);
     harness
         .open_or_create_conversation_session(options.clone())
@@ -217,7 +228,8 @@ async fn direct_event_store_delete_session_removes_configured_evidence_refs() {
         .await
         .expect("evidence stores");
 
-    let harness = harness_with_store(Some(evidence_store.clone())).await;
+    let harness =
+        harness_with_store_for_workspace(Some(evidence_store.clone()), Some(&workspace)).await;
     let options = SessionOptions::new(&workspace).with_session_id(session_id);
     harness
         .open_or_create_conversation_session(options)

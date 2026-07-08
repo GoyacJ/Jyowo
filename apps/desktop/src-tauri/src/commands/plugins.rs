@@ -776,9 +776,6 @@ pub(crate) fn plugin_manifest_validation_failure_report_reason(
     failure: &harness_contracts::ManifestValidationFailure,
 ) -> String {
     match failure {
-        harness_contracts::ManifestValidationFailure::UnsupportedSchemaVersion { .. } => {
-            "plugin manifest uses an unsupported schema version".to_owned()
-        }
         harness_contracts::ManifestValidationFailure::RemoteIntegrityMismatch { .. } => {
             "plugin manifest integrity check failed".to_owned()
         }
@@ -797,8 +794,8 @@ pub(crate) fn plugin_rejection_report_reason(reason: &RejectionReason) -> String
             "plugin dependency is not satisfied".to_owned()
         }
         RejectionReason::DependencyCycle { .. } => "plugin dependency cycle detected".to_owned(),
-        RejectionReason::HarnessVersionIncompatible { .. } => {
-            "plugin requires an incompatible harness version".to_owned()
+        RejectionReason::HarnessVersionMismatch { .. } => {
+            "plugin requires an mismatched harness version".to_owned()
         }
         RejectionReason::SlotOccupied { .. } => "plugin capability slot is occupied".to_owned(),
         RejectionReason::AdmissionDenied { .. } => "plugin rejected by policy".to_owned(),
@@ -909,8 +906,15 @@ pub(crate) fn plugin_package_dir_name(plugin_id: &PluginId) -> String {
 
 pub(crate) fn redact_plugin_detail_config(mut detail: PluginDetail) -> PluginDetail {
     detail.config =
-        redact_secret_config_values(detail.configuration_schema.as_ref(), detail.config);
+        redact_plugin_detail_config_values(detail.configuration_schema.as_ref(), detail.config);
     detail
+}
+
+pub(crate) fn redact_plugin_detail_config_values(schema: Option<&Value>, values: Value) -> Value {
+    let Some(schema) = schema else {
+        return Value::Null;
+    };
+    strip_secret_config_value_for_detail(schema, &values).unwrap_or(Value::Null)
 }
 
 pub(crate) fn redact_secret_config_values(schema: Option<&Value>, values: Value) -> Value {
@@ -918,6 +922,41 @@ pub(crate) fn redact_secret_config_values(schema: Option<&Value>, values: Value)
         return values;
     };
     strip_secret_config_value(schema, &values).unwrap_or(Value::Null)
+}
+
+fn strip_secret_config_value_for_detail(schema: &Value, value: &Value) -> Option<Value> {
+    if schema
+        .get("secret")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    match value {
+        Value::Object(object) => {
+            let properties = schema.get("properties").and_then(Value::as_object)?;
+            Some(Value::Object(
+                object
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        let field_schema = properties.get(key)?;
+                        strip_secret_config_value_for_detail(field_schema, value)
+                            .map(|value| (key.clone(), value))
+                    })
+                    .collect(),
+            ))
+        }
+        Value::Array(values) => {
+            let item_schema = schema.get("items")?;
+            Some(Value::Array(
+                values
+                    .iter()
+                    .filter_map(|value| strip_secret_config_value_for_detail(item_schema, value))
+                    .collect(),
+            ))
+        }
+        value => Some(value.clone()),
+    }
 }
 
 pub(crate) fn strip_secret_config_value(schema: &Value, value: &Value) -> Option<Value> {

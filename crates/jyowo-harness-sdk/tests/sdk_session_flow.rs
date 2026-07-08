@@ -17,6 +17,7 @@ async fn sdk_session_flow_runs_turn_and_writes_journal_events() {
     let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model(TestModelProvider::default().with_events(vec![
             ModelStreamEvent::ContentBlockDelta {
                 index: 0,
@@ -75,6 +76,7 @@ async fn submit_conversation_turn_rejects_second_active_turn_for_same_session() 
     let model = Arc::new(ScriptedProvider::new(vec![ScriptedResponse::WaitForCancel]));
 
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model_arc(model.clone())
         .with_store_arc(store.clone())
         .with_sandbox(NoopSandbox::new())
@@ -151,6 +153,7 @@ async fn rejected_second_active_turn_does_not_apply_memory_context_patch() {
     let model = Arc::new(ScriptedProvider::new(vec![ScriptedResponse::WaitForCancel]));
 
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model_arc(model.clone())
         .with_store_arc(store.clone())
         .with_sandbox(NoopSandbox::new())

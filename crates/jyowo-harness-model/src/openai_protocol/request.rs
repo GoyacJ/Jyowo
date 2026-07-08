@@ -39,7 +39,7 @@ pub(super) async fn chat_message(
         MessageRole::Assistant => assistant_message(&message.parts),
         MessageRole::Tool => tool_message(&message.parts),
         _ => Err(ModelError::InvalidRequest(
-            "unknown message role is not supported by OpenAI-compatible providers".to_owned(),
+            "unknown message role is not supported by OpenAI protocol providers".to_owned(),
         )),
     }
 }
@@ -65,13 +65,13 @@ fn assistant_message(parts: &[MessagePart]) -> Result<Value, ModelError> {
             | MessagePart::Thinking(_)
             | MessagePart::ToolResult { .. } => {
                 return Err(ModelError::InvalidRequest(
-                    "assistant messages only support text and tool use parts for OpenAI-compatible providers"
+                    "assistant messages only support text and tool use parts for OpenAI protocol providers"
                         .to_owned(),
                 ));
             }
             _ => {
                 return Err(ModelError::InvalidRequest(
-                    "unsupported assistant message part for OpenAI-compatible providers".to_owned(),
+                    "unsupported assistant message part for OpenAI protocol providers".to_owned(),
                 ));
             }
         }
@@ -98,7 +98,7 @@ fn tool_message(parts: &[MessagePart]) -> Result<Value, ModelError> {
     }] = parts
     else {
         return Err(ModelError::InvalidRequest(
-            "tool messages must contain exactly one tool result part for OpenAI-compatible providers"
+            "tool messages must contain exactly one tool result part for OpenAI protocol providers"
                 .to_owned(),
         ));
     };
@@ -154,25 +154,25 @@ async fn content_parts(parts: &[MessagePart], ctx: &InferContext) -> Result<Valu
             })),
             MessagePart::File { .. } => {
                 return Err(ModelError::InvalidRequest(
-                    "file message parts require provider-specific upload support for OpenAI-compatible providers"
+                    "file message parts require provider-specific upload support for OpenAI protocol providers"
                         .to_owned(),
                 ));
             }
             MessagePart::Thinking(_) => {
                 return Err(ModelError::InvalidRequest(
-                    "thinking message parts are not supported by OpenAI-compatible providers"
+                    "thinking message parts are not supported by OpenAI protocol providers"
                         .to_owned(),
                 ));
             }
             MessagePart::ToolUse { .. } | MessagePart::ToolResult { .. } => {
                 return Err(ModelError::InvalidRequest(
-                    "tool message parts must use assistant/tool roles for OpenAI-compatible providers"
+                    "tool message parts must use assistant/tool roles for OpenAI protocol providers"
                         .to_owned(),
                 ));
             }
             _ => {
                 return Err(ModelError::InvalidRequest(
-                    "unsupported message part for OpenAI-compatible providers".to_owned(),
+                    "unsupported message part for OpenAI protocol providers".to_owned(),
                 ));
             }
         }
@@ -216,7 +216,7 @@ fn tool_result_content(content: &ToolResult) -> Result<String, ModelError> {
         ToolResult::Text(text) => Ok(text.clone()),
         ToolResult::Structured(value) => Ok(value.to_string()),
         ToolResult::Blob { .. } => Err(ModelError::InvalidRequest(
-            "blob tool results are not supported by OpenAI-compatible providers".to_owned(),
+            "blob tool results are not supported by OpenAI protocol providers".to_owned(),
         )),
         ToolResult::Mixed(parts) => parts
             .iter()
@@ -224,7 +224,7 @@ fn tool_result_content(content: &ToolResult) -> Result<String, ModelError> {
             .collect::<Result<Vec<_>, _>>()
             .map(|parts| parts.join("")),
         _ => Err(ModelError::InvalidRequest(
-            "unsupported tool result for OpenAI-compatible providers".to_owned(),
+            "unsupported tool result for OpenAI protocol providers".to_owned(),
         )),
     }
 }
@@ -235,14 +235,13 @@ fn tool_result_part_content(part: &ToolResultPart) -> Result<String, ModelError>
         ToolResultPart::Text { text } | ToolResultPart::Code { text, .. } => Ok(text.clone()),
         ToolResultPart::Reference { summary, .. } => Ok(summary.clone().unwrap_or_default()),
         ToolResultPart::Blob { .. } => Err(ModelError::InvalidRequest(
-            "blob tool result parts are not supported by OpenAI-compatible providers".to_owned(),
+            "blob tool result parts are not supported by OpenAI protocol providers".to_owned(),
         )),
         ToolResultPart::Artifact { .. } => Err(ModelError::InvalidRequest(
-            "artifact tool result parts are not supported by OpenAI-compatible providers"
-                .to_owned(),
+            "artifact tool result parts are not supported by OpenAI protocol providers".to_owned(),
         )),
         _ => Err(ModelError::InvalidRequest(
-            "unsupported tool result part for OpenAI-compatible providers".to_owned(),
+            "unsupported tool result part for OpenAI protocol providers".to_owned(),
         )),
     }
 }

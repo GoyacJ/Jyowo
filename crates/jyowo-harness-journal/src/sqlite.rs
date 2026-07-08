@@ -15,8 +15,8 @@ use tokio::sync::Mutex;
 use crate::{
     apply_cursor, event_type, expected_next_offset_mismatch, journal_error, session_end_reason,
     AppendMetadata, CompactionLineage, EventEnvelope, EventEnvelopePage, EventStore,
-    JournalRedaction, PrunePolicy, PruneReport, ReplayCursor, SchemaVersion, SessionFilter,
-    SessionSnapshot, SessionSummary,
+    JournalRedaction, PrunePolicy, PruneReport, ReplayCursor, SessionFilter, SessionSnapshot,
+    SessionSummary,
 };
 
 pub struct SqliteEventStore {
@@ -44,7 +44,6 @@ impl SqliteEventStore {
                     recorded_at TEXT NOT NULL,
                     correlation_id TEXT,
                     causation_id TEXT,
-                    schema_version INTEGER NOT NULL DEFAULT 1,
                     body TEXT NOT NULL,
                     PRIMARY KEY (tenant_id, session_id, offset)
                  ) STRICT;
@@ -85,6 +84,7 @@ impl SqliteEventStore {
                  ) STRICT;",
             )
             .map_err(journal_error)?;
+        validate_events_table_shape(&connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
             redaction: JournalRedaction::new(redactor),
@@ -106,7 +106,6 @@ impl SqliteEventStore {
             run_id: metadata.run_id,
             correlation_id: metadata.correlation_id,
             causation_id: metadata.causation_id,
-            schema_version: SchemaVersion::CURRENT,
             recorded_at: harness_contracts::now(),
             payload,
         }
@@ -151,9 +150,9 @@ impl SqliteEventStore {
             tx.execute(
                 "INSERT INTO events (
                     tenant_id, session_id, offset, event_id, event_type, recorded_at,
-                    correlation_id, causation_id, schema_version, body
+                    correlation_id, causation_id, body
                  )
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     tenant.to_string(),
                     session_id.to_string(),
@@ -163,7 +162,6 @@ impl SqliteEventStore {
                     envelope.recorded_at.to_rfc3339(),
                     envelope.correlation_id.to_string(),
                     envelope.causation_id.map(|id| id.to_string()),
-                    i64::from(envelope.schema_version.get()),
                     body
                 ],
             )
@@ -243,6 +241,43 @@ impl SqliteEventStore {
         }
         Ok(lineage)
     }
+}
+
+fn validate_events_table_shape(connection: &Connection) -> Result<(), JournalError> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(events)")
+        .map_err(journal_error)?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(journal_error)?;
+    let mut columns = Vec::new();
+    for row in rows {
+        columns.push(row.map_err(journal_error)?);
+    }
+
+    const EXPECTED: &[&str] = &[
+        "tenant_id",
+        "session_id",
+        "offset",
+        "event_id",
+        "event_type",
+        "recorded_at",
+        "correlation_id",
+        "causation_id",
+        "body",
+    ];
+    let expected = EXPECTED
+        .iter()
+        .map(|column| (*column).to_owned())
+        .collect::<Vec<_>>();
+    if columns != expected {
+        return Err(JournalError::Message(format!(
+            "unsupported journal store shape: events columns {:?}",
+            columns
+        )));
+    }
+
+    Ok(())
 }
 
 #[async_trait]

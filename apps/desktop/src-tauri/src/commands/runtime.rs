@@ -1481,6 +1481,7 @@ pub(crate) async fn build_desktop_harness(
                 .map(project_config_store_for_workspace),
             event_store: Arc::clone(&event_store),
         });
+    let plugin_sidecar_capability = Arc::new(());
 
     let mut capabilities = CapabilityRegistry::default();
     capabilities.install(ToolCapability::NetworkBroker, Arc::clone(&network_broker));
@@ -1495,6 +1496,10 @@ pub(crate) async fn build_desktop_harness(
     capabilities.install(
         ToolCapability::Custom("jyowo.background_agent.starter".to_owned()),
         Arc::clone(&background_agent_starter),
+    );
+    capabilities.install(
+        ToolCapability::Custom("plugin_sidecar".to_owned()),
+        Arc::clone(&plugin_sidecar_capability),
     );
     let preflight_capabilities = Arc::new(capabilities);
 
@@ -1549,6 +1554,10 @@ pub(crate) async fn build_desktop_harness(
         .with_capability(
             ToolCapability::Custom("jyowo.background_agent.starter".to_owned()),
             background_agent_starter,
+        )
+        .with_capability(
+            ToolCapability::Custom("plugin_sidecar".to_owned()),
+            plugin_sidecar_capability,
         )
         .with_capability(ToolCapability::NetworkBroker, network_broker)
         .with_mcp_config(mcp_config)
@@ -2983,6 +2992,27 @@ esac
         // CapabilityRegistry[ToolCapability::NetworkBroker] hold the same Arc.
         // This is verified at construction time — no assertion needed beyond
         // successful construction without panics.
+    }
+
+    #[tokio::test]
+    async fn plugin_sidecar_capability_is_registered_for_preflight() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let sandbox = build_desktop_process_sandbox(workspace.path())
+            .await
+            .expect("factory should succeed");
+        let mut capabilities = CapabilityRegistry::default();
+        capabilities.install(
+            ToolCapability::Custom("plugin_sidecar".to_owned()),
+            Arc::new(()),
+        );
+        let registry = ExecutionPreflightRegistry::new(sandbox, None, Arc::new(capabilities));
+
+        assert!(
+            registry
+                .capabilities
+                .contains(&ToolCapability::Custom("plugin_sidecar".to_owned())),
+            "registered plugin sidecar capability should be available to preflight"
+        );
     }
 
     #[cfg(unix)]

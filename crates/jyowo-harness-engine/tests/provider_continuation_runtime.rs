@@ -212,13 +212,13 @@ mod provider_continuation {
             ContextEngine::builder().build().unwrap(),
             RecordingModel::events(text_events("done")),
             true,
-            runtime_model_snapshot_for_provider("deepseek-compatible"),
+            runtime_model_snapshot_for_provider("deepseek-protocol"),
         )
         .await;
         let assistant_id = MessageId::new();
         harness
             .append_records(vec![continuation_record_for_provider(
-                "deepseek-compatible",
+                "deepseek-protocol",
                 harness.tenant_id,
                 harness.session_id,
                 assistant_id,
@@ -229,7 +229,7 @@ mod provider_continuation {
         let events = harness
             .run_with_seed_and_model_snapshot(
                 vec![assistant_tool_message(assistant_id)],
-                model_snapshot_for_provider("deepseek-compatible"),
+                model_snapshot_for_provider("deepseek-protocol"),
             )
             .await;
 
@@ -238,7 +238,7 @@ mod provider_continuation {
         assert_eq!(requests.len(), 1);
         assert_eq!(
             requests[0].provider_context.provider_id,
-            "deepseek-compatible"
+            "deepseek-protocol"
         );
         assert_eq!(
             requests[0].provider_context.dialect.as_deref(),

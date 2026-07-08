@@ -9,7 +9,7 @@ impl RedactorContractTest {
         assert_eq!(once, twice);
     }
 
-    pub fn assert_noop_compatible(redactor: &dyn Redactor) {
+    pub fn assert_noop_contract(redactor: &dyn Redactor) {
         let input = "ordinary non-secret text";
         assert_eq!(redactor.redact(input, &RedactRules::default()), input);
     }

@@ -126,6 +126,7 @@ async fn conversation_event_page_applies_default_redaction_after_noop_observer()
             .expect("observer should build"),
     );
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model(testing::TestModelProvider::default())
         .with_store_arc(store.clone())
         .with_sandbox(testing::NoopSandbox::new())

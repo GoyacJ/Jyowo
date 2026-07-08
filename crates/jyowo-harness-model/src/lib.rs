@@ -35,8 +35,8 @@ pub mod middleware;
 pub mod minimax;
 #[cfg(feature = "openai")]
 pub mod openai;
-#[cfg(feature = "openai-compatible")]
-pub(crate) mod openai_compatible;
+#[cfg(feature = "openai-protocol")]
+pub(crate) mod openai_protocol;
 #[cfg(feature = "openrouter")]
 pub mod openrouter;
 pub mod provider;

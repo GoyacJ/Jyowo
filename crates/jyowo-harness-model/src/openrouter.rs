@@ -3,9 +3,7 @@ use harness_contracts::ModelError;
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::openai_compatible::{
-    OpenAiChatDialect, OpenAiCompatibleClient, OpenAiCompatibleProviderExt,
-};
+use crate::openai_protocol::{OpenAiChatDialect, OpenAiProtocolClient, OpenAiProtocolProviderExt};
 use crate::{
     ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
     ModelInventoryEntry, ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest,
@@ -18,14 +16,14 @@ pub const OPENROUTER_API_KEY_ENV: &str = "OPENROUTER_API_KEY";
 
 #[derive(Clone)]
 pub struct OpenRouterProvider {
-    client: OpenAiCompatibleClient,
+    client: OpenAiProtocolClient,
     extra_models: Vec<ModelDescriptor>,
 }
 
 impl OpenRouterProvider {
     pub fn from_api_key(api_key: impl Into<String>) -> Self {
         Self {
-            client: OpenAiCompatibleClient::from_api_key(api_key, DEFAULT_BASE_URL)
+            client: OpenAiProtocolClient::from_api_key(api_key, DEFAULT_BASE_URL)
                 .with_provider_id(PROVIDER_ID)
                 .with_chat_dialect(OpenAiChatDialect::OpenRouter),
             extra_models: Vec::new(),
@@ -53,8 +51,8 @@ impl OpenRouterProvider {
     }
 }
 
-impl OpenAiCompatibleProviderExt for OpenRouterProvider {
-    fn client(&self) -> &OpenAiCompatibleClient {
+impl OpenAiProtocolProviderExt for OpenRouterProvider {
+    fn client(&self) -> &OpenAiProtocolClient {
         &self.client
     }
 }
@@ -92,7 +90,7 @@ impl ModelProvider for OpenRouterProvider {
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
-        self.infer_openai_compatible(req, ctx).await
+        self.infer_openai_protocol(req, ctx).await
     }
 
     fn default_protocol(&self) -> ModelProtocol {

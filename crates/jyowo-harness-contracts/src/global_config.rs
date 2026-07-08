@@ -2,7 +2,7 @@
 //!
 //! These types are the canonical serialization schema for config files under
 //! `~/.jyowo/config/` and `<workspace>/.jyowo/config/`. Desktop-shell DTOs may
-//! wrap them for IPC camelCase compatibility, but the persisted schema is owned
+//! wrap them for IPC camelCase shape, but the persisted schema is owned
 //! here.
 
 use schemars::JsonSchema;
@@ -58,7 +58,7 @@ pub struct ProviderProfileConversationCapability {
 pub enum ProviderProfileModelLifecycle {
     Stable,
     Preview,
-    Deprecated { retirement_date: String },
+    Retiring { retirement_date: String },
 }
 
 /// Global provider secrets, stored in `~/.jyowo/config/provider-secrets.json`.
@@ -104,7 +104,7 @@ pub struct ProviderSelectionRecord {
 pub struct ExecutionDefaultsRecord {
     #[serde(default = "default_permission_mode")]
     pub permission_mode: crate::PermissionMode,
-    #[serde(default)]
+    #[serde(default = "default_tool_profile_full")]
     pub tool_profile: crate::ToolProfile,
     #[serde(default = "default_context_compression_trigger_ratio")]
     pub context_compression_trigger_ratio: f32,
@@ -122,6 +122,10 @@ fn default_permission_mode() -> crate::PermissionMode {
 
 fn default_context_compression_trigger_ratio() -> f32 {
     0.8
+}
+
+fn default_tool_profile_full() -> crate::ToolProfile {
+    crate::ToolProfile::Full
 }
 
 impl Default for ExecutionDefaultsRecord {

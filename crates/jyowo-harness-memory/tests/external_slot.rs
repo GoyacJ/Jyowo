@@ -1,4 +1,4 @@
-#![cfg(feature = "provider-registry")]
+#![cfg(all(feature = "provider-registry", feature = "testing"))]
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

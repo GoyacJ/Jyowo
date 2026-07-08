@@ -403,7 +403,7 @@ fn parse_sse_json<T: DeserializeOwned>(data: &str) -> Result<T, ModelStreamEvent
 
 fn invalid_sse_json(error: serde_json::Error) -> ModelStreamEvent {
     stream_error(
-        ModelError::UnexpectedResponse(format!("invalid OpenAI-compatible SSE JSON: {error}")),
+        ModelError::UnexpectedResponse(format!("invalid OpenAI protocol SSE JSON: {error}")),
         ErrorClass::Fatal,
     )
 }
@@ -418,7 +418,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::{response_to_stream, IncrementalSseParser, OpenAiStreamState, SseEvent};
-    use crate::openai_compatible::OpenAiChatDialect;
+    use crate::openai_protocol::OpenAiChatDialect;
     use crate::{ContentDelta, ModelStreamEvent};
 
     #[test]

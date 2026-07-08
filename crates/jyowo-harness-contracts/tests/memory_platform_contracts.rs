@@ -111,7 +111,7 @@ fn memory_evidence_origin_roundtrip() {
             snapshot_id: None,
         },
         MemoryEvidenceOrigin::Imported {
-            importer: "dreams-migration".to_owned(),
+            importer: "dreams-transition".to_owned(),
             import_id: "import-1".to_owned(),
         },
         MemoryEvidenceOrigin::Consolidated { from: vec![mem_id] },
@@ -1124,7 +1124,7 @@ fn memory_type_aliases_exist() {
     let _ = pid;
 }
 
-// ── DREAMs migration guard ──
+// ── DREAMs transition guard ──
 
 #[test]
 fn consolidation_event_has_no_dreams_field() {

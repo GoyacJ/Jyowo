@@ -36,6 +36,7 @@ fn conversation_turn_input_ask_mode_preserves_prompt_text() {
             ]],
         ));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
             .with_sandbox(NoopSandbox::new())
@@ -91,6 +92,7 @@ fn conversation_turn_request_includes_prior_session_messages() {
             ],
         ));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
             .with_sandbox(NoopSandbox::new())
@@ -362,6 +364,7 @@ fn conversation_session_budget_uses_model_window_and_trigger_ratio() {
             .with_context_limits(40, 10),
         );
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -423,6 +426,7 @@ fn default_conversation_system_prompt_uses_agent_runtime_identity() {
             vec![vec![ModelStreamEvent::MessageStop]],
         ));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
             .with_sandbox(NoopSandbox::new())
@@ -489,6 +493,7 @@ fn runtime_context_does_not_include_provider_credentials() {
             vec![vec![ModelStreamEvent::MessageStop]],
         ));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
             .with_sandbox(NoopSandbox::new())
@@ -535,6 +540,7 @@ fn default_system_prompt_excludes_coding_partner_language() {
             vec![vec![ModelStreamEvent::MessageStop]],
         ));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
             .with_sandbox(NoopSandbox::new())
@@ -658,6 +664,7 @@ fn required_missing_bootstrap_file_fails_session_creation() {
             vec![vec![ModelStreamEvent::MessageStop]],
         ));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
             .with_sandbox(NoopSandbox::new())
@@ -691,6 +698,7 @@ fn workspace_bootstrap_content_changes_session_hash_input() {
 
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -774,6 +782,7 @@ fn conversation_session_uses_descriptor_protocol_when_options_omit_protocol() {
         );
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -822,6 +831,7 @@ fn conversation_turn_input_renders_references_and_attachments_context_block() {
         ));
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -928,6 +938,7 @@ fn conversation_turn_hydrates_memory_references_before_model_request() {
             .await
             .expect("memory fixture should write");
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
             .with_sandbox(NoopSandbox::new())
@@ -984,6 +995,7 @@ fn conversation_turn_fails_closed_for_invalid_memory_reference_id() {
             vec![vec![ModelStreamEvent::MessageStop]],
         ));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
             .with_sandbox(NoopSandbox::new())
@@ -1033,6 +1045,7 @@ fn conversation_turn_fails_closed_for_missing_memory_reference() {
             vec![vec![ModelStreamEvent::MessageStop]],
         ));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
             .with_sandbox(NoopSandbox::new())
@@ -1095,6 +1108,7 @@ fn sdk_installs_default_context_pipeline() {
         ]));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())

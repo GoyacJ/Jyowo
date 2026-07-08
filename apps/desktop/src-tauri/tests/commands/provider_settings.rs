@@ -694,19 +694,19 @@ async fn list_provider_settings_payload_rejects_openrouter_descriptor_with_wrong
 }
 
 #[test]
-fn provider_settings_record_rejects_legacy_single_provider_shape() {
-    let legacy = json!({
+fn provider_settings_record_rejects_old_single_provider_shape() {
+    let old = json!({
         "modelId": "gpt-5.4-mini",
         "providerId": "openai",
         "secretRef": "provider/workspace-local/openai/default"
     });
 
-    assert!(serde_json::from_value::<ProviderSettingsRecord>(legacy).is_err());
+    assert!(serde_json::from_value::<ProviderSettingsRecord>(old).is_err());
 }
 
 #[test]
 fn provider_settings_record_rejects_config_without_new_model_descriptor() {
-    let legacy = json!({
+    let old = json!({
         "defaultConfigId": "openai",
         "configs": [{
             "apiKey": "provider-test-token",
@@ -718,12 +718,12 @@ fn provider_settings_record_rejects_config_without_new_model_descriptor() {
         }]
     });
 
-    assert!(serde_json::from_value::<ProviderSettingsRecord>(legacy).is_err());
+    assert!(serde_json::from_value::<ProviderSettingsRecord>(old).is_err());
 }
 
 #[test]
-fn desktop_provider_settings_store_rejects_invalid_legacy_provider_settings_file() {
-    let workspace = unique_workspace("provider-settings-legacy-provider-settings");
+fn desktop_provider_settings_store_rejects_invalid_old_provider_settings_file() {
+    let workspace = unique_workspace("provider-settings-old-provider-settings");
     let settings_dir = workspace.join(".jyowo").join("runtime");
     std::fs::create_dir_all(&settings_dir).unwrap();
     let workspace = workspace.canonicalize().unwrap();
@@ -768,11 +768,11 @@ fn desktop_provider_settings_store_rejects_invalid_legacy_provider_settings_file
 
     let loaded = store
         .load_record()
-        .expect("production provider settings load must ignore legacy runtime file");
+        .expect("production provider settings load must ignore old runtime file");
 
     assert!(
         loaded.is_none(),
-        "legacy runtime provider settings must not be used as production fallback"
+        "old runtime provider settings must not be used as production fallback"
     );
     assert!(settings_path.exists());
 }

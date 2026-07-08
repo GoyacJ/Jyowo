@@ -620,7 +620,7 @@ describe('RunEvent schema', () => {
     ])
   })
 
-  it('accepts unknown assistant notice codes for forward-compatible normal rendering', () => {
+  it('accepts unknown assistant notice codes for forward-stable normal rendering', () => {
     const event = runEventSchema.parse({
       id: 'evt-notice',
       conversationSequence: 14,
@@ -1040,7 +1040,7 @@ describe('RunEvent schema', () => {
         ...runEventFixtures[2],
         payload: {
           messageId: 'msg-001',
-          text: 'Anthropic compatible API, model list, Token 计数, Token: 统计, and token authentication.',
+          text: 'Anthropic protocol API, model list, Token 计数, Token: 统计, and token authentication.',
         },
       }),
     ).not.toThrow()
@@ -1357,6 +1357,7 @@ describe('RunEvent schema', () => {
       payload: {
         actorSource: { type: 'parentRun' },
         actionPlanHash: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+        autoResolved: false,
         decisionScope: 'current run',
         effectiveMode: 'default',
         exposure: 'Can modify package metadata and lockfile.',

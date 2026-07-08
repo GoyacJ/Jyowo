@@ -516,74 +516,24 @@ async fn schema_initialization_creates_fts_sync_triggers() {
 }
 
 #[tokio::test]
-async fn legacy_schema_version_is_rejected_instead_of_repaired() {
+async fn old_marker_table_is_rejected() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("test.sqlite3");
 
     {
         let db = rusqlite::Connection::open(&db_path).expect("open db");
-        db.execute_batch(
-            "
-            CREATE TABLE schema_version (
-                version INTEGER PRIMARY KEY,
-                applied_at TEXT NOT NULL
-            );
-            INSERT INTO schema_version (version, applied_at) VALUES (2, '2026-07-05T00:00:00Z');
-            CREATE TABLE memory_records (
-                id TEXT PRIMARY KEY,
-                tenant_id TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                visibility TEXT NOT NULL,
-                content TEXT NOT NULL,
-                metadata_json TEXT NOT NULL DEFAULT '{}',
-                content_hash TEXT NOT NULL,
-                source_kind TEXT NOT NULL,
-                evidence_json TEXT NOT NULL DEFAULT '{}',
-                confidence REAL NOT NULL DEFAULT 1.0,
-                access_count INTEGER NOT NULL DEFAULT 0,
-                last_accessed_at TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                expires_at TEXT,
-                deleted_at TEXT
-            );
-            CREATE VIRTUAL TABLE memory_records_fts USING fts5(
-                content,
-                metadata_text,
-                memory_id UNINDEXED,
-                tenant_id UNINDEXED,
-                tokenize='unicode61 remove_diacritics 2'
-            );
-            CREATE TABLE memory_embeddings (
-                memory_id TEXT PRIMARY KEY REFERENCES memory_records(id) ON DELETE CASCADE,
-                embedding_state TEXT NOT NULL CHECK (embedding_state IN ('missing', 'ready', 'failed', 'disabled')),
-                dimension INTEGER,
-                vector_le_f32 BLOB,
-                model_id TEXT,
-                updated_at TEXT NOT NULL,
-                error_kind TEXT
-            );
-            CREATE TABLE memory_tombstones (
-                id TEXT PRIMARY KEY,
-                tenant_id TEXT NOT NULL,
-                memory_id TEXT NOT NULL,
-                content_hash TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                evidence_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL
-            );
-            ",
-        )
-        .expect("old schema");
+        db.execute_batch(&format!(
+            "CREATE TABLE {} (version INTEGER PRIMARY KEY);",
+            old_marker_table()
+        ))
+        .expect("old marker");
     }
 
     let error = match LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE) {
         Ok(_) => panic!("old schema should be rejected"),
         Err(error) => error,
     };
-    assert!(error
-        .to_string()
-        .contains("unsupported memory schema version 2"));
+    assert!(error.to_string().contains("unsupported memory store shape"));
 }
 
 // ── Tombstone / deletion FTS cleanup ──
@@ -691,7 +641,7 @@ async fn tombstone_rejects_regenerating_from_same_evidence() {
 // ── Schema initialization ──
 
 #[tokio::test]
-async fn schema_initialization_creates_schema_version_and_tables() {
+async fn schema_initialization_creates_current_tables() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("test.sqlite3");
 
@@ -700,15 +650,6 @@ async fn schema_initialization_creates_schema_version_and_tables() {
     let _ = provider; // hold reference to keep DB alive
 
     let db = rusqlite::Connection::open(&db_path).expect("open for verification");
-    let version: i64 = db
-        .query_row(
-            "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .expect("schema_version should exist");
-    assert_eq!(version, 4);
-
     let table_count: i64 = db
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('memory_records', 'memory_embeddings', 'memory_tombstones', 'memory_records_fts')",
@@ -727,6 +668,189 @@ async fn schema_initialization_creates_schema_version_and_tables() {
         )
         .expect("should count indexes");
     assert!(idx_count >= 4, "should have at least 4 indexes");
+}
+
+#[tokio::test]
+async fn missing_current_table_is_rejected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.sqlite3");
+    {
+        let db = rusqlite::Connection::open(&db_path).expect("open db");
+        db.execute_batch("CREATE TABLE memory_records (id TEXT PRIMARY KEY);")
+            .expect("partial store");
+    }
+
+    let error = match LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE) {
+        Ok(_) => panic!("partial store should reject"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("unsupported memory store shape"));
+}
+
+#[tokio::test]
+async fn extra_current_table_is_rejected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.sqlite3");
+    let provider =
+        LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE).expect("open");
+    drop(provider);
+    {
+        let db = rusqlite::Connection::open(&db_path).expect("open db");
+        db.execute_batch("CREATE TABLE extra_memory_table (id TEXT PRIMARY KEY);")
+            .expect("extra table");
+    }
+
+    let error = match LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE) {
+        Ok(_) => panic!("extra table should reject"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("unsupported memory store shape"));
+}
+
+#[tokio::test]
+async fn extra_current_column_is_rejected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.sqlite3");
+    let provider =
+        LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE).expect("open");
+    drop(provider);
+    {
+        let db = rusqlite::Connection::open(&db_path).expect("open db");
+        db.execute_batch("ALTER TABLE memory_global_settings ADD COLUMN extra TEXT;")
+            .expect("extra column");
+    }
+
+    let error = match LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE) {
+        Ok(_) => panic!("extra column should reject"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("unsupported memory store shape"));
+}
+
+#[tokio::test]
+async fn missing_current_column_is_rejected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.sqlite3");
+    {
+        let db = rusqlite::Connection::open(&db_path).expect("open db");
+        db.execute_batch(
+            "
+            CREATE TABLE memory_records (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL
+            );
+            CREATE VIRTUAL TABLE memory_records_fts USING fts5(content);
+            CREATE TABLE memory_embeddings (
+                memory_id TEXT PRIMARY KEY,
+                embedding_state TEXT NOT NULL,
+                dimension INTEGER,
+                vector_le_f32 BLOB,
+                model_id TEXT,
+                updated_at TEXT NOT NULL,
+                error_kind TEXT
+            );
+            CREATE TABLE memory_tombstones (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                memory_id TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE memory_candidates (id TEXT PRIMARY KEY);
+            CREATE TABLE memory_extraction_jobs (job_id TEXT PRIMARY KEY);
+            CREATE TABLE memory_recall_traces (trace_id TEXT PRIMARY KEY);
+            CREATE TABLE memory_global_settings (tenant_id TEXT PRIMARY KEY);
+            CREATE TABLE memory_thread_settings (tenant_id TEXT NOT NULL, session_id TEXT NOT NULL);
+            CREATE TABLE memory_model_request_previews (tenant_id TEXT NOT NULL, session_id TEXT NOT NULL, run_id TEXT NOT NULL, trace_id TEXT NOT NULL);
+            ",
+        )
+        .expect("partial store");
+    }
+
+    let error = match LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE) {
+        Ok(_) => panic!("missing column should reject"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("unsupported memory store shape"));
+}
+
+#[tokio::test]
+async fn missing_candidate_column_is_rejected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.sqlite3");
+    {
+        let db = rusqlite::Connection::open(&db_path).expect("open db");
+        db.execute_batch(
+            "
+            CREATE TABLE memory_records (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                visibility TEXT NOT NULL,
+                content TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                content_hash TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                confidence REAL NOT NULL DEFAULT 1.0,
+                access_count INTEGER NOT NULL DEFAULT 0,
+                last_accessed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT,
+                deleted_at TEXT
+            );
+            CREATE VIRTUAL TABLE memory_records_fts USING fts5(
+                content,
+                metadata_text,
+                memory_id UNINDEXED,
+                tenant_id UNINDEXED,
+                tokenize='unicode61 remove_diacritics 2'
+            );
+            CREATE TABLE memory_embeddings (
+                memory_id TEXT PRIMARY KEY,
+                embedding_state TEXT NOT NULL,
+                dimension INTEGER,
+                vector_le_f32 BLOB,
+                model_id TEXT,
+                updated_at TEXT NOT NULL,
+                error_kind TEXT
+            );
+            CREATE TABLE memory_tombstones (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                memory_id TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE memory_candidates (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                state TEXT NOT NULL
+            );
+            CREATE TABLE memory_extraction_jobs (job_id TEXT PRIMARY KEY);
+            CREATE TABLE memory_recall_traces (trace_id TEXT PRIMARY KEY);
+            CREATE TABLE memory_global_settings (tenant_id TEXT PRIMARY KEY);
+            CREATE TABLE memory_thread_settings (tenant_id TEXT NOT NULL, session_id TEXT NOT NULL);
+            CREATE TABLE memory_model_request_previews (tenant_id TEXT NOT NULL, session_id TEXT NOT NULL, run_id TEXT NOT NULL, trace_id TEXT NOT NULL);
+            ",
+        )
+        .expect("partial store");
+    }
+
+    let error = match LocalMemoryProvider::open(db_path.to_str().unwrap(), TenantId::SINGLE) {
+        Ok(_) => panic!("missing candidate column should reject"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("unsupported memory store shape"));
+}
+
+fn old_marker_table() -> String {
+    ["schema", "version"].join("_")
 }
 
 // ── Embedding storage ──

@@ -84,6 +84,7 @@ describe('run-event-view-model', () => {
     const event = runEventSchema.parse({
       ...runEventFixtures[9],
       payload: {
+        ...(runEventFixtures[9].payload as Record<string, unknown>),
         actorSource: { type: 'parentRun' },
         decisionScope: 'current run',
         exposure: 'Can modify package metadata and lockfile.',
@@ -118,6 +119,7 @@ describe('run-event-view-model', () => {
     const event = runEventSchema.parse({
       ...runEventFixtures[9],
       payload: {
+        ...(runEventFixtures[9].payload as Record<string, unknown>),
         actorSource: { type: 'parentRun' },
         autoResolved: true,
         decisionScope: 'current run',
@@ -144,6 +146,7 @@ describe('run-event-view-model', () => {
     const event = runEventSchema.parse({
       ...runEventFixtures[10],
       payload: {
+        ...(runEventFixtures[10].payload as Record<string, unknown>),
         decision: 'deny',
         requestId: '01HZ0000000000000000000001',
       },
@@ -347,6 +350,7 @@ describe('run-event-view-model', () => {
         ...runEventFixtures[9],
         sequence: 1,
         payload: {
+          ...(runEventFixtures[9].payload as Record<string, unknown>),
           actorSource: { type: 'parentRun' },
           decisionScope: 'current run',
           exposure: 'Can modify package metadata and lockfile.',
@@ -363,6 +367,7 @@ describe('run-event-view-model', () => {
         ...runEventFixtures[10],
         sequence: 2,
         payload: {
+          ...(runEventFixtures[10].payload as Record<string, unknown>),
           decision: 'approve',
           requestId: '01HZ0000000000000000000001',
         },

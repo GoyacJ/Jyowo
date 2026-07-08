@@ -4682,7 +4682,7 @@ pub(crate) fn plugin_rejection_reason_payload(reason: &RejectionReason) -> &'sta
         RejectionReason::NamespaceConflict { .. } => "NamespaceConflict",
         RejectionReason::DependencyUnsatisfied { .. } => "DependencyUnsatisfied",
         RejectionReason::DependencyCycle { .. } => "DependencyCycle",
-        RejectionReason::HarnessVersionIncompatible { .. } => "HarnessVersionIncompatible",
+        RejectionReason::HarnessVersionMismatch { .. } => "HarnessVersionMismatch",
         RejectionReason::SlotOccupied { .. } => "SlotOccupied",
         RejectionReason::AdmissionDenied { .. } => "AdmissionDenied",
         _ => "AdmissionDenied",

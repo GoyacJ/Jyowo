@@ -19,8 +19,8 @@ pub enum PluginError {
         declared: TrustLevel,
         source_label: String,
     },
-    #[error("harness version incompatible: required {required}, actual {actual}")]
-    HarnessVersionIncompatible { required: String, actual: String },
+    #[error("harness version mismatch: required {required}, actual {actual}")]
+    HarnessVersionMismatch { required: String, actual: String },
     #[error("activation failed: {0}")]
     ActivateFailed(String),
     #[error("deactivation failed: {0}")]

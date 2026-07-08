@@ -76,15 +76,15 @@ async fn skill_loader_package_source_ignores_root_markdown_files() {
     let package = root.join("release-notes");
     std::fs::create_dir_all(&package).expect("package dir");
     std::fs::write(
-        root.join("legacy.md"),
+        root.join("single-file.md"),
         r"---
-name: legacy
-description: Legacy single file
+name: single-file
+description: Single file
 ---
-Legacy body
+Single file body
 ",
     )
-    .expect("write legacy skill");
+    .expect("write root skill");
     std::fs::write(
         package.join("SKILL.md"),
         r"---

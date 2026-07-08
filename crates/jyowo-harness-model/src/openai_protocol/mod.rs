@@ -7,5 +7,5 @@ mod request;
 mod responses_codec;
 mod streaming;
 
-pub(crate) use client::{OpenAiCompatibleClient, OpenAiCompatibleProviderExt};
+pub(crate) use client::{OpenAiProtocolClient, OpenAiProtocolProviderExt};
 pub(crate) use dialect::OpenAiChatDialect;

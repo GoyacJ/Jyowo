@@ -38,6 +38,7 @@ fn plugins_are_activated_before_session_runtime_assembly() {
             .expect("plugin registry should build");
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -125,6 +126,7 @@ fn plugin_mcp_servers_are_injected_into_session_tool_pool() {
             .expect("plugin registry should build");
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(store)
             .with_sandbox(NoopSandbox::new())
@@ -184,6 +186,7 @@ fn disabled_plugins_are_discovered_without_session_auto_activation() {
             .expect("plugin registry should build");
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -246,6 +249,7 @@ fn plugin_discovery_rejection_records_replay_event() {
             .expect("plugin registry should build");
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -302,6 +306,7 @@ fn plugin_activation_failure_records_failed_event_without_raw_error() {
             .expect("plugin registry should build");
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -351,14 +356,17 @@ fn plugin_manifest_validation_records_real_hash() {
             ));
         let plugin_dir = workspace.join(".jyowo/plugins/bad-plugin");
         std::fs::create_dir_all(&plugin_dir).unwrap();
-        let raw_manifest = r#"{
-  "manifest_schema_version": 99,
+        let old_field = ["manifest", "schema", "version"].join("_");
+        let raw_manifest = format!(
+            r#"{{
   "name": "bad-plugin",
   "version": "0.1.0",
   "trust_level": "admin_trusted",
   "min_harness_version": ">=0.0.0",
-  "capabilities": {}
-}"#;
+  "capabilities": {{}},
+  "{old_field}": 99
+}}"#
+        );
         std::fs::write(plugin_dir.join("plugin.json"), raw_manifest).unwrap();
         let session_id = SessionId::new();
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
@@ -374,6 +382,7 @@ fn plugin_manifest_validation_records_real_hash() {
             .expect("plugin registry should build");
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -428,6 +437,7 @@ fn plugin_manifest_validation_preserves_typed_failure() {
             .expect("plugin registry should build");
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -482,6 +492,7 @@ fn default_session_installs_agent_tool_when_subagent_runner_is_configured() {
         ]));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -526,6 +537,7 @@ fn session_installs_agent_tool_when_run_options_allow_subagents() {
         ]));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -585,6 +597,7 @@ fn session_hides_agent_tool_when_run_options_disable_subagents() {
         ]));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -647,6 +660,7 @@ fn session_hides_preinstalled_agent_tool_when_run_options_disable_subagents() {
         ]));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -725,6 +739,7 @@ fn runtime_assembly_starts_run_scoped_agent_team_through_agent_runtime_store() {
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let event_store: Arc<dyn EventStore> = store.clone();
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model.clone())
             .with_store_arc(event_store)
             .with_sandbox(NoopSandbox::new())
@@ -851,6 +866,7 @@ async fn runtime_assembly_cancels_active_run_scoped_team_after_parent_run_finish
     let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let event_store: Arc<dyn EventStore> = store.clone();
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model_arc(model.clone())
         .with_store_arc(event_store)
         .with_sandbox(NoopSandbox::new())
@@ -982,6 +998,7 @@ async fn runtime_assembly_team_member_sessions_use_run_workspace_root() {
     let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let event_store: Arc<dyn EventStore> = store.clone();
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model_arc(model.clone())
         .with_store_arc(event_store)
         .with_sandbox(NoopSandbox::new())

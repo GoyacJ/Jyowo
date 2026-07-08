@@ -228,7 +228,7 @@ fn tool_result_part_uses_semantic_whitelist_shape() {
 }
 
 #[test]
-fn tool_event_shape_matches_spec_and_rejects_legacy_fields() {
+fn tool_event_shape_matches_spec_and_rejects_old_fields() {
     let event = ToolUseRequestedEvent {
         run_id: RunId::new(),
         tool_use_id: ToolUseId::new(),

@@ -1078,7 +1078,7 @@ fn write_test_supervisor_lock(workspace: &Path) -> TestSupervisorControl {
     std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
     let token = "test-background-supervisor-token";
     let token_hash = blake3::hash(token.as_bytes()).to_hex().to_string();
-    let workspace_id = blake3::hash(workspace.display().to_string().as_bytes())
+    let workspace_id = blake3::hash(format!("project:{}", workspace.display()).as_bytes())
         .to_hex()
         .to_string();
     std::fs::write(

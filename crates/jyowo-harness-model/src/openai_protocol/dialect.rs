@@ -21,11 +21,11 @@ impl Default for OpenAiChatDialect {
 #[cfg(test)]
 mod provider_dialect_tests {
     use super::OpenAiChatDialect;
-    use crate::openai_compatible::{OpenAiCompatibleClient, OpenAiCompatibleProviderExt};
+    use crate::openai_protocol::{OpenAiProtocolClient, OpenAiProtocolProviderExt};
 
     #[test]
-    fn generic_openai_compatible_client_uses_plain_dialect() {
-        let client = OpenAiCompatibleClient::from_api_key("provider-key", "http://localhost");
+    fn generic_openai_protocol_client_uses_plain_dialect() {
+        let client = OpenAiProtocolClient::from_api_key("provider-key", "http://localhost");
 
         assert_eq!(client.chat_dialect(), OpenAiChatDialect::Plain);
     }

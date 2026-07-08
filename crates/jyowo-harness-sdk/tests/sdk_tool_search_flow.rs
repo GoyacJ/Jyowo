@@ -213,7 +213,9 @@ fn harness_with_registry(
     jyowo_harness_sdk::Set<Arc<dyn harness_journal::EventStore>>,
     jyowo_harness_sdk::Set<Arc<dyn harness_sandbox::SandboxBackend>>,
 > {
+    let runtime_workspace = unique_workspace("sdk-tool-search-runtime");
     Harness::builder()
+        .with_workspace_root(&runtime_workspace)
         .with_model_arc(model)
         .with_store_arc(store)
         .with_sandbox(NoopSandbox::new())

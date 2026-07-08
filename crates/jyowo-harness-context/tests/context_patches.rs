@@ -148,7 +148,7 @@ async fn deferred_tools_delta_is_injected_into_next_user_turn_once() {
             session_id,
             DeferredToolsDeltaAttachment {
                 added_names: vec!["mcp__fixture__lookup".to_owned()],
-                removed_names: vec!["legacy_tool".to_owned()],
+                removed_names: vec!["old_tool".to_owned()],
                 source: ToolPoolChangeSource::InitialClassification,
                 at: chrono::Utc::now(),
                 initial: true,
@@ -170,7 +170,7 @@ async fn deferred_tools_delta_is_injected_into_next_user_turn_once() {
     let first_text = text(first.messages.last().unwrap());
     assert!(first_text.contains("<deferred-tools initial=\"true\""));
     assert!(first_text.contains("mcp__fixture__lookup"));
-    assert!(first_text.contains("legacy_tool"));
+    assert!(first_text.contains("old_tool"));
     assert!(first_text.ends_with("next turn"));
 
     let second = engine

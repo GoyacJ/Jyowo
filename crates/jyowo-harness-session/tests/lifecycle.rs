@@ -7,7 +7,7 @@ use harness_contracts::{
 };
 use harness_journal::{
     AppendMetadata, EventEnvelope, EventStore, PrunePolicy, PruneReport, ReplayCursor,
-    SchemaVersion, SessionFilter, SessionSnapshot, SessionSummary,
+    SessionFilter, SessionSnapshot, SessionSummary,
 };
 use harness_session::SessionProjection;
 use harness_session::{Session, SessionOptions};
@@ -207,7 +207,6 @@ impl EventStore for RecordingEventStore {
                 run_id: None,
                 correlation_id: harness_contracts::CorrelationId::new(),
                 causation_id: None,
-                schema_version: SchemaVersion::CURRENT,
                 recorded_at: harness_contracts::now(),
                 payload,
             })

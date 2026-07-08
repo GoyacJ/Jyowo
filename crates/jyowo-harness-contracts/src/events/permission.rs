@@ -18,17 +18,11 @@ pub struct PermissionRequestedEvent {
     pub fingerprint: Option<ExecFingerprint>,
     pub presented_options: Vec<PermissionDecisionOption>,
     pub interactivity: InteractivityLevel,
-    #[serde(default)]
     pub auto_resolved: bool,
-    #[serde(default, skip_serializing_if = "PermissionActorSource::is_parent_run")]
     pub actor_source: PermissionActorSource,
-    #[serde(default)]
     pub action_plan_hash: ActionPlanHash,
-    #[serde(default)]
     pub review: PermissionReview,
-    #[serde(default)]
     pub effective_mode: PermissionMode,
-    #[serde(default)]
     pub sandbox_policy: SandboxPolicySummary,
     pub causation_id: EventId,
     pub at: DateTime<Utc>,
@@ -73,19 +67,6 @@ pub enum PermissionActorSource {
     },
 }
 
-impl Default for PermissionActorSource {
-    fn default() -> Self {
-        Self::ParentRun
-    }
-}
-
-impl PermissionActorSource {
-    #[must_use]
-    pub fn is_parent_run(&self) -> bool {
-        matches!(self, Self::ParentRun)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PermissionResolvedEvent {
     pub request_id: RequestId,
@@ -94,11 +75,8 @@ pub struct PermissionResolvedEvent {
     pub scope: DecisionScope,
     pub fingerprint: Option<ExecFingerprint>,
     pub rationale: Option<String>,
-    #[serde(default)]
     pub action_plan_hash: ActionPlanHash,
-    #[serde(default)]
     pub decision_id: DecisionId,
-    #[serde(default)]
     pub auto_resolved: bool,
     pub at: DateTime<Utc>,
 }

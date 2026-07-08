@@ -519,18 +519,18 @@ const sandboxPolicySummarySchema = z
 const permissionRequestedPayloadSchema = z
   .object({
     actorSource: permissionActorSourceSchema,
-    actionPlanHash: actionPlanHashSchema.optional(),
-    autoResolved: z.boolean().optional().default(false),
+    actionPlanHash: actionPlanHashSchema,
+    autoResolved: z.boolean(),
     decisionOptions: z.array(permissionDecisionOptionSchema).optional(),
     decisionScope: permissionDisplayTextSchema,
     diffSummary: permissionDisplayTextSchema.optional(),
-    effectiveMode: permissionModeSchema.optional(),
+    effectiveMode: permissionModeSchema,
     exposure: permissionDisplayTextSchema,
     operation: permissionDisplayTextSchema,
     reason: permissionDisplayTextSchema,
-    review: permissionReviewSchema.optional(),
+    review: permissionReviewSchema,
     requestId: requestIdSchema,
-    sandboxPolicy: sandboxPolicySummarySchema.optional(),
+    sandboxPolicy: sandboxPolicySummarySchema,
     severity: z.enum(['low', 'medium', 'high', 'critical']),
     target: permissionDisplayTextSchema,
     toolUseId: z.string().min(1),
@@ -539,10 +539,10 @@ const permissionRequestedPayloadSchema = z
   .strict()
 const permissionResolvedPayloadSchema = z
   .object({
-    actionPlanHash: actionPlanHashSchema.optional(),
-    autoResolved: z.boolean().optional().default(false),
+    actionPlanHash: actionPlanHashSchema,
+    autoResolved: z.boolean(),
     decision: z.enum(['approve', 'deny']),
-    decisionId: z.string().min(1).optional(),
+    decisionId: z.string().min(1),
     requestId: requestIdSchema,
   })
   .strict()

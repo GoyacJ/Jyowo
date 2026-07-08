@@ -84,7 +84,7 @@ fn conversation_worktree_page_contains_typed_decision_tool_command_diff_and_arti
 }
 
 #[test]
-fn conversation_worktree_page_rejects_legacy_thinking_segment() {
+fn conversation_worktree_page_rejects_old_thinking_segment() {
     let raw = r#"{
       "turns":[{
         "id":"turn-1","conversationId":"conversation-1","position":1,
@@ -347,7 +347,7 @@ fn process_step_has_ui_visibility() {
 }
 
 #[test]
-fn schema_export_excludes_legacy_thinking_types() {
+fn schema_export_excludes_old_thinking_types() {
     let schemas = export_all_schemas();
 
     // New workbench types must be present
@@ -367,7 +367,7 @@ fn schema_export_excludes_legacy_thinking_types() {
         assert!(schemas.contains_key(key), "missing workbench schema: {key}");
     }
 
-    // Legacy thinking types must be absent
+    // Old thinking types must be absent
     for key in [
         "thinking_segment",
         "thinking_summary",
@@ -377,13 +377,13 @@ fn schema_export_excludes_legacy_thinking_types() {
     ] {
         assert!(
             !schemas.contains_key(key),
-            "legacy thinking schema must not be exported: {key}"
+            "old thinking schema must not be exported: {key}"
         );
     }
 
-    // Legacy permission state must be absent
+    // Old permission state must be absent
     assert!(
         !schemas.contains_key("tool_permission_state"),
-        "legacy tool_permission_state must not be exported"
+        "old tool_permission_state must not be exported"
     );
 }

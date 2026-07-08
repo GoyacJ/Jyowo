@@ -89,8 +89,8 @@ fn get_execution_settings_defaults_to_standard_mode() {
 }
 
 #[test]
-fn get_execution_settings_ignores_legacy_runtime_record() {
-    let workspace = unique_workspace("execution-settings-ignore-legacy-runtime");
+fn get_execution_settings_ignores_old_runtime_record() {
+    let workspace = unique_workspace("execution-settings-ignore-old-runtime");
     std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
     let state = DesktopRuntimeState::with_workspace_for_test(workspace)
         .expect("runtime state should initialize");
@@ -102,7 +102,7 @@ fn get_execution_settings_ignores_legacy_runtime_record() {
     std::fs::create_dir_all(settings_path.parent().unwrap())
         .expect("settings directory should exist");
     std::fs::write(&settings_path, r#"{"permission_mode":"auto"}"#)
-        .expect("legacy execution settings should write");
+        .expect("old execution settings should write");
 
     let settings = get_execution_settings_with_store(
         &DesktopExecutionSettingsStore::new(workspace.to_path_buf()),

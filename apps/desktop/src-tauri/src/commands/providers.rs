@@ -448,8 +448,8 @@ fn provider_lifecycle_record_from_profile(
         harness_contracts::ProviderProfileModelLifecycle::Preview => {
             ProviderModelLifecycleRecord::Preview
         }
-        harness_contracts::ProviderProfileModelLifecycle::Deprecated { retirement_date } => {
-            ProviderModelLifecycleRecord::Deprecated { retirement_date }
+        harness_contracts::ProviderProfileModelLifecycle::Retiring { retirement_date } => {
+            ProviderModelLifecycleRecord::Retiring { retirement_date }
         }
     }
 }
@@ -2168,8 +2168,8 @@ pub(crate) fn model_lifecycle_payload(lifecycle: ModelLifecycle) -> ModelLifecyc
             kind: "preview",
             retirement_date: None,
         },
-        ModelLifecycle::Deprecated { retirement_date } => ModelLifecyclePayload {
-            kind: "deprecated",
+        ModelLifecycle::Retiring { retirement_date } => ModelLifecyclePayload {
+            kind: "retiring",
             retirement_date: Some(retirement_date.to_string()),
         },
     }
@@ -2220,11 +2220,9 @@ pub(crate) fn model_lifecycle_record(lifecycle: &ModelLifecycle) -> ProviderMode
     match lifecycle {
         ModelLifecycle::Stable => ProviderModelLifecycleRecord::Stable,
         ModelLifecycle::Preview => ProviderModelLifecycleRecord::Preview,
-        ModelLifecycle::Deprecated { retirement_date } => {
-            ProviderModelLifecycleRecord::Deprecated {
-                retirement_date: retirement_date.to_string(),
-            }
-        }
+        ModelLifecycle::Retiring { retirement_date } => ProviderModelLifecycleRecord::Retiring {
+            retirement_date: retirement_date.to_string(),
+        },
     }
 }
 
@@ -2288,12 +2286,12 @@ pub(crate) fn model_lifecycle_from_record(
     match record {
         ProviderModelLifecycleRecord::Stable => Ok(ModelLifecycle::Stable),
         ProviderModelLifecycleRecord::Preview => Ok(ModelLifecycle::Preview),
-        ProviderModelLifecycleRecord::Deprecated { retirement_date } => {
+        ProviderModelLifecycleRecord::Retiring { retirement_date } => {
             let retirement_date =
                 NaiveDate::parse_from_str(retirement_date, "%Y-%m-%d").map_err(|_| {
                     runtime_init_failed("provider model descriptor is invalid".to_owned())
                 })?;
-            Ok(ModelLifecycle::Deprecated { retirement_date })
+            Ok(ModelLifecycle::Retiring { retirement_date })
         }
     }
 }
@@ -2643,8 +2641,8 @@ fn provider_profile_lifecycle_from_record(
         ProviderModelLifecycleRecord::Preview => {
             harness_contracts::ProviderProfileModelLifecycle::Preview
         }
-        ProviderModelLifecycleRecord::Deprecated { retirement_date } => {
-            harness_contracts::ProviderProfileModelLifecycle::Deprecated {
+        ProviderModelLifecycleRecord::Retiring { retirement_date } => {
+            harness_contracts::ProviderProfileModelLifecycle::Retiring {
                 retirement_date: retirement_date.clone(),
             }
         }

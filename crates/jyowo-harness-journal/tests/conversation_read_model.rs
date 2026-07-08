@@ -189,7 +189,6 @@ fn envelope_with_run(
         run_id,
         correlation_id: CorrelationId::new(),
         causation_id: None,
-        schema_version: SchemaVersion::CURRENT,
         recorded_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH
             + chrono::Duration::seconds(offset as i64),
         payload,

@@ -166,8 +166,10 @@ async fn admin_custom_tool_search_scorer_changes_result_order() {
         )))
         .build()
         .expect("tool registry should build");
+    let runtime_root = unique_workspace("sdk-tool-search-custom-scorer-runtime");
 
     let harness = Harness::builder()
+        .with_workspace_root(runtime_root)
         .with_model_arc(model)
         .with_store_arc(store.clone())
         .with_sandbox(testing::NoopSandbox::new())
@@ -228,7 +230,9 @@ fn harness_with_registry(
     jyowo_harness_sdk::Set<Arc<dyn harness_journal::EventStore>>,
     jyowo_harness_sdk::Set<Arc<dyn harness_sandbox::SandboxBackend>>,
 > {
+    let runtime_root = unique_workspace("sdk-tool-search-runtime");
     Harness::builder()
+        .with_workspace_root(runtime_root)
         .with_model_arc(model)
         .with_store_arc(Arc::new(testing::InMemoryEventStore::new(Arc::new(
             testing::NoopRedactor,

@@ -1641,7 +1641,7 @@ const providerIdSchema = z.string().trim().min(1)
 
 const modelLifecycleSchema = z
   .object({
-    kind: z.enum(['stable', 'preview', 'deprecated']),
+    kind: z.enum(['stable', 'preview', 'retiring']),
     retirementDate: z.string().min(1).optional(),
   })
   .strict()

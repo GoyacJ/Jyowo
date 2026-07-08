@@ -276,6 +276,7 @@ mod capability_route {
             FileBlobStore::open(workspace.join(".jyowo").join("runtime").join("blobs"))
                 .expect("blob store should open");
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(Arc::clone(&provider) as Arc<dyn ModelProvider>)
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())

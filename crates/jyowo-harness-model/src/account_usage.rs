@@ -990,7 +990,16 @@ struct DeepSeekBalanceInfo {
     topped_up_balance: String,
 }
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    any(
+        feature = "anthropic",
+        feature = "codex",
+        feature = "deepseek",
+        feature = "openai",
+        feature = "openrouter"
+    )
+))]
 mod tests {
     use super::*;
     use chrono::TimeZone;

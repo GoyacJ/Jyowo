@@ -12,6 +12,7 @@ fn create_session_uses_engine_runtime_path() {
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default().with_events(vec![
                 ModelStreamEvent::ContentBlockDelta {
                     index: 0,
@@ -57,6 +58,7 @@ fn create_session_rejects_unknown_model_id_fail_closed() {
         let workspace = unique_workspace("sdk-unknown-model");
         std::fs::create_dir_all(&workspace).unwrap();
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -82,6 +84,7 @@ fn conversation_facade_opens_submits_and_pages_session_events() {
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default().with_events(vec![
                 ModelStreamEvent::ContentBlockDelta {
                     index: 0,
@@ -170,6 +173,7 @@ fn conversation_facade_pages_and_deletes_when_model_runtime_defaults_change() {
         let session_id = SessionId::new();
         let provider = Arc::new(TwoModelProvider);
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(provider)
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -238,6 +242,7 @@ fn conversation_turn_permission_override_is_run_scoped() {
             ],
         ));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -308,7 +313,7 @@ fn conversation_turn_permission_override_is_run_scoped() {
 #[test]
 fn session_hash_accepts_permission_mode_variant_payload() {
     block_on(async {
-        let workspace = unique_workspace("sdk-legacy-session-permission-hash");
+        let workspace = unique_workspace("sdk-old-session-permission-hash");
         std::fs::create_dir_all(&workspace).unwrap();
         let session_id = SessionId::new();
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
@@ -317,16 +322,17 @@ fn session_hash_accepts_permission_mode_variant_payload() {
             vec![vec![ModelStreamEvent::MessageStop]],
         ));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
             .build()
             .await
             .expect("harness should build");
-        let mut legacy_options = SessionOptions::new(&workspace)
+        let mut old_options = SessionOptions::new(&workspace)
             .with_session_id(session_id)
             .with_permission_mode(PermissionMode::BypassPermissions);
-        legacy_options.workspace_root = legacy_options
+        old_options.workspace_root = old_options
             .workspace_root
             .canonicalize()
             .expect("workspace root should canonicalize");
@@ -339,14 +345,14 @@ fn session_hash_accepts_permission_mode_variant_payload() {
                 &[Event::SessionCreated(SessionCreatedEvent {
                     session_id,
                     tenant_id: TenantId::SINGLE,
-                    options_hash: session_options_hash(&legacy_options),
+                    options_hash: session_options_hash(&old_options),
                     snapshot_id: SnapshotId::from_u128(1),
                     effective_config_hash: ConfigHash([1; 32]),
                     created_at: harness_contracts::now(),
                 })],
             )
             .await
-            .expect("legacy session should be written");
+            .expect("old session should be written");
         let receipt = harness
             .submit_conversation_turn(conversation_turn_request(
                 current_options,
@@ -377,6 +383,7 @@ fn conversation_session_hash_allows_permission_mode_variant() {
             ],
         ));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model)
             .with_store_arc(store)
             .with_sandbox(NoopSandbox::new())
@@ -452,6 +459,7 @@ fn runtime_assembly_conversation_allows_provider_model_switch_per_run() {
             .with_identity("minimax", "minimax-m3", "MiniMax M3"),
         );
         let deepseek_harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(deepseek)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -459,6 +467,7 @@ fn runtime_assembly_conversation_allows_provider_model_switch_per_run() {
             .await
             .expect("deepseek harness should build");
         let minimax_harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(minimax)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -541,6 +550,7 @@ fn runtime_assembly_run_config_changes_do_not_block_session_and_change_run_hash(
             ],
         ));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(model)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -625,6 +635,7 @@ fn effective_config_hash_tracks_runtime_prompt_context() {
             vec![vec![ModelStreamEvent::MessageStop]],
         ));
         let first_harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(first_model)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -641,6 +652,7 @@ fn effective_config_hash_tracks_runtime_prompt_context() {
             vec![vec![ModelStreamEvent::MessageStop]],
         ));
         let second_harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model_arc(second_model)
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -679,6 +691,7 @@ async fn conversation_facade_cancels_active_run_through_sdk_registry() {
     let provider = Arc::new(BlockingSkillListProvider::new(ToolUseId::new()));
 
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model_arc(provider.clone())
         .with_store_arc(store.clone())
         .with_sandbox(NoopSandbox::new())
@@ -742,6 +755,7 @@ async fn conversation_facade_delete_cancels_active_run_and_blocks_late_appends()
     let provider = Arc::new(BlockingSkillListProvider::new(ToolUseId::new()));
 
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model_arc(provider.clone())
         .with_store_arc(store.clone())
         .with_sandbox(NoopSandbox::new())
@@ -826,6 +840,7 @@ async fn conversation_facade_hides_and_deletes_malformed_session_streams() {
         .expect("malformed stream should be written for the regression test");
 
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model(TestModelProvider::default())
         .with_store_arc(store.clone())
         .with_sandbox(NoopSandbox::new())
@@ -877,6 +892,7 @@ fn conversation_facade_rejects_tenant_policy_bypass_before_reading_events() {
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
 
         let permissive = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())
@@ -897,6 +913,7 @@ fn conversation_facade_rejects_tenant_policy_bypass_before_reading_events() {
             .expect("shared tenant session should be created");
 
         let restricted = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store_arc(store)
             .with_sandbox(NoopSandbox::new())
@@ -956,6 +973,7 @@ fn conversation_facade_reopens_with_workspace_bound_options() {
             ModelStreamEvent::MessageStop,
         ]));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace_root)
             .with_model_arc(model.clone())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -1013,6 +1031,7 @@ fn conversation_facade_rejects_duplicate_session_created_with_mismatched_options
         let session_id = SessionId::new();
         let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
         let harness = Harness::builder()
+            .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
             .with_store_arc(store.clone())
             .with_sandbox(NoopSandbox::new())

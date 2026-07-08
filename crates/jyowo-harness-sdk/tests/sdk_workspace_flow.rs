@@ -23,9 +23,12 @@ use serde_json::json;
 
 #[tokio::test]
 async fn sdk_workspace_flow_binds_session_loads_bootstrap_and_merges_defaults() {
+    let root = unique_workspace("sdk-workspace-flow");
+    std::fs::write(root.join("AGENTS.md"), "workspace bootstrap").unwrap();
     let model = Arc::new(TestModelProvider::default());
     let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let harness = Harness::builder()
+        .with_workspace_root(&root)
         .with_model_arc(model.clone())
         .with_store_arc(store)
         .with_sandbox(NoopSandbox::new())
@@ -35,8 +38,6 @@ async fn sdk_workspace_flow_binds_session_loads_bootstrap_and_merges_defaults() 
         .build()
         .await
         .expect("harness should build");
-    let root = unique_workspace("sdk-workspace-flow");
-    std::fs::write(root.join("AGENTS.md"), "workspace bootstrap").unwrap();
 
     let workspace = harness
         .create_workspace(
@@ -96,6 +97,7 @@ async fn sdk_skill_flow_uses_turn_snapshot_then_next_turn_sees_reload() {
     });
 
     let harness = Harness::builder()
+        .with_workspace_root(&workspace)
         .with_model_arc(model)
         .with_store_arc(store.clone())
         .with_sandbox(NoopSandbox::new())
