@@ -20,7 +20,7 @@ use wiremock::{
 async fn deepseek_stream_captures_reasoning_content_as_private_continuation() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
+        .and(path("/chat/completions"))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "text/event-stream")
@@ -60,7 +60,7 @@ async fn deepseek_stream_captures_reasoning_content_as_private_continuation() {
 async fn deepseek_non_stream_captures_reasoning_content_as_private_continuation() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
+        .and(path("/chat/completions"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "ds_1",
             "choices": [{
@@ -103,7 +103,7 @@ async fn deepseek_non_stream_captures_reasoning_content_as_private_continuation(
 async fn deepseek_second_request_replays_reasoning_content_for_assistant_tool_call() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
+        .and(path("/chat/completions"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "ds_2",
             "choices": [{
@@ -137,7 +137,7 @@ async fn deepseek_second_request_replays_reasoning_content_for_assistant_tool_ca
 async fn deepseek_missing_required_reasoning_continuation_fails_closed_before_request() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
+        .and(path("/chat/completions"))
         .respond_with(ResponseTemplate::new(200))
         .mount(&server)
         .await;
@@ -188,7 +188,7 @@ async fn deepseek_invalid_reasoning_continuation_fails_closed_before_request() {
     for invalid_record in invalid_cases {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
+            .and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200))
             .mount(&server)
             .await;

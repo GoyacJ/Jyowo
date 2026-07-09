@@ -271,6 +271,7 @@ impl ModelRuntimeSemantics {
                 continuation_kind: ProviderContinuationKind::ReasoningReplay,
                 required_for_assistant_tool_replay: true,
             },
+            cache_protocol: CacheProtocolSemantics::OpenAiAuto,
             provider_continuation_dialect: Some("openai_chat.deepseek".to_owned()),
             ..Self::openai_chat_plain()
         }
@@ -732,6 +733,7 @@ impl ModelErrorExt for ModelError {
     fn classify(&self) -> ErrorClass {
         match self {
             Self::RateLimited(_) => ErrorClass::RateLimited { retry_after: None },
+            Self::InsufficientBalance(_) => ErrorClass::Fatal,
             Self::ContextTooLong { .. } => ErrorClass::ContextOverflow,
             Self::AuthExpired(_) => ErrorClass::AuthExpired,
             Self::ProviderUnavailable(_) | Self::Io(_) => ErrorClass::Transient,

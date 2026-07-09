@@ -9,9 +9,11 @@
 
 use chrono::Utc;
 use futures::StreamExt;
-use harness_contracts::{Message, MessageId, MessagePart, MessageRole, StopReason, UsageSnapshot};
+use harness_contracts::{
+    Message, MessageId, MessagePart, MessageRole, ModelError, StopReason, UsageSnapshot,
+};
 use harness_model::*;
-use serde_json::Value;
+use serde_json::{json, Value};
 use wiremock::{
     matchers::{header, method, path},
     Mock, MockServer, ResponseTemplate,
@@ -63,7 +65,14 @@ async fn assert_streaming_provider<P>(
         .mount(server)
         .await;
 
-    assert_eq!(provider.prompt_cache_style(), PromptCacheStyle::None);
+    if provider.provider_id() == "deepseek" {
+        assert_eq!(
+            provider.prompt_cache_style(),
+            PromptCacheStyle::OpenAi { auto: true }
+        );
+    } else {
+        assert_eq!(provider.prompt_cache_style(), PromptCacheStyle::None);
+    }
     assert!(provider
         .supported_models()
         .iter()
@@ -73,7 +82,7 @@ async fn assert_streaming_provider<P>(
                 .conversation_capability
                 .input_modalities
                 .contains(&ModelModality::Image)
-            && !model.conversation_capability.reasoning));
+            && (provider.provider_id() == "deepseek" || !model.conversation_capability.reasoning)));
 
     let events = provider
         .infer(request(model_id), InferContext::for_test())
@@ -138,8 +147,345 @@ provider_test!(
     DEEPSEEK_API_KEY_ENV,
     "DEEPSEEK_API_KEY",
     "deepseek-v4-flash",
-    "/v1/chat/completions"
+    "/chat/completions"
 );
+
+#[cfg(feature = "deepseek")]
+#[test]
+fn provider_deepseek_catalog_matches_official_capabilities_and_pricing() {
+    let provider = DeepSeekProvider::from_api_key("provider-key");
+    let models = provider.supported_models();
+    let flash = models
+        .iter()
+        .find(|model| model.model_id == "deepseek-v4-flash")
+        .expect("DeepSeek V4 Flash should be listed");
+    assert!(flash.conversation_capability.reasoning);
+    assert!(flash.conversation_capability.prompt_cache);
+    assert!(flash.conversation_capability.structured_output);
+    let flash_pricing = flash.pricing.as_ref().expect("Flash pricing should be set");
+    assert_eq!(flash_pricing.input_per_million.to_string(), "0.14");
+    assert_eq!(
+        flash_pricing.cache_read_per_million.unwrap().to_string(),
+        "0.0028"
+    );
+    assert_eq!(flash_pricing.output_per_million.to_string(), "0.28");
+
+    let pro = models
+        .iter()
+        .find(|model| model.model_id == "deepseek-v4-pro")
+        .expect("DeepSeek V4 Pro should be listed");
+    assert!(pro.conversation_capability.reasoning);
+    assert!(pro.conversation_capability.prompt_cache);
+    assert!(pro.conversation_capability.structured_output);
+    let pro_pricing = pro.pricing.as_ref().expect("Pro pricing should be set");
+    assert_eq!(pro_pricing.input_per_million.to_string(), "0.435");
+    assert_eq!(
+        pro_pricing.cache_read_per_million.unwrap().to_string(),
+        "0.003625"
+    );
+    assert_eq!(pro_pricing.output_per_million.to_string(), "0.87");
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_v1_base_url_naturally_extends_chat_path() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(deepseek_ok_json())
+        .mount(&server)
+        .await;
+    let provider = DeepSeekProvider::from_api_key("provider-key")
+        .with_base_url(format!("{}/v1", server.uri()));
+
+    provider
+        .infer(deepseek_request(false), InferContext::for_test())
+        .await
+        .expect("request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_default_thinking_removes_sampling_parameters() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(deepseek_ok_json())
+        .mount(&server)
+        .await;
+    let provider = DeepSeekProvider::from_api_key("provider-key").with_base_url(server.uri());
+    let mut req = deepseek_request(false);
+    req.temperature = Some(0.7);
+    req.extra = json!({
+        "top_p": 0.8,
+        "presence_penalty": 0.1,
+        "frequency_penalty": 0.2,
+        "reasoning_effort": "high"
+    });
+
+    provider
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert!(body.get("thinking").is_none());
+    assert!(body.get("temperature").is_none());
+    assert!(body.get("top_p").is_none());
+    assert!(body.get("presence_penalty").is_none());
+    assert!(body.get("frequency_penalty").is_none());
+    assert_eq!(body["reasoning_effort"], "high");
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_thinking_disabled_keeps_sampling_parameters() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(deepseek_ok_json())
+        .mount(&server)
+        .await;
+    let provider = DeepSeekProvider::from_api_key("provider-key").with_base_url(server.uri());
+    let mut req = deepseek_request(false);
+    req.temperature = Some(0.7);
+    req.extra = json!({
+        "thinking": { "disabled": true },
+        "top_p": 0.8,
+        "presence_penalty": 0.1,
+        "frequency_penalty": 0.2
+    });
+
+    provider
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["thinking"]["disabled"], true);
+    assert!((body["temperature"].as_f64().unwrap() - 0.7).abs() < 0.0001);
+    assert_eq!(body["top_p"], json!(0.8));
+    assert_eq!(body["presence_penalty"], json!(0.1));
+    assert_eq!(body["frequency_penalty"], json!(0.2));
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_non_stream_maps_cache_hit_miss_usage() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "ds_1",
+            "choices": [{
+                "message": { "role": "assistant", "content": "ok" },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "prompt_cache_miss_tokens": 3,
+                "prompt_cache_hit_tokens": 7,
+                "completion_tokens": 2
+            }
+        })))
+        .mount(&server)
+        .await;
+    let provider = DeepSeekProvider::from_api_key("provider-key").with_base_url(server.uri());
+
+    let events = provider
+        .infer(deepseek_request(false), InferContext::for_test())
+        .await
+        .expect("request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(events.contains(&ModelStreamEvent::MessageDelta {
+        stop_reason: Some(StopReason::EndTurn),
+        usage_delta: UsageSnapshot {
+            input_tokens: 3,
+            output_tokens: 2,
+            cache_read_tokens: 7,
+            cache_write_tokens: 0,
+            cost_micros: 0,
+            tool_calls: 0,
+        },
+    }));
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_stream_maps_cache_hit_miss_usage() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    concat!(
+                        "data: {\"id\":\"ds_1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"prompt_cache_miss_tokens\":3,\"prompt_cache_hit_tokens\":7,\"completion_tokens\":2}}\n\n",
+                        "data: [DONE]\n\n",
+                    ),
+                    "text/event-stream",
+                ),
+        )
+        .mount(&server)
+        .await;
+    let provider = DeepSeekProvider::from_api_key("provider-key").with_base_url(server.uri());
+
+    let events = provider
+        .infer(deepseek_request(true), InferContext::for_test())
+        .await
+        .expect("request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(events.contains(&ModelStreamEvent::MessageDelta {
+        stop_reason: Some(StopReason::EndTurn),
+        usage_delta: UsageSnapshot {
+            input_tokens: 3,
+            output_tokens: 2,
+            cache_read_tokens: 7,
+            cache_write_tokens: 0,
+            cost_micros: 0,
+            tool_calls: 0,
+        },
+    }));
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_http_402_maps_to_insufficient_balance() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(402).set_body_json(json!({
+            "error": { "message": "Insufficient Balance" }
+        })))
+        .mount(&server)
+        .await;
+    let provider = DeepSeekProvider::from_api_key("provider-key").with_base_url(server.uri());
+
+    let error = match provider
+        .infer(deepseek_request(false), InferContext::for_test())
+        .await
+    {
+        Ok(_) => panic!("402 should fail"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ModelError::InsufficientBalance(message) if message == "Insufficient Balance"
+    ));
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_maps_official_finish_reasons() {
+    for (finish_reason, expected) in [
+        ("content_filter", StopReason::ContentFiltered),
+        (
+            "insufficient_system_resource",
+            StopReason::ProviderResourceExhausted,
+        ),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "ds_1",
+                "choices": [{
+                    "message": { "role": "assistant", "content": "" },
+                    "finish_reason": finish_reason
+                }]
+            })))
+            .mount(&server)
+            .await;
+        let provider = DeepSeekProvider::from_api_key("provider-key").with_base_url(server.uri());
+
+        let events = provider
+            .infer(deepseek_request(false), InferContext::for_test())
+            .await
+            .expect("request should succeed")
+            .collect::<Vec<_>>()
+            .await;
+
+        assert!(events.contains(&ModelStreamEvent::MessageDelta {
+            stop_reason: Some(expected),
+            usage_delta: UsageSnapshot::default(),
+        }));
+    }
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_model_concurrency_permit_is_held_until_stream_drop() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(deepseek_ok_json())
+        .mount(&server)
+        .await;
+    let provider = DeepSeekProvider::from_api_key("provider-key")
+        .with_base_url(server.uri())
+        .with_model_concurrency_limits(0, 1);
+
+    let first_stream = provider
+        .infer(deepseek_request(false), InferContext::for_test())
+        .await
+        .expect("first request should acquire the only flash permit");
+    let second = tokio::spawn({
+        let provider = provider.clone();
+        async move {
+            provider
+                .infer(deepseek_request(false), InferContext::for_test())
+                .await
+        }
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(!second.is_finished());
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+
+    drop(first_stream);
+    let second_stream = tokio::time::timeout(std::time::Duration::from_secs(1), second)
+        .await
+        .expect("second request should acquire permit after first stream drop")
+        .expect("second task should not panic")
+        .expect("second request should succeed");
+    second_stream.collect::<Vec<_>>().await;
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+#[cfg(feature = "deepseek")]
+fn deepseek_request(stream: bool) -> ModelRequest {
+    let mut req = request("deepseek-v4-flash");
+    req.stream = stream;
+    req
+}
+
+#[cfg(feature = "deepseek")]
+fn deepseek_ok_json() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({
+        "id": "ds_1",
+        "choices": [{
+            "message": { "role": "assistant", "content": "ok" },
+            "finish_reason": "stop"
+        }],
+        "usage": {}
+    }))
+}
 
 #[cfg(feature = "minimax")]
 #[test]

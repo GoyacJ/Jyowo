@@ -35,6 +35,8 @@ pub enum ModelError {
     Message(String),
     #[error("rate limited: {0}")]
     RateLimited(String),
+    #[error("insufficient balance: {0}")]
+    InsufficientBalance(String),
     #[error("context too long: tokens={tokens}, max={max}")]
     ContextTooLong { tokens: usize, max: usize },
     #[error("invalid request: {0}")]

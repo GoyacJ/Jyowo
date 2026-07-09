@@ -240,7 +240,7 @@ domestic_contract!(
     contract_deepseek_provider,
     DeepSeekProvider,
     "deepseek-v4-flash",
-    "/v1/chat/completions"
+    "/chat/completions"
 );
 domestic_contract!(
     "minimax",

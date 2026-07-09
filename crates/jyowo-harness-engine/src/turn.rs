@@ -2937,6 +2937,7 @@ fn model_error_class(error: &ModelError) -> &'static str {
     match error {
         ModelError::Message(_) => "message",
         ModelError::RateLimited(_) => "rate_limited",
+        ModelError::InsufficientBalance(_) => "insufficient_balance",
         ModelError::ContextTooLong { .. } => "context_too_long",
         ModelError::InvalidRequest(_) => "invalid_request",
         ModelError::AllCredentialsBanned => "all_credentials_banned",

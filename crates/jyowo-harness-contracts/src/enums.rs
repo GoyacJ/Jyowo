@@ -102,6 +102,8 @@ pub enum StopReason {
     ToolUse,
     MaxIterations,
     Interrupt,
+    ContentFiltered,
+    ProviderResourceExhausted,
     Error(String),
 }
 

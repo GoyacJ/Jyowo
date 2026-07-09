@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::{ContentDelta, ContentType, ErrorClass, ErrorHints, ModelStream, ModelStreamEvent};
 
-use super::chat_codec::{stop_reason, usage, OpenAiUsage};
+use super::chat_codec::{stop_reason, usage_for_dialect, OpenAiUsage};
 use super::continuation;
 use super::dialect::OpenAiChatDialect;
 
@@ -203,7 +203,7 @@ impl OpenAiStreamState {
             self.started = true;
             events.push(ModelStreamEvent::MessageStart {
                 message_id: payload.id.clone().unwrap_or_default(),
-                usage: usage(None),
+                usage: usage_for_dialect(None, self.dialect),
             });
         }
 
@@ -245,7 +245,7 @@ impl OpenAiStreamState {
                 }
                 events.push(ModelStreamEvent::MessageDelta {
                     stop_reason: Some(stop_reason(&reason)),
-                    usage_delta: usage(payload.usage.as_ref()),
+                    usage_delta: usage_for_dialect(payload.usage.as_ref(), self.dialect),
                 });
                 self.terminal_pending = true;
             }
@@ -255,7 +255,7 @@ impl OpenAiStreamState {
             if !self.stopped && !finish_reason_seen {
                 events.push(ModelStreamEvent::MessageDelta {
                     stop_reason: None,
-                    usage_delta: usage(Some(usage_value)),
+                    usage_delta: usage_for_dialect(Some(usage_value), self.dialect),
                 });
             }
             events.extend(self.finish_message());
