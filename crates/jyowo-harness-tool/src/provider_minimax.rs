@@ -510,8 +510,9 @@ impl MinimaxApiClient {
                 redact_secret(&body_str, self.api_key.expose_secret())
             )));
         }
-        serde_json::from_str(&body_str)
-            .map_err(|error| MinimaxProviderClientError::UnexpectedResponse(error.to_string()))
+        let value = serde_json::from_str(&body_str)
+            .map_err(|error| MinimaxProviderClientError::UnexpectedResponse(error.to_string()))?;
+        check_minimax_business_error(value, self.api_key.expose_secret())
     }
 
     #[cfg(test)]
@@ -527,8 +528,9 @@ impl MinimaxApiClient {
                 redact_secret(&body, self.api_key.expose_secret())
             )));
         }
-        serde_json::from_str(&body)
-            .map_err(|error| MinimaxProviderClientError::UnexpectedResponse(error.to_string()))
+        let value = serde_json::from_str(&body)
+            .map_err(|error| MinimaxProviderClientError::UnexpectedResponse(error.to_string()))?;
+        check_minimax_business_error(value, self.api_key.expose_secret())
     }
 
     fn broker_headers(&self) -> Result<BTreeMap<String, String>, MinimaxProviderClientError> {
@@ -614,6 +616,38 @@ fn redact_secret(text: &str, secret: &str) -> String {
     } else {
         text.replace(secret, "[REDACTED]")
     }
+}
+
+fn check_minimax_business_error(
+    value: Value,
+    secret: &str,
+) -> Result<Value, MinimaxProviderClientError> {
+    let Some(base_resp) = value.get("base_resp") else {
+        return Ok(value);
+    };
+    let status_code = base_resp
+        .get("status_code")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    if status_code == 0 {
+        return Ok(value);
+    }
+
+    let status_msg = base_resp
+        .get("status_msg")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let trace_id = base_resp
+        .get("trace_id")
+        .or_else(|| value.get("trace_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let error = format!(
+        "MiniMax API business error: status_code={status_code}, status_msg={status_msg}, trace_id={trace_id}"
+    );
+    Err(MinimaxProviderClientError::ProviderUnavailable(
+        redact_secret(&error, secret),
+    ))
 }
 
 fn multipart_body(purpose: &str, file_name: &str, bytes: Vec<u8>) -> Vec<u8> {

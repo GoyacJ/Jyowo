@@ -164,7 +164,7 @@ fn every_runtime_descriptor_has_explicit_semantics() {
         for descriptor in entry.models {
             assert_eq!(
                 descriptor.runtime_semantics,
-                expected_runtime_semantics(&entry.provider_id),
+                expected_runtime_semantics(&entry.provider_id, &descriptor.model_id),
                 "{}:{} should use the provider's explicit runtime semantics",
                 entry.provider_id,
                 descriptor.model_id
@@ -213,27 +213,28 @@ fn provider_registry_resolves_deepseek_with_private_replay_semantics() {
     }
 
     #[cfg(not(feature = "deepseek"))]
-    assert_source_contains(
-        "deepseek.rs",
-        "ModelRuntimeSemantics::openai_chat_deepseek()",
-    );
+    assert_source_contains("catalog.rs", "RuntimeSemanticsKind::OpenAiChatDeepSeek");
 }
 
 #[test]
 fn provider_registry_resolves_minimax_without_private_replay_requirement() {
     #[cfg(feature = "minimax")]
     {
-        let descriptor = resolve_model_descriptor("minimax", "MiniMax-M3")
+        let descriptor = resolve_model_descriptor("minimax", "MiniMax-M2.7")
             .expect("minimax descriptor should resolve");
 
         assert_eq!(
             descriptor.runtime_semantics.reasoning_protocol,
-            ReasoningProtocolSemantics::None
+            ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind:
+                    harness_provider_state::ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: false,
+            }
         );
     }
 
     #[cfg(not(feature = "minimax"))]
-    assert_source_contains("minimax.rs", "ModelRuntimeSemantics::openai_chat_minimax()");
+    assert_source_contains("catalog.rs", "RuntimeSemanticsKind::OpenAiChatMinimax");
 }
 
 #[cfg(feature = "minimax")]
@@ -329,13 +330,14 @@ fn assert_modalities_subset(
     }
 }
 
-fn expected_runtime_semantics(provider_id: &str) -> ModelRuntimeSemantics {
+fn expected_runtime_semantics(provider_id: &str, model_id: &str) -> ModelRuntimeSemantics {
     match provider_id {
         "anthropic" => ModelRuntimeSemantics::anthropic_messages_default(),
         "codex" | "openai" => ModelRuntimeSemantics::openai_responses_default(),
         "deepseek" => ModelRuntimeSemantics::openai_chat_deepseek(),
         "gemini" => ModelRuntimeSemantics::gemini_default(),
         "bedrock" => ModelRuntimeSemantics::bedrock_converse_default(),
+        "minimax" if model_id == "MiniMax-M3" => ModelRuntimeSemantics::openai_responses_default(),
         "minimax" => ModelRuntimeSemantics::openai_chat_minimax(),
         "doubao" | "km" | "local-llama" | "openrouter" | "qwen" | "zhipu" => {
             ModelRuntimeSemantics::openai_chat_plain()

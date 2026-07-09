@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 
 use crate::InferContext;
 
+use super::dialect::OpenAiChatDialect;
+
 pub(super) const DEFAULT_MAX_TOKENS: u32 = 1024;
 
 pub(super) fn merge_extra_object(body: &mut Value, extra: &Value) -> Result<(), ModelError> {
@@ -27,14 +29,22 @@ pub(super) async fn chat_message(
     message: &Message,
     ctx: &InferContext,
 ) -> Result<Value, ModelError> {
+    chat_message_for_dialect(message, ctx, OpenAiChatDialect::Plain).await
+}
+
+pub(super) async fn chat_message_for_dialect(
+    message: &Message,
+    ctx: &InferContext,
+    dialect: OpenAiChatDialect,
+) -> Result<Value, ModelError> {
     match message.role {
         MessageRole::System => Ok(json!({
             "role": "system",
-            "content": text_content(&message.parts, ctx).await?,
+            "content": text_content(&message.parts, ctx, dialect).await?,
         })),
         MessageRole::User => Ok(json!({
             "role": "user",
-            "content": text_content(&message.parts, ctx).await?,
+            "content": text_content(&message.parts, ctx, dialect).await?,
         })),
         MessageRole::Assistant => assistant_message(&message.parts),
         MessageRole::Tool => tool_message(&message.parts),
@@ -62,6 +72,7 @@ fn assistant_message(parts: &[MessagePart]) -> Result<Value, ModelError> {
             MessagePart::Image { .. }
             | MessagePart::Video { .. }
             | MessagePart::File { .. }
+            | MessagePart::ProviderFileReference { .. }
             | MessagePart::Thinking(_)
             | MessagePart::ToolResult { .. } => {
                 return Err(ModelError::InvalidRequest(
@@ -110,7 +121,11 @@ fn tool_message(parts: &[MessagePart]) -> Result<Value, ModelError> {
     }))
 }
 
-async fn text_content(parts: &[MessagePart], ctx: &InferContext) -> Result<Value, ModelError> {
+async fn text_content(
+    parts: &[MessagePart],
+    ctx: &InferContext,
+    dialect: OpenAiChatDialect,
+) -> Result<Value, ModelError> {
     if parts
         .iter()
         .all(|part| matches!(part, MessagePart::Text(_)))
@@ -123,10 +138,14 @@ async fn text_content(parts: &[MessagePart], ctx: &InferContext) -> Result<Value
         }
         return Ok(Value::String(text));
     }
-    content_parts(parts, ctx).await
+    content_parts(parts, ctx, dialect).await
 }
 
-async fn content_parts(parts: &[MessagePart], ctx: &InferContext) -> Result<Value, ModelError> {
+async fn content_parts(
+    parts: &[MessagePart],
+    ctx: &InferContext,
+    dialect: OpenAiChatDialect,
+) -> Result<Value, ModelError> {
     let mut content = Vec::new();
     for part in parts {
         match part {
@@ -157,6 +176,27 @@ async fn content_parts(parts: &[MessagePart], ctx: &InferContext) -> Result<Valu
                     "file message parts require provider-specific upload support for OpenAI protocol providers"
                         .to_owned(),
                 ));
+            }
+            MessagePart::ProviderFileReference {
+                provider_id,
+                file_id,
+                mime_type,
+            } => {
+                if dialect != OpenAiChatDialect::MiniMax
+                    || provider_id != "minimax"
+                    || !mime_type.starts_with("video/")
+                {
+                    return Err(ModelError::InvalidRequest(
+                        "MiniMax provider file references only support MiniMax video files"
+                            .to_owned(),
+                    ));
+                }
+                content.push(json!({
+                    "type": "video_url",
+                    "video_url": {
+                        "url": format!("mm_file://{file_id}")
+                    },
+                }));
             }
             MessagePart::Thinking(_) => {
                 return Err(ModelError::InvalidRequest(

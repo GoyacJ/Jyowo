@@ -452,18 +452,6 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
         false,
         RuntimeSemanticsKind::OpenAiChatMinimax,
     ),
-    chat_model(
-        "minimax",
-        "M2-her",
-        "MiniMax M2 Her",
-        65_536,
-        65_536,
-        true,
-        false,
-        true,
-        false,
-        RuntimeSemanticsKind::OpenAiChatMinimax,
-    ),
     responses_model(
         "openai",
         "gpt-5.5-pro",
@@ -957,7 +945,7 @@ const fn minimax_m3_model(
         "minimax",
         model_id,
         display_name,
-        ModelProtocol::ChatCompletions,
+        ModelProtocol::Responses,
         context_window,
         max_output_tokens,
         true,
@@ -969,7 +957,7 @@ const fn minimax_m3_model(
         TEXT,
         TEXT_IMAGE_VIDEO,
         TEXT,
-        RuntimeSemanticsKind::OpenAiChatMinimax,
+        RuntimeSemanticsKind::OpenAiResponses,
     )
 }
 

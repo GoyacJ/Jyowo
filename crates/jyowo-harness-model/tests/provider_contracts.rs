@@ -199,6 +199,7 @@ fn model_request_accepts_contract_tool_descriptor() {
             origin: ToolOrigin::Builtin,
             search_hint: None,
             service_binding: None,
+            metadata: harness_contracts::ToolDescriptorMetadata::default(),
         }]),
         system: None,
         temperature: None,

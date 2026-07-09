@@ -181,6 +181,7 @@ impl ModelProvider for DummyModel {
             display_name: "Dummy model".to_owned(),
             context_window: 1_000,
             max_output_tokens: 100,
+            provider_declared_capability: ConversationModelCapability::default(),
             conversation_capability: ConversationModelCapability::default(),
             runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
                 harness_model::ModelProtocol::Messages,

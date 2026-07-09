@@ -383,6 +383,7 @@ fn normalize_path(path: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 #[async_trait]
 pub(crate) trait OpenAiProtocolProviderExt: Send + Sync + 'static {
     fn client(&self) -> &OpenAiProtocolClient;

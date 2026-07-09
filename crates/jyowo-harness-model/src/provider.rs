@@ -262,6 +262,10 @@ impl ModelRuntimeSemantics {
     #[must_use]
     pub fn openai_chat_minimax() -> Self {
         Self {
+            reasoning_protocol: ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind: ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: false,
+            },
             provider_continuation_dialect: Some("openai_chat.minimax".to_owned()),
             ..Self::openai_chat_plain()
         }
