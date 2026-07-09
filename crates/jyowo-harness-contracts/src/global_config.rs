@@ -18,6 +18,8 @@ pub struct ProviderProfileDefinition {
     pub provider_id: String,
     pub model_id: String,
     pub protocol: crate::ModelProtocol,
+    #[serde(default, skip_serializing_if = "crate::ModelRequestOptions::is_empty")]
+    pub model_options: crate::ModelRequestOptions,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     pub model_descriptor: ProviderProfileModelDescriptor,
@@ -35,6 +37,37 @@ pub struct ProviderProfileModelDescriptor {
     pub model_id: String,
     pub provider_id: String,
     pub conversation_capability: ProviderProfileConversationCapability,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_semantics: Option<ProviderRuntimeSemanticsDescriptor>,
+}
+
+/// Private model runtime behavior stored with provider profiles.
+///
+/// This is persisted config, not public catalog metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderRuntimeSemanticsDescriptor {
+    pub protocol: crate::ModelProtocol,
+    pub tool_protocol: String,
+    pub reasoning_protocol: ProviderRuntimeReasoningProtocolDescriptor,
+    pub streaming_protocol: String,
+    pub cache_protocol: String,
+    pub media_protocol: String,
+    pub output_protocol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_continuation_dialect: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "camelCase")]
+pub enum ProviderRuntimeReasoningProtocolDescriptor {
+    None,
+    PublicThinking,
+    PublicSummary,
+    ProviderPrivateReplay {
+        continuation_kind: String,
+        required_for_assistant_tool_replay: bool,
+    },
 }
 
 /// Conversation capability embedded in a provider profile definition.

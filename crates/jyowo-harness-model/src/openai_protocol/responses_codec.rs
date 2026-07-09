@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use async_stream::stream;
 use futures::StreamExt;
 use harness_contracts::{ModelError, StopReason, UsageSnapshot};
@@ -9,21 +11,43 @@ use crate::{
     ModelStreamEvent, ReasoningSummaryDelta, ThinkingDelta,
 };
 
-use super::request::{chat_message, merge_extra_object, responses_tool, DEFAULT_MAX_TOKENS};
+use super::continuation::{
+    find_openai_responses_previous_response, openai_responses_previous_response_event,
+    OpenAiResponsesContinuationCapture,
+};
+use super::request::{
+    apply_openai_responses_options, merge_extra_object_protecting, responses_message,
+    responses_tool, DEFAULT_MAX_TOKENS,
+};
 
 pub(super) async fn responses_request_body(
     req: &ModelRequest,
     ctx: &InferContext,
 ) -> Result<Value, ModelError> {
+    let setup_fingerprint = req.provider_context.setup_fingerprint.as_deref();
+    let previous = find_openai_responses_previous_response(
+        &req.provider_context.continuations,
+        &req.model_id,
+        setup_fingerprint,
+    );
+    let previous_position = previous.as_ref().and_then(|previous| {
+        req.messages
+            .iter()
+            .position(|message| message.id == previous.after_message_id)
+    });
+
     let mut input = Vec::new();
-    if let Some(system) = &req.system {
-        input.push(json!({
-            "role": "system",
-            "content": system,
-        }));
+    if previous_position.is_none() {
+        if let Some(system) = &req.system {
+            input.push(json!({
+                "role": "system",
+                "content": [{"type": "input_text", "text": system}],
+            }));
+        }
     }
-    for message in &req.messages {
-        input.push(chat_message(message, ctx).await?);
+    let message_start = previous_position.map_or(0, |position| position + 1);
+    for message in req.messages.iter().skip(message_start) {
+        input.extend(responses_message(message, ctx).await?);
     }
 
     let mut body = json!({
@@ -32,14 +56,28 @@ pub(super) async fn responses_request_body(
         "max_output_tokens": req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
         "stream": req.stream,
     });
+    if let (Some(previous), Some(_)) = (previous, previous_position) {
+        body["previous_response_id"] = json!(previous.response_id);
+    }
 
     if let Some(temperature) = req.temperature {
         body["temperature"] = json!(temperature);
     }
+    let response_options = req.options.openai_responses.as_ref();
     if let Some(tools) = &req.tools {
-        body["tools"] = Value::Array(tools.iter().map(responses_tool).collect());
+        let strict = response_options.is_some_and(|options| options.strict_tool_schemas);
+        body["tools"] = Value::Array(
+            tools
+                .iter()
+                .map(|tool| responses_tool(tool, strict))
+                .collect(),
+        );
     }
-    merge_extra_object(&mut body, &req.extra)?;
+    let mut protected_keys = Vec::new();
+    if let Some(options) = response_options {
+        protected_keys.extend(apply_openai_responses_options(&mut body, options));
+    }
+    merge_extra_object_protecting(&mut body, &req.extra, &protected_keys)?;
 
     Ok(body)
 }
@@ -88,11 +126,14 @@ impl IncrementalSseParser {
     }
 }
 
-pub(super) fn response_to_stream(response: reqwest::Response) -> ModelStream {
+pub(super) fn response_to_stream(
+    response: reqwest::Response,
+    continuation: OpenAiResponsesContinuationCapture,
+) -> ModelStream {
     let mut bytes = response.bytes_stream();
     Box::pin(stream! {
         let mut parser = IncrementalSseParser::default();
-        let mut state = ResponsesStreamState::default();
+        let mut state = ResponsesStreamState::new(continuation);
         while let Some(chunk) = bytes.next().await {
             match chunk {
                 Ok(chunk) => match parser.push(&chunk) {
@@ -130,13 +171,22 @@ pub(super) fn response_to_stream(response: reqwest::Response) -> ModelStream {
     })
 }
 
-pub(super) fn json_response_to_stream(value: Value) -> Result<ModelStream, ModelError> {
+pub(super) fn json_response_to_stream(
+    value: Value,
+    continuation: OpenAiResponsesContinuationCapture,
+) -> Result<ModelStream, ModelError> {
     let response: ResponsesJson = serde_json::from_value(value).map_err(|error| {
         ModelError::UnexpectedResponse(format!("invalid Responses API JSON: {error}"))
     })?;
+    let response_id = response.id.clone();
+    let failed_message = response
+        .error
+        .as_ref()
+        .and_then(|error| error.message.clone());
+    let stop_reason = non_stream_stop_reason(&response);
     let usage = usage(response.usage.as_ref());
     let mut events = vec![ModelStreamEvent::MessageStart {
-        message_id: response.id,
+        message_id: response_id.clone(),
         usage: usage.clone(),
     }];
     let mut next_index = 0;
@@ -180,6 +230,12 @@ pub(super) fn json_response_to_stream(value: Value) -> Result<ModelStream, Model
             }
             events.push(ModelStreamEvent::ContentBlockStop { index });
         } else if item.kind == "reasoning" {
+            let summary = item
+                .summary
+                .iter()
+                .filter_map(|summary| summary.text.as_deref())
+                .collect::<Vec<_>>()
+                .join("");
             let index = next_index;
             next_index += 1;
             events.push(ModelStreamEvent::ContentBlockStart {
@@ -189,7 +245,7 @@ pub(super) fn json_response_to_stream(value: Value) -> Result<ModelStream, Model
             events.push(ModelStreamEvent::ContentBlockDelta {
                 index,
                 delta: ContentDelta::ReasoningSummary(ReasoningSummaryDelta {
-                    text: item.summary.unwrap_or_default(),
+                    text: summary,
                     provider_native: Some(item.raw),
                 }),
             });
@@ -197,8 +253,20 @@ pub(super) fn json_response_to_stream(value: Value) -> Result<ModelStream, Model
         }
     }
 
+    if matches!(stop_reason, StopReason::Error(_)) && failed_message.is_some() {
+        events.push(stream_error(
+            ModelError::ProviderUnavailable(
+                failed_message.unwrap_or_else(|| "Responses API request failed".to_owned()),
+            ),
+            ErrorClass::Fatal,
+        ));
+        return Ok(Box::pin(futures::stream::iter(events)));
+    }
+    if let Some(event) = openai_responses_previous_response_event(&response_id, &continuation) {
+        events.push(event);
+    }
     events.push(ModelStreamEvent::MessageDelta {
-        stop_reason: Some(StopReason::EndTurn),
+        stop_reason: Some(stop_reason),
         usage_delta: usage,
     });
     events.push(ModelStreamEvent::MessageStop);
@@ -231,19 +299,55 @@ fn parse_frame(frame: &str) -> Option<SseEvent> {
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ResponseBlockKey {
+    item_id: String,
+    output_index: Option<u64>,
+    content_index: Option<u64>,
+}
+
+impl ResponseBlockKey {
+    fn is_empty(&self) -> bool {
+        self.item_id.is_empty() && self.output_index.is_none() && self.content_index.is_none()
+    }
+}
+
 #[derive(Default)]
+struct ToolBlockState {
+    index: u32,
+    saw_arguments_delta: bool,
+}
+
 struct ResponsesStreamState {
     started: bool,
     stopped: bool,
-    text_index: Option<u32>,
-    thinking_index: Option<u32>,
-    tool_index: Option<u32>,
+    response_id: Option<String>,
+    text_indices: HashMap<ResponseBlockKey, u32>,
+    refusal_indices: HashMap<ResponseBlockKey, u32>,
+    thinking_indices: HashMap<ResponseBlockKey, u32>,
+    tool_indices: HashMap<ResponseBlockKey, ToolBlockState>,
+    closed: HashSet<u32>,
     next_index: u32,
+    continuation: OpenAiResponsesContinuationCapture,
 }
 
 impl ResponsesStreamState {
+    fn new(continuation: OpenAiResponsesContinuationCapture) -> Self {
+        Self {
+            started: false,
+            stopped: false,
+            response_id: None,
+            text_indices: HashMap::new(),
+            refusal_indices: HashMap::new(),
+            thinking_indices: HashMap::new(),
+            tool_indices: HashMap::new(),
+            closed: HashSet::new(),
+            next_index: 0,
+            continuation,
+        }
+    }
+
     fn map_event(&mut self, event: SseEvent) -> Vec<ModelStreamEvent> {
-        let event_name = event.event.as_deref().unwrap_or_default();
         let data = match serde_json::from_str::<Value>(&event.data) {
             Ok(data) => data,
             Err(error) => {
@@ -255,73 +359,115 @@ impl ResponsesStreamState {
                 )];
             }
         };
+        let event_name = event
+            .event
+            .as_deref()
+            .or_else(|| data.get("type").and_then(Value::as_str))
+            .unwrap_or_default();
 
         let mut events = Vec::new();
         if !self.started {
             self.started = true;
+            self.response_id = response_id_from_event(&data).map(ToOwned::to_owned);
             events.push(ModelStreamEvent::MessageStart {
-                message_id: data
-                    .get("response")
-                    .and_then(|response| response.get("id"))
-                    .or_else(|| data.get("id"))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
+                message_id: self.response_id.clone().unwrap_or_default(),
                 usage: UsageSnapshot::default(),
             });
+        } else if self.response_id.is_none() {
+            self.response_id = response_id_from_event(&data).map(ToOwned::to_owned);
         }
 
         match event_name {
             "response.output_text.delta" => {
-                let delta = data
-                    .get("delta")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                if !delta.is_empty() {
-                    let index = self.ensure_text_block(&mut events);
-                    events.push(ModelStreamEvent::ContentBlockDelta {
-                        index,
-                        delta: ContentDelta::Text(delta.to_owned()),
-                    });
+                if let Some(delta) = data.get("delta").and_then(Value::as_str) {
+                    if !delta.is_empty() {
+                        let key = block_key(&data);
+                        let index = self.ensure_text_block(key, &mut events);
+                        events.push(ModelStreamEvent::ContentBlockDelta {
+                            index,
+                            delta: ContentDelta::Text(delta.to_owned()),
+                        });
+                    }
                 }
             }
+            "response.output_text.done" => {
+                let key = block_key(&data);
+                if !self.text_indices.contains_key(&key) {
+                    if let Some(text) = data.get("text").and_then(Value::as_str) {
+                        if !text.is_empty() {
+                            let index = self.ensure_text_block(key.clone(), &mut events);
+                            events.push(ModelStreamEvent::ContentBlockDelta {
+                                index,
+                                delta: ContentDelta::Text(text.to_owned()),
+                            });
+                        }
+                    }
+                }
+                self.close_keyed_text_block(&key, &mut events);
+            }
+            "response.refusal.delta" => {
+                if let Some(delta) = data.get("delta").and_then(Value::as_str) {
+                    if !delta.is_empty() {
+                        let key = block_key(&data);
+                        let index = self.ensure_refusal_block(key, &mut events);
+                        events.push(ModelStreamEvent::ContentBlockDelta {
+                            index,
+                            delta: ContentDelta::Text(delta.to_owned()),
+                        });
+                    }
+                }
+            }
+            "response.refusal.done" => {
+                let key = block_key(&data);
+                if !self.refusal_indices.contains_key(&key) {
+                    if let Some(refusal) = data.get("refusal").and_then(Value::as_str) {
+                        if !refusal.is_empty() {
+                            let index = self.ensure_refusal_block(key.clone(), &mut events);
+                            events.push(ModelStreamEvent::ContentBlockDelta {
+                                index,
+                                delta: ContentDelta::Text(refusal.to_owned()),
+                            });
+                        }
+                    }
+                }
+                self.close_keyed_refusal_block(&key, &mut events);
+            }
             "response.reasoning_text.delta" => {
-                let delta = data
-                    .get("delta")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                if !delta.is_empty() {
-                    let index = self.ensure_thinking_block(&mut events);
-                    events.push(ModelStreamEvent::ContentBlockDelta {
-                        index,
-                        delta: ContentDelta::Thinking(ThinkingDelta {
-                            text: Some(delta.to_owned()),
-                            provider_native: Some(data),
-                            signature: None,
-                        }),
-                    });
+                if let Some(delta) = data.get("delta").and_then(Value::as_str) {
+                    if !delta.is_empty() {
+                        let key = block_key(&data);
+                        let index = self.ensure_thinking_block(key, &mut events);
+                        events.push(ModelStreamEvent::ContentBlockDelta {
+                            index,
+                            delta: ContentDelta::Thinking(ThinkingDelta {
+                                text: Some(delta.to_owned()),
+                                provider_native: Some(data),
+                                signature: None,
+                            }),
+                        });
+                    }
                 }
             }
             "response.reasoning_summary_text.delta" => {
-                let delta = data
-                    .get("delta")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                if !delta.is_empty() {
-                    let index = self.ensure_thinking_block(&mut events);
-                    events.push(ModelStreamEvent::ContentBlockDelta {
-                        index,
-                        delta: ContentDelta::ReasoningSummary(ReasoningSummaryDelta {
-                            text: delta.to_owned(),
-                            provider_native: Some(data),
-                        }),
-                    });
+                if let Some(delta) = data.get("delta").and_then(Value::as_str) {
+                    if !delta.is_empty() {
+                        let key = block_key(&data);
+                        let index = self.ensure_thinking_block(key, &mut events);
+                        events.push(ModelStreamEvent::ContentBlockDelta {
+                            index,
+                            delta: ContentDelta::ReasoningSummary(ReasoningSummaryDelta {
+                                text: delta.to_owned(),
+                                provider_native: Some(data),
+                            }),
+                        });
+                    }
                 }
             }
             "response.output_item.added" => {
                 let item = data.get("item").unwrap_or(&data);
                 if item.get("type").and_then(Value::as_str) == Some("function_call") {
-                    let index = self.ensure_tool_block(&mut events);
+                    let key = item_block_key(&data, item);
+                    let index = self.ensure_tool_block(key, &mut events);
                     events.push(ModelStreamEvent::ContentBlockDelta {
                         index,
                         delta: ContentDelta::ToolUseStart {
@@ -341,22 +487,73 @@ impl ResponsesStreamState {
                 }
             }
             "response.function_call_arguments.delta" => {
-                let delta = data
-                    .get("delta")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                if !delta.is_empty() {
-                    let index = self.ensure_tool_block(&mut events);
-                    events.push(ModelStreamEvent::ContentBlockDelta {
-                        index,
-                        delta: ContentDelta::ToolUseInputJson(delta.to_owned()),
-                    });
+                if let Some(delta) = data.get("delta").and_then(Value::as_str) {
+                    if !delta.is_empty() {
+                        let key = self.tool_key_for_event(&data);
+                        let index = self.ensure_tool_block(key.clone(), &mut events);
+                        if let Some(tool) = self.tool_indices.get_mut(&key) {
+                            tool.saw_arguments_delta = true;
+                        }
+                        events.push(ModelStreamEvent::ContentBlockDelta {
+                            index,
+                            delta: ContentDelta::ToolUseInputJson(delta.to_owned()),
+                        });
+                    }
+                }
+            }
+            "response.function_call_arguments.done" => {
+                let key = self.tool_key_for_event(&data);
+                let index = self.ensure_tool_block(key.clone(), &mut events);
+                let saw_arguments_delta = self
+                    .tool_indices
+                    .get(&key)
+                    .is_some_and(|tool| tool.saw_arguments_delta);
+                if !saw_arguments_delta {
+                    if let Some(arguments) = data.get("arguments").and_then(Value::as_str) {
+                        if !arguments.is_empty() {
+                            events.push(ModelStreamEvent::ContentBlockDelta {
+                                index,
+                                delta: ContentDelta::ToolUseInputJson(arguments.to_owned()),
+                            });
+                        }
+                    }
+                }
+                self.close_keyed_tool_block(&key, &mut events);
+            }
+            "response.output_item.done" => {
+                let item = data.get("item").unwrap_or(&data);
+                if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                    let key = item_block_key(&data, item);
+                    self.close_keyed_tool_block(&key, &mut events);
                 }
             }
             "response.completed" => {
                 self.close_blocks(&mut events);
+                let response = data.get("response");
+                if let Some(response_id) = response
+                    .and_then(|response| response.get("id"))
+                    .and_then(Value::as_str)
+                    .or_else(|| self.response_id.as_deref())
+                {
+                    if let Some(event) =
+                        openai_responses_previous_response_event(response_id, &self.continuation)
+                    {
+                        events.push(event);
+                    }
+                }
                 events.push(ModelStreamEvent::MessageDelta {
                     stop_reason: Some(StopReason::EndTurn),
+                    usage_delta: usage(response.and_then(|response| response.get("usage"))),
+                });
+                events.push(ModelStreamEvent::MessageStop);
+                self.stopped = true;
+            }
+            "response.incomplete" => {
+                self.close_blocks(&mut events);
+                events.push(ModelStreamEvent::MessageDelta {
+                    stop_reason: Some(incomplete_stop_reason(
+                        data.get("response").unwrap_or(&data),
+                    )),
                     usage_delta: usage(
                         data.get("response")
                             .and_then(|response| response.get("usage")),
@@ -365,15 +562,9 @@ impl ResponsesStreamState {
                 events.push(ModelStreamEvent::MessageStop);
                 self.stopped = true;
             }
-            "response.failed" => {
+            "response.failed" | "error" | "response.error" => {
                 events.push(stream_error(
-                    ModelError::ProviderUnavailable(
-                        data.get("error")
-                            .and_then(|error| error.get("message"))
-                            .and_then(Value::as_str)
-                            .unwrap_or("Responses API stream failed")
-                            .to_owned(),
-                    ),
+                    ModelError::ProviderUnavailable(stream_error_message(&data)),
                     ErrorClass::Fatal,
                 ));
                 self.stopped = true;
@@ -384,35 +575,84 @@ impl ResponsesStreamState {
         events
     }
 
-    fn ensure_text_block(&mut self, events: &mut Vec<ModelStreamEvent>) -> u32 {
-        self.ensure_block(events, ContentType::Text, BlockKind::Text)
+    fn ensure_text_block(
+        &mut self,
+        key: ResponseBlockKey,
+        events: &mut Vec<ModelStreamEvent>,
+    ) -> u32 {
+        if let Some(index) = self.text_indices.get(&key) {
+            return *index;
+        }
+        let index = self.start_block(events, ContentType::Text);
+        self.text_indices.insert(key, index);
+        index
     }
 
-    fn ensure_thinking_block(&mut self, events: &mut Vec<ModelStreamEvent>) -> u32 {
-        self.ensure_block(events, ContentType::Thinking, BlockKind::Thinking)
+    fn ensure_refusal_block(
+        &mut self,
+        key: ResponseBlockKey,
+        events: &mut Vec<ModelStreamEvent>,
+    ) -> u32 {
+        if let Some(index) = self.refusal_indices.get(&key) {
+            return *index;
+        }
+        let index = self.start_block(events, ContentType::Text);
+        self.refusal_indices.insert(key, index);
+        index
     }
 
-    fn ensure_tool_block(&mut self, events: &mut Vec<ModelStreamEvent>) -> u32 {
-        self.ensure_block(events, ContentType::ToolUse, BlockKind::Tool)
+    fn ensure_thinking_block(
+        &mut self,
+        key: ResponseBlockKey,
+        events: &mut Vec<ModelStreamEvent>,
+    ) -> u32 {
+        if let Some(index) = self.thinking_indices.get(&key) {
+            return *index;
+        }
+        let index = self.start_block(events, ContentType::Thinking);
+        self.thinking_indices.insert(key, index);
+        index
     }
 
-    fn ensure_block(
+    fn ensure_tool_block(
+        &mut self,
+        key: ResponseBlockKey,
+        events: &mut Vec<ModelStreamEvent>,
+    ) -> u32 {
+        if let Some(tool) = self.tool_indices.get(&key) {
+            return tool.index;
+        }
+        let index = self.start_block(events, ContentType::ToolUse);
+        self.tool_indices.insert(
+            key,
+            ToolBlockState {
+                index,
+                saw_arguments_delta: false,
+            },
+        );
+        index
+    }
+
+    fn tool_key_for_event(&self, data: &Value) -> ResponseBlockKey {
+        let key = block_key(data);
+        if key.is_empty() && self.tool_indices.len() == 1 {
+            return self
+                .tool_indices
+                .keys()
+                .next()
+                .expect("single tool key should exist")
+                .clone();
+        }
+        key
+    }
+
+    fn start_block(
         &mut self,
         events: &mut Vec<ModelStreamEvent>,
         content_type: ContentType,
-        kind: BlockKind,
     ) -> u32 {
-        let slot = match kind {
-            BlockKind::Text => &mut self.text_index,
-            BlockKind::Thinking => &mut self.thinking_index,
-            BlockKind::Tool => &mut self.tool_index,
-        };
-        if let Some(index) = *slot {
-            return index;
-        }
         let index = self.next_index;
         self.next_index += 1;
-        *slot = Some(index);
         events.push(ModelStreamEvent::ContentBlockStart {
             index,
             content_type,
@@ -420,20 +660,157 @@ impl ResponsesStreamState {
         index
     }
 
+    fn close_keyed_text_block(
+        &mut self,
+        key: &ResponseBlockKey,
+        events: &mut Vec<ModelStreamEvent>,
+    ) {
+        if let Some(index) = self.text_indices.remove(key) {
+            self.close_index(index, events);
+        }
+    }
+
+    fn close_keyed_refusal_block(
+        &mut self,
+        key: &ResponseBlockKey,
+        events: &mut Vec<ModelStreamEvent>,
+    ) {
+        if let Some(index) = self.refusal_indices.remove(key) {
+            self.close_index(index, events);
+        }
+    }
+
+    fn close_keyed_tool_block(
+        &mut self,
+        key: &ResponseBlockKey,
+        events: &mut Vec<ModelStreamEvent>,
+    ) {
+        if let Some(tool) = self.tool_indices.remove(key) {
+            self.close_index(tool.index, events);
+        }
+    }
+
     fn close_blocks(&mut self, events: &mut Vec<ModelStreamEvent>) {
-        for index in [self.text_index, self.thinking_index, self.tool_index]
+        let text_indices = self
+            .text_indices
+            .drain()
+            .map(|(_, index)| index)
+            .collect::<Vec<_>>();
+        let refusal_indices = self
+            .refusal_indices
+            .drain()
+            .map(|(_, index)| index)
+            .collect::<Vec<_>>();
+        let thinking_indices = self
+            .thinking_indices
+            .drain()
+            .map(|(_, index)| index)
+            .collect::<Vec<_>>();
+        let tool_indices = self
+            .tool_indices
+            .drain()
+            .map(|(_, tool)| tool.index)
+            .collect::<Vec<_>>();
+        for index in text_indices
             .into_iter()
-            .flatten()
+            .chain(refusal_indices)
+            .chain(thinking_indices)
+            .chain(tool_indices)
         {
+            self.close_index(index, events);
+        }
+    }
+
+    fn close_index(&mut self, index: u32, events: &mut Vec<ModelStreamEvent>) {
+        if self.closed.insert(index) {
             events.push(ModelStreamEvent::ContentBlockStop { index });
         }
     }
 }
 
-enum BlockKind {
-    Text,
-    Thinking,
-    Tool,
+impl Default for ResponsesStreamState {
+    fn default() -> Self {
+        Self::new(OpenAiResponsesContinuationCapture {
+            model_id: String::new(),
+            setup_fingerprint: None,
+        })
+    }
+}
+
+fn response_id_from_event(data: &Value) -> Option<&str> {
+    data.get("response")
+        .and_then(|response| response.get("id"))
+        .or_else(|| data.get("response_id"))
+        .or_else(|| data.get("id"))
+        .and_then(Value::as_str)
+}
+
+fn block_key(data: &Value) -> ResponseBlockKey {
+    ResponseBlockKey {
+        item_id: data
+            .get("item_id")
+            .and_then(Value::as_str)
+            .or_else(|| data.get("id").and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_owned(),
+        output_index: data.get("output_index").and_then(Value::as_u64),
+        content_index: data.get("content_index").and_then(Value::as_u64),
+    }
+}
+
+fn item_block_key(data: &Value, item: &Value) -> ResponseBlockKey {
+    ResponseBlockKey {
+        item_id: item
+            .get("id")
+            .and_then(Value::as_str)
+            .or_else(|| data.get("item_id").and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_owned(),
+        output_index: data.get("output_index").and_then(Value::as_u64),
+        content_index: data.get("content_index").and_then(Value::as_u64),
+    }
+}
+
+fn non_stream_stop_reason(response: &ResponsesJson) -> StopReason {
+    match response.status.as_deref() {
+        Some("incomplete") => incomplete_stop_reason(
+            response
+                .raw
+                .get("incomplete_details")
+                .unwrap_or(&response.raw),
+        ),
+        Some("failed") => StopReason::Error(
+            response
+                .error
+                .as_ref()
+                .and_then(|error| error.message.clone())
+                .unwrap_or_else(|| "Responses API request failed".to_owned()),
+        ),
+        _ => StopReason::EndTurn,
+    }
+}
+
+fn incomplete_stop_reason(response: &Value) -> StopReason {
+    let reason = response
+        .get("incomplete_details")
+        .and_then(|details| details.get("reason"))
+        .or_else(|| response.get("reason"))
+        .and_then(Value::as_str)
+        .unwrap_or("incomplete");
+    if reason == "max_output_tokens" {
+        StopReason::MaxIterations
+    } else {
+        StopReason::Error(format!("Responses API response incomplete: {reason}"))
+    }
+}
+
+fn stream_error_message(data: &Value) -> String {
+    data.get("error")
+        .and_then(|error| error.get("message").or_else(|| error.get("error")))
+        .and_then(Value::as_str)
+        .or_else(|| data.get("message").and_then(Value::as_str))
+        .unwrap_or("Responses API stream failed")
+        .to_owned()
 }
 
 fn stream_error(error: ModelError, class: ErrorClass) -> ModelStreamEvent {
@@ -472,9 +849,18 @@ fn usage(value: Option<&Value>) -> UsageSnapshot {
 #[derive(Debug, Deserialize)]
 struct ResponsesJson {
     id: String,
+    status: Option<String>,
     #[serde(default)]
     output: Vec<ResponseOutputItem>,
     usage: Option<Value>,
+    error: Option<ResponseErrorJson>,
+    #[serde(flatten)]
+    raw: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponseErrorJson {
+    message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -485,11 +871,19 @@ struct ResponseOutputItem {
     call_id: Option<String>,
     name: Option<String>,
     arguments: Option<String>,
-    summary: Option<String>,
+    #[serde(default)]
+    summary: Vec<ResponseReasoningSummary>,
     #[serde(default)]
     content: Vec<ResponseContent>,
     #[serde(flatten)]
     raw: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponseReasoningSummary {
+    text: Option<String>,
+    #[serde(flatten)]
+    _raw: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -508,6 +902,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
+    use super::super::continuation::OpenAiResponsesContinuationCapture;
     use super::{response_to_stream, ResponsesStreamState, SseEvent};
     use crate::ModelStreamEvent;
 
@@ -530,7 +925,13 @@ mod tests {
             "event: response.completed\ndata: {\"response\":{\"id\":\"resp_1\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n",
         )
         .await;
-        let mut stream = response_to_stream(response);
+        let mut stream = response_to_stream(
+            response,
+            OpenAiResponsesContinuationCapture {
+                model_id: "gpt-5.4-mini".to_owned(),
+                setup_fingerprint: None,
+            },
+        );
 
         let mut events = Vec::new();
         while let Some(event) = tokio::time::timeout(Duration::from_millis(200), stream.next())

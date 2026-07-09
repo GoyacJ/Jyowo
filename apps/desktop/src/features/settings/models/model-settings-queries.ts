@@ -207,12 +207,14 @@ function useSetDefaultProviderConfig() {
       configId: string
       displayName: string
       modelId: string
+      modelOptions?: ProviderSettingsRequest['modelOptions']
       providerId: string
     }) => {
       const payload: ProviderSettingsRequest = {
         configId: request.configId,
         displayName: request.displayName,
         modelId: request.modelId,
+        modelOptions: request.modelOptions,
         providerId: request.providerId,
         setDefault: true,
       }
@@ -233,6 +235,7 @@ function useSetDefaultProviderConfig() {
       configId: string
       displayName: string
       modelId: string
+      modelOptions?: ProviderSettingsRequest['modelOptions']
       providerId: string
     }) => {
       if (pendingConfigIdRef.current !== null) {

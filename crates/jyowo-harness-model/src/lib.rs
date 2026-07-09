@@ -73,9 +73,11 @@ pub use doubao::*;
 #[cfg(feature = "gemini")]
 pub use gemini::*;
 pub use harness_contracts::{
-    ConversationModelCapability, ModelModality, ModelProtocol, ProviderAuthScheme,
-    ProviderBaseUrlRegion, ProviderRuntimeCapability, ProviderServiceCapability,
-    ProviderServiceCategory, ProviderServiceCostRisk, ProviderServiceExecution,
+    ConversationModelCapability, ModelModality, ModelProtocol, ModelRequestOptions,
+    OpenAiReasoningOptions, OpenAiResponsesOptions, OpenAiTextFormat, OpenAiTextOptions,
+    ProviderAuthScheme, ProviderBaseUrlRegion, ProviderRuntimeCapability,
+    ProviderServiceCapability, ProviderServiceCategory, ProviderServiceCostRisk,
+    ProviderServiceExecution,
 };
 #[cfg(feature = "km")]
 pub use km::*;

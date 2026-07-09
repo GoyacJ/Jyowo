@@ -27,6 +27,7 @@ fn request(stream: bool) -> ModelRequest {
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::GenerateContent,
         extra: json!({ "cached_content": "cachedContents/abc123" }),
+        options: harness_contracts::ModelRequestOptions::default(),
         provider_context: harness_model::ProviderRequestContext::default(),
     }
 }

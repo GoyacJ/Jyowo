@@ -1,16 +1,19 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use harness_contracts::ModelError;
+use rust_decimal::Decimal;
 use std::sync::Arc;
 
 use crate::openai_protocol::{OpenAiProtocolClient, OpenAiProtocolProviderExt};
 use crate::{
-    ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
-    ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
-    PromptCacheStyle,
+    BillingMode, ConversationModelCapability, Currency, InferContext, ModelCredentialResolver,
+    ModelDescriptor, ModelLifecycle, ModelModality, ModelPricing, ModelProtocol, ModelProvider,
+    ModelRequest, ModelStream, PricingSource, PromptCacheStyle, Ratio,
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
 const PROVIDER_ID: &str = "openai";
+const PRICING_VERSION: u32 = 20260709;
 pub const OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";
 
 #[derive(Clone)]
@@ -53,14 +56,74 @@ impl ModelProvider for OpenAiProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        // Verified 2026-06-21: https://platform.openai.com/docs/models
+        // Verified 2026-07-09: https://developers.openai.com/api/docs/models
         vec![
-            descriptor("gpt-5.5-pro", "GPT-5.5 Pro", 1_050_000, 128_000),
-            descriptor("gpt-5.5", "GPT-5.5", 1_000_000, 128_000),
-            descriptor("gpt-5.4-pro", "GPT-5.4 Pro", 1_050_000, 128_000),
-            descriptor("gpt-5.4", "GPT-5.4", 1_000_000, 128_000),
-            descriptor("gpt-5.4-mini", "GPT-5.4 mini", 400_000, 128_000),
-            descriptor("gpt-5.4-nano", "GPT-5.4 nano", 400_000, 128_000),
+            descriptor(ModelSpec {
+                model_id: "gpt-5.5-pro",
+                display_name: "GPT-5.5 Pro",
+                context_window: 1_050_000,
+                max_output_tokens: 128_000,
+                streaming: false,
+                structured_output: true,
+                input_per_million: "30.00",
+                cached_input_per_million: None,
+                output_per_million: "180.00",
+            }),
+            descriptor(ModelSpec {
+                model_id: "gpt-5.5",
+                display_name: "GPT-5.5",
+                context_window: 1_050_000,
+                max_output_tokens: 128_000,
+                streaming: true,
+                structured_output: true,
+                input_per_million: "5.00",
+                cached_input_per_million: Some("0.50"),
+                output_per_million: "30.00",
+            }),
+            descriptor(ModelSpec {
+                model_id: "gpt-5.4-pro",
+                display_name: "GPT-5.4 Pro",
+                context_window: 1_050_000,
+                max_output_tokens: 128_000,
+                streaming: true,
+                structured_output: false,
+                input_per_million: "30.00",
+                cached_input_per_million: None,
+                output_per_million: "180.00",
+            }),
+            descriptor(ModelSpec {
+                model_id: "gpt-5.4",
+                display_name: "GPT-5.4",
+                context_window: 1_050_000,
+                max_output_tokens: 128_000,
+                streaming: true,
+                structured_output: true,
+                input_per_million: "2.50",
+                cached_input_per_million: Some("0.25"),
+                output_per_million: "15.00",
+            }),
+            descriptor(ModelSpec {
+                model_id: "gpt-5.4-mini",
+                display_name: "GPT-5.4 mini",
+                context_window: 400_000,
+                max_output_tokens: 128_000,
+                streaming: true,
+                structured_output: true,
+                input_per_million: "0.75",
+                cached_input_per_million: Some("0.075"),
+                output_per_million: "4.50",
+            }),
+            descriptor(ModelSpec {
+                model_id: "gpt-5.4-nano",
+                display_name: "GPT-5.4 nano",
+                context_window: 400_000,
+                max_output_tokens: 128_000,
+                streaming: true,
+                structured_output: true,
+                input_per_million: "0.20",
+                cached_input_per_million: Some("0.02"),
+                output_per_million: "1.25",
+            }),
         ]
     }
 
@@ -77,32 +140,81 @@ impl ModelProvider for OpenAiProvider {
     }
 }
 
-fn descriptor(
-    model_id: &str,
-    display_name: &str,
+struct ModelSpec {
+    model_id: &'static str,
+    display_name: &'static str,
     context_window: u32,
     max_output_tokens: u32,
-) -> ModelDescriptor {
+    streaming: bool,
+    structured_output: bool,
+    input_per_million: &'static str,
+    cached_input_per_million: Option<&'static str>,
+    output_per_million: &'static str,
+}
+
+fn descriptor(spec: ModelSpec) -> ModelDescriptor {
     ModelDescriptor {
-        provider_id: "openai".to_owned(),
-        model_id: model_id.to_owned(),
-        display_name: display_name.to_owned(),
+        provider_id: PROVIDER_ID.to_owned(),
+        model_id: spec.model_id.to_owned(),
+        display_name: spec.display_name.to_owned(),
         protocol: ModelProtocol::Responses,
-        context_window,
-        max_output_tokens,
+        context_window: spec.context_window,
+        max_output_tokens: spec.max_output_tokens,
         conversation_capability: ConversationModelCapability {
-            context_window,
-            max_output_tokens,
+            context_window: spec.context_window,
+            max_output_tokens: spec.max_output_tokens,
             tool_calling: true,
-            reasoning: false,
+            reasoning: true,
             prompt_cache: true,
-            streaming: true,
-            structured_output: true,
-            input_modalities: vec![ModelModality::Text],
+            streaming: spec.streaming,
+            structured_output: spec.structured_output,
+            input_modalities: vec![
+                ModelModality::Text,
+                ModelModality::Image,
+                ModelModality::File,
+            ],
             output_modalities: vec![ModelModality::Text],
         },
         runtime_semantics: crate::ModelRuntimeSemantics::openai_responses_default(),
         lifecycle: ModelLifecycle::Stable,
-        pricing: None,
+        pricing: Some(pricing(
+            spec.model_id,
+            spec.input_per_million,
+            spec.cached_input_per_million,
+            spec.output_per_million,
+        )),
     }
+}
+
+fn pricing(
+    model_id: &str,
+    input_per_million: &str,
+    cached_input_per_million: Option<&str>,
+    output_per_million: &str,
+) -> ModelPricing {
+    ModelPricing {
+        pricing_id: format!("openai:{model_id}"),
+        pricing_version: PRICING_VERSION,
+        currency: Currency::Usd,
+        input_per_million: decimal(input_per_million),
+        output_per_million: decimal(output_per_million),
+        cache_creation_per_million: None,
+        cache_read_per_million: cached_input_per_million.map(decimal),
+        image_per_image: None,
+        last_updated: DateTime::parse_from_rfc3339("2026-07-09T00:00:00Z")
+            .expect("static OpenAI pricing timestamp must be valid")
+            .with_timezone(&Utc),
+        source: PricingSource::Hardcoded,
+        billing_mode: cached_input_per_million.map_or(BillingMode::Standard, |_| {
+            BillingMode::Cached {
+                cache_read_discount: Ratio(0.1),
+            }
+        }),
+    }
+}
+
+fn decimal(value: &str) -> Decimal {
+    value
+        .parse()
+        .expect("static OpenAI pricing decimal must be valid")
 }

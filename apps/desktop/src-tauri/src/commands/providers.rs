@@ -30,6 +30,11 @@ use super::stores::*;
 use super::validation::*;
 use super::*;
 use harness_contracts::{ProviderSecretEntry, ProviderSelectionRecord};
+use harness_model::{
+    CacheProtocolSemantics, MediaProtocolSemantics, OutputProtocolSemantics,
+    ReasoningProtocolSemantics, StreamingProtocolSemantics, ToolProtocolSemantics,
+};
+use harness_provider_state::ProviderContinuationKind;
 use jyowo_harness_sdk::AgentCapabilityResolutionContext;
 
 #[derive(Clone)]
@@ -381,6 +386,7 @@ fn provider_config_record_from_profile(
         display_name: profile.display_name,
         id: profile.id,
         model_id: profile.model_id,
+        model_options: profile.model_options,
         official_quota_api_key: secret.and_then(|entry| entry.official_quota_api_key.clone()),
         provider_id: profile.provider_id,
         model_descriptor: provider_model_descriptor_record_from_profile(profile.model_descriptor)?,
@@ -419,6 +425,7 @@ fn provider_model_descriptor_record_from_profile(
         max_output_tokens: descriptor.max_output_tokens,
         model_id: descriptor.model_id,
         provider_id: descriptor.provider_id,
+        runtime_semantics: descriptor.runtime_semantics,
     })
 }
 
@@ -1992,6 +1999,19 @@ pub async fn save_provider_settings_with_store(
                 })
                 .and_then(|config| config.official_quota_api_key.clone())
         });
+    let model_options = match request.model_options.as_ref() {
+        Some(model_options) => model_options.clone(),
+        None if previous_config.as_ref().is_some_and(|config| {
+            config.provider_id == request.provider_id && config.base_url == base_url
+        }) =>
+        {
+            previous_config
+                .as_ref()
+                .map(|config| config.model_options.clone())
+                .unwrap_or_default()
+        }
+        None => harness_contracts::ModelRequestOptions::default(),
+    };
     let config = ProviderConfigRecord {
         api_key: config_api_key,
         protocol: descriptor.protocol,
@@ -2005,6 +2025,7 @@ pub async fn save_provider_settings_with_store(
             .unwrap_or_else(|| provider_display_name(&request.provider_id)),
         id: config_id.clone(),
         model_id: request.model_id.clone(),
+        model_options,
         official_quota_api_key,
         provider_id: request.provider_id.clone(),
         model_descriptor: model_descriptor_record(&descriptor),
@@ -2189,6 +2210,7 @@ pub(crate) fn model_descriptor_record(
         max_output_tokens: descriptor.max_output_tokens,
         model_id: descriptor.model_id.clone(),
         provider_id: descriptor.provider_id.clone(),
+        runtime_semantics: Some(runtime_semantics_record(&descriptor.runtime_semantics)),
     }
 }
 
@@ -2250,10 +2272,236 @@ pub(crate) fn model_descriptor_from_record(
         conversation_capability: conversation_capability_from_record(
             &record.conversation_capability,
         ),
-        runtime_semantics: ModelRuntimeSemantics::messages_default(record.protocol),
+        runtime_semantics: runtime_semantics_from_record(record)?,
         lifecycle: model_lifecycle_from_record(&record.lifecycle)?,
         pricing: None,
     })
+}
+
+fn runtime_semantics_from_record(
+    record: &ProviderModelDescriptorRecord,
+) -> Result<ModelRuntimeSemantics, CommandErrorPayload> {
+    let Some(semantics) = &record.runtime_semantics else {
+        return Ok(runtime_semantics_fallback(
+            &record.provider_id,
+            record.protocol,
+        ));
+    };
+
+    Ok(ModelRuntimeSemantics {
+        protocol: semantics.protocol,
+        tool_protocol: tool_protocol_from_record(&semantics.tool_protocol)?,
+        reasoning_protocol: reasoning_protocol_from_record(&semantics.reasoning_protocol)?,
+        streaming_protocol: streaming_protocol_from_record(&semantics.streaming_protocol)?,
+        cache_protocol: cache_protocol_from_record(&semantics.cache_protocol)?,
+        media_protocol: media_protocol_from_record(&semantics.media_protocol)?,
+        output_protocol: output_protocol_from_record(&semantics.output_protocol)?,
+        provider_continuation_dialect: semantics.provider_continuation_dialect.clone(),
+    })
+}
+
+fn runtime_semantics_fallback(provider_id: &str, protocol: ModelProtocol) -> ModelRuntimeSemantics {
+    if provider_id == "openai" && protocol == ModelProtocol::Responses {
+        return ModelRuntimeSemantics::openai_responses_default();
+    }
+    ModelRuntimeSemantics::messages_default(protocol)
+}
+
+fn runtime_semantics_record(
+    semantics: &ModelRuntimeSemantics,
+) -> harness_contracts::ProviderRuntimeSemanticsDescriptor {
+    harness_contracts::ProviderRuntimeSemanticsDescriptor {
+        protocol: semantics.protocol,
+        tool_protocol: tool_protocol_record(&semantics.tool_protocol).to_owned(),
+        reasoning_protocol: reasoning_protocol_record(&semantics.reasoning_protocol),
+        streaming_protocol: streaming_protocol_record(&semantics.streaming_protocol).to_owned(),
+        cache_protocol: cache_protocol_record(&semantics.cache_protocol).to_owned(),
+        media_protocol: media_protocol_record(&semantics.media_protocol).to_owned(),
+        output_protocol: output_protocol_record(&semantics.output_protocol).to_owned(),
+        provider_continuation_dialect: semantics.provider_continuation_dialect.clone(),
+    }
+}
+
+fn tool_protocol_record(protocol: &ToolProtocolSemantics) -> &'static str {
+    match protocol {
+        ToolProtocolSemantics::None => "none",
+        ToolProtocolSemantics::OpenAiChatTools => "openai_chat_tools",
+        ToolProtocolSemantics::OpenAiResponsesTools => "openai_responses_tools",
+        ToolProtocolSemantics::AnthropicTools => "anthropic_tools",
+        ToolProtocolSemantics::GeminiTools => "gemini_tools",
+        ToolProtocolSemantics::BedrockConverseTools => "bedrock_converse_tools",
+    }
+}
+
+fn tool_protocol_from_record(value: &str) -> Result<ToolProtocolSemantics, CommandErrorPayload> {
+    match value {
+        "none" => Ok(ToolProtocolSemantics::None),
+        "openai_chat_tools" => Ok(ToolProtocolSemantics::OpenAiChatTools),
+        "openai_responses_tools" => Ok(ToolProtocolSemantics::OpenAiResponsesTools),
+        "anthropic_tools" => Ok(ToolProtocolSemantics::AnthropicTools),
+        "gemini_tools" => Ok(ToolProtocolSemantics::GeminiTools),
+        "bedrock_converse_tools" => Ok(ToolProtocolSemantics::BedrockConverseTools),
+        _ => Err(invalid_payload(format!(
+            "unknown runtime semantics toolProtocol: {value}"
+        ))),
+    }
+}
+
+fn reasoning_protocol_record(
+    protocol: &ReasoningProtocolSemantics,
+) -> harness_contracts::ProviderRuntimeReasoningProtocolDescriptor {
+    match protocol {
+        ReasoningProtocolSemantics::None => {
+            harness_contracts::ProviderRuntimeReasoningProtocolDescriptor::None
+        }
+        ReasoningProtocolSemantics::PublicThinking => {
+            harness_contracts::ProviderRuntimeReasoningProtocolDescriptor::PublicThinking
+        }
+        ReasoningProtocolSemantics::PublicSummary => {
+            harness_contracts::ProviderRuntimeReasoningProtocolDescriptor::PublicSummary
+        }
+        ReasoningProtocolSemantics::ProviderPrivateReplay {
+            continuation_kind,
+            required_for_assistant_tool_replay,
+        } => harness_contracts::ProviderRuntimeReasoningProtocolDescriptor::ProviderPrivateReplay {
+            continuation_kind: continuation_kind_record(continuation_kind),
+            required_for_assistant_tool_replay: *required_for_assistant_tool_replay,
+        },
+    }
+}
+
+fn reasoning_protocol_from_record(
+    protocol: &harness_contracts::ProviderRuntimeReasoningProtocolDescriptor,
+) -> Result<ReasoningProtocolSemantics, CommandErrorPayload> {
+    match protocol {
+        harness_contracts::ProviderRuntimeReasoningProtocolDescriptor::None => {
+            Ok(ReasoningProtocolSemantics::None)
+        }
+        harness_contracts::ProviderRuntimeReasoningProtocolDescriptor::PublicThinking => {
+            Ok(ReasoningProtocolSemantics::PublicThinking)
+        }
+        harness_contracts::ProviderRuntimeReasoningProtocolDescriptor::PublicSummary => {
+            Ok(ReasoningProtocolSemantics::PublicSummary)
+        }
+        harness_contracts::ProviderRuntimeReasoningProtocolDescriptor::ProviderPrivateReplay {
+            continuation_kind,
+            required_for_assistant_tool_replay,
+        } => Ok(ReasoningProtocolSemantics::ProviderPrivateReplay {
+            continuation_kind: continuation_kind_from_record(continuation_kind)?,
+            required_for_assistant_tool_replay: *required_for_assistant_tool_replay,
+        }),
+    }
+}
+
+fn continuation_kind_record(kind: &ProviderContinuationKind) -> String {
+    match kind {
+        ProviderContinuationKind::ReasoningReplay => "reasoning_replay".to_owned(),
+        ProviderContinuationKind::ToolReplay => "tool_replay".to_owned(),
+        ProviderContinuationKind::CacheReplay => "cache_replay".to_owned(),
+        ProviderContinuationKind::ProviderNative(value) => format!("provider_native:{value}"),
+    }
+}
+
+fn continuation_kind_from_record(
+    value: &str,
+) -> Result<ProviderContinuationKind, CommandErrorPayload> {
+    match value {
+        "reasoning_replay" => Ok(ProviderContinuationKind::ReasoningReplay),
+        "tool_replay" => Ok(ProviderContinuationKind::ToolReplay),
+        "cache_replay" => Ok(ProviderContinuationKind::CacheReplay),
+        _ => value
+            .strip_prefix("provider_native:")
+            .map(|native| ProviderContinuationKind::ProviderNative(native.to_owned()))
+            .ok_or_else(|| {
+                invalid_payload(format!(
+                    "unknown runtime semantics continuation kind: {value}"
+                ))
+            }),
+    }
+}
+
+fn streaming_protocol_record(protocol: &StreamingProtocolSemantics) -> &'static str {
+    match protocol {
+        StreamingProtocolSemantics::None => "none",
+        StreamingProtocolSemantics::Sse => "sse",
+        StreamingProtocolSemantics::JsonLines => "json_lines",
+        StreamingProtocolSemantics::ProviderNative => "provider_native",
+    }
+}
+
+fn streaming_protocol_from_record(
+    value: &str,
+) -> Result<StreamingProtocolSemantics, CommandErrorPayload> {
+    match value {
+        "none" => Ok(StreamingProtocolSemantics::None),
+        "sse" => Ok(StreamingProtocolSemantics::Sse),
+        "json_lines" => Ok(StreamingProtocolSemantics::JsonLines),
+        "provider_native" => Ok(StreamingProtocolSemantics::ProviderNative),
+        _ => Err(invalid_payload(format!(
+            "unknown runtime semantics streamingProtocol: {value}"
+        ))),
+    }
+}
+
+fn cache_protocol_record(protocol: &CacheProtocolSemantics) -> &'static str {
+    match protocol {
+        CacheProtocolSemantics::None => "none",
+        CacheProtocolSemantics::OpenAiAuto => "openai_auto",
+        CacheProtocolSemantics::AnthropicEphemeral => "anthropic_ephemeral",
+        CacheProtocolSemantics::GeminiContextCache => "gemini_context_cache",
+    }
+}
+
+fn cache_protocol_from_record(value: &str) -> Result<CacheProtocolSemantics, CommandErrorPayload> {
+    match value {
+        "none" => Ok(CacheProtocolSemantics::None),
+        "openai_auto" => Ok(CacheProtocolSemantics::OpenAiAuto),
+        "anthropic_ephemeral" => Ok(CacheProtocolSemantics::AnthropicEphemeral),
+        "gemini_context_cache" => Ok(CacheProtocolSemantics::GeminiContextCache),
+        _ => Err(invalid_payload(format!(
+            "unknown runtime semantics cacheProtocol: {value}"
+        ))),
+    }
+}
+
+fn media_protocol_record(protocol: &MediaProtocolSemantics) -> &'static str {
+    match protocol {
+        MediaProtocolSemantics::TextOnly => "text_only",
+        MediaProtocolSemantics::OpenAiContentParts => "openai_content_parts",
+        MediaProtocolSemantics::ProviderNative => "provider_native",
+    }
+}
+
+fn media_protocol_from_record(value: &str) -> Result<MediaProtocolSemantics, CommandErrorPayload> {
+    match value {
+        "text_only" => Ok(MediaProtocolSemantics::TextOnly),
+        "openai_content_parts" => Ok(MediaProtocolSemantics::OpenAiContentParts),
+        "provider_native" => Ok(MediaProtocolSemantics::ProviderNative),
+        _ => Err(invalid_payload(format!(
+            "unknown runtime semantics mediaProtocol: {value}"
+        ))),
+    }
+}
+
+fn output_protocol_record(protocol: &OutputProtocolSemantics) -> &'static str {
+    match protocol {
+        OutputProtocolSemantics::Text => "text",
+        OutputProtocolSemantics::TextAndToolUse => "text_and_tool_use",
+        OutputProtocolSemantics::StructuredJson => "structured_json",
+    }
+}
+
+fn output_protocol_from_record(
+    value: &str,
+) -> Result<OutputProtocolSemantics, CommandErrorPayload> {
+    match value {
+        "text" => Ok(OutputProtocolSemantics::Text),
+        "text_and_tool_use" => Ok(OutputProtocolSemantics::TextAndToolUse),
+        "structured_json" => Ok(OutputProtocolSemantics::StructuredJson),
+        _ => Err(invalid_payload(format!(
+            "unknown runtime semantics outputProtocol: {value}"
+        ))),
+    }
 }
 
 pub(crate) fn conversation_capability_from_record(
@@ -2372,6 +2620,7 @@ pub(crate) fn provider_config_payload(
         id: config.id.clone(),
         is_default: default_config_id.is_some_and(|id| id == config.id),
         model_id: config.model_id.clone(),
+        model_options: config.model_options.clone(),
         provider_id: config.provider_id.clone(),
         model_descriptor: model_descriptor_catalog_entry(descriptor),
     })
@@ -2531,7 +2780,15 @@ pub(crate) fn provider_config_by_id<'a>(
 pub(crate) fn model_from_provider_settings(
     store: &dyn ProviderSettingsStore,
     selected_config_id: Option<&str>,
-) -> Result<Option<(Arc<dyn ModelProvider>, String, ModelProtocol)>, CommandErrorPayload> {
+) -> Result<
+    Option<(
+        Arc<dyn ModelProvider>,
+        String,
+        ModelProtocol,
+        harness_contracts::ModelRequestOptions,
+    )>,
+    CommandErrorPayload,
+> {
     let Some(record) = store.load_record()? else {
         if selected_config_id.is_some() {
             return Err(runtime_init_failed("provider config is missing".to_owned()));
@@ -2565,6 +2822,7 @@ pub(crate) fn model_from_provider_settings(
         Arc::from(provider),
         config.model_id.clone(),
         protocol,
+        config.model_options.clone(),
     )))
 }
 
@@ -2580,6 +2838,7 @@ fn provider_profile_definition_from_config(
         provider_id: config.provider_id.clone(),
         model_id: config.model_id.clone(),
         protocol: config.protocol,
+        model_options: config.model_options.clone(),
         base_url: config.base_url.clone(),
         model_descriptor: provider_profile_descriptor_from_config(config),
     }
@@ -2628,6 +2887,16 @@ fn provider_profile_descriptor_from_config(
                 .conversation_capability
                 .structured_output,
         },
+        runtime_semantics: config
+            .model_descriptor
+            .runtime_semantics
+            .clone()
+            .or_else(|| {
+                Some(runtime_semantics_record(&runtime_semantics_fallback(
+                    &config.model_descriptor.provider_id,
+                    config.model_descriptor.protocol,
+                )))
+            }),
     }
 }
 

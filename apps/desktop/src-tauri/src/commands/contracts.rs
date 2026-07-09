@@ -76,6 +76,8 @@ pub struct ProviderSettingsRequest {
     pub display_name: Option<String>,
     pub model_id: String,
     #[serde(default)]
+    pub model_options: Option<harness_contracts::ModelRequestOptions>,
+    #[serde(default)]
     pub official_quota_api_key: Option<String>,
     pub provider_id: String,
     #[serde(default = "default_true")]
@@ -209,6 +211,11 @@ pub struct ProviderConfigRecord {
     pub display_name: String,
     pub id: String,
     pub model_id: String,
+    #[serde(
+        default,
+        skip_serializing_if = "harness_contracts::ModelRequestOptions::is_empty"
+    )]
+    pub model_options: harness_contracts::ModelRequestOptions,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub official_quota_api_key: Option<String>,
     pub provider_id: String,
@@ -245,6 +252,8 @@ pub struct ProviderModelDescriptorRecord {
     pub max_output_tokens: u32,
     pub model_id: String,
     pub provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_semantics: Option<harness_contracts::ProviderRuntimeSemanticsDescriptor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -371,6 +380,8 @@ pub struct ProviderConfigPayload {
     pub id: String,
     pub is_default: bool,
     pub model_id: String,
+    #[serde(skip_serializing_if = "harness_contracts::ModelRequestOptions::is_empty")]
+    pub model_options: harness_contracts::ModelRequestOptions,
     pub provider_id: String,
     pub model_descriptor: ModelCatalogEntry,
 }
@@ -2879,6 +2890,7 @@ mod debug_redaction_tests {
             display_name: "OpenAI Work".to_owned(),
             id: "openai-work".to_owned(),
             model_id: "gpt-5.4-mini".to_owned(),
+            model_options: harness_contracts::ModelRequestOptions::default(),
             official_quota_api_key: Some("quota-secret-token".to_owned()),
             provider_id: "openai".to_owned(),
             model_descriptor: ProviderModelDescriptorRecord {
@@ -2900,6 +2912,7 @@ mod debug_redaction_tests {
                 max_output_tokens: 16_384,
                 model_id: "gpt-5.4-mini".to_owned(),
                 provider_id: "openai".to_owned(),
+                runtime_semantics: None,
             },
         }
     }

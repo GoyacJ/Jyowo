@@ -55,6 +55,7 @@ fn provider_continuation_request_context_debug_redacts_payload() {
         provider_id: "deepseek".to_owned(),
         model_config_id: Some("config-1".to_owned()),
         dialect: Some("deepseek".to_owned()),
+        setup_fingerprint: None,
         continuations: vec![record()],
     };
 
@@ -83,10 +84,12 @@ fn provider_continuation_model_request_debug_redacts_payload() {
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::ChatCompletions,
         extra: Value::Null,
+        options: harness_contracts::ModelRequestOptions::default(),
         provider_context: ProviderRequestContext {
             provider_id: "deepseek".to_owned(),
             model_config_id: Some("config-1".to_owned()),
             dialect: Some("deepseek".to_owned()),
+            setup_fingerprint: None,
             continuations: vec![record()],
         },
     };

@@ -754,6 +754,7 @@ pub async fn save_provider_settings(
     config_id: Option<String>,
     display_name: Option<String>,
     model_id: String,
+    model_options: Option<harness_contracts::ModelRequestOptions>,
     official_quota_api_key: Option<String>,
     provider_id: String,
     set_default: Option<bool>,
@@ -765,6 +766,7 @@ pub async fn save_provider_settings(
         config_id,
         display_name,
         model_id,
+        model_options,
         official_quota_api_key,
         provider_id,
         set_default: set_default.unwrap_or(true),
@@ -780,7 +782,7 @@ pub async fn save_provider_settings(
             .as_ref()
             .ok_or_else(|| runtime_unavailable("Provider settings require the desktop runtime."))?;
         let layout = runtime_state.runtime_layout().clone();
-        let (harness, model_id, protocol) = build_desktop_harness(
+        let (harness, model_id, protocol, model_options) = build_desktop_harness(
             &layout,
             Arc::clone(stream_permission_runtime),
             Some(&response.config.id),
@@ -789,7 +791,7 @@ pub async fn save_provider_settings(
         )
         .await?;
         let _start_run_guard = runtime_state.start_run_lock.lock().await;
-        runtime_state.replace_harness(Arc::new(harness), model_id, protocol);
+        runtime_state.replace_harness(Arc::new(harness), model_id, protocol, model_options);
     }
     Ok(response)
 }

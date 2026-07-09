@@ -849,6 +849,7 @@ export const zhCN = {
       profileName: '配置名称',
       provider: '模型厂商',
       model: '模型',
+      modelOptions: '模型选项',
       baseUrl: 'Base URL',
       baseUrlRegion: 'Base URL 区域',
       baseUrlInternational: '国际',
@@ -886,6 +887,7 @@ export const zhCN = {
       },
       errors: {
         apiKeyRequired: 'API key 必填。',
+        modelOptionsInvalid: '模型选项必须是有效 JSON。',
         modelRequired: '模型必填。',
         providerRequired: '模型厂商必填。',
       },

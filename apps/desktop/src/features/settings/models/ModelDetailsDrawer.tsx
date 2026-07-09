@@ -56,6 +56,7 @@ export function ModelDetailsDrawer({
   const [displayName, setDisplayName] = useState('')
   const [providerId, setProviderId] = useState('')
   const [modelId, setModelId] = useState('')
+  const [modelOptionsJson, setModelOptionsJson] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [saveError, setSaveError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
@@ -103,6 +104,7 @@ export function ModelDetailsDrawer({
     setDisplayName(row?.displayName ?? '')
     setProviderId(row?.providerId ?? catalog.providers[0]?.providerId ?? '')
     setModelId(row?.modelId ?? catalog.providers[0]?.models[0]?.modelId ?? '')
+    setModelOptionsJson(formatModelOptionsJson(row?.modelOptions))
     setBaseUrl(row?.baseUrl ?? '')
     setSaveError(null)
     setIsSaving(false)
@@ -197,10 +199,16 @@ export function ModelDetailsDrawer({
     const trimmedBaseUrl = baseUrl.trim()
     const apiKey = readSecretFormValue(form, 'apiKey')
     const officialQuotaApiKey = readSecretFormValue(form, 'officialQuotaApiKey')
+    const modelOptions = parseModelOptionsJson(modelOptionsJson)
 
+    if (!modelOptions.ok) {
+      setSaveError(t('provider.errors.modelOptionsInvalid'))
+      return
+    }
     if (trimmedDisplayName) {
       request.displayName = trimmedDisplayName
     }
+    request.modelOptions = modelOptions.value
     if (trimmedBaseUrl) {
       request.baseUrl = trimmedBaseUrl
     }
@@ -395,6 +403,16 @@ export function ModelDetailsDrawer({
                     </label>
                   </div>
 
+                  <label className="grid gap-1 text-sm">
+                    <span className="font-medium">{t('provider.modelOptions')}</span>
+                    <textarea
+                      className="min-h-28 rounded-sm border border-input bg-background px-2 py-2 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      onChange={(event) => setModelOptionsJson(event.target.value)}
+                      spellCheck={false}
+                      value={modelOptionsJson}
+                    />
+                  </label>
+
                   {row.hasApiKey ? (
                     <div className="space-y-2">
                       <Button
@@ -533,6 +551,26 @@ function SavedStateBadge({ children, saved }: { children: ReactNode; saved: bool
       {children}
     </span>
   )
+}
+
+function formatModelOptionsJson(
+  modelOptions: ProviderSettingsRequest['modelOptions'] | undefined,
+): string {
+  return JSON.stringify(modelOptions ?? {}, null, 2)
+}
+
+function parseModelOptionsJson(
+  value: string,
+): { ok: true; value: ProviderSettingsRequest['modelOptions'] } | { ok: false } {
+  try {
+    const parsed = value.trim() ? JSON.parse(value) : {}
+    if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') {
+      return { ok: false }
+    }
+    return { ok: true, value: parsed as ProviderSettingsRequest['modelOptions'] }
+  } catch {
+    return { ok: false }
+  }
 }
 
 function CapabilitiesDetails({

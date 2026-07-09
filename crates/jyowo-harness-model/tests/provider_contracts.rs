@@ -171,6 +171,7 @@ fn model_request_accepts_contract_tool_descriptor() {
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::Messages,
         extra: serde_json::Value::Null,
+        options: harness_contracts::ModelRequestOptions::default(),
         provider_context: harness_model::ProviderRequestContext::default(),
     };
 

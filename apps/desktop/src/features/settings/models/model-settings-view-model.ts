@@ -86,6 +86,7 @@ export type ModelAssetRow = {
   baseUrl?: string
   providerId: ProviderConfig['providerId']
   modelId: string
+  modelOptions?: ProviderConfig['modelOptions']
   modelDescriptor?: ProviderConfig['modelDescriptor']
   displayName: string
   providerDisplayName: string
@@ -407,6 +408,7 @@ function buildModelAssetRow({
     baseUrl: config.baseUrl,
     providerId: config.providerId,
     modelId: config.modelId,
+    modelOptions: config.modelOptions,
     modelDescriptor: config.modelDescriptor,
     displayName: config.displayName,
     providerDisplayName,

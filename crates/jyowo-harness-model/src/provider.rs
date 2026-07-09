@@ -7,8 +7,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 use futures::stream::BoxStream;
 use harness_contracts::{
     BlobStore, ConversationModelCapability, Message, MessageId, ModelError, ModelProtocol,
-    ModelRef, PricingId, PricingSnapshotId, RequestId, RunId, SessionId, StopReason, TenantId,
-    ToolDescriptor, ToolUseId, UsageSnapshot,
+    ModelRef, ModelRequestOptions, PricingId, PricingSnapshotId, RequestId, RunId, SessionId,
+    StopReason, TenantId, ToolDescriptor, ToolUseId, UsageSnapshot,
 };
 use harness_provider_state::{ProviderContinuationKind, ProviderContinuationRecord};
 use http::HeaderMap;
@@ -498,6 +498,7 @@ pub struct ModelRequest {
     pub cache_breakpoints: Vec<CacheBreakpoint>,
     pub protocol: ModelProtocol,
     pub extra: Value,
+    pub options: ModelRequestOptions,
     pub provider_context: ProviderRequestContext,
 }
 
@@ -518,6 +519,7 @@ impl fmt::Debug for ModelRequest {
             .field("cache_breakpoint_count", &self.cache_breakpoints.len())
             .field("protocol", &self.protocol)
             .field("extra_present", &(!self.extra.is_null()))
+            .field("options_present", &(!self.options.is_empty()))
             .field("provider_context", &self.provider_context)
             .finish()
     }
@@ -528,6 +530,7 @@ pub struct ProviderRequestContext {
     pub provider_id: String,
     pub model_config_id: Option<String>,
     pub dialect: Option<String>,
+    pub setup_fingerprint: Option<String>,
     pub continuations: Vec<ProviderContinuationRecord>,
 }
 
@@ -538,6 +541,7 @@ impl fmt::Debug for ProviderRequestContext {
             .field("provider_id", &self.provider_id)
             .field("model_config_id", &self.model_config_id)
             .field("dialect", &self.dialect)
+            .field("setup_fingerprint", &self.setup_fingerprint)
             .field("continuation_count", &self.continuations.len())
             .finish()
     }

@@ -263,7 +263,7 @@ pub(crate) async fn start_automation_conversation_run(
     let session_id = parse_session_id(&conversation_id)?;
     let input = build_conversation_turn_input(&request, state).await?;
     let _start_run_guard = state.start_run_lock.lock().await;
-    let (harness, mut options, model_id, protocol) =
+    let (harness, mut options, model_id, protocol, _model_options) =
         runtime_for_model_config(session_id, &model_config_id, state).await?;
     options = options
         .with_tool_profile(automation_effective_tool_profile(automation))

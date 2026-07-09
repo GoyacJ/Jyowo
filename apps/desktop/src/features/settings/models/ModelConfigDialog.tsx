@@ -32,6 +32,7 @@ type ModelConfigFormValues = {
   baseUrl: string
   displayName: string
   modelId: string
+  modelOptionsJson: string
   providerId: string
 }
 
@@ -116,11 +117,18 @@ export function ModelConfigDialog({
     const baseUrl = values.baseUrl.trim()
     const apiKey = readSecretFormValue(form, 'apiKey')
     const officialQuotaApiKey = readSecretFormValue(form, 'officialQuotaApiKey')
+    const modelOptions = parseModelOptionsJson(values.modelOptionsJson)
+
+    if (!modelOptions.ok) {
+      setError('modelOptionsJson', { message: t('provider.errors.modelOptionsInvalid') })
+      return
+    }
 
     if (profile) {
       request.configId = profile.id
       request.setDefault = profile.isDefault
     }
+    request.modelOptions = modelOptions.value
     if (displayName) {
       request.displayName = displayName
     }
@@ -243,9 +251,23 @@ export function ModelConfigDialog({
             />
           </label>
 
+          <label className="grid gap-1 text-sm">
+            <span className="font-medium">{t('provider.modelOptions')}</span>
+            <textarea
+              className="min-h-28 rounded-sm border border-input bg-background px-2 py-2 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              spellCheck={false}
+              {...register('modelOptionsJson')}
+            />
+          </label>
+
           {errors.root?.message ? (
             <p className="text-destructive text-sm" role="alert">
               {errors.root.message}
+            </p>
+          ) : null}
+          {errors.modelOptionsJson?.message ? (
+            <p className="text-destructive text-sm" role="alert">
+              {errors.modelOptionsJson.message}
             </p>
           ) : null}
 
@@ -277,7 +299,28 @@ function formValuesFromProfile(
     baseUrl: profile?.baseUrl ?? defaultProvider?.defaultBaseUrl ?? '',
     displayName: profile?.displayName ?? '',
     modelId: profile?.modelId ?? defaultModel?.modelId ?? '',
+    modelOptionsJson: formatModelOptionsJson(profile?.modelOptions),
     providerId: profile?.providerId ?? defaultProvider?.providerId ?? '',
+  }
+}
+
+function formatModelOptionsJson(
+  modelOptions: ProviderSettingsRequest['modelOptions'] | undefined,
+): string {
+  return JSON.stringify(modelOptions ?? {}, null, 2)
+}
+
+function parseModelOptionsJson(
+  value: string,
+): { ok: true; value: ProviderSettingsRequest['modelOptions'] } | { ok: false } {
+  try {
+    const parsed = value.trim() ? JSON.parse(value) : {}
+    if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') {
+      return { ok: false }
+    }
+    return { ok: true, value: parsed as ProviderSettingsRequest['modelOptions'] }
+  } catch {
+    return { ok: false }
   }
 }
 

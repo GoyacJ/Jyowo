@@ -15,11 +15,19 @@ use crate::{
 };
 
 use super::chat_codec;
+use super::continuation::OpenAiResponsesContinuationCapture;
 use super::dialect::OpenAiChatDialect;
 use super::error::{map_response_error, map_transport_error, OpenAiProtocolError};
 use super::{responses_codec, streaming};
 
 const DEFAULT_CREDENTIAL_RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(60);
+
+fn responses_continuation_capture(req: &ModelRequest) -> OpenAiResponsesContinuationCapture {
+    OpenAiResponsesContinuationCapture {
+        model_id: req.model_id.clone(),
+        setup_fingerprint: req.provider_context.setup_fingerprint.clone(),
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct OpenAiProtocolClient {
@@ -183,9 +191,10 @@ impl OpenAiProtocolClient {
                             ModelProtocol::ChatCompletions => {
                                 streaming::response_to_stream(response, self.dialect)
                             }
-                            ModelProtocol::Responses => {
-                                responses_codec::response_to_stream(response)
-                            }
+                            ModelProtocol::Responses => responses_codec::response_to_stream(
+                                response,
+                                responses_continuation_capture(&req),
+                            ),
                             _ => unreachable!("validated OpenAI protocol API mode"),
                         };
                         return Ok(wrap_stream_with_cancel_deadline(stream, &ctx));
@@ -199,9 +208,10 @@ impl OpenAiProtocolClient {
                         ModelProtocol::ChatCompletions => {
                             chat_codec::chat_response_to_stream(response, self.dialect)
                         }
-                        ModelProtocol::Responses => {
-                            responses_codec::json_response_to_stream(response)
-                        }
+                        ModelProtocol::Responses => responses_codec::json_response_to_stream(
+                            response,
+                            responses_continuation_capture(&req),
+                        ),
                         _ => unreachable!("validated OpenAI protocol API mode"),
                     };
                 }
@@ -767,6 +777,7 @@ mod credential_pool_tests {
             cache_breakpoints: Vec::new(),
             protocol: ModelProtocol::ChatCompletions,
             extra: Value::Null,
+            options: harness_contracts::ModelRequestOptions::default(),
             provider_context: crate::ProviderRequestContext::default(),
         }
     }
