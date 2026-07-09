@@ -482,11 +482,155 @@ fn provider_auth_scheme(provider_id: &str) -> ProviderAuthScheme {
 
 fn service_capabilities(provider_id: &str) -> Vec<ProviderServiceCapability> {
     match provider_id {
+        "anthropic" => anthropic_service_capabilities(),
         "km" => kimi_service_capabilities(),
         "minimax" => minimax_service_capabilities(),
         "doubao" => seedance_service_capabilities(),
         _ => Vec::new(),
     }
+}
+
+fn anthropic_service_capabilities() -> Vec<ProviderServiceCapability> {
+    vec![
+        anthropic_service(
+            "anthropic.messages",
+            ProviderServiceCategory::Conversation,
+            vec![
+                ModelModality::Text,
+                ModelModality::Image,
+                ModelModality::File,
+            ],
+            ModelModality::Text,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Medium,
+        ),
+        anthropic_service(
+            "anthropic.messages.count_tokens",
+            ProviderServiceCategory::Conversation,
+            vec![
+                ModelModality::Text,
+                ModelModality::Image,
+                ModelModality::File,
+            ],
+            ModelModality::Text,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        anthropic_service(
+            "anthropic.models.list",
+            ProviderServiceCategory::Model,
+            vec![ModelModality::Text],
+            ModelModality::Text,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        anthropic_service(
+            "anthropic.models.retrieve",
+            ProviderServiceCategory::Model,
+            vec![ModelModality::Text],
+            ModelModality::Text,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        anthropic_service(
+            "anthropic.messages.batches.create",
+            ProviderServiceCategory::Conversation,
+            vec![
+                ModelModality::Text,
+                ModelModality::Image,
+                ModelModality::File,
+            ],
+            ModelModality::Text,
+            ProviderServiceExecution::AsyncJob,
+            true,
+            ProviderServiceCostRisk::Medium,
+        ),
+        anthropic_service(
+            "anthropic.messages.batches.list",
+            ProviderServiceCategory::Conversation,
+            vec![ModelModality::Text],
+            ModelModality::Text,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        anthropic_service(
+            "anthropic.messages.batches.retrieve",
+            ProviderServiceCategory::Conversation,
+            vec![ModelModality::Text],
+            ModelModality::Text,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        anthropic_service(
+            "anthropic.messages.batches.results",
+            ProviderServiceCategory::Conversation,
+            vec![ModelModality::Text],
+            ModelModality::File,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        anthropic_service(
+            "anthropic.messages.batches.cancel",
+            ProviderServiceCategory::Conversation,
+            vec![ModelModality::Text],
+            ModelModality::Text,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        anthropic_service(
+            "anthropic.files.upload",
+            ProviderServiceCategory::File,
+            vec![ModelModality::File],
+            ModelModality::File,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        anthropic_service(
+            "anthropic.files.list",
+            ProviderServiceCategory::File,
+            vec![ModelModality::Text],
+            ModelModality::File,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        anthropic_service(
+            "anthropic.files.retrieve",
+            ProviderServiceCategory::File,
+            vec![ModelModality::Text],
+            ModelModality::File,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        anthropic_service(
+            "anthropic.files.delete",
+            ProviderServiceCategory::File,
+            vec![ModelModality::Text],
+            ModelModality::Text,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        anthropic_service(
+            "anthropic.files.download",
+            ProviderServiceCategory::File,
+            vec![ModelModality::Text],
+            ModelModality::File,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+    ]
 }
 
 fn kimi_service_capabilities() -> Vec<ProviderServiceCapability> {
@@ -859,6 +1003,27 @@ fn kimi_service(
         execution,
         requires_polling,
         permission_subject: "network:kimi".to_owned(),
+        cost_risk,
+    }
+}
+
+fn anthropic_service(
+    operation_id: &str,
+    category: ProviderServiceCategory,
+    input_modalities: Vec<ModelModality>,
+    output_artifact: ModelModality,
+    execution: ProviderServiceExecution,
+    requires_polling: bool,
+    cost_risk: ProviderServiceCostRisk,
+) -> ProviderServiceCapability {
+    ProviderServiceCapability {
+        operation_id: operation_id.to_owned(),
+        category,
+        input_modalities,
+        output_artifact,
+        execution,
+        requires_polling,
+        permission_subject: "network:anthropic".to_owned(),
         cost_risk,
     }
 }

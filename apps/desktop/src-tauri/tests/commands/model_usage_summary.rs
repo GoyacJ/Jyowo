@@ -10,8 +10,11 @@ use jyowo_desktop_shell::commands::{
 };
 use jyowo_harness_sdk::ext::EventStore;
 use jyowo_harness_sdk::testing::InMemoryEventStore;
+use serde_json::json;
 
-use super::runtime_state_with_harness;
+use super::{
+    runtime_state_with_harness, test_storage_layout_for_workspace, ProviderModelModalityRecord,
+};
 
 fn usage_event(model_ref: ModelRef, input_tokens: u64, diagnostic: bool) -> Event {
     Event::UsageAccumulated(UsageAccumulatedEvent {
@@ -145,6 +148,107 @@ async fn model_settings_page_reads_usage_from_rollup_without_harness_scan() {
         .data
         .expect("ready usage slice should include data");
     assert_eq!(usage.all_time.total.input_tokens, 17);
+}
+
+#[tokio::test]
+async fn model_settings_catalog_merges_anthropic_models_api_snapshot() {
+    let workspace = super::unique_workspace("model-settings-anthropic-models-api");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state = jyowo_desktop_shell::commands::DesktopRuntimeState::with_workspace_for_test(
+        workspace.clone(),
+    )
+    .unwrap();
+    let layout = test_storage_layout_for_workspace(&workspace);
+    let runtime_root = layout.project_runtime_root(&workspace);
+    std::fs::create_dir_all(&runtime_root).unwrap();
+    std::fs::write(
+        runtime_root.join("provider-catalog-snapshot.json"),
+        serde_json::to_vec_pretty(&json!({
+            "openrouterModelsApiJson": { "data": [] },
+            "anthropicModelsApiJson": {
+                "data": [
+                    {
+                        "id": "claude-sonnet-5",
+                        "type": "model",
+                        "display_name": "Claude Sonnet 5",
+                        "created_at": "2026-02-01T00:00:00Z",
+                        "max_input_tokens": 321000,
+                        "max_tokens": 123000,
+                        "capabilities": {
+                            "batch": true,
+                            "code_execution": true,
+                            "context_management": true,
+                            "effort_levels": ["low", "medium", "high", "xhigh", "max"],
+                            "image_input": true,
+                            "pdf_input": true,
+                            "structured_outputs": true,
+                            "thinking_types": ["adaptive", "disabled"]
+                        }
+                    },
+                    {
+                        "id": "claude-mythos-4-20260101",
+                        "type": "model",
+                        "display_name": "Claude Mythos 4",
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "max_input_tokens": 500000,
+                        "max_tokens": 128000,
+                        "capabilities": {
+                            "batch": true,
+                            "image_input": true,
+                            "pdf_input": true,
+                            "thinking": true
+                        }
+                    }
+                ]
+            },
+            "lastSuccessfulRefreshAt": Utc::now(),
+            "lastAttemptAt": Utc::now()
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let page = get_model_settings_page_with_runtime_state(&state)
+        .await
+        .expect("model settings page should load");
+    let anthropic = page
+        .catalog
+        .providers
+        .iter()
+        .find(|provider| provider.provider_id == "anthropic")
+        .expect("anthropic provider should be present");
+    let sonnet_5 = anthropic
+        .models
+        .iter()
+        .find(|model| model.model_id == "claude-sonnet-5")
+        .expect("bundled model should remain present");
+    assert_eq!(sonnet_5.context_window, 321000);
+    assert_eq!(sonnet_5.max_output_tokens, 123000);
+    assert_eq!(
+        sonnet_5
+            .provider_capability_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("supportsCodeExecution"))
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+
+    let mythos = anthropic
+        .models
+        .iter()
+        .find(|model| model.model_id == "claude-mythos-4-20260101")
+        .expect("models api-only model should be added");
+    assert_eq!(mythos.display_name, "Claude Mythos 4");
+    assert_eq!(mythos.context_window, 500000);
+    assert_eq!(mythos.max_output_tokens, 128000);
+    assert!(mythos
+        .conversation_capability
+        .input_modalities
+        .contains(&ProviderModelModalityRecord::Image));
+    assert!(mythos
+        .conversation_capability
+        .input_modalities
+        .contains(&ProviderModelModalityRecord::File));
 }
 
 #[tokio::test]

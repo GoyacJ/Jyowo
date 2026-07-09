@@ -196,7 +196,7 @@ fn content_block_start(payload: &Value) -> Vec<ModelStreamEvent> {
                 },
             },
         ],
-        Some("thinking") => vec![ModelStreamEvent::ContentBlockStart {
+        Some("thinking" | "redacted_thinking") => vec![ModelStreamEvent::ContentBlockStart {
             index,
             content_type: ContentType::Thinking,
         }],
@@ -238,6 +238,11 @@ fn content_block_delta(payload: &Value) -> Vec<ModelStreamEvent> {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         })),
+        "redacted_thinking_delta" => Some(ContentDelta::Thinking(ThinkingDelta {
+            text: None,
+            provider_native: Some(delta.clone()),
+            signature: None,
+        })),
         _ => None,
     };
 
@@ -274,6 +279,9 @@ pub(super) fn stop_reason(reason: &str) -> StopReason {
         "end_turn" => StopReason::EndTurn,
         "tool_use" => StopReason::ToolUse,
         "max_tokens" => StopReason::MaxIterations,
+        "stop_sequence" | "pause_turn" | "refusal" | "model_context_window_exceeded" => {
+            StopReason::Error(reason.to_owned())
+        }
         _ => StopReason::Error(reason.to_owned()),
     }
 }

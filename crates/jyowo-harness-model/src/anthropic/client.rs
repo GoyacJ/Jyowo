@@ -2,10 +2,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use futures::stream;
+use futures::StreamExt;
 use harness_contracts::{
-    Message, MessagePart, MessageRole, ModelError, StopReason, ToolDescriptor, ToolResult,
-    ToolResultPart, UsageSnapshot,
+    BlobRef, BlobStore, Message, MessagePart, MessageRole, ModelError, StopReason, TenantId,
+    ThinkingBlock, ToolDescriptor, ToolResult, ToolResultPart, UsageSnapshot,
 };
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
@@ -63,7 +65,7 @@ impl AnthropicClient {
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
         validate_request(&req)?;
-        let body = request_body(&req)?;
+        let body = request_body(&req, &ctx).await?;
         let max_attempts = ctx.retry_policy.max_attempts.max(1);
         let mut attempt = 0;
 
@@ -277,11 +279,15 @@ fn validate_request(req: &ModelRequest) -> Result<(), ModelError> {
     Ok(())
 }
 
-fn request_body(req: &ModelRequest) -> Result<Value, ModelError> {
+async fn request_body(req: &ModelRequest, ctx: &InferContext) -> Result<Value, ModelError> {
     let messages = req
         .messages
         .iter()
-        .map(anthropic_message)
+        .map(|message| anthropic_message(message, ctx))
+        .collect::<futures::stream::FuturesOrdered<_>>()
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
     let tools = req
         .tools
@@ -323,7 +329,7 @@ fn merge_extra_object(body: &mut Value, extra: &Value) -> Result<(), ModelError>
     Ok(())
 }
 
-fn anthropic_message(message: &Message) -> Result<Value, ModelError> {
+async fn anthropic_message(message: &Message, ctx: &InferContext) -> Result<Value, ModelError> {
     let role = match message.role {
         MessageRole::User => "user",
         MessageRole::Assistant => "assistant",
@@ -343,13 +349,21 @@ fn anthropic_message(message: &Message) -> Result<Value, ModelError> {
         message
             .parts
             .iter()
-            .map(anthropic_tool_result_part)
+            .map(|part| anthropic_tool_result_part(part, ctx))
+            .collect::<futures::stream::FuturesOrdered<_>>()
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
             .collect::<Result<Vec<_>, _>>()?
     } else {
         message
             .parts
             .iter()
-            .map(anthropic_part)
+            .map(|part| anthropic_part(part, ctx))
+            .collect::<futures::stream::FuturesOrdered<_>>()
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
             .collect::<Result<Vec<_>, _>>()?
     };
 
@@ -359,7 +373,7 @@ fn anthropic_message(message: &Message) -> Result<Value, ModelError> {
     }))
 }
 
-fn anthropic_part(part: &MessagePart) -> Result<Value, ModelError> {
+async fn anthropic_part(part: &MessagePart, ctx: &InferContext) -> Result<Value, ModelError> {
     match part {
         MessagePart::Text(text) => Ok(json!({ "type": "text", "text": text })),
         MessagePart::ToolUse { id, name, input } => Ok(json!({
@@ -368,17 +382,25 @@ fn anthropic_part(part: &MessagePart) -> Result<Value, ModelError> {
             "name": name,
             "input": input,
         })),
-        MessagePart::Thinking(_) => Err(ModelError::InvalidRequest(
-            "Anthropic thinking replay requires an explicit provider-native contract".to_owned(),
-        )),
+        MessagePart::Thinking(thinking) => anthropic_thinking_part(thinking),
         MessagePart::ToolResult { .. } => Err(ModelError::InvalidRequest(
             "Anthropic tool_result blocks must use MessageRole::Tool".to_owned(),
         )),
-        MessagePart::Image { .. } => Err(ModelError::InvalidRequest(
-            "AnthropicProvider does not inline image message parts yet".to_owned(),
-        )),
-        MessagePart::Video { .. } | MessagePart::File { .. } => Err(ModelError::InvalidRequest(
-            "AnthropicProvider does not inline file or video message parts yet".to_owned(),
+        MessagePart::Image {
+            mime_type,
+            blob_ref,
+        } => anthropic_blob_part(ctx, "image", mime_type, blob_ref).await,
+        MessagePart::File {
+            mime_type,
+            blob_ref,
+        } => anthropic_blob_part(ctx, "document", mime_type, blob_ref).await,
+        MessagePart::ProviderFileReference {
+            provider_id,
+            file_id,
+            mime_type,
+        } => anthropic_provider_file_part(provider_id, file_id, mime_type),
+        MessagePart::Video { .. } => Err(ModelError::InvalidRequest(
+            "AnthropicProvider does not support video message parts".to_owned(),
         )),
         _ => Err(ModelError::InvalidRequest(
             "unsupported Anthropic message part".to_owned(),
@@ -386,7 +408,10 @@ fn anthropic_part(part: &MessagePart) -> Result<Value, ModelError> {
     }
 }
 
-fn anthropic_tool_result_part(part: &MessagePart) -> Result<Value, ModelError> {
+async fn anthropic_tool_result_part(
+    part: &MessagePart,
+    ctx: &InferContext,
+) -> Result<Value, ModelError> {
     match part {
         MessagePart::ToolResult {
             tool_use_id,
@@ -394,7 +419,7 @@ fn anthropic_tool_result_part(part: &MessagePart) -> Result<Value, ModelError> {
         } => Ok(json!({
             "type": "tool_result",
             "tool_use_id": tool_use_id.to_string(),
-            "content": anthropic_tool_result_content(content)?,
+            "content": anthropic_tool_result_content(content, ctx).await?,
         })),
         _ => Err(ModelError::InvalidRequest(
             "Anthropic tool messages may only contain tool_result parts".to_owned(),
@@ -402,26 +427,145 @@ fn anthropic_tool_result_part(part: &MessagePart) -> Result<Value, ModelError> {
     }
 }
 
-fn anthropic_tool_result_content(content: &ToolResult) -> Result<Value, ModelError> {
+fn anthropic_thinking_part(thinking: &ThinkingBlock) -> Result<Value, ModelError> {
+    if thinking.provider_id != PROVIDER_ID {
+        return Err(ModelError::InvalidRequest(
+            "AnthropicProvider can only replay Anthropic thinking blocks".to_owned(),
+        ));
+    }
+    if let Some(native) = &thinking.provider_native {
+        if native
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind == "thinking" || kind == "redacted_thinking")
+        {
+            return Ok(native.clone());
+        }
+    }
+    let text = thinking.text.as_deref().ok_or_else(|| {
+        ModelError::InvalidRequest(
+            "Anthropic thinking block requires text or provider_native".to_owned(),
+        )
+    })?;
+    let mut value = json!({
+        "type": "thinking",
+        "thinking": text,
+    });
+    if let Some(signature) = &thinking.signature {
+        value["signature"] = Value::String(signature.clone());
+    }
+    Ok(value)
+}
+
+async fn anthropic_blob_part(
+    ctx: &InferContext,
+    kind: &str,
+    mime_type: &str,
+    blob_ref: &BlobRef,
+) -> Result<Value, ModelError> {
+    let bytes = read_blob_bytes(ctx, blob_ref).await?;
+    let source = json!({
+        "type": "base64",
+        "media_type": mime_type,
+        "data": BASE64_STANDARD.encode(bytes),
+    });
+    Ok(json!({
+        "type": kind,
+        "source": source,
+    }))
+}
+
+fn anthropic_provider_file_part(
+    provider_id: &str,
+    file_id: &str,
+    mime_type: &str,
+) -> Result<Value, ModelError> {
+    if provider_id != PROVIDER_ID {
+        return Err(ModelError::InvalidRequest(format!(
+            "AnthropicProvider cannot use {provider_id} provider file references"
+        )));
+    }
+    let block_type = if mime_type.starts_with("image/") {
+        "image"
+    } else if mime_type == "application/x-container-upload" {
+        "container_upload"
+    } else {
+        "document"
+    };
+    if block_type == "container_upload" {
+        return Ok(json!({
+            "type": "container_upload",
+            "file_id": file_id,
+        }));
+    }
+    Ok(json!({
+        "type": block_type,
+        "source": {
+            "type": "file",
+            "file_id": file_id,
+        },
+    }))
+}
+
+async fn read_blob_bytes(ctx: &InferContext, blob_ref: &BlobRef) -> Result<Vec<u8>, ModelError> {
+    let store = ctx.blob_store.as_ref().ok_or_else(|| {
+        ModelError::InvalidRequest(
+            "blob store is required for Anthropic multimodal input".to_owned(),
+        )
+    })?;
+    read_blob_bytes_from_store(store.as_ref(), ctx.tenant_id, blob_ref).await
+}
+
+async fn read_blob_bytes_from_store(
+    store: &dyn BlobStore,
+    tenant_id: TenantId,
+    blob_ref: &BlobRef,
+) -> Result<Vec<u8>, ModelError> {
+    let mut stream = store.get(tenant_id, blob_ref).await.map_err(|error| {
+        ModelError::InvalidRequest(format!("failed to read Anthropic input blob: {error}"))
+    })?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+async fn anthropic_tool_result_content(
+    content: &ToolResult,
+    ctx: &InferContext,
+) -> Result<Value, ModelError> {
     match content {
         ToolResult::Text(text) => Ok(json!([{ "type": "text", "text": text }])),
         ToolResult::Structured(value) => Ok(json!([{ "type": "text", "text": value.to_string() }])),
         ToolResult::Mixed(parts) => Ok(Value::Array(
-            parts
-                .iter()
-                .map(anthropic_tool_result_content_part)
+            futures::stream::iter(parts)
+                .then(|part| anthropic_tool_result_content_part(part, ctx))
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
                 .collect::<Result<Vec<_>, _>>()?,
         )),
-        ToolResult::Blob { .. } => Err(ModelError::InvalidRequest(
-            "AnthropicProvider does not inline blob tool results".to_owned(),
-        )),
+        ToolResult::Blob {
+            content_type,
+            blob_ref,
+        } => Ok(json!([anthropic_blob_part(
+            ctx,
+            "document",
+            content_type,
+            blob_ref
+        )
+        .await?])),
         _ => Err(ModelError::InvalidRequest(
             "unsupported Anthropic tool result".to_owned(),
         )),
     }
 }
 
-fn anthropic_tool_result_content_part(part: &ToolResultPart) -> Result<Value, ModelError> {
+async fn anthropic_tool_result_content_part(
+    part: &ToolResultPart,
+    ctx: &InferContext,
+) -> Result<Value, ModelError> {
     match part {
         ToolResultPart::Text { text } => Ok(json!({ "type": "text", "text": text })),
         ToolResultPart::Structured { value, .. } => {
@@ -477,9 +621,11 @@ fn anthropic_tool_result_content_part(part: &ToolResultPart) -> Result<Value, Mo
             })
             .to_string(),
         })),
-        ToolResultPart::Blob { .. } => Err(ModelError::InvalidRequest(
-            "AnthropicProvider does not inline blob tool result parts".to_owned(),
-        )),
+        ToolResultPart::Blob {
+            content_type,
+            blob_ref,
+            ..
+        } => anthropic_blob_part(ctx, "document", content_type, blob_ref).await,
         ToolResultPart::Artifact { title, preview, .. } => Ok(json!({
             "type": "text",
             "text": preview
@@ -522,6 +668,65 @@ fn response_to_stream(response: AnthropicResponse) -> Result<ModelStream, ModelE
                 });
                 events.push(ModelStreamEvent::ContentBlockStop { index });
             }
+            AnthropicContent::ToolUse { id, name, input } => {
+                let index = index as u32;
+                events.push(ModelStreamEvent::ContentBlockStart {
+                    index,
+                    content_type: ContentType::ToolUse,
+                });
+                events.push(ModelStreamEvent::ContentBlockDelta {
+                    index,
+                    delta: ContentDelta::ToolUseStart { id, name },
+                });
+                events.push(ModelStreamEvent::ContentBlockDelta {
+                    index,
+                    delta: ContentDelta::ToolUseInputJson(input.to_string()),
+                });
+                events.push(ModelStreamEvent::ContentBlockStop { index });
+            }
+            AnthropicContent::Thinking {
+                thinking,
+                signature,
+            } => {
+                let index = index as u32;
+                let provider_native = json!({
+                    "type": "thinking",
+                    "thinking": thinking,
+                    "signature": signature,
+                });
+                events.push(ModelStreamEvent::ContentBlockStart {
+                    index,
+                    content_type: ContentType::Thinking,
+                });
+                events.push(ModelStreamEvent::ContentBlockDelta {
+                    index,
+                    delta: ContentDelta::Thinking(crate::ThinkingDelta {
+                        text: Some(thinking),
+                        provider_native: Some(provider_native),
+                        signature,
+                    }),
+                });
+                events.push(ModelStreamEvent::ContentBlockStop { index });
+            }
+            AnthropicContent::RedactedThinking { data } => {
+                let index = index as u32;
+                events.push(ModelStreamEvent::ContentBlockStart {
+                    index,
+                    content_type: ContentType::Thinking,
+                });
+                events.push(ModelStreamEvent::ContentBlockDelta {
+                    index,
+                    delta: ContentDelta::Thinking(crate::ThinkingDelta {
+                        text: None,
+                        provider_native: Some(json!({
+                            "type": "redacted_thinking",
+                            "data": data,
+                        })),
+                        signature: None,
+                    }),
+                });
+                events.push(ModelStreamEvent::ContentBlockStop { index });
+            }
             AnthropicContent::Other => {}
         }
     }
@@ -550,6 +755,9 @@ fn stop_reason(reason: &str) -> StopReason {
         "end_turn" => StopReason::EndTurn,
         "tool_use" => StopReason::ToolUse,
         "max_tokens" => StopReason::MaxIterations,
+        "stop_sequence" | "pause_turn" | "refusal" | "model_context_window_exceeded" => {
+            StopReason::Error(reason.to_owned())
+        }
         _ => StopReason::Error(reason.to_owned()),
     }
 }
@@ -583,6 +791,19 @@ struct AnthropicResponse {
 enum AnthropicContent {
     Text {
         text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        #[serde(default)]
+        input: Value,
+    },
+    Thinking {
+        thinking: String,
+        signature: Option<String>,
+    },
+    RedactedThinking {
+        data: String,
     },
     #[serde(other)]
     Other,

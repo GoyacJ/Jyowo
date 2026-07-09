@@ -132,6 +132,7 @@ fn anthropic_provider_exports_required_models() {
         .collect::<Vec<_>>();
 
     assert!(models.contains(&"claude-sonnet-4-6".to_owned()));
+    assert!(models.contains(&"claude-sonnet-5".to_owned()));
     assert!(models.contains(&"claude-haiku-4-5".to_owned()));
 }
 
@@ -282,7 +283,13 @@ async fn anthropic_request_posts_tool_use_history_and_tool_result() {
 }
 
 #[tokio::test]
-async fn anthropic_rejects_thinking_replay_without_contract() {
+async fn anthropic_request_posts_thinking_replay() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ok_response())
+        .mount(&server)
+        .await;
     let mut req = sample_request(false);
     req.messages = vec![Message {
         id: MessageId::new(),
@@ -296,15 +303,21 @@ async fn anthropic_rejects_thinking_replay_without_contract() {
         created_at: Utc::now(),
     }];
 
-    let error = match AnthropicProvider::from_api_key("test-key")
+    provider(&server)
         .infer(req, InferContext::for_test())
         .await
-    {
-        Ok(_) => panic!("thinking replay should require an explicit provider contract"),
-        Err(error) => error,
-    };
+        .expect("thinking replay should be sent to Anthropic")
+        .collect::<Vec<_>>()
+        .await;
 
-    assert!(matches!(error, ModelError::InvalidRequest(_)));
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["messages"][0]["content"][0]["type"], "thinking");
+    assert_eq!(
+        body["messages"][0]["content"][0]["thinking"],
+        "private reasoning"
+    );
+    assert_eq!(body["messages"][0]["content"][0]["signature"], "sig");
 }
 
 #[tokio::test]

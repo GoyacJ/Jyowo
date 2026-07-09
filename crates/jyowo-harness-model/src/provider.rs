@@ -363,7 +363,7 @@ impl ModelRuntimeSemantics {
             reasoning_protocol: ReasoningProtocolSemantics::PublicThinking,
             streaming_protocol: StreamingProtocolSemantics::Sse,
             cache_protocol: CacheProtocolSemantics::AnthropicEphemeral,
-            media_protocol: MediaProtocolSemantics::TextOnly,
+            media_protocol: MediaProtocolSemantics::ProviderNative,
             output_protocol: OutputProtocolSemantics::TextAndToolUse,
             provider_continuation_dialect: None,
         }
