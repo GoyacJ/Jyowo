@@ -861,6 +861,7 @@ pub(crate) async fn runtime_state_with_mcp_registry_for_workspace(
     .expect("state should use the harness permission broker");
     let state_workspace = state.workspace_root().to_path_buf();
     use_test_provider_settings_store(&mut state, &state_workspace);
+    state.set_mcp_server_store_for_test(Arc::new(RecordingMcpServerStore::default()));
     state
 }
 
@@ -955,6 +956,14 @@ pub(crate) fn provider_settings_store_for_workspace(
     DesktopProviderSettingsStore::new_with_layout(layout, workspace.to_path_buf())
 }
 
+pub(crate) fn execution_settings_store_for_workspace(
+    workspace: &Path,
+) -> DesktopExecutionSettingsStore {
+    DesktopExecutionSettingsStore::global_only_with_layout(test_storage_layout_for_workspace(
+        workspace,
+    ))
+}
+
 pub(crate) fn use_test_provider_settings_store(state: &mut DesktopRuntimeState, workspace: &Path) {
     let layout = test_storage_layout_for_workspace(workspace);
     let store = provider_settings_store_for_workspace(workspace);
@@ -975,6 +984,7 @@ pub(crate) fn use_test_provider_settings_store(state: &mut DesktopRuntimeState, 
         .set_active_runtime_provider_config_for_test(config)
         .expect("test active runtime provider binding should update");
     state.set_provider_settings_store_for_test(Arc::new(store));
+    state.set_skill_store_for_test(Arc::new(DesktopSkillStore::global(layout.clone())));
     state.set_config_stores_for_test(
         jyowo_desktop_shell::commands::stores::GlobalConfigStore::new(layout.clone()),
         Some(

@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlarmClock, Play, Save, Trash2 } from 'lucide-react'
 import { type FormEvent, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useActiveProjectPath } from '@/features/workspace/use-active-project-path'
 import type {
   AutomationRunRecord,
   AutomationSpec,
@@ -51,8 +50,6 @@ export function AutomationSettings() {
   const { t } = useTranslation('settings')
   const commandClient = useCommandClient()
   const queryClient = useQueryClient()
-  const activeProjectPathQuery = useActiveProjectPath()
-  const hasProjectScope = activeProjectPathQuery.data != null
   const formRef = useRef<HTMLFormElement>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [operationError, setOperationError] = useState<string | null>(null)
@@ -186,9 +183,7 @@ export function AutomationSettings() {
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <SectionTitle>{t('automation.title')}</SectionTitle>
-            <Badge variant="outline">
-              {hasProjectScope ? t('scope.projectOverrides') : t('scope.runtimeDiagnostics')}
-            </Badge>
+            <Badge variant="outline">{t('scope.globalDefaults')}</Badge>
           </div>
           <SectionDescription>{t('automation.description')}</SectionDescription>
         </div>
@@ -223,97 +218,92 @@ export function AutomationSettings() {
               </div>
             )}
 
-            {hasProjectScope ? (
-              <div className="space-y-3 rounded-md border border-border bg-background p-4">
-                <h3 className="font-medium text-sm">{t('automation.form.title')}</h3>
-                <form className="space-y-4" onSubmit={submit} ref={formRef}>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <FieldControl fieldId="automation-id" label={t('automation.form.id')}>
-                      <Input id="automation-id" name="id" placeholder="nightly-checks" />
-                    </FieldControl>
-                    <FieldControl
-                      fieldId="automation-interval"
-                      label={t('automation.form.interval')}
+            <div className="space-y-3 rounded-md border border-border bg-background p-4">
+              <h3 className="font-medium text-sm">{t('automation.form.title')}</h3>
+              <form className="space-y-4" onSubmit={submit} ref={formRef}>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <FieldControl fieldId="automation-id" label={t('automation.form.id')}>
+                    <Input id="automation-id" name="id" placeholder="nightly-checks" />
+                  </FieldControl>
+                  <FieldControl fieldId="automation-interval" label={t('automation.form.interval')}>
+                    <Input
+                      defaultValue={30}
+                      id="automation-interval"
+                      min={1}
+                      name="intervalMinutes"
+                      type="number"
+                    />
+                  </FieldControl>
+                  <FieldControl
+                    fieldId="automation-tool-profile"
+                    label={t('automation.form.toolProfile')}
+                  >
+                    <Select defaultValue="coding" id="automation-tool-profile" name="toolProfile">
+                      {toolProfileOptions.map((toolProfile) => (
+                        <option key={toolProfile} value={toolProfile}>
+                          {t(`automation.toolProfile.${toolProfile}`)}
+                        </option>
+                      ))}
+                    </Select>
+                  </FieldControl>
+                  <FieldControl
+                    fieldId="automation-permission-mode"
+                    label={t('automation.form.permissionMode')}
+                  >
+                    <Select
+                      defaultValue="default"
+                      id="automation-permission-mode"
+                      name="permissionMode"
                     >
-                      <Input
-                        defaultValue={30}
-                        id="automation-interval"
-                        min={1}
-                        name="intervalMinutes"
-                        type="number"
+                      {permissionModeOptions.map((permissionMode) => (
+                        <option key={permissionMode} value={permissionMode}>
+                          {t(`automation.permissionMode.${permissionMode}`)}
+                        </option>
+                      ))}
+                    </Select>
+                  </FieldControl>
+                  <FieldControl
+                    fieldId="automation-missed-policy"
+                    label={t('automation.form.missedRunPolicy')}
+                  >
+                    <Select
+                      defaultValue="skip"
+                      id="automation-missed-policy"
+                      name="missedRunPolicy"
+                    >
+                      {missedRunPolicyOptions.map((policy) => (
+                        <option key={policy} value={policy}>
+                          {t(`automation.missedRunPolicy.${policy}`)}
+                        </option>
+                      ))}
+                    </Select>
+                  </FieldControl>
+                  <label
+                    className="flex items-center gap-2 self-end text-sm"
+                    htmlFor="automation-enabled"
+                  >
+                    <Checkbox id="automation-enabled" name="enabled" />
+                    {t('automation.form.enabled')}
+                  </label>
+                  <div className="md:col-span-2">
+                    <FieldControl fieldId="automation-prompt" label={t('automation.form.prompt')}>
+                      <Textarea
+                        id="automation-prompt"
+                        name="prompt"
+                        placeholder={t('automation.form.promptPlaceholder')}
                       />
                     </FieldControl>
-                    <FieldControl
-                      fieldId="automation-tool-profile"
-                      label={t('automation.form.toolProfile')}
-                    >
-                      <Select defaultValue="coding" id="automation-tool-profile" name="toolProfile">
-                        {toolProfileOptions.map((toolProfile) => (
-                          <option key={toolProfile} value={toolProfile}>
-                            {t(`automation.toolProfile.${toolProfile}`)}
-                          </option>
-                        ))}
-                      </Select>
-                    </FieldControl>
-                    <FieldControl
-                      fieldId="automation-permission-mode"
-                      label={t('automation.form.permissionMode')}
-                    >
-                      <Select
-                        defaultValue="default"
-                        id="automation-permission-mode"
-                        name="permissionMode"
-                      >
-                        {permissionModeOptions.map((permissionMode) => (
-                          <option key={permissionMode} value={permissionMode}>
-                            {t(`automation.permissionMode.${permissionMode}`)}
-                          </option>
-                        ))}
-                      </Select>
-                    </FieldControl>
-                    <FieldControl
-                      fieldId="automation-missed-policy"
-                      label={t('automation.form.missedRunPolicy')}
-                    >
-                      <Select
-                        defaultValue="skip"
-                        id="automation-missed-policy"
-                        name="missedRunPolicy"
-                      >
-                        {missedRunPolicyOptions.map((policy) => (
-                          <option key={policy} value={policy}>
-                            {t(`automation.missedRunPolicy.${policy}`)}
-                          </option>
-                        ))}
-                      </Select>
-                    </FieldControl>
-                    <label
-                      className="flex items-center gap-2 self-end text-sm"
-                      htmlFor="automation-enabled"
-                    >
-                      <Checkbox id="automation-enabled" name="enabled" />
-                      {t('automation.form.enabled')}
-                    </label>
-                    <div className="md:col-span-2">
-                      <FieldControl fieldId="automation-prompt" label={t('automation.form.prompt')}>
-                        <Textarea
-                          id="automation-prompt"
-                          name="prompt"
-                          placeholder={t('automation.form.promptPlaceholder')}
-                        />
-                      </FieldControl>
-                    </div>
                   </div>
-                  {formError ? <p className="text-destructive text-sm">{formError}</p> : null}
-                  <div className="flex justify-end">
-                    <Button disabled={saveMutation.isPending} type="submit">
-                      <Save className="size-4" />
-                      {saveMutation.isPending ? t('automation.saving') : t('automation.save')}
-                    </Button>
-                  </div>
-                </form>
-              </div>
-            ) : null}
+                </div>
+                {formError ? <p className="text-destructive text-sm">{formError}</p> : null}
+                <div className="flex justify-end">
+                  <Button disabled={saveMutation.isPending} type="submit">
+                    <Save className="size-4" />
+                    {saveMutation.isPending ? t('automation.saving') : t('automation.save')}
+                  </Button>
+                </div>
+              </form>
+            </div>
           </div>
 
           <aside className="space-y-3 rounded-md border border-border bg-background p-4">

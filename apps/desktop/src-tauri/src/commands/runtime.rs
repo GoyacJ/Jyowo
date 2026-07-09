@@ -52,7 +52,6 @@ use harness_tool::ToolNetworkBrokerCap;
 struct DesktopBackgroundAgentStarter {
     runtime_layout: RuntimeLayout,
     global_config_store: GlobalConfigStore,
-    project_config_store: Option<ProjectConfigStore>,
     event_store: Arc<dyn EventStore>,
 }
 
@@ -64,20 +63,15 @@ impl BackgroundAgentStarterCap for DesktopBackgroundAgentStarter {
     {
         let runtime_layout = self.runtime_layout.clone();
         let global_config_store = self.global_config_store.clone();
-        let project_config_store = self.project_config_store.clone();
         let event_store = Arc::clone(&self.event_store);
         Box::pin(async move {
             let policy_root = runtime_layout
                 .workspace_root
                 .clone()
                 .unwrap_or_else(|| runtime_layout.runtime_root.clone());
-            let settings = resolve_effective_execution_settings(
-                Some(&global_config_store),
-                project_config_store.as_ref(),
-                None,
-                None,
-            )
-            .map_err(|error| ToolError::Internal(error.message))?;
+            let settings =
+                resolve_effective_execution_settings(Some(&global_config_store), None, None, None)
+                    .map_err(|error| ToolError::Internal(error.message))?;
             let capabilities_payload =
                 if let Some(project_workspace_root) = runtime_layout.workspace_root.as_deref() {
                     agent_capabilities_payload(
@@ -219,14 +213,11 @@ pub(crate) struct McpDiagnosticSubscriptionHandle {
 }
 
 fn active_runtime_provider_binding(
-    project_workspace_root: Option<&Path>,
+    _project_workspace_root: Option<&Path>,
     default_model_id: &str,
     default_protocol: ModelProtocol,
 ) -> Result<Option<(String, [u8; 32])>, CommandErrorPayload> {
-    let store = project_workspace_root.map_or_else(
-        DesktopProviderSettingsStore::global_only,
-        |workspace_root| DesktopProviderSettingsStore::new(workspace_root.to_path_buf()),
-    );
+    let store = DesktopProviderSettingsStore::global_only();
     let Some(record) = store.load_record()? else {
         return Ok(None);
     };
@@ -266,9 +257,8 @@ impl DesktopRuntimeState {
                 harness: None,
             })),
             automation_lock: Arc::new(tokio::sync::Mutex::new(())),
-            automation_store: Arc::new(DesktopAutomationStore::new_with_layout(
+            automation_store: Arc::new(DesktopAutomationStore::global_with_layout(
                 storage_layout.clone(),
-                workspace_root.clone(),
             )),
             conversation_metadata_lock: Arc::new(tokio::sync::Mutex::new(())),
             conversation_metadata_store: Arc::new(DesktopConversationMetadataStore::new(
@@ -283,22 +273,15 @@ impl DesktopRuntimeState {
             )),
             mcp_diagnostic_subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             mcp_server_lock: Arc::new(tokio::sync::Mutex::new(())),
-            mcp_server_store: Arc::new(DesktopMcpServerStore::new(
-                storage_layout.clone(),
-                workspace_root.clone(),
-            )),
+            mcp_server_store: Arc::new(DesktopMcpServerStore::global(storage_layout.clone())),
             permission_resolver: None,
             provider_api_key_reveal_tokens: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-            plugin_store: Arc::new(DesktopPluginStore::project(
-                storage_layout.clone(),
-                workspace_root.clone(),
-            )),
+            plugin_store: Arc::new(DesktopPluginStore::global(storage_layout.clone())),
             plugin_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             provider_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
-            provider_settings_store: Arc::new(DesktopProviderSettingsStore::new_with_layout(
-                storage_layout.clone(),
-                workspace_root.clone(),
-            )),
+            provider_settings_store: Arc::new(
+                DesktopProviderSettingsStore::global_only_with_layout(storage_layout.clone()),
+            ),
             provider_diagnostics_store: Arc::new(
                 DesktopProviderDiagnosticsStore::new_runtime_root(
                     runtime_layout.runtime_root.clone(),
@@ -310,22 +293,20 @@ impl DesktopRuntimeState {
             )),
             official_quota_flights: new_official_quota_flights(),
             account_usage_registry: Arc::new(default_account_usage_registry()),
-            provider_capability_route_store: provider_capability_route_store_for_layout(
-                &runtime_layout,
+            provider_capability_route_store: Arc::new(
+                DesktopProviderCapabilityRouteStore::global_only_with_layout(
+                    storage_layout.clone(),
+                ),
             ),
             provider_capability_routes: Arc::new(ParkingRwLock::new(
                 empty_provider_capability_route_settings(),
             )),
             execution_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
-            execution_settings_store: Arc::new(DesktopExecutionSettingsStore::new_with_layout(
-                storage_layout.clone(),
-                workspace_root.clone(),
-            )),
+            execution_settings_store: Arc::new(
+                DesktopExecutionSettingsStore::global_only_with_layout(storage_layout.clone()),
+            ),
             skill_catalog_install_tasks: Arc::new(RwLock::new(HashMap::new())),
-            skill_store: Arc::new(DesktopSkillStore::project(
-                storage_layout.clone(),
-                workspace_root.clone(),
-            )),
+            skill_store: Arc::new(DesktopSkillStore::global(storage_layout.clone())),
             skill_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             start_run_lock: Arc::new(tokio::sync::Mutex::new(())),
             stream_permission_runtime: None,
@@ -515,17 +496,7 @@ impl DesktopRuntimeState {
             mcp_server_store: mcp_server_store_for_layout(&runtime_layout),
             permission_resolver: Some(permission_resolver),
             provider_api_key_reveal_tokens: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-            plugin_store: Arc::new(if runtime_layout.workspace_root.is_some() {
-                DesktopPluginStore::project(
-                    storage_layout_for_home(),
-                    runtime_layout
-                        .workspace_root
-                        .clone()
-                        .expect("project runtime layout has workspace root"),
-                )
-            } else {
-                DesktopPluginStore::global(storage_layout_for_home())
-            }),
+            plugin_store: Arc::new(DesktopPluginStore::global(storage_layout_for_home())),
             plugin_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             provider_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
             provider_settings_store: Arc::new(DesktopProviderSettingsStore::from_runtime_layout(
@@ -551,17 +522,7 @@ impl DesktopRuntimeState {
                 &runtime_layout,
             )),
             skill_catalog_install_tasks: Arc::new(RwLock::new(HashMap::new())),
-            skill_store: Arc::new(if runtime_layout.workspace_root.is_some() {
-                DesktopSkillStore::project(
-                    storage_layout_for_home(),
-                    runtime_layout
-                        .workspace_root
-                        .clone()
-                        .expect("project runtime layout has workspace root"),
-                )
-            } else {
-                DesktopSkillStore::global(storage_layout_for_home())
-            }),
+            skill_store: Arc::new(DesktopSkillStore::global(storage_layout_for_home())),
             skill_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             start_run_lock: Arc::new(tokio::sync::Mutex::new(())),
             stream_permission_runtime: Some(stream_permission_runtime),
@@ -582,6 +543,16 @@ impl DesktopRuntimeState {
         provider_settings_store: Arc<dyn ProviderSettingsStore>,
     ) {
         self.provider_settings_store = provider_settings_store;
+    }
+
+    #[doc(hidden)]
+    pub fn set_mcp_server_store_for_test(&mut self, mcp_server_store: Arc<dyn McpServerStore>) {
+        self.mcp_server_store = mcp_server_store;
+    }
+
+    #[doc(hidden)]
+    pub fn set_skill_store_for_test(&mut self, skill_store: Arc<dyn SkillStore>) {
+        self.skill_store = skill_store;
     }
 
     #[doc(hidden)]
@@ -712,7 +683,7 @@ impl DesktopRuntimeState {
     ) -> Result<harness_contracts::ExecutionDefaultsRecord, CommandErrorPayload> {
         resolve_effective_execution_settings(
             self.global_config_store.as_ref(),
-            self.project_config_store.as_ref(),
+            None,
             run_permission_mode,
             None,
         )
@@ -1030,31 +1001,22 @@ pub(crate) fn project_config_store_for_workspace(workspace_root: &Path) -> Proje
 }
 
 fn automation_store_for_layout(layout: &RuntimeLayout) -> Arc<dyn AutomationStore> {
-    match layout.workspace_root.as_ref() {
-        Some(workspace_root) => Arc::new(DesktopAutomationStore::new(workspace_root.clone())),
-        None => Arc::new(NoWorkspaceAutomationStore),
-    }
+    let _ = layout;
+    Arc::new(DesktopAutomationStore::global_with_layout(
+        storage_layout_for_home(),
+    ))
 }
 
 fn mcp_server_store_for_layout(layout: &RuntimeLayout) -> Arc<dyn McpServerStore> {
-    match layout.workspace_root.as_ref() {
-        Some(workspace_root) => Arc::new(DesktopMcpServerStore::new(
-            storage_layout_for_home(),
-            workspace_root.clone(),
-        )),
-        None => Arc::new(NoWorkspaceMcpServerStore),
-    }
+    let _ = layout;
+    Arc::new(DesktopMcpServerStore::global(storage_layout_for_home()))
 }
 
 fn provider_capability_route_store_for_layout(
     layout: &RuntimeLayout,
 ) -> Arc<dyn ProviderCapabilityRouteStore> {
-    match layout.workspace_root.as_ref() {
-        Some(workspace_root) => Arc::new(DesktopProviderCapabilityRouteStore::new(
-            workspace_root.clone(),
-        )),
-        None => Arc::new(NoWorkspaceProviderCapabilityRouteStore),
-    }
+    let _ = layout;
+    Arc::new(DesktopProviderCapabilityRouteStore::global_only())
 }
 
 fn jyowo_home_dir() -> PathBuf {
@@ -1311,16 +1273,8 @@ pub(crate) async fn build_desktop_harness(
             runtime_init_failed(format!("event store initialization failed: {error}"))
         })?,
     );
-    let mcp_server_records = if let Some(project_workspace_root) = layout.workspace_root.as_deref()
-    {
-        let mcp_server_store = DesktopMcpServerStore::new(
-            storage_layout_for_home(),
-            project_workspace_root.to_path_buf(),
-        );
-        mcp_server_store.load_records()?
-    } else {
-        Vec::new()
-    };
+    let mcp_server_records =
+        DesktopMcpServerStore::global(storage_layout_for_home()).load_records()?;
     let mcp_diagnostic_store: Arc<dyn McpDiagnosticStore> = Arc::new(
         DesktopMcpDiagnosticStore::new_runtime_root(runtime_root.clone()),
     );
@@ -1346,26 +1300,11 @@ pub(crate) async fn build_desktop_harness(
         .load_global_skill_selection_if_present()?
         .map(|selection| selection.enabled.into_iter().collect());
     let global_skill_store = DesktopSkillStore::global(storage_layout);
-    let mut skill_loader =
-        SkillLoader::default().with_source(SkillSourceConfig::DirectoryPackages {
-            path: global_skill_store.enabled_dir(),
-            source_kind: DirectorySourceKind::User,
-            allowed_package_ids: global_skill_selection,
-        });
-    if let Some(project_workspace_root) = layout.workspace_root.as_deref() {
-        let skill_store = DesktopSkillStore::project(
-            storage_layout_for_home(),
-            project_workspace_root.to_path_buf(),
-        );
-        let project_skill_selection = project_config_store_for_workspace(project_workspace_root)
-            .load_project_skill_selection_if_present()?
-            .map(|selection| selection.enabled.into_iter().collect());
-        skill_loader = skill_loader.with_source(SkillSourceConfig::DirectoryPackages {
-            path: skill_store.enabled_dir(),
-            source_kind: DirectorySourceKind::Workspace,
-            allowed_package_ids: project_skill_selection,
-        });
-    }
+    let skill_loader = SkillLoader::default().with_source(SkillSourceConfig::DirectoryPackages {
+        path: global_skill_store.enabled_dir(),
+        source_kind: DirectorySourceKind::User,
+        allowed_package_ids: global_skill_selection,
+    });
     let blob_store: Arc<dyn harness_contracts::BlobStore> = Arc::new(
         FileBlobStore::open(runtime_root.join("blobs")).map_err(|error| {
             runtime_init_failed(format!("blob store initialization failed: {error}"))
@@ -1391,27 +1330,9 @@ pub(crate) async fn build_desktop_harness(
             Arc::clone(&provider_settings_store),
             Arc::clone(&provider_capability_routes),
         ));
-    let global_plugin_store = DesktopPluginStore::global(storage_layout_for_home());
     let plugin_store: Arc<dyn PluginStore> =
-        if let Some(project_workspace_root) = layout.workspace_root.as_deref() {
-            Arc::new(DesktopPluginStore::project(
-                storage_layout_for_home(),
-                project_workspace_root.to_path_buf(),
-            ))
-        } else {
-            Arc::new(global_plugin_store.clone())
-        };
-    let global_plugin_store_for_registry = if layout.workspace_root.is_some() {
-        Some(&global_plugin_store)
-    } else {
-        None
-    };
-    let plugin_registry = build_plugin_registry(
-        execution_cwd,
-        project_workspace_root,
-        plugin_store.as_ref(),
-        global_plugin_store_for_registry,
-    )?;
+        Arc::new(DesktopPluginStore::global(storage_layout_for_home()));
+    let plugin_registry = build_plugin_registry(execution_cwd, None, plugin_store.as_ref(), None)?;
 
     let sandbox = build_desktop_process_sandbox(execution_cwd).await?;
 
@@ -1476,9 +1397,6 @@ pub(crate) async fn build_desktop_harness(
         Arc::new(DesktopBackgroundAgentStarter {
             runtime_layout: layout.clone(),
             global_config_store: global_config_store_for_home(),
-            project_config_store: project_workspace_root
-                .as_deref()
-                .map(project_config_store_for_workspace),
             event_store: Arc::clone(&event_store),
         });
     let plugin_sidecar_capability = Arc::new(());
@@ -1520,7 +1438,7 @@ pub(crate) async fn build_desktop_harness(
         AgentId::new(),
         Arc::clone(&mcp_diagnostic_store),
         Arc::clone(&authorization_service),
-        project_workspace_root,
+        execution_cwd,
     )
     .await?;
 
@@ -1981,38 +1899,23 @@ pub(crate) fn build_plugin_registry(
     let global_settings = global_plugin_store
         .map(PluginStore::load_record)
         .transpose()?;
-    let project_selection = project_workspace_root
-        .map(|project_workspace_root| {
-            project_config_store_for_workspace(project_workspace_root)
-                .load_project_plugin_selection_if_present()
+    let project_enabled_plugin_ids: BTreeSet<String> = settings
+        .records
+        .iter()
+        .filter(|record| record.enabled)
+        .map(|record| record.plugin_id.0.clone())
+        .collect();
+    let global_enabled_plugin_ids: BTreeSet<String> = global_settings
+        .as_ref()
+        .map(|settings| {
+            settings
+                .records
+                .iter()
+                .filter(|record| record.enabled)
+                .map(|record| record.plugin_id.0.clone())
+                .collect()
         })
-        .transpose()?
-        .flatten();
-    let project_enabled_plugin_ids: BTreeSet<String> = if let Some(selection) = &project_selection {
-        selection.enabled.iter().cloned().collect()
-    } else {
-        settings
-            .records
-            .iter()
-            .filter(|record| record.enabled)
-            .map(|record| record.plugin_id.0.clone())
-            .collect()
-    };
-    let global_enabled_plugin_ids: BTreeSet<String> = if let Some(selection) = &project_selection {
-        selection.enabled.iter().cloned().collect()
-    } else {
-        global_settings
-            .as_ref()
-            .map(|settings| {
-                settings
-                    .records
-                    .iter()
-                    .filter(|record| record.enabled)
-                    .map(|record| record.plugin_id.0.clone())
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
+        .unwrap_or_default();
     let global_plugin_ids: BTreeSet<String> = global_settings
         .as_ref()
         .map(|settings| {
@@ -2023,10 +1926,7 @@ pub(crate) fn build_plugin_registry(
                 .collect()
         })
         .unwrap_or_default();
-    let allow_project_plugins = project_selection
-        .as_ref()
-        .map(|selection| selection.allow_project_plugins)
-        .unwrap_or(settings.allow_project_plugins);
+    let allow_project_plugins = settings.allow_project_plugins;
     let (sidecar_sandbox, sidecar_sandbox_mode) = desktop_plugin_sidecar_sandbox(execution_cwd);
     let mut entries = BTreeMap::new();
     let mut plugin_enabled_by_name = BTreeMap::<PluginName, bool>::new();
@@ -2035,7 +1935,7 @@ pub(crate) fn build_plugin_registry(
             &global_settings.records,
             global_store,
             &global_enabled_plugin_ids,
-            project_selection.is_some(),
+            false,
             true,
             &BTreeSet::new(),
             &mut entries,
@@ -2046,7 +1946,7 @@ pub(crate) fn build_plugin_registry(
         &settings.records,
         plugin_store,
         &project_enabled_plugin_ids,
-        project_selection.is_some(),
+        false,
         false,
         &global_plugin_ids,
         &mut entries,
@@ -2096,7 +1996,7 @@ pub(crate) fn build_plugin_registry(
         )));
 
     if let Some(project_workspace_root) = project_workspace_root {
-        if allow_project_plugins && project_selection.is_none() {
+        if allow_project_plugins {
             builder = builder.with_source(DiscoverySource::Project(
                 project_workspace_root.to_path_buf(),
             ));
@@ -2536,10 +2436,6 @@ mod tests {
         let starter = DesktopBackgroundAgentStarter {
             runtime_layout: storage_layout.runtime_layout_for_project(&workspace_root),
             global_config_store: GlobalConfigStore::new(storage_layout.clone()),
-            project_config_store: Some(ProjectConfigStore::new(
-                storage_layout,
-                workspace_root.clone(),
-            )),
             event_store: Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))),
         };
         let conversation_id = SessionId::new();
@@ -2899,7 +2795,7 @@ esac
     }
 
     #[tokio::test]
-    async fn project_selection_cannot_enable_globally_disabled_plugin() {
+    async fn project_selection_does_not_block_global_plugin_enable_request() {
         let workspace = tempfile::tempdir().expect("temp workspace");
         let workspace_root = workspace
             .path()
@@ -2952,10 +2848,10 @@ esac
             &state,
         )
         .await
-        .expect_err("global disabled plugin must not be enabled from project selection");
+        .expect_err("missing global plugin package should fail preflight");
 
-        assert_eq!(error.code, "INVALID_PAYLOAD");
-        assert!(error.message.contains("disabled globally"));
+        assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+        assert!(!error.message.contains("disabled globally"));
     }
 
     #[tokio::test]

@@ -29,18 +29,13 @@ use super::stores::*;
 #[allow(unused_imports)]
 use super::validation::*;
 use super::*;
-use harness_contracts::PluginSelectionRecord;
 use std::{collections::BTreeSet, path::Path};
 
 pub async fn list_plugins_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<ListPluginsResponse, CommandErrorPayload> {
     let settings = state.plugin_store.load_record()?;
-    let selection = project_plugin_selection_for_state(state)?;
-    let allow_project_plugins = selection
-        .as_ref()
-        .map(|selection| selection.allow_project_plugins)
-        .unwrap_or(settings.allow_project_plugins);
+    let allow_project_plugins = settings.allow_project_plugins;
     if let Some(harness) = state.harness() {
         if let Some(registry) = harness.plugin_registry() {
             registry.discover().await.map_err(|error| {
@@ -53,12 +48,11 @@ pub async fn list_plugins_with_runtime_state(
         }
     }
 
-    let global_plugin_store = global_plugin_store_for_project_state(state);
     let registry = build_plugin_registry(
         state.conversation_cwd(),
-        state.project_workspace_root(),
+        None,
         state.plugin_store.as_ref(),
-        global_plugin_store.as_ref(),
+        None,
     )?;
     registry
         .discover()
@@ -68,37 +62,6 @@ pub async fn list_plugins_with_runtime_state(
         allow_project_plugins,
         plugins: registry.product_snapshot(),
     })
-}
-
-fn global_plugin_store_for_project_state(
-    state: &DesktopRuntimeState,
-) -> Option<DesktopPluginStore> {
-    state.project_workspace_root()?;
-    state
-        .global_config_store
-        .as_ref()
-        .map(|store| DesktopPluginStore::global(store.layout().clone()))
-}
-
-fn project_plugin_selection_for_state(
-    state: &DesktopRuntimeState,
-) -> Result<Option<PluginSelectionRecord>, CommandErrorPayload> {
-    state
-        .project_config_store
-        .as_ref()
-        .map(ProjectConfigStore::load_project_plugin_selection_if_present)
-        .transpose()
-        .map(Option::flatten)
-}
-
-fn save_project_plugin_selection_for_state(
-    state: &DesktopRuntimeState,
-    selection: &PluginSelectionRecord,
-) -> Result<(), CommandErrorPayload> {
-    let project_config = state.project_config_store.as_ref().ok_or_else(|| {
-        runtime_operation_failed("project plugin selection config store is unavailable".to_owned())
-    })?;
-    project_config.save_project_plugin_selection(selection)
 }
 
 pub async fn get_plugin_detail_with_runtime_state(
@@ -118,12 +81,11 @@ pub async fn get_plugin_detail_with_runtime_state(
         }
     }
 
-    let global_plugin_store = global_plugin_store_for_project_state(state);
     let registry = build_plugin_registry(
         state.conversation_cwd(),
-        state.project_workspace_root(),
+        None,
         state.plugin_store.as_ref(),
-        global_plugin_store.as_ref(),
+        None,
     )?;
     registry
         .discover()
@@ -264,66 +226,6 @@ pub async fn set_plugin_enabled_with_runtime_state(
 ) -> Result<PluginOperationResult, CommandErrorPayload> {
     let _start_run_guard = state.start_run_lock.lock().await;
     let _plugin_store_guard = state.plugin_store_lock.lock().await;
-    if let Some(mut selection) = project_plugin_selection_for_state(state)? {
-        let previous_selection = selection.clone();
-        let settings = state.plugin_store.load_record()?;
-        let global_plugin_store = global_plugin_store_for_project_state(state);
-        let global_settings = global_plugin_store
-            .as_ref()
-            .map(PluginStore::load_record)
-            .transpose()?;
-        let project_installed = settings
-            .records
-            .iter()
-            .any(|record| record.plugin_id == request.plugin_id);
-        let global_record = global_settings
-            .iter()
-            .flat_map(|settings| settings.records.iter())
-            .find(|record| record.plugin_id == request.plugin_id);
-        if !project_installed && global_record.is_none() {
-            return Err(invalid_payload("plugin not found".to_owned()));
-        }
-        if request.enabled
-            && !project_installed
-            && global_record.is_some_and(|record| !record.enabled)
-        {
-            return Err(invalid_payload("plugin is disabled globally".to_owned()));
-        }
-        if request.enabled {
-            if !selection
-                .enabled
-                .iter()
-                .any(|id| id == &request.plugin_id.0)
-            {
-                selection.enabled.push(request.plugin_id.0.clone());
-                selection.enabled.sort();
-            }
-        } else {
-            selection.enabled.retain(|id| id != &request.plugin_id.0);
-        }
-        save_project_plugin_selection_for_state(state, &selection)?;
-        if request.enabled {
-            if let Err(error) = preflight_plugin_activation(state, &request.plugin_id).await {
-                let _ = save_project_plugin_selection_for_state(state, &previous_selection);
-                return Err(error);
-            }
-        }
-        if let Err(error) = reload_desktop_harness_after_plugin_change_locked(state).await {
-            let _ = save_project_plugin_selection_for_state(state, &previous_selection);
-            return Err(error);
-        }
-        let summary = plugin_summary_after_reload(state, &request.plugin_id).await?;
-        return Ok(PluginOperationResult {
-            plugin_id: Some(request.plugin_id),
-            status: if request.enabled {
-                PluginOperationStatus::Enabled
-            } else {
-                PluginOperationStatus::Disabled
-            },
-            summary,
-            report: None,
-        });
-    }
     let mut settings = state.plugin_store.load_record()?;
     let previous_settings = settings.clone();
     let record = settings
@@ -363,18 +265,6 @@ pub async fn set_project_plugins_enabled_with_runtime_state(
 ) -> Result<SetProjectPluginsEnabledResponse, CommandErrorPayload> {
     let _start_run_guard = state.start_run_lock.lock().await;
     let _plugin_store_guard = state.plugin_store_lock.lock().await;
-    if let Some(mut selection) = project_plugin_selection_for_state(state)? {
-        let previous_selection = selection.clone();
-        selection.allow_project_plugins = request.enabled;
-        save_project_plugin_selection_for_state(state, &selection)?;
-        if let Err(error) = reload_desktop_harness_after_plugin_change_locked(state).await {
-            let _ = save_project_plugin_selection_for_state(state, &previous_selection);
-            return Err(error);
-        }
-        return Ok(SetProjectPluginsEnabledResponse {
-            allow_project_plugins: selection.allow_project_plugins,
-        });
-    }
     let mut settings = state.plugin_store.load_record()?;
     let previous_settings = settings.clone();
     settings.allow_project_plugins = request.enabled;
@@ -394,63 +284,20 @@ pub async fn update_plugin_config_with_runtime_state(
 ) -> Result<PluginOperationResult, CommandErrorPayload> {
     let _start_run_guard = state.start_run_lock.lock().await;
     let _plugin_store_guard = state.plugin_store_lock.lock().await;
-    let global_plugin_store = global_plugin_store_for_project_state(state);
     let mut settings = state.plugin_store.load_record()?;
     let previous_settings = settings.clone();
-    let mut global_settings = global_plugin_store
-        .as_ref()
-        .map(PluginStore::load_record)
-        .transpose()?;
-    let owner = if let Some(index) = settings
+    let plugin_index = settings
         .records
         .iter()
         .position(|record| record.plugin_id == request.plugin_id)
-    {
-        PluginConfigOwner::Project(index)
-    } else if let Some((index, _)) = global_settings.as_ref().and_then(|settings| {
-        settings
-            .records
-            .iter()
-            .enumerate()
-            .find(|(_, record)| record.plugin_id == request.plugin_id)
-    }) {
-        PluginConfigOwner::Global(index)
-    } else {
-        return Err(invalid_payload("plugin not found".to_owned()));
-    };
-    let previous_global_settings = global_settings.clone();
-    let current_config = match &owner {
-        PluginConfigOwner::Project(index) => settings.records[*index].config.clone(),
-        PluginConfigOwner::Global(index) => global_settings
-            .as_ref()
-            .and_then(|settings| settings.records.get(*index))
-            .map(|record| record.config.clone())
-            .ok_or_else(|| invalid_payload("plugin not found".to_owned()))?,
-    };
-    let record_enabled = match &owner {
-        PluginConfigOwner::Project(index) => settings.records[*index].enabled,
-        PluginConfigOwner::Global(index) => global_settings
-            .as_ref()
-            .and_then(|settings| settings.records.get(*index))
-            .map(|record| record.enabled)
-            .ok_or_else(|| invalid_payload("plugin not found".to_owned()))?,
-    };
-    let selection = project_plugin_selection_for_state(state)?;
-    let currently_enabled = selection
-        .as_ref()
-        .map(|selection| {
-            selection
-                .enabled
-                .iter()
-                .any(|id| id == &request.plugin_id.0)
-                && (matches!(&owner, PluginConfigOwner::Project(_)) || record_enabled)
-        })
-        .unwrap_or(record_enabled);
+        .ok_or_else(|| invalid_payload("plugin not found".to_owned()))?;
+    let current_config = settings.records[plugin_index].config.clone();
+    let currently_enabled = settings.records[plugin_index].enabled;
     let registry = build_plugin_registry(
         state.conversation_cwd(),
-        state.project_workspace_root(),
+        None,
         state.plugin_store.as_ref(),
-        global_plugin_store.as_ref(),
+        None,
     )?;
     let discovered = registry
         .discover()
@@ -480,44 +327,17 @@ pub async fn update_plugin_config_with_runtime_state(
             values: validation_config,
         })
         .map_err(|error| invalid_payload(format!("plugin config rejected: {error}")))?;
-    match owner {
-        PluginConfigOwner::Project(index) => {
-            settings.records[index].config = merged_config;
-            settings.records[index].updated_at = now().to_rfc3339();
-            state.plugin_store.save_record(&settings)?;
-        }
-        PluginConfigOwner::Global(index) => {
-            let global_settings = global_settings
-                .as_mut()
-                .ok_or_else(|| invalid_payload("plugin not found".to_owned()))?;
-            global_settings.records[index].config = merged_config;
-            global_settings.records[index].updated_at = now().to_rfc3339();
-            let global_plugin_store = global_plugin_store.as_ref().ok_or_else(|| {
-                runtime_operation_failed("global plugin store is unavailable".to_owned())
-            })?;
-            global_plugin_store.save_record(global_settings)?;
-        }
-    }
+    settings.records[plugin_index].config = merged_config;
+    settings.records[plugin_index].updated_at = now().to_rfc3339();
+    state.plugin_store.save_record(&settings)?;
     if currently_enabled {
         if let Err(error) = preflight_plugin_activation(state, &request.plugin_id).await {
             let _ = state.plugin_store.save_record(&previous_settings);
-            if let (Some(global_plugin_store), Some(previous_global_settings)) = (
-                global_plugin_store.as_ref(),
-                previous_global_settings.as_ref(),
-            ) {
-                let _ = global_plugin_store.save_record(previous_global_settings);
-            }
             return Err(error);
         }
     }
     if let Err(error) = reload_desktop_harness_after_plugin_change_locked(state).await {
         let _ = state.plugin_store.save_record(&previous_settings);
-        if let (Some(global_plugin_store), Some(previous_global_settings)) = (
-            global_plugin_store.as_ref(),
-            previous_global_settings.as_ref(),
-        ) {
-            let _ = global_plugin_store.save_record(previous_global_settings);
-        }
         return Err(error);
     }
     let summary = plugin_summary_after_reload(state, &request.plugin_id).await?;
@@ -529,11 +349,6 @@ pub async fn update_plugin_config_with_runtime_state(
     })
 }
 
-enum PluginConfigOwner {
-    Project(usize),
-    Global(usize),
-}
-
 pub async fn uninstall_plugin_with_runtime_state(
     request: UninstallPluginRequest,
     state: &DesktopRuntimeState,
@@ -542,7 +357,6 @@ pub async fn uninstall_plugin_with_runtime_state(
     let _plugin_store_guard = state.plugin_store_lock.lock().await;
     let mut settings = state.plugin_store.load_record()?;
     let previous_settings = settings.clone();
-    let previous_selection = project_plugin_selection_for_state(state)?;
     let original_len = settings.records.len();
     let mut package_dirs = Vec::new();
     settings.records.retain(|record| {
@@ -557,18 +371,8 @@ pub async fn uninstall_plugin_with_runtime_state(
         return Err(invalid_payload("plugin not found".to_owned()));
     }
     state.plugin_store.save_record(&settings)?;
-    if let Some(mut selection) = previous_selection.clone() {
-        selection.enabled.retain(|id| id != &request.plugin_id.0);
-        if let Err(error) = save_project_plugin_selection_for_state(state, &selection) {
-            let _ = state.plugin_store.save_record(&previous_settings);
-            return Err(error);
-        }
-    }
     if let Err(error) = reload_desktop_harness_after_plugin_change_locked(state).await {
         let _ = state.plugin_store.save_record(&previous_settings);
-        if let Some(selection) = previous_selection {
-            let _ = save_project_plugin_selection_for_state(state, &selection);
-        }
         return Err(error);
     }
     for package_dir in &package_dirs {
@@ -593,34 +397,12 @@ pub async fn reload_plugin_with_runtime_state(
     let _start_run_guard = state.start_run_lock.lock().await;
     let _plugin_store_guard = state.plugin_store_lock.lock().await;
     let settings = state.plugin_store.load_record()?;
-    let selection = project_plugin_selection_for_state(state)?;
-    let global_plugin_store = global_plugin_store_for_project_state(state);
-    let global_settings = global_plugin_store
-        .as_ref()
-        .map(PluginStore::load_record)
-        .transpose()?;
-    let project_record = settings
+    let installed_record = settings
         .records
         .iter()
-        .find(|record| record.plugin_id == request.plugin_id);
-    let global_record = global_settings
-        .iter()
-        .flat_map(|settings| settings.records.iter())
-        .find(|record| record.plugin_id == request.plugin_id);
-    let installed_record = project_record
-        .or(global_record)
+        .find(|record| record.plugin_id == request.plugin_id)
         .ok_or_else(|| invalid_payload("plugin not found".to_owned()))?;
-    let enabled = selection
-        .as_ref()
-        .map(|selection| {
-            selection
-                .enabled
-                .iter()
-                .any(|id| id == &request.plugin_id.0)
-                && (project_record.is_some() || global_record.is_some_and(|record| record.enabled))
-        })
-        .unwrap_or(installed_record.enabled);
-    if enabled {
+    if installed_record.enabled {
         preflight_plugin_activation(state, &request.plugin_id).await?;
     }
     reload_desktop_harness_after_plugin_change_locked(state).await?;
@@ -637,12 +419,11 @@ pub(crate) async fn preflight_plugin_activation(
     state: &DesktopRuntimeState,
     plugin_id: &PluginId,
 ) -> Result<(), CommandErrorPayload> {
-    let global_plugin_store = global_plugin_store_for_project_state(state);
     let registry = build_plugin_registry(
         state.conversation_cwd(),
-        state.project_workspace_root(),
+        None,
         state.plugin_store.as_ref(),
-        global_plugin_store.as_ref(),
+        None,
     )?;
     let discovered = registry
         .discover()

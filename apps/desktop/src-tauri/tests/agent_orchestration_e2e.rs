@@ -434,7 +434,7 @@ async fn agent_orchestration_e2e_negative_policy_and_permission_paths_fail_close
             agent_teams_enabled: false,
             background_agents_enabled: false,
         },
-        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        &execution_settings_store_for_workspace(state.workspace_root()),
         Some(&AgentCapabilityResolutionContext {
             stream_permission_runtime_available: true,
         }),
@@ -469,7 +469,7 @@ async fn agent_orchestration_e2e_negative_policy_and_permission_paths_fail_close
             agent_teams_enabled: false,
             background_agents_enabled: false,
         },
-        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        &execution_settings_store_for_workspace(state.workspace_root()),
         Some(&AgentCapabilityResolutionContext {
             stream_permission_runtime_available: false,
         }),
@@ -755,6 +755,12 @@ fn use_test_provider_settings_store(
         .set_active_runtime_provider_config_for_test(&config)
         .expect("test active runtime provider binding should update");
     state.set_provider_settings_store_for_test(Arc::new(store));
+    let workspace = state.workspace_root().to_path_buf();
+    let layout = test_storage_layout_for_workspace(&workspace);
+    state.set_config_stores_for_test(
+        jyowo_desktop_shell::commands::stores::GlobalConfigStore::new(layout.clone()),
+        Some(jyowo_desktop_shell::commands::stores::ProjectConfigStore::new(layout, workspace)),
+    );
 }
 
 async fn test_blob_and_evidence_ref_store(
@@ -789,6 +795,14 @@ fn test_harness_options(workspace: &Path) -> HarnessOptions {
 }
 
 async fn enable_agent_execution_settings(state: &DesktopRuntimeState, background: bool) {
+    let store = execution_settings_store_for_workspace(state.workspace_root());
+    let global_supervisor = if background {
+        Some(write_test_supervisor_lock_for_runtime_root(
+            store.workspace_root(),
+        ))
+    } else {
+        None
+    };
     set_execution_settings_with_store(
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::Default,
@@ -798,12 +812,15 @@ async fn enable_agent_execution_settings(state: &DesktopRuntimeState, background
             agent_teams_enabled: true,
             background_agents_enabled: background,
         },
-        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        &store,
         Some(&AgentCapabilityResolutionContext {
             stream_permission_runtime_available: true,
         }),
     )
     .expect("execution settings save");
+    if let Some(supervisor) = global_supervisor {
+        supervisor.shutdown().await;
+    }
 }
 
 async fn read_events(
@@ -913,6 +930,7 @@ impl Default for NeedsPermissionTool {
                 origin: ToolOrigin::Builtin,
                 search_hint: None,
                 service_binding: None,
+                metadata: Default::default(),
             },
         }
     }
@@ -1033,6 +1051,7 @@ impl ModelProvider for SessionRoutedProvider {
             protocol: ModelProtocol::Messages,
             context_window: 128_000,
             max_output_tokens: 8192,
+            provider_declared_capability: Default::default(),
             conversation_capability: Default::default(),
             runtime_semantics: jyowo_harness_sdk::ext::ModelRuntimeSemantics::messages_default(
                 ModelProtocol::Messages,
@@ -1068,19 +1087,30 @@ impl ModelProvider for SessionRoutedProvider {
 }
 
 fn write_test_supervisor_lock(workspace: &Path) -> TestSupervisorControl {
+    let runtime_dir = workspace.join(".jyowo/runtime");
+    let identity = format!("project:{}", workspace.display());
+    write_test_supervisor_lock_for_runtime_dir(&runtime_dir, &identity)
+}
+
+fn write_test_supervisor_lock_for_runtime_root(runtime_root: &Path) -> TestSupervisorControl {
+    let identity = format!("runtime:{}", runtime_root.display());
+    write_test_supervisor_lock_for_runtime_dir(runtime_root, &identity)
+}
+
+fn write_test_supervisor_lock_for_runtime_dir(
+    runtime_dir: &Path,
+    identity: &str,
+) -> TestSupervisorControl {
     use std::io::{Read, Write};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("control bind");
     listener.set_nonblocking(true).expect("control nonblocking");
     let control_addr = listener.local_addr().expect("control addr");
-    let runtime_dir = workspace.join(".jyowo/runtime");
     std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
     let token = "test-background-supervisor-token";
     let token_hash = blake3::hash(token.as_bytes()).to_hex().to_string();
-    let workspace_id = blake3::hash(format!("project:{}", workspace.display()).as_bytes())
-        .to_hex()
-        .to_string();
+    let workspace_id = blake3::hash(identity.as_bytes()).to_hex().to_string();
     std::fs::write(
         runtime_dir.join("agent-supervisor.token"),
         serde_json::json!({
@@ -1171,10 +1201,22 @@ fn unique_workspace(label: &str) -> PathBuf {
 }
 
 fn provider_settings_store_for_workspace(workspace: &Path) -> DesktopProviderSettingsStore {
-    let layout = jyowo_desktop_shell::storage_layout::StorageLayout::new(
+    let layout = test_storage_layout_for_workspace(workspace);
+    DesktopProviderSettingsStore::new_with_layout(layout, workspace.to_path_buf())
+}
+
+fn execution_settings_store_for_workspace(workspace: &Path) -> DesktopExecutionSettingsStore {
+    DesktopExecutionSettingsStore::global_only_with_layout(test_storage_layout_for_workspace(
+        workspace,
+    ))
+}
+
+fn test_storage_layout_for_workspace(
+    workspace: &Path,
+) -> jyowo_desktop_shell::storage_layout::StorageLayout {
+    jyowo_desktop_shell::storage_layout::StorageLayout::new(
         jyowo_desktop_shell::storage_layout::JyowoHome::new(
             workspace.join(".jyowo-test-home").join(".jyowo"),
         ),
-    );
-    DesktopProviderSettingsStore::new_with_layout(layout, workspace.to_path_buf())
+    )
 }

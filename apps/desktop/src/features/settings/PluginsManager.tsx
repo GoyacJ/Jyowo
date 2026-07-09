@@ -17,7 +17,6 @@ import {
   listPlugins,
   reloadPlugin,
   setPluginEnabled,
-  setProjectPluginsEnabled,
   uninstallPlugin,
   updatePluginConfig,
   validatePluginFromPath,
@@ -109,12 +108,6 @@ export function PluginsManager({
       await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.all })
     },
   })
-  const setProjectPluginsMutation = useMutation({
-    mutationFn: (enabled: boolean) => setProjectPluginsEnabled(enabled, commandClient),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.list() })
-    },
-  })
   const [installReport, setInstallReport] = useState<PluginInstallReport | null>(null)
   const [installSourcePath, setInstallSourcePath] = useState<string | null>(null)
   const [installDialogOpen, setInstallDialogOpen] = useState(false)
@@ -122,7 +115,6 @@ export function PluginsManager({
   const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null)
   const [pendingUninstall, setPendingUninstall] = useState<PluginSummary | null>(null)
   const plugins = pluginsQuery.data?.plugins ?? []
-  const allowProjectPlugins = pluginsQuery.data?.allowProjectPlugins ?? false
 
   useEffect(() => {
     if (openPluginRequest) {
@@ -207,31 +199,9 @@ export function PluginsManager({
 
       {pluginsQuery.isError ? <ErrorMessage>{t('plugins.loadError')}</ErrorMessage> : null}
 
-      {setEnabledMutation.isError ||
-      reloadMutation.isError ||
-      uninstallMutation.isError ||
-      setProjectPluginsMutation.isError ? (
+      {setEnabledMutation.isError || reloadMutation.isError || uninstallMutation.isError ? (
         <ErrorMessage>{t('plugins.operationError')}</ErrorMessage>
       ) : null}
-
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-3">
-        <div>
-          <div className="font-medium text-sm">{t('plugins.projectGate.title')}</div>
-          <p className="mt-1 text-muted-foreground text-xs">
-            {t('plugins.projectGate.description')}
-          </p>
-        </div>
-        <Switch
-          aria-label={t(
-            allowProjectPlugins
-              ? 'plugins.actions.disableProjectPlugins'
-              : 'plugins.actions.enableProjectPlugins',
-          )}
-          checked={allowProjectPlugins}
-          disabled={pluginsQuery.isLoading || setProjectPluginsMutation.isPending}
-          onCheckedChange={(enabled) => setProjectPluginsMutation.mutate(enabled)}
-        />
-      </div>
 
       {!pluginsQuery.isLoading && !pluginsQuery.isError && plugins.length === 0 ? (
         <div className="rounded-md border border-dashed border-border bg-background px-4 py-6 text-center text-muted-foreground text-sm">

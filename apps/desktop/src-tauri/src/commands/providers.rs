@@ -233,32 +233,21 @@ pub(crate) fn sync_runtime_provider_capability_routes(
 #[derive(Clone)]
 pub struct DesktopProviderSettingsStore {
     layout: crate::storage_layout::StorageLayout,
-    selection_scope: ProviderSettingsSelectionScope,
-}
-
-#[derive(Clone)]
-enum ProviderSettingsSelectionScope {
-    Project { workspace_root: PathBuf },
-    GlobalOnly,
 }
 
 impl DesktopProviderSettingsStore {
-    pub fn new(workspace_root: PathBuf) -> Self {
+    pub fn new(_workspace_root: PathBuf) -> Self {
         let home = execution_settings_home_dir();
-        Self::new_with_layout(
-            crate::storage_layout::StorageLayout::new(crate::storage_layout::JyowoHome::new(home)),
-            workspace_root,
-        )
+        Self::global_only_with_layout(crate::storage_layout::StorageLayout::new(
+            crate::storage_layout::JyowoHome::new(home),
+        ))
     }
 
     pub fn new_with_layout(
         layout: crate::storage_layout::StorageLayout,
-        workspace_root: PathBuf,
+        _workspace_root: PathBuf,
     ) -> Self {
-        Self {
-            layout,
-            selection_scope: ProviderSettingsSelectionScope::Project { workspace_root },
-        }
+        Self::global_only_with_layout(layout)
     }
 
     pub fn global_only() -> Self {
@@ -269,56 +258,37 @@ impl DesktopProviderSettingsStore {
     }
 
     pub fn global_only_with_layout(layout: crate::storage_layout::StorageLayout) -> Self {
-        Self {
-            layout,
-            selection_scope: ProviderSettingsSelectionScope::GlobalOnly,
-        }
+        Self { layout }
     }
 
-    pub fn from_runtime_layout(layout: &crate::storage_layout::RuntimeLayout) -> Self {
-        match layout.workspace_root.as_ref() {
-            Some(workspace_root) => Self::new(workspace_root.clone()),
-            None => Self::global_only(),
-        }
+    pub fn from_runtime_layout(_layout: &crate::storage_layout::RuntimeLayout) -> Self {
+        Self::global_only()
+    }
+
+    pub fn from_runtime_layout_with_layout(
+        storage_layout: crate::storage_layout::StorageLayout,
+        _runtime_layout: &crate::storage_layout::RuntimeLayout,
+    ) -> Self {
+        Self::global_only_with_layout(storage_layout)
     }
 
     fn global_config_store(&self) -> GlobalConfigStore {
         GlobalConfigStore::new(self.layout.clone())
     }
 
-    fn project_config_store(&self) -> Option<ProjectConfigStore> {
-        match &self.selection_scope {
-            ProviderSettingsSelectionScope::Project { workspace_root } => Some(
-                ProjectConfigStore::new(self.layout.clone(), workspace_root.clone()),
-            ),
-            ProviderSettingsSelectionScope::GlobalOnly => None,
-        }
-    }
-
     fn load_selection(&self) -> Result<ProviderSelectionRecord, CommandErrorPayload> {
-        if let Some(project_config) = self.project_config_store() {
-            project_config.load_project_provider_selection()
-        } else {
-            self.global_config_store().load_global_provider_selection()
-        }
+        self.global_config_store().load_global_provider_selection()
     }
 
     fn save_selection(&self, record: &ProviderSelectionRecord) -> Result<(), CommandErrorPayload> {
-        if let Some(project_config) = self.project_config_store() {
-            project_config.save_project_provider_selection(record)
-        } else {
-            self.global_config_store()
-                .save_global_provider_selection(record)
-        }
+        self.global_config_store()
+            .save_global_provider_selection(record)
     }
 }
 
 impl ProviderSettingsStore for DesktopProviderSettingsStore {
     fn selection_scope(&self) -> SettingsScope {
-        match self.selection_scope {
-            ProviderSettingsSelectionScope::Project { .. } => SettingsScope::Project,
-            ProviderSettingsSelectionScope::GlobalOnly => SettingsScope::Global,
-        }
+        SettingsScope::Global
     }
 
     fn load_record(&self) -> Result<Option<ProviderSettingsRecord>, CommandErrorPayload> {
@@ -456,24 +426,53 @@ fn provider_lifecycle_record_from_profile(
 
 #[derive(Clone)]
 pub struct DesktopProviderCapabilityRouteStore {
-    workspace_root: PathBuf,
+    layout: crate::storage_layout::StorageLayout,
+    workspace_root: Option<PathBuf>,
 }
 
 impl DesktopProviderCapabilityRouteStore {
     pub fn new(workspace_root: PathBuf) -> Self {
-        Self { workspace_root }
+        let home = execution_settings_home_dir();
+        Self::new_with_layout(
+            crate::storage_layout::StorageLayout::new(crate::storage_layout::JyowoHome::new(home)),
+            workspace_root,
+        )
+    }
+
+    pub fn new_with_layout(
+        layout: crate::storage_layout::StorageLayout,
+        workspace_root: PathBuf,
+    ) -> Self {
+        Self {
+            layout,
+            workspace_root: Some(workspace_root),
+        }
+    }
+
+    pub fn global_only() -> Self {
+        let home = execution_settings_home_dir();
+        Self::global_only_with_layout(crate::storage_layout::StorageLayout::new(
+            crate::storage_layout::JyowoHome::new(home),
+        ))
+    }
+
+    pub fn global_only_with_layout(layout: crate::storage_layout::StorageLayout) -> Self {
+        Self {
+            layout,
+            workspace_root: None,
+        }
     }
 
     #[must_use]
-    pub fn workspace_root(&self) -> &Path {
-        &self.workspace_root
+    pub fn workspace_root(&self) -> Option<&Path> {
+        self.workspace_root.as_deref()
     }
 
     fn settings_path(&self) -> PathBuf {
-        let home = execution_settings_home_dir();
-        let layout =
-            crate::storage_layout::StorageLayout::new(crate::storage_layout::JyowoHome::new(home));
-        layout.project_provider_routes_file(&self.workspace_root)
+        match &self.workspace_root {
+            Some(workspace_root) => self.layout.project_provider_routes_file(workspace_root),
+            None => self.layout.global_provider_routes_file(),
+        }
     }
 }
 
@@ -572,21 +571,15 @@ impl DesktopExecutionSettingsStore {
         }
     }
 
-    pub fn from_runtime_layout(layout: &crate::storage_layout::RuntimeLayout) -> Self {
-        match layout.workspace_root.as_ref() {
-            Some(workspace_root) => Self::new(workspace_root.clone()),
-            None => Self::global_only(),
-        }
+    pub fn from_runtime_layout(_layout: &crate::storage_layout::RuntimeLayout) -> Self {
+        Self::global_only()
     }
 
     pub fn from_runtime_layout_with_layout(
         storage_layout: crate::storage_layout::StorageLayout,
-        runtime_layout: &crate::storage_layout::RuntimeLayout,
+        _runtime_layout: &crate::storage_layout::RuntimeLayout,
     ) -> Self {
-        match runtime_layout.workspace_root.as_ref() {
-            Some(workspace_root) => Self::new_with_layout(storage_layout, workspace_root.clone()),
-            None => Self::global_only_with_layout(storage_layout),
-        }
+        Self::global_only_with_layout(storage_layout)
     }
 
     #[must_use]
@@ -1253,12 +1246,7 @@ pub fn get_execution_settings_for_state_request(
     context: Option<&AgentCapabilityResolutionContext>,
 ) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
     let Some(workspace_path) = request.workspace_path else {
-        let record = state.effective_execution_settings(None)?;
-        let global_only = state.project_workspace_root().is_none();
-        let policy_root = state
-            .project_workspace_root()
-            .unwrap_or_else(|| state.runtime_root());
-        return execution_settings_response_from_record(&record, global_only, policy_root, context);
+        return get_execution_settings_with_store(state.execution_settings_store.as_ref(), context);
     };
     let workspace_root =
         canonical_workspace_root(PathBuf::from(workspace_path), "workspace path".to_owned())?;
@@ -1270,10 +1258,7 @@ pub fn get_execution_settings_for_state_request(
     {
         return Err(invalid_payload("project is not registered".to_owned()));
     }
-    let global = global_config_store_for_home();
-    let project = project_config_store_for_workspace(&workspace_root);
-    let record = resolve_effective_execution_settings(Some(&global), Some(&project), None, None)?;
-    execution_settings_response_from_record(&record, false, &workspace_root, context)
+    get_execution_settings_with_store(state.execution_settings_store.as_ref(), context)
 }
 
 pub fn get_execution_settings_for_request(
@@ -1295,8 +1280,7 @@ pub fn get_execution_settings_for_request(
     {
         return Err(invalid_payload("project is not registered".to_owned()));
     }
-    let store = DesktopExecutionSettingsStore::new(workspace_root);
-    get_execution_settings_with_store(&store, context)
+    get_execution_settings_with_store(active_store, context)
 }
 
 pub fn set_execution_settings_with_store(
@@ -1343,20 +1327,19 @@ pub fn set_execution_settings_with_store(
     })
 }
 
-/// Resolve effective execution settings by merging global defaults, project
-/// overrides, and optional run-level overrides.
+/// Resolve effective execution settings by merging global defaults and optional
+/// run-level overrides.
 ///
 /// Precedence (highest wins):
 /// 1. Run explicit params (`run_permission_mode`, `run_tool_profile`)
-/// 2. Project execution overrides
-/// 3. Global execution defaults
-/// 4. Contract defaults in [`harness_contracts::ExecutionDefaultsRecord::default`]
+/// 2. Global execution defaults
+/// 3. Contract defaults in [`harness_contracts::ExecutionDefaultsRecord::default`]
 ///
 /// This is the single source of truth for effective execution settings.
 /// Frontend code must not reimplement this overlay.
 pub fn resolve_effective_execution_settings(
     global_config: Option<&crate::commands::stores::GlobalConfigStore>,
-    project_config: Option<&crate::commands::stores::ProjectConfigStore>,
+    _project_config: Option<&crate::commands::stores::ProjectConfigStore>,
     run_permission_mode: Option<PermissionMode>,
     run_tool_profile: Option<ToolProfile>,
 ) -> Result<harness_contracts::ExecutionDefaultsRecord, CommandErrorPayload> {
@@ -1375,15 +1358,7 @@ pub fn resolve_effective_execution_settings(
         effective.background_agents_enabled = global_defaults.background_agents_enabled;
     }
 
-    // 3. Apply project overrides (overwrite global defaults where project has
-    //    explicit non-default values).
-    if let Some(project) = project_config {
-        let overrides = project.load_execution_overrides()?;
-        ensure_execution_overrides_structure(&overrides)?;
-        apply_execution_overrides(&mut effective, &overrides);
-    }
-
-    // 4. Apply run explicit params.
+    // 3. Apply run explicit params.
     if let Some(permission_mode) = run_permission_mode {
         effective.permission_mode = permission_mode;
     }
@@ -2664,8 +2639,9 @@ fn modality_to_string(modality: &ProviderModelModalityRecord) -> String {
 
 #[cfg(test)]
 mod execution_settings_tests {
-    use harness_contracts::{PermissionMode, ToolProfile};
+    use harness_contracts::{ModelProtocol, PermissionMode, ProviderSelectionRecord, ToolProfile};
 
+    use crate::commands::stores::ProjectConfigStore;
     use crate::storage_layout::{JyowoHome, StorageLayout};
 
     use super::*;
@@ -2680,6 +2656,192 @@ mod execution_settings_tests {
             .prefix("home-")
             .tempdir_in(base)
             .expect("home tempdir")
+    }
+
+    fn provider_config(id: &str) -> ProviderConfigRecord {
+        ProviderConfigRecord {
+            api_key: format!("{id}-api-key"),
+            base_url: None,
+            display_name: id.to_owned(),
+            id: id.to_owned(),
+            model_descriptor: ProviderModelDescriptorRecord {
+                context_window: 128_000,
+                conversation_capability: ConversationModelCapabilityRecord {
+                    context_window: 128_000,
+                    input_modalities: vec![ProviderModelModalityRecord::Text],
+                    max_output_tokens: 8_192,
+                    output_modalities: vec![ProviderModelModalityRecord::Text],
+                    prompt_cache: false,
+                    reasoning: false,
+                    streaming: true,
+                    structured_output: true,
+                    tool_calling: true,
+                },
+                display_name: "GPT".to_owned(),
+                lifecycle: ProviderModelLifecycleRecord::Stable,
+                max_output_tokens: 8_192,
+                model_id: "gpt-5.4-mini".to_owned(),
+                protocol: ModelProtocol::Responses,
+                provider_id: "openai".to_owned(),
+            },
+            model_id: "gpt-5.4-mini".to_owned(),
+            official_quota_api_key: None,
+            protocol: ModelProtocol::Responses,
+            provider_id: "openai".to_owned(),
+        }
+    }
+
+    fn execution_record(
+        permission_mode: PermissionMode,
+        tool_profile: ToolProfile,
+    ) -> harness_contracts::ExecutionDefaultsRecord {
+        harness_contracts::ExecutionDefaultsRecord {
+            permission_mode,
+            tool_profile,
+            context_compression_trigger_ratio: 0.8,
+            subagents_enabled: false,
+            agent_teams_enabled: false,
+            background_agents_enabled: false,
+        }
+    }
+
+    #[test]
+    fn provider_settings_store_from_project_runtime_layout_uses_global_selection() {
+        let home = temp_execution_settings_home();
+        let layout = StorageLayout::new(JyowoHome::new(home.path().join(".jyowo")));
+        let workspace = home.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let runtime_layout = layout.runtime_layout_for_project(&workspace);
+        let configs = vec![
+            provider_config("global-default"),
+            provider_config("project-default"),
+        ];
+
+        DesktopProviderSettingsStore::global_only_with_layout(layout.clone())
+            .save_record(&ProviderSettingsRecord {
+                default_config_id: Some("global-default".to_owned()),
+                configs,
+            })
+            .expect("save global provider selection");
+        ProjectConfigStore::new(layout.clone(), workspace.clone())
+            .save_project_provider_selection(&ProviderSelectionRecord {
+                default_config_id: Some("project-default".to_owned()),
+            })
+            .expect("save stale project provider selection");
+
+        let store =
+            DesktopProviderSettingsStore::from_runtime_layout_with_layout(layout, &runtime_layout);
+        let record = store
+            .load_record()
+            .expect("load provider settings")
+            .expect("provider settings");
+
+        assert_eq!(store.selection_scope(), SettingsScope::Global);
+        assert_eq!(record.default_config_id.as_deref(), Some("global-default"));
+    }
+
+    #[test]
+    fn provider_settings_store_new_with_layout_uses_global_selection() {
+        let home = temp_execution_settings_home();
+        let layout = StorageLayout::new(JyowoHome::new(home.path().join(".jyowo")));
+        let workspace = home.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let configs = vec![
+            provider_config("global-default"),
+            provider_config("project-default"),
+        ];
+
+        DesktopProviderSettingsStore::global_only_with_layout(layout.clone())
+            .save_record(&ProviderSettingsRecord {
+                default_config_id: Some("global-default".to_owned()),
+                configs,
+            })
+            .expect("save global provider selection");
+        ProjectConfigStore::new(layout.clone(), workspace.clone())
+            .save_project_provider_selection(&ProviderSelectionRecord {
+                default_config_id: Some("project-default".to_owned()),
+            })
+            .expect("save stale project provider selection");
+
+        let store = DesktopProviderSettingsStore::new_with_layout(layout, workspace);
+        let record = store
+            .load_record()
+            .expect("load provider settings")
+            .expect("provider settings");
+
+        assert_eq!(store.selection_scope(), SettingsScope::Global);
+        assert_eq!(record.default_config_id.as_deref(), Some("global-default"));
+    }
+
+    #[test]
+    fn execution_settings_store_from_project_runtime_layout_uses_global_defaults() {
+        let home = temp_execution_settings_home();
+        let layout = StorageLayout::new(JyowoHome::new(home.path().join(".jyowo")));
+        let workspace = home.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let runtime_layout = layout.runtime_layout_for_project(&workspace);
+
+        DesktopExecutionSettingsStore::global_only_with_layout(layout.clone())
+            .save_record(
+                &execution_record(PermissionMode::BypassPermissions, ToolProfile::Coding),
+                None,
+            )
+            .expect("save global execution defaults");
+        DesktopExecutionSettingsStore::new_with_layout(layout.clone(), workspace.clone())
+            .save_record(
+                &execution_record(PermissionMode::Default, ToolProfile::Minimal),
+                None,
+            )
+            .expect("save stale project execution overrides");
+
+        let store =
+            DesktopExecutionSettingsStore::from_runtime_layout_with_layout(layout, &runtime_layout);
+        let response = get_execution_settings_with_store(&store, None).expect("load settings");
+
+        assert_eq!(response.scope, SettingsScope::Global);
+        assert_eq!(response.permission_mode, PermissionMode::BypassPermissions);
+        assert_eq!(response.tool_profile, ToolProfile::Coding);
+    }
+
+    #[test]
+    fn get_execution_settings_for_state_request_uses_global_defaults_with_active_project() {
+        let temp = temp_execution_settings_home();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+            .expect("runtime state should initialize");
+        state
+            .global_config_store
+            .as_ref()
+            .expect("global config store")
+            .save_execution_defaults(&execution_record(
+                PermissionMode::BypassPermissions,
+                ToolProfile::Coding,
+            ))
+            .expect("save global execution defaults");
+        state
+            .project_config_store
+            .as_ref()
+            .expect("project config store")
+            .save_execution_overrides(
+                &execution_record(PermissionMode::Default, ToolProfile::Minimal).into(),
+            )
+            .expect("save stale project execution overrides");
+        let registry = crate::project_registry::ProjectRegistry::load().expect("project registry");
+
+        let response = get_execution_settings_for_state_request(
+            GetExecutionSettingsRequest {
+                workspace_path: None,
+            },
+            &state,
+            &registry,
+            None,
+        )
+        .expect("load settings");
+
+        assert_eq!(response.scope, SettingsScope::Global);
+        assert_eq!(response.permission_mode, PermissionMode::BypassPermissions);
+        assert_eq!(response.tool_profile, ToolProfile::Coding);
     }
 
     #[test]

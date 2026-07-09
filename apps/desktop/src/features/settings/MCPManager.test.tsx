@@ -88,7 +88,7 @@ describe('MCPManager', () => {
     expect(screen.queryByRole('navigation', { name: /mcp/i })).not.toBeInTheDocument()
   })
 
-  it('renders runtime diagnostics without project write controls when no project is active', async () => {
+  it('shows global write controls when no project is active', async () => {
     renderMCPManager(
       createTestCommandClient({
         browserMcpPresets: { presets: [] },
@@ -98,8 +98,8 @@ describe('MCPManager', () => {
       }),
     )
 
-    expect(await screen.findAllByText('Runtime diagnostics')).toHaveLength(2)
-    expect(screen.queryByRole('button', { name: 'Add server' })).not.toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Add server' })).toBeInTheDocument()
+    expect(screen.queryByText('Project overrides')).not.toBeInTheDocument()
     expect(await screen.findByText('No MCP servers configured.')).toBeInTheDocument()
   })
 

@@ -165,8 +165,6 @@ export function ExecutionSettings() {
       setSaving(false)
     }
   }
-  const scopeLabelKey = scope === 'project' ? 'scope.projectOverrides' : 'scope.globalDefaults'
-
   return (
     <Section>
       <SectionHeader className="flex items-start gap-3">
@@ -176,7 +174,7 @@ export function ExecutionSettings() {
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <SectionTitle>{t('execution.title')}</SectionTitle>
-            <Badge variant="outline">{t(scopeLabelKey)}</Badge>
+            <Badge variant="outline">{t('scope.globalDefaults')}</Badge>
           </div>
           <SectionDescription>{t('execution.description')}</SectionDescription>
         </div>

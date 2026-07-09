@@ -48,7 +48,6 @@ pub use automation::NoWorkspaceAutomationStore;
 pub use global_config::GlobalConfigStore;
 pub use mcp::DesktopMcpDiagnosticStore;
 pub(crate) use mcp::DesktopMcpServerStore;
-pub(crate) use mcp::NoWorkspaceMcpServerStore;
 pub use plugin::DesktopPluginStore;
 pub use project_config::ProjectConfigStore;
 pub use skill::DesktopSkillStore;

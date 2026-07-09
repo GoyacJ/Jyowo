@@ -114,12 +114,7 @@ async fn save_mcp_server_record_with_runtime_state(
     record: McpServerConfigRecord,
     state: &DesktopRuntimeState,
 ) -> Result<SaveMcpServerResponse, CommandErrorPayload> {
-    let Some(workspace_root) = state.project_workspace_root() else {
-        return Err(invalid_payload(
-            "custom MCP servers require an active project workspace".to_owned(),
-        ));
-    };
-    let _ = mcp_server_spec_from_record(&record, workspace_root)?;
+    let _ = mcp_server_spec_from_record(&record, mcp_workdir_root_for_state(state))?;
     state.mcp_server_store.save_record(&record)?;
 
     let Some(harness) = state.harness() else {
@@ -618,17 +613,10 @@ pub(crate) async fn mcp_config_from_records(
     default_agent_id: AgentId,
     diagnostic_store: Arc<dyn McpDiagnosticStore>,
     authorization_service: Arc<harness_execution::AuthorizationService>,
-    workspace_root: Option<&Path>,
+    workdir_root: &Path,
 ) -> Result<McpConfig, CommandErrorPayload> {
     let registry = McpRegistry::new();
     let mut server_ids_to_inject = Vec::new();
-
-    let Some(workspace_root) = workspace_root else {
-        return Ok(McpConfig {
-            registry,
-            server_ids_to_inject,
-        });
-    };
 
     for record in records {
         ensure_mcp_server_record(&record)?;
@@ -642,7 +630,7 @@ pub(crate) async fn mcp_config_from_records(
             default_agent_id,
             Arc::clone(&diagnostic_store),
             Arc::clone(&authorization_service),
-            workspace_root,
+            workdir_root,
             InteractivityLevel::NoInteractive,
         )
         .await?;
@@ -669,11 +657,6 @@ pub(crate) async fn register_mcp_record_with_harness(
     let Some(config) = harness.mcp_config() else {
         return Ok(mcp_server_summary_from_record(record));
     };
-    let Some(workspace_root) = state.project_workspace_root() else {
-        return Err(invalid_payload(
-            "custom MCP servers require an active project workspace".to_owned(),
-        ));
-    };
     let server_id = register_mcp_record_with_registry(
         record,
         &config.registry,
@@ -681,7 +664,7 @@ pub(crate) async fn register_mcp_record_with_harness(
         AgentId::new(),
         Arc::clone(&state.mcp_diagnostic_store),
         harness.authorization_service(),
-        workspace_root,
+        mcp_workdir_root_for_state(state),
         InteractivityLevel::FullyInteractive,
     )
     .await?;
@@ -713,6 +696,12 @@ pub(crate) async fn register_mcp_record_with_harness(
         .ok_or_else(|| {
             runtime_operation_failed("mcp server registry summary unavailable".to_owned())
         })
+}
+
+fn mcp_workdir_root_for_state(state: &DesktopRuntimeState) -> &Path {
+    state
+        .project_workspace_root()
+        .unwrap_or_else(|| state.conversation_cwd())
 }
 
 pub(crate) async fn register_mcp_record_with_registry(

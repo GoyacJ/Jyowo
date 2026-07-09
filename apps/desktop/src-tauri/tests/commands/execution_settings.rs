@@ -7,6 +7,16 @@ use super::provider_support::*;
 use super::support::*;
 use super::*;
 
+fn global_execution_settings_store(workspace: &std::path::Path) -> DesktopExecutionSettingsStore {
+    DesktopExecutionSettingsStore::global_only_with_layout(test_storage_layout_for_workspace(
+        workspace,
+    ))
+}
+
+fn global_execution_settings_path(workspace: &std::path::Path) -> std::path::PathBuf {
+    test_storage_layout_for_workspace(workspace).global_execution_defaults_file()
+}
+
 #[test]
 fn execution_settings_save_default_without_changing_session_options() {
     let workspace = unique_workspace("execution-settings-session-options");
@@ -22,7 +32,7 @@ fn execution_settings_save_default_without_changing_session_options() {
             agent_teams_enabled: false,
             background_agents_enabled: false,
         },
-        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        &global_execution_settings_store(state.workspace_root()),
         None,
     )
     .expect("execution settings should save");
@@ -49,7 +59,7 @@ async fn active_conversation_runtime_applies_saved_tool_profile() {
             agent_teams_enabled: false,
             background_agents_enabled: false,
         },
-        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        &global_execution_settings_store(state.workspace_root()),
         None,
     )
     .expect("execution settings should save");
@@ -70,7 +80,7 @@ fn get_execution_settings_defaults_to_standard_mode() {
     let state = DesktopRuntimeState::with_workspace_for_test(workspace)
         .expect("runtime state should initialize");
     let settings = get_execution_settings_with_store(
-        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        &global_execution_settings_store(state.workspace_root()),
         None,
     )
     .expect("execution settings should load");
@@ -104,11 +114,9 @@ fn get_execution_settings_ignores_old_runtime_record() {
     std::fs::write(&settings_path, r#"{"permission_mode":"auto"}"#)
         .expect("old execution settings should write");
 
-    let settings = get_execution_settings_with_store(
-        &DesktopExecutionSettingsStore::new(workspace.to_path_buf()),
-        None,
-    )
-    .expect("execution settings should load");
+    let settings =
+        get_execution_settings_with_store(&global_execution_settings_store(&workspace), None)
+            .expect("execution settings should load");
 
     assert_eq!(settings.permission_mode, PermissionMode::Default);
     assert!(!settings.agent_capabilities.subagents_enabled);
@@ -120,18 +128,16 @@ fn get_execution_settings_ignores_old_runtime_record() {
 #[test]
 fn get_execution_settings_normalizes_unavailable_auto_default() {
     let workspace = unique_workspace("execution-settings-stale-auto");
-    let settings_dir = workspace.join(".jyowo").join("config");
-    std::fs::create_dir_all(&settings_dir).expect("settings directory should exist");
-    std::fs::write(
-        settings_dir.join("execution-overrides.json"),
-        br#"{"permissionMode":"auto"}"#,
-    )
-    .expect("stale settings file should be written");
+    let settings_path = global_execution_settings_path(&workspace);
+    std::fs::create_dir_all(settings_path.parent().unwrap())
+        .expect("settings directory should exist");
+    std::fs::write(&settings_path, br#"{"permissionMode":"auto"}"#)
+        .expect("stale settings file should be written");
     let state = DesktopRuntimeState::with_workspace_for_test(workspace)
         .expect("runtime state should initialize");
 
     let settings = get_execution_settings_with_store(
-        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        &global_execution_settings_store(state.workspace_root()),
         None,
     )
     .expect("execution settings should load");
@@ -146,7 +152,7 @@ fn get_execution_settings_normalizes_unavailable_auto_default() {
 }
 
 #[test]
-fn get_execution_settings_for_request_reads_registered_workspace_instead_of_active_store() {
+fn get_execution_settings_for_request_uses_global_defaults_for_registered_workspace() {
     let _lock = HOME_ENV_LOCK.lock().unwrap();
     let home = unique_workspace("execution-settings-project-registry-home");
     let active_workspace = unique_workspace("execution-settings-active-workspace");
@@ -168,7 +174,7 @@ fn get_execution_settings_for_request_reads_registered_workspace_instead_of_acti
     registry
         .upsert_and_activate(&active_workspace)
         .expect("active workspace should be registered");
-    let active_store = DesktopExecutionSettingsStore::new(active_workspace);
+    let active_store = DesktopExecutionSettingsStore::global_only();
     set_execution_settings_with_store(
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::BypassPermissions,
@@ -215,7 +221,10 @@ fn get_execution_settings_for_request_reads_registered_workspace_instead_of_acti
         active_settings.permission_mode,
         PermissionMode::BypassPermissions
     );
-    assert_eq!(requested_settings.permission_mode, PermissionMode::Default);
+    assert_eq!(
+        requested_settings.permission_mode,
+        PermissionMode::BypassPermissions
+    );
     assert_eq!(unregistered_error.code, "INVALID_PAYLOAD");
     assert!(unregistered_error.message.contains("not registered"));
     assert!(
@@ -230,7 +239,7 @@ fn get_execution_settings_for_request_reads_registered_workspace_instead_of_acti
 fn set_execution_settings_rejects_unavailable_agent_capabilities() {
     let workspace = unique_workspace("execution-settings-unavailable-agent-capabilities");
     std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
-    let store = DesktopExecutionSettingsStore::new(workspace);
+    let store = global_execution_settings_store(&workspace);
 
     for request in [
         SetExecutionSettingsRequest {
@@ -271,7 +280,7 @@ fn set_execution_settings_serializes_agent_capability_fields() {
     let state = DesktopRuntimeState::with_workspace_for_test(workspace)
         .expect("runtime state should initialize");
     let workspace = state.workspace_root().to_path_buf();
-    let store = DesktopExecutionSettingsStore::new(workspace.clone());
+    let store = global_execution_settings_store(&workspace);
 
     let response = set_execution_settings_with_store(
         SetExecutionSettingsRequest {
@@ -288,10 +297,7 @@ fn set_execution_settings_serializes_agent_capability_fields() {
     .expect("disabled execution settings should save");
 
     assert!(!response.agent_capabilities.subagents_enabled);
-    let settings_path = workspace
-        .join(".jyowo")
-        .join("config")
-        .join("execution-overrides.json");
+    let settings_path = global_execution_settings_path(&workspace);
     let saved = std::fs::read_to_string(settings_path).expect("settings file should exist");
     let saved: Value = serde_json::from_str(&saved).expect("settings file should be json");
     assert_eq!(
@@ -311,7 +317,7 @@ fn set_execution_settings_serializes_agent_capability_fields() {
 fn set_execution_settings_rejects_invalid_context_compression_trigger_ratio() {
     let workspace = unique_workspace("execution-settings-invalid-context-ratio");
     std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
-    let store = DesktopExecutionSettingsStore::new(workspace);
+    let store = global_execution_settings_store(&workspace);
 
     let low_error = set_execution_settings_with_store(
         SetExecutionSettingsRequest {
@@ -351,10 +357,7 @@ fn invalid_execution_settings_file_is_rejected() {
     let state = DesktopRuntimeState::with_workspace_for_test(workspace)
         .expect("runtime state should initialize");
     let workspace = state.workspace_root().to_path_buf();
-    let settings_path = workspace
-        .join(".jyowo")
-        .join("config")
-        .join("execution-overrides.json");
+    let settings_path = global_execution_settings_path(&workspace);
     std::fs::create_dir_all(settings_path.parent().unwrap())
         .expect("settings directory should exist");
     std::fs::write(
@@ -363,11 +366,9 @@ fn invalid_execution_settings_file_is_rejected() {
     )
     .expect("invalid execution settings should write");
 
-    let error = get_execution_settings_with_store(
-        &DesktopExecutionSettingsStore::new(workspace.to_path_buf()),
-        None,
-    )
-    .expect_err("old snake_case settings should be rejected");
+    let error =
+        get_execution_settings_with_store(&global_execution_settings_store(&workspace), None)
+            .expect_err("old snake_case settings should be rejected");
 
     assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
     assert!(error.message.contains("execution settings"));
@@ -389,7 +390,7 @@ fn set_execution_settings_rejects_auto_without_runtime_support() {
             agent_teams_enabled: false,
             background_agents_enabled: false,
         },
-        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        &global_execution_settings_store(state.workspace_root()),
         None,
     )
     .expect_err("auto mode should be rejected without runtime support");
@@ -425,7 +426,7 @@ fn resolve_effective_execution_settings_applies_global_defaults() {
 
     let effective = resolve_effective_execution_settings(
         Some(&global),
-        None, // no project overrides
+        None,
         None, // no run param
         None,
     )
@@ -438,7 +439,7 @@ fn resolve_effective_execution_settings_applies_global_defaults() {
 }
 
 #[test]
-fn resolve_effective_execution_settings_project_overrides_global() {
+fn resolve_effective_execution_settings_ignores_project_overrides() {
     use harness_contracts::ExecutionDefaultsRecord;
     use jyowo_desktop_shell::commands::stores::{GlobalConfigStore, ProjectConfigStore};
     use jyowo_desktop_shell::storage_layout::{JyowoHome, StorageLayout};
@@ -464,7 +465,6 @@ fn resolve_effective_execution_settings_project_overrides_global() {
         })
         .expect("save global");
 
-    // Project overrides: permission_mode=BypassPermissions
     project
         .save_execution_overrides(
             &ExecutionDefaultsRecord {
@@ -482,14 +482,13 @@ fn resolve_effective_execution_settings_project_overrides_global() {
     let effective = resolve_effective_execution_settings(Some(&global), Some(&project), None, None)
         .expect("resolve");
 
-    // Project overrides win
-    assert_eq!(effective.permission_mode, PermissionMode::BypassPermissions);
-    assert_eq!(effective.tool_profile, ToolProfile::Coding);
-    assert!((effective.context_compression_trigger_ratio - 0.75).abs() < f32::EPSILON);
+    assert_eq!(effective.permission_mode, PermissionMode::Auto);
+    assert_eq!(effective.tool_profile, ToolProfile::Full);
+    assert!((effective.context_compression_trigger_ratio - 0.8).abs() < f32::EPSILON);
 }
 
 #[test]
-fn resolve_effective_execution_settings_partial_project_override_preserves_global_fields() {
+fn resolve_effective_execution_settings_ignores_partial_project_override() {
     use harness_contracts::{ExecutionDefaultsRecord, ExecutionOverridesRecord};
     use jyowo_desktop_shell::commands::stores::{GlobalConfigStore, ProjectConfigStore};
     use jyowo_desktop_shell::storage_layout::{JyowoHome, StorageLayout};
@@ -525,7 +524,7 @@ fn resolve_effective_execution_settings_partial_project_override_preserves_globa
 
     assert_eq!(effective.permission_mode, PermissionMode::BypassPermissions);
     assert_eq!(effective.tool_profile, ToolProfile::Minimal);
-    assert!((effective.context_compression_trigger_ratio - 0.7).abs() < f32::EPSILON);
+    assert!((effective.context_compression_trigger_ratio - 0.8).abs() < f32::EPSILON);
     assert!(effective.subagents_enabled);
     assert!(effective.agent_teams_enabled);
     assert!(!effective.background_agents_enabled);

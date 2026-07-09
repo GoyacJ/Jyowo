@@ -98,10 +98,12 @@ describe('CapabilityRoutesPanel', () => {
     expect(screen.queryByRole('table', { name: 'Capability route table' })).not.toBeInTheDocument()
   })
 
-  it('marks routes as runtime diagnostics without an active project', () => {
+  it('keeps route settings labeled as global without an active project', () => {
     renderPanel(routeRows, false)
 
-    expect(screen.getByText('Runtime diagnostics')).toBeInTheDocument()
+    expect(screen.getByText('Global defaults')).toBeInTheDocument()
+    expect(screen.queryByText('Runtime diagnostics')).not.toBeInTheDocument()
+    expect(screen.queryByText('Project overrides')).not.toBeInTheDocument()
   })
 })
 
