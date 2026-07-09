@@ -11,6 +11,7 @@ use harness_contracts::{OfficialQuotaScope, OfficialQuotaSnapshot, OfficialQuota
     feature = "anthropic",
     feature = "codex",
     feature = "deepseek",
+    feature = "km",
     feature = "openai",
     feature = "openrouter"
 ))]
@@ -24,6 +25,8 @@ const OPENROUTER_KEY_SOURCE: &str =
     "https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key";
 #[cfg(feature = "deepseek")]
 const DEEPSEEK_BALANCE_SOURCE: &str = "https://api-docs.deepseek.com/api/get-user-balance";
+#[cfg(feature = "km")]
+const KIMI_BALANCE_SOURCE: &str = "https://platform.kimi.com/docs/api/balance";
 #[cfg(any(feature = "openai", feature = "codex"))]
 const OPENAI_USAGE_SOURCE: &str = "https://platform.openai.com/docs/api-reference/usage";
 #[cfg(feature = "anthropic")]
@@ -105,6 +108,8 @@ fn register_default_account_usage_clients(_registry: &mut ProviderAccountUsageRe
     _registry.register(Arc::new(OpenRouterAccountUsageClient));
     #[cfg(feature = "deepseek")]
     _registry.register(Arc::new(DeepSeekAccountUsageClient));
+    #[cfg(feature = "km")]
+    _registry.register(Arc::new(KimiAccountUsageClient));
     #[cfg(feature = "openai")]
     _registry.register(Arc::new(OpenAiAccountUsageClient));
     #[cfg(feature = "codex")]
@@ -260,8 +265,8 @@ pub fn unsupported_reason(provider_id: &str) -> (&'static str, &'static str) {
             "Gemini does not expose an official account balance API for the stored API key.",
         ),
         "km" => (
-            "https://platform.moonshot.ai/docs",
-            "Kimi does not expose an official account balance API for the stored API key.",
+            "https://platform.kimi.com/docs/api/balance",
+            "Kimi official balance support is not enabled in this build.",
         ),
         "local-llama" => (
             "https://ollama.com/library",
@@ -311,7 +316,7 @@ pub async fn fetch_official_quota(
     }
 }
 
-#[cfg(any(feature = "deepseek", feature = "openrouter"))]
+#[cfg(any(feature = "deepseek", feature = "km", feature = "openrouter"))]
 #[must_use]
 fn decimal_to_micros(value: f64) -> u64 {
     if !value.is_finite() || value <= 0.0 {
@@ -320,7 +325,7 @@ fn decimal_to_micros(value: f64) -> u64 {
     (value * 1_000_000.0).round() as u64
 }
 
-#[cfg(any(feature = "deepseek", feature = "openrouter"))]
+#[cfg(feature = "deepseek")]
 #[must_use]
 fn decimal_string_to_micros(value: &str) -> Option<u64> {
     let trimmed = value.trim();
@@ -334,6 +339,7 @@ fn decimal_string_to_micros(value: &str) -> Option<u64> {
     feature = "anthropic",
     feature = "codex",
     feature = "deepseek",
+    feature = "km",
     feature = "openai",
     feature = "openrouter"
 ))]
@@ -990,19 +996,145 @@ struct DeepSeekBalanceInfo {
     topped_up_balance: String,
 }
 
+#[cfg(feature = "km")]
+struct KimiAccountUsageClient;
+
+#[cfg(feature = "km")]
+#[async_trait]
+impl ProviderAccountUsageClient for KimiAccountUsageClient {
+    fn provider_id(&self) -> &str {
+        "km"
+    }
+
+    fn source_url(&self) -> &'static str {
+        KIMI_BALANCE_SOURCE
+    }
+
+    fn cache_ttl(&self) -> Duration {
+        DEFAULT_QUOTA_CACHE_TTL
+    }
+
+    async fn fetch_quota(
+        &self,
+        request: ProviderAccountUsageRequest,
+    ) -> Result<OfficialQuotaSnapshot, AccountUsageError> {
+        let url = kimi_official_balance_url(request.base_url.as_deref())?;
+
+        let response = reqwest::Client::new()
+            .get(url)
+            .bearer_auth(&request.api_key)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|_| AccountUsageError::Failed {
+                safe_message: "Kimi quota request failed due to a network error.".to_owned(),
+            })?;
+
+        let status = response.status();
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return Err(AccountUsageError::AuthRequired {
+                safe_message: "Kimi rejected the configured API key.".to_owned(),
+            });
+        }
+        if !status.is_success() {
+            return Err(AccountUsageError::Failed {
+                safe_message: format!("Kimi quota request failed with status {}.", status.as_u16()),
+            });
+        }
+
+        let body: KimiBalanceResponse =
+            response
+                .json()
+                .await
+                .map_err(|_| AccountUsageError::Failed {
+                    safe_message: "Kimi quota response could not be parsed.".to_owned(),
+                })?;
+        kimi_balance_snapshot(&request, self.source_url(), self.cache_ttl(), body)
+    }
+}
+
+#[cfg(feature = "km")]
+fn kimi_official_balance_url(base_url: Option<&str>) -> Result<String, AccountUsageError> {
+    let base_url = base_url
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("https://api.moonshot.cn")
+        .trim_end_matches('/');
+    let parsed = reqwest::Url::parse(base_url).map_err(|_| AccountUsageError::Failed {
+        safe_message: "Kimi official quota endpoint is not a valid URL.".to_owned(),
+    })?;
+    let is_official_origin = parsed.scheme() == "https"
+        && parsed.host_str() == Some("api.moonshot.cn")
+        && matches!(parsed.port_or_known_default(), Some(443));
+    let path = parsed.path().trim_end_matches('/');
+    if !is_official_origin || !matches!(path, "" | "/" | "/v1") {
+        return Err(AccountUsageError::Failed {
+            safe_message: "Kimi official quota requires the official Kimi API endpoint.".to_owned(),
+        });
+    }
+    Ok("https://api.moonshot.cn/v1/users/me/balance".to_owned())
+}
+
+#[cfg(feature = "km")]
+fn kimi_balance_snapshot(
+    request: &ProviderAccountUsageRequest,
+    source_url: &'static str,
+    ttl: Duration,
+    body: KimiBalanceResponse,
+) -> Result<OfficialQuotaSnapshot, AccountUsageError> {
+    if !body.status {
+        return Err(AccountUsageError::Failed {
+            safe_message: "Kimi quota response reported an unsuccessful status.".to_owned(),
+        });
+    }
+    let quota_remaining = Some(decimal_to_micros(body.data.available_balance));
+
+    Ok(supported_snapshot(
+        request,
+        source_url,
+        ttl,
+        None,
+        None,
+        quota_remaining,
+        "cny_micro",
+        Some("Kimi account balance"),
+    ))
+}
+
+#[cfg(feature = "km")]
+#[derive(Debug, Deserialize)]
+struct KimiBalanceResponse {
+    #[allow(dead_code)]
+    code: i32,
+    data: KimiBalanceData,
+    #[allow(dead_code)]
+    scode: String,
+    status: bool,
+}
+
+#[cfg(feature = "km")]
+#[derive(Debug, Deserialize)]
+struct KimiBalanceData {
+    available_balance: f64,
+    #[allow(dead_code)]
+    voucher_balance: f64,
+    #[allow(dead_code)]
+    cash_balance: f64,
+}
+
 #[cfg(all(
     test,
     any(
         feature = "anthropic",
         feature = "codex",
         feature = "deepseek",
+        feature = "km",
         feature = "openai",
         feature = "openrouter"
     )
 ))]
 mod tests {
     use super::*;
-    #[cfg(any(feature = "openai", feature = "codex"))]
+    #[cfg(any(feature = "anthropic", feature = "codex", feature = "openai"))]
     use chrono::TimeZone;
 
     #[test]
@@ -1071,6 +1203,53 @@ mod tests {
 
         let custom = deepseek_official_balance_url(Some("https://gateway.example.com/v1"));
         assert!(matches!(custom, Err(AccountUsageError::Failed { .. })));
+    }
+
+    #[test]
+    #[cfg(feature = "km")]
+    fn kimi_official_balance_url_accepts_only_official_origin() {
+        let default_url = kimi_official_balance_url(None).unwrap();
+        assert_eq!(default_url, "https://api.moonshot.cn/v1/users/me/balance");
+
+        let configured_url = kimi_official_balance_url(Some("https://api.moonshot.cn/v1")).unwrap();
+        assert_eq!(configured_url, default_url);
+
+        let custom = kimi_official_balance_url(Some("https://gateway.example.com/v1"));
+        assert!(matches!(custom, Err(AccountUsageError::Failed { .. })));
+    }
+
+    #[test]
+    #[cfg(feature = "km")]
+    fn kimi_balance_response_maps_available_balance_to_cny_micros() {
+        let request = ProviderAccountUsageRequest {
+            config_id: "cfg-test".to_owned(),
+            provider_id: "km".to_owned(),
+            model_id: Some("kimi-k2.6".to_owned()),
+            api_key: "provider-key".to_owned(),
+            official_quota_api_key: None,
+            base_url: None,
+        };
+        let snapshot = kimi_balance_snapshot(
+            &request,
+            KIMI_BALANCE_SOURCE,
+            DEFAULT_QUOTA_CACHE_TTL,
+            KimiBalanceResponse {
+                code: 0,
+                data: KimiBalanceData {
+                    available_balance: 12.345678,
+                    voucher_balance: 2.0,
+                    cash_balance: -1.0,
+                },
+                scode: "OK".to_owned(),
+                status: true,
+            },
+        )
+        .expect("Kimi balance should map to quota snapshot");
+
+        assert_eq!(snapshot.status, OfficialQuotaStatus::Supported);
+        assert_eq!(snapshot.quota_remaining, Some(12_345_678));
+        assert_eq!(snapshot.quota_total, None);
+        assert_eq!(snapshot.unit.as_deref(), Some("cny_micro"));
     }
 
     #[test]

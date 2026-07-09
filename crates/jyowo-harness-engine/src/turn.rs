@@ -1941,8 +1941,8 @@ fn provider_continuation_query_for_prompt(
     tenant_id: TenantId,
     session_id: SessionId,
     final_messages: &[Message],
+    continuation_kind: ProviderContinuationKind,
 ) -> Option<ProviderContinuationQuery> {
-    let (continuation_kind, _) = private_replay_kind(model_snapshot)?;
     let message_ids = assistant_tool_replay_message_ids(final_messages);
     if message_ids.is_empty() {
         return None;
@@ -1976,16 +1976,16 @@ async fn provider_request_context_for_prompt(
         continuations: Vec::new(),
     };
 
-    let Some((continuation_kind, replay_required)) = private_replay_kind(&engine.model_snapshot)
-    else {
+    let Some(continuation_kind) = private_replay_kind(&engine.model_snapshot) else {
         return Ok(provider_context);
     };
+    let replay_required = private_replay_required(&engine.model_snapshot);
 
     let replay_message_ids = assistant_tool_replay_message_ids(final_messages);
     let requires_store = replay_required
         && (!replay_message_ids.is_empty() || tools_can_produce_assistant_tool_replay);
     let Some(store) = engine.provider_continuation_store.as_ref() else {
-        if requires_store {
+        if requires_store && replay_required {
             return Err(engine_error(ModelError::InvalidRequest(
                 MISSING_PROVIDER_CONTINUATION_ERROR.to_owned(),
             )));
@@ -1999,52 +1999,46 @@ async fn provider_request_context_for_prompt(
         session.tenant_id,
         session.session_id,
         final_messages,
+        continuation_kind.clone(),
     ) else {
         return Ok(provider_context);
     };
 
     let records = store.load_for_messages(query).await.map_err(engine_error)?;
-    if !replay_required {
-        provider_context.continuations = records;
-        return Ok(provider_context);
-    }
-
-    let exact_matches: HashSet<(MessageId, ProviderContinuationKind)> = records
-        .iter()
-        .map(|record| (record.message_id, record.kind.clone()))
-        .collect();
-    for message_id in replay_message_ids {
-        if !exact_matches.contains(&(message_id, continuation_kind.clone())) {
-            return Err(engine_error(ModelError::InvalidRequest(
-                MISSING_PROVIDER_CONTINUATION_ERROR.to_owned(),
-            )));
+    if replay_required {
+        let exact_matches: HashSet<(MessageId, ProviderContinuationKind)> = records
+            .iter()
+            .map(|record| (record.message_id, record.kind.clone()))
+            .collect();
+        for message_id in replay_message_ids {
+            if !exact_matches.contains(&(message_id, continuation_kind.clone())) {
+                return Err(engine_error(ModelError::InvalidRequest(
+                    MISSING_PROVIDER_CONTINUATION_ERROR.to_owned(),
+                )));
+            }
         }
     }
     provider_context.continuations = records;
     Ok(provider_context)
 }
 
-fn required_private_replay_kind(
-    model_snapshot: &ModelRuntimeSnapshot,
-) -> Option<ProviderContinuationKind> {
-    private_replay_kind(model_snapshot)
-        .filter(|(_, replay_required)| *replay_required)
-        .map(|(continuation_kind, _)| continuation_kind)
-}
-
-fn private_replay_kind(
-    model_snapshot: &ModelRuntimeSnapshot,
-) -> Option<(ProviderContinuationKind, bool)> {
+fn private_replay_kind(model_snapshot: &ModelRuntimeSnapshot) -> Option<ProviderContinuationKind> {
     match &model_snapshot.runtime_semantics.reasoning_protocol {
         ReasoningProtocolSemantics::ProviderPrivateReplay {
-            continuation_kind,
-            required_for_assistant_tool_replay,
-        } => Some((
-            continuation_kind.clone(),
-            *required_for_assistant_tool_replay,
-        )),
+            continuation_kind, ..
+        } => Some(continuation_kind.clone()),
         _ => None,
     }
+}
+
+fn private_replay_required(model_snapshot: &ModelRuntimeSnapshot) -> bool {
+    matches!(
+        &model_snapshot.runtime_semantics.reasoning_protocol,
+        ReasoningProtocolSemantics::ProviderPrivateReplay {
+            required_for_assistant_tool_replay: true,
+            ..
+        }
+    )
 }
 
 fn provider_continuation_dialect(model_snapshot: &ModelRuntimeSnapshot) -> String {

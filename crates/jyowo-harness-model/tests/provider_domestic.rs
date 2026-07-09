@@ -103,6 +103,19 @@ async fn assert_streaming_provider<P>(
                         .contains(&ModelModality::Image)
                         && model.conversation_capability.reasoning
                 }
+                "km" => {
+                    model
+                        .conversation_capability
+                        .input_modalities
+                        .contains(&ModelModality::Image)
+                        && model
+                            .conversation_capability
+                            .input_modalities
+                            .contains(&ModelModality::Video)
+                        && model.conversation_capability.reasoning
+                        && model.conversation_capability.prompt_cache
+                        && model.conversation_capability.structured_output
+                }
                 _ => {
                     !model
                         .conversation_capability
@@ -144,11 +157,14 @@ async fn assert_streaming_provider<P>(
     assert_eq!(body["stream_options"]["include_usage"], true);
     assert_eq!(body["messages"][0]["role"], "user");
     assert_eq!(body["messages"][0]["content"], "hello");
-    if matches!(provider.provider_id(), "minimax" | "qwen") {
+    if matches!(provider.provider_id(), "minimax" | "qwen" | "km") {
         assert_eq!(body["max_completion_tokens"], 64);
         assert!(body.get("max_tokens").is_none());
     } else {
         assert_eq!(body["max_tokens"], 64);
+    }
+    if provider.provider_id() == "km" {
+        assert!(body.get("temperature").is_none());
     }
 }
 
@@ -807,4 +823,31 @@ impl Drop for EnvVarGuard {
             None => std::env::remove_var(self.key),
         }
     }
+}
+
+#[cfg(feature = "km")]
+#[test]
+fn provider_km_exposes_official_api_key_alias() {
+    assert_eq!(MOONSHOT_API_KEY_ENV, "MOONSHOT_API_KEY");
+    assert_eq!(KIMI_API_KEY_ENVS, &["MOONSHOT_API_KEY", "KM_API_KEY"]);
+}
+
+#[cfg(feature = "km")]
+#[test]
+fn provider_km_reads_official_api_key_alias_before_legacy_alias() {
+    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+    let _moonshot = EnvVarGuard::set(MOONSHOT_API_KEY_ENV, "moonshot-key");
+    let _km = EnvVarGuard::set(KM_API_KEY_ENV, "legacy-key");
+
+    assert_eq!(kimi_api_key_from_env().as_deref(), Some("moonshot-key"));
+}
+
+#[cfg(feature = "km")]
+#[test]
+fn provider_km_reads_legacy_api_key_alias_when_official_alias_is_missing() {
+    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+    let _moonshot = EnvVarGuard::unset(MOONSHOT_API_KEY_ENV);
+    let _km = EnvVarGuard::set(KM_API_KEY_ENV, "legacy-key");
+
+    assert_eq!(kimi_api_key_from_env().as_deref(), Some("legacy-key"));
 }

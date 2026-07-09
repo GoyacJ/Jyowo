@@ -82,6 +82,7 @@ fn tool_descriptor() -> ToolDescriptor {
         origin: ToolOrigin::Builtin,
         search_hint: None,
         service_binding: None,
+        metadata: harness_contracts::ToolDescriptorMetadata::default(),
     }
 }
 

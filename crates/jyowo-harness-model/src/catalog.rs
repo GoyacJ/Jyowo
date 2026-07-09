@@ -57,6 +57,9 @@ enum RuntimeSemanticsKind {
     BedrockConverse,
     Gemini,
     OpenAiChatDeepSeek,
+    OpenAiChatKimi,
+    OpenAiChatKimiOptionalReplay,
+    OpenAiChatKimiPlain,
     OpenAiChatMinimax,
     OpenAiChatPlain,
     OpenAiChatZhipu,
@@ -65,6 +68,7 @@ enum RuntimeSemanticsKind {
 
 #[derive(Debug, Clone, Copy)]
 enum ModelLifecycleSpec {
+    Preview,
     Stable,
     Retiring { retirement_date: NaiveDate },
 }
@@ -93,7 +97,7 @@ pub(crate) const PROVIDER_METADATA: &[ProviderCatalogMetadata] = &[
     ),
     provider("doubao", "https://www.volcengine.com/docs/82379/1494384"),
     provider("gemini", "https://ai.google.dev/gemini-api/docs/models"),
-    provider("km", "https://platform.moonshot.ai/docs"),
+    provider_with_date("km", "https://platform.kimi.com/docs", date(2026, 7, 9)),
     provider("local-llama", "https://ollama.com/library"),
     provider(
         "minimax",
@@ -303,53 +307,125 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
         8192,
         TEXT_IMAGE,
     ),
-    chat_model(
-        "km",
+    kimi_chat_model(
         "kimi-k2.7-code",
         "Kimi K2.7 Code",
-        200_000,
-        16_384,
+        256_000,
+        32_768,
+        TEXT_IMAGE_VIDEO,
         true,
-        false,
-        false,
-        false,
-        RuntimeSemanticsKind::OpenAiChatPlain,
+        true,
+        true,
+        RuntimeSemanticsKind::OpenAiChatKimi,
+        ModelLifecycleSpec::Stable,
     ),
-    chat_model(
-        "km",
+    kimi_chat_model(
         "kimi-k2.7-code-highspeed",
         "Kimi K2.7 Code Highspeed",
-        200_000,
-        16_384,
+        256_000,
+        32_768,
+        TEXT_IMAGE_VIDEO,
         true,
-        false,
-        false,
-        false,
-        RuntimeSemanticsKind::OpenAiChatPlain,
+        true,
+        true,
+        RuntimeSemanticsKind::OpenAiChatKimi,
+        ModelLifecycleSpec::Stable,
     ),
-    chat_model(
-        "km",
+    kimi_chat_model(
         "kimi-k2.6",
         "Kimi K2.6",
-        200_000,
-        16_384,
+        256_000,
+        32_768,
+        TEXT_IMAGE_VIDEO,
         true,
-        false,
-        false,
-        false,
-        RuntimeSemanticsKind::OpenAiChatPlain,
+        true,
+        true,
+        RuntimeSemanticsKind::OpenAiChatKimiOptionalReplay,
+        ModelLifecycleSpec::Stable,
     ),
-    chat_model(
-        "km",
+    kimi_chat_model(
         "kimi-k2.5",
         "Kimi K2.5",
-        200_000,
-        16_384,
+        256_000,
+        32_768,
+        TEXT_IMAGE_VIDEO,
         true,
+        true,
+        true,
+        RuntimeSemanticsKind::OpenAiChatKimiOptionalReplay,
+        ModelLifecycleSpec::Stable,
+    ),
+    kimi_chat_model(
+        "moonshot-v1-8k",
+        "Moonshot V1 8K",
+        8_192,
+        4_096,
+        TEXT,
         false,
         false,
         false,
-        RuntimeSemanticsKind::OpenAiChatPlain,
+        RuntimeSemanticsKind::OpenAiChatKimiPlain,
+        ModelLifecycleSpec::Stable,
+    ),
+    kimi_chat_model(
+        "moonshot-v1-32k",
+        "Moonshot V1 32K",
+        32_768,
+        4_096,
+        TEXT,
+        false,
+        false,
+        false,
+        RuntimeSemanticsKind::OpenAiChatKimiPlain,
+        ModelLifecycleSpec::Stable,
+    ),
+    kimi_chat_model(
+        "moonshot-v1-128k",
+        "Moonshot V1 128K",
+        131_072,
+        4_096,
+        TEXT,
+        false,
+        false,
+        false,
+        RuntimeSemanticsKind::OpenAiChatKimiPlain,
+        ModelLifecycleSpec::Stable,
+    ),
+    kimi_chat_model(
+        "moonshot-v1-8k-vision-preview",
+        "Moonshot V1 8K Vision Preview",
+        8_192,
+        4_096,
+        TEXT_IMAGE,
+        false,
+        false,
+        false,
+        RuntimeSemanticsKind::OpenAiChatKimiPlain,
+        ModelLifecycleSpec::Preview,
+    ),
+    kimi_chat_model(
+        "moonshot-v1-32k-vision-preview",
+        "Moonshot V1 32K Vision Preview",
+        32_768,
+        4_096,
+        TEXT_IMAGE,
+        false,
+        false,
+        false,
+        RuntimeSemanticsKind::OpenAiChatKimiPlain,
+        ModelLifecycleSpec::Preview,
+    ),
+    kimi_chat_model(
+        "moonshot-v1-128k-vision-preview",
+        "Moonshot V1 128K Vision Preview",
+        131_072,
+        4_096,
+        TEXT_IMAGE,
+        false,
+        false,
+        false,
+        RuntimeSemanticsKind::OpenAiChatKimiPlain,
+        ModelLifecycleSpec::Preview,
     ),
     chat_model(
         "local-llama",
@@ -1221,6 +1297,40 @@ const fn chat_model(
 }
 
 #[allow(clippy::fn_params_excessive_bools)]
+const fn kimi_chat_model(
+    model_id: &'static str,
+    display_name: &'static str,
+    context_window: u32,
+    max_output_tokens: u32,
+    input_modalities: &'static [ModelModality],
+    reasoning: bool,
+    prompt_cache: bool,
+    structured_output: bool,
+    runtime_semantics: RuntimeSemanticsKind,
+    lifecycle: ModelLifecycleSpec,
+) -> ModelCatalogSpec {
+    ModelCatalogSpec {
+        provider_id: "km",
+        model_id,
+        display_name,
+        protocol: ModelProtocol::ChatCompletions,
+        context_window,
+        max_output_tokens,
+        tool_calling: true,
+        reasoning,
+        prompt_cache,
+        streaming: true,
+        structured_output,
+        declared_input_modalities: input_modalities,
+        declared_output_modalities: TEXT,
+        runtime_input_modalities: input_modalities,
+        runtime_output_modalities: TEXT,
+        runtime_semantics,
+        lifecycle,
+    }
+}
+
+#[allow(clippy::fn_params_excessive_bools)]
 const fn zhipu_chat_model(
     model_id: &'static str,
     display_name: &'static str,
@@ -1389,6 +1499,13 @@ fn runtime_semantics(kind: RuntimeSemanticsKind) -> ModelRuntimeSemantics {
         RuntimeSemanticsKind::BedrockConverse => ModelRuntimeSemantics::bedrock_converse_default(),
         RuntimeSemanticsKind::Gemini => ModelRuntimeSemantics::gemini_default(),
         RuntimeSemanticsKind::OpenAiChatDeepSeek => ModelRuntimeSemantics::openai_chat_deepseek(),
+        RuntimeSemanticsKind::OpenAiChatKimi => ModelRuntimeSemantics::openai_chat_kimi(),
+        RuntimeSemanticsKind::OpenAiChatKimiOptionalReplay => {
+            ModelRuntimeSemantics::openai_chat_kimi_optional_replay()
+        }
+        RuntimeSemanticsKind::OpenAiChatKimiPlain => {
+            ModelRuntimeSemantics::openai_chat_kimi_plain()
+        }
         RuntimeSemanticsKind::OpenAiChatMinimax => ModelRuntimeSemantics::openai_chat_minimax(),
         RuntimeSemanticsKind::OpenAiChatPlain => ModelRuntimeSemantics::openai_chat_plain(),
         RuntimeSemanticsKind::OpenAiChatZhipu => ModelRuntimeSemantics::openai_chat_zhipu(),
@@ -1398,6 +1515,7 @@ fn runtime_semantics(kind: RuntimeSemanticsKind) -> ModelRuntimeSemantics {
 
 fn lifecycle(spec: ModelLifecycleSpec) -> ModelLifecycle {
     match spec {
+        ModelLifecycleSpec::Preview => ModelLifecycle::Preview,
         ModelLifecycleSpec::Stable => ModelLifecycle::Stable,
         ModelLifecycleSpec::Retiring { retirement_date } => {
             ModelLifecycle::Retiring { retirement_date }

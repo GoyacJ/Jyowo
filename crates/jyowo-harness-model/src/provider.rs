@@ -285,6 +285,40 @@ impl ModelRuntimeSemantics {
     }
 
     #[must_use]
+    pub fn openai_chat_kimi_plain() -> Self {
+        Self {
+            provider_continuation_dialect: Some("openai_chat.kimi".to_owned()),
+            ..Self::openai_chat_plain()
+        }
+    }
+
+    #[must_use]
+    pub fn openai_chat_kimi_optional_replay() -> Self {
+        Self {
+            reasoning_protocol: ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind: ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: false,
+            },
+            cache_protocol: CacheProtocolSemantics::OpenAiAuto,
+            provider_continuation_dialect: Some("openai_chat.kimi".to_owned()),
+            ..Self::openai_chat_plain()
+        }
+    }
+
+    #[must_use]
+    pub fn openai_chat_kimi() -> Self {
+        Self {
+            reasoning_protocol: ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind: ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: true,
+            },
+            cache_protocol: CacheProtocolSemantics::OpenAiAuto,
+            provider_continuation_dialect: Some("openai_chat.kimi".to_owned()),
+            ..Self::openai_chat_plain()
+        }
+    }
+
+    #[must_use]
     pub fn openai_chat_zhipu() -> Self {
         Self {
             reasoning_protocol: ReasoningProtocolSemantics::ProviderPrivateReplay {

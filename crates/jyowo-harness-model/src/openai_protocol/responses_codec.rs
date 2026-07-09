@@ -9,7 +9,9 @@ use crate::{
     ModelStreamEvent, ReasoningSummaryDelta, ThinkingDelta,
 };
 
-use super::request::{chat_message, merge_extra_object, responses_tool, DEFAULT_MAX_TOKENS};
+use super::request::{
+    merge_extra_object, responses_chat_message, responses_tool, DEFAULT_MAX_TOKENS,
+};
 
 pub(super) async fn responses_request_body(
     req: &ModelRequest,
@@ -23,7 +25,7 @@ pub(super) async fn responses_request_body(
         }));
     }
     for message in &req.messages {
-        input.push(chat_message(message, ctx).await?);
+        input.push(responses_chat_message(message, ctx).await?);
     }
 
     let mut body = json!({

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use futures::StreamExt;
 use harness_contracts::{
@@ -25,17 +27,19 @@ pub(super) fn merge_extra_object(body: &mut Value, extra: &Value) -> Result<(), 
     Ok(())
 }
 
-pub(super) async fn chat_message(
+pub(super) async fn responses_chat_message(
     message: &Message,
     ctx: &InferContext,
 ) -> Result<Value, ModelError> {
-    chat_message_for_dialect(message, ctx, OpenAiChatDialect::Plain).await
+    let tool_call_names = BTreeMap::new();
+    chat_message(message, OpenAiChatDialect::Plain, ctx, &tool_call_names).await
 }
 
-pub(super) async fn chat_message_for_dialect(
+pub(super) async fn chat_message(
     message: &Message,
-    ctx: &InferContext,
     dialect: OpenAiChatDialect,
+    ctx: &InferContext,
+    tool_call_names: &BTreeMap<String, String>,
 ) -> Result<Value, ModelError> {
     match message.role {
         MessageRole::System => Ok(json!({
@@ -47,7 +51,7 @@ pub(super) async fn chat_message_for_dialect(
             "content": text_content(&message.parts, ctx, dialect).await?,
         })),
         MessageRole::Assistant => assistant_message(&message.parts),
-        MessageRole::Tool => tool_message(&message.parts),
+        MessageRole::Tool => tool_message(&message.parts, dialect, ctx, tool_call_names).await,
         _ => Err(ModelError::InvalidRequest(
             "unknown message role is not supported by OpenAI protocol providers".to_owned(),
         )),
@@ -102,7 +106,12 @@ fn assistant_message(parts: &[MessagePart]) -> Result<Value, ModelError> {
     Ok(message)
 }
 
-fn tool_message(parts: &[MessagePart]) -> Result<Value, ModelError> {
+async fn tool_message(
+    parts: &[MessagePart],
+    dialect: OpenAiChatDialect,
+    ctx: &InferContext,
+    tool_call_names: &BTreeMap<String, String>,
+) -> Result<Value, ModelError> {
     let [MessagePart::ToolResult {
         tool_use_id,
         content,
@@ -114,11 +123,41 @@ fn tool_message(parts: &[MessagePart]) -> Result<Value, ModelError> {
         ));
     };
 
-    Ok(json!({
+    let kimi_tool_name = if dialect == OpenAiChatDialect::Kimi {
+        Some(
+            tool_call_names
+                .get(&tool_use_id.to_string())
+                .ok_or_else(|| {
+                    ModelError::InvalidRequest(
+                        "Kimi tool messages require a preceding assistant tool call name"
+                            .to_owned(),
+                    )
+                })?
+                .clone(),
+        )
+    } else {
+        None
+    };
+
+    let mut message = json!({
         "role": "tool",
         "tool_call_id": tool_use_id.to_string(),
-        "content": tool_result_content(content)?,
-    }))
+        "content": if dialect == OpenAiChatDialect::Kimi {
+            if kimi_tool_result_needs_content_parts(content) {
+                kimi_tool_result_content(content, ctx).await?
+            } else {
+                Value::String(kimi_tool_result_text_content(content)?)
+            }
+        } else {
+            Value::String(tool_result_content(content)?)
+        },
+    });
+
+    if let Some(name) = kimi_tool_name {
+        message["name"] = Value::String(name);
+    }
+
+    Ok(message)
 }
 
 async fn text_content(
@@ -284,6 +323,148 @@ fn tool_result_part_content(part: &ToolResultPart) -> Result<String, ModelError>
             "unsupported tool result part for OpenAI protocol providers".to_owned(),
         )),
     }
+}
+
+fn kimi_tool_result_needs_content_parts(content: &ToolResult) -> bool {
+    match content {
+        ToolResult::Blob { .. } => true,
+        ToolResult::Mixed(parts) => parts
+            .iter()
+            .any(|part| matches!(part, ToolResultPart::Blob { .. })),
+        _ => false,
+    }
+}
+
+fn kimi_tool_result_text_content(content: &ToolResult) -> Result<String, ModelError> {
+    match content {
+        ToolResult::Text(text) => Ok(text.clone()),
+        ToolResult::Structured(value) => Ok(value.to_string()),
+        ToolResult::Mixed(parts) => parts
+            .iter()
+            .map(kimi_tool_result_part_text_content)
+            .collect::<Result<Vec<_>, _>>()
+            .map(|parts| parts.join("")),
+        ToolResult::Blob { .. } => Err(ModelError::InvalidRequest(
+            "blob tool results require Kimi multimodal content parts".to_owned(),
+        )),
+        _ => Err(ModelError::InvalidRequest(
+            "unsupported Kimi tool result for OpenAI protocol providers".to_owned(),
+        )),
+    }
+}
+
+fn kimi_tool_result_part_text_content(part: &ToolResultPart) -> Result<String, ModelError> {
+    match part {
+        ToolResultPart::Structured { value, .. } => Ok(value.to_string()),
+        ToolResultPart::Text { text } | ToolResultPart::Code { text, .. } => Ok(text.clone()),
+        ToolResultPart::Reference { title, summary, .. } => Ok(summary
+            .as_deref()
+            .or(title.as_deref())
+            .unwrap_or_default()
+            .to_owned()),
+        ToolResultPart::Artifact { title, preview, .. } => {
+            Ok(preview.as_deref().unwrap_or(title).to_owned())
+        }
+        ToolResultPart::Table { .. }
+        | ToolResultPart::Progress { .. }
+        | ToolResultPart::Error { .. } => serde_json::to_string(part).map_err(|error| {
+            ModelError::InvalidRequest(format!("failed to encode Kimi tool result: {error}"))
+        }),
+        ToolResultPart::Blob { .. } => Err(ModelError::InvalidRequest(
+            "blob tool result parts require Kimi multimodal content parts".to_owned(),
+        )),
+        _ => Err(ModelError::InvalidRequest(
+            "unsupported Kimi tool result part for OpenAI protocol providers".to_owned(),
+        )),
+    }
+}
+
+async fn kimi_tool_result_content(
+    content: &ToolResult,
+    ctx: &InferContext,
+) -> Result<Value, ModelError> {
+    let blocks = match content {
+        ToolResult::Text(text) => vec![text_block(text)],
+        ToolResult::Structured(value) => vec![text_block(&value.to_string())],
+        ToolResult::Blob {
+            content_type,
+            blob_ref,
+        } => vec![kimi_blob_block(ctx, content_type, blob_ref).await?],
+        ToolResult::Mixed(parts) => {
+            let mut blocks = Vec::new();
+            for part in parts {
+                blocks.push(kimi_tool_result_part_block(part, ctx).await?);
+            }
+            blocks
+        }
+        _ => {
+            return Err(ModelError::InvalidRequest(
+                "unsupported Kimi tool result for OpenAI protocol providers".to_owned(),
+            ));
+        }
+    };
+    Ok(Value::Array(blocks))
+}
+
+async fn kimi_tool_result_part_block(
+    part: &ToolResultPart,
+    ctx: &InferContext,
+) -> Result<Value, ModelError> {
+    match part {
+        ToolResultPart::Structured { value, .. } => Ok(text_block(&value.to_string())),
+        ToolResultPart::Text { text } | ToolResultPart::Code { text, .. } => Ok(text_block(text)),
+        ToolResultPart::Reference { title, summary, .. } => Ok(text_block(
+            summary.as_deref().or(title.as_deref()).unwrap_or_default(),
+        )),
+        ToolResultPart::Artifact { title, preview, .. } => {
+            Ok(text_block(preview.as_deref().unwrap_or(title)))
+        }
+        ToolResultPart::Blob {
+            content_type,
+            blob_ref,
+            ..
+        } => kimi_blob_block(ctx, content_type, blob_ref).await,
+        ToolResultPart::Table { .. }
+        | ToolResultPart::Progress { .. }
+        | ToolResultPart::Error { .. } => Ok(text_block(&serde_json::to_string(part).map_err(
+            |error| {
+                ModelError::InvalidRequest(format!("failed to encode Kimi tool result: {error}"))
+            },
+        )?)),
+        _ => Err(ModelError::InvalidRequest(
+            "unsupported Kimi tool result part for OpenAI protocol providers".to_owned(),
+        )),
+    }
+}
+
+async fn kimi_blob_block(
+    ctx: &InferContext,
+    content_type: &str,
+    blob_ref: &BlobRef,
+) -> Result<Value, ModelError> {
+    let url = blob_data_url(ctx, content_type, blob_ref).await?;
+    if content_type.starts_with("image/") {
+        return Ok(json!({
+            "type": "image_url",
+            "image_url": { "url": url },
+        }));
+    }
+    if content_type.starts_with("video/") {
+        return Ok(json!({
+            "type": "video_url",
+            "video_url": { "url": url },
+        }));
+    }
+    Err(ModelError::InvalidRequest(
+        "Kimi tool result blobs must be image or video content".to_owned(),
+    ))
+}
+
+fn text_block(text: &str) -> Value {
+    json!({
+        "type": "text",
+        "text": text,
+    })
 }
 
 pub(super) fn openai_tool(tool: &ToolDescriptor) -> Value {

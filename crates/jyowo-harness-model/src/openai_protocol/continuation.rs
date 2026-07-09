@@ -9,6 +9,7 @@ use super::dialect::OpenAiChatDialect;
 const REASONING_CONTENT_FIELD: &str = "reasoning_content";
 const DEEPSEEK_REASONING_PAYLOAD_FORMAT: &str = "deepseek.reasoning_content.v1";
 const ZHIPU_REASONING_PAYLOAD_FORMAT: &str = "zhipu.reasoning_content.v1";
+const KIMI_REASONING_PAYLOAD_FORMAT: &str = "kimi.reasoning_content.v1";
 const MINIMAX_REASONING_CONTENT_FIELD: &str = "reasoning_content";
 const MINIMAX_REASONING_DETAILS_FIELD: &str = "reasoning_details";
 const MINIMAX_REASONING_PAYLOAD_FORMAT: &str = "minimax.reasoning_details.v1";
@@ -23,7 +24,7 @@ pub(super) fn stream_reasoning_continuation_payload(
     chunk: &Value,
 ) -> Option<Value> {
     match dialect {
-        OpenAiChatDialect::DeepSeek | OpenAiChatDialect::Zhipu => {
+        OpenAiChatDialect::DeepSeek | OpenAiChatDialect::Zhipu | OpenAiChatDialect::Kimi => {
             let config = reasoning_replay_config(dialect)?;
             stream_reasoning_delta(dialect, chunk)
                 .map(|reasoning| reasoning_payload(config, &reasoning))
@@ -42,7 +43,7 @@ pub(super) fn stream_continuation_event(
     }
 
     match dialect {
-        OpenAiChatDialect::DeepSeek | OpenAiChatDialect::Zhipu => {
+        OpenAiChatDialect::DeepSeek | OpenAiChatDialect::Zhipu | OpenAiChatDialect::Kimi => {
             let config = reasoning_replay_config(dialect)?;
             let reasoning = payloads
                 .iter()
@@ -64,7 +65,7 @@ pub(super) fn chat_response_continuation_event(
     response: &Value,
 ) -> Option<ModelStreamEvent> {
     match dialect {
-        OpenAiChatDialect::DeepSeek | OpenAiChatDialect::Zhipu => {
+        OpenAiChatDialect::DeepSeek | OpenAiChatDialect::Zhipu | OpenAiChatDialect::Kimi => {
             reasoning_chat_response_continuation_event(dialect, response)
         }
         OpenAiChatDialect::MiniMax => minimax_chat_response_continuation_event(response),
@@ -77,16 +78,17 @@ pub(super) fn apply_chat_message_continuation(
     source: &Message,
     dialect: OpenAiChatDialect,
     continuations: &[ProviderContinuationRecord],
-) -> Result<(), ModelError> {
+    required: bool,
+) -> Result<bool, ModelError> {
     if source.role != MessageRole::Assistant {
-        return Ok(());
+        return Ok(false);
     }
     let has_tool_calls = encoded
         .get("tool_calls")
         .and_then(Value::as_array)
         .is_some_and(|tool_calls| !tool_calls.is_empty());
     if !has_tool_calls {
-        return Ok(());
+        return Ok(false);
     }
 
     if dialect == OpenAiChatDialect::MiniMax {
@@ -94,15 +96,18 @@ pub(super) fn apply_chat_message_continuation(
             record.message_id == source.id
                 && record.kind == ProviderContinuationKind::ReasoningReplay
         }) else {
-            return Ok(());
+            return Ok(false);
         };
         apply_minimax_payload(encoded, &record.payload)?;
-        return Ok(());
+        return Ok(true);
     }
 
     let Some(config) = reasoning_replay_config(dialect) else {
-        return Ok(());
+        return Ok(false);
     };
+    if !required {
+        return Ok(false);
+    }
     let matching_message = continuations
         .iter()
         .filter(|record| record.message_id == source.id)
@@ -116,7 +121,7 @@ pub(super) fn apply_chat_message_continuation(
         .ok_or_else(invalid_provider_continuation)?;
     let reasoning = reasoning_content_from_payload(&record.payload, config)?;
     encoded[REASONING_CONTENT_FIELD] = json!(reasoning);
-    Ok(())
+    Ok(true)
 }
 
 fn stream_reasoning_delta(dialect: OpenAiChatDialect, chunk: &Value) -> Option<String> {
@@ -245,6 +250,9 @@ fn reasoning_replay_config(dialect: OpenAiChatDialect) -> Option<ReasoningReplay
         }),
         OpenAiChatDialect::Zhipu => Some(ReasoningReplayConfig {
             payload_format: ZHIPU_REASONING_PAYLOAD_FORMAT,
+        }),
+        OpenAiChatDialect::Kimi => Some(ReasoningReplayConfig {
+            payload_format: KIMI_REASONING_PAYLOAD_FORMAT,
         }),
         _ => None,
     }

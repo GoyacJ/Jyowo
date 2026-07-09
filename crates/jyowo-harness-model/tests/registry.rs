@@ -41,6 +41,15 @@ fn provider_inventory_includes_source_metadata() {
     assert!(entries
         .iter()
         .all(|entry| entry.verified_date >= min_verified_date));
+    #[cfg(feature = "km")]
+    assert_eq!(
+        entries
+            .iter()
+            .find(|entry| entry.provider_id == "km")
+            .expect("km inventory should exist")
+            .verified_date,
+        chrono::NaiveDate::from_ymd_opt(2026, 7, 9).unwrap()
+    );
     #[cfg(feature = "zhipu")]
     assert_eq!(
         entries
@@ -175,7 +184,7 @@ fn every_runtime_descriptor_has_explicit_semantics() {
         for descriptor in entry.models {
             assert_eq!(
                 descriptor.runtime_semantics,
-                expected_runtime_semantics(&entry.provider_id, &descriptor.model_id),
+                expected_runtime_semantics(&entry.provider_id, &descriptor),
                 "{}:{} should use the provider's explicit runtime semantics",
                 entry.provider_id,
                 descriptor.model_id
@@ -225,6 +234,92 @@ fn provider_registry_resolves_deepseek_with_private_replay_semantics() {
 
     #[cfg(not(feature = "deepseek"))]
     assert_source_contains("catalog.rs", "RuntimeSemanticsKind::OpenAiChatDeepSeek");
+}
+
+#[test]
+fn provider_registry_resolves_kimi_with_private_replay_semantics() {
+    #[cfg(feature = "km")]
+    {
+        let k27 = resolve_model_descriptor("km", "kimi-k2.7-code")
+            .expect("Kimi K2.7 descriptor should resolve");
+        assert_eq!(
+            k27.runtime_semantics.reasoning_protocol,
+            ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind:
+                    harness_provider_state::ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: true,
+            }
+        );
+
+        let k26 = resolve_model_descriptor("km", "kimi-k2.6")
+            .expect("Kimi K2.6 descriptor should resolve");
+        assert_eq!(
+            k26.runtime_semantics.reasoning_protocol,
+            ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind:
+                    harness_provider_state::ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: false,
+            }
+        );
+    }
+
+    #[cfg(not(feature = "km"))]
+    assert_source_contains("catalog.rs", "RuntimeSemanticsKind::OpenAiChatKimi");
+}
+
+#[cfg(feature = "km")]
+#[test]
+fn kimi_provider_catalog_matches_official_capabilities() {
+    let descriptor =
+        resolve_model_descriptor("km", "kimi-k2.6").expect("Kimi K2.6 descriptor should resolve");
+    assert_eq!(descriptor.context_window, 256_000);
+    assert_eq!(descriptor.max_output_tokens, 32_768);
+    assert!(descriptor.conversation_capability.reasoning);
+    assert!(descriptor.conversation_capability.prompt_cache);
+    assert!(descriptor.conversation_capability.structured_output);
+    assert_eq!(
+        descriptor.conversation_capability.input_modalities,
+        vec![
+            harness_model::ModelModality::Text,
+            harness_model::ModelModality::Image,
+            harness_model::ModelModality::Video,
+        ]
+    );
+
+    let moonshot = resolve_model_descriptor("km", "moonshot-v1-8k").unwrap();
+    assert_eq!(
+        moonshot.runtime_semantics.reasoning_protocol,
+        ReasoningProtocolSemantics::None
+    );
+    assert!(resolve_model_descriptor("km", "moonshot-v1-8k").is_ok());
+    assert!(resolve_model_descriptor("km", "moonshot-v1-32k").is_ok());
+    assert!(resolve_model_descriptor("km", "moonshot-v1-128k").is_ok());
+    assert!(resolve_model_descriptor("km", "moonshot-v1-8k-vision-preview").is_ok());
+    assert!(resolve_model_descriptor("km", "moonshot-v1-auto").is_err());
+}
+
+#[cfg(feature = "km")]
+#[test]
+fn kimi_provider_catalog_exposes_runtime_and_service_capabilities() {
+    let kimi = harness_model::provider_catalog_entries()
+        .into_iter()
+        .find(|entry| entry.provider_id == "km")
+        .expect("Kimi catalog should exist");
+
+    assert_eq!(kimi.default_base_url, "https://api.moonshot.cn");
+    assert!(kimi.runtime_capability.supports_live_validation);
+    assert!(kimi
+        .service_capabilities
+        .iter()
+        .any(|capability| capability.operation_id == "kimi.models.list"));
+    assert!(kimi
+        .service_capabilities
+        .iter()
+        .any(|capability| capability.operation_id == "kimi.tokenizers.estimate_token_count"));
+    assert!(kimi
+        .service_capabilities
+        .iter()
+        .any(|capability| capability.operation_id == "kimi.balance.retrieve"));
 }
 
 #[test]
@@ -590,20 +685,34 @@ fn assert_modalities_subset(
     }
 }
 
-fn expected_runtime_semantics(provider_id: &str, model_id: &str) -> ModelRuntimeSemantics {
+fn expected_runtime_semantics(
+    provider_id: &str,
+    descriptor: &harness_model::ModelDescriptor,
+) -> ModelRuntimeSemantics {
     match provider_id {
         "anthropic" => ModelRuntimeSemantics::anthropic_messages_default(),
         "codex" | "openai" => ModelRuntimeSemantics::openai_responses_default(),
         "deepseek" => ModelRuntimeSemantics::openai_chat_deepseek(),
         "gemini" => ModelRuntimeSemantics::gemini_default(),
         "bedrock" => ModelRuntimeSemantics::bedrock_converse_default(),
-        "minimax" if model_id == "MiniMax-M3" => ModelRuntimeSemantics::openai_responses_default(),
+        "km" if matches!(
+            descriptor.model_id.as_str(),
+            "kimi-k2.7-code" | "kimi-k2.7-code-highspeed"
+        ) =>
+        {
+            ModelRuntimeSemantics::openai_chat_kimi()
+        }
+        "km" if descriptor.conversation_capability.reasoning => {
+            ModelRuntimeSemantics::openai_chat_kimi_optional_replay()
+        }
+        "km" => ModelRuntimeSemantics::openai_chat_kimi_plain(),
+        "minimax" if descriptor.model_id == "MiniMax-M3" => {
+            ModelRuntimeSemantics::openai_responses_default()
+        }
         "minimax" => ModelRuntimeSemantics::openai_chat_minimax(),
         "zhipu" => ModelRuntimeSemantics::openai_chat_zhipu(),
         "qwen" => ModelRuntimeSemantics::openai_responses_default(),
-        "doubao" | "km" | "local-llama" | "openrouter" => {
-            ModelRuntimeSemantics::openai_chat_plain()
-        }
+        "doubao" | "local-llama" | "openrouter" => ModelRuntimeSemantics::openai_chat_plain(),
         provider_id => {
             panic!("missing explicit runtime semantics expectation for provider {provider_id}")
         }
@@ -668,6 +777,7 @@ fn descriptor_block_end(source: &str, start: usize) -> Option<usize> {
 
 #[cfg(any(
     not(feature = "deepseek"),
+    not(feature = "km"),
     not(feature = "minimax"),
     not(feature = "zhipu")
 ))]
