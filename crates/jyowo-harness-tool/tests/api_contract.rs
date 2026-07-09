@@ -290,6 +290,7 @@ fn descriptor(is_concurrency_safe: bool) -> ToolDescriptor {
         origin: ToolOrigin::Builtin,
         search_hint: None,
         service_binding: None,
+        metadata: Default::default(),
     }
 }
 

@@ -832,6 +832,7 @@ fn test_tool(name: &str, is_concurrency_safe: bool, behavior: Behavior) -> TestT
             origin: ToolOrigin::Builtin,
             search_hint: None,
             service_binding: None,
+            metadata: Default::default(),
         },
         behavior,
     }
