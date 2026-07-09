@@ -10,8 +10,9 @@ use std::{
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    ActionResource, DecisionScope, NetworkAccess, PermissionSubject, ToolActionPlan,
-    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult, WorkspaceAccess,
+    ActionResource, BudgetMetric, DecisionScope, NetworkAccess, OverflowAction, PermissionSubject,
+    ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
+    WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use regex::Regex;
@@ -30,22 +31,46 @@ pub struct GrepTool {
 impl Default for GrepTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "Grep",
-                "Grep",
-                "Search files with ripgrep.",
-                ToolGroup::Search,
-                true,
-                true,
-                false,
-                64_000,
-                Vec::new(),
-                super::object_schema(
-                    &["path", "pattern"],
+            descriptor: super::with_result_budget(
+                super::with_output_schema(
+                    super::descriptor(
+                        "Grep",
+                        "Grep",
+                        "Search files with ripgrep.",
+                        ToolGroup::Search,
+                        true,
+                        true,
+                        false,
+                        1_000,
+                        Vec::new(),
+                        super::object_schema(
+                            &["path", "pattern"],
+                            json!({
+                                "path": { "type": "string" },
+                                "pattern": { "type": "string" }
+                            }),
+                        ),
+                    ),
                     json!({
-                        "path": { "type": "string" },
-                        "pattern": { "type": "string" }
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["path", "line", "text"],
+                            "properties": {
+                                "path": { "type": "string" },
+                                "line": { "type": "integer", "minimum": 1 },
+                                "text": { "type": "string" }
+                            },
+                            "additionalProperties": false
+                        }
                     }),
+                ),
+                super::result_budget(
+                    BudgetMetric::Lines,
+                    1_000,
+                    OverflowAction::Offload,
+                    200,
+                    200,
                 ),
             ),
         }

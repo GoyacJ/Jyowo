@@ -28,25 +28,29 @@ pub struct DiagnosticsTool {
 impl Default for DiagnosticsTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "Diagnostics",
-                "Diagnostics",
-                "Run read-only workspace diagnostics and return structured findings.",
-                ToolGroup::Search,
-                false,
-                true,
-                false,
-                128_000,
-                vec![diagnostics_runner_capability()],
-                super::object_schema(
-                    &["runner"],
-                    json!({
-                        "runner": {
-                            "type": "string",
-                            "enum": ["rust", "desktop_ts"]
-                        }
-                    }),
+            descriptor: super::with_output_schema(
+                super::descriptor(
+                    "Diagnostics",
+                    "Diagnostics",
+                    "Run read-only workspace diagnostics and return structured findings.",
+                    ToolGroup::Search,
+                    false,
+                    true,
+                    false,
+                    128_000,
+                    vec![diagnostics_runner_capability()],
+                    super::object_schema(
+                        &["runner"],
+                        json!({
+                            "runner": {
+                                "type": "string",
+                                "enum": ["rust", "desktop_ts"]
+                            }
+                        }),
+                    ),
                 ),
+                serde_json::to_value(schemars::schema_for!(DiagnosticsResult))
+                    .unwrap_or_else(|_| json!({"type": "object"})),
             ),
         }
     }

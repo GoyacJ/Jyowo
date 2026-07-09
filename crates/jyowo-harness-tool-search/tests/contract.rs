@@ -1,6 +1,7 @@
 use chrono::{TimeZone, Utc};
 use harness_contracts::{ToolPoolChangeSource, ToolSearchMode};
 use harness_tool_search::{DeferredThresholdEvaluator, DeferredToolsDelta, TOOL_SEARCH_PROMPT};
+use std::collections::BTreeMap;
 
 #[test]
 fn tool_search_prompt_keeps_expected_query_contract() {
@@ -20,18 +21,33 @@ fn deferred_tools_delta_attachment_is_stable() {
         source: ToolPoolChangeSource::InitialClassification,
         at: Utc.with_ymd_and_hms(2026, 4, 25, 10, 32, 11).unwrap(),
         initial: false,
+        reason: "deferred tool pool changed after initial classification".to_owned(),
+        added_reasons: BTreeMap::from([
+            (
+                "mcp__slack__post_message".to_owned(),
+                "matched messaging task".to_owned(),
+            ),
+            (
+                "mcp__slack__list_channels".to_owned(),
+                "matched messaging task".to_owned(),
+            ),
+        ]),
+        removed_reasons: BTreeMap::from([(
+            "old_tool".to_owned(),
+            "tool is no longer deferred".to_owned(),
+        )]),
     };
 
     assert_eq!(
         delta.to_attachment_text(),
         concat!(
-            "<deferred-tools changed-at=\"2026-04-25T10:32:11+00:00\">\n",
+            "<deferred-tools changed-at=\"2026-04-25T10:32:11+00:00\" reason=\"deferred tool pool changed after initial classification\">\n",
             "  <added>\n",
-            "    mcp__slack__post_message\n",
-            "    mcp__slack__list_channels\n",
+            "    <tool name=\"mcp__slack__post_message\" reason=\"matched messaging task\" />\n",
+            "    <tool name=\"mcp__slack__list_channels\" reason=\"matched messaging task\" />\n",
             "  </added>\n",
             "  <removed>\n",
-            "    old_tool\n",
+            "    <tool name=\"old_tool\" reason=\"tool is no longer deferred\" />\n",
             "  </removed>\n",
             "</deferred-tools>"
         )

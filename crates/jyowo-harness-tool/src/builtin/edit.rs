@@ -20,25 +20,36 @@ pub struct FileEditTool {
 impl Default for FileEditTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "FileEdit",
-                "File edit",
-                "Replace text in a workspace file.",
-                ToolGroup::FileSystem,
-                false,
-                false,
-                true,
-                64_000,
-                Vec::new(),
-                super::object_schema(
-                    &["path", "old", "new"],
-                    json!({
-                        "path": { "type": "string" },
-                        "old": { "type": "string" },
-                        "new": { "type": "string" },
-                        "replace_all": { "type": "boolean" }
-                    }),
+            descriptor: super::with_output_schema(
+                super::descriptor(
+                    "FileEdit",
+                    "File edit",
+                    "Replace text in a workspace file.",
+                    ToolGroup::FileSystem,
+                    false,
+                    false,
+                    true,
+                    64_000,
+                    Vec::new(),
+                    super::object_schema(
+                        &["path", "old", "new"],
+                        json!({
+                            "path": { "type": "string" },
+                            "old": { "type": "string" },
+                            "new": { "type": "string" },
+                            "replace_all": { "type": "boolean" }
+                        }),
+                    ),
                 ),
+                json!({
+                    "type": "object",
+                    "required": ["path", "replacements"],
+                    "properties": {
+                        "path": { "type": "string" },
+                        "replacements": { "type": "integer", "minimum": 0 }
+                    },
+                    "additionalProperties": false
+                }),
             ),
         }
     }

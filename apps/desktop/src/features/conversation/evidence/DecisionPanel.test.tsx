@@ -149,6 +149,21 @@ describe('DecisionPanel', () => {
     expect(screen.getByText(/I understand/)).toBeDefined()
   })
 
+  it('renders permission resources, scope, and review details', () => {
+    const decision = makeDecision({
+      resources: ['command:cargo test', 'workspace:crates/jyowo-harness-tool'],
+      scope: 'workspace_only',
+      reviewDetails: ['execution channel: sandbox', 'network: none'],
+    })
+    render(<DecisionPanel conversationId="conv-1" decision={decision} />)
+
+    expect(screen.getByText('workspace_only')).toBeInTheDocument()
+    expect(screen.getByText('command:cargo test')).toBeInTheDocument()
+    expect(screen.getByText('workspace:crates/jyowo-harness-tool')).toBeInTheDocument()
+    expect(screen.getByText('execution channel: sandbox')).toBeInTheDocument()
+    expect(screen.getByText('network: none')).toBeInTheDocument()
+  })
+
   it('disables approve when confirmation text does not match', () => {
     const decision = makeDecision({
       riskLevel: 'high',

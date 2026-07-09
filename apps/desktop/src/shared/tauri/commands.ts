@@ -759,6 +759,9 @@ const decisionRequestStateSchema = z
     policy: decisionPolicySchema,
     decisionOptions: z.array(decisionOptionSchema),
     evidenceRefs: z.array(conversationEventRefSchema).optional(),
+    resources: z.array(conversationDisplayTextSchema).optional(),
+    scope: conversationDisplayTextSchema.optional(),
+    reviewDetails: z.array(conversationDisplayTextSchema).optional(),
     dataExposure: dataExposureSchema,
     confirmation: decisionConfirmationSchema.optional(),
   })
@@ -773,6 +776,8 @@ const toolFailurePhaseSchema = z.enum([
   'transport',
   'projection',
 ])
+const toolFailureKindSchema = z.enum(['capabilityMissing', 'toolError'])
+const toolResultKindSchema = z.enum(['text', 'structured', 'blob', 'mixed', 'offloaded'])
 
 const toolAttemptSchema = z
   .object({
@@ -790,7 +795,10 @@ const toolAttemptSchema = z
     durationMs: z.number().int().nonnegative().optional(),
     retryOf: z.string().optional(),
     failurePhase: toolFailurePhaseSchema.optional(),
+    failureKind: toolFailureKindSchema.optional(),
     failureSummary: conversationDisplayTextSchema.optional(),
+    resultKind: toolResultKindSchema.optional(),
+    truncated: z.boolean().optional(),
     permission: decisionRequestStateSchema.optional(),
     eventRefs: z.array(conversationEventRefSchema).optional(),
   })

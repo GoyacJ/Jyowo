@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    ActionResource, DecisionScope, NetworkAccess, PermissionSubject, ToolActionPlan,
-    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult, WorkspaceAccess,
+    ActionResource, BudgetMetric, DecisionScope, NetworkAccess, OverflowAction, PermissionSubject,
+    ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
+    WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -20,23 +21,35 @@ pub struct FileReadTool {
 impl Default for FileReadTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "FileRead",
-                "File read",
-                "Read a UTF-8 workspace file.",
-                ToolGroup::FileSystem,
-                true,
-                true,
-                false,
-                64_000,
-                Vec::new(),
-                super::object_schema(
-                    &["path"],
-                    json!({
-                        "path": { "type": "string" },
-                        "start_line": { "type": "integer", "minimum": 1 },
-                        "end_line": { "type": "integer", "minimum": 1 }
-                    }),
+            descriptor: super::with_result_budget(
+                super::with_output_schema(
+                    super::descriptor(
+                        "FileRead",
+                        "File read",
+                        "Read a UTF-8 workspace file.",
+                        ToolGroup::FileSystem,
+                        true,
+                        true,
+                        false,
+                        128_000,
+                        Vec::new(),
+                        super::object_schema(
+                            &["path"],
+                            json!({
+                                "path": { "type": "string" },
+                                "start_line": { "type": "integer", "minimum": 1 },
+                                "end_line": { "type": "integer", "minimum": 1 }
+                            }),
+                        ),
+                    ),
+                    super::text_output_schema(),
+                ),
+                super::result_budget(
+                    BudgetMetric::Chars,
+                    128_000,
+                    OverflowAction::Offload,
+                    4_000,
+                    4_000,
                 ),
             ),
         }

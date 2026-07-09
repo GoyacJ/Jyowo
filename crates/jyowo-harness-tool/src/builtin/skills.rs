@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    ContextPatchLifecycle, ContextPatchRequest, ContextPatchSinkCap, ContextPatchSource,
-    DeferPolicy, SkillFilter, SkillInjectionId, SkillInvocationReceipt, SkillRegistryCap,
-    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
-    ToolResult,
+    ActionResource, ContextPatchLifecycle, ContextPatchRequest, ContextPatchSinkCap,
+    ContextPatchSource, DeferPolicy, SkillFilter, SkillInjectionId, SkillInvocationReceipt,
+    SkillRegistryCap, SkillSummary, SkillView, ToolActionPlan, ToolCapability, ToolDescriptor,
+    ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -19,20 +19,27 @@ pub struct SkillsListTool {
 impl Default for SkillsListTool {
     fn default() -> Self {
         Self {
-            descriptor: skill_descriptor(
-                "skills_list",
-                "List skills",
-                "List available skills by metadata.",
-                DeferPolicy::AlwaysLoad,
-                vec![ToolCapability::SkillRegistry],
-                super::object_schema(
-                    &[],
-                    json!({
-                        "tag": { "type": "string" },
-                        "category": { "type": "string" },
-                        "include_prerequisite_missing": { "type": "boolean" }
-                    }),
+            descriptor: super::with_output_schema(
+                skill_descriptor(
+                    "skills_list",
+                    "List skills",
+                    "List available skills by metadata.",
+                    DeferPolicy::AlwaysLoad,
+                    vec![ToolCapability::SkillRegistry],
+                    super::object_schema(
+                        &[],
+                        json!({
+                            "tag": { "type": "string" },
+                            "category": { "type": "string" },
+                            "include_prerequisite_missing": { "type": "boolean" }
+                        }),
+                    ),
                 ),
+                json!({
+                    "type": "array",
+                    "items": serde_json::to_value(schemars::schema_for!(SkillSummary))
+                        .unwrap_or_else(|_| json!({"type": "object"}))
+                }),
             ),
         }
     }
@@ -49,11 +56,15 @@ impl Tool for SkillsListTool {
     }
 
     async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
-        super::generic_action_plan(
+        super::generic_action_plan_with_resources(
             &self.descriptor,
             input,
             ctx,
             PermissionCheck::Allowed,
+            vec![ActionResource::Skill {
+                action: "list".to_owned(),
+                name: None,
+            }],
             ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
@@ -78,19 +89,23 @@ pub struct SkillsViewTool {
 impl Default for SkillsViewTool {
     fn default() -> Self {
         Self {
-            descriptor: skill_descriptor(
-                "skills_view",
-                "View skill",
-                "View one skill with parameters, config keys, and optional full body.",
-                DeferPolicy::AutoDefer,
-                vec![ToolCapability::SkillRegistry],
-                super::object_schema(
-                    &["name"],
-                    json!({
-                        "name": { "type": "string" },
-                        "full": { "type": "boolean" }
-                    }),
+            descriptor: super::with_output_schema(
+                skill_descriptor(
+                    "skills_view",
+                    "View skill",
+                    "View one skill with parameters, config keys, and optional full body.",
+                    DeferPolicy::AutoDefer,
+                    vec![ToolCapability::SkillRegistry],
+                    super::object_schema(
+                        &["name"],
+                        json!({
+                            "name": { "type": "string" },
+                            "full": { "type": "boolean" }
+                        }),
+                    ),
                 ),
+                serde_json::to_value(schemars::schema_for!(SkillView))
+                    .unwrap_or_else(|_| json!({"type": "object"})),
             ),
         }
     }
@@ -108,11 +123,15 @@ impl Tool for SkillsViewTool {
     }
 
     async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
-        super::generic_action_plan(
+        super::generic_action_plan_with_resources(
             &self.descriptor,
             input,
             ctx,
             PermissionCheck::Allowed,
+            vec![ActionResource::Skill {
+                action: "view".to_owned(),
+                name: input.get("name").and_then(Value::as_str).map(str::to_owned),
+            }],
             ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
@@ -141,22 +160,26 @@ pub struct SkillsInvokeTool {
 impl Default for SkillsInvokeTool {
     fn default() -> Self {
         Self {
-            descriptor: skill_descriptor(
-                "skills_invoke",
-                "Invoke skill",
-                "Render a skill and return an injection receipt without repeating the body.",
-                DeferPolicy::AutoDefer,
-                vec![
-                    ToolCapability::SkillRegistry,
-                    ToolCapability::ContextPatchSink,
-                ],
-                super::object_schema(
-                    &["name"],
-                    json!({
-                        "name": { "type": "string" },
-                        "params": { "type": "object" }
-                    }),
+            descriptor: super::with_output_schema(
+                skill_descriptor(
+                    "skills_invoke",
+                    "Invoke skill",
+                    "Render a skill and return an injection receipt without repeating the body.",
+                    DeferPolicy::AutoDefer,
+                    vec![
+                        ToolCapability::SkillRegistry,
+                        ToolCapability::ContextPatchSink,
+                    ],
+                    super::object_schema(
+                        &["name"],
+                        json!({
+                            "name": { "type": "string" },
+                            "params": { "type": "object" }
+                        }),
+                    ),
                 ),
+                serde_json::to_value(schemars::schema_for!(SkillInvocationReceipt))
+                    .unwrap_or_else(|_| json!({"type": "object"})),
             ),
         }
     }
@@ -174,11 +197,15 @@ impl Tool for SkillsInvokeTool {
     }
 
     async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
-        super::generic_action_plan(
+        super::generic_action_plan_with_resources(
             &self.descriptor,
             input,
             ctx,
             PermissionCheck::Allowed,
+            vec![ActionResource::Skill {
+                action: "invoke".to_owned(),
+                name: input.get("name").and_then(Value::as_str).map(str::to_owned),
+            }],
             ToolExecutionChannel::DirectAuthorizedRust,
         )
     }

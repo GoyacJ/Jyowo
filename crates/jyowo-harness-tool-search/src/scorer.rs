@@ -84,6 +84,7 @@ pub struct ScoringWeights {
     pub full_name_fallback: u32,
     pub search_hint: u32,
     pub description: u32,
+    pub required_capability: u32,
     pub metadata: u32,
     pub discovered_penalty_ratio: f32,
 }
@@ -98,6 +99,7 @@ impl Default for ScoringWeights {
             full_name_fallback: 3,
             search_hint: 4,
             description: 2,
+            required_capability: 3,
             metadata: 4,
             discovered_penalty_ratio: 0.3,
         }
@@ -124,6 +126,7 @@ impl ToolSearchScorer for DefaultScorer {
             .as_deref()
             .unwrap_or_default()
             .to_ascii_lowercase();
+        let capabilities = required_capability_text(tool);
         let metadata = metadata_terms(tool);
         let is_mcp = name.starts_with("mcp__");
         let parts = parse_tool_name_parts(&tool.name);
@@ -136,11 +139,17 @@ impl ToolSearchScorer for DefaultScorer {
             return 0;
         }
 
-        if !terms
-            .required
-            .iter()
-            .all(|term| matches_any(term, &name, &description, &search_hint, &metadata, &parts))
-        {
+        if !terms.required.iter().all(|term| {
+            matches_any(
+                term,
+                &name,
+                &description,
+                &search_hint,
+                &capabilities,
+                &metadata,
+                &parts,
+            )
+        }) {
             return 0;
         }
 
@@ -151,6 +160,7 @@ impl ToolSearchScorer for DefaultScorer {
                 &name,
                 &description,
                 &search_hint,
+                &capabilities,
                 &metadata,
                 &parts,
                 is_mcp,
@@ -177,12 +187,14 @@ fn matches_any(
     name: &str,
     description: &str,
     search_hint: &str,
+    capabilities: &str,
     metadata: &str,
     parts: &[String],
 ) -> bool {
     name.contains(term)
         || description.contains(term)
         || search_hint.contains(term)
+        || capabilities.contains(term)
         || metadata.contains(term)
         || parts.iter().any(|part| part.contains(term))
 }
@@ -192,6 +204,7 @@ fn score_term(
     name: &str,
     description: &str,
     search_hint: &str,
+    capabilities: &str,
     metadata: &str,
     parts: &[String],
     is_mcp: bool,
@@ -222,10 +235,21 @@ fn score_term(
     if description.contains(term) {
         score += weights.description;
     }
+    if capabilities.contains(term) {
+        score += weights.required_capability;
+    }
     if !metadata.is_empty() && metadata.contains(term) {
         score += weights.metadata;
     }
     score
+}
+
+fn required_capability_text(tool: &ToolDescriptor) -> String {
+    tool.required_capabilities
+        .iter()
+        .map(|capability| format!("{capability:?}").to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn metadata_terms(tool: &ToolDescriptor) -> String {

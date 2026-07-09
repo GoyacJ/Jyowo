@@ -1,11 +1,12 @@
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    CodeLanguage, CodeRunRequest, DecisionScope, PermissionSubject, ToolActionPlan, ToolCapability,
-    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
+    ActionResource, CodeLanguage, CodeRunRequest, DecisionScope, PermissionSubject, ToolActionPlan,
+    ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
+use std::time::Duration;
 
 use crate::{AuthorizedToolInput, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
 
@@ -17,26 +18,49 @@ pub struct ExecuteCodeTool {
 impl Default for ExecuteCodeTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "execute_code",
-                "Execute code",
-                "Run deterministic MiniLua code through the configured code runtime.",
-                ToolGroup::Shell,
-                false,
-                false,
-                true,
-                256_000,
-                vec![
-                    ToolCapability::CodeRuntime,
-                    ToolCapability::EmbeddedToolDispatcher,
-                ],
-                super::object_schema(
-                    &["source"],
+            descriptor: super::with_long_running(
+                super::with_output_schema(
+                    super::descriptor(
+                        "execute_code",
+                        "Execute code",
+                        "Run deterministic MiniLua code through the configured code runtime.",
+                        ToolGroup::Shell,
+                        false,
+                        false,
+                        true,
+                        256_000,
+                        vec![
+                            ToolCapability::CodeRuntime,
+                            ToolCapability::EmbeddedToolDispatcher,
+                        ],
+                        super::object_schema(
+                            &["source"],
+                            json!({
+                                "language": { "type": "string", "enum": ["mini_lua"] },
+                                "source": { "type": "string" }
+                            }),
+                        ),
+                    ),
                     json!({
-                        "language": { "type": "string", "enum": ["mini_lua"] },
-                        "source": { "type": "string" }
+                        "type": "object",
+                        "required": ["value", "stats", "embedded_steps"],
+                        "properties": {
+                            "value": true,
+                            "stats": {
+                                "type": "object",
+                                "required": ["instructions", "embedded_call_count"],
+                                "properties": {
+                                    "instructions": { "type": "integer", "minimum": 0 },
+                                    "embedded_call_count": { "type": "integer", "minimum": 0 }
+                                },
+                                "additionalProperties": false
+                            },
+                            "embedded_steps": { "type": "array" }
+                        },
+                        "additionalProperties": false
                     }),
                 ),
+                super::long_running_policy(Duration::from_secs(2), Duration::from_secs(60)),
             ),
         }
     }
@@ -67,7 +91,7 @@ impl Tool for ExecuteCodeTool {
             );
         }
         let script_hash = blake3::hash(source(input).unwrap_or_default().as_bytes());
-        super::generic_action_plan(
+        super::generic_action_plan_with_resources(
             &self.descriptor,
             input,
             ctx,
@@ -80,6 +104,12 @@ impl Tool for ExecuteCodeTool {
                     script_hash: *script_hash.as_bytes(),
                 },
             },
+            vec![ActionResource::CodeExecution {
+                language: match language(input).unwrap_or(CodeLanguage::MiniLua) {
+                    CodeLanguage::MiniLua => "mini_lua".to_owned(),
+                },
+                script_hash: script_hash.to_hex().to_string(),
+            }],
             ToolExecutionChannel::ProcessSandbox,
         )
     }

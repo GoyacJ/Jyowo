@@ -23,24 +23,37 @@ pub struct GlobTool {
 impl Default for GlobTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "Glob",
-                "Glob",
-                "Find files by glob pattern.",
-                ToolGroup::Search,
-                true,
-                true,
-                false,
-                32_000,
-                Vec::new(),
-                super::object_schema(
-                    &["path", "pattern"],
-                    json!({
-                        "path": { "type": "string" },
-                        "pattern": { "type": "string" },
-                        "include_hidden": { "type": "boolean" }
-                    }),
+            descriptor: super::with_output_schema(
+                super::descriptor(
+                    "Glob",
+                    "Glob",
+                    "Find files by glob pattern.",
+                    ToolGroup::Search,
+                    true,
+                    true,
+                    false,
+                    32_000,
+                    Vec::new(),
+                    super::object_schema(
+                        &["path", "pattern"],
+                        json!({
+                            "path": { "type": "string" },
+                            "pattern": { "type": "string" },
+                            "include_hidden": { "type": "boolean" }
+                        }),
+                    ),
                 ),
+                json!({
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["path"],
+                        "properties": {
+                            "path": { "type": "string" }
+                        },
+                        "additionalProperties": false
+                    }
+                }),
             ),
         }
     }

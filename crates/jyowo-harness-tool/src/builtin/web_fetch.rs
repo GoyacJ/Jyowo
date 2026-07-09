@@ -5,9 +5,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    ActionResource, BudgetMetric, DecisionScope, HostRule, NetworkAccess, PermissionSubject,
-    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
-    ToolResult, WorkspaceAccess,
+    ActionResource, BudgetMetric, DecisionScope, HostRule, NetworkAccess, OverflowAction,
+    PermissionSubject, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolResult, WorkspaceAccess,
 };
 use harness_permission::{DangerousPatternLibrary, PermissionCheck};
 use serde_json::{json, Value};
@@ -27,22 +27,46 @@ pub struct WebFetchTool {
 impl Default for WebFetchTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "WebFetch",
-                "Web fetch",
-                "Fetch text content from an HTTP URL.",
-                ToolGroup::Network,
-                true,
-                true,
-                false,
-                64_000,
-                Vec::new(),
-                super::object_schema(
-                    &["url"],
+            descriptor: super::with_result_budget(
+                super::with_output_schema(
+                    super::descriptor(
+                        "WebFetch",
+                        "Web fetch",
+                        "Fetch text content from an HTTP URL.",
+                        ToolGroup::Network,
+                        true,
+                        true,
+                        false,
+                        262_144,
+                        Vec::new(),
+                        super::object_schema(
+                            &["url"],
+                            json!({
+                                "url": { "type": "string" },
+                                "max_bytes": { "type": "integer", "minimum": 1 }
+                            }),
+                        ),
+                    ),
                     json!({
-                        "url": { "type": "string" },
-                        "max_bytes": { "type": "integer", "minimum": 1 }
+                        "type": "object",
+                        "required": ["url", "status", "content_type", "body", "body_bytes", "truncated"],
+                        "properties": {
+                            "url": { "type": "string" },
+                            "status": { "type": "integer" },
+                            "content_type": { "type": ["string", "null"] },
+                            "body": { "type": ["string", "null"] },
+                            "body_bytes": { "type": "integer", "minimum": 0 },
+                            "truncated": { "type": "boolean" }
+                        },
+                        "additionalProperties": false
                     }),
+                ),
+                super::result_budget(
+                    BudgetMetric::Bytes,
+                    262_144,
+                    OverflowAction::Offload,
+                    4_000,
+                    4_000,
                 ),
             ),
         }
@@ -165,17 +189,45 @@ async fn brokered_web_fetch(
             metric: BudgetMetric::Bytes,
         });
     }
-    let body_str = String::from_utf8_lossy(&resp.body).into_owned();
+    let content_type = resp.headers.get("content-type").cloned();
+    let body_bytes = resp.body.len();
+    let body = content_type
+        .as_deref()
+        .filter(|content_type| is_textual_content_type(content_type))
+        .map(|_| String::from_utf8_lossy(&resp.body).into_owned());
+    let truncated = body.is_none();
 
     Ok(Box::pin(stream::iter([ToolEvent::Final(
         ToolResult::Structured(json!({
             "url": url_str,
             "status": resp.status,
-            "content_type": resp.headers.get("content-type").cloned(),
-            "body": body_str,
-            "truncated": false
+            "content_type": content_type,
+            "body": body,
+            "body_bytes": body_bytes,
+            "truncated": truncated
         })),
     )])))
+}
+
+fn is_textual_content_type(content_type: &str) -> bool {
+    let mime = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    mime.starts_with("text/")
+        || matches!(
+            mime.as_str(),
+            "application/json"
+                | "application/ld+json"
+                | "application/javascript"
+                | "application/xml"
+                | "application/xhtml+xml"
+                | "image/svg+xml"
+        )
+        || mime.ends_with("+json")
+        || mime.ends_with("+xml")
 }
 
 fn validation_error(error: ValidationError) -> ToolError {

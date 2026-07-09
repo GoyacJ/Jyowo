@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use harness_contracts::{
-    DeferPolicy, ProviderRestriction, ToolDescriptor, ToolDescriptorMetadata, ToolGroup,
-    ToolIntegrationSource, ToolOrigin, ToolProperties, ToolRiskLevel, TrustLevel,
+    DeferPolicy, ProviderRestriction, ToolCapability, ToolDescriptor, ToolDescriptorMetadata,
+    ToolGroup, ToolIntegrationSource, ToolOrigin, ToolProperties, ToolRiskLevel, TrustLevel,
 };
 use harness_tool_search::{
     parse_tool_name_parts, DefaultScorer, ScoringContext, ScoringTerms, ToolSearchScorer,
@@ -105,6 +105,19 @@ async fn aliases_and_examples_are_searchable() {
     let mut tool = descriptor("GitStage", "Stage files", None);
     tool.metadata.aliases = vec!["git add".to_owned()];
     tool.metadata.examples = vec!["Stage files before commit".to_owned()];
+
+    let score = scorer.score(&tool, &props(), &terms, &context).await;
+
+    assert!(score > 0);
+}
+
+#[tokio::test]
+async fn required_capabilities_contribute_to_score() {
+    let scorer = DefaultScorer::default();
+    let context = ScoringContext::default();
+    let terms = ScoringTerms::parse("blob");
+    let mut tool = descriptor("ReadBlob", "Read stored artifact", None);
+    tool.required_capabilities = vec![ToolCapability::BlobReader];
 
     let score = scorer.score(&tool, &props(), &terms, &context).await;
 

@@ -743,9 +743,27 @@ fn tool_crate_does_not_depend_on_harness_model() {
         assert!(manifest.contains(
             "jyowo-harness-model = { path = \"../jyowo-harness-model\", optional = true }"
         ));
-        assert!(manifest.contains("minimax-tools = ["));
-        assert!(manifest.contains("\"dep:jyowo-harness-model\""));
-        assert!(manifest.contains("\"jyowo-harness-model/minimax\""));
+        let minimax_feature_start = manifest
+            .find("minimax-tools = [")
+            .expect("minimax-tools feature should be declared");
+        let minimax_feature = &manifest[minimax_feature_start..];
+        let minimax_feature = minimax_feature
+            .split_once("]\n")
+            .map(|(feature, _)| feature)
+            .unwrap_or(minimax_feature);
+        for expected in [
+            "builtin-toolset",
+            "dep:base64",
+            "dep:jyowo-harness-model",
+            "dep:reqwest",
+            "dep:secrecy",
+            "jyowo-harness-model/minimax",
+        ] {
+            assert!(
+                minimax_feature.contains(expected),
+                "minimax-tools feature should include {expected}"
+            );
+        }
     }
 }
 

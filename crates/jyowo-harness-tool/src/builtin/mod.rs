@@ -119,12 +119,14 @@ pub use web_search::{
 pub use write::FileWriteTool;
 
 use harness_contracts::{
-    BudgetMetric, DeferPolicy, NetworkAccess, OverflowAction, ProviderRestriction, ResultBudget,
-    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
-    ToolOrigin, ToolProperties, ToolServiceBinding, TrustLevel, WorkspaceAccess,
+    ActionResource, BudgetMetric, DeferPolicy, LongRunningPolicy, NetworkAccess, OverflowAction,
+    ProviderRestriction, ResultBudget, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolServiceBinding, TrustLevel,
+    WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
+use std::time::Duration;
 
 use crate::{action_plan_from_permission_check, ToolContext};
 
@@ -196,20 +198,74 @@ pub(super) fn descriptor_with_binding(
         },
         provider_restriction: ProviderRestriction::All,
         origin: ToolOrigin::Builtin,
-        search_hint: None,
+        search_hint: Some(format!("{display_name} {description}")),
         service_binding,
         metadata: Default::default(),
     }
+}
+
+pub(super) fn result_budget(
+    metric: BudgetMetric,
+    limit: u64,
+    on_overflow: OverflowAction,
+    preview_head_chars: u32,
+    preview_tail_chars: u32,
+) -> ResultBudget {
+    ResultBudget {
+        metric,
+        limit,
+        on_overflow,
+        preview_head_chars,
+        preview_tail_chars,
+    }
+}
+
+pub(super) fn with_result_budget(
+    mut descriptor: ToolDescriptor,
+    budget: ResultBudget,
+) -> ToolDescriptor {
+    descriptor.budget = budget;
+    descriptor
+}
+
+pub(super) fn long_running_policy(
+    stall_threshold: Duration,
+    hard_timeout: Duration,
+) -> LongRunningPolicy {
+    LongRunningPolicy {
+        stall_threshold,
+        hard_timeout,
+    }
+}
+
+pub(super) fn with_long_running(
+    mut descriptor: ToolDescriptor,
+    policy: LongRunningPolicy,
+) -> ToolDescriptor {
+    descriptor.properties.long_running = Some(policy);
+    descriptor
 }
 
 fn object_schema(required: &[&str], properties: Value) -> Value {
     json!({
         "type": "object",
         "required": required,
-        "properties": properties
+        "properties": properties,
+        "additionalProperties": false
     })
 }
 
+fn with_output_schema(mut descriptor: ToolDescriptor, output_schema: Value) -> ToolDescriptor {
+    descriptor.output_schema = Some(output_schema);
+    descriptor
+}
+
+#[cfg_attr(not(feature = "builtin-toolset"), allow(dead_code))]
+fn text_output_schema() -> Value {
+    json!({ "type": "string" })
+}
+
+#[cfg_attr(not(feature = "programmatic-tool-calling"), allow(dead_code))]
 fn generic_action_plan(
     descriptor: &ToolDescriptor,
     input: &Value,
@@ -217,12 +273,23 @@ fn generic_action_plan(
     check: PermissionCheck,
     channel: ToolExecutionChannel,
 ) -> Result<ToolActionPlan, ToolError> {
+    generic_action_plan_with_resources(descriptor, input, ctx, check, Vec::new(), channel)
+}
+
+fn generic_action_plan_with_resources(
+    descriptor: &ToolDescriptor,
+    input: &Value,
+    ctx: &ToolContext,
+    check: PermissionCheck,
+    resources: Vec<ActionResource>,
+    channel: ToolExecutionChannel,
+) -> Result<ToolActionPlan, ToolError> {
     action_plan_from_permission_check(
         descriptor,
         input,
         ctx,
         check,
-        Vec::new(),
+        resources,
         WorkspaceAccess::None,
         NetworkAccess::None,
         channel,

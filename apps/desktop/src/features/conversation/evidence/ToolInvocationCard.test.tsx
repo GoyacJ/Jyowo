@@ -43,4 +43,64 @@ describe('ToolInvocationCard', () => {
 
     expect(screen.getByText('completed')).toHaveClass('bg-success/10', 'text-success')
   })
+
+  it('shows offloaded result state without exposing blob details', () => {
+    render(
+      <ToolInvocationCard
+        attempt={toolAttempt({
+          outputSummary: undefined,
+          resultKind: 'offloaded',
+          truncated: true,
+        })}
+      />,
+    )
+
+    expect(screen.getByText('offloaded')).toBeInTheDocument()
+    expect(screen.queryByText(/blob/i)).not.toBeInTheDocument()
+  })
+
+  it('renders only schema-declared display fields for tool output', () => {
+    render(
+      <ToolInvocationCard
+        attempt={toolAttempt({
+          argumentsPreview: 'Authorization: Bearer secret-token',
+          outputSummary: 'Safe summary',
+          resultKind: 'structured',
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Safe summary')).toBeInTheDocument()
+    expect(screen.getByText('structured')).toBeInTheDocument()
+    expect(screen.queryByText(/secret-token/)).not.toBeInTheDocument()
+  })
+
+  it.each(['text', 'structured', 'blob', 'mixed', 'offloaded'] as const)(
+    'shows %s result kind',
+    (resultKind) => {
+      render(
+        <ToolInvocationCard
+          attempt={toolAttempt({
+            outputSummary: undefined,
+            resultKind,
+          })}
+        />,
+      )
+
+      expect(screen.getByText(resultKind)).toBeInTheDocument()
+    },
+  )
+
+  it('shows capability missing failures as a distinct tool state', () => {
+    render(
+      <ToolInvocationCard
+        attempt={toolAttempt({
+          failureKind: 'capabilityMissing',
+          status: 'failed',
+        })}
+      />,
+    )
+
+    expect(screen.getByText('capabilityMissing')).toBeInTheDocument()
+  })
 })

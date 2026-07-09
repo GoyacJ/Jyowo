@@ -83,6 +83,9 @@ function validWorktreePage(): PageConversationWorktreeResponse {
                   toolUseId: 'tool-use-001',
                   toolName: 'read_file',
                   status: 'failed',
+                  failureKind: 'capabilityMissing',
+                  resultKind: 'offloaded',
+                  truncated: true,
                   permission: {
                     id: 'permission:request-001',
                     requestId: 'request-001',

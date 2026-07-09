@@ -405,6 +405,26 @@ async fn web_search_uses_network_permission_and_backend() {
 }
 
 #[tokio::test]
+async fn web_search_returns_empty_result_set() {
+    let tool = WebSearchTool::default();
+    let mut caps = CapabilityRegistry::default();
+    let backend: Arc<dyn WebSearchBackend> = Arc::new(EmptyWebSearchBackend);
+    caps.install(
+        ToolCapability::Custom(WEB_SEARCH_BACKEND_CAPABILITY.to_owned()),
+        backend,
+    );
+
+    let result = execute_final(
+        &tool,
+        json!({ "query": "nothing here" }),
+        tool_ctx(caps, None),
+    )
+    .await;
+
+    assert_eq!(result, ToolResult::Structured(json!([])));
+}
+
+#[tokio::test]
 async fn web_search_rejects_invalid_max_results() {
     let tool = WebSearchTool::default();
     let ctx = tool_ctx(CapabilityRegistry::default(), None);
@@ -487,6 +507,7 @@ async fn web_fetch_fails_closed_by_default_and_uses_injected_backend() {
     let mut caps = CapabilityRegistry::default();
     let broker: Arc<dyn ToolNetworkBrokerCap> = Arc::new(FakeNetworkBroker {
         expected_url: "https://example.test/page",
+        content_type: "text/plain",
         body: Bytes::from_static(b"hello world"),
     });
     caps.install(ToolCapability::NetworkBroker, broker);
@@ -508,6 +529,7 @@ async fn web_fetch_rejects_invalid_max_bytes_and_oversized_responses() {
     let mut caps = CapabilityRegistry::default();
     let broker: Arc<dyn ToolNetworkBrokerCap> = Arc::new(FakeNetworkBroker {
         expected_url: "https://example.test/utf8",
+        content_type: "text/plain",
         body: Bytes::from_static("éé".as_bytes()),
     });
     caps.install(ToolCapability::NetworkBroker, broker);
@@ -539,6 +561,67 @@ async fn web_fetch_rejects_invalid_max_bytes_and_oversized_responses() {
         matches!(error, ToolError::ResultTooLarge { .. }),
         "oversized UTF-8 response must fail closed, got {error:?}"
     );
+}
+
+#[tokio::test]
+async fn web_fetch_validates_scheme_and_returns_safe_response_metadata() {
+    let tool = WebFetchTool::default();
+    let ctx = tool_ctx(CapabilityRegistry::default(), None);
+
+    let invalid_scheme =
+        validate_error_message(&tool, json!({ "url": "file:///etc/passwd" }), ctx.clone()).await;
+    assert_eq!(invalid_scheme, "url must use http or https");
+
+    let mut caps = CapabilityRegistry::default();
+    let broker: Arc<dyn ToolNetworkBrokerCap> = Arc::new(FakeNetworkBroker {
+        expected_url: "https://example.test/page",
+        content_type: "text/plain",
+        body: Bytes::from_static(b"hello world"),
+    });
+    caps.install(ToolCapability::NetworkBroker, broker);
+    let events = execute_events(
+        &tool,
+        json!({ "url": "https://example.test/page", "max_bytes": 64 }),
+        tool_ctx(caps, None),
+    )
+    .await;
+
+    let Some(harness_tool::ToolEvent::Final(ToolResult::Structured(value))) = events.last() else {
+        panic!("expected structured web fetch result");
+    };
+    assert_eq!(value["url"], json!("https://example.test/page"));
+    assert_eq!(value["status"], json!(200));
+    assert_eq!(value["content_type"], json!("text/plain"));
+    assert_eq!(value["body"], json!("hello world"));
+    assert_eq!(value["body_bytes"], json!(11));
+    assert_eq!(value["truncated"], json!(false));
+}
+
+#[tokio::test]
+async fn web_fetch_does_not_inline_non_text_response_bodies() {
+    let tool = WebFetchTool::default();
+    let mut caps = CapabilityRegistry::default();
+    let broker: Arc<dyn ToolNetworkBrokerCap> = Arc::new(FakeNetworkBroker {
+        expected_url: "https://example.test/image.png",
+        content_type: "image/png",
+        body: Bytes::from_static(b"\x89PNG\r\n"),
+    });
+    caps.install(ToolCapability::NetworkBroker, broker);
+
+    let events = execute_events(
+        &tool,
+        json!({ "url": "https://example.test/image.png", "max_bytes": 64 }),
+        tool_ctx(caps, None),
+    )
+    .await;
+
+    let Some(harness_tool::ToolEvent::Final(ToolResult::Structured(value))) = events.last() else {
+        panic!("expected structured web fetch result");
+    };
+    assert_eq!(value["content_type"], json!("image/png"));
+    assert_eq!(value["body"], Value::Null);
+    assert_eq!(value["body_bytes"], json!(6));
+    assert_eq!(value["truncated"], json!(true));
 }
 
 #[tokio::test]
@@ -579,6 +662,26 @@ async fn clarify_and_send_message_use_capability_registry() {
             "delivered": true
         }))
     );
+}
+
+#[tokio::test]
+async fn clarify_plan_declares_clarification_resource() {
+    let tool = ClarifyTool::default();
+    let plan = tool
+        .plan(
+            &json!({ "prompt": "Pick one" }),
+            &tool_ctx(CapabilityRegistry::default(), None),
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        plan.resources.as_slice(),
+        [ActionResource::Clarification {
+            action,
+            prompt_hash: Some(_)
+        }] if action == "ask"
+    ));
 }
 
 #[tokio::test]
@@ -1119,6 +1222,16 @@ impl WebSearchBackend for FakeWebSearchBackend {
     }
 }
 
+struct EmptyWebSearchBackend;
+
+#[async_trait]
+impl WebSearchBackend for EmptyWebSearchBackend {
+    async fn search(&self, request: WebSearchRequest) -> Result<Vec<WebSearchResult>, ToolError> {
+        assert_eq!(request.query, "nothing here");
+        Ok(Vec::new())
+    }
+}
+
 #[async_trait]
 impl ToolNetworkBrokerPreflightCap for FakeNetworkBroker {
     async fn preflight_network_request(
@@ -1131,6 +1244,7 @@ impl ToolNetworkBrokerPreflightCap for FakeNetworkBroker {
 
 struct FakeNetworkBroker {
     expected_url: &'static str,
+    content_type: &'static str,
     body: Bytes,
 }
 
@@ -1145,7 +1259,7 @@ impl ToolNetworkBrokerCap for FakeNetworkBroker {
         assert_eq!(request.url, self.expected_url);
         Ok(ToolHttpResponse {
             status: 200,
-            headers: BTreeMap::from([("content-type".to_owned(), "text/plain".to_owned())]),
+            headers: BTreeMap::from([("content-type".to_owned(), self.content_type.to_owned())]),
             body: self.body.clone(),
         })
     }

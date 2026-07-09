@@ -543,6 +543,174 @@ fn coordinator_spawn_worker_tool_binds_engine_runner_for_new_member() {
     });
 }
 
+#[test]
+fn coordinator_team_control_tool_rejects_invalid_agent_id() {
+    block_on(async {
+        let harness = test_harness(Script::ToolThenTextWithInput {
+            tool_name: "pause_worker".to_owned(),
+            input: serde_json::json!({
+                "agent_id": "not-an-agent-id"
+            }),
+            body: "after failure".to_owned(),
+            usage: usage(2, 3, 5),
+        });
+        let runner = EngineTeamMemberRunner::new(harness.engine.clone());
+
+        let outcome = runner
+            .run_member(request_with_control(
+                TenantId::SINGLE,
+                SessionId::new(),
+                RunId::new(),
+                CorrelationId::new(),
+                TeamMemberEngineConfig::default(),
+                true,
+                test_control_handle(),
+            ))
+            .await
+            .expect("coordinator run should continue after tool validation failure");
+
+        assert_eq!(outcome.body, "after failure");
+        assert_team_control_failure(&harness.store, "invalid typed ulid").await;
+    });
+}
+
+#[test]
+fn coordinator_team_control_tool_reports_stop_after_followup_errors() {
+    block_on(async {
+        let harness = test_harness(Script::ToolThenTextWithInput {
+            tool_name: "dispatch".to_owned(),
+            input: serde_json::json!({
+                "broadcast": true,
+                "body": "after stop"
+            }),
+            body: "after failure".to_owned(),
+            usage: usage(2, 3, 5),
+        });
+        let runner = EngineTeamMemberRunner::new(harness.engine.clone());
+        let control = test_control_handle();
+        control
+            .stop_team()
+            .await
+            .expect("test team should stop before dispatch");
+
+        let outcome = runner
+            .run_member(request_with_control(
+                TenantId::SINGLE,
+                SessionId::new(),
+                RunId::new(),
+                CorrelationId::new(),
+                TeamMemberEngineConfig::default(),
+                true,
+                control,
+            ))
+            .await
+            .expect("coordinator run should continue after team control failure");
+
+        assert_eq!(outcome.body, "after failure");
+        assert_team_control_failure(&harness.store, "team is terminated").await;
+    });
+}
+
+#[test]
+fn coordinator_team_control_tool_reports_missing_worker() {
+    block_on(async {
+        let missing = AgentId::new();
+        let harness = test_harness(Script::ToolThenTextWithInput {
+            tool_name: "pause_worker".to_owned(),
+            input: serde_json::json!({
+                "agent_id": missing.to_string()
+            }),
+            body: "after failure".to_owned(),
+            usage: usage(2, 3, 5),
+        });
+        let runner = EngineTeamMemberRunner::new(harness.engine.clone());
+
+        let outcome = runner
+            .run_member(request_with_control(
+                TenantId::SINGLE,
+                SessionId::new(),
+                RunId::new(),
+                CorrelationId::new(),
+                TeamMemberEngineConfig::default(),
+                true,
+                test_control_handle(),
+            ))
+            .await
+            .expect("coordinator run should continue after team control failure");
+
+        assert_eq!(outcome.body, "after failure");
+        assert_team_control_failure(&harness.store, "worker missing").await;
+    });
+}
+
+#[test]
+fn coordinator_team_control_tool_reports_duplicate_pause() {
+    block_on(async {
+        let (control, worker) = test_control_handle_with_worker();
+        control
+            .pause_worker(worker)
+            .await
+            .expect("test worker should pause before duplicate pause");
+        let harness = test_harness(Script::ToolThenTextWithInput {
+            tool_name: "pause_worker".to_owned(),
+            input: serde_json::json!({
+                "agent_id": worker.to_string()
+            }),
+            body: "after failure".to_owned(),
+            usage: usage(2, 3, 5),
+        });
+        let runner = EngineTeamMemberRunner::new(harness.engine.clone());
+
+        let outcome = runner
+            .run_member(request_with_control(
+                TenantId::SINGLE,
+                SessionId::new(),
+                RunId::new(),
+                CorrelationId::new(),
+                TeamMemberEngineConfig::default(),
+                true,
+                control,
+            ))
+            .await
+            .expect("coordinator run should continue after team control failure");
+
+        assert_eq!(outcome.body, "after failure");
+        assert_team_control_failure(&harness.store, "worker already paused").await;
+    });
+}
+
+#[test]
+fn coordinator_team_control_tool_reports_duplicate_resume() {
+    block_on(async {
+        let (control, worker) = test_control_handle_with_worker();
+        let harness = test_harness(Script::ToolThenTextWithInput {
+            tool_name: "resume_worker".to_owned(),
+            input: serde_json::json!({
+                "agent_id": worker.to_string()
+            }),
+            body: "after failure".to_owned(),
+            usage: usage(2, 3, 5),
+        });
+        let runner = EngineTeamMemberRunner::new(harness.engine.clone());
+
+        let outcome = runner
+            .run_member(request_with_control(
+                TenantId::SINGLE,
+                SessionId::new(),
+                RunId::new(),
+                CorrelationId::new(),
+                TeamMemberEngineConfig::default(),
+                true,
+                control,
+            ))
+            .await
+            .expect("coordinator run should continue after team control failure");
+
+        assert_eq!(outcome.body, "after failure");
+        assert_team_control_failure(&harness.store, "worker is not paused").await;
+    });
+}
+
 struct TestHarness {
     store: Arc<RecordingEventStore>,
     model: Arc<ScriptedModel>,
@@ -683,6 +851,10 @@ fn request_with_control(
 }
 
 fn test_control_handle() -> TeamControlHandle {
+    test_control_handle_with_worker().0
+}
+
+fn test_control_handle_with_worker() -> (TeamControlHandle, AgentId) {
     let store = Arc::new(RecordingEventStore::default());
     let journal = TeamJournalContext {
         tenant_id: TenantId::SINGLE,
@@ -696,14 +868,31 @@ fn test_control_handle() -> TeamControlHandle {
         .coordinator_worker(coordinator, vec![worker])
         .build();
     let bus = MessageBus::journaled(spec.team_id, 16, journal, store.clone());
-    Team::new(
+    let control = Team::new(
         spec,
         bus,
         journal,
         store,
         Arc::new(InMemoryBlobStore::default()),
     )
-    .control_handle()
+    .control_handle();
+    (control, worker)
+}
+
+async fn assert_team_control_failure(store: &RecordingEventStore, expected: &str) {
+    let events = store.events().await;
+    let failure = events
+        .iter()
+        .find_map(|envelope| match &envelope.payload {
+            Event::ToolUseFailed(event) => Some(event),
+            _ => None,
+        })
+        .expect("team control tool failure should be recorded");
+    assert!(
+        failure.error.message.contains(expected),
+        "expected failure to contain {expected:?}, got {:?}",
+        failure.error.message
+    );
 }
 
 fn turn_input(text: &str) -> TurnInput {

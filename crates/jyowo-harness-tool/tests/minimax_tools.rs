@@ -23,6 +23,7 @@ use serde_json::json;
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
+    time::Duration,
 };
 use wiremock::{
     matchers::{header, method, path, query_param},
@@ -36,21 +37,90 @@ async fn minimax_tools_register_with_default_builtin_toolset() {
         .build()
         .unwrap();
 
-    assert!(registry.get("MiniMaxTextToImage").is_some());
-    assert!(registry.get("MiniMaxTextToVideo").is_some());
-    assert!(registry.get("MiniMaxVideoGenerationQuery").is_some());
-    assert!(registry.get("MiniMaxTextToSpeech").is_some());
+    let snapshot = registry.snapshot();
+    let minimax_names = snapshot
+        .iter_sorted()
+        .map(|(name, _)| name.as_str())
+        .filter(|name| name.starts_with("MiniMax"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        minimax_names,
+        vec![
+            "MiniMaxAnthropicCountTokens",
+            "MiniMaxAnthropicMessages",
+            "MiniMaxAnthropicModelRetrieve",
+            "MiniMaxAnthropicModelsList",
+            "MiniMaxDeleteVoice",
+            "MiniMaxFileDelete",
+            "MiniMaxFileList",
+            "MiniMaxFileRetrieve",
+            "MiniMaxFileUpload",
+            "MiniMaxFirstLastFrameToVideo",
+            "MiniMaxImageToImage",
+            "MiniMaxImageToVideo",
+            "MiniMaxListVoices",
+            "MiniMaxLyricsGeneration",
+            "MiniMaxModelRetrieve",
+            "MiniMaxModelsList",
+            "MiniMaxMusicCoverPreprocess",
+            "MiniMaxMusicGeneration",
+            "MiniMaxResponses",
+            "MiniMaxResponsesInputTokens",
+            "MiniMaxSubjectReferenceVideo",
+            "MiniMaxTextToImage",
+            "MiniMaxTextToSpeech",
+            "MiniMaxTextToSpeechAsync",
+            "MiniMaxTextToSpeechAsyncQuery",
+            "MiniMaxTextToVideo",
+            "MiniMaxVideoGenerationQuery",
+            "MiniMaxVideoTemplate",
+            "MiniMaxVideoTemplateQuery",
+            "MiniMaxVoiceClone",
+            "MiniMaxVoiceDesign",
+        ]
+    );
     assert!(registry.get("MiniMaxTextToSpeechWs").is_none());
-    assert!(registry.get("MiniMaxTextToSpeechAsyncQuery").is_some());
-    assert!(registry.get("MiniMaxMusicGeneration").is_some());
-    assert!(registry.get("MiniMaxFileUpload").is_some());
-    assert!(registry.get("MiniMaxFileList").is_some());
-    assert!(registry.get("MiniMaxFileRetrieve").is_some());
-    assert!(registry.get("MiniMaxFileDelete").is_some());
-    assert!(registry.get("MiniMaxModelsList").is_some());
-    assert!(registry.get("MiniMaxModelRetrieve").is_some());
-    assert!(registry.get("MiniMaxResponses").is_some());
-    assert!(registry.get("MiniMaxAnthropicMessages").is_some());
+    for name in minimax_names {
+        let descriptor = snapshot.get(name).unwrap().descriptor();
+        assert!(
+            descriptor.output_schema.is_some(),
+            "{name} should declare a provider output schema"
+        );
+    }
+}
+
+#[tokio::test]
+async fn minimax_async_media_tools_declare_long_running_policy() {
+    let registry = ToolRegistryBuilder::new()
+        .with_builtin_toolset(BuiltinToolset::Default)
+        .build()
+        .unwrap();
+    let snapshot = registry.snapshot();
+
+    for name in [
+        "MiniMaxTextToVideo",
+        "MiniMaxImageToVideo",
+        "MiniMaxFirstLastFrameToVideo",
+        "MiniMaxSubjectReferenceVideo",
+        "MiniMaxVideoGenerationQuery",
+        "MiniMaxVideoTemplate",
+        "MiniMaxVideoTemplateQuery",
+        "MiniMaxTextToSpeechAsync",
+        "MiniMaxTextToSpeechAsyncQuery",
+        "MiniMaxMusicGeneration",
+    ] {
+        let policy = snapshot
+            .get(name)
+            .unwrap()
+            .descriptor()
+            .properties
+            .long_running
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name} should declare a long-running policy"));
+        assert_eq!(policy.stall_threshold, Duration::from_secs(10), "{name}");
+        assert_eq!(policy.hard_timeout, Duration::from_secs(900), "{name}");
+    }
 }
 
 #[tokio::test]
@@ -412,6 +482,35 @@ async fn minimax_service_artifact_video_query_returns_typed_video_artifact() {
         "video/mp4",
         "Generated video",
     );
+}
+
+#[tokio::test]
+async fn minimax_video_query_returns_structured_pending_status() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/query/video_generation"))
+        .and(query_param("task_id", "video-task-pending"))
+        .and(header("authorization", "Bearer provider-test-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "processing",
+            "task_id": "video-task-pending"
+        })))
+        .mount(&server)
+        .await;
+
+    let tool = MiniMaxVideoGenerationQueryTool::default();
+    let result = execute_final(
+        &tool,
+        json!({"request": {"task_id": "video-task-pending"}}),
+        ctx_with_media(server.uri()),
+    )
+    .await;
+
+    let ToolResult::Structured(value) = result else {
+        panic!("expected structured pending status, got {result:?}");
+    };
+    assert_eq!(value["status"], "processing");
+    assert_eq!(value["task_id"], "video-task-pending");
 }
 
 #[tokio::test]

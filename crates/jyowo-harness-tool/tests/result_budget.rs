@@ -2,17 +2,19 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::future::BoxFuture;
 use futures::stream;
 use harness_contracts::{
-    BlobError, BlobMeta, BlobRef, BlobStore, BudgetMetric, CapabilityRegistry, Event,
-    OverflowAction, ProviderRestriction, ResultBudget, TenantId, ToolActionPlan, ToolDescriptor,
-    ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-    ToolResultPart, ToolUseId, TrustLevel,
+    BlobError, BlobMeta, BlobReaderCap, BlobReaderCapAdapter, BlobRef, BlobStore, BudgetMetric,
+    CapabilityRegistry, Event, OffloadedBlobAuthorizerCap, OverflowAction, ProviderRestriction,
+    ResultBudget, TenantId, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolResultPart,
+    ToolUseId, TrustLevel,
 };
 use harness_permission::PermissionCheck;
 use harness_tool::{
-    AuthorizedTicketSummary, AuthorizedToolCall, AuthorizedToolInput, InterruptToken,
-    OrchestratorContext, Tool, ToolCall, ToolContext, ToolEvent, ToolEventEmitter,
+    builtin::ReadBlobTool, AuthorizedTicketSummary, AuthorizedToolCall, AuthorizedToolInput,
+    InterruptToken, OrchestratorContext, Tool, ToolCall, ToolContext, ToolEvent, ToolEventEmitter,
     ToolOrchestrator, ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolSearchMode,
     ValidationError,
 };
@@ -131,6 +133,48 @@ async fn offload_budget_writes_full_text_and_returns_preview_with_metadata() {
     assert!(
         matches!(&events[0], Event::ToolResultOffloaded(event) if event.original_size == 10 && event.effective_limit == 5)
     );
+}
+
+#[tokio::test]
+async fn offloaded_result_blob_can_be_read_back_with_read_blob() {
+    let (pool, call) = pool_with_tool(
+        "offload_readback",
+        budget(5, OverflowAction::Offload),
+        vec![ToolEvent::Final(ToolResult::Text("abcdefghij".to_owned()))],
+    )
+    .await;
+    let blob_store = Arc::new(RecordingBlobStore::default());
+
+    let results = dispatch(
+        pool,
+        call,
+        Some(blob_store.clone()),
+        Arc::new(RecordingEmitter::default()),
+    )
+    .await;
+
+    let Ok(ToolResult::Mixed(parts)) = &results[0].result else {
+        panic!("expected offloaded mixed result: {:?}", results[0].result);
+    };
+    let blob_ref = parts
+        .iter()
+        .find_map(|part| match part {
+            ToolResultPart::Blob { blob_ref, .. } => Some(blob_ref.clone()),
+            _ => None,
+        })
+        .expect("offload result should include blob ref");
+
+    let reader: Arc<dyn BlobReaderCap> = Arc::new(BlobReaderCapAdapter::new(blob_store));
+    let mut caps = CapabilityRegistry::default();
+    caps.install(ToolCapability::BlobReader, reader);
+    caps.install::<dyn OffloadedBlobAuthorizerCap>(
+        ToolCapability::OffloadedBlobAuthorizer,
+        Arc::new(AllowOffloadedBlobAuthorizer),
+    );
+
+    let read_result = execute_read_blob(blob_ref, caps).await;
+
+    assert_eq!(read_result, ToolResult::Text("abcdefghij".to_owned()));
 }
 
 #[tokio::test]
@@ -644,9 +688,68 @@ fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
     }
 }
 
+async fn execute_read_blob(blob_ref: BlobRef, cap_registry: CapabilityRegistry) -> ToolResult {
+    let tool = ReadBlobTool::default();
+    let mut ctx = bare_tool_context(Arc::new(cap_registry));
+    ctx.tool_use_id = ToolUseId::new();
+    let input = json!({ "blob_ref": blob_ref });
+    tool.validate(&input, &ctx).await.expect("input validates");
+    let plan = tool.plan(&input, &ctx).await.expect("plan builds");
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan))
+        .expect("authorized input builds");
+    let mut stream = tool
+        .execute_authorized(authorized, ctx)
+        .await
+        .expect("read starts");
+    let event = futures::StreamExt::next(&mut stream)
+        .await
+        .expect("read emits final event");
+    match event {
+        ToolEvent::Final(result) => result,
+        other => panic!("expected final read result, got {other:?}"),
+    }
+}
+
+fn bare_tool_context(cap_registry: Arc<CapabilityRegistry>) -> ToolContext {
+    ToolContext {
+        tool_use_id: ToolUseId::new(),
+        run_id: harness_contracts::RunId::new(),
+        session_id: harness_contracts::SessionId::new(),
+        tenant_id: TenantId::SINGLE,
+        correlation_id: harness_contracts::CorrelationId::new(),
+        agent_id: harness_contracts::AgentId::from_u128(1),
+        subagent_depth: 0,
+        workspace_root: std::env::temp_dir(),
+        project_workspace_root: None,
+        sandbox: None,
+        cap_registry,
+        redactor: std::sync::Arc::new(harness_contracts::NoopRedactor),
+        interrupt: InterruptToken::default(),
+        parent_run: None,
+        model: None,
+        model_config_id: None,
+        memory_thread_settings: None,
+        actor_source: harness_contracts::PermissionActorSource::ParentRun,
+    }
+}
+
+struct AllowOffloadedBlobAuthorizer;
+
+impl OffloadedBlobAuthorizerCap for AllowOffloadedBlobAuthorizer {
+    fn authorize_offloaded_blob(
+        &self,
+        _tenant_id: TenantId,
+        _session_id: harness_contracts::SessionId,
+        _run_id: harness_contracts::RunId,
+        _blob: BlobRef,
+    ) -> BoxFuture<'_, Result<(), ToolError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
 #[derive(Default)]
 struct RecordingBlobStore {
-    puts: Mutex<Vec<(Bytes, BlobMeta)>>,
+    puts: Mutex<Vec<(BlobRef, Bytes, BlobMeta)>>,
     fail: bool,
 }
 
@@ -659,7 +762,11 @@ impl RecordingBlobStore {
     }
 
     fn puts(&self) -> Vec<(Bytes, BlobMeta)> {
-        self.puts.lock().clone()
+        self.puts
+            .lock()
+            .iter()
+            .map(|(_, bytes, meta)| (bytes.clone(), meta.clone()))
+            .collect()
     }
 }
 
@@ -678,29 +785,38 @@ impl BlobStore for RecordingBlobStore {
         if self.fail {
             return Err(BlobError::Backend("backend down".to_owned()));
         }
-        self.puts.lock().push((bytes, meta.clone()));
-        Ok(BlobRef {
+        let blob_ref = BlobRef {
             id: harness_contracts::BlobId::new(),
             size: meta.size,
             content_hash: meta.content_hash,
-            content_type: meta.content_type,
-        })
+            content_type: meta.content_type.clone(),
+        };
+        self.puts
+            .lock()
+            .push((blob_ref.clone(), bytes, meta.clone()));
+        Ok(blob_ref)
     }
 
     async fn get(
         &self,
         _tenant: TenantId,
-        _blob: &BlobRef,
+        blob: &BlobRef,
     ) -> Result<futures::stream::BoxStream<'static, Bytes>, BlobError> {
-        Err(BlobError::NotFound(harness_contracts::BlobId::new()))
+        let bytes = self
+            .puts
+            .lock()
+            .iter()
+            .find_map(|(stored_blob, bytes, _)| (stored_blob.id == blob.id).then(|| bytes.clone()))
+            .ok_or_else(|| BlobError::NotFound(blob.id))?;
+        Ok(Box::pin(stream::once(async move { bytes })))
     }
 
-    async fn head(
-        &self,
-        _tenant: TenantId,
-        _blob: &BlobRef,
-    ) -> Result<Option<BlobMeta>, BlobError> {
-        Ok(None)
+    async fn head(&self, _tenant: TenantId, blob: &BlobRef) -> Result<Option<BlobMeta>, BlobError> {
+        Ok(self
+            .puts
+            .lock()
+            .iter()
+            .find_map(|(stored_blob, _, meta)| (stored_blob.id == blob.id).then(|| meta.clone())))
     }
 
     async fn delete(&self, _tenant: TenantId, _blob: &BlobRef) -> Result<(), BlobError> {

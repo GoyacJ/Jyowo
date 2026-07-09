@@ -1,14 +1,16 @@
 use std::path::{Component, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    ActionResource, DecisionScope, Event, NetworkAccess, PermissionSubject, ProcessReadInvocation,
-    ProcessReadRequest, ProcessStartInvocation, ProcessStartRequest, ProcessStopInvocation,
-    ProcessStopRequest, RunScopedProcessRegistryCap, ToolActionPlan, ToolCapability,
-    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult, WorkspaceAccess,
-    RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
+    ActionResource, BudgetMetric, DecisionScope, Event, NetworkAccess, OverflowAction,
+    PermissionSubject, ProcessReadInvocation, ProcessReadRequest, ProcessReadResult,
+    ProcessStartInvocation, ProcessStartRequest, ProcessStartResult, ProcessStopInvocation,
+    ProcessStopRequest, ProcessStopResult, RunScopedProcessRegistryCap, ToolActionPlan,
+    ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
+    WorkspaceAccess, RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
 };
 use harness_permission::{DangerousPatternLibrary, PermissionCheck};
 use harness_sandbox::{ExecSpec, StdioSpec};
@@ -27,28 +29,35 @@ pub struct ProcessStartTool {
 impl Default for ProcessStartTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "ProcessStart",
-                "Process Start",
-                "Start a run-scoped process through the configured sandbox.",
-                ToolGroup::Shell,
-                false,
-                false,
-                true,
-                16_000,
-                vec![process_registry_capability()],
-                super::object_schema(
-                    &["command"],
-                    json!({
-                        "command": { "type": "string" },
-                        "args": {
-                            "type": "array",
-                            "items": { "type": "string" }
-                        },
-                        "cwd": { "type": "string" },
-                        "buffer_bytes": { "type": "integer", "minimum": 1 }
-                    }),
+            descriptor: super::with_long_running(
+                super::with_output_schema(
+                    super::descriptor(
+                        "ProcessStart",
+                        "Process Start",
+                        "Start a run-scoped process through the configured sandbox.",
+                        ToolGroup::Shell,
+                        false,
+                        false,
+                        true,
+                        16_000,
+                        vec![process_registry_capability()],
+                        super::object_schema(
+                            &["command"],
+                            json!({
+                                "command": { "type": "string" },
+                                "args": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
+                                },
+                                "cwd": { "type": "string" },
+                                "buffer_bytes": { "type": "integer", "minimum": 1 }
+                            }),
+                        ),
+                    ),
+                    serde_json::to_value(schemars::schema_for!(ProcessStartResult))
+                        .unwrap_or_else(|_| json!({"type": "object"})),
                 ),
+                super::long_running_policy(Duration::from_secs(5), Duration::from_secs(120)),
             ),
         }
     }
@@ -165,23 +174,39 @@ pub struct ProcessReadTool {
 impl Default for ProcessReadTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "ProcessRead",
-                "Process Read",
-                "Read redacted output from a run-scoped process.",
-                ToolGroup::Shell,
-                true,
-                true,
-                false,
-                128_000,
-                vec![process_registry_capability()],
-                super::object_schema(
-                    &["process_id"],
-                    json!({
-                        "process_id": { "type": "string" },
-                        "max_bytes": { "type": "integer", "minimum": 1 }
-                    }),
+            descriptor: super::with_long_running(
+                super::with_result_budget(
+                    super::with_output_schema(
+                        super::descriptor(
+                            "ProcessRead",
+                            "Process Read",
+                            "Read redacted output from a run-scoped process.",
+                            ToolGroup::Shell,
+                            true,
+                            true,
+                            false,
+                            256_000,
+                            vec![process_registry_capability()],
+                            super::object_schema(
+                                &["process_id"],
+                                json!({
+                                    "process_id": { "type": "string" },
+                                    "max_bytes": { "type": "integer", "minimum": 1 }
+                                }),
+                            ),
+                        ),
+                        serde_json::to_value(schemars::schema_for!(ProcessReadResult))
+                            .unwrap_or_else(|_| json!({"type": "object"})),
+                    ),
+                    super::result_budget(
+                        BudgetMetric::Bytes,
+                        256_000,
+                        OverflowAction::Offload,
+                        4_000,
+                        4_000,
+                    ),
                 ),
+                super::long_running_policy(Duration::from_secs(5), Duration::from_secs(30)),
             ),
         }
     }
@@ -199,7 +224,8 @@ impl Tool for ProcessReadTool {
     }
 
     async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
-        super::generic_action_plan(
+        let request = process_read_request(input).map_err(validation_error)?;
+        action_plan_from_permission_check(
             &self.descriptor,
             input,
             ctx,
@@ -210,6 +236,12 @@ impl Tool for ProcessReadTool {
                 },
                 scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
+            vec![ActionResource::Process {
+                process_id: request.process_id,
+                operation: "read".to_owned(),
+            }],
+            WorkspaceAccess::None,
+            NetworkAccess::None,
             ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
@@ -245,22 +277,29 @@ pub struct ProcessStopTool {
 impl Default for ProcessStopTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "ProcessStop",
-                "Process Stop",
-                "Stop a run-scoped process.",
-                ToolGroup::Shell,
-                false,
-                false,
-                true,
-                16_000,
-                vec![process_registry_capability()],
-                super::object_schema(
-                    &["process_id"],
-                    json!({
-                        "process_id": { "type": "string" }
-                    }),
+            descriptor: super::with_long_running(
+                super::with_output_schema(
+                    super::descriptor(
+                        "ProcessStop",
+                        "Process Stop",
+                        "Stop a run-scoped process.",
+                        ToolGroup::Shell,
+                        false,
+                        false,
+                        true,
+                        16_000,
+                        vec![process_registry_capability()],
+                        super::object_schema(
+                            &["process_id"],
+                            json!({
+                                "process_id": { "type": "string" }
+                            }),
+                        ),
+                    ),
+                    serde_json::to_value(schemars::schema_for!(ProcessStopResult))
+                        .unwrap_or_else(|_| json!({"type": "object"})),
                 ),
+                super::long_running_policy(Duration::from_secs(5), Duration::from_secs(30)),
             ),
         }
     }
@@ -278,7 +317,8 @@ impl Tool for ProcessStopTool {
     }
 
     async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
-        super::generic_action_plan(
+        let request = process_stop_request(input).map_err(validation_error)?;
+        action_plan_from_permission_check(
             &self.descriptor,
             input,
             ctx,
@@ -289,6 +329,12 @@ impl Tool for ProcessStopTool {
                 },
                 scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
+            vec![ActionResource::Process {
+                process_id: request.process_id,
+                operation: "stop".to_owned(),
+            }],
+            WorkspaceAccess::None,
+            NetworkAccess::None,
             ToolExecutionChannel::DirectAuthorizedRust,
         )
     }

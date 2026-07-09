@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    DecisionScope, PermissionSubject, TodoItem, TodoStoreCap, ToolActionPlan, ToolCapability,
-    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
+    ActionResource, DecisionScope, PermissionSubject, TodoItem, TodoStoreCap, ToolActionPlan,
+    ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -17,32 +17,43 @@ pub struct TodoTool {
 impl Default for TodoTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "Todo",
-                "Todo",
-                "Update the run todo list.",
-                ToolGroup::Memory,
-                false,
-                false,
-                false,
-                32_000,
-                vec![ToolCapability::TodoStore],
-                super::object_schema(
-                    &["items"],
-                    json!({
-                        "items": {
-                            "type": "array",
+            descriptor: super::with_output_schema(
+                super::descriptor(
+                    "Todo",
+                    "Todo",
+                    "Update the run todo list.",
+                    ToolGroup::Memory,
+                    false,
+                    false,
+                    false,
+                    32_000,
+                    vec![ToolCapability::TodoStore],
+                    super::object_schema(
+                        &["items"],
+                        json!({
                             "items": {
-                                "type": "object",
-                                "required": ["content", "status"],
-                                "properties": {
-                                    "content": { "type": "string" },
-                                    "status": { "type": "string" }
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["content", "status"],
+                                    "properties": {
+                                        "content": { "type": "string" },
+                                        "status": { "type": "string" }
+                                    }
                                 }
                             }
-                        }
-                    }),
+                        }),
+                    ),
                 ),
+                json!({
+                    "type": "object",
+                    "required": ["accepted", "items"],
+                    "properties": {
+                        "accepted": { "type": "boolean" },
+                        "items": { "type": "integer", "minimum": 0 }
+                    },
+                    "additionalProperties": false
+                }),
             ),
         }
     }
@@ -60,7 +71,7 @@ impl Tool for TodoTool {
     }
 
     async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
-        super::generic_action_plan(
+        super::generic_action_plan_with_resources(
             &self.descriptor,
             input,
             ctx,
@@ -71,6 +82,13 @@ impl Tool for TodoTool {
                 },
                 scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
+            vec![ActionResource::Todo {
+                operation: "replace".to_owned(),
+                item_count: input
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .and_then(|items| u64::try_from(items.len()).ok()),
+            }],
             ToolExecutionChannel::DirectAuthorizedRust,
         )
     }

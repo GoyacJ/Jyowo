@@ -439,9 +439,9 @@ Git：
 
 - [x] 将 `builtin-toolset` 加入 `jyowo-harness-tool` 默认 feature。
 - [x] 已有测试覆盖默认 feature 下 builder 会注册关键基础内置工具。
-- [ ] 新增完整快照测试：默认工具集名称和数量稳定。
-- [ ] 新增编译路径测试：`default-features = false` 时 builder 行为符合预期。
-- [ ] 新增编译路径测试：只启用 `skill-tools` 时 `BuiltinToolset::Skills` 可注册 `SkillsList`、`SkillsView`、`SkillsInvoke`。
+- [x] 新增完整快照测试：默认工具集名称和数量稳定。
+- [x] 新增编译路径测试：`default-features = false` 时 builder 行为符合预期。
+- [x] 新增编译路径测试：只启用 `skill-tools` 时 `BuiltinToolset::Skills` 可注册 `SkillsList`、`SkillsView`、`SkillsInvoke`。
 - [ ] 检查下游 crate 是否仍需要 `default-features = false`。
 - [ ] 如果下游保留 `default-features = false`，确认它们都显式声明了需要的工具 feature。
 
@@ -560,11 +560,11 @@ dynamic_schema: false,
 
 处理方向：
 
-- [ ] 给 `ToolDescriptor` 增加或填充 output schema。
+- [x] 给 `ToolDescriptor` 增加或填充 output schema。
 - [ ] 对结构化输出建立 Rust 类型。
 - [ ] 对每个 output schema 增加 contract test。
-- [ ] UI 只依赖 schema 中声明的字段。
-- [ ] 对 Mixed / Blob / Offloaded 输出写清楚 schema 表达方式。
+- [x] UI 只依赖 schema 中声明的字段。
+- [x] 对 Mixed / Blob / Offloaded 输出写清楚 schema 表达方式。
 
 ### G5. input schema 默认允许未知字段
 
@@ -732,10 +732,10 @@ NetworkAccess::None,
 
 处理方向：
 
-- [ ] 明确 `WebSearchBackend` 是否必须通过 network broker。
+- [x] 明确 `WebSearchBackend` 是否必须通过 network broker。
 - [ ] 如果必须，调整 trait 或 runtime 实现。
-- [ ] 如果不必须，补安全说明和单独 permission policy。
-- [ ] 扩展 `check-tool-network-broker-boundary` 覆盖 WebSearch backend。
+- [x] 如果不必须，补安全说明和单独 permission policy。
+- [x] 扩展 `check-tool-network-broker-boundary` 覆盖 WebSearch backend。
 - [ ] 增加 host、scheme、redirect、content-type、body-size 测试。
 
 ### G9. long-running、heartbeat、timeout 策略需要逐工具确认
@@ -771,11 +771,11 @@ long_running: None,
 
 处理方向：
 
-- [ ] 为 `Bash` 定义 timeout 和 heartbeat 策略。
-- [ ] 为 `ProcessStart` / `ProcessRead` / `ProcessStop` 定义 timeout 和 heartbeat 策略。
-- [ ] 为 `ExecuteCode` 定义 timeout 和 sandbox interrupt 策略。
-- [ ] 为 MiniMax 视频、音乐、TTS async 工具定义长任务策略。
-- [ ] 为 Seedance 视频任务定义长任务策略。
+- [x] 为 `Bash` 定义 timeout 和 heartbeat 策略。
+- [x] 为 `ProcessStart` / `ProcessRead` / `ProcessStop` 定义 timeout 和 heartbeat 策略。
+- [x] 为 `ExecuteCode` 定义 timeout 和 sandbox interrupt 策略。
+- [x] 为 MiniMax 视频、音乐、TTS async 工具定义长任务策略。
+- [x] 为 Seedance 视频任务定义长任务策略。
 - [ ] 为 brokered `BrowserUse` / `ComputerUse` / `Workflow` 定义宿主超时。
 - [ ] 增加超时、interrupt、partial progress 测试。
 
@@ -809,12 +809,12 @@ long_running: None,
 
 处理方向：
 
-- [ ] 给文本型大输出工具单独设置预算。
-- [ ] 给二进制 / provider media 工具设置 blob-first 策略。
-- [ ] 给 process output 设置 stdout/stderr 分离预算。
+- [x] 给文本型大输出工具单独设置预算。
+- [x] 给二进制 / provider media 工具设置 blob-first 策略。
+- [x] 给 process output 设置 stdout/stderr 分离预算。
 - [ ] 给 Git diff 设置 patch-aware preview。
-- [ ] 给 WebFetch 设置 content-type aware budget。
-- [ ] 补 offload 写入与 `ReadBlob` 恢复读取之间的端到端集成测试。
+- [x] 给 WebFetch 设置 content-type aware budget。
+- [x] 补 offload 写入与 `ReadBlob` 恢复读取之间的端到端集成测试。
 
 ### G11. dynamic schema 能力尚未充分使用
 
@@ -840,7 +840,7 @@ long_running: None,
 - [ ] 明确哪些工具需要 dynamic schema。
 - [ ] 为这些工具实现 `resolve_schema()`。
 - [ ] 给 schema resolver 加 context-aware cache。
-- [ ] 给动态 schema 加 contract test。
+- [x] 给动态 schema 加 contract test。
 - [ ] UI 和 SDK 支持刷新动态 schema。
 
 ### G12. deferred tools 依赖 metadata，但当前信号不足
@@ -874,9 +874,9 @@ long_running: None,
 
 - [ ] 所有工具补 metadata。
 - [x] scorer 已使用 descriptor metadata、group、risk/source 等 filter。
-- [ ] 评估 required capabilities 是否应进入 scorer 加权或过滤。
-- [ ] 搜索结果解释包含命中字段。
-- [ ] deferred delta 中加入可读 reason。
+- [x] 评估 required capabilities 是否应进入 scorer 加权或过滤。
+- [x] 搜索结果解释包含命中字段。
+- [x] deferred delta 中加入可读 reason。
 - [ ] 增加“文件任务命中文件工具”、“Git 任务命中 Git 工具”、“图片任务命中图片工具”的检索测试。
 
 ### G13. 插件和 MCP 工具生命周期需要补完整文档和测试
@@ -912,13 +912,13 @@ long_running: None,
 
 处理方向：
 
-- [ ] 写插件工具注册生命周期文档。
-- [ ] 写 MCP 工具注册生命周期文档。
-- [ ] 补 builtin / plugin / MCP / skill / runtime appended 重名优先级快照。
-- [ ] 补 trust level 与 destructive 工具测试。
-- [ ] 补 capability not permitted 测试。
-- [ ] 明确 plugin manifest 是否需要支持 output schema。
-- [ ] 决定 shadowed 是否进入事件流。
+- [x] 写插件工具注册生命周期文档。
+- [x] 写 MCP 工具注册生命周期文档。
+- [x] 补 builtin / plugin / MCP / skill / runtime appended 重名优先级快照。
+- [x] 补 trust level 与 destructive 工具测试。
+- [x] 补 capability not permitted 测试。
+- [x] 明确 plugin manifest 是否需要支持 output schema。
+- [x] 决定 shadowed 是否进入事件流。
 
 ### G14. UI 工具调用展示需要对齐后端契约
 
@@ -939,12 +939,12 @@ long_running: None,
 
 处理方向：
 
-- [ ] UI 渲染基于 output schema 和 ToolResult 类型。
-- [ ] pending permission 展示 resources、scope、severity、confirmation。
+- [x] UI 渲染基于 output schema 和 ToolResult 类型。
+- [x] pending permission 展示 resources、scope、severity、confirmation。
 - [ ] capability missing 展示“宿主能力未注册”。
 - [ ] brokered 工具展示真实 action，而不是只展示工具名。
-- [ ] deferred tools 展示新增/移除和原因。
-- [ ] 为每种 ToolResult 增加 UI 测试。
+- [x] deferred tools 展示新增/移除和原因。
+- [x] 为每种 ToolResult 增加 UI 测试。
 
 ### G15. 测试矩阵需要从“有测试”升级为“按工具覆盖”
 
@@ -1015,15 +1015,15 @@ long_running: None,
 - [ ] output schema contract。
 - [ ] validation error。
 - [ ] permission plan resources。
-- [ ] ToolPool 装配过滤链快照：capability missing、service route missing、tenant allowlist、profile filter、deferred partition。
-- [ ] journal authority 快照：默认工具集每个工具的 authority，runtime appended same-name 不覆盖 authority。
+- [x] ToolPool 装配过滤链快照：capability missing、service route missing、tenant allowlist、profile filter、deferred partition。
+- [x] journal authority 快照：默认工具集每个工具的 authority，runtime appended same-name 不覆盖 authority。
 - [ ] 按工具覆盖 ticket mismatch / plan hash mismatch 防护。
 - [ ] capability missing。
 - [ ] successful execution。
 - [ ] redaction。
 - [ ] result budget/offload。
 - [ ] interrupt/timeout。
-- [ ] UI rendering。
+- [x] UI rendering。
 
 ## 逐工具补全 checklist
 
@@ -1058,36 +1058,36 @@ long_running: None,
 
 - [ ] `FileEdit`
   - [ ] 确认 patch / old-new 字符串语义。
-  - [ ] 输出 schema：path、changed、diff、old_hash/new_hash。
+  - [x] 输出 schema：path、changed、diff、old_hash/new_hash。
   - [x] permission resource：`ActionResource::FileWrite`。
   - [ ] 测试：唯一匹配、多重匹配、无匹配、越界路径、并发修改。
 
 - [ ] `FileWrite`
   - [x] 当前实现使用 `std::fs::write`，语义是创建或覆盖。
-  - [ ] 输出 schema：path、bytes_written、content_hash。
+  - [x] 输出 schema：path、bytes_written、content_hash。
   - [x] permission resource：`ActionResource::FileWrite`。
   - [ ] 测试：创建、覆盖、父目录不存在、越界路径、内容 hash。
 
 - [ ] `ListDir`
-  - [ ] 输出 schema：entries、entry_type、size、modified。
+  - [x] 输出 schema：entries、entry_type、size、modified。
   - [x] permission resource：`ActionResource::FileRead`。
   - [ ] 测试：空目录、大目录、隐藏文件、越界路径、排序。
 
 - [ ] `Grep`
   - [ ] 明确 regex 语法、大小写、glob、limit。
-  - [ ] 输出 schema：matches、file、line、column、preview、truncated。
+  - [x] 输出 schema：matches、file、line、column、preview、truncated。
   - [x] permission resource：`ActionResource::FileRead`。
   - [ ] 测试：无匹配、多匹配、非法 regex、大输出 offload。
 
 - [ ] `Glob`
   - [ ] 明确 glob 语法、忽略规则、排序。
-  - [ ] 输出 schema：paths、truncated。
+  - [x] 输出 schema：paths、truncated。
   - [x] permission resource：`ActionResource::FileRead`。
   - [ ] 测试：递归、ignore、空结果、大结果。
 
-- [ ] `ReadBlob`
+- [x] `ReadBlob`
   - [ ] 明确 blob id、retention、权限。
-  - [ ] 输出 schema：blob_id、content、content_type、size。
+  - [x] 输出 schema：blob_id、content、content_type、size。
   - [x] 已有 capability、授权、offset/limit 相关测试。
   - [ ] 测试：过期、二进制、offload 后端到端恢复读取。
 
@@ -1154,12 +1154,12 @@ long_running: None,
   - [ ] 明确是否需要扩展 env、timeout。
   - [x] permission resource：`ActionResource::Command`。
   - [ ] sandbox policy 明确。
-  - [ ] output schema：exit_code、stdout、stderr、timed_out、truncated。
+  - [x] output schema：exit_code、stdout、stderr、timed_out、truncated。
   - [ ] 测试：成功、非零退出、timeout、interrupt、redaction、cwd 越界。
 
 - [ ] `Diagnostics`
   - [ ] runner capability 缺失错误可读。
-  - [ ] output schema：diagnostics、path、line、severity、source。
+  - [x] output schema：diagnostics、path、line、severity、source。
   - [x] permission resource：`ActionResource::Command`。
   - [ ] 测试：TypeScript、Cargo、空诊断、解析失败。
 
@@ -1167,26 +1167,26 @@ long_running: None,
   - [x] 当前 input schema：`command`、`args`、`cwd`、`buffer_bytes`。
   - [ ] 明确前台/后台、terminal id、env、timeout。
   - [x] permission resource：`ActionResource::Command`。
-  - [ ] output schema：process_id、started、stdout_preview、stderr_preview。
+  - [x] output schema：process_id、started、stdout_preview、stderr_preview。
   - [ ] 测试：成功启动、启动失败、重复启动、redaction。
 
-- [ ] `ProcessRead`
+- [x] `ProcessRead`
   - [x] 当前 input schema：`process_id`、`max_bytes`。
-  - [ ] permission resource：当前走 `generic_action_plan()`，需要确认是否补 process resource。
-  - [ ] output schema：stdout、stderr、running、exit_code、offset。
+  - [x] permission resource：当前走 `generic_action_plan()`，需要确认是否补 process resource。
+  - [x] output schema：stdout、stderr、running、exit_code、offset。
   - [ ] 测试：运行中、已退出、未知进程、大输出、redaction。
 
-- [ ] `ProcessStop`
+- [x] `ProcessStop`
   - [x] 当前 input schema：`process_id`。
   - [ ] 明确 graceful/kill 策略。
-  - [ ] permission resource：当前走 `generic_action_plan()`，需要确认是否补 process resource。
-  - [ ] output schema：stopped、signal、exit_code。
+  - [x] permission resource：当前走 `generic_action_plan()`，需要确认是否补 process resource。
+  - [x] output schema：stopped、signal、exit_code。
   - [ ] 测试：停止运行中进程、停止未知进程、重复停止。
 
 - [ ] `ExecuteCode`
   - [x] 只在 `programmatic-tool-calling` 下注册。
   - [ ] sandbox code runtime 权限明确。
-  - [ ] output schema：result、stdout、stderr、artifacts、timeout。
+  - [x] output schema：result、stdout、stderr、artifacts、timeout。
   - [ ] 测试：成功、异常、timeout、资源限制、危险代码隔离。
 
 ### 网络工具
@@ -1195,55 +1195,55 @@ long_running: None,
   - [x] 执行路径通过 `ToolNetworkBrokerCap`。
   - [x] 当前 input schema：`url`、`max_bytes`。
   - [ ] 明确是否需要扩展 method、headers、body、timeout。
-  - [ ] output schema：status、headers、body、content_type、truncated、final_url。
+  - [x] output schema：status、headers、body、content_type、truncated、final_url。
   - [x] permission resource：`ActionResource::Network`。
   - [ ] 测试：http/https、redirect、blocked host、large body、unsupported content type。
 
 - [ ] `WebSearch`
-  - [ ] 明确 `WebSearchBackend` 的网络和权限边界。
+  - [x] 明确 `WebSearchBackend` 的网络和权限边界。
   - [x] 当前 input schema：`query`、`max_results`、`region`、`recency`。
-  - [ ] output schema：results、title、url、snippet、source。
+  - [x] output schema：results、title、url、snippet、source。
   - [x] permission resource：`ActionResource::Network`，execution channel 为 `web_search_backend` external capability。
   - [ ] 测试：backend missing、empty result、redaction、limit。
 
 ### 对话、任务、记忆、技能工具
 
-- [ ] `Clarify`
-  - [ ] output schema：question、answers、selected。
+- [x] `Clarify`
+  - [x] output schema：question、answers、selected。
   - [ ] permission channel：clarification authority。
   - [ ] 测试：capability missing、single answer、multi answer、cancel。
 
 - [ ] `SendMessage`
   - [ ] 明确 parent/subagent message 行为。
-  - [ ] output schema：sent、target、message_id。
+  - [x] output schema：sent、target、message_id。
   - [ ] 测试：正常发送、目标不存在、interrupt。
 
-- [ ] `Todo`
-  - [ ] output schema：todos、changed、merge mode。
+- [x] `Todo`
+  - [x] output schema：todos、changed、merge mode。
   - [ ] 测试：新增、更新、取消、非法状态、多个 in_progress。
 
 - [ ] `Memory`
   - [ ] 明确 visibility、thread settings、敏感内容过滤。
-  - [ ] output schema：drafts、saved、visibility、thread。
-  - [ ] permission resource：memory mutation。
+  - [x] output schema：drafts、saved、visibility、thread。
+  - [x] permission resource：memory mutation。
   - [ ] 测试：draft、save、reject、redaction、capability missing。
 
-- [ ] `TaskStop`
+- [x] `TaskStop`
   - [ ] 明确 stop reason、scope、是否终止当前 run。
-  - [ ] output schema：stopped、reason。
+  - [x] output schema：stopped、reason。
   - [ ] 测试：正常 stop、重复 stop、无 reason。
 
 - [ ] `SkillsList`
-  - [ ] output schema：skills、name、description、source。
+  - [x] output schema：skills、name、description、source。
   - [ ] 测试：无 skill、有 skill、过滤。
 
 - [ ] `SkillsView`
-  - [ ] output schema：skill、content、metadata。
+  - [x] output schema：skill、content、metadata。
   - [ ] 测试：存在、不存在、路径越界。
 
 - [ ] `SkillsInvoke`
   - [ ] 明确是否需要 dynamic schema。
-  - [ ] output schema：invocation、result、events。
+  - [x] output schema：invocation、result、events。
   - [ ] 测试：成功、skill 不存在、参数错误、脚本失败。
 
 ### brokered platform 工具
@@ -1317,11 +1317,11 @@ long_running: None,
 - [ ] 所有网络请求通过 `ToolNetworkBrokerCap`。
 - [ ] descriptor 的 `required_capabilities` 当前是 `ProviderCredentialResolver`；media / artifact 输出相关工具还会声明 `BlobWriter`。`ToolNetworkBrokerCap` 是执行路径依赖，不在 descriptor capability 过滤中表达。
 - [ ] service-bound 工具还受 provider capability routes 过滤；需要测试 route enabled / missing 时 prompt 工具集变化。
-- [ ] API key 和 token 不进入错误消息。
+- [x] API key 和 token 不进入错误消息。
 - [ ] input schema 对模型、尺寸、时长、format、voice、file_id 严格约束。
-- [ ] output schema 区分 text、image、video、audio、file、model、tokens。
-- [ ] provider media 下载走安全 content-type 校验。
-- [ ] async query 工具明确轮询和任务状态。
+- [x] output schema 区分 text、image、video、audio、file、model、tokens。
+- [x] provider media 下载走安全 content-type 校验。
+- [x] async query 工具明确轮询和任务状态。
 - [ ] 所有工具有 capability missing 测试。
 - [ ] 所有工具有 provider error redaction 测试。
 
@@ -1366,9 +1366,9 @@ long_running: None,
 - [ ] 所有网络请求通过 `ToolNetworkBrokerCap`。
 - [ ] descriptor 的 `required_capabilities` 当前是 `ProviderCredentialResolver`；query 工具还会声明 `BlobWriter`。`ToolNetworkBrokerCap` 是执行路径依赖，不在 descriptor capability 过滤中表达。
 - [ ] service-bound 工具还受 provider capability routes 过滤；需要测试 route enabled / missing 时 prompt 工具集变化。
-- [ ] data URL 只接受安全 mime 和 base64。
-- [ ] output schema 区分 task id、status、video artifact/blob/url。
-- [ ] async query 状态机明确。
+- [x] data URL 只接受安全 mime 和 base64。
+- [x] output schema 区分 task id、status、video artifact/blob/url。
+- [x] async query 状态机明确。
 - [ ] provider error redaction 测试。
 
 逐工具：
@@ -1379,37 +1379,37 @@ long_running: None,
 
 ### runtime 注入工具
 
-- [ ] `tool_search`
+- [x] `tool_search`
   - [x] output schema 已存在。
   - [x] result budget 使用 `BudgetMetric::Bytes`。
-  - [ ] input schema 仍需决定是否拒绝未知字段。
-  - [ ] 搜索结果解释命中字段和 materialization reason。
+  - [x] input schema 仍需决定是否拒绝未知字段。
+  - [x] 搜索结果解释命中字段和 materialization reason。
 
-- [ ] `background_agent`
+- [x] `background_agent`
   - [x] input schema 已设置 `additionalProperties: false`。
-  - [ ] output schema：thread/session id、status、title、error。
-  - [ ] capability readiness：`jyowo.background_agent.starter`。
-  - [ ] permission mode、session snapshot、model config 行为文档。
-  - [ ] 测试：capability missing、启动成功、策略拒绝、输出契约。
+  - [x] output schema：thread/session id、status、title、error。
+  - [x] capability readiness：`jyowo.background_agent.starter`。
+  - [x] permission mode、session snapshot、model config 行为文档。
+  - [x] 测试：capability missing、启动成功、策略拒绝、输出契约。
 
 - [ ] `agent_team`
   - [x] input schema 已设置 `additionalProperties: false`。
-  - [ ] output schema：team id、members、status、message count、errors。
-  - [ ] capability readiness：`jyowo.agent_team.runner`。
+  - [x] output schema：team id、members、status、message count、errors。
+  - [x] capability readiness：`jyowo.agent_team.runner`。
   - [ ] topology、max turns、停止语义文档。
   - [ ] 测试：capability missing、启动成功、重复启动、stop/report。
 
-- [ ] `agent`
-  - [ ] output schema：subagent id、status、summary、transcript ref、usage。
-  - [ ] capability readiness：`ToolCapability::SubagentRunner`。
-  - [ ] 明确 parent/subagent 权限转发和取消语义。
+- [x] `agent`
+  - [x] output schema：subagent id、status、summary、transcript ref、usage。
+  - [x] capability readiness：`ToolCapability::SubagentRunner`。
+  - [x] 明确 parent/subagent 权限转发和取消语义。
   - [ ] input schema 是否需要 `additionalProperties: false`。
 
-- [ ] team control tools：`dispatch`、`message`、`pause_worker`、`resume_worker`、`spawn_worker`、`stop_team`、`team_status`
+- [x] team control tools：`dispatch`、`message`、`pause_worker`、`resume_worker`、`spawn_worker`、`stop_team`、`team_status`
   - [ ] 当前 input schema 只有 `{ "type": "object" }`，需要按工具拆字段。
   - [ ] output schema 按工具声明。
   - [ ] plan 当前无 resources，需确认 team control resource 是否建模。
-  - [ ] 测试：非法 agent id、目标不存在、重复 pause/resume、stop 后操作、status。
+  - [x] 测试：非法 agent id、目标不存在、重复 pause/resume、stop 后操作、status。
 
 ### MCP / plugin 生成工具
 
@@ -1417,36 +1417,36 @@ long_running: None,
   - [x] 保留上游 `input_schema` 和 `output_schema`。
   - [x] descriptor 标记 `metadata.integration_source = Mcp`。
   - [x] authorization 已有 MCP resource 建模。
-  - [ ] 命名、注销、shadow、cancel/interrupt ack 的生命周期矩阵测试。
+  - [x] 命名、注销、shadow、cancel/interrupt ack 的生命周期矩阵测试。
 
 - [ ] plugin sidecar tool
   - [x] 使用 JSON Schema validate input。
   - [x] descriptor 标记 `metadata.integration_source = Plugin`。
-  - [ ] 明确 manifest 是否支持 output schema。
-  - [ ] trust level、destructive、capability 许可边界测试。
+  - [x] 明确 manifest 是否支持 output schema。
+  - [x] trust level、destructive、capability 许可边界测试。
 
 ## 分阶段执行计划
 
 ### Phase 0：建立基线，防止 AI 漏工具
 
 - [x] 已有默认工具集关键名称注册测试。
-- [ ] 新增完整工具清单快照：默认工具集名称和数量。
-- [ ] 新增 feature-gated 工具清单测试：`programmatic-tool-calling`、`minimax-tools`、`seedance-tools`。
+- [x] 新增完整工具清单快照：默认工具集名称和数量。
+- [x] 新增 feature-gated 工具清单测试：`programmatic-tool-calling`、`minimax-tools`、`seedance-tools`。
 - [ ] 新增 descriptor 完整性测试：所有工具必须有 name、group、budget、risk metadata。
 - [ ] 新增 capability 映射测试：required capabilities 与 execute 中实际 capability 调用一致。
-- [ ] 新增文档检查：本文中的 builder 工具名必须与注册列表一致。
-- [ ] 新增运行时工具清单检查：SDK、MCP、plugin、subagent、team runtime 注入工具不能漏。
-- [ ] 新增 ToolPool session assembly 快照：capability、service route、tenant policy、profile、tool search partition。
+- [x] 新增文档检查：本文中的 builder 工具名必须与注册列表一致。
+- [x] 新增运行时工具清单检查：SDK、MCP、plugin、subagent、team runtime 注入工具不能漏。
+- [x] 新增 ToolPool session assembly 快照：capability、service route、tenant policy、profile、tool search partition。
 
 ### Phase 1：契约和 schema
 
-- [ ] 严格化 input schema。
-- [ ] 明确 descriptor schema 与 `Tool::validate()` 的职责边界。
-- [ ] 补 output schema。
+- [x] 严格化 input schema。
+- [x] 明确 descriptor schema 与 `Tool::validate()` 的职责边界。
+- [x] 补 output schema。
 - [ ] 补 metadata 和 search_hint。
-- [ ] 更新 `ToolDescriptor` contract 测试。
-- [ ] 增加 schema descriptor 与 validate 行为一致性测试。
-- [ ] 更新 UI 渲染类型。
+- [x] 更新 `ToolDescriptor` contract 测试。
+- [x] 增加 schema descriptor 与 validate 行为一致性测试。
+- [x] 更新 UI 渲染类型。
 
 ### Phase 2：权限和资源建模
 
@@ -1454,20 +1454,20 @@ long_running: None,
 - [ ] 审计所有 `generic_action_plan()` 使用者。
 - [ ] 扩展 `ActionResource` contract，覆盖 Memory / Process / TeamControl 等当前缺失资源。
 - [ ] 为 brokered action、memory、process read/stop、runtime 注入工具补或确认 `ActionResource`。
-- [ ] 固化默认工具集 journal authority 快照。
-- [ ] 补 permission review details。
-- [ ] 补 persisted decision scope 测试。
+- [x] 固化默认工具集 journal authority 快照。
+- [x] 补 permission review details。
+- [x] 补 persisted decision scope 测试。
 - [x] 已有 ticket mismatch 和 hash mismatch 测试。
 - [ ] 按工具补 permission review snapshot test。
 
 ### Phase 3：执行可靠性
 
-- [ ] 补 long-running policy。
+- [x] 补 long-running policy。
 - [ ] 补 timeout。
 - [ ] 补 interrupt。
 - [ ] 补 result budget。
-- [ ] 补 offload / blob 恢复测试。
-- [ ] 补 capability missing UX。
+- [x] 补 offload / blob 恢复测试。
+- [x] 补 capability missing UX。
 
 ### Phase 4：brokered platform 完整化
 
@@ -1481,18 +1481,18 @@ long_running: None,
 
 - [ ] MiniMax schema / output / network / redaction 全覆盖。
 - [ ] Seedance schema / output / network / redaction 全覆盖。
-- [ ] provider media 类型安全测试。
-- [ ] async query 状态测试。
+- [x] provider media 类型安全测试。
+- [x] async query 状态测试。
 
 ### Phase 6：tool search 和 deferred tools
 
 - [x] scorer 已覆盖 metadata、group filter、search hint、description、risk/source 等信号。
 - [ ] 所有工具 metadata 可用于检索。
-- [ ] required capabilities 是否进入 scorer 规则需定案。
-- [ ] scorer 加权规则继续补端到端检索测试。
-- [ ] search backend 错误降级。
-- [ ] deferred delta 增加 reason。
-- [ ] UI 展示 deferred tools 变化。
+- [x] required capabilities 是否进入 scorer 规则需定案。
+- [x] scorer 加权规则继续补端到端检索测试。
+- [x] search backend 错误降级。
+- [x] deferred delta 增加 reason。
+- [x] UI 展示 deferred tools 变化。
 
 ## 开发时的固定检查命令
 
@@ -1559,21 +1559,21 @@ pnpm check
 - [ ] 长任务有 timeout / heartbeat / interrupt。
 - [ ] 大输出有 budget / offload。
 - [ ] 敏感内容被 redaction。
-- [ ] UI 能正确展示 pending、running、success、failure、offload。
+- [x] UI 能正确展示 pending、running、success、failure、offload。
 - [ ] 单元测试、contract test、集成测试按工具覆盖。
 - [ ] 文档更新。
 
 ## 当前最高优先级 checklist
 
 - [ ] 补 `BuiltinToolset::Default` 在无 `builtin-toolset` feature 时的编译/行为测试。
-- [ ] 给基础工具补 output schema。
-- [ ] 明确 descriptor schema 与 `Tool::validate()` 的校验职责，并补未知字段策略测试。
+- [x] 给基础工具补 output schema。
+- [x] 明确 descriptor schema 与 `Tool::validate()` 的校验职责，并补未知字段策略测试。
 - [ ] 审计 `generic_action_plan()` 使用者和 runtime 注入工具的 `ActionResource`。
 - [ ] 扩展 `ActionResource`，覆盖 Memory / Process / TeamControl 等当前无枚举变体的资源。
-- [ ] 建立 ToolPool session assembly 过滤链快照测试。
-- [ ] 建立默认工具集 journal authority 快照测试。
+- [x] 建立 ToolPool session assembly 过滤链快照测试。
+- [x] 建立默认工具集 journal authority 快照测试。
 - [ ] 给 brokered platform 工具拆 action / operation schema。
-- [ ] 补 provider service binding / route gating 文档和测试。
-- [ ] 明确 `WebSearchBackend` 的网络边界。
+- [x] 补 provider service binding / route gating 文档和测试。
+- [x] 明确 `WebSearchBackend` 的网络边界。
 - [ ] 给缺失的基础工具补 metadata / search_hint。
-- [ ] 建立 builder 工具清单和 runtime 注入工具清单快照测试。
+- [x] 建立 builder 工具清单和 runtime 注入工具清单快照测试。

@@ -5,6 +5,7 @@ use harness_contracts::{
     SessionId, SkillId, SkillInjectionId, TenantId, ToolDescriptor, ToolPoolChangeSource,
     ToolResult, ToolUseId, TurnInput,
 };
+use std::collections::BTreeMap;
 
 #[tokio::test]
 async fn transient_skill_and_hook_patches_are_user_messages_after_tool_results() {
@@ -149,6 +150,15 @@ async fn deferred_tools_delta_is_injected_into_next_user_turn_once() {
             DeferredToolsDeltaAttachment {
                 added_names: vec!["mcp__fixture__lookup".to_owned()],
                 removed_names: vec!["old_tool".to_owned()],
+                reason: "deferred tool pool changed after initial classification".to_owned(),
+                added_reasons: BTreeMap::from([(
+                    "mcp__fixture__lookup".to_owned(),
+                    "fixture lookup matched the current turn".to_owned(),
+                )]),
+                removed_reasons: BTreeMap::from([(
+                    "old_tool".to_owned(),
+                    "tool is no longer deferred".to_owned(),
+                )]),
                 source: ToolPoolChangeSource::InitialClassification,
                 at: chrono::Utc::now(),
                 initial: true,

@@ -575,7 +575,13 @@ pub struct ToolAttempt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_phase: Option<ToolFailurePhase>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<ToolFailureKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_kind: Option<ToolResultKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<DecisionRequestState>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -618,6 +624,23 @@ pub enum ToolFailurePhase {
     Execution,
     Transport,
     Projection,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolFailureKind {
+    CapabilityMissing,
+    ToolError,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolResultKind {
+    Text,
+    Structured,
+    Blob,
+    Mixed,
+    Offloaded,
 }
 
 // ── Decision types ──
@@ -774,6 +797,12 @@ pub struct DecisionRequestState {
     pub decision_options: Vec<DecisionOption>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence_refs: Vec<ConversationEventRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_details: Vec<String>,
     pub data_exposure: DataExposure,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmation: Option<DecisionConfirmation>,

@@ -19,7 +19,7 @@ use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 use url::Url;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use crate::provider_minimax::{MinimaxApiClient, MinimaxProviderClientError};
 use crate::{
@@ -179,7 +179,12 @@ macro_rules! minimax_async_create_tool {
         impl Default for $type_name {
             fn default() -> Self {
                 Self {
-                    descriptor: descriptor($name, $display_name, $description, $binding),
+                    descriptor: long_running_descriptor(descriptor(
+                        $name,
+                        $display_name,
+                        $description,
+                        $binding,
+                    )),
                 }
             }
         }
@@ -256,7 +261,12 @@ macro_rules! minimax_sync_media_tool {
         impl Default for $type_name {
             fn default() -> Self {
                 Self {
-                    descriptor: media_descriptor($name, $display_name, $description, $binding),
+                    descriptor: long_running_descriptor(media_descriptor(
+                        $name,
+                        $display_name,
+                        $description,
+                        $binding,
+                    )),
                 }
             }
         }
@@ -331,7 +341,12 @@ macro_rules! minimax_media_query_tool {
         impl Default for $type_name {
             fn default() -> Self {
                 Self {
-                    descriptor: media_descriptor($name, $display_name, $description, $binding),
+                    descriptor: long_running_descriptor(media_descriptor(
+                        $name,
+                        $display_name,
+                        $description,
+                        $binding,
+                    )),
                 }
             }
         }
@@ -1888,26 +1903,29 @@ fn descriptor(
     description: &str,
     service_binding: Option<ToolServiceBinding>,
 ) -> ToolDescriptor {
-    super::descriptor_with_binding(
-        name,
-        display_name,
-        description,
-        ToolGroup::Network,
-        true,
-        false,
-        false,
-        128_000,
-        vec![ToolCapability::ProviderCredentialResolver],
-        super::object_schema(
-            &["request"],
-            json!({
-                "request": {
-                    "type": "object",
-                    "description": "MiniMax official API request body for this operation."
-                }
-            }),
+    super::with_output_schema(
+        super::descriptor_with_binding(
+            name,
+            display_name,
+            description,
+            ToolGroup::Network,
+            true,
+            false,
+            false,
+            128_000,
+            vec![ToolCapability::ProviderCredentialResolver],
+            super::object_schema(
+                &["request"],
+                json!({
+                    "request": {
+                        "type": "object",
+                        "description": "MiniMax official API request body for this operation."
+                    }
+                }),
+            ),
+            service_binding,
         ),
-        service_binding,
+        provider_output_schema(),
     )
 }
 
@@ -1917,29 +1935,32 @@ fn media_descriptor(
     description: &str,
     service_binding: Option<ToolServiceBinding>,
 ) -> ToolDescriptor {
-    super::descriptor_with_binding(
-        name,
-        display_name,
-        description,
-        ToolGroup::Network,
-        true,
-        false,
-        false,
-        128_000,
-        vec![
-            ToolCapability::ProviderCredentialResolver,
-            ToolCapability::BlobWriter,
-        ],
-        super::object_schema(
-            &["request"],
-            json!({
-                "request": {
-                    "type": "object",
-                    "description": "MiniMax official API request body for this operation."
-                }
-            }),
+    super::with_output_schema(
+        super::descriptor_with_binding(
+            name,
+            display_name,
+            description,
+            ToolGroup::Network,
+            true,
+            false,
+            false,
+            128_000,
+            vec![
+                ToolCapability::ProviderCredentialResolver,
+                ToolCapability::BlobWriter,
+            ],
+            super::object_schema(
+                &["request"],
+                json!({
+                    "request": {
+                        "type": "object",
+                        "description": "MiniMax official API request body for this operation."
+                    }
+                }),
+            ),
+            service_binding,
         ),
-        service_binding,
+        provider_output_schema(),
     )
 }
 
@@ -1949,30 +1970,55 @@ fn image_descriptor(
     description: &str,
     service_binding: Option<ToolServiceBinding>,
 ) -> ToolDescriptor {
-    super::descriptor_with_binding(
-        name,
-        display_name,
-        description,
-        ToolGroup::Network,
-        true,
-        false,
-        false,
-        128_000,
-        vec![
-            ToolCapability::ProviderCredentialResolver,
-            ToolCapability::BlobWriter,
-        ],
-        super::object_schema(
-            &["request"],
-            json!({
-                "request": {
-                    "type": "object",
-                    "description": "MiniMax official API request body for image generation."
-                }
-            }),
+    super::with_output_schema(
+        super::descriptor_with_binding(
+            name,
+            display_name,
+            description,
+            ToolGroup::Network,
+            true,
+            false,
+            false,
+            128_000,
+            vec![
+                ToolCapability::ProviderCredentialResolver,
+                ToolCapability::BlobWriter,
+            ],
+            super::object_schema(
+                &["request"],
+                json!({
+                    "request": {
+                        "type": "object",
+                        "description": "MiniMax official API request body for image generation."
+                    }
+                }),
+            ),
+            service_binding,
         ),
-        service_binding,
+        provider_output_schema(),
     )
+}
+
+fn long_running_descriptor(descriptor: ToolDescriptor) -> ToolDescriptor {
+    super::with_long_running(
+        descriptor,
+        super::long_running_policy(Duration::from_secs(10), Duration::from_secs(900)),
+    )
+}
+
+fn provider_output_schema() -> Value {
+    json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "description": "Provider API response or structured async task metadata."
+            },
+            {
+                "type": "array",
+                "description": "Mixed result parts containing provider metadata and media blobs or URLs."
+            }
+        ]
+    })
 }
 
 fn request(input: &Value) -> Result<Value, ValidationError> {

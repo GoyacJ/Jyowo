@@ -53,6 +53,7 @@ describe('RunEvent schema', () => {
       ['tool_use_denied', 'tool.denied'],
       ['tool_use_completed', 'tool.completed'],
       ['tool_use_failed', 'tool.failed'],
+      ['tool_deferred_pool_changed', 'tool.deferred_pool_changed'],
       ['permission_requested', 'permission.requested'],
       ['permission_resolved', 'permission.resolved'],
       ['subagent_spawned', 'subagent.spawned'],
@@ -124,6 +125,51 @@ describe('RunEvent schema', () => {
       'assistant.notice',
       'engine.failed',
     ])
+  })
+
+  it('accepts safe tool result and capability failure metadata', () => {
+    const completed = runEventSchema.parse({
+      ...runEventFixtures[7],
+      payload: {
+        resultKind: 'offloaded',
+        toolUseId: 'tool-001',
+        truncated: true,
+      },
+    })
+    const failed = runEventSchema.parse({
+      ...runEventFixtures[8],
+      payload: {
+        code: 'tool_error',
+        failureKind: 'capabilityMissing',
+        message: 'Tool error withheld from conversation timeline.',
+        toolUseId: 'tool-003',
+      },
+    })
+
+    expect(completed.payload).toMatchObject({ resultKind: 'offloaded', truncated: true })
+    expect(failed.payload).toMatchObject({ failureKind: 'capabilityMissing' })
+  })
+
+  it('accepts deferred tool pool changes with safe display reasons', () => {
+    const event = runEventSchema.parse({
+      ...runEventFixtures[7],
+      type: 'tool.deferred_pool_changed',
+      source: 'engine',
+      payload: {
+        added: [{ name: 'web_search', hint: 'network task detected' }],
+        at: '2026-07-09T00:00:00.000Z',
+        deferredTotal: 3,
+        removed: ['grep'],
+        sessionId: 'session-001',
+        source: 'initial_classification',
+      },
+    })
+
+    expect(event.payload).toMatchObject({
+      added: [{ name: 'web_search', hint: 'network task detected' }],
+      removed: ['grep'],
+      deferredTotal: 3,
+    })
   })
 
   it('accepts run started permission mode payloads', () => {

@@ -99,10 +99,10 @@ pub mod agents_team {
     use async_trait::async_trait;
     use futures::{stream, StreamExt};
     use harness_contracts::{
-        AgentId, BudgetMetric, ContextVisibility, DeferPolicy, Event, MessageContent,
-        OverflowAction, PermissionActorSource, ProviderRestriction, Recipient, ResultBudget,
-        ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties,
-        ToolResult, TrustLevel, UsageSnapshot,
+        ActionResource, AgentId, BudgetMetric, ContextVisibility, DeferPolicy, Event,
+        MessageContent, OverflowAction, PermissionActorSource, ProviderRestriction, Recipient,
+        ResultBudget, ToolActionPlan, ToolDescriptor, ToolError, ToolGroup, ToolOrigin,
+        ToolProperties, ToolResult, TrustLevel, UsageSnapshot,
     };
     use harness_engine::{Engine, EngineRunner, RunContext, SessionHandle};
     use harness_team::{
@@ -471,7 +471,10 @@ pub mod agents_team {
                 input,
                 ctx,
                 PermissionCheck::Allowed,
-                Vec::new(),
+                vec![ActionResource::TeamControl {
+                    action: self.kind.name().to_owned(),
+                    target: team_control_target(input),
+                }],
                 harness_contracts::WorkspaceAccess::None,
                 harness_contracts::NetworkAccess::None,
                 harness_contracts::ToolExecutionChannel::DirectAuthorizedRust,
@@ -517,12 +520,18 @@ pub mod agents_team {
                 }
                 TeamControlToolKind::PauseWorker => {
                     let worker = parse_agent_id(&input, "agent_id")?;
-                    self.control.pause_worker(worker).await;
+                    self.control
+                        .pause_worker(worker)
+                        .await
+                        .map_err(team_tool_error)?;
                     ToolResult::Structured(serde_json::json!({ "paused": worker.to_string() }))
                 }
                 TeamControlToolKind::ResumeWorker => {
                     let worker = parse_agent_id(&input, "agent_id")?;
-                    self.control.resume_worker(worker).await;
+                    self.control
+                        .resume_worker(worker)
+                        .await
+                        .map_err(team_tool_error)?;
                     ToolResult::Structured(serde_json::json!({ "resumed": worker.to_string() }))
                 }
                 TeamControlToolKind::SpawnWorker => {
@@ -588,8 +597,8 @@ pub mod agents_team {
             category: "team".to_owned(),
             group: ToolGroup::Custom("team_control".to_owned()),
             version: "0.0.0".to_owned(),
-            input_schema: serde_json::json!({ "type": "object" }),
-            output_schema: None,
+            input_schema: team_control_input_schema(kind),
+            output_schema: Some(team_control_output_schema(kind)),
             dynamic_schema: false,
             properties: ToolProperties {
                 is_concurrency_safe: false,
@@ -609,10 +618,108 @@ pub mod agents_team {
             },
             provider_restriction: ProviderRestriction::All,
             origin: ToolOrigin::Builtin,
-            search_hint: None,
+            search_hint: Some(format!("team coordinator control {}", kind.name())),
             service_binding: None,
             metadata: Default::default(),
         }
+    }
+
+    fn team_control_input_schema(kind: TeamControlToolKind) -> serde_json::Value {
+        let recipient_properties = serde_json::json!({
+            "agent_id": { "type": "string" },
+            "role": { "type": "string" },
+            "broadcast": { "type": "boolean" },
+            "body": { "type": "string" }
+        });
+        match kind {
+            TeamControlToolKind::Dispatch | TeamControlToolKind::Message => {
+                team_control_object_schema(&[], recipient_properties)
+            }
+            TeamControlToolKind::PauseWorker | TeamControlToolKind::ResumeWorker => {
+                team_control_object_schema(
+                    &["agent_id"],
+                    serde_json::json!({ "agent_id": { "type": "string" } }),
+                )
+            }
+            TeamControlToolKind::SpawnWorker => team_control_object_schema(
+                &[],
+                serde_json::json!({
+                    "agent_id": { "type": "string" },
+                    "role": { "type": "string" }
+                }),
+            ),
+            TeamControlToolKind::StopTeam | TeamControlToolKind::TeamStatus => {
+                team_control_object_schema(&[], serde_json::json!({}))
+            }
+        }
+    }
+
+    fn team_control_output_schema(kind: TeamControlToolKind) -> serde_json::Value {
+        match kind {
+            TeamControlToolKind::Dispatch | TeamControlToolKind::Message => {
+                team_control_object_schema(
+                    &["message_id"],
+                    serde_json::json!({ "message_id": { "type": "string" } }),
+                )
+            }
+            TeamControlToolKind::PauseWorker => team_control_object_schema(
+                &["paused"],
+                serde_json::json!({ "paused": { "type": "string" } }),
+            ),
+            TeamControlToolKind::ResumeWorker => team_control_object_schema(
+                &["resumed"],
+                serde_json::json!({ "resumed": { "type": "string" } }),
+            ),
+            TeamControlToolKind::SpawnWorker => team_control_object_schema(
+                &["agent_id"],
+                serde_json::json!({ "agent_id": { "type": "string" } }),
+            ),
+            TeamControlToolKind::StopTeam => team_control_object_schema(
+                &["team_id", "message_count"],
+                serde_json::json!({
+                    "team_id": { "type": "string" },
+                    "message_count": { "type": "integer", "minimum": 0 }
+                }),
+            ),
+            TeamControlToolKind::TeamStatus => team_control_object_schema(
+                &["team_id", "member_count", "paused_members", "terminated"],
+                serde_json::json!({
+                    "team_id": { "type": "string" },
+                    "member_count": { "type": "integer", "minimum": 0 },
+                    "paused_members": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "terminated": { "type": ["string", "null"] }
+                }),
+            ),
+        }
+    }
+
+    fn team_control_object_schema(
+        required: &[&str],
+        properties: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "required": required,
+            "properties": properties,
+            "additionalProperties": false
+        })
+    }
+
+    fn team_control_target(input: &serde_json::Value) -> Option<String> {
+        if let Some(agent_id) = input.get("agent_id").and_then(serde_json::Value::as_str) {
+            return Some(format!("agent:{agent_id}"));
+        }
+        if let Some(role) = input.get("role").and_then(serde_json::Value::as_str) {
+            return Some(format!("role:{role}"));
+        }
+        input
+            .get("broadcast")
+            .and_then(serde_json::Value::as_bool)
+            .filter(|broadcast| *broadcast)
+            .map(|_| "broadcast".to_owned())
     }
 
     fn parse_recipient(input: &serde_json::Value) -> Result<Recipient, ToolError> {
@@ -705,6 +812,35 @@ pub mod agents_team {
             let filter = member_tool_filter(&config);
 
             assert!(!filter.denylist.contains("memory"));
+        }
+
+        #[test]
+        fn team_control_descriptors_declare_strict_io_schemas() {
+            for kind in [
+                TeamControlToolKind::Dispatch,
+                TeamControlToolKind::Message,
+                TeamControlToolKind::PauseWorker,
+                TeamControlToolKind::ResumeWorker,
+                TeamControlToolKind::SpawnWorker,
+                TeamControlToolKind::StopTeam,
+                TeamControlToolKind::TeamStatus,
+            ] {
+                let descriptor = team_control_descriptor(kind);
+                assert_eq!(
+                    descriptor
+                        .input_schema
+                        .get("additionalProperties")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(false),
+                    "{} input schema should reject unknown fields",
+                    kind.name()
+                );
+                assert!(
+                    descriptor.output_schema.is_some(),
+                    "{} should declare an output schema",
+                    kind.name()
+                );
+            }
         }
     }
 }

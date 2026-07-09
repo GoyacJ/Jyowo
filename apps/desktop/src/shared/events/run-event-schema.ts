@@ -24,6 +24,7 @@ export const runEventContractTypeSchema = z.enum([
   'tool_use_denied',
   'tool_use_completed',
   'tool_use_failed',
+  'tool_deferred_pool_changed',
   'permission_requested',
   'permission_resolved',
   'subagent_spawned',
@@ -306,15 +307,52 @@ const toolCompletedPayloadSchema = z
     exitCode: z.number().int().optional(),
     itemCount: z.number().int().nonnegative().optional(),
     outputSummary: toolDisplayTextSchema.optional(),
+    resultKind: z.enum(['text', 'structured', 'blob', 'mixed', 'offloaded']).optional(),
     toolName: toolDisplayTextSchema.optional(),
     toolUseId: z.string().min(1),
+    truncated: z.boolean().optional(),
   })
   .strict()
 const toolFailedPayloadSchema = z
   .object({
     code: z.literal('tool_error'),
+    failureKind: z.enum(['capabilityMissing', 'toolError']).optional(),
     message: z.literal(toolErrorWithheldMessage).optional(),
     toolUseId: z.string().min(1),
+  })
+  .strict()
+const deferredToolHintSchema = z
+  .object({
+    name: toolDisplayTextSchema,
+    hint: toolDisplayTextSchema.nullable().optional(),
+  })
+  .strict()
+const toolPoolChangeSourceSchema = z.union([
+  z.literal('initial_classification'),
+  z
+    .object({
+      mcp_list_changed: z.object({ server_id: toolDisplayTextSchema }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      plugin_registration: z.object({ plugin_id: toolDisplayTextSchema }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      skill_hot_reload: z.object({ skill_id: toolDisplayTextSchema }).strict(),
+    })
+    .strict(),
+])
+const toolDeferredPoolChangedPayloadSchema = z
+  .object({
+    added: z.array(deferredToolHintSchema),
+    at: z.string().datetime({ offset: true }).optional(),
+    deferredTotal: z.number().int().nonnegative(),
+    removed: z.array(toolDisplayTextSchema),
+    sessionId: z.string().min(1),
+    source: toolPoolChangeSourceSchema,
   })
   .strict()
 const permissionActorSourceSchema = z.discriminatedUnion('type', [
@@ -937,6 +975,7 @@ export const runEventSchema = z
     eventSchema('tool.denied', toolResolvedPayloadSchema),
     eventSchema('tool.completed', toolCompletedPayloadSchema),
     eventSchema('tool.failed', toolFailedPayloadSchema),
+    eventSchema('tool.deferred_pool_changed', toolDeferredPoolChangedPayloadSchema),
     eventSchema('permission.requested', permissionRequestedPayloadSchema),
     eventSchema('permission.resolved', permissionResolvedPayloadSchema),
     eventSchema('subagent.spawned', subagentSpawnedPayloadSchema),
@@ -1157,6 +1196,8 @@ export function mapRunEventContractType(contractType: RunEventContractType): Run
       return 'tool.completed'
     case 'tool_use_failed':
       return 'tool.failed'
+    case 'tool_deferred_pool_changed':
+      return 'tool.deferred_pool_changed'
     case 'permission_requested':
       return 'permission.requested'
     case 'permission_resolved':
@@ -1262,6 +1303,8 @@ export function getRunEventLabel(event: RunEvent): string {
       return 'Tool completed'
     case 'tool.failed':
       return 'Tool failed'
+    case 'tool.deferred_pool_changed':
+      return 'Deferred tools changed'
     case 'permission.requested':
       return 'Permission requested'
     case 'permission.resolved':

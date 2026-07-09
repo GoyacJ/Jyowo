@@ -197,6 +197,47 @@ async fn validation_failure_skips_permission_and_execute() {
 }
 
 #[tokio::test]
+async fn schema_unknown_field_failure_skips_tool_validation_and_execute() {
+    let executed = Arc::new(AtomicBool::new(false));
+    let mut tool = test_tool(
+        "strict",
+        true,
+        Behavior::MarkExecuted(Arc::clone(&executed)),
+    );
+    tool.descriptor.input_schema = json!({
+        "type": "object",
+        "required": ["message"],
+        "properties": {
+            "message": { "type": "string" }
+        },
+        "additionalProperties": false
+    });
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Empty)
+        .with_tool(Box::new(tool))
+        .build()
+        .unwrap();
+
+    let results = ToolOrchestrator::default()
+        .dispatch(
+            vec![call_with_input(
+                "strict",
+                json!({ "message": "hello", "unexpected": true }),
+            )],
+            orchestrator_ctx(pool(&registry).await, vec![]),
+        )
+        .await;
+
+    let error_message = match &results[0].result {
+        Err(ToolError::Validation(message)) => message.to_lowercase(),
+        other => panic!("expected schema validation error, got {other:?}"),
+    };
+    assert!(error_message.contains("unexpected"));
+    assert!(error_message.contains("additional properties are not allowed"));
+    assert!(!executed.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
 async fn authorized_tool_calls_execute_without_permission_broker() {
     let executed = Arc::new(AtomicBool::new(false));
     let registry = ToolRegistry::builder()

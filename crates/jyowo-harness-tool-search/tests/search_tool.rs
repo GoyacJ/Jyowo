@@ -57,8 +57,32 @@ async fn descriptor_is_always_loaded_meta_tool() {
         BTreeSet::from([
             "tool_reference".to_owned(),
             "inline_reinjected".to_owned(),
-            "no_match".to_owned()
+            "no_match".to_owned(),
+            "backend_failed".to_owned()
         ])
+    );
+}
+
+#[tokio::test]
+async fn validate_rejects_unknown_input_fields() {
+    let tool = ToolSearchTool::builder().build();
+    let ctx = test_context(Arc::new(FakeRuntime::new(ToolSearchRuntimeSnapshot {
+        deferred_tools: Vec::new(),
+        loaded_tool_names: BTreeSet::new(),
+        discovered_tool_names: BTreeSet::new(),
+        pending_mcp_servers: Vec::new(),
+        model_caps: Arc::new(ConversationModelCapability::default()),
+        reload_handle: None,
+    })));
+
+    let error = tool
+        .validate(&json!({ "query": "ReadFile", "extra": true }), &ctx)
+        .await
+        .expect_err("unknown input fields must be rejected");
+
+    assert!(
+        error.to_string().contains("unknown field"),
+        "unexpected validation error: {error}"
     );
 }
 
@@ -90,8 +114,14 @@ async fn select_query_materializes_only_deferred_matches() {
         result["materialization"],
         json!({
             "kind": "tool_reference",
-            "tool_names": ["ReadFile"]
+            "tool_names": ["ReadFile"],
+            "reason": "recording selected because the model supports tool references"
         })
+    );
+    assert_eq!(result["explanations"][0]["tool_name"], json!("ReadFile"));
+    assert_eq!(
+        result["explanations"][0]["matched_fields"],
+        json!(["select"])
     );
     assert_eq!(backend.requested().await, vec!["ReadFile".to_owned()]);
     assert!(runtime
@@ -142,8 +172,65 @@ async fn keyword_query_scores_and_clamps_results() {
     .await;
 
     assert_eq!(result["matches"], json!(["mcp__slack__post_message"]));
+    assert_eq!(
+        result["explanations"][0]["matched_fields"],
+        json!(["name", "description", "search_hint"])
+    );
+    assert!(
+        result["explanations"][0]["score"]
+            .as_u64()
+            .expect("score should be numeric")
+            > 0
+    );
     assert_eq!(result["pending_mcp_servers"], json!(["slow-server"]));
     assert_eq!(result["total_deferred_tools"], json!(3));
+}
+
+#[tokio::test]
+async fn keyword_query_matches_file_network_and_media_tasks() {
+    let runtime = Arc::new(FakeRuntime::new(ToolSearchRuntimeSnapshot {
+        deferred_tools: vec![
+            descriptor(
+                "FileRead",
+                "Read workspace file contents",
+                Some("file read"),
+            ),
+            descriptor(
+                "WebFetch",
+                "Fetch network URL content",
+                Some("network http fetch"),
+            ),
+            descriptor(
+                "MiniMaxTextToImage",
+                "Generate an image from a prompt",
+                Some("image media generation"),
+            ),
+        ],
+        loaded_tool_names: BTreeSet::new(),
+        discovered_tool_names: BTreeSet::new(),
+        pending_mcp_servers: Vec::new(),
+        model_caps: Arc::new(ConversationModelCapability::default()),
+        reload_handle: None,
+    }));
+    let tool = ToolSearchTool::builder()
+        .with_scorer(Arc::new(DefaultScorer::default()))
+        .with_backend_selector(Arc::new(StaticSelector::new(Arc::new(
+            RecordingBackend::default(),
+        ))))
+        .build();
+
+    let file = execute(&tool, runtime.clone(), json!({ "query": "file task read" })).await;
+    let network = execute(
+        &tool,
+        runtime.clone(),
+        json!({ "query": "network task fetch" }),
+    )
+    .await;
+    let image = execute(&tool, runtime, json!({ "query": "image media task" })).await;
+
+    assert_eq!(file["matches"], json!(["FileRead"]));
+    assert_eq!(network["matches"], json!(["WebFetch"]));
+    assert_eq!(image["matches"], json!(["MiniMaxTextToImage"]));
 }
 
 #[tokio::test]
@@ -165,7 +252,14 @@ async fn no_match_does_not_materialize() {
     let result = execute(&tool, runtime, json!({ "query": "slack" })).await;
 
     assert_eq!(result["matches"], json!([]));
-    assert_eq!(result["materialization"], json!({ "kind": "no_match" }));
+    assert_eq!(result["explanations"], json!([]));
+    assert_eq!(
+        result["materialization"],
+        json!({
+            "kind": "no_match",
+            "reason": "query matched no deferred tools to materialize"
+        })
+    );
     assert!(backend.requested().await.is_empty());
 }
 
@@ -202,7 +296,8 @@ async fn default_backend_uses_inline_reinjection_for_non_tool_reference_models()
             "cache_impact": {
                 "prompt_cache_invalidated": true,
                 "reason": "test_reload"
-            }
+            },
+            "reason": "inline_reinjection selected because schemas must be reinjected inline"
         })
     );
     assert_eq!(reload.requested().await, vec!["ReadFile".to_owned()]);
@@ -217,7 +312,7 @@ async fn default_backend_uses_inline_reinjection_for_non_tool_reference_models()
 }
 
 #[tokio::test]
-async fn default_backend_rejects_inline_reinjection_when_reload_handle_is_missing() {
+async fn default_backend_degrades_inline_reinjection_errors() {
     let mut model_caps = ConversationModelCapability::default();
     model_caps.tool_calling = false;
     let runtime = Arc::new(FakeRuntime::new(ToolSearchRuntimeSnapshot {
@@ -232,25 +327,28 @@ async fn default_backend_rejects_inline_reinjection_when_reload_handle_is_missin
         .with_scorer(Arc::new(DefaultScorer::default()))
         .build();
 
-    let error = try_execute(
+    let result = execute(
         &tool,
         runtime.clone(),
         json!({ "query": "select:ReadFile" }),
     )
-    .await
-    .expect_err("inline reinjection without reload handle must fail closed");
+    .await;
 
-    assert!(matches!(
-        error,
-        ToolError::Internal(message) if message.contains("reload handle missing")
-    ));
-    assert!(!runtime.events().await.iter().any(|event| {
-        matches!(
-            event,
-            Event::ToolSchemaMaterialized(materialized)
-                if materialized.backend == "anthropic_tool_reference_degraded_no_reload_handle"
-        )
-    }));
+    assert_eq!(result["matches"], json!(["ReadFile"]));
+    assert_eq!(
+        result["materialization"],
+        json!({
+            "kind": "backend_failed",
+            "tool_names": ["ReadFile"],
+            "backend": "inline_reinjection",
+            "reason": "reload handle missing: inline backend requires session.reload_with handle"
+        })
+    );
+    assert!(!runtime
+        .events()
+        .await
+        .iter()
+        .any(|event| matches!(event, Event::ToolSchemaMaterialized(_))));
 }
 
 async fn execute(tool: &ToolSearchTool, runtime: Arc<FakeRuntime>, input: Value) -> Value {
@@ -264,13 +362,25 @@ async fn try_execute(
     runtime: Arc<FakeRuntime>,
     input: Value,
 ) -> Result<Value, ToolError> {
+    let ctx = test_context(runtime);
+    tool.validate(&input, &ctx).await.unwrap();
+    let plan = tool.plan(&input, &ctx).await?;
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan))?;
+    let mut stream = tool.execute_authorized(authorized, ctx).await?;
+    match stream.next().await.unwrap() {
+        harness_tool::ToolEvent::Final(ToolResult::Structured(value)) => Ok(value),
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+fn test_context(runtime: Arc<FakeRuntime>) -> ToolContext {
     let mut caps = CapabilityRegistry::default();
     let cap: Arc<dyn ToolSearchRuntimeCap> = runtime;
     caps.install(
         harness_contracts::ToolCapability::Custom(TOOL_SEARCH_RUNTIME_CAPABILITY.to_owned()),
         cap,
     );
-    let ctx = ToolContext {
+    ToolContext {
         tool_use_id: ToolUseId::new(),
         run_id: RunId::new(),
         session_id: SessionId::new(),
@@ -289,14 +399,6 @@ async fn try_execute(
         model_config_id: None,
         memory_thread_settings: None,
         actor_source: harness_contracts::PermissionActorSource::ParentRun,
-    };
-    tool.validate(&input, &ctx).await.unwrap();
-    let plan = tool.plan(&input, &ctx).await?;
-    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan))?;
-    let mut stream = tool.execute_authorized(authorized, ctx).await?;
-    match stream.next().await.unwrap() {
-        harness_tool::ToolEvent::Final(ToolResult::Structured(value)) => Ok(value),
-        other => panic!("unexpected event: {other:?}"),
     }
 }
 

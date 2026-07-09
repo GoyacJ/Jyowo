@@ -34,10 +34,12 @@ fn tool_descriptor_exposes_memory_tool_args_schema() {
     assert_eq!(desc.display_name, "Memory");
     // Tool belongs to Memory group
     assert!(matches!(desc.group, ToolGroup::Memory));
-    assert_eq!(
-        desc.input_schema,
-        serde_json::to_value(schemars::schema_for!(MemoryToolArgs)).unwrap()
-    );
+    let mut expected = serde_json::to_value(schemars::schema_for!(MemoryToolArgs)).unwrap();
+    expected
+        .as_object_mut()
+        .unwrap()
+        .insert("additionalProperties".to_owned(), json!(false));
+    assert_eq!(desc.input_schema, expected);
 }
 
 #[test]

@@ -23,24 +23,40 @@ pub struct ListDirTool {
 impl Default for ListDirTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "ListDir",
-                "List directory",
-                "List workspace directory entries.",
-                ToolGroup::FileSystem,
-                true,
-                true,
-                false,
-                32_000,
-                Vec::new(),
-                super::object_schema(
-                    &["path"],
-                    json!({
-                        "path": { "type": "string" },
-                        "max_depth": { "type": "integer", "minimum": 1 },
-                        "include_hidden": { "type": "boolean" }
-                    }),
+            descriptor: super::with_output_schema(
+                super::descriptor(
+                    "ListDir",
+                    "List directory",
+                    "List workspace directory entries.",
+                    ToolGroup::FileSystem,
+                    true,
+                    true,
+                    false,
+                    32_000,
+                    Vec::new(),
+                    super::object_schema(
+                        &["path"],
+                        json!({
+                            "path": { "type": "string" },
+                            "max_depth": { "type": "integer", "minimum": 1 },
+                            "include_hidden": { "type": "boolean" }
+                        }),
+                    ),
                 ),
+                json!({
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["path", "kind", "size"],
+                        "properties": {
+                            "path": { "type": "string" },
+                            "kind": { "type": "string", "enum": ["file", "dir"] },
+                            "size": { "type": "integer", "minimum": 0 },
+                            "modified": { "type": ["string", "null"] }
+                        },
+                        "additionalProperties": false
+                    }
+                }),
             ),
         }
     }
