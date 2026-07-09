@@ -1,7 +1,8 @@
+use chrono::NaiveDate;
 use harness_model::{
-    build_provider, provider_catalog_entries, provider_inventory_entries, resolve_model_descriptor,
-    ConversationModelCapability, ModelRuntimeSemantics, ProviderBuildConfig, ProviderRegistryError,
-    ReasoningProtocolSemantics,
+    build_provider, model_catalog_entries, provider_catalog_entries, provider_inventory_entries,
+    resolve_model_descriptor, ConversationModelCapability, ModelModality, ModelRuntimeSemantics,
+    ProviderBuildConfig, ProviderRegistryError, ReasoningProtocolSemantics,
 };
 
 #[test]
@@ -38,6 +39,79 @@ fn provider_inventory_includes_source_metadata() {
     assert!(entries
         .iter()
         .all(|entry| entry.verified_date.to_string() == "2026-06-21"));
+}
+
+#[test]
+fn model_catalog_entries_include_fresh_verification_metadata() {
+    let entries = model_catalog_entries();
+    let stale_cutoff = NaiveDate::from_ymd_opt(2026, 1, 9).expect("valid stale cutoff");
+
+    assert!(!entries.is_empty());
+    for entry in entries {
+        assert!(!entry.source_url.is_empty());
+        assert!(
+            entry.verified_at >= stale_cutoff,
+            "{}:{} verified_at {} is older than 180 days",
+            entry.provider_id,
+            entry.model_id,
+            entry.verified_at
+        );
+    }
+}
+
+#[test]
+fn model_catalog_distinguishes_declared_and_runtime_capabilities() {
+    let entries = model_catalog_entries();
+
+    assert!(entries.iter().any(|entry| {
+        entry
+            .provider_declared_capability
+            .input_modalities
+            .contains(&ModelModality::Image)
+            && !entry
+                .conversation_capability
+                .input_modalities
+                .contains(&ModelModality::Image)
+    }));
+}
+
+#[test]
+fn runtime_modalities_do_not_exceed_declared_provider_capabilities() {
+    for entry in model_catalog_entries() {
+        assert_modalities_subset(
+            &entry.provider_id,
+            &entry.model_id,
+            "input",
+            &entry.conversation_capability.input_modalities,
+            &entry.provider_declared_capability.input_modalities,
+        );
+        assert_modalities_subset(
+            &entry.provider_id,
+            &entry.model_id,
+            "output",
+            &entry.conversation_capability.output_modalities,
+            &entry.provider_declared_capability.output_modalities,
+        );
+    }
+
+    for provider in provider_catalog_entries() {
+        for descriptor in provider.models {
+            assert_modalities_subset(
+                &descriptor.provider_id,
+                &descriptor.model_id,
+                "input",
+                &descriptor.conversation_capability.input_modalities,
+                &descriptor.provider_declared_capability.input_modalities,
+            );
+            assert_modalities_subset(
+                &descriptor.provider_id,
+                &descriptor.model_id,
+                "output",
+                &descriptor.conversation_capability.output_modalities,
+                &descriptor.provider_declared_capability.output_modalities,
+            );
+        }
+    }
 }
 
 #[cfg(any(
@@ -238,6 +312,21 @@ fn catalog_auth_scheme(
         .unwrap_or_else(|| panic!("{provider_id} catalog should exist"))
         .runtime_capability
         .auth_scheme
+}
+
+fn assert_modalities_subset(
+    provider_id: &str,
+    model_id: &str,
+    dimension: &str,
+    runtime_modalities: &[ModelModality],
+    declared_modalities: &[ModelModality],
+) {
+    for modality in runtime_modalities {
+        assert!(
+            declared_modalities.contains(modality),
+            "{provider_id}:{model_id} runtime {dimension} modality {modality:?} is not declared by provider"
+        );
+    }
 }
 
 fn expected_runtime_semantics(provider_id: &str) -> ModelRuntimeSemantics {

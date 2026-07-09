@@ -5,8 +5,8 @@ use harness_contracts::ModelError;
 
 use crate::openai_protocol::{OpenAiChatDialect, OpenAiProtocolClient, OpenAiProtocolProviderExt};
 use crate::{
-    ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
-    ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
+    InferContext, ModelCredentialResolver, ModelDescriptor, ModelProtocol, ModelProvider,
+    ModelRequest, ModelStream,
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.deepseek.com";
@@ -54,11 +54,7 @@ impl ModelProvider for DeepSeekProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        // Verified 2026-06-21: https://api-docs.deepseek.com/quick_start/pricing
-        vec![
-            descriptor("deepseek-v4-flash", "DeepSeek V4 Flash", 1_000_000, 384_000),
-            descriptor("deepseek-v4-pro", "DeepSeek V4 Pro", 1_000_000, 384_000),
-        ]
+        crate::catalog::provider_model_descriptors(PROVIDER_ID)
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
@@ -67,35 +63,5 @@ impl ModelProvider for DeepSeekProvider {
 
     fn default_protocol(&self) -> ModelProtocol {
         ModelProtocol::ChatCompletions
-    }
-}
-
-fn descriptor(
-    model_id: &str,
-    display_name: &str,
-    context_window: u32,
-    max_output_tokens: u32,
-) -> ModelDescriptor {
-    ModelDescriptor {
-        provider_id: PROVIDER_ID.to_owned(),
-        model_id: model_id.to_owned(),
-        display_name: display_name.to_owned(),
-        protocol: ModelProtocol::ChatCompletions,
-        context_window,
-        max_output_tokens,
-        conversation_capability: ConversationModelCapability {
-            context_window,
-            max_output_tokens,
-            tool_calling: true,
-            reasoning: model_id.contains("reasoner"),
-            prompt_cache: false,
-            streaming: true,
-            structured_output: false,
-            input_modalities: vec![ModelModality::Text],
-            output_modalities: vec![ModelModality::Text],
-        },
-        runtime_semantics: crate::ModelRuntimeSemantics::openai_chat_deepseek(),
-        lifecycle: ModelLifecycle::Stable,
-        pricing: None,
     }
 }

@@ -21,10 +21,30 @@ pub enum CassetteMode {
     Passthrough,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderContinuationRecording {
+    OmitPayload,
+    RecordPayloadForLocalTests,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CassetteProviderOptions {
+    pub continuation_recording: ProviderContinuationRecording,
+}
+
+impl Default for CassetteProviderOptions {
+    fn default() -> Self {
+        Self {
+            continuation_recording: ProviderContinuationRecording::OmitPayload,
+        }
+    }
+}
+
 pub struct CassetteProvider {
     inner: Arc<dyn ModelProvider>,
     cassette: PathBuf,
     mode: CassetteMode,
+    options: CassetteProviderOptions,
 }
 
 impl CassetteProvider {
@@ -38,6 +58,22 @@ impl CassetteProvider {
             inner,
             cassette: cassette.into(),
             mode,
+            options: CassetteProviderOptions::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn new_with_options(
+        inner: Arc<dyn ModelProvider>,
+        cassette: impl Into<PathBuf>,
+        mode: CassetteMode,
+        options: CassetteProviderOptions,
+    ) -> Self {
+        Self {
+            inner,
+            cassette: cassette.into(),
+            mode,
+            options,
         }
     }
 
@@ -67,7 +103,7 @@ impl CassetteProvider {
         let recorded = events
             .iter()
             .cloned()
-            .map(RecordedModelStreamEvent::from)
+            .map(|event| RecordedModelStreamEvent::from_event(event, self.options))
             .collect::<Vec<_>>();
         let mut cassette = read_cassette(&self.cassette).await.unwrap_or_default();
         cassette.entries.retain(|entry| entry.request_key != key);
@@ -75,6 +111,8 @@ impl CassetteProvider {
             request_key: key,
             events: recorded,
         });
+        cassette.metadata =
+            CassetteMetadata::from_entries_and_options(&cassette.entries, self.options);
         write_cassette(&self.cassette, &cassette).await?;
         Ok(Box::pin(stream::iter(events)))
     }
@@ -118,13 +156,66 @@ impl ModelProvider for CassetteProvider {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct CassetteFile {
+    #[serde(default)]
+    metadata: CassetteMetadata,
     entries: Vec<CassetteEntry>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct CassetteMetadata {
+    #[serde(default)]
+    contains_private_provider_state: bool,
+    #[serde(default)]
+    provider_continuation_payloads: ProviderContinuationPayloadPolicy,
+}
+
+impl CassetteMetadata {
+    fn from_entries_and_options(
+        entries: &[CassetteEntry],
+        options: CassetteProviderOptions,
+    ) -> Self {
+        let contains_recorded_payload = entries.iter().any(CassetteEntry::contains_private_payload);
+        if contains_recorded_payload
+            || options.continuation_recording
+                == ProviderContinuationRecording::RecordPayloadForLocalTests
+        {
+            Self {
+                contains_private_provider_state: true,
+                provider_continuation_payloads:
+                    ProviderContinuationPayloadPolicy::RecordedLocalTestOnly,
+            }
+        } else {
+            Self::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ProviderContinuationPayloadPolicy {
+    #[default]
+    Omitted,
+    RecordedLocalTestOnly,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CassetteEntry {
     request_key: String,
     events: Vec<RecordedModelStreamEvent>,
+}
+
+impl CassetteEntry {
+    fn contains_private_payload(&self) -> bool {
+        self.events.iter().any(|event| {
+            matches!(
+                event,
+                RecordedModelStreamEvent::ProviderContinuationDelta {
+                    payload: Some(_),
+                    ..
+                }
+            )
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -152,6 +243,8 @@ enum RecordedModelStreamEvent {
     MessageStop,
     ProviderContinuationDelta {
         kind: ProviderContinuationKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload: Option<Value>,
     },
     StreamError {
         error: ModelError,
@@ -208,8 +301,8 @@ enum RecordedErrorClass {
     Fatal,
 }
 
-impl From<ModelStreamEvent> for RecordedModelStreamEvent {
-    fn from(value: ModelStreamEvent) -> Self {
+impl RecordedModelStreamEvent {
+    fn from_event(value: ModelStreamEvent, options: CassetteProviderOptions) -> Self {
         match value {
             ModelStreamEvent::MessageStart { message_id, usage } => {
                 Self::MessageStart { message_id, usage }
@@ -234,8 +327,12 @@ impl From<ModelStreamEvent> for RecordedModelStreamEvent {
                 usage_delta,
             },
             ModelStreamEvent::MessageStop => Self::MessageStop,
-            ModelStreamEvent::ProviderContinuationDelta { kind, .. } => {
-                Self::ProviderContinuationDelta { kind }
+            ModelStreamEvent::ProviderContinuationDelta { kind, payload } => {
+                let payload = match options.continuation_recording {
+                    ProviderContinuationRecording::OmitPayload => None,
+                    ProviderContinuationRecording::RecordPayloadForLocalTests => Some(payload),
+                };
+                Self::ProviderContinuationDelta { kind, payload }
             }
             ModelStreamEvent::StreamError {
                 error,
@@ -281,10 +378,10 @@ impl From<RecordedModelStreamEvent> for ModelStreamEvent {
                 usage_delta,
             },
             RecordedModelStreamEvent::MessageStop => Self::MessageStop,
-            RecordedModelStreamEvent::ProviderContinuationDelta { kind } => {
+            RecordedModelStreamEvent::ProviderContinuationDelta { kind, payload } => {
                 Self::ProviderContinuationDelta {
                     kind,
-                    payload: Value::Null,
+                    payload: payload.unwrap_or(Value::Null),
                 }
             }
             RecordedModelStreamEvent::StreamError {

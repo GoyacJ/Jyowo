@@ -5,8 +5,8 @@ use harness_contracts::ModelError;
 
 use crate::openai_protocol::{OpenAiChatDialect, OpenAiProtocolClient, OpenAiProtocolProviderExt};
 use crate::{
-    ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
-    ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
+    InferContext, ModelCredentialResolver, ModelDescriptor, ModelProtocol, ModelProvider,
+    ModelRequest, ModelStream,
 };
 
 const DEFAULT_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode";
@@ -54,20 +54,7 @@ impl ModelProvider for QwenProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        // Verified 2026-06-21: https://help.aliyun.com/zh/model-studio/models
-        vec![
-            descriptor("qwen3.7-max", "Qwen3.7 Max", 1_000_000, 32_768, false),
-            descriptor(
-                "qwen3.7-max-thinking",
-                "Qwen3.7 Max Thinking",
-                1_000_000,
-                32_768,
-                true,
-            ),
-            descriptor("qwen3.7-plus", "Qwen3.7 Plus", 1_000_000, 32_768, false),
-            descriptor("qwen3.6-flash", "Qwen3.6 Flash", 128_000, 8192, false),
-            descriptor("qwen3-coder-plus", "Qwen3 Coder Plus", 128_000, 8192, false),
-        ]
+        crate::catalog::provider_model_descriptors(PROVIDER_ID)
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
@@ -76,36 +63,5 @@ impl ModelProvider for QwenProvider {
 
     fn default_protocol(&self) -> ModelProtocol {
         ModelProtocol::ChatCompletions
-    }
-}
-
-fn descriptor(
-    model_id: &str,
-    display_name: &str,
-    context_window: u32,
-    max_output_tokens: u32,
-    reasoning: bool,
-) -> ModelDescriptor {
-    ModelDescriptor {
-        provider_id: PROVIDER_ID.to_owned(),
-        model_id: model_id.to_owned(),
-        display_name: display_name.to_owned(),
-        protocol: ModelProtocol::ChatCompletions,
-        context_window,
-        max_output_tokens,
-        conversation_capability: ConversationModelCapability {
-            context_window,
-            max_output_tokens,
-            tool_calling: true,
-            reasoning,
-            prompt_cache: false,
-            streaming: true,
-            structured_output: false,
-            input_modalities: vec![ModelModality::Text],
-            output_modalities: vec![ModelModality::Text],
-        },
-        runtime_semantics: crate::ModelRuntimeSemantics::openai_chat_plain(),
-        lifecycle: ModelLifecycle::Stable,
-        pricing: None,
     }
 }
