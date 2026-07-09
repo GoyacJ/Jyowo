@@ -654,10 +654,16 @@ pub(crate) fn ensure_mcp_server_request(
 pub(crate) fn ensure_mcp_server_record(
     record: &McpServerConfigRecord,
 ) -> Result<(), CommandErrorPayload> {
-    ensure_non_empty("displayName", &record.display_name)?;
-    ensure_mcp_server_id(&record.id)?;
+    ensure_mcp_server_record_identity(record)?;
     ensure_mcp_server_scope(&record.scope)?;
     ensure_mcp_server_transport(&record.transport)
+}
+
+pub(crate) fn ensure_mcp_server_record_identity(
+    record: &McpServerConfigRecord,
+) -> Result<(), CommandErrorPayload> {
+    ensure_non_empty("displayName", &record.display_name)?;
+    ensure_mcp_server_id(&record.id)
 }
 
 pub(crate) fn ensure_mcp_server_transport(

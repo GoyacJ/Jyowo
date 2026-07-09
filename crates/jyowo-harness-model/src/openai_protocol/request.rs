@@ -40,14 +40,6 @@ pub(super) fn merge_extra_object_protecting(
     Ok(())
 }
 
-pub(super) async fn responses_chat_message(
-    message: &Message,
-    ctx: &InferContext,
-) -> Result<Value, ModelError> {
-    let tool_call_names = BTreeMap::new();
-    chat_message(message, OpenAiChatDialect::Plain, ctx, &tool_call_names).await
-}
-
 pub(super) async fn chat_message(
     message: &Message,
     dialect: OpenAiChatDialect,

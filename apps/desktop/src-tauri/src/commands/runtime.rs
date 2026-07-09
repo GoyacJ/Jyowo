@@ -2257,6 +2257,11 @@ mod tests {
         previous: Option<std::ffi::OsString>,
     }
 
+    struct EnvVarGuard {
+        name: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
     struct CurrentDirGuard {
         previous: PathBuf,
     }
@@ -2266,6 +2271,14 @@ mod tests {
             let previous = std::env::var_os("HOME");
             std::env::set_var("HOME", home.as_os_str());
             Self { previous }
+        }
+    }
+
+    impl EnvVarGuard {
+        fn remove(name: &'static str) -> Self {
+            let previous = std::env::var_os(name);
+            std::env::remove_var(name);
+            Self { name, previous }
         }
     }
 
@@ -2411,6 +2424,15 @@ mod tests {
             match &self.previous {
                 Some(value) => std::env::set_var("HOME", value),
                 None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
             }
         }
     }
@@ -3360,6 +3382,139 @@ esac
                 .join(conversation_id.to_string())
         );
         assert!(layout.workspace_root.is_none());
+    }
+
+    #[test]
+    fn no_workspace_runtime_marks_mcp_server_with_missing_bearer_env_failed() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let _bearer_guard = EnvVarGuard::remove("MCP_TEST_BEARER");
+        let conversation_id = SessionId::new();
+        let runtime_root = home.path().join(".jyowo").join("runtime");
+        let config_dir = home.path().join(".jyowo").join("config");
+        std::fs::create_dir_all(&config_dir).expect("global config dir");
+        crate::commands::stores::write_json_file_atomic(
+            &config_dir.join("mcp-servers.json"),
+            "mcp server settings",
+            &vec![McpServerConfigRecord {
+                enabled: true,
+                display_name: "Remote Context".to_owned(),
+                id: "context7".to_owned(),
+                scope: "global".to_owned(),
+                transport: McpServerTransportConfig::Http {
+                    url: "http://127.0.0.1:9/mcp".to_owned(),
+                    bearer_token_env_var: Some("MCP_TEST_BEARER".to_owned()),
+                    headers: Vec::new(),
+                    headers_from_env: Vec::new(),
+                },
+            }],
+        )
+        .expect("mcp server settings");
+
+        let state = tauri::async_runtime::block_on(
+            runtime_state_for_global_conversation_with_runtime_root(
+                conversation_id,
+                runtime_root,
+                Arc::new(StreamPermissionRuntime::default()),
+            ),
+        )
+        .expect("global conversation runtime state");
+        let harness = state.harness().expect("runtime harness");
+        let config = harness.mcp_config().expect("mcp config");
+        let server_id = McpServerId("context7".to_owned());
+
+        assert!(matches!(
+            tauri::async_runtime::block_on(config.registry.connection_state(&server_id)),
+            Some(McpConnectionState::Failed { last_error })
+                if last_error.contains("MCP bearer token env var is unavailable: MCP_TEST_BEARER")
+        ));
+        assert!(!config.server_ids_to_inject.contains(&server_id));
+    }
+
+    #[test]
+    fn no_workspace_runtime_marks_mcp_server_with_invalid_persisted_transport_failed() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let conversation_id = SessionId::new();
+        let runtime_root = home.path().join(".jyowo").join("runtime");
+        let config_dir = home.path().join(".jyowo").join("config");
+        std::fs::create_dir_all(&config_dir).expect("global config dir");
+        crate::commands::stores::write_json_file_atomic(
+            &config_dir.join("mcp-servers.json"),
+            "mcp server settings",
+            &vec![McpServerConfigRecord {
+                enabled: true,
+                display_name: "Legacy In Process".to_owned(),
+                id: "legacy_in_process".to_owned(),
+                scope: "global".to_owned(),
+                transport: McpServerTransportConfig::InProcess,
+            }],
+        )
+        .expect("mcp server settings");
+
+        let state = tauri::async_runtime::block_on(
+            runtime_state_for_global_conversation_with_runtime_root(
+                conversation_id,
+                runtime_root,
+                Arc::new(StreamPermissionRuntime::default()),
+            ),
+        )
+        .expect("global conversation runtime state");
+        let harness = state.harness().expect("runtime harness");
+        let config = harness.mcp_config().expect("mcp config");
+        let server_id = McpServerId("legacy_in_process".to_owned());
+
+        assert!(matches!(
+            tauri::async_runtime::block_on(config.registry.connection_state(&server_id)),
+            Some(McpConnectionState::Failed { last_error })
+                if last_error.contains("transport.kind must be stdio or http for workspace MCP servers")
+        ));
+        assert!(!config.server_ids_to_inject.contains(&server_id));
+    }
+
+    #[test]
+    fn no_workspace_runtime_skips_mcp_server_with_invalid_persisted_identity() {
+        let _lock = lock_home_env();
+        let home = temp_home_dir();
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let conversation_id = SessionId::new();
+        let runtime_root = home.path().join(".jyowo").join("runtime");
+        let config_dir = home.path().join(".jyowo").join("config");
+        std::fs::create_dir_all(&config_dir).expect("global config dir");
+        crate::commands::stores::write_json_file_atomic(
+            &config_dir.join("mcp-servers.json"),
+            "mcp server settings",
+            &vec![McpServerConfigRecord {
+                enabled: true,
+                display_name: String::new(),
+                id: "bad id".to_owned(),
+                scope: "global".to_owned(),
+                transport: McpServerTransportConfig::Stdio {
+                    command: "node".to_owned(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    inherit_env: Vec::new(),
+                    working_dir: None,
+                },
+            }],
+        )
+        .expect("mcp server settings");
+
+        let state = tauri::async_runtime::block_on(
+            runtime_state_for_global_conversation_with_runtime_root(
+                conversation_id,
+                runtime_root,
+                Arc::new(StreamPermissionRuntime::default()),
+            ),
+        )
+        .expect("global conversation runtime state");
+        let harness = state.harness().unwrap();
+        let config = harness.mcp_config().unwrap();
+
+        assert!(tauri::async_runtime::block_on(config.registry.server_ids()).is_empty());
+        assert!(config.server_ids_to_inject.is_empty());
     }
 
     #[test]

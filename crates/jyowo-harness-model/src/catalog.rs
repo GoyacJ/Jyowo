@@ -1018,6 +1018,7 @@ pub fn model_catalog_entries() -> Vec<ModelCatalogEntry> {
 }
 
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn provider_model_descriptors(provider_id: &str) -> Vec<ModelDescriptor> {
     MODEL_SPECS
         .iter()

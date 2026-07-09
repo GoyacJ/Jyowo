@@ -799,6 +799,56 @@ async fn set_mcp_server_enabled_registers_and_injects_tools() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn set_mcp_server_enabled_rejects_missing_bearer_env_without_persisting_enabled() {
+    let _guard = WORKSPACE_ROOT_ENV_LOCK.lock().unwrap();
+    let _env = EnvVarGuard::remove("MCP_ENABLE_TEST_BEARER");
+    let workspace = unique_workspace("mcp-enable-missing-bearer");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut state =
+        runtime_state_with_mcp_registry_for_workspace(workspace, McpRegistry::new(), Vec::new())
+            .await;
+    let store = Arc::new(RecordingMcpServerStore::default());
+    *store.record.lock().unwrap() = Some(McpServerConfigRecord {
+        enabled: false,
+        display_name: "Remote Context".to_owned(),
+        id: "context7".to_owned(),
+        scope: "global".to_owned(),
+        transport: McpServerTransportConfig::Http {
+            url: "http://127.0.0.1:9/mcp".to_owned(),
+            bearer_token_env_var: Some("MCP_ENABLE_TEST_BEARER".to_owned()),
+            headers: Vec::new(),
+            headers_from_env: Vec::new(),
+        },
+    });
+    state.set_mcp_server_store_for_test(store.clone());
+
+    let error = set_mcp_server_enabled_with_runtime_state(
+        SetMcpServerEnabledRequest {
+            id: "context7".to_owned(),
+            enabled: true,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+    assert!(error
+        .message
+        .contains("MCP bearer token env var is unavailable: MCP_ENABLE_TEST_BEARER"));
+    assert!(!store.record.lock().unwrap().as_ref().unwrap().enabled);
+    assert!(state
+        .harness()
+        .unwrap()
+        .mcp_config()
+        .unwrap()
+        .registry
+        .connection_state(&McpServerId("context7".to_owned()))
+        .await
+        .is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn restart_mcp_server_removes_registers_and_injects_tools() {
     let _guard = WORKSPACE_ROOT_ENV_LOCK.lock().unwrap();
     let workspace = unique_workspace("mcp-restart");

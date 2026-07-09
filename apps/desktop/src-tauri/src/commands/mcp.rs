@@ -362,6 +362,9 @@ pub async fn set_mcp_server_enabled_with_runtime_state(
     record.enabled = request.enabled;
     ensure_mcp_server_record(record)?;
     let record = record.clone();
+    if record.enabled {
+        let _ = mcp_server_spec_from_record(&record, mcp_workdir_root_for_state(state))?;
+    }
     state.mcp_server_store.save_record(&record)?;
 
     let Some(harness) = state.harness() else {
@@ -619,7 +622,9 @@ pub(crate) async fn mcp_config_from_records(
     let mut server_ids_to_inject = Vec::new();
 
     for record in records {
-        ensure_mcp_server_record(&record)?;
+        if ensure_mcp_server_record_identity(&record).is_err() {
+            continue;
+        }
         if !record.enabled {
             continue;
         }
@@ -632,6 +637,7 @@ pub(crate) async fn mcp_config_from_records(
             Arc::clone(&authorization_service),
             workdir_root,
             InteractivityLevel::NoInteractive,
+            true,
         )
         .await?;
         if matches!(
@@ -666,6 +672,7 @@ pub(crate) async fn register_mcp_record_with_harness(
         harness.authorization_service(),
         mcp_workdir_root_for_state(state),
         InteractivityLevel::FullyInteractive,
+        false,
     )
     .await?;
 
@@ -713,10 +720,45 @@ pub(crate) async fn register_mcp_record_with_registry(
     authorization_service: Arc<harness_execution::AuthorizationService>,
     workspace_root: &Path,
     interactivity: InteractivityLevel,
+    allow_config_error_as_failed: bool,
 ) -> Result<McpServerId, CommandErrorPayload> {
-    let spec = mcp_server_spec_from_record(record, workspace_root)?;
+    ensure_mcp_server_record_identity(record)?;
+
+    let mut config_error = if allow_config_error_as_failed {
+        ensure_mcp_server_record(record)
+            .err()
+            .map(|error| error.message)
+    } else {
+        ensure_mcp_server_record(record)?;
+        None
+    };
+    let spec = if config_error.is_some() {
+        mcp_server_spec_from_record_for_failed_registration(record, workspace_root)
+    } else {
+        match mcp_server_spec_from_record(record, workspace_root) {
+            Ok(spec) => spec,
+            Err(error) if allow_config_error_as_failed => {
+                config_error = Some(error.message);
+                mcp_server_spec_from_record_for_failed_registration(record, workspace_root)
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    let scope = match mcp_server_scope_from_record(record, default_session_id, default_agent_id) {
+        Ok(scope) => scope,
+        Err(_) if config_error.is_some() => McpServerScope::Global,
+        Err(error) => return Err(error),
+    };
     let server_id = spec.server_id.clone();
-    let scope = mcp_server_scope_from_record(record, default_session_id, default_agent_id)?;
+
+    if let Some(error) = config_error {
+        registry
+            .add_failed_server(spec, scope, error)
+            .await
+            .map_err(|error| runtime_operation_failed(error.to_string()))?;
+        return Ok(server_id);
+    }
+
     let transport = mcp_transport_for_config(&record.transport);
     let event_sink = Arc::new(DesktopMcpEventSink { diagnostic_store });
     let connect_context =
@@ -747,6 +789,38 @@ pub(crate) async fn register_mcp_record_with_registry(
     }
 
     Ok(server_id)
+}
+
+fn mcp_server_spec_from_record_for_failed_registration(
+    record: &McpServerConfigRecord,
+    workspace_root: &Path,
+) -> McpServerSpec {
+    let transport = match &record.transport {
+        McpServerTransportConfig::Stdio { command, args, .. } => {
+            let mut policy = StdioPolicy::default();
+            policy.working_dir = Some(workspace_root.to_path_buf());
+            TransportChoice::Stdio {
+                command: command.clone(),
+                args: args.clone(),
+                env: StdioEnv::Empty {
+                    extra: BTreeMap::new(),
+                },
+                policy,
+            }
+        }
+        McpServerTransportConfig::Http { url, .. } => TransportChoice::Http {
+            url: url.clone(),
+            headers: BTreeMap::new(),
+        },
+        McpServerTransportConfig::InProcess => TransportChoice::InProcess,
+    };
+
+    McpServerSpec::new(
+        McpServerId(record.id.clone()),
+        record.display_name.clone(),
+        transport,
+        McpServerSource::Workspace,
+    )
 }
 
 fn mcp_authorization_context(
