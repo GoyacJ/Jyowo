@@ -4,8 +4,8 @@ use std::{path::Path, sync::Arc};
 
 use futures::StreamExt;
 use harness_contracts::{
-    CapabilityRegistry, DecisionScope, TenantId, ToolActionPlan, ToolCapability, ToolError,
-    ToolGroup, ToolResult, ToolUseId,
+    ActionResource, CapabilityRegistry, DecisionScope, PermissionConfirmation, TenantId,
+    ToolActionPlan, ToolCapability, ToolError, ToolGroup, ToolResult, ToolUseId,
 };
 use harness_tool::{
     builtin::{
@@ -253,6 +253,84 @@ fn descriptors_match_architecture_groups_and_capabilities() {
         stop.descriptor().required_capabilities,
         vec![ToolCapability::RunCanceller]
     );
+}
+
+#[tokio::test]
+async fn todo_and_task_stop_plan_declares_specific_resources() {
+    let ctx = tool_ctx(CapabilityRegistry::default());
+
+    let todo = TodoTool::default();
+    let todo_plan = todo
+        .plan(
+            &json!({ "items": [{ "content": "review", "status": "pending" }] }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        todo_plan.resources.as_slice(),
+        [ActionResource::Todo { operation, item_count }]
+            if operation == "replace" && *item_count == Some(1)
+    ));
+
+    let stop = TaskStopTool::default();
+    let stop_plan = stop.plan(&json!({ "reason": "done" }), &ctx).await.unwrap();
+    let expected_run_id = ctx.run_id.to_string();
+    assert!(matches!(
+        stop_plan.resources.as_slice(),
+        [ActionResource::RunControl { action, target }]
+            if action == "stop" && target.as_deref() == Some(expected_run_id.as_str())
+    ));
+}
+
+#[tokio::test]
+async fn permission_review_details_describe_tool_scope_access_and_resources() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("note.txt");
+    std::fs::write(&file, "alpha").unwrap();
+    let ctx = tool_ctx_at(dir.path(), CapabilityRegistry::default());
+    let tool = FileEditTool::default();
+
+    let plan = tool
+        .plan(
+            &json!({
+                "path": file,
+                "old": "alpha",
+                "new": "beta"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(!plan.review.redacted);
+    assert_eq!(plan.review.confirmation, PermissionConfirmation::None);
+    assert!(plan
+        .review
+        .summary
+        .contains(tool.descriptor().display_name.as_str()));
+    assert!(plan.review.summary.contains("Medium"));
+
+    let labels = plan
+        .review
+        .details
+        .iter()
+        .map(|detail| detail.label.as_str())
+        .collect::<Vec<_>>();
+    for expected in [
+        "tool",
+        "scope",
+        "workspace_access",
+        "network_access",
+        "execution_channel",
+        "resource",
+    ] {
+        assert!(
+            labels.contains(&expected),
+            "permission review should include {expected}"
+        );
+    }
+    assert!(plan.review.details.iter().all(|detail| !detail.redacted));
 }
 
 async fn execute_final(tool: &dyn Tool, input: Value, ctx: ToolContext) -> ToolResult {

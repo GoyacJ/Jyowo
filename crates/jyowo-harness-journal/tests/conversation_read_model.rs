@@ -1117,6 +1117,7 @@ async fn sqlite_worktree_projects_command_metadata_and_offloaded_output_from_eve
     assert!(offloaded_event.payload.get("blob_ref").is_none());
     assert!(offloaded_event.payload.get("outputBytes").is_none());
     assert!(offloaded_event.payload.get("previewBytes").is_none());
+    assert_eq!(offloaded_event.payload["resultKind"], "offloaded");
     assert_eq!(offloaded_event.payload["truncated"], true);
     let timeline_ref = EvidenceRefId::new(
         offloaded_event.payload["fullOutputRef"]

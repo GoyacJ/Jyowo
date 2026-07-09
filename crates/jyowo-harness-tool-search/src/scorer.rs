@@ -68,6 +68,7 @@ pub struct ScoringWeights {
     pub full_name_fallback: u32,
     pub search_hint: u32,
     pub description: u32,
+    pub required_capability: u32,
     pub discovered_penalty_ratio: f32,
 }
 
@@ -81,6 +82,7 @@ impl Default for ScoringWeights {
             full_name_fallback: 3,
             search_hint: 4,
             description: 2,
+            required_capability: 3,
             discovered_penalty_ratio: 0.3,
         }
     }
@@ -106,14 +108,20 @@ impl ToolSearchScorer for DefaultScorer {
             .as_deref()
             .unwrap_or_default()
             .to_ascii_lowercase();
+        let capabilities = required_capability_text(tool);
         let is_mcp = name.starts_with("mcp__");
         let parts = parse_tool_name_parts(&tool.name);
 
-        if !terms
-            .required
-            .iter()
-            .all(|term| matches_any(term, &name, &description, &search_hint, &parts))
-        {
+        if !terms.required.iter().all(|term| {
+            matches_any(
+                term,
+                &name,
+                &description,
+                &search_hint,
+                &capabilities,
+                &parts,
+            )
+        }) {
             return 0;
         }
 
@@ -124,6 +132,7 @@ impl ToolSearchScorer for DefaultScorer {
                 &name,
                 &description,
                 &search_hint,
+                &capabilities,
                 &parts,
                 is_mcp,
                 self.weights,
@@ -149,11 +158,13 @@ fn matches_any(
     name: &str,
     description: &str,
     search_hint: &str,
+    capabilities: &str,
     parts: &[String],
 ) -> bool {
     name.contains(term)
         || description.contains(term)
         || search_hint.contains(term)
+        || capabilities.contains(term)
         || parts.iter().any(|part| part.contains(term))
 }
 
@@ -162,6 +173,7 @@ fn score_term(
     name: &str,
     description: &str,
     search_hint: &str,
+    capabilities: &str,
     parts: &[String],
     is_mcp: bool,
     weights: ScoringWeights,
@@ -191,7 +203,18 @@ fn score_term(
     if description.contains(term) {
         score += weights.description;
     }
+    if capabilities.contains(term) {
+        score += weights.required_capability;
+    }
     score
+}
+
+fn required_capability_text(tool: &ToolDescriptor) -> String {
+    tool.required_capabilities
+        .iter()
+        .map(|capability| format!("{capability:?}").to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[must_use]

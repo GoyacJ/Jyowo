@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    DecisionScope, PermissionSubject, RunCancellerCap, ToolActionPlan, ToolCapability,
-    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
+    ActionResource, DecisionScope, PermissionSubject, RunCancellerCap, ToolActionPlan,
+    ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -17,22 +17,33 @@ pub struct TaskStopTool {
 impl Default for TaskStopTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "TaskStop",
-                "Task stop",
-                "Request graceful stop for the current run.",
-                ToolGroup::Agent,
-                false,
-                false,
-                false,
-                1_000,
-                vec![ToolCapability::RunCanceller],
-                super::object_schema(
-                    &["reason"],
-                    json!({
-                        "reason": { "type": "string" }
-                    }),
+            descriptor: super::with_output_schema(
+                super::descriptor(
+                    "TaskStop",
+                    "Task stop",
+                    "Request graceful stop for the current run.",
+                    ToolGroup::Agent,
+                    false,
+                    false,
+                    false,
+                    1_000,
+                    vec![ToolCapability::RunCanceller],
+                    super::object_schema(
+                        &["reason"],
+                        json!({
+                            "reason": { "type": "string" }
+                        }),
+                    ),
                 ),
+                json!({
+                    "type": "object",
+                    "required": ["stopped", "reason"],
+                    "properties": {
+                        "stopped": { "type": "boolean" },
+                        "reason": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                }),
             ),
         }
     }
@@ -50,7 +61,7 @@ impl Tool for TaskStopTool {
     }
 
     async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
-        super::generic_action_plan(
+        super::generic_action_plan_with_resources(
             &self.descriptor,
             input,
             ctx,
@@ -61,6 +72,10 @@ impl Tool for TaskStopTool {
                 },
                 scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
+            vec![ActionResource::RunControl {
+                action: "stop".to_owned(),
+                target: Some(ctx.run_id.to_string()),
+            }],
             ToolExecutionChannel::DirectAuthorizedRust,
         )
     }

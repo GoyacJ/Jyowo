@@ -8,9 +8,10 @@ use chrono::{DateTime, Utc};
 use futures::Stream;
 use harness_contracts::{
     ActionPlanHash, ActionPlanId, ActionResource, AuthorizationTicketId, DecisionScope, Event,
-    MessagePart, NetworkAccess, PermissionReview, PermissionSubject, ResourceLimits, RunId,
-    SandboxMode, SandboxPolicy, SandboxScope, SessionId, Severity, TenantId, ToolActionPlan,
-    ToolDescriptor, ToolError, ToolExecutionChannel, ToolResult, ToolUseId, WorkspaceAccess,
+    MessagePart, NetworkAccess, PermissionConfirmation, PermissionReview, PermissionReviewDetail,
+    PermissionSubject, ResourceLimits, RunId, SandboxMode, SandboxPolicy, SandboxScope, SessionId,
+    Severity, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel,
+    ToolResult, ToolUseId, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use parking_lot::Mutex;
@@ -464,6 +465,16 @@ pub fn action_plan_from_permission_check(
         PermissionCheck::Denied { reason } => return Err(ToolError::PermissionDenied(reason)),
     };
 
+    let review = permission_review(
+        descriptor,
+        &severity,
+        &scope,
+        &resources,
+        &workspace_access,
+        &network_access,
+        &execution_channel,
+    );
+
     let mut plan = ToolActionPlan {
         plan_id: ActionPlanId::new(),
         tool_use_id: ctx.tool_use_id,
@@ -477,12 +488,67 @@ pub fn action_plan_from_permission_check(
         workspace_access,
         network_access,
         execution_channel,
-        review: PermissionReview::default(),
+        review,
         plan_hash: ActionPlanHash::default(),
         created_at: Utc::now(),
     };
     plan.plan_hash = canonical_action_plan_hash(&plan);
     Ok(plan)
+}
+
+fn permission_review(
+    descriptor: &ToolDescriptor,
+    severity: &Severity,
+    scope: &DecisionScope,
+    resources: &[ActionResource],
+    workspace_access: &WorkspaceAccess,
+    network_access: &NetworkAccess,
+    execution_channel: &ToolExecutionChannel,
+) -> PermissionReview {
+    let mut details = vec![
+        PermissionReviewDetail {
+            label: "tool".to_owned(),
+            value: descriptor.name.clone(),
+            redacted: false,
+        },
+        PermissionReviewDetail {
+            label: "scope".to_owned(),
+            value: format!("{scope:?}"),
+            redacted: false,
+        },
+        PermissionReviewDetail {
+            label: "workspace_access".to_owned(),
+            value: format!("{workspace_access:?}"),
+            redacted: false,
+        },
+        PermissionReviewDetail {
+            label: "network_access".to_owned(),
+            value: format!("{network_access:?}"),
+            redacted: false,
+        },
+        PermissionReviewDetail {
+            label: "execution_channel".to_owned(),
+            value: format!("{execution_channel:?}"),
+            redacted: false,
+        },
+    ];
+    for resource in resources {
+        details.push(PermissionReviewDetail {
+            label: "resource".to_owned(),
+            value: format!("{resource:?}"),
+            redacted: false,
+        });
+    }
+    PermissionReview {
+        summary: format!(
+            "{} requests {severity:?} permission for {} resource(s).",
+            descriptor.display_name,
+            resources.len()
+        ),
+        details,
+        confirmation: PermissionConfirmation::None,
+        redacted: false,
+    }
 }
 
 #[must_use]

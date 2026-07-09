@@ -357,7 +357,18 @@ impl BackgroundAgentTool {
                     },
                     "additionalProperties": false
                 }),
-                output_schema: None,
+                output_schema: Some(json!({
+                    "type": "object",
+                    "required": ["backgroundAgentId", "status", "conversationId", "parentRunId", "title"],
+                    "properties": {
+                        "backgroundAgentId": { "type": "string" },
+                        "status": { "type": "string" },
+                        "conversationId": { "type": "string" },
+                        "parentRunId": { "type": "string" },
+                        "title": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                })),
                 dynamic_schema: false,
                 properties: ToolProperties {
                     is_concurrency_safe: false,
@@ -427,7 +438,10 @@ impl Tool for BackgroundAgentTool {
             input,
             ctx,
             PermissionCheck::Allowed,
-            Vec::new(),
+            vec![harness_contracts::ActionResource::TeamControl {
+                action: "background_agent".to_owned(),
+                target: tool_goal_target(input),
+            }],
             harness_contracts::WorkspaceAccess::None,
             harness_contracts::NetworkAccess::None,
             harness_contracts::ToolExecutionChannel::DirectAuthorizedRust,
@@ -518,7 +532,24 @@ impl Default for AgentTeamTool {
                     },
                     "additionalProperties": false
                 }),
-                output_schema: None,
+                output_schema: Some(json!({
+                    "type": "object",
+                    "required": ["team_id", "status", "goal", "topology", "leadProfileId", "memberProfileIds", "sharedMemoryPolicy", "maxTurnsPerGoal"],
+                    "properties": {
+                        "team_id": { "type": "string" },
+                        "status": { "type": "string" },
+                        "goal": { "type": "string" },
+                        "topology": { "type": "string" },
+                        "leadProfileId": { "type": "string" },
+                        "memberProfileIds": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        },
+                        "sharedMemoryPolicy": { "type": "string" },
+                        "maxTurnsPerGoal": { "type": "integer", "minimum": 1 }
+                    },
+                    "additionalProperties": false
+                })),
                 dynamic_schema: false,
                 properties: ToolProperties {
                     is_concurrency_safe: false,
@@ -583,7 +614,10 @@ impl Tool for AgentTeamTool {
             input,
             ctx,
             PermissionCheck::Allowed,
-            Vec::new(),
+            vec![harness_contracts::ActionResource::TeamControl {
+                action: "agent_team".to_owned(),
+                target: tool_goal_target(input),
+            }],
             harness_contracts::WorkspaceAccess::None,
             harness_contracts::NetworkAccess::None,
             harness_contracts::ToolExecutionChannel::DirectAuthorizedRust,
@@ -843,6 +877,16 @@ fn tool_search_hook_context(
     }
 }
 
+#[cfg(any(feature = "agents-subagent", feature = "agents-team"))]
+fn tool_goal_target(input: &Value) -> Option<String> {
+    input
+        .get("goal")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|goal| !goal.is_empty())
+        .map(|goal| format!("goal:{goal}"))
+}
+
 #[cfg(feature = "tool-search")]
 struct ToolSearchHookView {
     workspace_root: Option<PathBuf>,
@@ -886,7 +930,8 @@ mod tests {
     use super::*;
     use futures::StreamExt;
     use harness_contracts::{
-        CorrelationId, NoopRedactor, PermissionActorSource, ToolActionPlan, ToolUseId,
+        ActionResource, CorrelationId, NoopRedactor, PermissionActorSource, ToolActionPlan,
+        ToolUseId,
     };
     use harness_tool::{
         AuthorizationTicketClaims, AuthorizedTicketSummary, AuthorizedToolInput, InterruptToken,
@@ -940,6 +985,11 @@ mod tests {
             let input = json!({ "goal": "inspect no-workspace" });
             tool.validate(&input, &ctx).await.expect("validate");
             let plan = tool.plan(&input, &ctx).await.expect("plan");
+            assert!(matches!(
+                plan.resources.as_slice(),
+                [ActionResource::TeamControl { action, target }]
+                    if action == "agent_team" && target.as_deref() == Some("goal:inspect no-workspace")
+            ));
             let authorized =
                 AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).expect("ticket");
             let mut stream = tool
@@ -947,7 +997,16 @@ mod tests {
                 .await
                 .expect("execute");
             let event = stream.next().await.expect("final event");
-            assert!(matches!(event, ToolEvent::Final(_)));
+            let ToolEvent::Final(ToolResult::Structured(output)) = event else {
+                panic!("expected structured final event");
+            };
+            assert_eq!(output["status"], json!("started"));
+            assert_eq!(output["goal"], json!("inspect no-workspace"));
+            assert_eq!(output["topology"], json!("coordinator_worker"));
+            assert_eq!(output["maxTurnsPerGoal"], json!(4));
+            assert!(output["team_id"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty()));
 
             let request = captured
                 .lock()
@@ -957,6 +1016,228 @@ mod tests {
             assert_eq!(request.workspace_root, execution_cwd);
             assert_eq!(request.project_workspace_root, None);
         });
+    }
+
+    #[test]
+    fn agent_team_tool_reports_missing_runner_capability() {
+        futures::executor::block_on(async {
+            let ctx = test_context(std::env::temp_dir());
+            let tool = AgentTeamTool::default();
+            let input = json!({ "goal": "inspect missing runner" });
+            let plan = tool.plan(&input, &ctx).await.expect("plan");
+            let authorized =
+                AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).expect("ticket");
+
+            let error = match tool.execute_authorized(authorized, ctx).await {
+                Ok(_) => panic!("missing runner should fail"),
+                Err(error) => error,
+            };
+
+            assert!(matches!(
+                error,
+                ToolError::CapabilityMissing(ToolCapability::Custom(ref capability))
+                    if capability == AGENT_TEAM_RUNNER_CAPABILITY
+            ));
+        });
+    }
+
+    #[test]
+    fn background_agent_tool_plan_declares_team_control_resource() {
+        futures::executor::block_on(async {
+            let ctx = test_context(std::env::temp_dir());
+            let tool = BackgroundAgentTool::new(
+                agent_tool_policy(),
+                None,
+                harness_contracts::PermissionMode::Default,
+                background_session_snapshot(ctx.session_id),
+            );
+            let input = json!({
+                "goal": "summarize traces",
+                "title": "Trace summary"
+            });
+
+            let plan = tool.plan(&input, &ctx).await.expect("plan");
+
+            assert!(matches!(
+                plan.resources.as_slice(),
+                [ActionResource::TeamControl { action, target }]
+                    if action == "background_agent"
+                        && target.as_deref() == Some("goal:summarize traces")
+            ));
+        });
+    }
+
+    #[test]
+    fn background_agent_tool_executes_with_policy_snapshot_and_output_contract() {
+        futures::executor::block_on(async {
+            let captured = Arc::new(Mutex::new(None));
+            let mut cap_registry = CapabilityRegistry::default();
+            cap_registry.install::<dyn harness_contracts::BackgroundAgentStarterCap>(
+                ToolCapability::Custom(BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned()),
+                Arc::new(CapturingBackgroundAgentStarter {
+                    captured: Arc::clone(&captured),
+                }),
+            );
+            let mut ctx = test_context(std::env::temp_dir());
+            ctx.model_config_id = Some("ctx-model".to_owned());
+            ctx.cap_registry = Arc::new(cap_registry);
+            let session = background_session_snapshot(ctx.session_id);
+            let tool = BackgroundAgentTool::new(
+                agent_tool_policy(),
+                Some("tool-model".to_owned()),
+                harness_contracts::PermissionMode::BypassPermissions,
+                session.clone(),
+            );
+            let input = json!({
+                "goal": "summarize traces",
+                "title": "Trace summary"
+            });
+            let plan = tool.plan(&input, &ctx).await.expect("plan");
+            let authorized =
+                AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).expect("ticket");
+
+            let mut stream = tool
+                .execute_authorized(authorized, ctx.clone())
+                .await
+                .expect("execute");
+            let event = stream.next().await.expect("final event");
+            let ToolEvent::Final(ToolResult::Structured(output)) = event else {
+                panic!("expected structured final event");
+            };
+            assert_eq!(output["backgroundAgentId"], json!("background-1"));
+            assert_eq!(output["status"], json!("queued"));
+            assert_eq!(output["conversationId"], json!(ctx.session_id.to_string()));
+            assert_eq!(output["parentRunId"], json!(ctx.run_id.to_string()));
+            assert_eq!(output["title"], json!("Trace summary"));
+
+            let request = captured
+                .lock()
+                .expect("captured lock")
+                .clone()
+                .expect("captured request");
+            assert_eq!(request.goal, "summarize traces");
+            assert_eq!(request.title, "Trace summary");
+            assert_eq!(request.model_config_id.as_deref(), Some("tool-model"));
+            assert_eq!(
+                request.permission_mode,
+                harness_contracts::PermissionMode::BypassPermissions
+            );
+            assert_eq!(request.session, session);
+            assert_eq!(
+                request.agent_tool_policy.background_agents,
+                harness_contracts::AgentUsePolicy::Allowed
+            );
+        });
+    }
+
+    #[test]
+    fn background_agent_tool_reports_missing_starter_capability() {
+        futures::executor::block_on(async {
+            let ctx = test_context(std::env::temp_dir());
+            let tool = BackgroundAgentTool::new(
+                agent_tool_policy(),
+                None,
+                harness_contracts::PermissionMode::Default,
+                background_session_snapshot(ctx.session_id),
+            );
+            let input = json!({ "goal": "summarize traces" });
+            let plan = tool.plan(&input, &ctx).await.expect("plan");
+            let authorized =
+                AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).expect("ticket");
+
+            let error = match tool.execute_authorized(authorized, ctx).await {
+                Ok(_) => panic!("missing starter should fail"),
+                Err(error) => error,
+            };
+
+            assert!(matches!(
+                error,
+                ToolError::CapabilityMissing(ToolCapability::Custom(ref capability))
+                    if capability == BACKGROUND_AGENT_STARTER_CAPABILITY
+            ));
+        });
+    }
+
+    #[test]
+    fn runtime_agent_tools_declare_strict_input_and_output_schemas() {
+        let ctx = test_context(std::env::temp_dir());
+        let background = BackgroundAgentTool::new(
+            agent_tool_policy(),
+            None,
+            harness_contracts::PermissionMode::Default,
+            background_session_snapshot(ctx.session_id),
+        );
+        assert_eq!(
+            background
+                .descriptor()
+                .input_schema
+                .get("additionalProperties"),
+            Some(&serde_json::Value::Bool(false))
+        );
+        let background_output = background
+            .descriptor()
+            .output_schema
+            .as_ref()
+            .expect("background_agent should declare output schema");
+        assert_eq!(
+            background_output.get("additionalProperties"),
+            Some(&serde_json::Value::Bool(false))
+        );
+        for field in [
+            "backgroundAgentId",
+            "status",
+            "conversationId",
+            "parentRunId",
+            "title",
+        ] {
+            assert!(
+                background_output
+                    .get("required")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|required| required
+                        .iter()
+                        .any(|value| value.as_str() == Some(field))),
+                "background_agent output should require {field}"
+            );
+        }
+
+        let agent_team = AgentTeamTool::default();
+        assert_eq!(
+            agent_team
+                .descriptor()
+                .input_schema
+                .get("additionalProperties"),
+            Some(&serde_json::Value::Bool(false))
+        );
+        let agent_team_output = agent_team
+            .descriptor()
+            .output_schema
+            .as_ref()
+            .expect("agent_team should declare output schema");
+        assert_eq!(
+            agent_team_output.get("additionalProperties"),
+            Some(&serde_json::Value::Bool(false))
+        );
+        for field in [
+            "team_id",
+            "status",
+            "goal",
+            "topology",
+            "leadProfileId",
+            "memberProfileIds",
+            "sharedMemoryPolicy",
+            "maxTurnsPerGoal",
+        ] {
+            assert!(
+                agent_team_output
+                    .get("required")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|required| required
+                        .iter()
+                        .any(|value| value.as_str() == Some(field))),
+                "agent_team output should require {field}"
+            );
+        }
     }
 
     #[derive(Clone)]
@@ -972,6 +1253,32 @@ mod tests {
         ) -> Result<harness_contracts::TeamId, ToolError> {
             *self.captured.lock().expect("captured lock") = Some(request);
             Ok(harness_contracts::TeamId::new())
+        }
+    }
+
+    #[derive(Clone)]
+    struct CapturingBackgroundAgentStarter {
+        captured: Arc<Mutex<Option<harness_contracts::BackgroundAgentToolStartRequest>>>,
+    }
+
+    impl harness_contracts::BackgroundAgentStarterCap for CapturingBackgroundAgentStarter {
+        fn start_background_agent(
+            &self,
+            request: harness_contracts::BackgroundAgentToolStartRequest,
+        ) -> futures::future::BoxFuture<
+            'static,
+            Result<harness_contracts::BackgroundAgentToolStartResponse, ToolError>,
+        > {
+            *self.captured.lock().expect("captured lock") = Some(request.clone());
+            Box::pin(async move {
+                Ok(harness_contracts::BackgroundAgentToolStartResponse {
+                    background_agent_id: "background-1".to_owned(),
+                    conversation_id: request.conversation_id,
+                    parent_run_id: request.parent_run_id,
+                    title: request.title,
+                    status: "queued".to_owned(),
+                })
+            })
         }
     }
 
@@ -1002,5 +1309,57 @@ mod tests {
         ledger
             .consume(ticket.id, &claims, chrono::Utc::now())
             .expect("test ticket should consume")
+    }
+
+    fn test_context(workspace_root: PathBuf) -> ToolContext {
+        ToolContext {
+            tool_use_id: ToolUseId::new(),
+            run_id: RunId::new(),
+            session_id: SessionId::new(),
+            tenant_id: TenantId::SINGLE,
+            model: None,
+            model_config_id: None,
+            memory_thread_settings: None,
+            correlation_id: CorrelationId::new(),
+            agent_id: AgentId::new(),
+            subagent_depth: 0,
+            workspace_root,
+            project_workspace_root: None,
+            sandbox: None,
+            cap_registry: Arc::new(CapabilityRegistry::default()),
+            redactor: Arc::new(NoopRedactor),
+            interrupt: InterruptToken::new(),
+            parent_run: None,
+            actor_source: PermissionActorSource::ParentRun,
+        }
+    }
+
+    fn agent_tool_policy() -> harness_contracts::AgentToolPolicy {
+        harness_contracts::AgentToolPolicy {
+            subagents: harness_contracts::AgentUsePolicy::Allowed,
+            agent_team: harness_contracts::AgentUsePolicy::Allowed,
+            background_agents: harness_contracts::AgentUsePolicy::Allowed,
+            team_config: None,
+            workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
+            max_depth: 1,
+            max_concurrent_subagents: 1,
+            max_team_members: 1,
+        }
+    }
+
+    fn background_session_snapshot(
+        session_id: SessionId,
+    ) -> harness_contracts::BackgroundAgentToolSessionSnapshot {
+        harness_contracts::BackgroundAgentToolSessionSnapshot {
+            tenant_id: TenantId::SINGLE,
+            session_id,
+            tool_search: harness_contracts::ToolSearchMode::Disabled,
+            tool_profile: harness_contracts::ToolProfile::Full,
+            permission_mode: harness_contracts::PermissionMode::Default,
+            interactivity: harness_contracts::InteractivityLevel::FullyInteractive,
+            team_id: None,
+            max_iterations: 1,
+            context_compression_trigger_ratio: 0.8,
+        }
     }
 }

@@ -41,6 +41,7 @@ Query forms:
 "#;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ToolSearchInput {
     pub query: String,
     #[serde(default)]
@@ -50,6 +51,7 @@ pub struct ToolSearchInput {
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct ToolSearchOutput {
     pub matches: Vec<String>,
+    pub explanations: Vec<ToolSearchMatchExplanation>,
     pub query: String,
     pub total_deferred_tools: usize,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -58,16 +60,33 @@ pub struct ToolSearchOutput {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct ToolSearchMatchExplanation {
+    pub tool_name: String,
+    pub score: u32,
+    pub matched_fields: Vec<String>,
+    pub materialization_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolSearchMaterialization {
     ToolReference {
         tool_names: Vec<String>,
+        reason: String,
     },
     InlineReinjected {
         tool_names: Vec<String>,
         cache_impact: CacheImpact,
+        reason: String,
     },
-    NoMatch,
+    NoMatch {
+        reason: String,
+    },
+    BackendFailed {
+        tool_names: Vec<String>,
+        backend: String,
+        reason: String,
+    },
 }
 
 #[derive(Clone)]
@@ -277,7 +296,9 @@ impl Tool for ToolSearchTool {
             .await?;
 
         let materialization = if materialize_names.is_empty() {
-            ToolSearchMaterialization::NoMatch
+            ToolSearchMaterialization::NoMatch {
+                reason: "query matched no deferred tools to materialize".to_owned(),
+            }
         } else {
             let loading_ctx = ToolLoadingContext {
                 session_id: ctx.session_id,
@@ -287,66 +308,87 @@ impl Tool for ToolSearchTool {
             };
             let backend = self.backend_selector.select(&loading_ctx).await;
             let backend_name = backend.backend_name();
-            let outcome = backend
-                .materialize(&loading_ctx, &materialize_names)
-                .await
-                .map_err(|error| ToolError::Internal(error.to_string()))?;
-            let (materialization, cache_impact, coalesced_count, triggered_session_reload) =
-                match outcome {
-                    MaterializeOutcome::ToolReferenceEmitted { refs } => (
-                        ToolSearchMaterialization::ToolReference {
-                            tool_names: refs
-                                .into_iter()
-                                .map(|reference| reference.tool_name)
-                                .collect(),
-                        },
-                        CacheImpact {
-                            prompt_cache_invalidated: false,
-                            reason: None,
-                        },
-                        0,
-                        false,
-                    ),
-                    MaterializeOutcome::InlineReinjected {
-                        tools,
+            match backend.materialize(&loading_ctx, &materialize_names).await {
+                Ok(outcome) => {
+                    let (
+                        materialization,
                         cache_impact,
-                    } => (
-                        ToolSearchMaterialization::InlineReinjected {
-                            tool_names: tools,
-                            cache_impact: cache_impact.clone(),
-                        },
+                        coalesced_count,
+                        triggered_session_reload,
+                    ) = match outcome {
+                        MaterializeOutcome::ToolReferenceEmitted { refs } => (
+                            ToolSearchMaterialization::ToolReference {
+                                tool_names: refs
+                                    .into_iter()
+                                    .map(|reference| reference.tool_name)
+                                    .collect(),
+                                reason: format!(
+                                    "{backend_name} selected because the model supports tool references"
+                                ),
+                            },
+                            CacheImpact {
+                                prompt_cache_invalidated: false,
+                                reason: None,
+                            },
+                            0,
+                            false,
+                        ),
+                        MaterializeOutcome::InlineReinjected {
+                            tools,
+                            cache_impact,
+                        } => (
+                            ToolSearchMaterialization::InlineReinjected {
+                                tool_names: tools,
+                                cache_impact: cache_impact.clone(),
+                                reason: format!(
+                                    "{backend_name} selected because schemas must be reinjected inline"
+                                ),
+                            },
+                            cache_impact,
+                            materialize_names.len() as u32,
+                            true,
+                        ),
+                    };
+                    let materialized_event = ToolSchemaMaterializedEvent {
+                        session_id: ctx.session_id,
+                        run_id: ctx.run_id,
+                        tool_use_id: ctx.tool_use_id,
+                        names: materialize_names,
+                        backend: backend_name,
                         cache_impact,
-                        materialize_names.len() as u32,
-                        true,
-                    ),
-                };
-            let materialized_event = ToolSchemaMaterializedEvent {
-                session_id: ctx.session_id,
-                run_id: ctx.run_id,
-                tool_use_id: ctx.tool_use_id,
-                names: materialize_names,
-                backend: backend_name,
-                cache_impact,
-                triggered_session_reload,
-                coalesced_count,
-                at: Utc::now(),
-            };
-            runtime
-                .emit_event(Event::ToolSchemaMaterialized(materialized_event.clone()))
-                .await?;
-            runtime
-                .dispatch_post_tool_search_hook(
-                    &ctx,
-                    ctx.tool_use_id,
-                    materialized_event.names,
-                    materialized_event.backend,
-                    materialized_event.cache_impact,
-                )
-                .await?;
-            materialization
+                        triggered_session_reload,
+                        coalesced_count,
+                        at: Utc::now(),
+                    };
+                    runtime
+                        .emit_event(Event::ToolSchemaMaterialized(materialized_event.clone()))
+                        .await?;
+                    runtime
+                        .dispatch_post_tool_search_hook(
+                            &ctx,
+                            ctx.tool_use_id,
+                            materialized_event.names,
+                            materialized_event.backend,
+                            materialized_event.cache_impact,
+                        )
+                        .await?;
+                    materialization
+                }
+                Err(error) => ToolSearchMaterialization::BackendFailed {
+                    tool_names: materialize_names,
+                    backend: backend_name,
+                    reason: error.to_string(),
+                },
+            }
         };
 
         let output = ToolSearchOutput {
+            explanations: explain_matches(
+                &matches,
+                &scored,
+                &snapshot.deferred_tools,
+                &input.query,
+            ),
             matches,
             query: input.query,
             total_deferred_tools: snapshot.deferred_tools.len(),
@@ -411,6 +453,91 @@ fn query_kind(query: &str) -> ToolSearchQueryKind {
     }
 }
 
+fn explain_matches(
+    matches: &[String],
+    scored: &[(String, u32)],
+    descriptors: &[ToolDescriptor],
+    query: &str,
+) -> Vec<ToolSearchMatchExplanation> {
+    let terms = ScoringTerms::parse(query);
+    matches
+        .iter()
+        .map(|name| {
+            let descriptor = descriptors
+                .iter()
+                .find(|descriptor| descriptor.name == *name);
+            let score = scored
+                .iter()
+                .find_map(|(scored_name, score)| (scored_name == name).then_some(*score))
+                .unwrap_or_default();
+            let matched_fields = descriptor.map_or_else(
+                || vec!["select".to_owned()],
+                |descriptor| matched_fields(descriptor, &terms),
+            );
+            ToolSearchMatchExplanation {
+                tool_name: name.clone(),
+                score,
+                matched_fields,
+                materialization_reason: "matched deferred tool selected for materialization"
+                    .to_owned(),
+            }
+        })
+        .collect()
+}
+
+fn matched_fields(descriptor: &ToolDescriptor, terms: &ScoringTerms) -> Vec<String> {
+    let all_terms = terms
+        .required
+        .iter()
+        .chain(terms.optional.iter())
+        .collect::<Vec<_>>();
+    if all_terms.is_empty() {
+        return vec!["select".to_owned()];
+    }
+    let name = descriptor.name.to_ascii_lowercase();
+    let name_parts = crate::parse_tool_name_parts(&descriptor.name);
+    let description = descriptor.description.to_ascii_lowercase();
+    let search_hint = descriptor
+        .search_hint
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let capabilities = descriptor
+        .required_capabilities
+        .iter()
+        .map(|capability| format!("{capability:?}").to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut fields = Vec::new();
+    if all_terms.iter().any(|term| {
+        name.contains(term.as_str()) || name_parts.iter().any(|part| part.contains(term.as_str()))
+    }) {
+        fields.push("name".to_owned());
+    }
+    if all_terms
+        .iter()
+        .any(|term| description.contains(term.as_str()))
+    {
+        fields.push("description".to_owned());
+    }
+    if all_terms
+        .iter()
+        .any(|term| search_hint.contains(term.as_str()))
+    {
+        fields.push("search_hint".to_owned());
+    }
+    if all_terms
+        .iter()
+        .any(|term| capabilities.contains(term.as_str()))
+    {
+        fields.push("required_capabilities".to_owned());
+    }
+    if fields.is_empty() {
+        fields.push("select".to_owned());
+    }
+    fields
+}
+
 fn parse_select(query: &str) -> Option<Vec<String>> {
     let rest = query.trim().strip_prefix("select:")?;
     Some(
@@ -452,15 +579,32 @@ fn tool_search_descriptor() -> ToolDescriptor {
             "properties": {
                 "query": { "type": "string" },
                 "max_results": { "type": "integer", "minimum": 1, "maximum": 50 }
-            }
+            },
+            "additionalProperties": false
         }),
         output_schema: Some(json!({
             "type": "object",
-            "required": ["matches", "query", "total_deferred_tools", "materialization"],
+            "required": ["matches", "explanations", "query", "total_deferred_tools", "materialization"],
             "properties": {
                 "matches": {
                     "type": "array",
                     "items": { "type": "string" }
+                },
+                "explanations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["tool_name", "score", "matched_fields", "materialization_reason"],
+                        "properties": {
+                            "tool_name": { "type": "string" },
+                            "score": { "type": "integer", "minimum": 0 },
+                            "matched_fields": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                            },
+                            "materialization_reason": { "type": "string" }
+                        }
+                    }
                 },
                 "query": { "type": "string" },
                 "total_deferred_tools": {
@@ -475,32 +619,48 @@ fn tool_search_descriptor() -> ToolDescriptor {
                     "oneOf": [
                         {
                             "type": "object",
-                            "required": ["kind", "tool_names"],
+                            "required": ["kind", "tool_names", "reason"],
                             "properties": {
                                 "kind": { "const": "tool_reference" },
                                 "tool_names": {
                                     "type": "array",
                                     "items": { "type": "string" }
-                                }
+                                },
+                                "reason": { "type": "string" }
                             }
                         },
                         {
                             "type": "object",
-                            "required": ["kind", "tool_names", "cache_impact"],
+                            "required": ["kind", "tool_names", "cache_impact", "reason"],
                             "properties": {
                                 "kind": { "const": "inline_reinjected" },
                                 "tool_names": {
                                     "type": "array",
                                     "items": { "type": "string" }
                                 },
-                                "cache_impact": { "type": "object" }
+                                "cache_impact": { "type": "object" },
+                                "reason": { "type": "string" }
                             }
                         },
                         {
                             "type": "object",
-                            "required": ["kind"],
+                            "required": ["kind", "reason"],
                             "properties": {
-                                "kind": { "const": "no_match" }
+                                "kind": { "const": "no_match" },
+                                "reason": { "type": "string" }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "required": ["kind", "tool_names", "backend", "reason"],
+                            "properties": {
+                                "kind": { "const": "backend_failed" },
+                                "tool_names": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
+                                },
+                                "backend": { "type": "string" },
+                                "reason": { "type": "string" }
                             }
                         }
                     ]

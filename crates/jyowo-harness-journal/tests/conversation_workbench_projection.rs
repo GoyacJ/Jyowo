@@ -953,6 +953,7 @@ fn tool_failure_projects_failure_summary() {
             "run-1",
             "tool.failed",
             json!({
+                "failureKind": "capabilityMissing",
                 "toolUseId": "tool-1"
             }),
         ),
@@ -972,5 +973,9 @@ fn tool_failure_projects_failure_summary() {
         .unwrap();
 
     assert_eq!(tool_group.attempts[0].status, ToolAttemptStatus::Failed);
+    assert_eq!(
+        tool_group.attempts[0].failure_kind,
+        Some(ToolFailureKind::CapabilityMissing)
+    );
     assert!(tool_group.attempts[0].failure_summary.is_some());
 }

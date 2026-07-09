@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use harness_contracts::{
-    DeferPolicy, ProviderRestriction, ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties,
-    TrustLevel,
+    DeferPolicy, ProviderRestriction, ToolCapability, ToolDescriptor, ToolGroup, ToolOrigin,
+    ToolProperties, TrustLevel,
 };
 use harness_tool_search::{
     parse_tool_name_parts, DefaultScorer, ScoringContext, ScoringTerms, ToolSearchScorer,
@@ -95,6 +95,19 @@ async fn discovered_tools_are_penalized_but_still_searchable() {
 
     assert!(penalized > 0);
     assert!(penalized < normal);
+}
+
+#[tokio::test]
+async fn required_capabilities_contribute_to_score() {
+    let scorer = DefaultScorer::default();
+    let context = ScoringContext::default();
+    let terms = ScoringTerms::parse("blob");
+    let mut tool = descriptor("ReadBlob", "Read stored artifact", None);
+    tool.required_capabilities = vec![ToolCapability::BlobReader];
+
+    let score = scorer.score(&tool, &props(), &terms, &context).await;
+
+    assert!(score > 0);
 }
 
 fn descriptor(name: &str, description: &str, search_hint: Option<&str>) -> ToolDescriptor {

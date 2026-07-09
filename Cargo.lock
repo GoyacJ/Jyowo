@@ -3462,6 +3462,7 @@ dependencies = [
  "chrono",
  "futures",
  "globset",
+ "jsonschema",
  "jyowo-harness-contracts",
  "jyowo-harness-execution",
  "jyowo-harness-model",

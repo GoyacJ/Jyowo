@@ -2081,9 +2081,22 @@ impl Default for AgentTool {
                         "role": { "type": "string" },
                         "task": { "type": "string" },
                         "prompt_template": { "type": "object" }
-                    }
+                    },
+                    "additionalProperties": false
                 }),
-                output_schema: None,
+                output_schema: Some(json!({
+                    "type": "object",
+                    "required": ["subagent_id", "status"],
+                    "properties": {
+                        "subagent_id": { "type": "string" },
+                        "status": { "type": "string" },
+                        "summary": { "type": ["string", "null"] },
+                        "result": true,
+                        "usage": true,
+                        "transcript_ref": true
+                    },
+                    "additionalProperties": false
+                })),
                 dynamic_schema: false,
                 properties: ToolProperties {
                     is_concurrency_safe: false,
@@ -2139,7 +2152,10 @@ impl Tool for AgentTool {
             input,
             ctx,
             PermissionCheck::Allowed,
-            Vec::new(),
+            vec![harness_contracts::ActionResource::TeamControl {
+                action: "agent".to_owned(),
+                target: agent_target(input),
+            }],
             harness_contracts::WorkspaceAccess::None,
             harness_contracts::NetworkAccess::None,
             harness_contracts::ToolExecutionChannel::DirectAuthorizedRust,
@@ -2175,6 +2191,15 @@ impl Tool for AgentTool {
             ToolResult::Structured(announcement_json(announcement)),
         )])))
     }
+}
+
+fn agent_target(input: &Value) -> Option<String> {
+    input
+        .get("role")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|role| !role.is_empty())
+        .map(|role| format!("role:{role}"))
 }
 
 fn normalize_agent_input(input: Value) -> Result<SubagentSpec, ToolError> {
@@ -2460,5 +2485,41 @@ pub mod testing {
             memory_thread_settings: None,
             actor_source: harness_contracts::PermissionActorSource::ParentRun,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_descriptor_input_schema_rejects_unknown_fields() {
+        let tool = AgentTool::default();
+
+        assert_eq!(
+            tool.descriptor()
+                .input_schema
+                .get("additionalProperties")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_tool_plan_declares_team_control_resource() {
+        let tool = AgentTool::default();
+        let input = json!({
+            "role": "reviewer",
+            "task": "check implementation"
+        });
+        let ctx = testing::tool_context_with_caps(Arc::new(CapabilityRegistry::default()));
+
+        let plan = tool.plan(&input, &ctx).await.expect("plan");
+
+        assert!(matches!(
+            plan.resources.as_slice(),
+            [harness_contracts::ActionResource::TeamControl { action, target }]
+                if action == "agent" && target.as_deref() == Some("role:reviewer")
+        ));
     }
 }

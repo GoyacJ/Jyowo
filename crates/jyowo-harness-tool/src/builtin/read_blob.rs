@@ -1,14 +1,17 @@
 use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_contracts::{
-    BlobReaderCap, BlobRef, DecisionScope, OffloadedBlobAuthorizerCap, PermissionSubject,
-    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
-    ToolResult,
+    ActionResource, BlobReaderCap, BlobRef, DecisionScope, NetworkAccess,
+    OffloadedBlobAuthorizerCap, PermissionSubject, ToolActionPlan, ToolCapability, ToolDescriptor,
+    ToolError, ToolExecutionChannel, ToolGroup, ToolResult, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 
-use crate::{AuthorizedToolInput, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{
+    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
+    ToolStream, ValidationError,
+};
 
 const DEFAULT_READ_LIMIT: usize = 64_000;
 
@@ -20,31 +23,34 @@ pub struct ReadBlobTool {
 impl Default for ReadBlobTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "ReadBlob",
-                "Read blob",
-                "Read a previously offloaded tool result blob.",
-                ToolGroup::Meta,
-                true,
-                true,
-                false,
-                64_000,
-                vec![
-                    ToolCapability::BlobReader,
-                    ToolCapability::OffloadedBlobAuthorizer,
-                ],
-                super::object_schema(
-                    &["blob_ref"],
-                    json!({
-                        "blob_ref": { "type": "object" },
-                        "offset": { "type": "integer", "minimum": 0 },
-                        "limit": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": DEFAULT_READ_LIMIT
-                        }
-                    }),
+            descriptor: super::with_output_schema(
+                super::descriptor(
+                    "ReadBlob",
+                    "Read blob",
+                    "Read a previously offloaded tool result blob.",
+                    ToolGroup::Meta,
+                    true,
+                    true,
+                    false,
+                    64_000,
+                    vec![
+                        ToolCapability::BlobReader,
+                        ToolCapability::OffloadedBlobAuthorizer,
+                    ],
+                    super::object_schema(
+                        &["blob_ref"],
+                        json!({
+                            "blob_ref": { "type": "object" },
+                            "offset": { "type": "integer", "minimum": 0 },
+                            "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": DEFAULT_READ_LIMIT
+                            }
+                        }),
+                    ),
                 ),
+                super::text_output_schema(),
             ),
         }
     }
@@ -63,7 +69,8 @@ impl Tool for ReadBlobTool {
     }
 
     async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
-        super::generic_action_plan(
+        let blob_ref = blob_ref(input).map_err(|error| ToolError::Validation(error.to_string()))?;
+        action_plan_from_permission_check(
             &self.descriptor,
             input,
             ctx,
@@ -74,6 +81,9 @@ impl Tool for ReadBlobTool {
                 },
                 scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
+            vec![ActionResource::BlobRead { blob_ref }],
+            WorkspaceAccess::None,
+            NetworkAccess::None,
             ToolExecutionChannel::DirectAuthorizedRust,
         )
     }

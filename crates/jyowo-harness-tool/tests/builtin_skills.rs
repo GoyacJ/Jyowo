@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use futures::{future::BoxFuture, StreamExt};
 use harness_contracts::{
-    AgentId, CapabilityRegistry, ContextPatchRequest, ContextPatchSinkCap, ContextPatchSource,
-    RenderedSkill, SkillFilter, SkillId, SkillParameterInfo, SkillRegistryCap, SkillStatus,
-    SkillSummary, SkillView, TenantId, ToolActionPlan, ToolCapability, ToolError, ToolGroup,
-    ToolOrigin, ToolResult, ToolUseId,
+    ActionResource, AgentId, CapabilityRegistry, ContextPatchRequest, ContextPatchSinkCap,
+    ContextPatchSource, RenderedSkill, SkillFilter, SkillId, SkillParameterInfo, SkillRegistryCap,
+    SkillStatus, SkillSummary, SkillView, TenantId, ToolActionPlan, ToolCapability, ToolError,
+    ToolGroup, ToolOrigin, ToolResult, ToolUseId,
 };
 use harness_tool::{
     builtin::{SkillsInvokeTool, SkillsListTool, SkillsViewTool},
@@ -72,6 +72,41 @@ fn default_builtin_toolset_registers_skill_tools() {
     for name in ["skills_list", "skills_view", "skills_invoke"] {
         assert!(registry.get(name).is_some(), "{name} should be registered");
     }
+}
+
+#[tokio::test]
+async fn skill_tools_plan_declares_skill_resources() {
+    let ctx = tool_ctx(AgentId::from_u128(7), CapabilityRegistry::default());
+
+    let list_plan = SkillsListTool::default()
+        .plan(&json!({}), &ctx)
+        .await
+        .unwrap();
+    assert!(matches!(
+        list_plan.resources.as_slice(),
+        [ActionResource::Skill { action, name }]
+            if action == "list" && name.is_none()
+    ));
+
+    let view_plan = SkillsViewTool::default()
+        .plan(&json!({ "name": "daily" }), &ctx)
+        .await
+        .unwrap();
+    assert!(matches!(
+        view_plan.resources.as_slice(),
+        [ActionResource::Skill { action, name }]
+            if action == "view" && name.as_deref() == Some("daily")
+    ));
+
+    let invoke_plan = SkillsInvokeTool::default()
+        .plan(&json!({ "name": "daily" }), &ctx)
+        .await
+        .unwrap();
+    assert!(matches!(
+        invoke_plan.resources.as_slice(),
+        [ActionResource::Skill { action, name }]
+            if action == "invoke" && name.as_deref() == Some("daily")
+    ));
 }
 
 #[tokio::test]

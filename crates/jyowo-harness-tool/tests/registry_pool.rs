@@ -7,10 +7,10 @@ use std::sync::{
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    DeferPolicy, McpOrigin, McpServerId, McpServerSource, ModelProvider, PluginId,
-    ProviderRestriction, ShadowReason, SkillId, SkillOrigin, SkillSourceKind, ToolActionPlan,
-    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProfile,
-    ToolProperties, ToolResult, TrustLevel,
+    canonical_mcp_tool_name, DeferPolicy, McpOrigin, McpServerId, McpServerSource, ModelProvider,
+    PluginId, ProviderRestriction, ShadowReason, SkillId, SkillOrigin, SkillSourceKind,
+    ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin,
+    ToolProfile, ToolProperties, ToolResult, TrustLevel,
 };
 use harness_permission::PermissionCheck;
 use harness_tool::{
@@ -177,6 +177,63 @@ fn registry_records_shadowing_and_applies_builtin_and_trust_precedence() {
         )))
         .unwrap();
     assert_eq!(registry.shadowed()[4].reason, ShadowReason::Duplicate);
+}
+
+#[test]
+fn registry_covers_mcp_registration_deregistration_and_shadow_lifecycle() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Empty)
+        .build()
+        .unwrap();
+    let mcp_name = canonical_mcp_tool_name("workspace-server", "search").unwrap();
+    let server_id = McpServerId("workspace-server".to_owned());
+
+    registry
+        .register(Box::new(tool(
+            &mcp_name,
+            ToolOrigin::Mcp(McpOrigin {
+                server_id: server_id.clone(),
+                upstream_name: "search".to_owned(),
+                server_meta: BTreeMap::new(),
+                server_source: McpServerSource::Workspace,
+                server_trust: TrustLevel::AdminTrusted,
+            }),
+            TrustLevel::AdminTrusted,
+        )))
+        .unwrap();
+    assert!(registry.get(&mcp_name).is_some());
+
+    assert!(!registry
+        .deregister_mcp_tool(&server_id, &McpServerSource::User, &mcp_name)
+        .unwrap());
+    assert!(registry.get(&mcp_name).is_some());
+
+    assert!(registry
+        .deregister_mcp_tool(&server_id, &McpServerSource::Workspace, &mcp_name)
+        .unwrap());
+    assert!(registry.get(&mcp_name).is_none());
+
+    registry
+        .register(Box::new(tool(
+            &mcp_name,
+            mcp_origin("workspace-server", TrustLevel::AdminTrusted),
+            TrustLevel::AdminTrusted,
+        )))
+        .unwrap();
+    registry
+        .register(Box::new(tool(
+            &mcp_name,
+            plugin_origin("user-plugin", TrustLevel::UserControlled),
+            TrustLevel::UserControlled,
+        )))
+        .unwrap();
+
+    let descriptor = registry.get(&mcp_name).unwrap().descriptor().clone();
+    assert!(matches!(descriptor.origin, ToolOrigin::Mcp(_)));
+    let shadowed = registry.shadowed();
+    assert_eq!(shadowed.len(), 1);
+    assert_eq!(shadowed[0].name, mcp_name);
+    assert_eq!(shadowed[0].reason, ShadowReason::HigherTrust);
 }
 
 #[tokio::test]
@@ -743,9 +800,27 @@ fn tool_crate_does_not_depend_on_harness_model() {
         assert!(manifest.contains(
             "jyowo-harness-model = { path = \"../jyowo-harness-model\", optional = true }"
         ));
-        assert!(manifest.contains(
-            "minimax-tools = [\"builtin-toolset\", \"dep:base64\", \"dep:jyowo-harness-model\", \"jyowo-harness-model/minimax\"]"
-        ));
+        let minimax_feature_start = manifest
+            .find("minimax-tools = [")
+            .expect("minimax-tools feature should be declared");
+        let minimax_feature = &manifest[minimax_feature_start..];
+        let minimax_feature = minimax_feature
+            .split_once("]\n")
+            .map(|(feature, _)| feature)
+            .unwrap_or(minimax_feature);
+        for expected in [
+            "builtin-toolset",
+            "dep:base64",
+            "dep:jyowo-harness-model",
+            "dep:reqwest",
+            "dep:secrecy",
+            "jyowo-harness-model/minimax",
+        ] {
+            assert!(
+                minimax_feature.contains(expected),
+                "minimax-tools feature should include {expected}"
+            );
+        }
     }
 }
 

@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
-use chrono::Utc;
 use futures::{future::BoxFuture, StreamExt};
 use harness_contracts::{
-    CapabilityRegistry, CodeLanguage, CodeRunRequest, CodeRunResult, CodeRunStats, DecisionScope,
-    EmbeddedToolDispatchRequest, EmbeddedToolDispatchResponse, Event, ExecuteCodeStepInvokedEvent,
-    TenantId, ToolActionPlan, ToolCapability, ToolError, ToolGroup, ToolResult, ToolUseId,
+    ActionResource, CapabilityRegistry, CodeLanguage, CodeRunRequest, CodeRunResult, CodeRunStats,
+    DecisionScope, EmbeddedToolDispatchRequest, EmbeddedToolDispatchResponse, Event,
+    ExecuteCodeStepInvokedEvent, TenantId, ToolActionPlan, ToolCapability, ToolError, ToolGroup,
+    ToolResult, ToolUseId,
 };
 use harness_tool::{
     builtin::ExecuteCodeTool, AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset,
@@ -37,6 +37,26 @@ fn default_toolset_registers_execute_code_with_runtime_capabilities() {
             ToolCapability::EmbeddedToolDispatcher
         ]
     );
+}
+
+#[tokio::test]
+async fn execute_code_plan_declares_code_execution_resource() {
+    let tool = ExecuteCodeTool::default();
+    let plan = tool
+        .plan(
+            &json!({ "language": "mini_lua", "source": "return 1" }),
+            &tool_ctx(CapabilityRegistry::default()),
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        plan.resources.as_slice(),
+        [ActionResource::CodeExecution {
+            language,
+            script_hash
+        }] if language == "mini_lua" && !script_hash.is_empty()
+    ));
 }
 
 #[tokio::test]
@@ -198,6 +218,8 @@ fn tool_ctx(cap_registry: CapabilityRegistry) -> ToolContext {
         parent_run: None,
         model: None,
         model_config_id: None,
+        memory_thread_settings: None,
+        actor_source: harness_contracts::PermissionActorSource::ParentRun,
     }
 }
 

@@ -150,6 +150,8 @@ impl ToolOrchestrator {
             let mut tool_ctx = ctx.tool_context.clone();
             tool_ctx.tool_use_id = call.tool_use_id;
 
+            validate_input_schema(tool.input_schema(), call.input.raw_input())?;
+
             tool.validate(call.input.raw_input(), &tool_ctx)
                 .await
                 .map_err(|error| ToolError::Validation(error.to_string()))?;
@@ -211,6 +213,19 @@ impl ToolOrchestrator {
             progress_emitted,
         }
     }
+}
+
+fn validate_input_schema(schema: &Value, input: &Value) -> Result<(), ToolError> {
+    let validator = jsonschema::validator_for(schema)
+        .map_err(|error| ToolError::Validation(format!("input schema compile failed: {error}")))?;
+    if validator.is_valid(input) {
+        return Ok(());
+    }
+    let message = validator.iter_errors(input).next().map_or_else(
+        || "input does not match tool input schema".to_owned(),
+        |error| error.to_string(),
+    );
+    Err(ToolError::Validation(message))
 }
 
 async fn collect_stream(

@@ -1368,6 +1368,10 @@ pub enum TeamError {
     SharedMemoryWriteDenied,
     #[error("worker missing: {0}")]
     WorkerMissing(AgentId),
+    #[error("worker already paused: {0}")]
+    WorkerAlreadyPaused(AgentId),
+    #[error("worker is not paused: {0}")]
+    WorkerNotPaused(AgentId),
     #[error("member already exists: {0}")]
     MemberExists(AgentId),
     #[error("team is paused")]
@@ -1838,12 +1842,24 @@ impl TeamControlHandle {
         Ok(())
     }
 
-    pub async fn pause_worker(&self, agent_id: AgentId) {
-        self.inner.paused_members.lock().await.insert(agent_id);
+    pub async fn pause_worker(&self, agent_id: AgentId) -> Result<(), TeamError> {
+        self.inner.ensure_not_terminated().await?;
+        self.inner.ensure_member_exists(agent_id).await?;
+        let mut paused_members = self.inner.paused_members.lock().await;
+        if !paused_members.insert(agent_id) {
+            return Err(TeamError::WorkerAlreadyPaused(agent_id));
+        }
+        Ok(())
     }
 
-    pub async fn resume_worker(&self, agent_id: AgentId) {
-        self.inner.paused_members.lock().await.remove(&agent_id);
+    pub async fn resume_worker(&self, agent_id: AgentId) -> Result<(), TeamError> {
+        self.inner.ensure_not_terminated().await?;
+        self.inner.ensure_member_exists(agent_id).await?;
+        let mut paused_members = self.inner.paused_members.lock().await;
+        if !paused_members.remove(&agent_id) {
+            return Err(TeamError::WorkerNotPaused(agent_id));
+        }
+        Ok(())
     }
 }
 
@@ -1853,6 +1869,20 @@ impl TeamInner {
             return Err(TeamError::TeamTerminated);
         }
         Ok(())
+    }
+
+    async fn ensure_member_exists(&self, agent_id: AgentId) -> Result<(), TeamError> {
+        if self
+            .spec
+            .lock()
+            .await
+            .members
+            .iter()
+            .any(|member| member.agent_id == agent_id)
+        {
+            return Ok(());
+        }
+        Err(TeamError::WorkerMissing(agent_id))
     }
 
     async fn touch_activity(&self, at: DateTime<Utc>) {

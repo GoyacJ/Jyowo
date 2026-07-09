@@ -240,7 +240,7 @@ async fn deferred_pool_change_generates_pending_delta_and_take_clears_it() {
                 session_id: session,
                 added: vec![DeferredToolHint {
                     name: "mcp__fixture__lookup".to_owned(),
-                    hint: None,
+                    hint: Some("fixture lookup matched the current turn".to_owned()),
                 }],
                 removed: vec!["old_tool".to_owned()],
                 source: ToolPoolChangeSource::InitialClassification,
@@ -257,6 +257,17 @@ async fn deferred_pool_change_generates_pending_delta_and_take_clears_it() {
         .expect("deferred pool change should queue a prompt delta");
     assert_eq!(pending.added_names, vec!["mcp__fixture__lookup".to_owned()]);
     assert_eq!(pending.removed_names, vec!["old_tool".to_owned()]);
+    assert_eq!(
+        pending
+            .added_reasons
+            .get("mcp__fixture__lookup")
+            .map(String::as_str),
+        Some("fixture lookup matched the current turn")
+    );
+    assert_eq!(
+        pending.removed_reasons.get("old_tool").map(String::as_str),
+        Some("tool is no longer deferred")
+    );
     assert!(pending.initial);
 
     let taken = projection

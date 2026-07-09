@@ -21,23 +21,34 @@ pub struct SendMessageTool {
 impl Default for SendMessageTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "SendMessage",
-                "Send message",
-                "Send an outbound user message through the session channel.",
-                ToolGroup::Network,
-                false,
-                false,
-                false,
-                4_000,
-                vec![ToolCapability::UserMessenger],
-                super::object_schema(
-                    &["channel", "body"],
-                    json!({
-                        "channel": { "type": "string" },
-                        "body": { "type": "string" }
-                    }),
+            descriptor: super::with_output_schema(
+                super::descriptor(
+                    "SendMessage",
+                    "Send message",
+                    "Send an outbound user message through the session channel.",
+                    ToolGroup::Network,
+                    false,
+                    false,
+                    false,
+                    4_000,
+                    vec![ToolCapability::UserMessenger],
+                    super::object_schema(
+                        &["channel", "body"],
+                        json!({
+                            "channel": { "type": "string" },
+                            "body": { "type": "string" }
+                        }),
+                    ),
                 ),
+                json!({
+                    "type": "object",
+                    "required": ["message_id", "delivered"],
+                    "properties": {
+                        "message_id": { "type": "string" },
+                        "delivered": { "type": "boolean" }
+                    },
+                    "additionalProperties": false
+                }),
             ),
         }
     }

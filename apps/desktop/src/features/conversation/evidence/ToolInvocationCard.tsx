@@ -13,6 +13,9 @@ export function ToolInvocationCard({
   const { t } = useTranslation('conversation')
   const statusLabel = t(`timeline.toolStatus.${attempt.status}`)
   const originLabel = attempt.origin ? t(`timeline.toolOrigin.${attempt.origin}`) : null
+  const resultLabel = attempt.resultKind ?? null
+  const failureKindLabel =
+    attempt.failureKind === 'capabilityMissing' ? 'capabilityMissing' : null
   const interactive = Boolean(onClick)
   const className = cn(
     'w-full rounded-md border border-border px-3 py-2 text-left transition-colors',
@@ -36,6 +39,8 @@ export function ToolInvocationCard({
           </span>
         ) : null}
         {attempt.outputSummary ? <span className="truncate">{attempt.outputSummary}</span> : null}
+        {resultLabel ? <span>{resultLabel}</span> : null}
+        {failureKindLabel ? <span className="text-destructive">{failureKindLabel}</span> : null}
         {attempt.failurePhase ? (
           <span className="text-destructive">
             {t(`timeline.failurePhase.${attempt.failurePhase}`)}

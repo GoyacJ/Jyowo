@@ -70,6 +70,32 @@ export function DecisionPanel({
         {decision.policy.sandbox ? ` · ${decision.policy.sandbox}` : ''}
       </div>
 
+      {decision.scope || decision.resources?.length || decision.reviewDetails?.length ? (
+        <div className="grid gap-1 text-xs">
+          {decision.scope ? (
+            <div className="text-muted-foreground">
+              scope: <span className="text-foreground">{decision.scope}</span>
+            </div>
+          ) : null}
+          {decision.resources?.length ? (
+            <div className="flex flex-wrap gap-1">
+              {decision.resources.map((resource) => (
+                <span key={resource} className="rounded bg-background px-1.5 py-0.5 font-mono">
+                  {resource}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {decision.reviewDetails?.length ? (
+            <div className="grid gap-0.5 text-muted-foreground">
+              {decision.reviewDetails.map((detail) => (
+                <span key={detail}>{detail}</span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       {/* Decision options */}
       {canResolve && approveOptions.length > 0 ? (
         <div className="grid gap-2">

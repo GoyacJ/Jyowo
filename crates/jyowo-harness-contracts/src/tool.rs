@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 use crate::{
-    ActionPlanHash, ActionPlanId, CapabilityRouteKind, DecisionScope, ExecFingerprint,
+    ActionPlanHash, ActionPlanId, BlobRef, CapabilityRouteKind, DecisionScope, ExecFingerprint,
     ManifestOriginRef, ModelModality, NetworkAccess, PermissionActorSource, PermissionSubject,
     ProviderRestriction, ResultBudget, SandboxPolicy, SandboxPolicyHash, SemverString, Severity,
     ToolCapability, ToolExecutionChannel, ToolGroup, ToolName, ToolOrigin, ToolProperties,
@@ -145,6 +145,41 @@ pub enum ActionResource {
     Network {
         host: String,
         port: Option<u16>,
+    },
+    BlobRead {
+        blob_ref: BlobRef,
+    },
+    Memory {
+        action: String,
+        subject: Option<String>,
+    },
+    Process {
+        process_id: String,
+        operation: String,
+    },
+    TeamControl {
+        action: String,
+        target: Option<String>,
+    },
+    Todo {
+        operation: String,
+        item_count: Option<u64>,
+    },
+    RunControl {
+        action: String,
+        target: Option<String>,
+    },
+    Clarification {
+        action: String,
+        prompt_hash: Option<String>,
+    },
+    Skill {
+        action: String,
+        name: Option<String>,
+    },
+    CodeExecution {
+        language: String,
+        script_hash: String,
     },
     McpTool {
         server_id: String,

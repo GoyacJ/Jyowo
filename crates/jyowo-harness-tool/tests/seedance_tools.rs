@@ -19,6 +19,7 @@ use serde_json::json;
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
+    time::Duration,
 };
 use wiremock::{
     matchers::{header, method, path},
@@ -36,9 +37,54 @@ async fn seedance_tools_register_with_default_builtin_toolset() {
         .build()
         .unwrap();
 
-    assert!(registry.get("SeedanceTextToVideo").is_some());
-    assert!(registry.get("SeedanceImageToVideo").is_some());
-    assert!(registry.get("SeedanceVideoGenerationQuery").is_some());
+    let snapshot = registry.snapshot();
+    let seedance_names = snapshot
+        .iter_sorted()
+        .map(|(name, _)| name.as_str())
+        .filter(|name| name.starts_with("Seedance"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        seedance_names,
+        vec![
+            "SeedanceImageToVideo",
+            "SeedanceTextToVideo",
+            "SeedanceVideoGenerationQuery",
+        ]
+    );
+    for name in seedance_names {
+        let descriptor = snapshot.get(name).unwrap().descriptor();
+        assert!(
+            descriptor.output_schema.is_some(),
+            "{name} should declare a provider output schema"
+        );
+    }
+}
+
+#[tokio::test]
+async fn seedance_video_tools_declare_long_running_policy() {
+    let registry = ToolRegistryBuilder::new()
+        .with_builtin_toolset(BuiltinToolset::Default)
+        .build()
+        .unwrap();
+    let snapshot = registry.snapshot();
+
+    for name in [
+        "SeedanceTextToVideo",
+        "SeedanceImageToVideo",
+        "SeedanceVideoGenerationQuery",
+    ] {
+        let policy = snapshot
+            .get(name)
+            .unwrap()
+            .descriptor()
+            .properties
+            .long_running
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name} should declare a long-running policy"));
+        assert_eq!(policy.stall_threshold, Duration::from_secs(10), "{name}");
+        assert_eq!(policy.hard_timeout, Duration::from_secs(900), "{name}");
+    }
 }
 
 #[tokio::test]
@@ -158,6 +204,34 @@ async fn seedance_query_completed_task_returns_typed_video_artifact() {
 }
 
 #[tokio::test]
+async fn seedance_query_returns_structured_pending_status() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/contents/generations/tasks/cgt-video-pending"))
+        .and(header("authorization", "Bearer provider-test-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "running",
+            "id": "cgt-video-pending"
+        })))
+        .mount(&server)
+        .await;
+
+    let tool = SeedanceVideoGenerationQueryTool::default();
+    let result = execute_final(
+        &tool,
+        json!({"request": {"task_id": "cgt-video-pending"}}),
+        ctx_with_media(server.uri()),
+    )
+    .await;
+
+    let ToolResult::Structured(value) = result else {
+        panic!("expected structured pending status, got {result:?}");
+    };
+    assert_eq!(value["status"], "running");
+    assert_eq!(value["id"], "cgt-video-pending");
+}
+
+#[tokio::test]
 async fn seedance_query_rejects_unsafe_output_url() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -181,6 +255,59 @@ async fn seedance_query_rejects_unsafe_output_url() {
     .await;
 
     assert!(matches!(error, ToolError::PermissionDenied(_)));
+}
+
+#[tokio::test]
+async fn seedance_query_rejects_non_base64_data_url_media() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/contents/generations/tasks/cgt-video-data-url"))
+        .and(header("authorization", "Bearer provider-test-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "succeeded",
+            "content": {
+                "video": "data:video/mp4,plain-text"
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let tool = SeedanceVideoGenerationQueryTool::default();
+    let error = execute_error(
+        &tool,
+        json!({"request": {"task_id": "cgt-video-data-url"}}),
+        ctx_with_media(server.uri()),
+    )
+    .await;
+
+    assert!(error.to_string().contains("data URL is unsupported"));
+}
+
+#[tokio::test]
+async fn seedance_query_rejects_unsupported_data_url_mime() {
+    let server = MockServer::start().await;
+    let svg = general_purpose::STANDARD.encode("<svg></svg>");
+    Mock::given(method("GET"))
+        .and(path("/contents/generations/tasks/cgt-video-svg"))
+        .and(header("authorization", "Bearer provider-test-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "succeeded",
+            "content": {
+                "video": format!("data:video/svg+xml;base64,{svg}")
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let tool = SeedanceVideoGenerationQueryTool::default();
+    let error = execute_error(
+        &tool,
+        json!({"request": {"task_id": "cgt-video-svg"}}),
+        ctx_with_media(server.uri()),
+    )
+    .await;
+
+    assert!(error.to_string().contains("data URL is unsupported"));
 }
 
 #[tokio::test]

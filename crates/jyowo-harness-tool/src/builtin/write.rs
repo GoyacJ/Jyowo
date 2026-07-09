@@ -20,23 +20,34 @@ pub struct FileWriteTool {
 impl Default for FileWriteTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "FileWrite",
-                "File write",
-                "Overwrite a workspace file.",
-                ToolGroup::FileSystem,
-                false,
-                false,
-                true,
-                64_000,
-                Vec::new(),
-                super::object_schema(
-                    &["path", "content"],
-                    json!({
-                        "path": { "type": "string" },
-                        "content": { "type": "string" }
-                    }),
+            descriptor: super::with_output_schema(
+                super::descriptor(
+                    "FileWrite",
+                    "File write",
+                    "Overwrite a workspace file.",
+                    ToolGroup::FileSystem,
+                    false,
+                    false,
+                    true,
+                    64_000,
+                    Vec::new(),
+                    super::object_schema(
+                        &["path", "content"],
+                        json!({
+                            "path": { "type": "string" },
+                            "content": { "type": "string" }
+                        }),
+                    ),
                 ),
+                json!({
+                    "type": "object",
+                    "required": ["path", "bytes"],
+                    "properties": {
+                        "path": { "type": "string" },
+                        "bytes": { "type": "integer", "minimum": 0 }
+                    },
+                    "additionalProperties": false
+                }),
             ),
         }
     }

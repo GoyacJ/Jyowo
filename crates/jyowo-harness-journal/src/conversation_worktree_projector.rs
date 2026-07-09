@@ -23,7 +23,8 @@ use harness_contracts::{
     EvidenceRefKind, JournalError, NoticeSegment, ProcessActivityItem, ProcessActivityItemKind,
     ProcessSegment, ProcessSegmentStatus, ProcessStep, ProcessStepDetail, ProcessStepKind,
     ProcessStepStatus, ReviewRequestSegment, RiskLevel, TenantId, TextSegment, ToolAttempt,
-    ToolAttemptOrigin, ToolAttemptStatus, ToolGroupSegment, UiSafeText, UiVisibility,
+    ToolAttemptOrigin, ToolAttemptStatus, ToolFailureKind, ToolGroupSegment, ToolResultKind,
+    UiSafeText, UiVisibility,
 };
 use serde_json::{Map, Value};
 
@@ -1038,7 +1039,10 @@ impl ProjectionState<'_> {
             duration_ms: None,
             retry_of: None,
             failure_phase: None,
+            failure_kind: None,
             failure_summary: None,
+            result_kind: None,
+            truncated: None,
             permission: None,
             event_refs: vec![event_ref.clone()],
         });
@@ -1095,6 +1099,8 @@ impl ProjectionState<'_> {
             attempt.ended_at = Some(event.timestamp.to_rfc3339());
             attempt.duration_ms = u64_field(&event.payload, "durationMs")
                 .or_else(|| u64_field(&event.payload, "duration_ms"));
+            attempt.result_kind = tool_result_kind_from_payload(&event.payload);
+            attempt.truncated = bool_field(&event.payload, "truncated");
             attempt.event_refs.push(event_ref);
         }
     }
@@ -1109,6 +1115,7 @@ impl ProjectionState<'_> {
         };
         if let Some(attempt) = self.tool_attempt_mut(&event.run_id, &tool_use_id) {
             attempt.status = ToolAttemptStatus::Failed;
+            attempt.failure_kind = tool_failure_kind_from_payload(&event.payload);
             attempt.failure_summary = Some(safe_tool_failure_summary(event));
             attempt.event_refs.push(event_ref.clone());
             let tool_name = attempt.tool_name.as_str().to_owned();
@@ -2603,6 +2610,33 @@ pub fn safe_tool_failure_summary(_event: &ConversationTimelineEvent) -> String {
     "工具执行失败。可在详情中查看。".to_owned()
 }
 
+fn tool_failure_kind_from_payload(payload: &Value) -> Option<ToolFailureKind> {
+    match string_field(payload, "failureKind")
+        .or_else(|| string_field(payload, "failure_kind"))
+        .as_deref()
+    {
+        Some("capabilityMissing" | "capability_missing") => {
+            Some(ToolFailureKind::CapabilityMissing)
+        }
+        Some("toolError" | "tool_error") => Some(ToolFailureKind::ToolError),
+        _ => None,
+    }
+}
+
+fn tool_result_kind_from_payload(payload: &Value) -> Option<ToolResultKind> {
+    match string_field(payload, "resultKind")
+        .or_else(|| string_field(payload, "result_kind"))
+        .as_deref()
+    {
+        Some("text") => Some(ToolResultKind::Text),
+        Some("structured") => Some(ToolResultKind::Structured),
+        Some("blob") => Some(ToolResultKind::Blob),
+        Some("mixed") => Some(ToolResultKind::Mixed),
+        Some("offloaded") => Some(ToolResultKind::Offloaded),
+        _ => None,
+    }
+}
+
 fn merge_process_step_detail(
     existing: Option<&ProcessStepDetail>,
     incoming: Option<ProcessStepDetail>,
@@ -2680,6 +2714,9 @@ fn permission_request_state_from_payload(
         policy,
         decision_options: permission_decision_options(payload),
         evidence_refs: vec![],
+        resources: permission_resources_from_payload(payload),
+        scope: permission_scope_from_payload(payload),
+        review_details: permission_review_details_from_payload(payload),
         data_exposure: permission_data_exposure_from_payload(payload),
         confirmation: permission_confirmation_expected(payload).map(|text| DecisionConfirmation {
             expected_text: text,
@@ -2903,6 +2940,92 @@ fn target_kind_from_operation_label(label: &str) -> DecisionTargetKind {
     } else {
         DecisionTargetKind::Unknown
     }
+}
+
+fn permission_resources_from_payload(payload: &Value) -> Vec<String> {
+    let mut resources = payload
+        .get("resources")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|resource| {
+            resource
+                .as_str()
+                .map(ToOwned::to_owned)
+                .or_else(|| string_field(resource, "label"))
+                .or_else(|| string_field(resource, "resource"))
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(subject) = payload.get("subject") {
+        let subject_kind = subject_type(subject);
+        let body = subject_body(subject);
+        match subject_kind.as_deref() {
+            Some("file_write" | "file_delete") => {
+                if let Some(path) = string_field(body, "path") {
+                    resources.push(format!("file:{path}"));
+                }
+            }
+            Some("command_exec" | "dangerous_command") => {
+                if let Some(command) = command_text_from_payload(body) {
+                    resources.push(format!("command:{command}"));
+                }
+                if let Some(cwd) = command_cwd_from_payload(body) {
+                    resources.push(format!("workspace:{cwd}"));
+                }
+            }
+            Some("network_access") => {
+                if let Some(host) = string_field(body, "host") {
+                    resources.push(format!("network:{host}"));
+                }
+            }
+            Some("mcp_tool_call") => {
+                if let (Some(server), Some(tool)) =
+                    (string_field(body, "server"), string_field(body, "tool"))
+                {
+                    resources.push(format!("mcp:{server}/{tool}"));
+                }
+            }
+            Some("tool_invocation") => {
+                if let Some(tool) = string_field(body, "tool") {
+                    resources.push(format!("tool:{tool}"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    resources.sort();
+    resources.dedup();
+    resources
+}
+
+fn permission_scope_from_payload(payload: &Value) -> Option<String> {
+    payload
+        .get("sandboxPolicy")
+        .or_else(|| payload.get("sandbox_policy"))
+        .and_then(|policy| string_field(policy, "scope"))
+        .or_else(|| string_field(payload, "scope"))
+}
+
+fn permission_review_details_from_payload(payload: &Value) -> Vec<String> {
+    payload
+        .get("review")
+        .and_then(|review| review.get("details"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|detail| {
+            detail
+                .as_str()
+                .map(ToOwned::to_owned)
+                .or_else(|| string_field(detail, "detail"))
+                .or_else(|| string_field(detail, "summary"))
+                .or_else(|| string_field(detail, "label"))
+                .or_else(|| string_field(detail, "title"))
+        })
+        .filter_map(|detail| safe_projected_display_text(&detail, 500))
+        .collect()
 }
 
 fn permission_data_exposure_from_payload(payload: &Value) -> DataExposure {

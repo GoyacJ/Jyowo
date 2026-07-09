@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -32,23 +33,47 @@ pub struct BashTool {
 impl Default for BashTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "Bash",
-                "Bash",
-                "Execute a shell command through the configured sandbox.",
-                ToolGroup::Shell,
-                false,
-                false,
-                true,
-                256_000,
-                Vec::new(),
-                super::object_schema(
-                    &["command"],
+            descriptor: super::with_long_running(
+                super::with_output_schema(
+                    super::descriptor(
+                        "Bash",
+                        "Bash",
+                        "Execute a shell command through the configured sandbox.",
+                        ToolGroup::Shell,
+                        false,
+                        false,
+                        true,
+                        256_000,
+                        Vec::new(),
+                        super::object_schema(
+                            &["command"],
+                            json!({
+                                "command": { "type": "string" },
+                                "cwd": { "type": "string" }
+                            }),
+                        ),
+                    ),
                     json!({
-                        "command": { "type": "string" },
-                        "cwd": { "type": "string" }
+                        "type": "object",
+                        "required": ["exit_status", "stdout_bytes_observed", "stderr_bytes_observed"],
+                        "properties": {
+                            "exit_status": { "type": "object" },
+                            "stdout_bytes_observed": { "type": "integer", "minimum": 0 },
+                            "stderr_bytes_observed": { "type": "integer", "minimum": 0 },
+                            "overflow": {
+                                "type": ["object", "null"],
+                                "properties": {
+                                    "stream": { "type": "string", "enum": ["stdout", "stderr", "combined"] },
+                                    "original_bytes": { "type": "integer", "minimum": 0 },
+                                    "effective_limit": { "type": "integer", "minimum": 0 },
+                                    "blob_ref": { "type": "object" }
+                                }
+                            }
+                        },
+                        "additionalProperties": false
                     }),
                 ),
+                super::long_running_policy(Duration::from_secs(5), Duration::from_secs(600)),
             ),
         }
     }

@@ -9,18 +9,22 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    ActionPlanId, DecisionScope, MemoryId, MemoryKind, MemoryMetadata, MemoryPermissionContext,
-    MemoryPolicyDenyReason, MemoryProviderSelectionPolicy, MemoryRedactionSummary,
-    MemoryTakesEffect, MemoryThreadSettings, MemoryToolArgs, MemoryToolDenial, MemoryToolResponse,
-    MemoryToolState, PermissionSubject, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError,
-    ToolExecutionChannel, ToolGroup, ToolResult,
+    ActionPlanId, ActionResource, DecisionScope, MemoryId, MemoryKind, MemoryMetadata,
+    MemoryPermissionContext, MemoryPolicyDenyReason, MemoryProviderSelectionPolicy,
+    MemoryRedactionSummary, MemoryTakesEffect, MemoryThreadSettings, MemoryToolArgs,
+    MemoryToolDenial, MemoryToolResponse, MemoryToolState, NetworkAccess, PermissionSubject,
+    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
+    ToolResult, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::{AuthorizedToolInput, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use crate::{
+    action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
+    ToolStream, ValidationError,
+};
 
 pub const MEMORY_TOOL_RUNTIME_CAPABILITY: &str = "jyowo.memory.tool_runtime";
 
@@ -52,6 +56,7 @@ pub trait MemoryToolRuntimeCap: Send + Sync + 'static {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub enum MemoryToolRuntimeAction {
     Search {
         query: String,
@@ -136,25 +141,33 @@ pub struct MemoryTool {
 impl Default for MemoryTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "memory",
-                "Memory",
-                "Search, read, create, update, delete, list, and propose long-term memories. Write actions (create/update/delete) require explicit user permission. propose creates a candidate for review without direct storage. Search returns records matching the query via FTS5 lexical search.",
-                ToolGroup::Memory,
-                false,  // not concurrency safe (mutates shared state)
-                false,  // not read-only (has write actions)
-                true,   // destructive (delete action)
-                64_000, // budget limit
-                vec![memory_tool_runtime_capability()],
-                generated_memory_tool_schema(),
+            descriptor: super::with_output_schema(
+                super::descriptor(
+                    "memory",
+                    "Memory",
+                    "Search, read, create, update, delete, list, and propose long-term memories. Write actions (create/update/delete) require explicit user permission. propose creates a candidate for review without direct storage. Search returns records matching the query via FTS5 lexical search.",
+                    ToolGroup::Memory,
+                    false,  // not concurrency safe (mutates shared state)
+                    false,  // not read-only (has write actions)
+                    true,   // destructive (delete action)
+                    64_000, // budget limit
+                    vec![memory_tool_runtime_capability()],
+                    generated_memory_tool_schema(),
+                ),
+                serde_json::to_value(schemars::schema_for!(MemoryToolResponse))
+                    .unwrap_or_else(|_| json!({"type": "object"})),
             ),
         }
     }
 }
 
 fn generated_memory_tool_schema() -> Value {
-    serde_json::to_value(schemars::schema_for!(MemoryToolArgs))
-        .unwrap_or_else(|_| json!({"type": "object"}))
+    let mut schema = serde_json::to_value(schemars::schema_for!(MemoryToolArgs))
+        .unwrap_or_else(|_| json!({"type": "object"}));
+    if let Some(object) = schema.as_object_mut() {
+        object.insert("additionalProperties".to_owned(), json!(false));
+    }
+    schema
 }
 
 #[async_trait]
@@ -187,11 +200,14 @@ impl Tool for MemoryTool {
             }
         };
 
-        super::generic_action_plan(
+        action_plan_from_permission_check(
             &self.descriptor,
             input,
             ctx,
             permission,
+            vec![memory_resource(&action)],
+            WorkspaceAccess::None,
+            NetworkAccess::None,
             ToolExecutionChannel::DirectAuthorizedRust,
         )
     }
@@ -271,6 +287,25 @@ fn memory_tool_action_name(action: &MemoryToolRuntimeAction) -> &'static str {
         MemoryToolRuntimeAction::Delete { .. } => "delete",
         MemoryToolRuntimeAction::List { .. } => "list",
         MemoryToolRuntimeAction::Propose { .. } => "propose",
+    }
+}
+
+fn memory_resource(action: &MemoryToolRuntimeAction) -> ActionResource {
+    let subject = match action {
+        MemoryToolRuntimeAction::Search { query, .. } => Some(format!("query:{query}")),
+        MemoryToolRuntimeAction::Read { memory_id }
+        | MemoryToolRuntimeAction::Update { memory_id, .. }
+        | MemoryToolRuntimeAction::Delete { memory_id, .. } => Some(memory_id.to_string()),
+        MemoryToolRuntimeAction::Create { draft } | MemoryToolRuntimeAction::Propose { draft } => {
+            Some(format!("{:?}:{:?}", draft.visibility, draft.kind))
+        }
+        MemoryToolRuntimeAction::List { visibility, .. } => visibility
+            .as_ref()
+            .map(|visibility| format!("visibility:{visibility:?}")),
+    };
+    ActionResource::Memory {
+        action: memory_tool_action_name(action).to_owned(),
+        subject,
     }
 }
 

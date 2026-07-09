@@ -372,6 +372,64 @@ async fn default_registry_buffers_truncates_redacts_and_stops_processes() {
 }
 
 #[tokio::test]
+async fn default_registry_applies_read_budget_to_stdout_and_stderr_separately() {
+    let sandbox = Arc::new(FakeSandbox::with_streams(
+        vec![Bytes::from_static(b"stdout-abcdef")],
+        vec![Bytes::from_static(b"stderr-uvwxyz")],
+    ));
+    let registry = DefaultRunScopedProcessRegistry::new(sandbox);
+    let session_id = SessionId::new();
+    let run_id = harness_contracts::RunId::new();
+    let workspace = tempfile::tempdir().unwrap();
+
+    let start = registry
+        .start_process(
+            ProcessStartInvocation {
+                tenant_id: TenantId::SINGLE,
+                session_id,
+                run_id,
+                tool_use_id: ToolUseId::new(),
+                workspace_root: workspace.path().to_path_buf(),
+                request: ProcessStartRequest {
+                    command: "serve".to_owned(),
+                    args: Vec::new(),
+                    cwd: None,
+                    buffer_bytes: Some(64),
+                },
+                sandbox_policy: ExecSpec::default().policy,
+                workspace_access: WorkspaceAccess::ReadWrite {
+                    allowed_writable_subpaths: Vec::new(),
+                },
+            },
+            Arc::new(NoopRedactor),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let read = registry
+        .read_process(
+            ProcessReadInvocation {
+                tenant_id: TenantId::SINGLE,
+                session_id,
+                run_id,
+                request: ProcessReadRequest {
+                    process_id: start.process_id.clone(),
+                    max_bytes: Some(8),
+                },
+            },
+            Arc::new(NoopRedactor),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(read.stdout, "t-abcdef");
+    assert_eq!(read.stderr, "r-uvwxyz");
+    assert!(read.stdout_truncated);
+    assert!(read.stderr_truncated);
+}
+
+#[tokio::test]
 async fn default_registry_read_after_stop_returns_stopped_status() {
     let sandbox = Arc::new(FakeSandbox::new(vec![Bytes::from_static(b"ready")]));
     let kill_count = sandbox.kill_count.clone();
@@ -516,6 +574,7 @@ impl Redactor for NoopRedactor {
 
 struct FakeSandbox {
     stdout: Mutex<Vec<Bytes>>,
+    stderr: Mutex<Vec<Bytes>>,
     recorded_execs: Mutex<Vec<ExecSpec>>,
     activity: Arc<FakeActivity>,
     kill_count: Arc<AtomicUsize>,
@@ -523,9 +582,14 @@ struct FakeSandbox {
 
 impl FakeSandbox {
     fn new(stdout: Vec<Bytes>) -> Self {
+        Self::with_streams(stdout, Vec::new())
+    }
+
+    fn with_streams(stdout: Vec<Bytes>, stderr: Vec<Bytes>) -> Self {
         let kill_count = Arc::new(AtomicUsize::new(0));
         Self {
             stdout: Mutex::new(stdout),
+            stderr: Mutex::new(stderr),
             recorded_execs: Mutex::new(Vec::new()),
             activity: Arc::new(FakeActivity {
                 kill_count: kill_count.clone(),
@@ -572,10 +636,11 @@ impl SandboxBackend for FakeSandbox {
     ) -> Result<ProcessHandle, SandboxError> {
         self.recorded_execs.lock().push(spec);
         let stdout = std::mem::take(&mut *self.stdout.lock());
+        let stderr = std::mem::take(&mut *self.stderr.lock());
         Ok(ProcessHandle {
             pid: Some(42),
             stdout: Some(Box::pin(stream::iter(stdout))),
-            stderr: Some(Box::pin(stream::empty())),
+            stderr: Some(Box::pin(stream::iter(stderr))),
             stdin: None,
             cwd_marker: None,
             activity: self.activity.clone(),

@@ -1066,6 +1066,7 @@ fn project_envelope(
             let mut payload = json!({
                 "durationMs": event.duration_ms,
                 "outputSummary": "Output withheld from conversation timeline.",
+                "resultKind": tool_result_kind(&event.result),
                 "toolUseId": event.tool_use_id.to_string(),
             });
             if let Some(tool_name) = tool_name.as_ref() {
@@ -1087,6 +1088,7 @@ fn project_envelope(
                 "blobRef": event.blob_ref,
                 "outputBytes": event.original_size,
                 "previewBytes": event.effective_limit,
+                "resultKind": "offloaded",
                 "toolUseId": event.tool_use_id.to_string(),
                 "truncated": true,
             });
@@ -1102,18 +1104,22 @@ fn project_envelope(
                 event.at,
             )
         }
-        Event::ToolUseFailed(event) => (
-            "tool.failed",
-            "tool",
-            "redacted",
-            json!({
+        Event::ToolUseFailed(event) => {
+            let mut payload = json!({
                 "code": "tool_error",
                 "message": "Tool error withheld from conversation timeline.",
                 "toolUseId": event.tool_use_id.to_string(),
-            }),
-            None,
-            event.at,
-        ),
+            });
+            if event.error.code == "capability_missing"
+                || event
+                    .error
+                    .message
+                    .starts_with("required capability missing:")
+            {
+                payload["failureKind"] = json!("capabilityMissing");
+            }
+            ("tool.failed", "tool", "redacted", payload, None, event.at)
+        }
         Event::PermissionRequested(event) => {
             permission_context = Some((event.request_id, event.run_id));
             let subject = permission_subject_display(&event.subject);
@@ -2339,6 +2345,16 @@ fn project_safe_tool_result_fields(
                 }
             }
         }
+    }
+}
+
+fn tool_result_kind(result: &ToolResult) -> &'static str {
+    match result {
+        ToolResult::Text(_) => "text",
+        ToolResult::Structured(_) => "structured",
+        ToolResult::Blob { .. } => "blob",
+        ToolResult::Mixed(_) => "mixed",
+        _ => "structured",
     }
 }
 

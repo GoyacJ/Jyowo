@@ -75,3 +75,36 @@ fn permit() {
   assert.doesNotMatch(result.stderr, /src\/network_broker\.rs/);
   assert.doesNotMatch(result.stderr, /src\/test_only\.rs/);
 });
+
+test("allows web search to declare an external backend boundary without raw network code", () => {
+  const root = fixtureRoot("web-search-backend");
+  const src = join(root, "crates", "jyowo-harness-tool", "src");
+
+  writeFileSync(join(src, "network_broker.rs"), "fn broker() {}\n");
+  writeFileSync(
+    join(src, "web_search.rs"),
+    `
+pub const WEB_SEARCH_BACKEND_CAPABILITY: &str = "web_search_backend";
+
+pub trait WebSearchBackend {
+  fn search(&self, query: String);
+}
+
+fn execution_channel() -> &'static str {
+  WEB_SEARCH_BACKEND_CAPABILITY
+}
+`,
+  );
+
+  const result = spawnSync(process.execPath, [SCRIPT], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      JYOWO_TOOL_NETWORK_BROKER_BOUNDARY_ROOT: root,
+    },
+    encoding: "utf-8",
+  });
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /Network broker boundary clean/);
+});

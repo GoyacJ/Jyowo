@@ -52,28 +52,44 @@ impl WebSearchTool {
     }
 
     fn default_descriptor() -> ToolDescriptor {
-        super::descriptor(
-            "WebSearch",
-            "Web search",
-            "Search the web using a configured backend.",
-            ToolGroup::Network,
-            true,
-            true,
-            false,
-            32_000,
-            Vec::new(),
-            super::object_schema(
-                &["query"],
-                json!({
-                    "query": { "type": "string" },
-                    "max_results": { "type": "integer", "minimum": 1 },
-                    "region": { "type": "string", "minLength": 1 },
-                    "recency": {
-                        "type": "string",
-                        "enum": ["day", "week", "month", "year"]
-                    }
-                }),
+        super::with_output_schema(
+            super::descriptor(
+                "WebSearch",
+                "Web search",
+                "Search the web using a configured backend.",
+                ToolGroup::Network,
+                true,
+                true,
+                false,
+                32_000,
+                Vec::new(),
+                super::object_schema(
+                    &["query"],
+                    json!({
+                        "query": { "type": "string" },
+                        "max_results": { "type": "integer", "minimum": 1 },
+                        "region": { "type": "string", "minLength": 1 },
+                        "recency": {
+                            "type": "string",
+                            "enum": ["day", "week", "month", "year"]
+                        }
+                    }),
+                ),
             ),
+            json!({
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["title", "url", "snippet", "score"],
+                    "properties": {
+                        "title": { "type": "string" },
+                        "url": { "type": "string" },
+                        "snippet": { "type": "string" },
+                        "score": { "type": "number" }
+                    },
+                    "additionalProperties": false
+                }
+            }),
         )
     }
 }

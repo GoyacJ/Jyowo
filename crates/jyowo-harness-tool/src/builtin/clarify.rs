@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use harness_contracts::{
-    AssistantClarificationRequestedEvent, ClarifyChannelCap, ClarifyChoice, ClarifyPrompt,
-    DecisionScope, Event, PermissionSubject, RequestId, ToolActionPlan, ToolCapability,
-    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult, UiSafeText,
+    ActionResource, AssistantClarificationRequestedEvent, ClarifyChannelCap, ClarifyChoice,
+    ClarifyPrompt, DecisionScope, Event, PermissionSubject, RequestId, ToolActionPlan,
+    ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
+    UiSafeText,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -19,36 +20,51 @@ pub struct ClarifyTool {
 impl Default for ClarifyTool {
     fn default() -> Self {
         Self {
-            descriptor: super::descriptor(
-                "Clarify",
-                "Clarify",
-                "Ask the user for clarification through the session channel.",
-                ToolGroup::Clarification,
-                false,
-                false,
-                false,
-                8_000,
-                vec![ToolCapability::ClarifyChannel],
-                super::object_schema(
-                    &["prompt"],
-                    json!({
-                        "prompt": { "type": "string" },
-                        "choices": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "required": ["id", "label"],
-                                "properties": {
-                                    "id": { "type": "string", "minLength": 1 },
-                                    "label": { "type": "string", "minLength": 1 },
-                                    "hint": { "type": "string" }
+            descriptor: super::with_output_schema(
+                super::descriptor(
+                    "Clarify",
+                    "Clarify",
+                    "Ask the user for clarification through the session channel.",
+                    ToolGroup::Clarification,
+                    false,
+                    false,
+                    false,
+                    8_000,
+                    vec![ToolCapability::ClarifyChannel],
+                    super::object_schema(
+                        &["prompt"],
+                        json!({
+                            "prompt": { "type": "string" },
+                            "choices": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["id", "label"],
+                                    "properties": {
+                                        "id": { "type": "string", "minLength": 1 },
+                                        "label": { "type": "string", "minLength": 1 },
+                                        "hint": { "type": "string" }
+                                    }
                                 }
-                            }
-                        },
-                        "multiple": { "type": "boolean" },
-                        "timeout_seconds": { "type": "integer", "minimum": 1 }
-                    }),
+                            },
+                            "multiple": { "type": "boolean" },
+                            "timeout_seconds": { "type": "integer", "minimum": 1 }
+                        }),
+                    ),
                 ),
+                json!({
+                    "type": "object",
+                    "required": ["answer", "chosen_ids", "answered_at"],
+                    "properties": {
+                        "answer": { "type": "string" },
+                        "chosen_ids": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        },
+                        "answered_at": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                }),
             ),
         }
     }
@@ -66,7 +82,11 @@ impl Tool for ClarifyTool {
     }
 
     async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
-        super::generic_action_plan(
+        let prompt_hash = input
+            .get("prompt")
+            .and_then(Value::as_str)
+            .map(|prompt| blake3::hash(prompt.as_bytes()).to_hex().to_string());
+        super::generic_action_plan_with_resources(
             &self.descriptor,
             input,
             ctx,
@@ -77,6 +97,10 @@ impl Tool for ClarifyTool {
                 },
                 scope: DecisionScope::ToolName(self.descriptor.name.clone()),
             },
+            vec![ActionResource::Clarification {
+                action: "ask".to_owned(),
+                prompt_hash,
+            }],
             ToolExecutionChannel::DirectAuthorizedRust,
         )
     }

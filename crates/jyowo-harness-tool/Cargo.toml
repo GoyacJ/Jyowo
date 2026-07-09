@@ -46,6 +46,7 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
 globset = { workspace = true }
+jsonschema = { workspace = true }
 parking_lot = "0.12.5"
 regex = { workspace = true }
 reqwest = { workspace = true, optional = true }

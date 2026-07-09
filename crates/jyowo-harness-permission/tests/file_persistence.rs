@@ -151,6 +151,33 @@ async fn file_persistence_lookup_works_through_decision_store_trait_object() {
 }
 
 #[tokio::test]
+async fn file_persistence_reuses_persisted_decision_only_within_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = canonical_temp_root(&temp).join("permissions.json");
+    let persistence = FileDecisionPersistence::new(TenantId::SINGLE, &path, signer());
+    let mut decision = persisted_decision();
+    decision.scope = DecisionScope::PathPrefix(PathBuf::from("/workspace/src"));
+    persistence.persist(decision.clone()).await.unwrap();
+
+    let mut in_scope = lookup();
+    in_scope.requested_scope = DecisionScope::PathPrefix(PathBuf::from("/workspace/src/lib.rs"));
+    assert_eq!(
+        persistence.find_scoped_decision(in_scope).await.unwrap(),
+        Some(decision)
+    );
+
+    let mut outside_scope = lookup();
+    outside_scope.requested_scope = DecisionScope::PathPrefix(PathBuf::from("/workspace/tests"));
+    assert_eq!(
+        persistence
+            .find_scoped_decision(outside_scope)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
 async fn file_persistence_does_not_reuse_session_allow_across_sessions() {
     let temp = tempfile::tempdir().unwrap();
     let path = canonical_temp_root(&temp).join("permissions.json");

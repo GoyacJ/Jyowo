@@ -15,7 +15,7 @@ use harness_contracts::{
     ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
     ToolResultPart, ToolServiceBinding, WorkspaceAccess,
 };
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use harness_model::{SeedanceApiClient, SEEDANCE_DEFAULT_BASE_URL, SEEDANCE_PROVIDER_ID};
 use harness_permission::PermissionCheck;
@@ -744,68 +744,96 @@ fn service_binding(
 }
 
 fn create_descriptor(name: &str, display_name: &str, description: &str) -> ToolDescriptor {
-    super::descriptor_with_binding(
-        name,
-        display_name,
-        description,
-        ToolGroup::Network,
-        true,
-        false,
-        false,
-        128_000,
-        vec![ToolCapability::ProviderCredentialResolver],
-        super::object_schema(
-            &["request"],
-            json!({
-                "request": {
-                    "type": "object",
-                    "description": "Volcengine Ark Seedance official API request body for this operation."
-                }
-            }),
+    long_running_descriptor(super::with_output_schema(
+        super::descriptor_with_binding(
+            name,
+            display_name,
+            description,
+            ToolGroup::Network,
+            true,
+            false,
+            false,
+            128_000,
+            vec![ToolCapability::ProviderCredentialResolver],
+            super::object_schema(
+                &["request"],
+                json!({
+                    "request": {
+                        "type": "object",
+                        "description": "Volcengine Ark Seedance official API request body for this operation."
+                    }
+                }),
+            ),
+            Some(service_binding(
+                "seedance.video_generation",
+                CapabilityRouteKind::VideoGeneration,
+                ModelModality::Video,
+            )),
         ),
-        Some(service_binding(
-            "seedance.video_generation",
-            CapabilityRouteKind::VideoGeneration,
-            ModelModality::Video,
-        )),
-    )
+        provider_output_schema(),
+    ))
 }
 
 fn query_descriptor(name: &str, display_name: &str, description: &str) -> ToolDescriptor {
-    super::descriptor_with_binding(
-        name,
-        display_name,
-        description,
-        ToolGroup::Network,
-        true,
-        false,
-        false,
-        128_000,
-        vec![
-            ToolCapability::ProviderCredentialResolver,
-            ToolCapability::BlobWriter,
-        ],
-        super::object_schema(
-            &["request"],
-            json!({
-                "request": {
-                    "type": "object",
-                    "required": ["task_id"],
-                    "properties": {
-                        "task_id": {
-                            "type": "string",
-                            "description": "Seedance video generation task id."
+    long_running_descriptor(super::with_output_schema(
+        super::descriptor_with_binding(
+            name,
+            display_name,
+            description,
+            ToolGroup::Network,
+            true,
+            false,
+            false,
+            128_000,
+            vec![
+                ToolCapability::ProviderCredentialResolver,
+                ToolCapability::BlobWriter,
+            ],
+            super::object_schema(
+                &["request"],
+                json!({
+                    "request": {
+                        "type": "object",
+                        "required": ["task_id"],
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Seedance video generation task id."
+                            }
                         }
                     }
-                }
-            }),
+                }),
+            ),
+            Some(service_binding(
+                "seedance.video_generation.query",
+                CapabilityRouteKind::VideoGeneration,
+                ModelModality::Video,
+            )),
         ),
-        Some(service_binding(
-            "seedance.video_generation.query",
-            CapabilityRouteKind::VideoGeneration,
-            ModelModality::Video,
-        )),
+        provider_output_schema(),
+    ))
+}
+
+fn long_running_descriptor(descriptor: ToolDescriptor) -> ToolDescriptor {
+    super::with_long_running(
+        descriptor,
+        super::long_running_policy(Duration::from_secs(10), Duration::from_secs(900)),
     )
+}
+
+fn provider_output_schema() -> Value {
+    json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "description": "Seedance async task id or structured task status."
+            },
+            {
+                "type": "array",
+                "description": "Mixed result parts containing task metadata and video artifacts."
+            }
+        ]
+    })
 }
 
 fn request(input: &Value) -> Result<Value, ValidationError> {
