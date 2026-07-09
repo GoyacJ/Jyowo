@@ -5,8 +5,8 @@ use harness_contracts::ModelError;
 
 use crate::openai_protocol::{OpenAiChatDialect, OpenAiProtocolClient, OpenAiProtocolProviderExt};
 use crate::{
-    ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
-    ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
+    InferContext, ModelCredentialResolver, ModelDescriptor, ModelProtocol, ModelProvider,
+    ModelRequest, ModelStream,
 };
 
 const DEFAULT_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
@@ -54,16 +54,7 @@ impl ModelProvider for ZhipuProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        // Verified 2026-06-21: https://docs.bigmodel.cn/api-reference/模型-api/对话补全
-        vec![
-            descriptor("glm-5.2", "GLM-5.2", 1_000_000, 131_072),
-            descriptor("glm-5.1", "GLM-5.1", 1_000_000, 131_072),
-            descriptor("glm-5-turbo", "GLM-5 Turbo", 1_000_000, 131_072),
-            descriptor("glm-5", "GLM-5", 1_000_000, 131_072),
-            descriptor("glm-4.7", "GLM-4.7", 1_000_000, 131_072),
-            descriptor("glm-4.6", "GLM-4.6", 128_000, 16_384),
-            descriptor("glm-4.5-flash", "GLM-4.5 Flash", 128_000, 16_384),
-        ]
+        crate::catalog::provider_model_descriptors(PROVIDER_ID)
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
@@ -72,35 +63,5 @@ impl ModelProvider for ZhipuProvider {
 
     fn default_protocol(&self) -> ModelProtocol {
         ModelProtocol::ChatCompletions
-    }
-}
-
-fn descriptor(
-    model_id: &str,
-    display_name: &str,
-    context_window: u32,
-    max_output_tokens: u32,
-) -> ModelDescriptor {
-    ModelDescriptor {
-        provider_id: PROVIDER_ID.to_owned(),
-        model_id: model_id.to_owned(),
-        display_name: display_name.to_owned(),
-        protocol: ModelProtocol::ChatCompletions,
-        context_window,
-        max_output_tokens,
-        conversation_capability: ConversationModelCapability {
-            context_window,
-            max_output_tokens,
-            tool_calling: true,
-            reasoning: false,
-            prompt_cache: false,
-            streaming: true,
-            structured_output: false,
-            input_modalities: vec![ModelModality::Text],
-            output_modalities: vec![ModelModality::Text],
-        },
-        runtime_semantics: crate::ModelRuntimeSemantics::openai_chat_plain(),
-        lifecycle: ModelLifecycle::Stable,
-        pricing: None,
     }
 }

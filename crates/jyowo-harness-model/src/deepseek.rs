@@ -2,17 +2,14 @@ use std::sync::Arc;
 
 use async_stream::stream;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use harness_contracts::ModelError;
-use rust_decimal::Decimal;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::openai_protocol::{OpenAiChatDialect, OpenAiProtocolClient, OpenAiProtocolProviderExt};
 use crate::{
-    BillingMode, ConversationModelCapability, Currency, InferContext, ModelCredentialResolver,
-    ModelDescriptor, ModelLifecycle, ModelModality, ModelPricing, ModelProtocol, ModelProvider,
-    ModelRequest, ModelStream, PricingSource, PromptCacheStyle, Ratio,
+    InferContext, ModelCredentialResolver, ModelDescriptor, ModelProtocol, ModelProvider,
+    ModelRequest, ModelStream, PromptCacheStyle,
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.deepseek.com";
@@ -73,11 +70,7 @@ impl ModelProvider for DeepSeekProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        // Verified 2026-06-21: https://api-docs.deepseek.com/quick_start/pricing
-        vec![
-            descriptor("deepseek-v4-flash", "DeepSeek V4 Flash", 1_000_000, 384_000),
-            descriptor("deepseek-v4-pro", "DeepSeek V4 Pro", 1_000_000, 384_000),
-        ]
+        crate::catalog::provider_model_descriptors(PROVIDER_ID)
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
@@ -146,75 +139,4 @@ fn hold_concurrency_permit(
             yield event;
         }
     })
-}
-
-fn descriptor(
-    model_id: &str,
-    display_name: &str,
-    context_window: u32,
-    max_output_tokens: u32,
-) -> ModelDescriptor {
-    ModelDescriptor {
-        provider_id: PROVIDER_ID.to_owned(),
-        model_id: model_id.to_owned(),
-        display_name: display_name.to_owned(),
-        protocol: ModelProtocol::ChatCompletions,
-        context_window,
-        max_output_tokens,
-        conversation_capability: ConversationModelCapability {
-            context_window,
-            max_output_tokens,
-            tool_calling: true,
-            reasoning: true,
-            prompt_cache: true,
-            streaming: true,
-            structured_output: true,
-            input_modalities: vec![ModelModality::Text],
-            output_modalities: vec![ModelModality::Text],
-        },
-        runtime_semantics: crate::ModelRuntimeSemantics::openai_chat_deepseek(),
-        lifecycle: ModelLifecycle::Stable,
-        pricing: Some(pricing(model_id)),
-    }
-}
-
-fn pricing(model_id: &str) -> ModelPricing {
-    let (input_per_million, cache_read_per_million, output_per_million, discount) =
-        if model_id.ends_with("-pro") {
-            (
-                Decimal::new(435, 3),
-                Decimal::new(3_625, 6),
-                Decimal::new(87, 2),
-                Ratio(0.008_333_334),
-            )
-        } else {
-            (
-                Decimal::new(14, 2),
-                Decimal::new(28, 4),
-                Decimal::new(28, 2),
-                Ratio(0.02),
-            )
-        };
-
-    ModelPricing {
-        pricing_id: format!("deepseek-{model_id}-official-2026-06-21"),
-        pricing_version: 1,
-        currency: Currency::Usd,
-        input_per_million,
-        output_per_million,
-        cache_creation_per_million: None,
-        cache_read_per_million: Some(cache_read_per_million),
-        image_per_image: None,
-        last_updated: pricing_last_updated(),
-        source: PricingSource::Hardcoded,
-        billing_mode: BillingMode::Cached {
-            cache_read_discount: discount,
-        },
-    }
-}
-
-fn pricing_last_updated() -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339("2026-06-21T00:00:00Z")
-        .expect("hardcoded DeepSeek pricing timestamp should parse")
-        .with_timezone(&Utc)
 }

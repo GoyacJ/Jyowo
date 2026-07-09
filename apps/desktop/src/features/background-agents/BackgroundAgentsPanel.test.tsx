@@ -6,6 +6,7 @@ import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { BackgroundAgentsPanel } from '@/features/background-agents/BackgroundAgentsPanel'
+import { AppI18nProvider } from '@/shared/i18n/i18n'
 import type { BackgroundAgentRecord, CommandClient } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
 import {
@@ -52,7 +53,9 @@ function renderPanel(
   function Wrapper({ children }: { children: ReactNode }) {
     return (
       <CommandClientProvider client={commandClient}>
-        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        <QueryClientProvider client={queryClient}>
+          <AppI18nProvider>{children}</AppI18nProvider>
+        </QueryClientProvider>
       </CommandClientProvider>
     )
   }

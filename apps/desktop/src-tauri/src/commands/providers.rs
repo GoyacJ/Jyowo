@@ -2240,6 +2240,8 @@ pub(crate) fn model_modality_record(modality: &ModelModality) -> ProviderModelMo
 pub(crate) fn model_descriptor_from_record(
     record: &ProviderModelDescriptorRecord,
 ) -> Result<ModelDescriptor, CommandErrorPayload> {
+    let conversation_capability =
+        conversation_capability_from_record(&record.conversation_capability);
     Ok(ModelDescriptor {
         provider_id: record.provider_id.clone(),
         model_id: record.model_id.clone(),
@@ -2247,9 +2249,8 @@ pub(crate) fn model_descriptor_from_record(
         protocol: record.protocol,
         context_window: record.context_window,
         max_output_tokens: record.max_output_tokens,
-        conversation_capability: conversation_capability_from_record(
-            &record.conversation_capability,
-        ),
+        provider_declared_capability: conversation_capability.clone(),
+        conversation_capability,
         runtime_semantics: ModelRuntimeSemantics::messages_default(record.protocol),
         lifecycle: model_lifecycle_from_record(&record.lifecycle)?,
         pricing: None,
@@ -2318,6 +2319,7 @@ pub(crate) fn descriptor_from_inventory_model(
             protocol: model.protocol,
             context_window: model.context_window,
             max_output_tokens: model.max_output_tokens,
+            provider_declared_capability: model.provider_declared_capability,
             conversation_capability: model.conversation_capability,
             runtime_semantics: model.runtime_semantics,
             lifecycle: model.lifecycle,

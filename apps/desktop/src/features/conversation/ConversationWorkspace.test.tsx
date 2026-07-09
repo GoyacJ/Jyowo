@@ -310,7 +310,7 @@ describe('ConversationWorkspace', () => {
     const { unmount } = renderConversationWorkspace(createTestCommandClient({ delayMs: 10 }))
 
     expect(screen.getByText('Loading conversation')).toBeInTheDocument()
-    expect(screen.queryByText('Loading conversation...')).not.toBeInTheDocument()
+    expect(screen.queryByText('Loading conversation…')).not.toBeInTheDocument()
     expect(
       await screen.findByRole('heading', { name: 'Build the desktop foundation' }),
     ).toBeInTheDocument()
@@ -412,17 +412,14 @@ describe('ConversationWorkspace', () => {
     const commandClient = createConversationSwitchClient()
     const rendered = renderConversationWorkspace(commandClient, 'conversation-a')
 
-    fireEvent.change(
-      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
-      {
-        target: { value: 'draft for A' },
-      },
-    )
+    fireEvent.change(await screen.findByPlaceholderText('Ask Jyowo anything about this project…'), {
+      target: { value: 'draft for A' },
+    })
 
     rendered.rerender(<ConversationWorkspace conversationId="conversation-b" />)
 
     const draftB = (await screen.findByPlaceholderText(
-      'Ask Jyowo anything about this project...',
+      'Ask Jyowo anything about this project…',
     )) as HTMLTextAreaElement
     expect(draftB.value).toBe('')
 
@@ -461,12 +458,9 @@ describe('ConversationWorkspace', () => {
     const { queryClient } = renderConversationWorkspace(trackedClient)
     const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries')
 
-    fireEvent.change(
-      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
-      {
-        target: { value: 'Refresh metadata defaults after submit' },
-      },
-    )
+    fireEvent.change(await screen.findByPlaceholderText('Ask Jyowo anything about this project…'), {
+      target: { value: 'Refresh metadata defaults after submit' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
     await waitFor(() => {
@@ -538,12 +532,9 @@ describe('ConversationWorkspace', () => {
 
     renderConversationWorkspace(trackedClient)
 
-    fireEvent.change(
-      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
-      {
-        target: { value: 'Continue the Tauri setup' },
-      },
-    )
+    fireEvent.change(await screen.findByPlaceholderText('Ask Jyowo anything about this project…'), {
+      target: { value: 'Continue the Tauri setup' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
     expect(await screen.findByText('Continue the Tauri setup')).toBeInTheDocument()
@@ -579,12 +570,9 @@ describe('ConversationWorkspace', () => {
     renderConversationWorkspace(trackedClient)
 
     const prompt = 'Use token: abcdefghijklmnop from /Users/goya/.ssh/config'
-    fireEvent.change(
-      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
-      {
-        target: { value: prompt },
-      },
-    )
+    fireEvent.change(await screen.findByPlaceholderText('Ask Jyowo anything about this project…'), {
+      target: { value: prompt },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
     // RedactedBody renders with i18n text "内容已隐藏" (zh-CN fallback: "timeline.redactedBody")
@@ -641,7 +629,7 @@ describe('ConversationWorkspace', () => {
     expect(
       await screen.findByRole('button', { name: 'Permission mode: Full access' }),
     ).toBeInTheDocument()
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: 'Use the saved default mode' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
@@ -716,7 +704,7 @@ describe('ConversationWorkspace', () => {
       await screen.findByRole('button', { name: 'Permission mode: Request approval' }),
     ).toBeInTheDocument()
 
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: 'Use workspace B defaults' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
@@ -744,12 +732,9 @@ describe('ConversationWorkspace', () => {
 
     renderConversationWorkspace(trackedClient)
 
-    fireEvent.change(
-      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
-      {
-        target: { value: 'Do not use default before settings load' },
-      },
-    )
+    fireEvent.change(await screen.findByPlaceholderText('Ask Jyowo anything about this project…'), {
+      target: { value: 'Do not use default before settings load' },
+    })
     const sendButton = screen.getByRole('button', { name: 'Send message' })
 
     expect(sendButton).toBeDisabled()
@@ -823,7 +808,7 @@ describe('ConversationWorkspace', () => {
       expect(pageConversationWorktree.mock.calls.length).toBeGreaterThan(1)
       expect(uiStore.getState().activeRunId).toBeUndefined()
     })
-    expect(screen.getByPlaceholderText('Ask Jyowo anything about this project...')).toBeEnabled()
+    expect(screen.getByPlaceholderText('Ask Jyowo anything about this project…')).toBeEnabled()
   })
 
   it('cancels the current active run from the composer', async () => {
@@ -841,7 +826,7 @@ describe('ConversationWorkspace', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel run' }))
 
     await waitFor(() => expect(cancelRun).toHaveBeenCalledWith('run-001'))
-    expect(screen.getByPlaceholderText('Ask Jyowo anything about this project...')).toBeDisabled()
+    expect(screen.getByPlaceholderText('Ask Jyowo anything about this project…')).toBeDisabled()
   })
 
   it('keeps the loaded conversation visible and recoverable when startRun fails', async () => {
@@ -855,12 +840,9 @@ describe('ConversationWorkspace', () => {
 
     renderConversationWorkspace(failingClient)
 
-    fireEvent.change(
-      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
-      {
-        target: { value: 'Continue the Tauri setup' },
-      },
-    )
+    fireEvent.change(await screen.findByPlaceholderText('Ask Jyowo anything about this project…'), {
+      target: { value: 'Continue the Tauri setup' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
     expect(

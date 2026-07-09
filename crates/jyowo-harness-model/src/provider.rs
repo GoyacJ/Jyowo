@@ -154,6 +154,7 @@ pub struct ModelDescriptor {
     pub protocol: ModelProtocol,
     pub context_window: u32,
     pub max_output_tokens: u32,
+    pub provider_declared_capability: ConversationModelCapability,
     pub conversation_capability: ConversationModelCapability,
     pub runtime_semantics: ModelRuntimeSemantics,
     pub lifecycle: ModelLifecycle,
@@ -168,6 +169,7 @@ pub struct ModelRuntimeSnapshot {
     pub protocol: ModelProtocol,
     pub context_window: u32,
     pub max_output_tokens: u32,
+    pub provider_declared_capability: ConversationModelCapability,
     pub conversation_capability: ConversationModelCapability,
     pub runtime_semantics: ModelRuntimeSemantics,
     pub lifecycle: ModelLifecycle,
@@ -184,6 +186,7 @@ impl ModelRuntimeSnapshot {
             protocol: descriptor.protocol,
             context_window: descriptor.context_window,
             max_output_tokens: descriptor.max_output_tokens,
+            provider_declared_capability: descriptor.provider_declared_capability,
             conversation_capability: descriptor.conversation_capability,
             runtime_semantics: descriptor.runtime_semantics,
             lifecycle: descriptor.lifecycle,
@@ -259,6 +262,10 @@ impl ModelRuntimeSemantics {
     #[must_use]
     pub fn openai_chat_minimax() -> Self {
         Self {
+            reasoning_protocol: ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind: ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: false,
+            },
             provider_continuation_dialect: Some("openai_chat.minimax".to_owned()),
             ..Self::openai_chat_plain()
         }
@@ -393,6 +400,7 @@ pub struct ModelInventoryEntry {
     pub protocol: ModelProtocol,
     pub context_window: u32,
     pub max_output_tokens: u32,
+    pub provider_declared_capability: ConversationModelCapability,
     pub conversation_capability: ConversationModelCapability,
     pub runtime_semantics: ModelRuntimeSemantics,
     pub lifecycle: ModelLifecycle,
@@ -410,6 +418,7 @@ impl ModelInventoryEntry {
             protocol: descriptor.protocol,
             context_window: descriptor.context_window,
             max_output_tokens: descriptor.max_output_tokens,
+            provider_declared_capability: descriptor.provider_declared_capability,
             conversation_capability: descriptor.conversation_capability,
             runtime_semantics: descriptor.runtime_semantics,
             lifecycle: descriptor.lifecycle,
@@ -434,6 +443,7 @@ impl ModelInventoryEntry {
             protocol,
             context_window: 0,
             max_output_tokens: 0,
+            provider_declared_capability: conversation_capability.clone(),
             conversation_capability,
             runtime_semantics: ModelRuntimeSemantics::messages_default(protocol),
             lifecycle: ModelLifecycle::Stable,

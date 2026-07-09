@@ -130,6 +130,11 @@ pub enum MessagePart {
         mime_type: String,
         blob_ref: BlobRef,
     },
+    ProviderFileReference {
+        provider_id: String,
+        file_id: String,
+        mime_type: String,
+    },
     ToolUse {
         id: ToolUseId,
         name: String,

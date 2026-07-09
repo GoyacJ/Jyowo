@@ -157,6 +157,7 @@ async fn channel_changes_alter_plan_hash() {
         origin: ToolOrigin::Builtin,
         search_hint: None,
         service_binding: None,
+        metadata: Default::default(),
     };
 
     let process_sandbox_plan = action_plan_from_permission_check(

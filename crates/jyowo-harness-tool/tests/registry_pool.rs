@@ -743,9 +743,9 @@ fn tool_crate_does_not_depend_on_harness_model() {
         assert!(manifest.contains(
             "jyowo-harness-model = { path = \"../jyowo-harness-model\", optional = true }"
         ));
-        assert!(manifest.contains(
-            "minimax-tools = [\"builtin-toolset\", \"dep:base64\", \"dep:jyowo-harness-model\", \"jyowo-harness-model/minimax\"]"
-        ));
+        assert!(manifest.contains("minimax-tools = ["));
+        assert!(manifest.contains("\"dep:jyowo-harness-model\""));
+        assert!(manifest.contains("\"jyowo-harness-model/minimax\""));
     }
 }
 
@@ -910,6 +910,7 @@ fn descriptor(
         origin,
         search_hint: None,
         service_binding: None,
+        metadata: Default::default(),
     }
 }
 

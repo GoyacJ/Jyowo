@@ -160,7 +160,7 @@ struct OpenAiStreamState {
     text_started: bool,
     text_stopped: bool,
     next_block_index: u32,
-    reasoning_replay_buffer: String,
+    reasoning_replay_payloads: Vec<Value>,
     continuation_emitted: bool,
     tool_calls: BTreeMap<u32, ToolCallState>,
 }
@@ -187,10 +187,10 @@ impl OpenAiStreamState {
             Ok(payload) => payload,
             Err(error) => return vec![error],
         };
-        if let Some(reasoning_delta) =
-            continuation::deepseek_stream_reasoning_delta(self.dialect, &payload_value)
+        if let Some(payload) =
+            continuation::stream_reasoning_continuation_payload(self.dialect, &payload_value)
         {
-            self.reasoning_replay_buffer.push_str(&reasoning_delta);
+            self.reasoning_replay_payloads.push(payload);
         }
         let payload = match serde_json::from_value::<ChatCompletionChunk>(payload_value) {
             Ok(payload) => payload,
@@ -270,9 +270,9 @@ impl OpenAiStreamState {
         }
         let mut events = Vec::new();
         if !self.continuation_emitted {
-            if let Some(event) = continuation::deepseek_stream_continuation_event(
+            if let Some(event) = continuation::stream_continuation_event(
                 self.dialect,
-                &self.reasoning_replay_buffer,
+                &self.reasoning_replay_payloads,
             ) {
                 events.push(event);
             }

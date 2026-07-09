@@ -57,6 +57,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - run: pnpm check:design-tokens
       - run: pnpm check:frontend:fast
 
   rust-fast:

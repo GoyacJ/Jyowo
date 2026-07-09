@@ -1,8 +1,12 @@
-import { FlaskConical, Play, TriangleAlert } from 'lucide-react'
+import { FlaskConical, Loader2, Play, TriangleAlert } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { formatDateTime } from '@/shared/formatters'
 import { cn } from '@/shared/lib/utils'
 import { Button } from '@/shared/ui/button'
+import { Card } from '@/shared/ui/card'
+import { EmptyState } from '@/shared/ui/empty-state'
+import { Section, SectionDescription, SectionHeader, SectionTitle } from '@/shared/ui/section'
 
 type EvalRunStatus = 'failed' | 'passed' | 'running' | 'unavailable'
 
@@ -35,25 +39,18 @@ export function EvalLab({ cases, errorMessage, onRunCase, unavailable = false }:
   const { t } = useTranslation('evals')
 
   return (
-    <section
-      aria-label={t('lab')}
-      className="space-y-4 rounded-md border border-border bg-surface p-5"
-    >
-      <div className="flex items-start gap-3">
+    <Section aria-label={t('lab')}>
+      <SectionHeader className="flex items-start gap-3 space-y-0">
         <div className="rounded-md border border-border bg-background p-2 text-muted-foreground">
           <FlaskConical className="size-4" />
         </div>
         <div>
-          <h2 className="font-semibold text-base">{t('lab')}</h2>
-          <p className="mt-1 text-muted-foreground text-sm">{t('description')}</p>
+          <SectionTitle>{t('lab')}</SectionTitle>
+          <SectionDescription>{t('description')}</SectionDescription>
         </div>
-      </div>
+      </SectionHeader>
 
-      {unavailable ? (
-        <div className="rounded-md border border-dashed border-border bg-background px-4 py-6 text-center text-muted-foreground text-sm">
-          {t('runtimeUnavailable')}
-        </div>
-      ) : null}
+      {unavailable ? <EmptyState>{t('runtimeUnavailable')}</EmptyState> : null}
 
       {errorMessage ? (
         <div
@@ -66,34 +63,50 @@ export function EvalLab({ cases, errorMessage, onRunCase, unavailable = false }:
       ) : null}
 
       {!unavailable && !errorMessage && cases.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border bg-background px-4 py-6 text-center text-muted-foreground text-sm">
-          {t('empty')}
-        </div>
+        <EmptyState>{t('empty')}</EmptyState>
       ) : null}
 
       {cases.length > 0 ? (
         <div className="space-y-3">
           {cases.map((evalCase) => {
             const status = evalCase.lastRun?.status ?? 'unavailable'
+            const isRunning = status === 'running'
 
             return (
-              <article
+              <Card
                 aria-label={evalCase.title}
-                className="rounded-md border border-border bg-background px-4 py-3"
+                className={cn(
+                  'bg-background/50 px-4 py-3 hover:bg-background hover:-translate-y-[0.5px]',
+                  isRunning && 'border-warning/45 bg-warning/5 ring-1 ring-warning/15',
+                )}
                 key={evalCase.id}
+                role="article"
               >
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="font-medium text-sm">{evalCase.title}</h3>
-                      <span className={cn('text-xs', statusStyles[status])}>{status}</span>
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <h3 className="font-semibold text-sm text-foreground/90">{evalCase.title}</h3>
+                      <span
+                        className={cn(
+                          'text-xs flex items-center gap-1.5 font-medium',
+                          statusStyles[status],
+                        )}
+                      >
+                        {isRunning && (
+                          <span className="relative flex size-1.5 items-center justify-center">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-warning/50 opacity-75"></span>
+                            <span className="relative inline-flex size-1.5 rounded-full bg-warning"></span>
+                          </span>
+                        )}
+                        {status}
+                      </span>
                     </div>
                     {evalCase.lastRun ? (
-                      <div className="mt-2 flex flex-wrap gap-3 text-muted-foreground text-xs">
+                      <div className="mt-2 flex flex-wrap gap-3 text-muted-foreground text-xs font-medium">
                         <span>{t('passed', { count: evalCase.lastRun.passed })}</span>
                         <span>{t('failed', { count: evalCase.lastRun.failed })}</span>
                         {evalCase.lastRun.completedAt ? (
-                          <span>{new Date(evalCase.lastRun.completedAt).toLocaleString()}</span>
+                          <span>{formatDateTime(evalCase.lastRun.completedAt)}</span>
                         ) : null}
                       </div>
                     ) : (
@@ -102,21 +115,26 @@ export function EvalLab({ cases, errorMessage, onRunCase, unavailable = false }:
                   </div>
 
                   <Button
-                    disabled={!onRunCase || unavailable}
+                    disabled={!onRunCase || unavailable || isRunning}
                     onClick={() => onRunCase?.(evalCase.id)}
                     size="sm"
                     type="button"
                     variant="outline"
+                    className="min-w-[90px]"
                   >
-                    <Play className="size-4" />
+                    {isRunning ? (
+                      <Loader2 className="size-3.5 animate-spin text-warning" />
+                    ) : (
+                      <Play className="size-3.5" />
+                    )}
                     {t('runCase', { title: evalCase.title })}
                   </Button>
                 </div>
-              </article>
+              </Card>
             )
           })}
         </div>
       ) : null}
-    </section>
+    </Section>
   )
 }

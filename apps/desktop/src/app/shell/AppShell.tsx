@@ -17,6 +17,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const currentSearch = useRouterState({
     select: (state) => state.location.search,
   })
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
   const selectedConversationId =
     typeof currentSearch.conversationId === 'string' ? currentSearch.conversationId : undefined
   const selectedActiveRun = selectActiveRun(activeRunsByConversation, selectedConversationId)
@@ -51,7 +54,11 @@ export function AppShell({ children }: { children: ReactNode }) {
               <CommandIcon aria-hidden="true" className="size-4" />
             </Button>
           </header>
-          <main className="min-h-0 min-w-0 overflow-hidden px-6 pb-6 xl:px-8">{children}</main>
+          <main className="min-h-0 min-w-0 overflow-hidden px-6 pb-6 xl:px-8">
+            <div key={pathname} className="h-full min-h-0 min-w-0 animate-page-enter">
+              {children}
+            </div>
+          </main>
         </div>
       </div>
       <ActivityRail activeRunId={selectedActiveRun?.runId} onOpenSettings={openSettings} />

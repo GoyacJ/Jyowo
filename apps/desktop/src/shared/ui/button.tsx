@@ -5,14 +5,17 @@ import type { ButtonHTMLAttributes } from 'react'
 import { cn } from '@/shared/lib/utils'
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-sm font-medium text-sm tracking-normal outline-none transition-[background-color,box-shadow,transform,filter] duration-150 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 [&_svg[data-icon]]:pointer-events-none [&_svg[data-icon]]:size-4 [&_svg[data-icon]]:shrink-0',
+  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md font-medium text-sm tracking-normal outline-none transition-[background-color,box-shadow,transform,filter] duration-200 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 [&_svg[data-icon]]:pointer-events-none [&_svg[data-icon]]:size-4 [&_svg[data-icon]]:shrink-0',
   {
     variants: {
       variant: {
-        default: 'bg-primary text-primary-foreground hover:brightness-95',
-        destructive: 'bg-destructive text-destructive-foreground hover:brightness-95',
-        outline: 'border border-border bg-surface hover:bg-muted',
-        secondary: 'bg-secondary text-secondary-foreground hover:brightness-[0.97]',
+        default:
+          'bg-primary text-primary-foreground shadow-sm hover:brightness-[1.05] hover:shadow-md',
+        destructive:
+          'bg-destructive text-destructive-foreground shadow-sm hover:brightness-[1.05] hover:shadow-md',
+        outline:
+          'border border-border bg-surface shadow-sm hover:bg-muted hover:border-muted-foreground/30',
+        secondary: 'bg-secondary text-secondary-foreground shadow-sm hover:brightness-[1.02]',
         ghost: 'hover:bg-muted',
       },
       size: {

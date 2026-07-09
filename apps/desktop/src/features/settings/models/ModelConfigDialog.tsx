@@ -19,6 +19,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/shared/ui/dialog'
+import { Input } from '@/shared/ui/input'
+import { Select } from '@/shared/ui/select'
 
 type ModelConfigDialogProps = {
   catalog: ModelProviderCatalogResponse
@@ -170,18 +172,15 @@ export function ModelConfigDialog({
             void handleSubmit((values) => submit(values, form))(event)
           }}
         >
-          <label className="grid gap-1 text-sm">
+          <label className="grid gap-1 text-sm" htmlFor="provider-display-name">
             <span className="font-medium">{t('provider.profileName')}</span>
-            <input
-              className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              {...register('displayName')}
-            />
+            <Input id="provider-display-name" {...register('displayName')} />
           </label>
 
-          <label className="grid gap-1 text-sm">
+          <label className="grid gap-1 text-sm" htmlFor="provider-provider-id">
             <span className="font-medium">{t('provider.provider')}</span>
-            <select
-              className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            <Select
+              id="provider-provider-id"
               {...register('providerId', { required: t('provider.errors.providerRequired') })}
             >
               {providers.map((provider) => (
@@ -189,13 +188,13 @@ export function ModelConfigDialog({
                   {provider.displayName}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
 
-          <label className="grid gap-1 text-sm">
+          <label className="grid gap-1 text-sm" htmlFor="provider-model-id">
             <span className="font-medium">{t('provider.model')}</span>
-            <select
-              className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            <Select
+              id="provider-model-id"
               {...register('modelId', { required: t('provider.errors.modelRequired') })}
             >
               {modelOptions.map((model) => (
@@ -203,22 +202,22 @@ export function ModelConfigDialog({
                   {model.displayName}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
 
-          <label className="grid gap-1 text-sm">
+          <label className="grid gap-1 text-sm" htmlFor="provider-base-url">
             <span className="font-medium">{t('provider.baseUrl')}</span>
-            <input
-              className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            <Input
+              id="provider-base-url"
               placeholder={selectedProvider?.defaultBaseUrl}
               {...register('baseUrl')}
             />
           </label>
 
-          <label className="grid gap-1 text-sm">
+          <label className="grid gap-1 text-sm" htmlFor="provider-api-key">
             <span className="font-medium">{t('provider.apiKey')}</span>
-            <input
-              className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            <Input
+              id="provider-api-key"
               placeholder={
                 profile?.hasApiKey
                   ? t('provider.apiKeyExistingPlaceholder')
@@ -229,10 +228,10 @@ export function ModelConfigDialog({
             />
           </label>
 
-          <label className="grid gap-1 text-sm">
+          <label className="grid gap-1 text-sm" htmlFor="provider-official-quota-api-key">
             <span className="font-medium">{t('provider.officialQuotaApiKey')}</span>
-            <input
-              className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            <Input
+              id="provider-official-quota-api-key"
               placeholder={
                 profile?.hasOfficialQuotaApiKey
                   ? t('provider.officialQuotaApiKeyExistingPlaceholder')

@@ -163,7 +163,7 @@ describe('ConversationWorkspace model config selection', () => {
     fireEvent.change(modelSelector, { target: { value: 'minimax-config' } })
     expect(startRunCalls).toHaveLength(0)
 
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: 'Use MiniMax for this run' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
@@ -240,12 +240,9 @@ describe('ConversationWorkspace model config selection', () => {
 
     renderConversationWorkspace(trackedClient)
 
-    fireEvent.change(
-      await screen.findByPlaceholderText('Ask Jyowo anything about this project...'),
-      {
-        target: { value: 'Use the backend default model' },
-      },
-    )
+    fireEvent.change(await screen.findByPlaceholderText('Ask Jyowo anything about this project…'), {
+      target: { value: 'Use the backend default model' },
+    })
     const sendButton = await screen.findByRole('button', { name: 'Send message' })
 
     await waitFor(() => {

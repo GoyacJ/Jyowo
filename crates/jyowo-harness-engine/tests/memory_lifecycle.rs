@@ -171,6 +171,7 @@ impl ModelProvider for StopModel {
             display_name: "Stop".to_owned(),
             context_window: 8_192,
             max_output_tokens: 1_024,
+            provider_declared_capability: ConversationModelCapability::default(),
             conversation_capability: ConversationModelCapability::default(),
             runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
                 harness_model::ModelProtocol::Messages,

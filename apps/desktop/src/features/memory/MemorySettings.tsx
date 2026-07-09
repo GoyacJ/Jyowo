@@ -12,6 +12,7 @@ import {
 import { useCommandClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card'
+import { EmptyState } from '@/shared/ui/empty-state'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 import { Switch } from '@/shared/ui/switch'
@@ -41,15 +42,15 @@ export function MemorySettings() {
   })
 
   if (settingsQuery.isLoading) {
-    return <div className="p-4 text-muted-foreground">{t('loading')}</div>
+    return <div className="text-muted-foreground text-sm">{t('loading')}</div>
   }
   if (settingsQuery.isError) {
-    return <div className="p-4 text-destructive">{t('errorLoading')}</div>
+    return <div className="text-destructive text-sm">{t('errorLoading')}</div>
   }
 
   const settings = settingsQuery.data?.settings
   if (!settings) {
-    return <div className="p-4 text-muted-foreground">{t('noSettings')}</div>
+    return <EmptyState>{t('noSettings')}</EmptyState>
   }
 
   const handleToggle = (
@@ -76,7 +77,7 @@ export function MemorySettings() {
   }
 
   return (
-    <div className="space-y-4 p-4">
+    <div className="space-y-4">
       <Card>
         <CardHeader>
           <CardTitle>{t('globalSettings')}</CardTitle>

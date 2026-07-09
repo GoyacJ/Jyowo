@@ -7,7 +7,9 @@ use crate::{ContentDelta, ContentType, InferContext, ModelRequest, ModelStream, 
 
 use super::continuation;
 use super::dialect::OpenAiChatDialect;
-use super::request::{chat_message, merge_extra_object, openai_tool, DEFAULT_MAX_TOKENS};
+use super::request::{
+    chat_message_for_dialect, merge_extra_object, openai_tool, DEFAULT_MAX_TOKENS,
+};
 
 pub(super) async fn chat_request_body(
     req: &ModelRequest,
@@ -23,7 +25,7 @@ pub(super) async fn chat_request_body(
         }));
     }
     for message in &req.messages {
-        let mut encoded = chat_message(message, ctx).await?;
+        let mut encoded = chat_message_for_dialect(message, ctx, dialect).await?;
         continuation::apply_chat_message_continuation(
             &mut encoded,
             message,
@@ -39,6 +41,10 @@ pub(super) async fn chat_request_body(
         "stream": req.stream,
     });
     body[max_tokens_field] = json!(req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS));
+
+    if dialect == OpenAiChatDialect::MiniMax && req.extra.get("reasoning_split").is_none() {
+        body["reasoning_split"] = json!(true);
+    }
 
     if req.stream {
         body["stream_options"] = json!({ "include_usage": true });
@@ -61,8 +67,7 @@ pub(super) fn chat_response_to_stream(
     response: Value,
     dialect: OpenAiChatDialect,
 ) -> Result<ModelStream, ModelError> {
-    let continuation_event =
-        continuation::deepseek_chat_response_continuation_event(dialect, &response);
+    let continuation_event = continuation::chat_response_continuation_event(dialect, &response);
     let response: ChatCompletionResponse = serde_json::from_value(response).map_err(|error| {
         ModelError::UnexpectedResponse(format!("invalid OpenAI protocol response: {error}"))
     })?;

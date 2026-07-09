@@ -611,6 +611,7 @@ pub mod agents_team {
             origin: ToolOrigin::Builtin,
             search_hint: None,
             service_binding: None,
+            metadata: Default::default(),
         }
     }
 

@@ -5,6 +5,9 @@ import { useTranslation } from 'react-i18next'
 import { useActiveProjectPath } from '@/features/workspace/use-active-project-path'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
+import { Checkbox } from '@/shared/ui/checkbox'
+import { Input } from '@/shared/ui/input'
+import { Select } from '@/shared/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 
 import { CapabilityRouteEditorDrawer } from './CapabilityRouteEditorDrawer'
@@ -137,10 +140,11 @@ export function ModelSettingsPage() {
             aria-label={t('models.filters.label')}
             className="flex flex-wrap items-end gap-3 rounded-md border border-border bg-surface p-3"
           >
-            <label className="grid gap-1 text-sm">
+            <label className="grid gap-1 text-sm" htmlFor="model-filter-provider">
               <span className="font-medium text-xs">{t('models.filters.provider')}</span>
-              <select
-                className="h-9 min-w-40 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              <Select
+                className="min-w-40"
+                id="model-filter-provider"
                 onChange={(event) => setProviderFilter(event.target.value)}
                 value={providerFilter}
               >
@@ -150,12 +154,13 @@ export function ModelSettingsPage() {
                     {provider.label}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
-            <label className="grid gap-1 text-sm">
+            <label className="grid gap-1 text-sm" htmlFor="model-filter-health">
               <span className="font-medium text-xs">{t('models.filters.health')}</span>
-              <select
-                className="h-9 min-w-36 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              <Select
+                className="min-w-36"
+                id="model-filter-health"
                 onChange={(event) => setHealthFilter(event.target.value as HealthFilter)}
                 value={healthFilter}
               >
@@ -164,33 +169,31 @@ export function ModelSettingsPage() {
                 <option value="failing">{t('models.filters.failing')}</option>
                 <option value="never_checked">{t('models.connectivity.neverChecked')}</option>
                 <option value="unavailable">{t('models.unavailable')}</option>
-              </select>
+              </Select>
             </label>
-            <label className="grid min-w-52 flex-1 gap-1 text-sm">
+            <label className="grid min-w-52 flex-1 gap-1 text-sm" htmlFor="model-filter-search">
               <span className="font-medium text-xs">{t('models.filters.search')}</span>
-              <input
-                className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              <Input
+                id="model-filter-search"
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder={t('models.filters.searchPlaceholder')}
                 type="search"
                 value={search}
               />
             </label>
-            <label className="flex h-9 items-center gap-2 text-sm">
-              <input
+            <label className="flex h-9 items-center gap-2 text-sm" htmlFor="model-filter-default">
+              <Checkbox
                 checked={defaultOnly}
-                className="size-4 accent-primary"
-                onChange={(event) => setDefaultOnly(event.target.checked)}
-                type="checkbox"
+                id="model-filter-default"
+                onCheckedChange={(checked) => setDefaultOnly(checked === true)}
               />
               {t('models.filters.defaultOnly')}
             </label>
-            <label className="flex h-9 items-center gap-2 text-sm">
-              <input
+            <label className="flex h-9 items-center gap-2 text-sm" htmlFor="model-filter-failing">
+              <Checkbox
                 checked={failingOnly}
-                className="size-4 accent-primary"
-                onChange={(event) => setFailingOnly(event.target.checked)}
-                type="checkbox"
+                id="model-filter-failing"
+                onCheckedChange={(checked) => setFailingOnly(checked === true)}
               />
               {t('models.filters.failingOnly')}
             </label>

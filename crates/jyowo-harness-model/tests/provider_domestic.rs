@@ -65,7 +65,7 @@ async fn assert_streaming_provider<P>(
         .mount(server)
         .await;
 
-    if provider.provider_id() == "deepseek" {
+    if matches!(provider.provider_id(), "deepseek" | "minimax") {
         assert_eq!(
             provider.prompt_cache_style(),
             PromptCacheStyle::OpenAi { auto: true }
@@ -520,7 +520,7 @@ fn provider_minimax_catalog_matches_official_capabilities() {
         m27.conversation_capability.input_modalities,
         vec![ModelModality::Text]
     );
-    assert!(models.iter().any(|model| model.model_id == "M2-her"));
+    assert!(!models.iter().any(|model| model.model_id == "M2-her"));
 }
 provider_test!(
     "minimax",

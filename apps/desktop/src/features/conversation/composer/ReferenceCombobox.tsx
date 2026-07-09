@@ -2,6 +2,7 @@ import type { KeyboardEvent, ReactNode } from 'react'
 
 import { cn } from '@/shared/lib/utils'
 import type { ContextReference, ListReferenceCandidatesResponse } from '@/shared/tauri/commands'
+import { Input } from '@/shared/ui/input'
 
 type ReferenceComboboxItem = {
   label: string
@@ -57,13 +58,13 @@ export function ReferenceCombobox({
       {trigger ? trigger : null}
       {open ? (
         <div className="mt-2 w-80 rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-md">
-          <input
+          <Input
             aria-activedescendant={activeItemId}
             aria-autocomplete="list"
             aria-controls={listboxId}
             aria-expanded={open}
             aria-label={searchLabel}
-            className="mb-2 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="mb-2"
             disabled={disabled}
             onKeyDown={(event) => {
               if (onKeyCommand?.(event)) {

@@ -2,7 +2,7 @@ import { Activity, KeyRound, Link2, Server, ShieldCheck, Star } from 'lucide-rea
 import type { FormEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-
+import { formatMilliseconds, formatNumber, formatTokens } from '@/shared/formatters'
 import {
   getProviderConfigApiKey,
   type ModelProviderCatalogResponse,
@@ -21,6 +21,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/shared/ui/dialog'
+import { Input } from '@/shared/ui/input'
+import { Select } from '@/shared/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 
 import { routeKindLabel } from './CapabilityRoutesPanel'
@@ -301,19 +303,19 @@ export function ModelDetailsDrawer({
                   ref={secretFormRef}
                 >
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <label className="grid gap-1 text-sm">
+                    <label className="grid gap-1 text-sm" htmlFor="model-details-display-name">
                       <span className="font-medium">{t('provider.profileName')}</span>
-                      <input
-                        className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      <Input
+                        id="model-details-display-name"
                         onChange={(event) => setDisplayName(event.target.value)}
                         value={displayName}
                       />
                     </label>
 
-                    <label className="grid gap-1 text-sm">
+                    <label className="grid gap-1 text-sm" htmlFor="model-details-provider-id">
                       <span className="font-medium">{t('provider.provider')}</span>
-                      <select
-                        className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      <Select
+                        id="model-details-provider-id"
                         onChange={(event) => setProviderId(event.target.value)}
                         value={providerId}
                       >
@@ -322,13 +324,13 @@ export function ModelDetailsDrawer({
                             {provider.displayName}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </label>
 
-                    <label className="grid gap-1 text-sm">
+                    <label className="grid gap-1 text-sm" htmlFor="model-details-model-id">
                       <span className="font-medium">{t('provider.model')}</span>
-                      <select
-                        className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      <Select
+                        id="model-details-model-id"
                         onChange={(event) => setModelId(event.target.value)}
                         value={modelId}
                       >
@@ -337,20 +339,20 @@ export function ModelDetailsDrawer({
                             {model.displayName}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </label>
 
-                    <label className="grid gap-1 text-sm">
+                    <label className="grid gap-1 text-sm" htmlFor="model-details-base-url">
                       <span className="font-medium">{t('provider.baseUrl')}</span>
-                      <input
-                        className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      <Input
+                        id="model-details-base-url"
                         onChange={(event) => setBaseUrl(event.target.value)}
                         placeholder={selectedProvider?.defaultBaseUrl}
                         value={baseUrl}
                       />
                     </label>
 
-                    <label className="grid gap-1 text-sm">
+                    <label className="grid gap-1 text-sm" htmlFor="model-details-api-key">
                       <span className="flex items-center justify-between gap-2 font-medium">
                         {t('provider.apiKey')}
                         <SavedStateBadge saved={row.hasApiKey}>
@@ -359,9 +361,9 @@ export function ModelDetailsDrawer({
                             : t('models.details.configuration.apiKeyMissing')}
                         </SavedStateBadge>
                       </span>
-                      <input
+                      <Input
                         aria-label={t('provider.apiKey')}
-                        className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        id="model-details-api-key"
                         name="apiKey"
                         placeholder={
                           row.hasApiKey
@@ -372,7 +374,10 @@ export function ModelDetailsDrawer({
                       />
                     </label>
 
-                    <label className="grid gap-1 text-sm">
+                    <label
+                      className="grid gap-1 text-sm"
+                      htmlFor="model-details-official-quota-api-key"
+                    >
                       <span className="flex items-center justify-between gap-2 font-medium">
                         {t('provider.officialQuotaApiKey')}
                         <SavedStateBadge saved={row.hasOfficialQuotaApiKey}>
@@ -381,9 +386,9 @@ export function ModelDetailsDrawer({
                             : t('provider.savedApiKeyMissing')}
                         </SavedStateBadge>
                       </span>
-                      <input
+                      <Input
                         aria-label={t('provider.officialQuotaApiKey')}
-                        className="h-9 rounded-sm border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        id="model-details-official-quota-api-key"
                         name="officialQuotaApiKey"
                         placeholder={
                           row.hasOfficialQuotaApiKey
@@ -562,10 +567,10 @@ function CapabilitiesDetails({
           {formatBoolean(capability.structuredOutput, t('yes'), t('no'))}
         </DetailRow>
         <DetailRow label={t('models.details.capabilities.contextWindow')}>
-          {capability.contextWindow.toLocaleString()}
+          {formatNumber(capability.contextWindow)}
         </DetailRow>
         <DetailRow label={t('models.details.capabilities.maxOutputTokens')}>
-          {capability.maxOutputTokens.toLocaleString()}
+          {formatNumber(capability.maxOutputTokens)}
         </DetailRow>
       </DetailGrid>
 
@@ -718,10 +723,6 @@ function connectivityToneClass(
   return 'border-destructive/25 bg-destructive/10 text-destructive'
 }
 
-function formatMilliseconds(value: number | undefined, unavailable: string) {
-  return value === undefined ? unavailable : `${value.toLocaleString()} ms`
-}
-
 function formatConnectivityMilliseconds(
   connectivity: ModelAssetRow['connectivity'],
   key: 'latencyMs' | 'timeoutMs',
@@ -749,7 +750,7 @@ function formatUsage(usage: {
 }) {
   const tokens =
     usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens
-  return `${tokens.toLocaleString()} tokens`
+  return formatTokens(tokens)
 }
 
 function readSecretFormValue(form: HTMLFormElement, name: string): string {

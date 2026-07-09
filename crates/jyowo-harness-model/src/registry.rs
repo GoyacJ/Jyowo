@@ -711,23 +711,14 @@ fn doubao_service(
 }
 
 fn provider_source(provider_id: &str) -> (&'static str, NaiveDate) {
-    let verified_date = NaiveDate::from_ymd_opt(2026, 6, 21).expect("valid verification date");
-    let source_url = match provider_id {
-        "anthropic" => "https://docs.anthropic.com/en/docs/about-claude/models/overview",
-        "codex" => "https://developers.openai.com/api/docs/models/all",
-        "deepseek" => "https://api-docs.deepseek.com/quick_start/pricing",
-        "doubao" => "https://www.volcengine.com/docs/82379/1494384",
-        "gemini" => "https://ai.google.dev/gemini-api/docs/models",
-        "km" => "https://platform.moonshot.ai/docs",
-        "local-llama" => "https://ollama.com/library",
-        "minimax" => "https://platform.minimax.io/docs/api-reference/text-chat-openai",
-        "openai" => "https://platform.openai.com/docs/models",
-        "openrouter" => "https://openrouter.ai/api/v1/models",
-        "qwen" => "https://help.aliyun.com/zh/model-studio/models",
-        "zhipu" => "https://docs.bigmodel.cn/api-reference/模型-api/对话补全",
-        _ => "https://jyowo.local/provider-catalog",
-    };
-    (source_url, verified_date)
+    crate::catalog::provider_metadata(provider_id)
+        .map(|metadata| (metadata.source_url, metadata.verified_at))
+        .unwrap_or_else(|| {
+            (
+                "https://jyowo.local/provider-catalog",
+                NaiveDate::from_ymd_opt(2026, 6, 21).expect("valid verification date"),
+            )
+        })
 }
 
 fn inventory_only_models(provider_id: &str) -> Vec<ModelInventoryEntry> {
@@ -833,6 +824,7 @@ pub fn runnable_inventory_models(models: &[ModelInventoryEntry]) -> Vec<ModelDes
                 protocol: model.protocol,
                 context_window: model.context_window,
                 max_output_tokens: model.max_output_tokens,
+                provider_declared_capability: model.provider_declared_capability.clone(),
                 conversation_capability: model.conversation_capability.clone(),
                 runtime_semantics: model.runtime_semantics.clone(),
                 lifecycle: model.lifecycle.clone(),

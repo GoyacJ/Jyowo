@@ -63,6 +63,12 @@ function ThemeProvider({ children }: { children: ReactNode }) {
 
     document.documentElement.classList.toggle('dark', resolvedTheme === 'dark')
     document.documentElement.dataset.theme = theme
+    const themeColor = getComputedStyle(document.documentElement)
+      .getPropertyValue('--background')
+      .trim()
+    if (themeColor) {
+      document.querySelector('meta[name="theme-color"]')?.setAttribute('content', themeColor)
+    }
   }, [systemPrefersDark, theme])
 
   return children
