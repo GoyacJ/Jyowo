@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-
+import { formatTime } from '@/shared/formatters'
 import {
   DEFAULT_MEMORY_TENANT_ID,
   getMemoryRecallTrace,
@@ -10,6 +10,8 @@ import {
 import { useCommandClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card'
+import { EmptyState } from '@/shared/ui/empty-state'
+import { Section } from '@/shared/ui/section'
 
 const traceQueryKeys = {
   all: ['memory-traces'] as const,
@@ -37,24 +39,24 @@ export function MemoryRecallTracePanel() {
   })
 
   if (tracesQuery.isLoading) {
-    return <div className="p-4 text-muted-foreground">{t('loading')}</div>
+    return <div className="text-muted-foreground text-sm">{t('loading')}</div>
   }
   if (tracesQuery.isError) {
-    return <div className="p-4 text-destructive">{t('errorLoading')}</div>
+    return <div className="text-destructive text-sm">{t('errorLoading')}</div>
   }
 
   const traces = tracesQuery.data?.traces ?? []
 
   if (traces.length === 0) {
-    return <div className="p-4 text-muted-foreground">{t('noTracesYet')}</div>
+    return <EmptyState>{t('noTracesYet')}</EmptyState>
   }
 
   return (
-    <div className="space-y-3 p-4">
+    <Section>
       {traces.map((trace) => (
         <Card key={trace.trace_id}>
           <CardHeader className="flex flex-row items-center justify-between gap-3">
-            <CardTitle className="text-xs font-mono">{trace.trace_id.slice(0, 12)}...</CardTitle>
+            <CardTitle className="text-xs font-mono">{trace.trace_id.slice(0, 12)}…</CardTitle>
             <Button
               size="sm"
               variant={selectedTraceId === trace.trace_id ? 'secondary' : 'outline'}
@@ -75,7 +77,7 @@ export function MemoryRecallTracePanel() {
                 {t('redacted')}: {trace.redacted_count}
               </div>
               <div>
-                {t('at')}: {new Date(trace.at).toLocaleTimeString()}
+                {t('at')}: {formatTime(trace.at)}
               </div>
             </div>
             {selectedTraceId === trace.trace_id && (
@@ -88,7 +90,7 @@ export function MemoryRecallTracePanel() {
           </CardContent>
         </Card>
       ))}
-    </div>
+    </Section>
   )
 }
 

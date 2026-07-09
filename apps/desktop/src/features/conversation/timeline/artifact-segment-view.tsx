@@ -107,7 +107,9 @@ function ArtifactImagePreview({
     <img
       alt={title}
       className="mt-3 max-h-[420px] w-full rounded-md border border-border object-contain"
+      height={420}
       src={previewQuery.data.dataUrl}
+      width={746}
     />
   )
 }

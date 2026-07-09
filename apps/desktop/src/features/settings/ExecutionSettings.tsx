@@ -14,6 +14,8 @@ import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { useCommandClient } from '@/shared/tauri/react'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
+import { Input } from '@/shared/ui/input'
+import { RadioCard } from '@/shared/ui/radio-card-group'
 import { Section, SectionDescription, SectionHeader, SectionTitle } from '@/shared/ui/section'
 import { Switch } from '@/shared/ui/switch'
 
@@ -198,27 +200,20 @@ export function ExecutionSettings() {
                   : permissionModeDescriptionKey(option.value)
 
               return (
-                <label
-                  className="flex cursor-pointer items-start gap-3 rounded-md border border-border p-4"
+                <RadioCard
+                  checked={permissionMode === option.value}
+                  disabled={disabled}
                   key={option.value}
+                  name="permissionMode"
+                  onChange={() => {
+                    setPermissionMode(option.value)
+                    void saveSettings(option.value)
+                  }}
+                  value={option.value}
                 >
-                  <input
-                    checked={permissionMode === option.value}
-                    className="mt-1"
-                    disabled={disabled}
-                    name="permissionMode"
-                    onChange={() => {
-                      setPermissionMode(option.value)
-                      void saveSettings(option.value)
-                    }}
-                    type="radio"
-                    value={option.value}
-                  />
-                  <span className="space-y-1">
-                    <span className="block font-medium text-sm">{t(option.labelKey)}</span>
-                    <span className="block text-muted-foreground text-sm">{t(descriptionKey)}</span>
-                  </span>
-                </label>
+                  <span className="block font-medium text-sm">{t(option.labelKey)}</span>
+                  <span className="block text-muted-foreground text-sm">{t(descriptionKey)}</span>
+                </RadioCard>
               )
             })}
           </fieldset>
@@ -229,29 +224,22 @@ export function ExecutionSettings() {
               const disabled = saving || toolProfile === option.value
 
               return (
-                <label
-                  className="flex cursor-pointer items-start gap-3 rounded-md border border-border p-4"
+                <RadioCard
+                  checked={toolProfile === option.value}
+                  disabled={disabled}
                   key={option.value}
+                  name="toolProfile"
+                  onChange={() => {
+                    setToolProfile(option.value)
+                    void saveSettings(permissionMode, option.value)
+                  }}
+                  value={option.value}
                 >
-                  <input
-                    checked={toolProfile === option.value}
-                    className="mt-1"
-                    disabled={disabled}
-                    name="toolProfile"
-                    onChange={() => {
-                      setToolProfile(option.value)
-                      void saveSettings(permissionMode, option.value)
-                    }}
-                    type="radio"
-                    value={option.value}
-                  />
-                  <span className="space-y-1">
-                    <span className="block font-medium text-sm">{t(option.labelKey)}</span>
-                    <span className="block text-muted-foreground text-sm">
-                      {t(toolProfileDescriptionKey(option.value))}
-                    </span>
+                  <span className="block font-medium text-sm">{t(option.labelKey)}</span>
+                  <span className="block text-muted-foreground text-sm">
+                    {t(toolProfileDescriptionKey(option.value))}
                   </span>
-                </label>
+                </RadioCard>
               )
             })}
           </fieldset>
@@ -327,8 +315,8 @@ export function ExecutionSettings() {
               {t('execution.contextCompressionTriggerRatio.label')}
             </label>
             <div className="flex items-center gap-2">
-              <input
-                className="h-9 w-24 rounded-sm border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              <Input
+                className="w-24"
                 disabled={saving}
                 id="context-compression-trigger-ratio"
                 max={95}

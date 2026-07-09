@@ -36,6 +36,7 @@ import {
   DialogTitle,
 } from '@/shared/ui/dialog'
 import { IconButton } from '@/shared/ui/icon-button'
+import { Input } from '@/shared/ui/input'
 import { Section, SectionDescription, SectionHeader, SectionTitle } from '@/shared/ui/section'
 import { StatusBadge, type StatusBadgeProps } from '@/shared/ui/status-badge'
 import { Switch } from '@/shared/ui/switch'
@@ -785,12 +786,12 @@ function ConfigInput({
   }
 
   return (
-    <label className="block space-y-2 text-sm">
+    <label className="block space-y-2 text-sm" htmlFor={inputId}>
       <span className="font-medium">{field.name}</span>
-      <input
+      <Input
         aria-label={field.name}
-        className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
         disabled={disabled}
+        id={inputId}
         onChange={(event) => {
           if (field.type === 'number') {
             onChange(Number(event.target.value))

@@ -9,7 +9,7 @@ export function DecisionCard({ detail, title }: DecisionCardProps) {
   return (
     <section
       aria-label={`Decision needed: ${title}`}
-      className="mt-4 rounded-md border border-border border-l-4 border-l-warning bg-surface/40 hover:bg-surface px-4 py-3.5 shadow-sm hover:shadow-md transition-all duration-200"
+      className="mt-4 rounded-md border border-border border-l-4 border-l-warning bg-surface/40 px-4 py-3.5 shadow-sm transition-[background-color,box-shadow] duration-200 hover:bg-surface hover:shadow-md"
     >
       <div className="flex items-start gap-3">
         <div className="mt-0.5 relative flex size-4 shrink-0 items-center justify-center">

@@ -1,25 +1,30 @@
 import { Archive, Pause, Play, Send, Trash2, X } from 'lucide-react'
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { cn } from '@/shared/lib/utils'
 import type { BackgroundAgentIdRequest, BackgroundAgentRecord } from '@/shared/tauri/commands'
 import { Button } from '@/shared/ui/button'
+import { Card } from '@/shared/ui/card'
+import { EmptyState } from '@/shared/ui/empty-state'
+import { Input } from '@/shared/ui/input'
+import { Section, SectionTitle } from '@/shared/ui/section'
 
 import { useBackgroundAgents } from './use-background-agents'
 
 const stateLabels: Record<BackgroundAgentRecord['state'], string> = {
-  archived: '已归档',
-  cancelled: '已取消',
-  cancelling: '取消中',
-  failed: '失败',
-  interrupted: '已中断',
-  paused: '已暂停',
-  queued: '排队中',
-  recoverable: '可恢复',
-  running: '运行中',
-  succeeded: '已完成',
-  waiting_for_input: '等待输入',
-  waiting_for_permission: '等待权限',
+  archived: 'state.archived',
+  cancelled: 'state.cancelled',
+  cancelling: 'state.cancelling',
+  failed: 'state.failed',
+  interrupted: 'state.interrupted',
+  paused: 'state.paused',
+  queued: 'state.queued',
+  recoverable: 'state.recoverable',
+  running: 'state.running',
+  succeeded: 'state.succeeded',
+  waiting_for_input: 'state.waitingForInput',
+  waiting_for_permission: 'state.waitingForPermission',
 }
 
 function agentRequest(agent: BackgroundAgentRecord): BackgroundAgentIdRequest {
@@ -38,6 +43,7 @@ export function BackgroundAgentsPanel({
 }: {
   selectedBackgroundAgentId?: string
 }) {
+  const { t } = useTranslation('backgroundAgents')
   const {
     archiveMutation,
     cancelMutation,
@@ -79,45 +85,42 @@ export function BackgroundAgentsPanel({
   }
 
   return (
-    <section className="mx-auto flex w-full max-w-5xl flex-col gap-4">
-      <h1 className="font-semibold text-2xl">后台 Agent</h1>
+    <Section className="mx-auto w-full max-w-5xl">
+      <SectionTitle>{t('title')}</SectionTitle>
 
-      {listQuery.isLoading ? (
-        <p className="text-muted-foreground text-sm">正在加载后台 Agent。</p>
-      ) : null}
+      {listQuery.isLoading ? <p className="text-muted-foreground text-sm">{t('loading')}</p> : null}
 
       {listQuery.isError ? (
         <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
-          后台 Agent 无法加载。
+          {t('loadError')}
         </p>
       ) : null}
 
       {!listQuery.isLoading && !listQuery.isError && agents.length === 0 ? (
-        <p className="rounded-md border border-dashed border-border bg-surface px-4 py-6 text-center text-muted-foreground text-sm">
-          暂无后台 Agent。
-        </p>
+        <EmptyState>{t('empty')}</EmptyState>
       ) : null}
 
       {agents.length > 0 ? (
         <div className="grid gap-3">
           {agents.map((agent) => (
-            <article
+            <Card
               aria-label={agent.title}
               className={cn(
-                'rounded-md border border-border bg-background p-4',
+                'bg-background p-4',
                 agent.backgroundAgentId === selectedBackgroundAgentId && 'border-primary',
               )}
               key={agent.backgroundAgentId}
+              role="article"
             >
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0 space-y-1">
                   <h2 className="break-words font-medium text-base">{agent.title}</h2>
                   <div className="flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground text-xs">
-                    <span>{stateLabels[agent.state]}</span>
+                    <span>{t(stateLabels[agent.state])}</span>
                     <span>{agent.conversationId}</span>
                     {agent.parentRunId ? <span>{agent.parentRunId}</span> : null}
                     {agent.backgroundAgentId === selectedBackgroundAgentId ? (
-                      <span>已打开</span>
+                      <span>{t('selected')}</span>
                     ) : null}
                   </div>
                 </div>
@@ -133,7 +136,7 @@ export function BackgroundAgentsPanel({
                         variant="outline"
                       >
                         <Pause data-icon className="size-4" />
-                        暂停
+                        {t('actions.pause')}
                       </Button>
                       <Button
                         disabled={cancelMutation.isPending}
@@ -143,7 +146,7 @@ export function BackgroundAgentsPanel({
                         variant="outline"
                       >
                         <X data-icon className="size-4" />
-                        取消
+                        {t('actions.cancel')}
                       </Button>
                     </>
                   ) : null}
@@ -157,7 +160,7 @@ export function BackgroundAgentsPanel({
                       variant="outline"
                     >
                       <Play data-icon className="size-4" />
-                      恢复
+                      {t('actions.resume')}
                     </Button>
                   ) : null}
 
@@ -170,7 +173,7 @@ export function BackgroundAgentsPanel({
                       variant="outline"
                     >
                       <Archive data-icon className="size-4" />
-                      归档
+                      {t('actions.archive')}
                     </Button>
                   ) : null}
 
@@ -183,7 +186,7 @@ export function BackgroundAgentsPanel({
                       variant="outline"
                     >
                       <Trash2 data-icon className="size-4" />
-                      删除
+                      {t('actions.delete')}
                     </Button>
                   ) : null}
                 </div>
@@ -191,10 +194,13 @@ export function BackgroundAgentsPanel({
 
               {agent.state === 'waiting_for_input' ? (
                 <div className="mt-3 flex flex-wrap items-end gap-2">
-                  <label className="flex min-w-64 flex-1 flex-col gap-1 text-sm">
-                    <span className="font-medium">输入</span>
-                    <input
-                      className="h-9 rounded-md border border-border bg-background px-3 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  <label
+                    className="flex min-w-64 flex-1 flex-col gap-1 text-sm"
+                    htmlFor={`background-agent-input-${agent.backgroundAgentId}`}
+                  >
+                    <span className="font-medium">{t('input.label')}</span>
+                    <Input
+                      id={`background-agent-input-${agent.backgroundAgentId}`}
                       onChange={(event) =>
                         setInputDrafts((current) => ({
                           ...current,
@@ -211,19 +217,19 @@ export function BackgroundAgentsPanel({
                     type="button"
                   >
                     <Send data-icon className="size-4" />
-                    发送输入
+                    {t('input.send')}
                   </Button>
                   {!agent.pendingInputRequestId ? (
                     <p className="basis-full text-muted-foreground text-xs">
-                      等待输入请求尚未恢复。
+                      {t('input.pendingRequestMissing')}
                     </p>
                   ) : null}
                 </div>
               ) : null}
-            </article>
+            </Card>
           ))}
         </div>
       ) : null}
-    </section>
+    </Section>
   )
 }

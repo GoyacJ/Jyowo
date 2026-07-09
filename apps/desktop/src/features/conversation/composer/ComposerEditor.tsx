@@ -1,6 +1,8 @@
 import { useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { Textarea } from '@/shared/ui/textarea'
+
 type ComposerEditorProps = {
   disabled: boolean
   value: string
@@ -49,10 +51,10 @@ export function ComposerEditor({
   }
 
   return (
-    <textarea
+    <Textarea
       ref={ref}
       aria-label={t('composer.inputLabel')}
-      className="w-full resize-none bg-transparent text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60"
+      className="min-h-0 w-full resize-none border-0 bg-transparent px-0 py-0 shadow-none focus:border-transparent focus:ring-0"
       disabled={disabled}
       onChange={handleChange}
       onKeyDown={handleKeyDown}

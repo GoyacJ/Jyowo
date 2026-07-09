@@ -216,7 +216,7 @@ describe('ExecutionSettings', () => {
       }),
     )
 
-    expect(screen.getByText('Loading default permission mode...')).toBeInTheDocument()
+    expect(screen.getByText('Loading default permission mode…')).toBeInTheDocument()
   })
 
   it('renders project scope badge when execution settings are project scoped', async () => {

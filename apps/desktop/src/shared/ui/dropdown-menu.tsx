@@ -18,7 +18,7 @@ export function DropdownMenuContent({
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
         className={cn(
-          'z-50 min-w-40 overflow-hidden rounded-lg border border-border bg-surface/85 glass-effect p-1 text-foreground shadow-md animate-popover-enter',
+          'z-50 min-w-40 overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md animate-popover-enter',
           className,
         )}
         sideOffset={sideOffset}
@@ -36,7 +36,7 @@ export function DropdownMenuItem({
   return (
     <DropdownMenuPrimitive.Item
       className={cn(
-        'relative flex cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none transition-all duration-150 focus:bg-muted focus:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+        'relative flex cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none transition-[background-color,color] duration-150 focus:bg-muted focus:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
         inset && 'pl-8',
         className,
       )}
@@ -55,7 +55,7 @@ export function DropdownMenuCheckboxItem({
     <DropdownMenuPrimitive.CheckboxItem
       checked={checked}
       className={cn(
-        'relative flex cursor-default select-none items-center rounded-md py-1.5 pr-2 pl-8 text-sm outline-none transition-all duration-150 focus:bg-muted focus:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+        'relative flex cursor-default select-none items-center rounded-md py-1.5 pr-2 pl-8 text-sm outline-none transition-[background-color,color] duration-150 focus:bg-muted focus:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
         className,
       )}
       {...props}
@@ -79,7 +79,7 @@ export function DropdownMenuSubTrigger({
   return (
     <DropdownMenuPrimitive.SubTrigger
       className={cn(
-        'flex cursor-default select-none items-center rounded-md px-2 py-1.5 text-sm outline-none transition-all duration-150 focus:bg-muted data-[state=open]:bg-muted',
+        'flex cursor-default select-none items-center rounded-md px-2 py-1.5 text-sm outline-none transition-[background-color,color] duration-150 focus:bg-muted data-[state=open]:bg-muted',
         inset && 'pl-8',
         className,
       )}
@@ -100,7 +100,7 @@ export function DropdownMenuSubContent({
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.SubContent
         className={cn(
-          'z-50 min-w-40 overflow-hidden rounded-lg border border-border bg-surface/85 glass-effect p-1 text-foreground shadow-md animate-popover-enter',
+          'z-50 min-w-40 overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md animate-popover-enter',
           className,
         )}
         sideOffset={sideOffset}
