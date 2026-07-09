@@ -130,7 +130,7 @@ describe('App', () => {
     expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Status' })).toBeInTheDocument()
     expect(
-      screen.getByPlaceholderText('Ask Jyowo anything about this project...'),
+      screen.getByPlaceholderText('Ask Jyowo anything about this project…'),
     ).toBeInTheDocument()
   })
 

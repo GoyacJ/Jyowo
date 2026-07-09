@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlarmClock, Play, Save, Trash2 } from 'lucide-react'
-import { type FormEvent, type ReactNode, useRef, useState } from 'react'
+import { type FormEvent, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useActiveProjectPath } from '@/features/workspace/use-active-project-path'
 import type {
@@ -21,9 +21,14 @@ import {
 import { useCommandClient } from '@/shared/tauri/react'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
+import { Checkbox } from '@/shared/ui/checkbox'
+import { FieldControl } from '@/shared/ui/field'
+import { Input } from '@/shared/ui/input'
 import { Section, SectionDescription, SectionHeader, SectionTitle } from '@/shared/ui/section'
+import { Select } from '@/shared/ui/select'
 import { StatusBadge, type StatusBadgeProps } from '@/shared/ui/status-badge'
 import { Switch } from '@/shared/ui/switch'
+import { Textarea } from '@/shared/ui/textarea'
 
 const automationQueryKeys = {
   all: ['automations'] as const,
@@ -223,47 +228,38 @@ export function AutomationSettings() {
                 <h3 className="font-medium text-sm">{t('automation.form.title')}</h3>
                 <form className="space-y-4" onSubmit={submit} ref={formRef}>
                   <div className="grid gap-3 md:grid-cols-2">
-                    <Field fieldId="automation-id" label={t('automation.form.id')}>
-                      <input
-                        className={inputClassName}
-                        id="automation-id"
-                        name="id"
-                        placeholder="nightly-checks"
-                      />
-                    </Field>
-                    <Field fieldId="automation-interval" label={t('automation.form.interval')}>
-                      <input
-                        className={inputClassName}
+                    <FieldControl fieldId="automation-id" label={t('automation.form.id')}>
+                      <Input id="automation-id" name="id" placeholder="nightly-checks" />
+                    </FieldControl>
+                    <FieldControl
+                      fieldId="automation-interval"
+                      label={t('automation.form.interval')}
+                    >
+                      <Input
                         defaultValue={30}
                         id="automation-interval"
                         min={1}
                         name="intervalMinutes"
                         type="number"
                       />
-                    </Field>
-                    <Field
+                    </FieldControl>
+                    <FieldControl
                       fieldId="automation-tool-profile"
                       label={t('automation.form.toolProfile')}
                     >
-                      <select
-                        className={inputClassName}
-                        defaultValue="coding"
-                        id="automation-tool-profile"
-                        name="toolProfile"
-                      >
+                      <Select defaultValue="coding" id="automation-tool-profile" name="toolProfile">
                         {toolProfileOptions.map((toolProfile) => (
                           <option key={toolProfile} value={toolProfile}>
                             {t(`automation.toolProfile.${toolProfile}`)}
                           </option>
                         ))}
-                      </select>
-                    </Field>
-                    <Field
+                      </Select>
+                    </FieldControl>
+                    <FieldControl
                       fieldId="automation-permission-mode"
                       label={t('automation.form.permissionMode')}
                     >
-                      <select
-                        className={inputClassName}
+                      <Select
                         defaultValue="default"
                         id="automation-permission-mode"
                         name="permissionMode"
@@ -273,14 +269,13 @@ export function AutomationSettings() {
                             {t(`automation.permissionMode.${permissionMode}`)}
                           </option>
                         ))}
-                      </select>
-                    </Field>
-                    <Field
+                      </Select>
+                    </FieldControl>
+                    <FieldControl
                       fieldId="automation-missed-policy"
                       label={t('automation.form.missedRunPolicy')}
                     >
-                      <select
-                        className={inputClassName}
+                      <Select
                         defaultValue="skip"
                         id="automation-missed-policy"
                         name="missedRunPolicy"
@@ -290,21 +285,23 @@ export function AutomationSettings() {
                             {t(`automation.missedRunPolicy.${policy}`)}
                           </option>
                         ))}
-                      </select>
-                    </Field>
-                    <label className="flex items-center gap-2 self-end text-sm">
-                      <input className="size-4" name="enabled" type="checkbox" />
+                      </Select>
+                    </FieldControl>
+                    <label
+                      className="flex items-center gap-2 self-end text-sm"
+                      htmlFor="automation-enabled"
+                    >
+                      <Checkbox id="automation-enabled" name="enabled" />
                       {t('automation.form.enabled')}
                     </label>
                     <div className="md:col-span-2">
-                      <Field fieldId="automation-prompt" label={t('automation.form.prompt')}>
-                        <textarea
-                          className={`${inputClassName} min-h-24 resize-y py-2`}
+                      <FieldControl fieldId="automation-prompt" label={t('automation.form.prompt')}>
+                        <Textarea
                           id="automation-prompt"
                           name="prompt"
                           placeholder={t('automation.form.promptPlaceholder')}
                         />
-                      </Field>
+                      </FieldControl>
                     </div>
                   </div>
                   {formError ? <p className="text-destructive text-sm">{formError}</p> : null}
@@ -438,25 +435,6 @@ function Detail({ children, label }: { children: string; label: string }) {
   )
 }
 
-function Field({
-  children,
-  fieldId,
-  label,
-}: {
-  children: ReactNode
-  fieldId: string
-  label: string
-}) {
-  return (
-    <div className="space-y-2">
-      <label className="block font-medium text-sm" htmlFor={fieldId}>
-        {label}
-      </label>
-      {children}
-    </div>
-  )
-}
-
 function simpleToolProfileLabel(toolProfile: ToolProfile, t: (key: string) => string) {
   if (typeof toolProfile === 'string') {
     return t(`automation.toolProfile.${toolProfile}`)
@@ -475,6 +453,3 @@ function formatDate(value: string) {
     timeStyle: 'short',
   }).format(new Date(value))
 }
-
-const inputClassName =
-  'h-10 w-full rounded-sm border border-border bg-surface px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring'

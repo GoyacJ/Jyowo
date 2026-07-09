@@ -40,7 +40,7 @@ export function PlanBlock({ completedCount, items, totalCount }: PlanBlockProps)
             role="progressbar"
           >
             <span
-              className="block h-full bg-gradient-to-r from-success/80 to-success transition-all duration-300"
+              className="block h-full bg-gradient-to-r from-success/80 to-success transition-[width] duration-300"
               style={{ width: `${progressValue}%` }}
             />
           </span>

@@ -48,8 +48,8 @@ export function WelcomeWorkspace({ onConversationCreated }: WelcomeWorkspaceProp
 
   return (
     <section className="mx-auto flex min-h-full max-w-3xl flex-col items-center justify-center px-4 py-16 text-center">
-      <div className="grid size-16 place-items-center rounded-2xl border border-border bg-surface shadow-sm hover:border-primary/45 hover:shadow-md transition-all duration-300 animate-page-enter [animation-delay:60ms]">
-        <img alt="" className="size-10" src={appIconUrl} />
+      <div className="grid size-16 place-items-center rounded-md border border-border bg-surface shadow-sm transition-[border-color,box-shadow] duration-300 hover:border-primary/45 hover:shadow-md animate-page-enter [animation-delay:60ms]">
+        <img alt="" className="size-10" height={40} src={appIconUrl} width={40} />
       </div>
       <div className="mt-6 flex items-center gap-2 text-muted-foreground text-sm animate-page-enter [animation-delay:150ms]">
         <Sparkles aria-hidden="true" className="size-4 text-primary" />

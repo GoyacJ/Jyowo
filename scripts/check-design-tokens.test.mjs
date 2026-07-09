@@ -36,11 +36,34 @@ export function Demo() {
   )
 })
 
-test('allows semantic token classes and test files', () => {
+test('warns on broad transitions and raw form controls in production UI code', () => {
   const root = writeFixture({
     'apps/desktop/src/features/demo/Demo.tsx': `
 export function Demo() {
-  return <div className="bg-surface text-muted-foreground border-border shadow-card" />
+  return <div className="transition-all"><input /></div>
+}
+`,
+  })
+
+  const result = scanDesignTokenUsage(root)
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(
+    result.warnings.map((warning) => warning.rule),
+    ['transition-all', 'raw-form-control'],
+  )
+})
+
+test('allows semantic token classes, shared form controls, and test files', () => {
+  const root = writeFixture({
+    'apps/desktop/src/features/demo/Demo.tsx': `
+export function Demo() {
+  return <div className="bg-surface text-popover-foreground border-border shadow-card" />
+}
+`,
+    'apps/desktop/src/shared/ui/input.tsx': `
+export function Input() {
+  return <input className="transition-[border-color,box-shadow]" />
 }
 `,
     'apps/desktop/src/features/demo/Demo.test.tsx': `

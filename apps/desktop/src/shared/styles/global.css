@@ -7,6 +7,8 @@
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-surface: var(--surface);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
   --color-sidebar: var(--sidebar);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
@@ -56,6 +58,8 @@
   --background: #f8f9fa;
   --foreground: #1e293b;
   --surface: #ffffff;
+  --popover: #ffffff;
+  --popover-foreground: #1e293b;
   --sidebar: #f1f5f9;
   --muted: #f1f5f9;
   --muted-foreground: #64748b;
@@ -118,6 +122,8 @@
   --background: #09090b;
   --foreground: #f4f4f5;
   --surface: #18181b;
+  --popover: #18181b;
+  --popover-foreground: #f4f4f5;
   --sidebar: #0f0f11;
   --muted: #27272a;
   --muted-foreground: #a1a1aa;
@@ -250,23 +256,6 @@ select {
   }
 }
 
-/* 全局交互微动效与过渡 */
-button,
-a,
-input,
-select,
-textarea,
-[role="button"],
-.transition-all-custom {
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-/* 按钮悬停轻微上浮与柔和阴影 */
-button:not(:disabled):hover,
-[role="button"]:not(:disabled):hover {
-  transform: translateY(-1px);
-}
-
 /* 智能体运行态呼吸微光效果 */
 @keyframes agent-pulse-glow {
   0%, 100% {
@@ -348,4 +337,15 @@ button:not(:disabled):hover,
 }
 .animate-fade-in-quick {
   animation: fade-in-quick 0.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
 }

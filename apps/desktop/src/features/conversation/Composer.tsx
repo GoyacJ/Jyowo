@@ -500,7 +500,7 @@ export function Composer({
           {canCancelRun ? (
             <button
               aria-label={t('conversation:composer.cancelRun')}
-              className="rounded-md border border-border p-2 text-muted-foreground transition-all duration-200 hover:bg-muted hover:text-foreground hover:shadow-sm active:scale-95 disabled:scale-100 disabled:opacity-50 disabled:pointer-events-none"
+              className="rounded-md border border-border p-2 text-muted-foreground transition-[background-color,color,box-shadow,transform,opacity] duration-200 hover:bg-muted hover:text-foreground hover:shadow-sm active:scale-95 disabled:scale-100 disabled:opacity-50 disabled:pointer-events-none"
               disabled={cancelPending}
               onClick={() => {
                 void handleCancelRun()
@@ -512,7 +512,7 @@ export function Composer({
           ) : null}
           <button
             aria-label={t('conversation:composer.sendMessage')}
-            className="rounded-md bg-primary p-2 text-primary-foreground shadow-sm transition-all duration-200 hover:brightness-[1.05] hover:shadow-md active:scale-95 disabled:scale-100 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none disabled:pointer-events-none"
+            className="rounded-md bg-primary p-2 text-primary-foreground shadow-sm transition-[background-color,color,box-shadow,filter,transform] duration-200 hover:brightness-[1.05] hover:shadow-md active:scale-95 disabled:scale-100 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none disabled:pointer-events-none"
             disabled={!canSubmit}
             type="submit"
           >

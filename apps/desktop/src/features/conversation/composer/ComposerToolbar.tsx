@@ -10,6 +10,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/shared/ui/dropdown-menu'
+import { Select } from '@/shared/ui/select'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/shared/ui/tooltip'
 
 import { ReferenceCombobox, type ReferenceComboboxGroup } from './ReferenceCombobox'
@@ -103,9 +104,9 @@ export function ComposerToolbar({
           }
         />
         {modelConfigs.length > 0 ? (
-          <select
+          <Select
             aria-label={t('modelConfig')}
-            className="h-8 max-w-[220px] rounded-md border border-border bg-background px-2 text-foreground text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+            className="h-8 max-w-[220px] text-xs"
             disabled={disabled || modelConfigDisabled || !onModelConfigChange}
             onChange={(event) => onModelConfigChange?.(event.target.value)}
             value={modelConfigId ?? ''}
@@ -116,7 +117,7 @@ export function ComposerToolbar({
                 {modelConfig.label}
               </option>
             ))}
-          </select>
+          </Select>
         ) : null}
       </div>
     </TooltipProvider>

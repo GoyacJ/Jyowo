@@ -7,6 +7,7 @@ import { APP_LOCALES, type AppLocale } from '@/shared/i18n/locales'
 import { cn } from '@/shared/lib/utils'
 import { useUiStore } from '@/shared/state/ui-store'
 import { Section, SectionDescription, SectionHeader, SectionTitle } from '@/shared/ui/section'
+import { Select } from '@/shared/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 import { AboutSettings } from './AboutSettings'
 import { AutomationSettings } from './AutomationSettings'
@@ -155,7 +156,7 @@ function ThemeSettings() {
           <button
             aria-pressed={theme === value}
             className={cn(
-              'inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 font-medium text-sm transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-95',
+              'inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 font-medium text-sm transition-[background-color,border-color,color,box-shadow,transform] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-95',
               theme === value
                 ? 'bg-primary text-primary-foreground shadow-sm shadow-primary/15'
                 : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground hover:shadow-sm',
@@ -190,10 +191,11 @@ function LanguageSettings() {
         </div>
       </SectionHeader>
 
-      <label className="block max-w-sm space-y-2 text-sm">
+      <label className="block max-w-sm space-y-2 text-sm" htmlFor="settings-language">
         <span className="font-medium">{t('language.label')}</span>
-        <select
-          className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none transition-[border-color,box-shadow] duration-200 focus:border-ring/60 focus:ring-2 focus:ring-ring/10"
+        <Select
+          className="h-10"
+          id="settings-language"
           onChange={(event) => setLocale(event.target.value as AppLocale)}
           value={locale}
         >
@@ -202,7 +204,7 @@ function LanguageSettings() {
               {appLocale === 'zh-CN' ? t('language.zhCN') : t('language.enUS')}
             </option>
           ))}
-        </select>
+        </Select>
       </label>
     </Section>
   )

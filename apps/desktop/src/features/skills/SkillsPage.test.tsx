@@ -17,9 +17,29 @@ import { CommandClientProvider } from '@/shared/tauri/react'
 import { createRejectedTestCommandClient, createTestCommandClient } from '@/testing/command-client'
 
 const openDialogSpy = vi.hoisted(() => vi.fn())
+const routerSpy = vi.hoisted(() => ({
+  navigate: vi.fn(async ({ search, to }: { search?: Record<string, string>; to: string }) => {
+    const nextSearch = search ? `?${new URLSearchParams(search).toString()}` : ''
+    window.history.pushState(null, '', `${to}${nextSearch}`)
+  }),
+}))
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   open: openDialogSpy,
+}))
+
+vi.mock('@tanstack/react-router', async () => ({
+  useNavigate: () => routerSpy.navigate,
+  useRouterState: ({
+    select,
+  }: {
+    select: (state: { location: { search: Record<string, unknown> } }) => unknown
+  }) =>
+    select({
+      location: {
+        search: Object.fromEntries(new URLSearchParams(window.location.search)),
+      },
+    }),
 }))
 
 function renderSkillsPage(commandClient: CommandClient = createTestCommandClient()) {
@@ -46,6 +66,8 @@ function renderSkillsPage(commandClient: CommandClient = createTestCommandClient
 describe('SkillsPage', () => {
   beforeEach(() => {
     openDialogSpy.mockReset()
+    routerSpy.navigate.mockClear()
+    window.history.replaceState(null, '', '/skills')
   })
 
   it('renders skills, tools, and MCP sections as tabs', async () => {

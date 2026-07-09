@@ -1,17 +1,22 @@
-import { createLazyFileRoute } from '@tanstack/react-router'
-import { useState } from 'react'
+import { createLazyFileRoute, useNavigate, useRouterState } from '@tanstack/react-router'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { MemoryBrowser } from '@/features/memory/MemoryBrowser'
 import { MemoryInbox } from '@/features/memory/MemoryInbox'
 import { MemoryRecallTracePanel } from '@/features/memory/MemoryRecallTracePanel'
 import { MemorySettings } from '@/features/memory/MemorySettings'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 
 type MemoryTab = 'items' | 'inbox' | 'traces' | 'settings'
 
 function MemoryPage() {
   const { t } = useTranslation('memory')
-  const [tab, setTab] = useState<MemoryTab>('items')
+  const navigate = useNavigate()
+  const requestedTab = useRouterState({
+    select: (state) => state.location.search.tab,
+  })
+  const [tab, setTab] = useState<MemoryTab>(isMemoryTab(requestedTab) ? requestedTab : 'items')
 
   const tabs: { id: MemoryTab; label: string }[] = [
     { id: 'items', label: t('items') },
@@ -20,32 +25,56 @@ function MemoryPage() {
     { id: 'settings', label: t('settings') },
   ]
 
+  useEffect(() => {
+    if (isMemoryTab(requestedTab) && requestedTab !== tab) {
+      setTab(requestedTab)
+    }
+  }, [requestedTab, tab])
+
+  function selectTab(nextTab: MemoryTab) {
+    setTab(nextTab)
+    void navigate({ search: { tab: nextTab }, to: '/memory' })
+  }
+
   return (
-    <div>
-      <div className="flex border-b">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setTab(t.id)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              tab === t.id
-                ? 'border-primary text-primary'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
+    <section aria-label={t('title')} className="h-full min-h-0 overflow-y-auto pr-1">
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 pb-6">
+        <Tabs
+          className="min-h-0"
+          onValueChange={(value) => {
+            if (isMemoryTab(value)) {
+              selectTab(value)
+            }
+          }}
+          value={tab}
+        >
+          <TabsList aria-label={t('tabsLabel')} className="flex h-auto w-fit flex-wrap">
+            {tabs.map((item) => (
+              <TabsTrigger key={item.id} value={item.id}>
+                {item.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          <TabsContent className="space-y-5 pt-3" value="items">
+            <MemoryBrowser />
+          </TabsContent>
+          <TabsContent className="space-y-5 pt-3" value="inbox">
+            <MemoryInbox />
+          </TabsContent>
+          <TabsContent className="space-y-5 pt-3" value="traces">
+            <MemoryRecallTracePanel />
+          </TabsContent>
+          <TabsContent className="space-y-5 pt-3" value="settings">
+            <MemorySettings />
+          </TabsContent>
+        </Tabs>
       </div>
-      <div>
-        {tab === 'items' && <MemoryBrowser />}
-        {tab === 'inbox' && <MemoryInbox />}
-        {tab === 'traces' && <MemoryRecallTracePanel />}
-        {tab === 'settings' && <MemorySettings />}
-      </div>
-    </div>
+    </section>
   )
+}
+
+function isMemoryTab(value: unknown): value is MemoryTab {
+  return value === 'items' || value === 'inbox' || value === 'traces' || value === 'settings'
 }
 
 export const Route = createLazyFileRoute('/memory')({

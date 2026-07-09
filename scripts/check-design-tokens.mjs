@@ -14,6 +14,7 @@ const EXCLUDED_FILE_SUFFIXES = [
   '.gen.ts',
 ]
 const EXCLUDED_FILES = new Set(['apps/desktop/src/shared/styles/global.css'])
+const RAW_CONTROL_ALLOWED_PATH_SEGMENTS = ['/shared/ui/']
 
 const CHECKED_EXTENSIONS = ['.ts', '.tsx', '.css']
 
@@ -30,6 +31,15 @@ const RULES = [
   {
     id: 'direct-hex-color',
     pattern: /#[0-9a-fA-F]{3,8}\b/g,
+  },
+  {
+    id: 'transition-all',
+    pattern: /\btransition-all\b|transition:\s*all\b/g,
+  },
+  {
+    id: 'raw-form-control',
+    pattern: /<(?:input|select|textarea)\b/g,
+    allow: (rel) => RAW_CONTROL_ALLOWED_PATH_SEGMENTS.some((segment) => rel.includes(segment)),
   },
 ]
 
@@ -53,6 +63,9 @@ export function scanDesignTokenUsage(repoRoot = defaultRepoRoot) {
         rule.pattern.lastIndex = 0
         const matches = line.matchAll(rule.pattern)
         for (const match of matches) {
+          if (rule.allow?.(rel)) {
+            continue
+          }
           warnings.push({
             file: rel,
             line: index + 1,

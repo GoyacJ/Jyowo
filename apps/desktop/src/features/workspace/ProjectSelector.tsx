@@ -212,7 +212,7 @@ export function ProjectSelector({ compact = false }: ProjectSelectorProps) {
     return (
       <div className="flex w-full flex-col items-center gap-2">
         <span className="grid size-9 place-items-center" title={t('workspace')}>
-          <img alt="" className="size-6" src={appIconUrl} />
+          <img alt="" className="size-6" height={24} src={appIconUrl} width={24} />
         </span>
         {projectMenu}
         {errorMessage ? (
@@ -228,7 +228,7 @@ export function ProjectSelector({ compact = false }: ProjectSelectorProps) {
     <div className="min-w-0 flex-1">
       <div className="flex min-w-0 items-center gap-2">
         <span className="grid size-8 shrink-0 place-items-center">
-          <img alt="" className="size-6" src={appIconUrl} />
+          <img alt="" className="size-6" height={24} src={appIconUrl} width={24} />
         </span>
         {projectMenu}
       </div>

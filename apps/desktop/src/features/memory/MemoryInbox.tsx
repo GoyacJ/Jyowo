@@ -13,6 +13,9 @@ import {
 import { useCommandClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card'
+import { Checkbox } from '@/shared/ui/checkbox'
+import { EmptyState } from '@/shared/ui/empty-state'
+import { Section } from '@/shared/ui/section'
 
 const inboxQueryKeys = {
   all: ['memory-inbox'] as const,
@@ -102,21 +105,21 @@ export function MemoryInbox() {
   })
 
   if (inboxQuery.isLoading) {
-    return <div className="p-4 text-muted-foreground">{t('loading')}</div>
+    return <div className="text-muted-foreground text-sm">{t('loading')}</div>
   }
   if (inboxQuery.isError) {
-    return <div className="p-4 text-destructive">{t('errorLoading')}</div>
+    return <div className="text-destructive text-sm">{t('errorLoading')}</div>
   }
 
   const candidates = inboxQuery.data?.candidates ?? []
   const selectedCount = selectedCandidateIds.length
 
   if (candidates.length === 0) {
-    return <div className="p-4 text-muted-foreground">{t('inboxEmpty')}</div>
+    return <EmptyState>{t('inboxEmpty')}</EmptyState>
   }
 
   return (
-    <div className="space-y-4 p-4">
+    <Section>
       {message && <div className="rounded bg-success/10 p-2 text-sm text-success">{message}</div>}
       <div className="flex items-center justify-between gap-3">
         <p className="text-muted-foreground text-sm">
@@ -136,14 +139,13 @@ export function MemoryInbox() {
         <Card key={candidate.id}>
           <CardHeader>
             <div className="flex items-center gap-3">
-              <input
+              <Checkbox
                 aria-label={t('selectCandidate')}
                 checked={selectedCandidateIds.includes(candidate.id)}
                 disabled={candidate.state !== 'proposed'}
-                type="checkbox"
-                onChange={(event) => {
+                onCheckedChange={(checked) => {
                   setSelectedCandidateIds((currentIds) =>
-                    event.target.checked
+                    checked === true
                       ? [...currentIds, candidate.id]
                       : currentIds.filter((id) => id !== candidate.id),
                   )
@@ -185,7 +187,7 @@ export function MemoryInbox() {
           </CardContent>
         </Card>
       ))}
-    </div>
+    </Section>
   )
 }
 
