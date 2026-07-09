@@ -308,6 +308,7 @@ pub async fn refresh_model_provider_catalog_with_runtime_state(
     let models_api_json = fetch_openrouter_models_api_json().await?;
     let anthropic_models_api_json =
         fetch_anthropic_models_api_json_for_runtime_state(runtime_state).await?;
+    let deepseek_models_api_json = fetch_deepseek_models_api_json().await.ok();
     let bytes = serde_json::to_vec(&models_api_json).map_err(|error| {
         runtime_operation_failed(format!(
             "provider catalog refresh serialization failed: {error}"
@@ -316,11 +317,15 @@ pub async fn refresh_model_provider_catalog_with_runtime_state(
     inventory_from_models_api_json(&bytes).map_err(|error| {
         runtime_operation_failed(format!("provider catalog refresh parse failed: {error}"))
     })?;
+    if let Some(deepseek_models_api_json) = &deepseek_models_api_json {
+        validate_deepseek_models_api_json(deepseek_models_api_json)?;
+    }
     runtime_state
         .provider_catalog_snapshot_store
         .save_record(&ProviderCatalogSnapshotRecord {
             openrouter_models_api_json: models_api_json,
             anthropic_models_api_json,
+            deepseek_models_api_json,
             last_successful_refresh_at: now,
             last_attempt_at: now,
         })?;
@@ -402,6 +407,68 @@ async fn fetch_anthropic_models_api_json(
     serde_json::from_slice(&bytes).map_err(|error| {
         runtime_operation_failed(format!("Anthropic model catalog parse failed: {error}"))
     })
+}
+
+async fn fetch_deepseek_models_api_json() -> Result<serde_json::Value, CommandErrorPayload> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|error| {
+            runtime_operation_failed(format!("provider catalog client failed: {error}"))
+        })?;
+    let mut response = client
+        .get("https://api.deepseek.com/models")
+        .send()
+        .await
+        .map_err(|error| {
+            runtime_operation_failed(format!("DeepSeek catalog fetch failed: {error}"))
+        })?
+        .error_for_status()
+        .map_err(|error| {
+            runtime_operation_failed(format!("DeepSeek catalog fetch failed: {error}"))
+        })?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_OPENROUTER_MODELS_API_BYTES as u64)
+    {
+        return Err(runtime_operation_failed(
+            "DeepSeek catalog response is too large".to_owned(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        runtime_operation_failed(format!("DeepSeek catalog read failed: {error}"))
+    })? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_OPENROUTER_MODELS_API_BYTES {
+            return Err(runtime_operation_failed(
+                "DeepSeek catalog response is too large".to_owned(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|error| {
+        runtime_operation_failed(format!("DeepSeek catalog parse failed: {error}"))
+    })
+}
+
+fn validate_deepseek_models_api_json(value: &serde_json::Value) -> Result<(), CommandErrorPayload> {
+    let Some(models) = value.get("data").and_then(serde_json::Value::as_array) else {
+        return Err(runtime_operation_failed(
+            "DeepSeek catalog response did not include data".to_owned(),
+        ));
+    };
+    for model in models {
+        if model
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+        {
+            return Err(runtime_operation_failed(
+                "DeepSeek catalog response included a model without id".to_owned(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn fetch_openrouter_models_api_json() -> Result<serde_json::Value, CommandErrorPayload> {

@@ -246,6 +246,7 @@ impl ModelProvider for ScriptedMiniMaxProvider {
             model_id: "minimax-m3".to_owned(),
             display_name: "MiniMax M3".to_owned(),
             protocol: ModelProtocol::ChatCompletions,
+            supported_parameters: Vec::new(),
             context_window: 1_000_000,
             max_output_tokens: 8_192,
             provider_declared_capability: ConversationModelCapability::default(),

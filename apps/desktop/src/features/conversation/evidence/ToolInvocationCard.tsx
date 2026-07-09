@@ -14,8 +14,7 @@ export function ToolInvocationCard({
   const statusLabel = t(`timeline.toolStatus.${attempt.status}`)
   const originLabel = attempt.origin ? t(`timeline.toolOrigin.${attempt.origin}`) : null
   const resultLabel = attempt.resultKind ?? null
-  const failureKindLabel =
-    attempt.failureKind === 'capabilityMissing' ? 'capabilityMissing' : null
+  const failureKindLabel = attempt.failureKind === 'capabilityMissing' ? 'capabilityMissing' : null
   const interactive = Boolean(onClick)
   const className = cn(
     'w-full rounded-md border border-border px-3 py-2 text-left transition-colors',

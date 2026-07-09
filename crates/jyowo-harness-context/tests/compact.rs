@@ -656,12 +656,14 @@ impl ModelProvider for TestModelProvider {
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             protocol: harness_model::ModelProtocol::Messages,
+            supported_parameters: Vec::new(),
             lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "test".to_owned(),
             model_id: "test-aux".to_owned(),
             display_name: "Test Aux".to_owned(),
             context_window: 8_192,
             max_output_tokens: 1_024,
+            provider_declared_capability: Default::default(),
             conversation_capability: ConversationModelCapability::default(),
             runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
                 harness_model::ModelProtocol::Messages,

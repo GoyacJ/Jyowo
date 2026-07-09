@@ -190,6 +190,163 @@ async fn save_provider_settings_accepts_structured_defaults_for_non_qwen_provide
 }
 
 #[tokio::test]
+async fn save_provider_settings_accepts_deepseek_chat_and_messages_defaults() {
+    let store = RecordingProviderSettingsStore::default();
+
+    let messages = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some("provider-test-token".to_owned()),
+            base_url: Some("https://api.deepseek.com/anthropic".to_owned()),
+            config_id: None,
+            display_name: Some("DeepSeek Anthropic".to_owned()),
+            model_id: "deepseek-v4-pro".to_owned(),
+            model_options: Some(harness_contracts::ModelRequestOptions::default()),
+            official_quota_api_key: None,
+            provider_id: "deepseek".to_owned(),
+            protocol: Some(ModelProtocol::Messages),
+            provider_defaults: Some(ProviderDefaultsRecord {
+                body: Some(json!({
+                    "thinking": { "type": "enabled" },
+                    "output_config": { "effort": "max" },
+                    "stop_sequences": ["DONE"]
+                })),
+                headers: Default::default(),
+            }),
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(messages.config.protocol, ModelProtocol::Messages);
+    assert_eq!(
+        messages
+            .config
+            .provider_defaults
+            .as_ref()
+            .and_then(|defaults| defaults.body.as_ref())
+            .and_then(|body| body.pointer("/output_config/effort"))
+            .and_then(serde_json::Value::as_str),
+        Some("max")
+    );
+    assert_eq!(
+        messages
+            .config
+            .provider_defaults
+            .as_ref()
+            .and_then(|defaults| defaults.body.as_ref())
+            .and_then(|body| body.pointer("/stop_sequences/0"))
+            .and_then(serde_json::Value::as_str),
+        Some("DONE")
+    );
+
+    let chat = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some("provider-test-token".to_owned()),
+            base_url: Some("https://api.deepseek.com".to_owned()),
+            config_id: Some(messages.config.id.clone()),
+            display_name: Some("DeepSeek Chat".to_owned()),
+            model_id: "deepseek-v4-pro".to_owned(),
+            model_options: Some(harness_contracts::ModelRequestOptions::default()),
+            official_quota_api_key: None,
+            provider_id: "deepseek".to_owned(),
+            protocol: Some(ModelProtocol::ChatCompletions),
+            provider_defaults: Some(ProviderDefaultsRecord {
+                body: Some(json!({
+                    "thinking": { "type": "disabled" },
+                    "reasoning_effort": "high",
+                    "stop": ["DONE"]
+                })),
+                headers: Default::default(),
+            }),
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(chat.config.protocol, ModelProtocol::ChatCompletions);
+}
+
+#[tokio::test]
+async fn save_provider_settings_rejects_deepseek_fim_as_conversation_config() {
+    let store = RecordingProviderSettingsStore::default();
+
+    let error = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some("provider-test-token".to_owned()),
+            base_url: Some("https://api.deepseek.com/beta".to_owned()),
+            config_id: None,
+            display_name: Some("DeepSeek FIM".to_owned()),
+            model_id: "deepseek-v4-pro".to_owned(),
+            model_options: Some(harness_contracts::ModelRequestOptions::default()),
+            official_quota_api_key: None,
+            provider_id: "deepseek".to_owned(),
+            protocol: Some(ModelProtocol::Completions),
+            provider_defaults: None,
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.message.contains("chat_completions or messages"));
+}
+
+#[tokio::test]
+async fn save_provider_settings_rejects_deepseek_messages_with_chat_defaults_or_base_url() {
+    let store = RecordingProviderSettingsStore::default();
+
+    let wrong_defaults = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some("provider-test-token".to_owned()),
+            base_url: Some("https://api.deepseek.com/anthropic".to_owned()),
+            config_id: None,
+            display_name: Some("DeepSeek Anthropic".to_owned()),
+            model_id: "deepseek-v4-pro".to_owned(),
+            model_options: Some(harness_contracts::ModelRequestOptions::default()),
+            official_quota_api_key: None,
+            provider_id: "deepseek".to_owned(),
+            protocol: Some(ModelProtocol::Messages),
+            provider_defaults: Some(ProviderDefaultsRecord {
+                body: Some(json!({ "reasoning_effort": "max" })),
+                headers: Default::default(),
+            }),
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap_err();
+    assert!(wrong_defaults
+        .message
+        .contains("unsupported field reasoning_effort"));
+
+    let wrong_base_url = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some("provider-test-token".to_owned()),
+            base_url: Some("https://api.deepseek.com".to_owned()),
+            config_id: None,
+            display_name: Some("DeepSeek Anthropic".to_owned()),
+            model_id: "deepseek-v4-pro".to_owned(),
+            model_options: Some(harness_contracts::ModelRequestOptions::default()),
+            official_quota_api_key: None,
+            provider_id: "deepseek".to_owned(),
+            protocol: Some(ModelProtocol::Messages),
+            provider_defaults: None,
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap_err();
+    assert!(wrong_base_url.message.contains("/anthropic"));
+}
+
+#[tokio::test]
 async fn save_provider_settings_rejects_provider_defaults_core_fields() {
     let store = RecordingProviderSettingsStore::default();
 

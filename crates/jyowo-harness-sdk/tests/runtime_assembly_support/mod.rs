@@ -1064,8 +1064,10 @@ impl ModelProvider for CapabilityScriptedProvider {
             model_id: self.model_id.clone(),
             display_name: self.display_name.clone(),
             protocol: self.protocol,
+            supported_parameters: Vec::new(),
             context_window: self.context_window,
             max_output_tokens: self.max_output_tokens,
+            provider_declared_capability: Default::default(),
             conversation_capability: self.capabilities.clone(),
             runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
                 self.protocol,
@@ -1112,8 +1114,10 @@ impl ModelProvider for TwoModelProvider {
                 model_id: "model-a".to_owned(),
                 display_name: "Model A".to_owned(),
                 protocol: ModelProtocol::Messages,
+                supported_parameters: Vec::new(),
                 context_window: 128_000,
                 max_output_tokens: 8_192,
+                provider_declared_capability: Default::default(),
                 conversation_capability: ConversationModelCapability::default(),
                 runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
                     ModelProtocol::Messages,
@@ -1126,8 +1130,10 @@ impl ModelProvider for TwoModelProvider {
                 model_id: "model-b".to_owned(),
                 display_name: "Model B".to_owned(),
                 protocol: ModelProtocol::Responses,
+                supported_parameters: Vec::new(),
                 context_window: 128_000,
                 max_output_tokens: 8_192,
+                provider_declared_capability: Default::default(),
                 conversation_capability: ConversationModelCapability::default(),
                 runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
                     ModelProtocol::Responses,

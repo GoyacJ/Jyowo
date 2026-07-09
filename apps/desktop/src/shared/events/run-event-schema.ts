@@ -177,6 +177,7 @@ const permissionModeSchema = z.enum([
 const actionPlanHashSchema = z.string().regex(/^[0-9a-f]{64}$/)
 const modelProtocolSchema = z.enum([
   'chat_completions',
+  'completions',
   'responses',
   'messages',
   'generate_content',

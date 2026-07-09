@@ -425,6 +425,58 @@ describe('ModelConfigDialog', () => {
       },
     })
   })
+
+  it('saves DeepSeek API mode and official thinking defaults', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: deepseekProfile,
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: deepseekProfile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    expect(within(dialog).getByLabelText('API mode')).not.toHaveTextContent('FIM Beta')
+    fireEvent.change(within(dialog).getByLabelText('API mode'), {
+      target: { value: 'messages' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Thinking'), {
+      target: { value: 'disabled' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Reasoning effort'), {
+      target: { value: 'max' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Top P'), {
+      target: { value: '0.8' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Stop sequences'), {
+      target: { value: 'DONE,STOP' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      baseUrl: 'https://api.deepseek.com/anthropic',
+      configId: 'cfg-deepseek',
+      protocol: 'messages',
+      providerDefaults: {
+        body: {
+          thinking: { type: 'disabled' },
+          output_config: { effort: 'max' },
+          top_p: 0.8,
+          stop_sequences: ['DONE', 'STOP'],
+        },
+        headers: {},
+      },
+    })
+    expect(saveProviderSettings.mock.calls[0][0].providerDefaults.body).not.toHaveProperty(
+      'chat_prefix',
+    )
+  })
 })
 
 const modelCapability: ConversationModelCapability = {
@@ -461,6 +513,21 @@ const qwen3Max = {
   ...gpt41,
   displayName: 'Qwen3 Max',
   modelId: 'qwen3-max',
+}
+
+const deepseekModel = {
+  ...gpt41,
+  protocol: 'chat_completions' as const,
+  displayName: 'DeepSeek V4 Pro',
+  modelId: 'deepseek-v4-pro',
+  supportedParameters: [
+    'thinking',
+    'reasoning_effort',
+    'top_p',
+    'stop',
+    'response_format',
+    'tool_choice',
+  ],
 }
 
 const catalog: ModelProviderCatalogResponse = {
@@ -534,6 +601,30 @@ const catalog: ModelProviderCatalogResponse = {
       sourceUrl: 'https://help.aliyun.com/zh/model-studio/',
       verifiedDate: '2026-07-09',
     },
+    {
+      defaultBaseUrl: 'https://api.deepseek.com',
+      displayName: 'DeepSeek',
+      models: [deepseekModel],
+      providerId: 'deepseek',
+      runtimeCapability: {
+        authScheme: 'bearer',
+        baseUrlRegions: [
+          { id: 'default', label: 'Default', baseUrl: 'https://api.deepseek.com' },
+          {
+            id: 'anthropic',
+            label: 'Anthropic',
+            baseUrl: 'https://api.deepseek.com/anthropic',
+          },
+          { id: 'beta', label: 'Beta', baseUrl: 'https://api.deepseek.com/beta' },
+        ],
+        supportsLiveValidation: true,
+        supportsStreamingValidation: true,
+        secretRevealSupported: true,
+      },
+      serviceCapabilities: [],
+      sourceUrl: 'https://api-docs.deepseek.com',
+      verifiedDate: '2026-07-09',
+    },
   ],
 }
 
@@ -590,4 +681,21 @@ const qwen3MaxProfile: ProviderConfig = {
   modelId: 'qwen3-max',
   displayName: 'Primary Qwen Max',
   modelDescriptor: qwen3Max,
+}
+
+const deepseekProfile: ProviderConfig = {
+  id: 'cfg-deepseek',
+  providerId: 'deepseek',
+  modelId: 'deepseek-v4-pro',
+  displayName: 'Primary DeepSeek',
+  baseUrl: 'https://api.deepseek.com',
+  hasApiKey: true,
+  hasOfficialQuotaApiKey: false,
+  isDefault: false,
+  protocol: 'chat_completions',
+  providerDefaults: {
+    body: {},
+    headers: {},
+  },
+  modelDescriptor: deepseekModel,
 }

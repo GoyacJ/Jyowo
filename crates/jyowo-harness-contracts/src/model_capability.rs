@@ -9,6 +9,7 @@ use std::collections::HashSet;
 #[serde(rename_all = "snake_case")]
 pub enum ModelProtocol {
     ChatCompletions,
+    Completions,
     Responses,
     Messages,
     GenerateContent,

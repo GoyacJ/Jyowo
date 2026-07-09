@@ -211,6 +211,7 @@ fn tool_search_prompt_name(mode: &ToolSearchMode) -> &'static str {
 fn model_protocol_prompt_name(protocol: ModelProtocol) -> &'static str {
     match protocol {
         ModelProtocol::ChatCompletions => "chat_completions",
+        ModelProtocol::Completions => "completions",
         ModelProtocol::Responses => "responses",
         ModelProtocol::Messages => "messages",
         ModelProtocol::GenerateContent => "generate_content",

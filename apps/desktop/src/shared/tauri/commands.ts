@@ -1191,6 +1191,7 @@ const agentActivityPermissionStateSchema = decisionRequestStateSchema
 
 const modelProtocolSchema = z.enum([
   'chat_completions',
+  'completions',
   'responses',
   'messages',
   'generate_content',

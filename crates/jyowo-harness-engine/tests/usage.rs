@@ -339,6 +339,7 @@ impl ModelProvider for MutablePricingModel {
         let pricing_version = self.pricing_version.lock();
         vec![ModelDescriptor {
             protocol: harness_model::ModelProtocol::Messages,
+            supported_parameters: Vec::new(),
             lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "test".to_owned(),
             model_id: "usage-model".to_owned(),
@@ -378,6 +379,7 @@ impl ModelProvider for UsageModel {
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             protocol: harness_model::ModelProtocol::Messages,
+            supported_parameters: Vec::new(),
             lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "test".to_owned(),
             model_id: "usage-model".to_owned(),

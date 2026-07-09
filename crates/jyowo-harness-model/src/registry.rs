@@ -388,6 +388,24 @@ fn runtime_capability(
                 base_url: "https://api.minimax.io".to_owned(),
             },
         ]
+    } else if provider_id == "deepseek" {
+        vec![
+            ProviderBaseUrlRegion {
+                id: "default".to_owned(),
+                label: "Chat Completions".to_owned(),
+                base_url: default_base_url.to_owned(),
+            },
+            ProviderBaseUrlRegion {
+                id: "anthropic".to_owned(),
+                label: "Anthropic Messages".to_owned(),
+                base_url: "https://api.deepseek.com/anthropic".to_owned(),
+            },
+            ProviderBaseUrlRegion {
+                id: "beta".to_owned(),
+                label: "Beta".to_owned(),
+                base_url: "https://api.deepseek.com/beta".to_owned(),
+            },
+        ]
     } else if provider_id == "zhipu" {
         vec![
             ProviderBaseUrlRegion {

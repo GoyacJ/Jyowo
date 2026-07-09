@@ -51,6 +51,7 @@ type ModelConfigFormValues = {
   serviceTier: string
   sessionCache: boolean
   stopSequences: string
+  thinkingMode: string
   thinkingBudget: string
   topK: string
   topP: string
@@ -100,7 +101,9 @@ export function ModelConfigDialog({
   )
   const isQwen = selectedProvider?.providerId === 'qwen'
   const isAnthropic = selectedProvider?.providerId === 'anthropic'
+  const isDeepSeek = selectedProvider?.providerId === 'deepseek'
   const protocol = watch('protocol')
+  const thinkingMode = watch('thinkingMode')
   const qwenChatWebExtractorEnabled =
     protocol !== 'chat_completions' || supportsQwenChatWebExtractor(modelId)
   const modelOptions = useMemo(() => {
@@ -178,7 +181,7 @@ export function ModelConfigDialog({
     if (baseUrl) {
       request.baseUrl = baseUrl
     }
-    if (values.providerId === 'qwen') {
+    if (values.providerId === 'qwen' || values.providerId === 'deepseek') {
       request.protocol = values.protocol
       request.providerDefaults = providerDefaultsFromValues(values)
     } else {
@@ -334,7 +337,55 @@ export function ModelConfigDialog({
             </div>
           ) : null}
 
-          {!isQwen && supportedParameters.size > 0 ? (
+          {isDeepSeek ? (
+            <div className="grid gap-3 rounded-sm border border-border p-3 text-sm">
+              <label className="grid gap-1" htmlFor="provider-protocol">
+                <span className="font-medium">{t('provider.apiMode')}</span>
+                <Select
+                  id="provider-protocol"
+                  value={protocol}
+                  onChange={(event) => {
+                    const nextProtocol = event.currentTarget.value as ModelProtocol
+                    setValue('protocol', nextProtocol)
+                    setValue('baseUrl', deepseekBaseUrlForProtocol(nextProtocol))
+                  }}
+                >
+                  <option value="chat_completions">Chat Completions</option>
+                  <option value="messages">Anthropic Messages</option>
+                </Select>
+              </label>
+              <label className="grid gap-1" htmlFor="provider-thinking-mode">
+                <span className="font-medium">{t('provider.enableThinking')}</span>
+                <Select id="provider-thinking-mode" {...register('thinkingMode')}>
+                  <option value="">{t('provider.default')}</option>
+                  <option value="enabled">Enabled</option>
+                  <option value="disabled">Disabled</option>
+                </Select>
+              </label>
+              <label className="grid gap-1" htmlFor="provider-reasoning-effort">
+                <span className="font-medium">{t('provider.reasoningEffort')}</span>
+                <Select id="provider-reasoning-effort" {...register('reasoningEffort')}>
+                  <option value="">{t('provider.default')}</option>
+                  <option value="high">High</option>
+                  <option value="max">Max</option>
+                </Select>
+              </label>
+              {thinkingMode === 'disabled' ? (
+                <>
+                  <label className="grid gap-1" htmlFor="provider-top-p">
+                    <span className="font-medium">{t('provider.topP')}</span>
+                    <Input id="provider-top-p" inputMode="decimal" {...register('topP')} />
+                  </label>
+                  <label className="grid gap-1" htmlFor="provider-stop-sequences">
+                    <span className="font-medium">{t('provider.stopSequences')}</span>
+                    <Input id="provider-stop-sequences" {...register('stopSequences')} />
+                  </label>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+
+          {!isQwen && !isDeepSeek && supportedParameters.size > 0 ? (
             <div className="grid gap-3 rounded-sm border border-border p-3 text-sm">
               <span className="font-medium">{t('provider.providerOptions')}</span>
               {supportsAny(supportedParameters, ['thinking', 'thinkingConfig']) ? (
@@ -371,11 +422,13 @@ export function ModelConfigDialog({
                   <span className="font-medium">Thinking type</span>
                   <Select id="provider-thinking-type" {...register('thinkingType')}>
                     <option value="">{t('provider.default')}</option>
-                    {(providerCapabilityMetadata?.thinkingModes ?? [
-                      'adaptive',
-                      'enabled',
-                      'disabled',
-                    ]).map((mode) => (
+                    {(
+                      providerCapabilityMetadata?.thinkingModes ?? [
+                        'adaptive',
+                        'enabled',
+                        'disabled',
+                      ]
+                    ).map((mode) => (
                       <option key={mode} value={mode}>
                         {mode}
                       </option>
@@ -467,10 +520,7 @@ export function ModelConfigDialog({
                   </label>
                   <label className="grid gap-1" htmlFor="provider-user-profile-id">
                     <span className="font-medium">User profile ID</span>
-                    <Input
-                      id="provider-user-profile-id"
-                      {...register('anthropicUserProfileId')}
-                    />
+                    <Input id="provider-user-profile-id" {...register('anthropicUserProfileId')} />
                   </label>
                   <label className="grid gap-1" htmlFor="provider-inference-geo">
                     <span className="font-medium">Inference geo</span>
@@ -610,12 +660,13 @@ function formValuesFromProfile(
     performanceLatency: providerDefaults.performanceLatency,
     protocol: profile?.protocol ?? defaultProtocolForProvider(defaultProvider),
     providerId: profile?.providerId ?? defaultProvider?.providerId ?? '',
-    reasoningEffort: defaults.reasoningEffort,
+    reasoningEffort: defaults.reasoningEffort || providerDefaults.reasoningEffort,
     responseMimeType: providerDefaults.responseMimeType,
     seed: providerDefaults.seed,
     serviceTier: providerDefaults.serviceTier,
     sessionCache: defaults.sessionCache,
     stopSequences: providerDefaults.stopSequences,
+    thinkingMode: providerDefaults.thinkingMode,
     thinkingBudget: providerDefaults.thinkingBudget,
     thinkingDisplay: providerDefaults.thinkingDisplay,
     thinkingType: providerDefaults.thinkingType,
@@ -676,6 +727,7 @@ function providerOptionDefaultsFromProfile(profile: ProviderConfig | null | unde
   const topP = firstStringable(body.top_p, body.topP, inferenceConfig?.topP)
   const topK = firstStringable(body.top_k, body.topK)
   const stopSequences = firstArray(
+    body.stop,
     body.stop_sequences,
     body.stopSequences,
     inferenceConfig?.stopSequences,
@@ -698,10 +750,18 @@ function providerOptionDefaultsFromProfile(profile: ProviderConfig | null | unde
     outputEffort: typeof outputConfig?.effort === 'string' ? outputConfig.effort : '',
     performanceLatency:
       typeof performanceConfig?.latency === 'string' ? performanceConfig.latency : '',
+    reasoningEffort:
+      typeof body.reasoning_effort === 'string'
+        ? body.reasoning_effort
+        : typeof outputConfig?.effort === 'string'
+          ? outputConfig.effort
+          : '',
     responseMimeType: typeof body.responseMimeType === 'string' ? body.responseMimeType : '',
     seed: firstStringable(body.seed),
     serviceTier: typeof body.service_tier === 'string' ? body.service_tier : '',
     stopSequences: stopSequences.join(','),
+    thinkingMode:
+      thinking?.type === 'enabled' || thinking?.type === 'disabled' ? thinking.type : '',
     thinkingBudget: firstStringable(thinking?.budget_tokens, thinkingConfig?.thinkingBudget),
     thinkingDisplay: typeof thinking?.display === 'string' ? thinking.display : '',
     thinkingType: typeof thinking?.type === 'string' ? thinking.type : '',
@@ -833,6 +893,31 @@ function providerDefaultsFromValues(
       return { body, headers }
     }
 
+    if (values.providerId === 'deepseek') {
+      if (values.thinkingMode === 'enabled' || values.thinkingMode === 'disabled') {
+        body.thinking = { type: values.thinkingMode }
+      }
+      if (values.thinkingMode === 'disabled' && topP !== null) {
+        body.top_p = topP
+      }
+      if (values.protocol === 'messages') {
+        if (values.reasoningEffort === 'high' || values.reasoningEffort === 'max') {
+          body.output_config = { effort: values.reasoningEffort }
+        }
+        if (stopSequences.length > 0) {
+          body.stop_sequences = stopSequences
+        }
+      } else {
+        if (values.reasoningEffort === 'high' || values.reasoningEffort === 'max') {
+          body.reasoning_effort = values.reasoningEffort
+        }
+        if (stopSequences.length > 0) {
+          body.stop = stopSequences
+        }
+      }
+      return { body, headers }
+    }
+
     if (topP !== null) {
       body.top_p = topP
     }
@@ -908,6 +993,7 @@ function resetProviderOptionFields(setValue: UseFormSetValue<ModelConfigFormValu
   setValue('seed', '')
   setValue('serviceTier', '')
   setValue('stopSequences', '')
+  setValue('thinkingMode', '')
   setValue('thinkingBudget', '')
   setValue('topK', '')
   setValue('topP', '')
@@ -973,16 +1059,23 @@ function parseJsonObject(value: string, label: string): Record<string, unknown> 
 function mergeAdvancedAnthropicBody(body: Record<string, unknown>, value: string) {
   const advanced = parseJsonObject(value, 'Advanced Anthropic JSON')
   for (const forbidden of ['model', 'messages', 'input', 'contents', 'stream', 'max_tokens']) {
-    if (Object.prototype.hasOwnProperty.call(advanced, forbidden)) {
+    if (Object.hasOwn(advanced, forbidden)) {
       throw new Error(`Advanced Anthropic JSON must not include ${forbidden}`)
     }
   }
   for (const [key, fieldValue] of Object.entries(advanced)) {
-    if (Object.prototype.hasOwnProperty.call(body, key)) {
+    if (Object.hasOwn(body, key)) {
       throw new Error(`Advanced Anthropic JSON duplicates ${key}`)
     }
     body[key] = fieldValue
   }
+}
+
+function deepseekBaseUrlForProtocol(protocol: ModelProtocol): string {
+  if (protocol === 'messages') {
+    return 'https://api.deepseek.com/anthropic'
+  }
+  return 'https://api.deepseek.com'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

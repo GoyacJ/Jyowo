@@ -100,8 +100,8 @@ pub(super) async fn chat_request_body(
                 None => body["tools"] = Value::Array(local_tools.collect()),
             }
         }
-        if matches!(dialect, OpenAiChatDialect::DeepSeek) && deepseek_thinking_enabled(&body) {
-            remove_deepseek_sampling_parameters(&mut body);
+        if matches!(dialect, OpenAiChatDialect::DeepSeek) {
+            apply_deepseek_request_options(&mut body, req)?;
         }
     }
 
@@ -239,7 +239,83 @@ fn openai_compatible_usage(value: Option<&OpenAiUsage>) -> UsageSnapshot {
     }
 }
 
+pub(crate) fn deepseek_chat_prefix_requested(extra: &Value) -> bool {
+    extra
+        .pointer("/deepseek/chat_prefix")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || extra
+            .get("chat_prefix")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+}
+
+fn apply_deepseek_request_options(body: &mut Value, req: &ModelRequest) -> Result<(), ModelError> {
+    remove_deepseek_private_options(body);
+    normalize_deepseek_reasoning_effort(body)?;
+    if deepseek_chat_prefix_requested(&req.extra) {
+        apply_deepseek_chat_prefix(body)?;
+    }
+    if deepseek_thinking_enabled(body) {
+        remove_deepseek_sampling_parameters(body);
+    }
+    Ok(())
+}
+
+fn remove_deepseek_private_options(body: &mut Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    object.remove("deepseek");
+    object.remove("chat_prefix");
+}
+
+fn normalize_deepseek_reasoning_effort(body: &mut Value) -> Result<(), ModelError> {
+    let Some(effort) = body.get_mut("reasoning_effort") else {
+        return Ok(());
+    };
+    let Some(value) = effort.as_str() else {
+        return Err(ModelError::InvalidRequest(
+            "DeepSeek reasoning_effort must be a string".to_owned(),
+        ));
+    };
+    let normalized = match value {
+        "high" | "low" | "medium" => "high",
+        "max" | "xhigh" => "max",
+        _ => {
+            return Err(ModelError::InvalidRequest(
+                "DeepSeek reasoning_effort must be high or max".to_owned(),
+            ));
+        }
+    };
+    *effort = Value::String(normalized.to_owned());
+    Ok(())
+}
+
+fn apply_deepseek_chat_prefix(body: &mut Value) -> Result<(), ModelError> {
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return Err(ModelError::InvalidRequest(
+            "DeepSeek Chat Prefix requires messages".to_owned(),
+        ));
+    };
+    let Some(last) = messages.last_mut() else {
+        return Err(ModelError::InvalidRequest(
+            "DeepSeek Chat Prefix requires a final assistant message".to_owned(),
+        ));
+    };
+    if last.get("role").and_then(Value::as_str) != Some("assistant") {
+        return Err(ModelError::InvalidRequest(
+            "DeepSeek Chat Prefix requires the final message to be assistant".to_owned(),
+        ));
+    }
+    last["prefix"] = Value::Bool(true);
+    Ok(())
+}
+
 fn deepseek_thinking_enabled(body: &Value) -> bool {
+    if let Some(kind) = body.pointer("/thinking/type").and_then(Value::as_str) {
+        return kind != "disabled";
+    }
     body.pointer("/thinking/disabled").and_then(Value::as_bool) != Some(true)
 }
 

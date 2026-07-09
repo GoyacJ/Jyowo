@@ -46,6 +46,25 @@ fn request(model_id: &str) -> ModelRequest {
     }
 }
 
+fn deepseek_messages_request() -> ModelRequest {
+    let mut req = request("deepseek-v4-pro");
+    req.protocol = ModelProtocol::Messages;
+    req.stream = false;
+    req
+}
+
+fn deepseek_fim_request() -> ModelRequest {
+    let mut req = request("deepseek-v4-pro");
+    req.protocol = ModelProtocol::Completions;
+    req.stream = false;
+    req.extra = json!({
+        "prompt": "def fib(a):",
+        "suffix": "    return fib(a-1) + fib(a-2)"
+    });
+    req.max_tokens = Some(128);
+    req
+}
+
 async fn assert_streaming_provider<P>(
     provider: P,
     model_id: &str,
@@ -230,6 +249,67 @@ fn provider_deepseek_catalog_matches_official_capabilities_and_pricing() {
         "0.003625"
     );
     assert_eq!(pro_pricing.output_per_million.to_string(), "0.87");
+
+    assert!(models.iter().any(|model| model.model_id == "deepseek-chat"));
+    assert!(models
+        .iter()
+        .any(|model| model.model_id == "deepseek-reasoner"));
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_legacy_chat_alias_maps_to_v4_flash_with_thinking_disabled() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(deepseek_ok_json())
+        .mount(&server)
+        .await;
+
+    let provider = DeepSeekProvider::from_api_key("provider-key").with_base_url(server.uri());
+
+    provider
+        .infer(
+            deepseek_request_for_model("deepseek-chat", false),
+            InferContext::for_test(),
+        )
+        .await
+        .expect("request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["model"], "deepseek-v4-flash");
+    assert_eq!(body["thinking"]["type"], "disabled");
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_legacy_reasoner_alias_maps_to_v4_flash_with_thinking_default() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(deepseek_ok_json())
+        .mount(&server)
+        .await;
+
+    let provider = DeepSeekProvider::from_api_key("provider-key").with_base_url(server.uri());
+
+    provider
+        .infer(
+            deepseek_request_for_model("deepseek-reasoner", false),
+            InferContext::for_test(),
+        )
+        .await
+        .expect("request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["model"], "deepseek-v4-flash");
+    assert!(body.get("thinking").is_none());
 }
 
 #[cfg(feature = "deepseek")]
@@ -288,6 +368,211 @@ async fn provider_deepseek_default_thinking_removes_sampling_parameters() {
     assert!(body.get("presence_penalty").is_none());
     assert!(body.get("frequency_penalty").is_none());
     assert_eq!(body["reasoning_effort"], "high");
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_thinking_type_disabled_preserves_sampling_parameters() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(deepseek_ok_json())
+        .mount(&server)
+        .await;
+
+    let provider = DeepSeekProvider::from_api_key("provider-key").with_base_url(server.uri());
+    let mut req = deepseek_request(false);
+    req.temperature = Some(0.7);
+    req.extra = json!({
+        "thinking": { "type": "disabled" },
+        "top_p": 0.8,
+        "presence_penalty": 0.1,
+        "frequency_penalty": 0.2
+    });
+
+    provider
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["thinking"]["type"], "disabled");
+    assert!(
+        (body["temperature"].as_f64().unwrap() - 0.7).abs() < 0.000_001,
+        "temperature should be preserved"
+    );
+    assert_eq!(body["top_p"], 0.8);
+    assert_eq!(body["presence_penalty"], 0.1);
+    assert_eq!(body["frequency_penalty"], 0.2);
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_reasoning_effort_is_normalized_to_official_values() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(deepseek_ok_json())
+        .mount(&server)
+        .await;
+
+    let provider = DeepSeekProvider::from_api_key("provider-key").with_base_url(server.uri());
+    let mut req = deepseek_request(false);
+    req.extra = json!({ "reasoning_effort": "xhigh" });
+
+    provider
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["reasoning_effort"], "max");
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_chat_prefix_marks_last_assistant_message_on_beta_base_url() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/beta/chat/completions"))
+        .respond_with(deepseek_ok_json())
+        .mount(&server)
+        .await;
+
+    let provider = DeepSeekProvider::from_api_key("provider-key")
+        .with_base_url(format!("{}/beta", server.uri()));
+    let mut req = deepseek_request(false);
+    req.messages.push(Message {
+        id: MessageId::new(),
+        role: MessageRole::Assistant,
+        parts: vec![MessagePart::Text("```python\n".to_owned())],
+        created_at: Utc::now(),
+    });
+    req.extra = json!({
+        "deepseek": { "chat_prefix": true },
+        "stop": ["```"]
+    });
+
+    provider
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["messages"][1]["role"], "assistant");
+    assert_eq!(body["messages"][1]["prefix"], true);
+    assert!(body.get("deepseek").is_none());
+    assert_eq!(body["stop"], json!(["```"]));
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_chat_prefix_requires_beta_base_url() {
+    let server = MockServer::start().await;
+    let provider = DeepSeekProvider::from_api_key("provider-key").with_base_url(server.uri());
+    let mut req = deepseek_request(false);
+    req.messages.push(Message {
+        id: MessageId::new(),
+        role: MessageRole::Assistant,
+        parts: vec![MessagePart::Text("prefix".to_owned())],
+        created_at: Utc::now(),
+    });
+    req.extra = json!({ "deepseek": { "chat_prefix": true } });
+
+    let error = match provider.infer(req, InferContext::for_test()).await {
+        Ok(_) => panic!("non-beta chat prefix should be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(error, ModelError::InvalidRequest(message) if message.contains("beta")));
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_messages_uses_anthropic_compatible_api() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/anthropic/v1/messages"))
+        .and(header("x-api-key", "provider-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "hi" }],
+            "stop_reason": "end_turn",
+            "usage": { "input_tokens": 3, "output_tokens": 1 }
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = DeepSeekProvider::from_api_key("provider-key")
+        .with_base_url(format!("{}/anthropic", server.uri()));
+
+    let events = provider
+        .infer(deepseek_messages_request(), InferContext::for_test())
+        .await
+        .expect("messages request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(events.contains(&ModelStreamEvent::ContentBlockDelta {
+        index: 0,
+        delta: ContentDelta::Text("hi".to_owned()),
+    }));
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["model"], "deepseek-v4-pro");
+    assert_eq!(body["messages"][0]["role"], "user");
+    assert!(requests[0].headers.get("authorization").is_none());
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_fim_uses_beta_completions_api() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/beta/completions"))
+        .and(header("authorization", "Bearer provider-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "cmpl_1",
+            "choices": [{ "index": 0, "text": "    if a < 2:\n        return a\n", "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 9, "completion_tokens": 7 }
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = DeepSeekProvider::from_api_key("provider-key")
+        .with_base_url(format!("{}/beta", server.uri()));
+
+    let events = provider
+        .infer(deepseek_fim_request(), InferContext::for_test())
+        .await
+        .expect("FIM request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(events.contains(&ModelStreamEvent::ContentBlockDelta {
+        index: 0,
+        delta: ContentDelta::Text("    if a < 2:\n        return a\n".to_owned()),
+    }));
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["model"], "deepseek-v4-pro");
+    assert_eq!(body["prompt"], "def fib(a):");
+    assert_eq!(body["suffix"], "    return fib(a-1) + fib(a-2)");
+    assert_eq!(body["max_tokens"], 128);
+    assert!(body.get("messages").is_none());
 }
 
 #[cfg(feature = "deepseek")]
@@ -516,7 +801,12 @@ async fn provider_deepseek_model_concurrency_permit_is_held_until_stream_drop() 
 
 #[cfg(feature = "deepseek")]
 fn deepseek_request(stream: bool) -> ModelRequest {
-    let mut req = request("deepseek-v4-flash");
+    deepseek_request_for_model("deepseek-v4-flash", stream)
+}
+
+#[cfg(feature = "deepseek")]
+fn deepseek_request_for_model(model_id: &str, stream: bool) -> ModelRequest {
+    let mut req = request(model_id);
     req.stream = stream;
     req
 }

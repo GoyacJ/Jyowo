@@ -36,7 +36,10 @@ pub struct AnthropicClient {
     http: reqwest::Client,
     api_key: SecretString,
     credential_resolver: Option<Arc<dyn ModelCredentialResolver>>,
+    provider_id: String,
     base_url: String,
+    messages_path: String,
+    prompt_cache_enabled: bool,
     cooldown_until: Arc<Mutex<Option<Instant>>>,
 }
 
@@ -46,9 +49,18 @@ impl AnthropicClient {
             http: reqwest::Client::new(),
             api_key: SecretString::new(api_key.into().into_boxed_str()),
             credential_resolver: None,
+            provider_id: PROVIDER_ID.to_owned(),
             base_url: DEFAULT_BASE_URL.to_owned(),
+            messages_path: "/v1/messages".to_owned(),
+            prompt_cache_enabled: true,
             cooldown_until: Arc::new(Mutex::new(None)),
         }
+    }
+
+    #[must_use]
+    pub fn with_provider_id(mut self, provider_id: impl Into<String>) -> Self {
+        self.provider_id = provider_id.into();
+        self
     }
 
     #[must_use]
@@ -58,14 +70,30 @@ impl AnthropicClient {
     }
 
     #[must_use]
+    pub fn with_messages_path(mut self, path: impl Into<String>) -> Self {
+        self.messages_path = path.into();
+        self
+    }
+
+    #[must_use]
+    pub fn with_prompt_cache(mut self, enabled: bool) -> Self {
+        self.prompt_cache_enabled = enabled;
+        self
+    }
+
+    #[must_use]
     pub fn with_credential_resolver(mut self, resolver: Arc<dyn ModelCredentialResolver>) -> Self {
         self.credential_resolver = Some(resolver);
         self
     }
 
-    async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
+    pub(crate) async fn infer(
+        &self,
+        req: ModelRequest,
+        ctx: InferContext,
+    ) -> Result<ModelStream, ModelError> {
         validate_request(&req)?;
-        let body = request_body(&req, &ctx).await?;
+        let body = request_body(&req, &ctx, self.prompt_cache_enabled).await?;
         let max_attempts = ctx.retry_policy.max_attempts.max(1);
         let mut attempt = 0;
 
@@ -156,7 +184,7 @@ impl AnthropicClient {
         resolver
             .pick(ModelCredentialPickContext {
                 tenant_id: ctx.tenant_id,
-                provider_id: PROVIDER_ID.to_owned(),
+                provider_id: self.provider_id.clone(),
                 model_id: req.model_id.clone(),
             })
             .await
@@ -172,8 +200,9 @@ impl AnthropicClient {
         let response = self
             .http
             .post(format!(
-                "{}/v1/messages",
-                self.base_url.trim_end_matches('/')
+                "{}{}",
+                self.base_url.trim_end_matches('/'),
+                normalize_path(&self.messages_path)
             ))
             .headers(self.headers(credential)?)
             .json(body)
@@ -279,7 +308,11 @@ fn validate_request(req: &ModelRequest) -> Result<(), ModelError> {
     Ok(())
 }
 
-async fn request_body(req: &ModelRequest, ctx: &InferContext) -> Result<Value, ModelError> {
+async fn request_body(
+    req: &ModelRequest,
+    ctx: &InferContext,
+    prompt_cache_enabled: bool,
+) -> Result<Value, ModelError> {
     let messages = req
         .messages
         .iter()
@@ -311,9 +344,19 @@ async fn request_body(req: &ModelRequest, ctx: &InferContext) -> Result<Value, M
         body["tools"] = Value::Array(tools);
     }
 
-    apply_prompt_cache(&mut body, req)?;
+    if prompt_cache_enabled {
+        apply_prompt_cache(&mut body, req)?;
+    }
     merge_extra_object(&mut body, &req.extra)?;
     Ok(body)
+}
+
+fn normalize_path(path: &str) -> String {
+    if path.starts_with('/') {
+        path.to_owned()
+    } else {
+        format!("/{path}")
+    }
 }
 
 fn merge_extra_object(body: &mut Value, extra: &Value) -> Result<(), ModelError> {

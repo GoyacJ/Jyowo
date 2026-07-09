@@ -19,7 +19,7 @@ const POST_FINISH_USAGE_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SseEvent {
-    data: String,
+    pub(super) data: String,
 }
 
 #[derive(Debug, Default)]
