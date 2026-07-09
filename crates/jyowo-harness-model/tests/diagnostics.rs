@@ -31,6 +31,7 @@ impl ModelProvider for ProbeTestProvider {
             model_id: "gpt-4.1".to_owned(),
             display_name: "Test".to_owned(),
             protocol: ModelProtocol::Responses,
+            supported_parameters: Vec::new(),
             context_window: 8_192,
             max_output_tokens: 1_024,
             provider_declared_capability: ConversationModelCapability::default(),

@@ -306,7 +306,21 @@ fn request_body(req: &ModelRequest) -> Result<Value, ModelError> {
     }
 
     apply_prompt_cache(&mut body, req)?;
+    merge_extra_object(&mut body, &req.extra)?;
     Ok(body)
+}
+
+fn merge_extra_object(body: &mut Value, extra: &Value) -> Result<(), ModelError> {
+    if extra.is_null() {
+        return Ok(());
+    }
+    let extra = extra.as_object().ok_or_else(|| {
+        ModelError::InvalidRequest("model request extra must be an object".to_owned())
+    })?;
+    for (key, value) in extra {
+        body[key] = value.clone();
+    }
+    Ok(())
 }
 
 fn anthropic_message(message: &Message) -> Result<Value, ModelError> {

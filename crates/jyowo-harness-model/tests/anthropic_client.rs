@@ -181,6 +181,40 @@ async fn anthropic_non_stream_request_posts_messages() {
 }
 
 #[tokio::test]
+async fn anthropic_request_merges_provider_defaults_extra() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ok_response())
+        .mount(&server)
+        .await;
+
+    let mut req = sample_request(false);
+    req.extra = json!({
+        "thinking": { "type": "enabled", "budget_tokens": 1024 },
+        "output_config": { "effort": "medium" },
+        "service_tier": "auto",
+        "stop_sequences": ["DONE"],
+        "top_p": 0.9
+    });
+
+    provider(&server)
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["thinking"]["type"], "enabled");
+    assert_eq!(body["output_config"]["effort"], "medium");
+    assert_eq!(body["service_tier"], "auto");
+    assert_eq!(body["stop_sequences"], json!(["DONE"]));
+    assert_eq!(body["top_p"], json!(0.9));
+}
+
+#[tokio::test]
 async fn anthropic_request_posts_tool_use_history_and_tool_result() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

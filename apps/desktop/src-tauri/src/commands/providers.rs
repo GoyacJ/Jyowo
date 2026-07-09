@@ -31,7 +31,7 @@ use super::validation::*;
 use super::*;
 use harness_contracts::{ProviderSecretEntry, ProviderSelectionRecord};
 use harness_model::{
-    CacheProtocolSemantics, MediaProtocolSemantics, OutputProtocolSemantics,
+    CacheProtocolSemantics, MediaProtocolSemantics, OutputProtocolSemantics, ProviderAuthScheme,
     ReasoningProtocolSemantics, StreamingProtocolSemantics, ToolProtocolSemantics,
 };
 use harness_provider_state::ProviderContinuationKind;
@@ -990,11 +990,9 @@ pub(crate) fn ensure_provider_settings_record(
             "defaultConfigId must reference an existing provider config".to_owned(),
         ));
     }
-    if record
-        .configs
-        .iter()
-        .any(|config| config.api_key.trim().is_empty())
-    {
+    if record.configs.iter().any(|config| {
+        provider_requires_api_key(&config.provider_id) && config.api_key.trim().is_empty()
+    }) {
         return Err(runtime_operation_failed(
             "apiKey is required for every provider config".to_owned(),
         ));
@@ -2010,8 +2008,17 @@ pub async fn save_provider_settings_with_store(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let provider_requires_api_key = provider_requires_api_key(&request.provider_id);
     let config_api_key = if let Some(api_key) = api_key {
         api_key.to_owned()
+    } else if !provider_requires_api_key {
+        previous_config
+            .as_ref()
+            .filter(|config| {
+                config.provider_id == request.provider_id && config.base_url == base_url
+            })
+            .map(|config| config.api_key.clone())
+            .unwrap_or_default()
     } else if let Some(config) = previous_config.as_ref() {
         if config.provider_id != request.provider_id || config.base_url != base_url {
             return Err(invalid_payload(
@@ -2263,6 +2270,7 @@ pub(crate) fn model_descriptor_catalog_entry(descriptor: ModelDescriptor) -> Mod
     let conversation_capability = descriptor.conversation_capability;
     ModelCatalogEntry {
         protocol: descriptor.protocol,
+        supported_parameters: descriptor.supported_parameters,
         conversation_capability: conversation_capability_record(&conversation_capability),
         context_window: descriptor.context_window,
         display_name: descriptor.display_name,
@@ -2366,6 +2374,10 @@ pub(crate) fn model_descriptor_from_record(
         model_id: record.model_id.clone(),
         display_name: record.display_name.clone(),
         protocol: record.protocol,
+        supported_parameters: supported_parameters_for_provider_model(
+            &record.provider_id,
+            record.protocol,
+        ),
         context_window: record.context_window,
         max_output_tokens: record.max_output_tokens,
         provider_declared_capability: conversation_capability.clone(),
@@ -2374,6 +2386,24 @@ pub(crate) fn model_descriptor_from_record(
         lifecycle: model_lifecycle_from_record(&record.lifecycle)?,
         pricing: None,
     })
+}
+
+fn supported_parameters_for_provider_model(
+    provider_id: &str,
+    protocol: ModelProtocol,
+) -> Vec<String> {
+    let values = match provider_id {
+        "anthropic" => provider_default_body_fields("anthropic"),
+        "bedrock" => provider_default_body_fields("bedrock"),
+        "gemini" => provider_default_body_fields("gemini"),
+        "qwen" => provider_default_body_fields("qwen"),
+        "codex" | "openai" => provider_default_body_fields("openai"),
+        _ if protocol == ModelProtocol::ChatCompletions => {
+            provider_default_body_fields("__openai_compatible")
+        }
+        _ => &[],
+    };
+    values.iter().map(|value| (*value).to_owned()).collect()
 }
 
 fn runtime_semantics_from_record(
@@ -2662,6 +2692,7 @@ pub(crate) fn descriptor_from_inventory_model(
             model_id: model.model_id,
             display_name: model.display_name,
             protocol: model.protocol,
+            supported_parameters: model.supported_parameters,
             context_window: model.context_window,
             max_output_tokens: model.max_output_tokens,
             provider_declared_capability: model.provider_declared_capability,
@@ -2730,6 +2761,13 @@ pub(crate) fn provider_config_has_api_key(config: &ProviderConfigRecord) -> bool
     !config.api_key.trim().is_empty()
 }
 
+pub(crate) fn provider_requires_api_key(provider_id: &str) -> bool {
+    harness_model::provider_catalog_entries()
+        .into_iter()
+        .find(|entry| entry.provider_id == provider_id)
+        .is_none_or(|entry| entry.runtime_capability.auth_scheme != ProviderAuthScheme::None)
+}
+
 pub(crate) fn provider_config_has_official_quota_api_key(config: &ProviderConfigRecord) -> bool {
     config
         .official_quota_api_key
@@ -2778,34 +2816,114 @@ pub(crate) fn validate_provider_defaults(
     let Some(defaults) = defaults else {
         return Ok(());
     };
-    if provider_id != "qwen" {
-        return Err(invalid_payload(
-            "providerDefaults are only supported for Qwen provider configs".to_owned(),
-        ));
-    }
     if let Some(body) = &defaults.body {
         let Some(object) = body.as_object() else {
             return Err(invalid_payload(
                 "providerDefaults.body must be an object".to_owned(),
             ));
         };
-        for forbidden in ["model", "messages", "input", "stream"] {
+        for forbidden in ["model", "messages", "input", "contents", "stream"] {
             if object.contains_key(forbidden) {
                 return Err(invalid_payload(format!(
                     "providerDefaults.body must not include core field {forbidden}"
                 )));
             }
         }
+        for key in object.keys() {
+            if !provider_default_body_fields(provider_id).contains(&key.as_str()) {
+                return Err(invalid_payload(format!(
+                    "providerDefaults.body includes unsupported field {key} for provider {provider_id}"
+                )));
+            }
+        }
     }
     for (name, value) in &defaults.headers {
-        if !name.eq_ignore_ascii_case("x-dashscope-session-cache") || value != "enable" {
+        if provider_id != "qwen"
+            || !name.eq_ignore_ascii_case("x-dashscope-session-cache")
+            || value != "enable"
+        {
             return Err(invalid_payload(
-                "providerDefaults.headers only supports x-dashscope-session-cache: enable"
+                "providerDefaults.headers only supports x-dashscope-session-cache: enable for Qwen"
                     .to_owned(),
             ));
         }
     }
     Ok(())
+}
+
+fn provider_default_body_fields(provider_id: &str) -> &'static [&'static str] {
+    match provider_id {
+        "anthropic" => &[
+            "thinking",
+            "output_config",
+            "service_tier",
+            "stop_sequences",
+            "top_k",
+            "top_p",
+            "tool_choice",
+            "metadata",
+        ],
+        "bedrock" => &[
+            "inferenceConfig",
+            "additionalModelRequestFields",
+            "additionalModelResponseFieldPaths",
+            "performanceConfig",
+            "requestMetadata",
+        ],
+        "gemini" => &[
+            "thinkingConfig",
+            "stopSequences",
+            "topP",
+            "topK",
+            "seed",
+            "responseMimeType",
+            "responseSchema",
+            "toolConfig",
+            "safetySettings",
+            "cachedContent",
+            "cached_content",
+        ],
+        "qwen" => &[
+            "enable_thinking",
+            "reasoning",
+            "tools",
+            "enable_search",
+            "enable_code_interpreter",
+            "search_options",
+        ],
+        "codex" | "openai" => &[
+            "reasoning",
+            "text",
+            "metadata",
+            "service_tier",
+            "store",
+            "truncation",
+            "parallel_tool_calls",
+            "tool_choice",
+            "response_format",
+        ],
+        _ => &[
+            "temperature",
+            "top_p",
+            "top_k",
+            "max_tokens",
+            "max_completion_tokens",
+            "stop",
+            "response_format",
+            "tool_choice",
+            "reasoning",
+            "reasoning_effort",
+            "thinking",
+            "service_tier",
+            "stream_options",
+            "frequency_penalty",
+            "presence_penalty",
+            "logprobs",
+            "top_logprobs",
+            "seed",
+            "n",
+        ],
+    }
 }
 
 pub(crate) fn provider_config_descriptor(
@@ -2931,7 +3049,7 @@ pub(crate) fn build_provider_for_config(
 ) -> Result<(Arc<dyn ModelProvider>, ModelProtocol), CommandErrorPayload> {
     let descriptor = provider_config_descriptor(config)?;
     let api_key = config.api_key.trim();
-    if api_key.is_empty() {
+    if provider_requires_api_key(&config.provider_id) && api_key.is_empty() {
         return Err(runtime_init_failed(
             "provider config has no api key".to_owned(),
         ));
@@ -2985,7 +3103,7 @@ pub(crate) fn model_from_provider_settings(
     };
     let descriptor = provider_config_descriptor(config)?;
     let api_key = config.api_key.trim();
-    if api_key.is_empty() {
+    if provider_requires_api_key(&config.provider_id) && api_key.is_empty() {
         return Err(runtime_init_failed(
             "provider config has no api key".to_owned(),
         ));

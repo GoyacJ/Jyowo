@@ -302,9 +302,7 @@ function defaultRequestFromRow(row: ModelAssetRow) {
   return {
     ...(row.baseUrl ? { baseUrl: row.baseUrl } : {}),
     ...(row.providerId === 'qwen' ? { protocol: row.protocol } : {}),
-    ...(row.providerId === 'qwen' && row.providerDefaults
-      ? { providerDefaults: row.providerDefaults }
-      : {}),
+    ...(row.providerDefaults ? { providerDefaults: row.providerDefaults } : {}),
     configId: row.configId,
     displayName: row.displayName,
     modelId: row.modelId,

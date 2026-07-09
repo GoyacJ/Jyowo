@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -11,6 +12,7 @@ use harness_contracts::{
     MessagePart, MessageRole, ModelError, StopReason, ToolDescriptor, ToolResult, UsageSnapshot,
 };
 use serde_json::Value;
+use tokio::sync::OnceCell;
 
 use crate::{
     wrap_stream_with_cancel_deadline, ContentDelta, ContentType, ErrorClass, ErrorHints,
@@ -26,9 +28,17 @@ pub struct BedrockProvider {
 }
 
 impl BedrockProvider {
-    pub async fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
-            transport: Arc::new(AwsBedrockTransport::new().await),
+            transport: Arc::new(AwsBedrockTransport::new(None)),
+        }
+    }
+
+    #[must_use]
+    pub fn with_base_url(self, base_url: impl Into<String>) -> Self {
+        Self {
+            transport: Arc::new(AwsBedrockTransport::new(Some(base_url.into()))),
         }
     }
 
@@ -48,15 +58,30 @@ pub trait BedrockTransport: Send + Sync + 'static {
 }
 
 struct AwsBedrockTransport {
-    client: aws_sdk_bedrockruntime::Client,
+    client: OnceCell<aws_sdk_bedrockruntime::Client>,
+    endpoint_url: Option<String>,
 }
 
 impl AwsBedrockTransport {
-    async fn new() -> Self {
-        let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+    fn new(endpoint_url: Option<String>) -> Self {
         Self {
-            client: aws_sdk_bedrockruntime::Client::new(&config),
+            client: OnceCell::new(),
+            endpoint_url,
         }
+    }
+
+    async fn client(&self) -> &aws_sdk_bedrockruntime::Client {
+        let endpoint_url = self.endpoint_url.clone();
+        self.client
+            .get_or_init(|| async move {
+                let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
+                if let Some(endpoint_url) = endpoint_url {
+                    loader = loader.endpoint_url(endpoint_url);
+                }
+                let config = loader.load().await;
+                aws_sdk_bedrockruntime::Client::new(&config)
+            })
+            .await
     }
 }
 
@@ -67,7 +92,8 @@ impl BedrockTransport for AwsBedrockTransport {
         req: ModelRequest,
         _ctx: InferContext,
     ) -> Result<ModelStream, ModelError> {
-        let mut builder = self.client.converse_stream().model_id(req.model_id.clone());
+        let mut builder = aws_sdk_bedrockruntime::operation::converse_stream::builders::ConverseStreamInputBuilder::default()
+            .model_id(req.model_id.clone());
         let messages = bedrock_messages(&req)?;
         if !messages.is_empty() {
             builder = builder.set_messages(Some(messages));
@@ -75,15 +101,19 @@ impl BedrockTransport for AwsBedrockTransport {
         if let Some(system) = req.system.as_ref().filter(|system| !system.is_empty()) {
             builder = builder.system(br::SystemContentBlock::Text(system.clone()));
         }
-        if req.max_tokens.is_some() || req.temperature.is_some() {
+        if req.max_tokens.is_some()
+            || req.temperature.is_some()
+            || req.extra.get("inferenceConfig").is_some()
+        {
             builder = builder.inference_config(inference_config(&req));
         }
         if let Some(tools) = bedrock_tools(req.tools.as_deref())? {
             builder = builder.tool_config(tools);
         }
+        builder = apply_bedrock_extra_to_builder(builder, &req.extra)?;
 
         let output = builder
-            .send()
+            .send_with(self.client().await)
             .await
             .map_err(|error| ModelError::ProviderUnavailable(error.to_string()))?;
         Ok(bedrock_event_stream(output.stream))
@@ -183,10 +213,108 @@ fn tool_result_content(content: &ToolResult) -> br::ToolResultContentBlock {
 }
 
 fn inference_config(req: &ModelRequest) -> br::InferenceConfiguration {
-    br::InferenceConfiguration::builder()
+    let mut builder = br::InferenceConfiguration::builder()
         .set_max_tokens(req.max_tokens.map(|value| value as i32))
-        .set_temperature(req.temperature)
-        .build()
+        .set_temperature(req.temperature);
+    if let Some(extra) = req.extra.get("inferenceConfig").and_then(Value::as_object) {
+        if let Some(max_tokens) = extra
+            .get("maxTokens")
+            .and_then(Value::as_u64)
+            .and_then(|value| i32::try_from(value).ok())
+        {
+            builder = builder.max_tokens(max_tokens);
+        }
+        if let Some(temperature) = extra
+            .get("temperature")
+            .and_then(Value::as_f64)
+            .map(|value| value as f32)
+        {
+            builder = builder.temperature(temperature);
+        }
+        if let Some(top_p) = extra
+            .get("topP")
+            .and_then(Value::as_f64)
+            .map(|value| value as f32)
+        {
+            builder = builder.top_p(top_p);
+        }
+        if let Some(stop_sequences) = string_array(extra.get("stopSequences")) {
+            builder = builder.set_stop_sequences(Some(stop_sequences));
+        }
+    }
+    builder.build()
+}
+
+fn apply_bedrock_extra_to_builder(
+    mut builder: aws_sdk_bedrockruntime::operation::converse_stream::builders::ConverseStreamInputBuilder,
+    extra: &Value,
+) -> Result<
+    aws_sdk_bedrockruntime::operation::converse_stream::builders::ConverseStreamInputBuilder,
+    ModelError,
+> {
+    if extra.is_null() {
+        return Ok(builder);
+    }
+    let extra = extra.as_object().ok_or_else(|| {
+        ModelError::InvalidRequest("model request extra must be an object".to_owned())
+    })?;
+    if let Some(value) = extra.get("additionalModelRequestFields") {
+        builder = builder.additional_model_request_fields(json_to_document(value));
+    }
+    if let Some(paths) = string_array(extra.get("additionalModelResponseFieldPaths")) {
+        builder = builder.set_additional_model_response_field_paths(Some(paths));
+    }
+    if let Some(value) = extra.get("performanceConfig") {
+        let config = performance_config(value)?;
+        builder = builder.performance_config(config);
+    }
+    if let Some(metadata) = string_map(extra.get("requestMetadata"))? {
+        builder = builder.set_request_metadata(Some(metadata));
+    }
+    Ok(builder)
+}
+
+fn performance_config(value: &Value) -> Result<br::PerformanceConfiguration, ModelError> {
+    let object = value.as_object().ok_or_else(|| {
+        ModelError::InvalidRequest("Bedrock performanceConfig must be an object".to_owned())
+    })?;
+    let Some(latency) = object.get("latency").and_then(Value::as_str) else {
+        return Ok(br::PerformanceConfiguration::builder().build());
+    };
+    Ok(br::PerformanceConfiguration::builder()
+        .latency(latency.parse().map_err(|_| {
+            ModelError::InvalidRequest("Bedrock performanceConfig.latency is invalid".to_owned())
+        })?)
+        .build())
+}
+
+fn string_array(value: Option<&Value>) -> Option<Vec<String>> {
+    value.and_then(Value::as_array).map(|values| {
+        values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    })
+}
+
+fn string_map(value: Option<&Value>) -> Result<Option<HashMap<String, String>>, ModelError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let object = value.as_object().ok_or_else(|| {
+        ModelError::InvalidRequest("Bedrock requestMetadata must be an object".to_owned())
+    })?;
+    let mut metadata = HashMap::new();
+    for (key, value) in object {
+        let Some(value) = value.as_str() else {
+            return Err(ModelError::InvalidRequest(
+                "Bedrock requestMetadata values must be strings".to_owned(),
+            ));
+        };
+        metadata.insert(key.clone(), value.to_owned());
+    }
+    Ok(Some(metadata))
 }
 
 fn bedrock_tools(
@@ -422,4 +550,73 @@ fn validate_request(req: &ModelRequest, ctx: &InferContext) -> Result<(), ModelE
         }
     }
     bedrock_messages(req).map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn bedrock_extra_maps_to_converse_stream_input_fields() {
+        let mut req = ModelRequest {
+            model_id: "anthropic.claude-3-5-sonnet-20241022-v2:0".to_owned(),
+            messages: Vec::new(),
+            tools: None,
+            system: None,
+            temperature: Some(0.2),
+            max_tokens: Some(64),
+            stream: true,
+            cache_breakpoints: Vec::new(),
+            protocol: ModelProtocol::Messages,
+            extra: json!({
+                "inferenceConfig": {
+                    "topP": 0.8,
+                    "stopSequences": ["DONE"]
+                },
+                "additionalModelRequestFields": {
+                    "thinking": { "type": "enabled", "budget_tokens": 1024 }
+                },
+                "additionalModelResponseFieldPaths": ["/stop_sequence"],
+                "performanceConfig": { "latency": "optimized" },
+                "requestMetadata": { "source": "settings" }
+            }),
+            options: harness_contracts::ModelRequestOptions::default(),
+            provider_context: crate::ProviderRequestContext::default(),
+        };
+
+        let mut builder = aws_sdk_bedrockruntime::operation::converse_stream::builders::ConverseStreamInputBuilder::default()
+            .model_id(req.model_id.clone())
+            .inference_config(inference_config(&req));
+        builder = apply_bedrock_extra_to_builder(builder, &req.extra).unwrap();
+        let input = builder.build().unwrap();
+        let input_inference_config = input.inference_config().unwrap();
+
+        assert_eq!(input_inference_config.max_tokens(), Some(64));
+        assert_eq!(input_inference_config.temperature(), Some(0.2));
+        assert_eq!(input_inference_config.top_p(), Some(0.8));
+        assert_eq!(input_inference_config.stop_sequences(), ["DONE"]);
+        assert!(input.additional_model_request_fields().is_some());
+        assert_eq!(
+            input.additional_model_response_field_paths(),
+            ["/stop_sequence"]
+        );
+        assert_eq!(
+            input.performance_config().unwrap().latency().as_str(),
+            "optimized"
+        );
+        assert_eq!(input.request_metadata().unwrap()["source"], "settings");
+
+        req.extra = serde_json::Value::Null;
+        let input = apply_bedrock_extra_to_builder(
+            aws_sdk_bedrockruntime::operation::converse_stream::builders::ConverseStreamInputBuilder::default()
+                .model_id(req.model_id.clone())
+                .inference_config(inference_config(&req)),
+            &req.extra,
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        assert_eq!(input.inference_config().unwrap().top_p(), None);
+    }
 }

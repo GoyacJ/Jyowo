@@ -52,12 +52,33 @@ fn list_model_provider_catalog_payload_exposes_models_and_default_base_urls() {
         .find(|provider| provider["providerId"] == "anthropic")
         .unwrap();
     assert_eq!(anthropic["runtimeCapability"]["authScheme"], "x_api_key");
+    assert!(anthropic["models"].as_array().unwrap().iter().all(|model| {
+        model["supportedParameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|parameter| parameter == "thinking")
+    }));
+
+    let bedrock = providers
+        .iter()
+        .find(|provider| provider["providerId"] == "bedrock")
+        .unwrap();
+    assert_eq!(bedrock["displayName"], "Bedrock");
+    assert_eq!(bedrock["runtimeCapability"]["authScheme"], "none");
 
     let gemini = providers
         .iter()
         .find(|provider| provider["providerId"] == "gemini")
         .unwrap();
     assert_eq!(gemini["runtimeCapability"]["authScheme"], "api_key");
+    assert!(gemini["models"].as_array().unwrap().iter().all(|model| {
+        model["supportedParameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|parameter| parameter == "thinkingConfig")
+    }));
 
     let local_llama = providers
         .iter()
@@ -122,6 +143,80 @@ fn list_model_provider_catalog_payload_exposes_models_and_default_base_urls() {
         .unwrap()
         .iter()
         .any(|service| service["execution"] == "websocket"));
+}
+
+#[tokio::test]
+async fn save_provider_settings_accepts_structured_defaults_for_non_qwen_providers() {
+    let store = RecordingProviderSettingsStore::default();
+
+    let payload = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some("provider-test-token".to_owned()),
+            base_url: None,
+            config_id: None,
+            display_name: None,
+            model_id: "claude-sonnet-4-6".to_owned(),
+            model_options: Some(harness_contracts::ModelRequestOptions::default()),
+            official_quota_api_key: None,
+            provider_id: "anthropic".to_owned(),
+            protocol: None,
+            provider_defaults: Some(ProviderDefaultsRecord {
+                body: Some(json!({
+                    "thinking": { "type": "adaptive" },
+                    "output_config": { "effort": "medium" },
+                    "service_tier": "auto",
+                    "stop_sequences": ["DONE"],
+                    "top_p": 0.9
+                })),
+                headers: Default::default(),
+            }),
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        payload
+            .config
+            .provider_defaults
+            .as_ref()
+            .and_then(|defaults| defaults.body.as_ref())
+            .and_then(|body| body.pointer("/thinking/type"))
+            .and_then(serde_json::Value::as_str),
+        Some("adaptive")
+    );
+}
+
+#[tokio::test]
+async fn save_provider_settings_rejects_provider_defaults_core_fields() {
+    let store = RecordingProviderSettingsStore::default();
+
+    let error = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some("provider-test-token".to_owned()),
+            base_url: None,
+            config_id: None,
+            display_name: None,
+            model_id: "claude-sonnet-4-6".to_owned(),
+            model_options: Some(harness_contracts::ModelRequestOptions::default()),
+            official_quota_api_key: None,
+            provider_id: "anthropic".to_owned(),
+            protocol: None,
+            provider_defaults: Some(ProviderDefaultsRecord {
+                body: Some(json!({ "messages": [] })),
+                headers: Default::default(),
+            }),
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("messages"));
 }
 
 #[tokio::test]
@@ -1094,6 +1189,57 @@ fn provider_settings_record_rejects_default_config_id_missing_from_configs() {
     });
 
     assert!(serde_json::from_value::<ProviderSettingsRecord>(record).is_err());
+}
+
+#[tokio::test]
+async fn save_provider_settings_payload_accepts_bedrock_without_api_key() {
+    let store = RecordingProviderSettingsStore::default();
+    let payload = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: None,
+            base_url: None,
+            config_id: Some("bedrock-claude".to_owned()),
+            display_name: Some("Bedrock Claude".to_owned()),
+            model_id: "anthropic.claude-3-5-sonnet-20241022-v2:0".to_owned(),
+            model_options: Some(harness_contracts::ModelRequestOptions::default()),
+            official_quota_api_key: None,
+            provider_id: "bedrock".to_owned(),
+            protocol: None,
+            provider_defaults: Some(ProviderDefaultsRecord {
+                body: Some(json!({
+                    "inferenceConfig": {
+                        "topP": 0.8
+                    },
+                    "performanceConfig": {
+                        "latency": "optimized"
+                    }
+                })),
+                headers: Default::default(),
+            }),
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(payload.config.provider_id, "bedrock");
+    assert!(!payload.config.has_api_key);
+    assert_eq!(
+        payload.config.provider_defaults.unwrap().body.unwrap(),
+        json!({
+            "inferenceConfig": {
+                "topP": 0.8
+            },
+            "performanceConfig": {
+                "latency": "optimized"
+            }
+        })
+    );
+    assert_eq!(
+        store.record.lock().unwrap().as_ref().unwrap().configs[0].api_key,
+        ""
+    );
 }
 
 #[tokio::test]

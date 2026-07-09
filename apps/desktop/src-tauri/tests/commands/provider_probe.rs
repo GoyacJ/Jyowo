@@ -35,6 +35,7 @@ impl ModelProvider for ProbeCountingProvider {
             model_id: "gpt-5.4-mini".to_owned(),
             display_name: "OpenAI".to_owned(),
             protocol: ModelProtocol::Responses,
+            supported_parameters: Vec::new(),
             context_window: 128_000,
             max_output_tokens: 16_384,
             provider_declared_capability: ConversationModelCapability::default(),

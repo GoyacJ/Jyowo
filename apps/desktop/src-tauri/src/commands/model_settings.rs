@@ -36,7 +36,7 @@ use super::providers::{
     build_provider_for_config, desktop_provider_service_adapter_availability,
     list_model_provider_catalog_payload, list_provider_capability_route_options_from_inputs,
     list_provider_capability_routes_with_store, list_provider_settings_with_store,
-    model_descriptor_catalog_entry, provider_config_by_id,
+    model_descriptor_catalog_entry, provider_config_by_id, provider_requires_api_key,
 };
 use super::{
     DesktopRuntimeState, GetModelUsageSummaryResponse, ListOfficialQuotaSnapshotsResponse,
@@ -765,7 +765,7 @@ pub async fn probe_provider_config_with_runtime_state(
             .load_record()?
             .ok_or_else(|| invalid_payload("provider config was not found".to_owned()))?;
         let config = provider_config_by_id(&record, &config_id_lookup)?;
-        if config.api_key.trim().is_empty() {
+        if provider_requires_api_key(&config.provider_id) && config.api_key.trim().is_empty() {
             return Err(invalid_payload(
                 "apiKey is not configured for this provider config".to_owned(),
             ));
@@ -822,7 +822,7 @@ pub async fn probe_provider_config_with_provider(
     if config.id != config_id {
         return Err(invalid_payload("provider config was not found".to_owned()));
     }
-    if config.api_key.trim().is_empty() {
+    if provider_requires_api_key(&config.provider_id) && config.api_key.trim().is_empty() {
         return Err(invalid_payload(
             "apiKey is not configured for this provider config".to_owned(),
         ));

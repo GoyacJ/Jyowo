@@ -77,6 +77,7 @@ export const fixtureModelProviderCatalog: ModelProviderCatalogResponse = {
       models: [
         {
           protocol: 'responses',
+          supportedParameters: [],
           conversationCapability: {
             ...textCapability,
             inputModalities: ['text', 'image'],
@@ -110,6 +111,7 @@ export const fixtureModelProviderCatalog: ModelProviderCatalogResponse = {
       models: [
         {
           protocol: 'messages',
+          supportedParameters: [],
           conversationCapability: textCapability,
           contextWindow: 128000,
           displayName: 'Llama 3.1',
@@ -147,6 +149,7 @@ export const fixtureProviderSettingsList: ListProviderSettingsResponse = {
       isDefault: true,
       modelDescriptor: {
         protocol: 'responses',
+        supportedParameters: [],
         conversationCapability: {
           ...textCapability,
           inputModalities: ['text', 'image'],
@@ -179,6 +182,7 @@ export const fixtureSaveProviderSettings: SaveProviderSettingsResponse = {
     modelId: 'gpt-4o-mini',
     modelDescriptor: {
       protocol: 'responses',
+      supportedParameters: [],
       conversationCapability: {
         ...textCapability,
         inputModalities: ['text', 'image'],

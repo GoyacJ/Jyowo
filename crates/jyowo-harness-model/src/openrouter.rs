@@ -176,6 +176,7 @@ impl OpenRouterModelData {
             model_id: model_id.clone(),
             display_name: self.name.unwrap_or(model_id),
             protocol: ModelProtocol::ChatCompletions,
+            supported_parameters,
             context_window,
             max_output_tokens,
             provider_declared_capability: conversation_capability.clone(),
