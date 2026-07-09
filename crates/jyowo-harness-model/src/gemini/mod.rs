@@ -13,9 +13,8 @@ use serde_json::{json, Value};
 
 use crate::{
     apply_response_headers_middlewares, wrap_stream_with_cancel_deadline, ContentDelta,
-    ContentType, ConversationModelCapability, ErrorClass, ErrorHints, GeminiCacheMode,
-    InferContext, ModelDescriptor, ModelLifecycle, ModelModality, ModelProtocol, ModelProvider,
-    ModelRequest, ModelStream, ModelStreamEvent, PromptCacheStyle,
+    ContentType, ErrorClass, ErrorHints, GeminiCacheMode, InferContext, ModelDescriptor,
+    ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent, PromptCacheStyle,
 };
 
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
@@ -101,12 +100,7 @@ impl ModelProvider for GeminiProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        // Verified 2026-06-21: https://ai.google.dev/gemini-api/docs/models
-        vec![
-            descriptor("gemini-2.5-pro", "Gemini 2.5 Pro", 32_000),
-            descriptor("gemini-2.5-flash", "Gemini 2.5 Flash", 16_384),
-            descriptor("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite", 8192),
-        ]
+        crate::catalog::provider_model_descriptors(PROVIDER_ID)
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
@@ -549,30 +543,5 @@ fn stop_reason(reason: &str) -> StopReason {
         "MAX_TOKENS" => StopReason::MaxIterations,
         "MALFORMED_FUNCTION_CALL" => StopReason::ToolUse,
         other => StopReason::Error(other.to_owned()),
-    }
-}
-
-fn descriptor(model_id: &str, display_name: &str, max_output_tokens: u32) -> ModelDescriptor {
-    ModelDescriptor {
-        provider_id: "gemini".to_owned(),
-        model_id: model_id.to_owned(),
-        display_name: display_name.to_owned(),
-        protocol: ModelProtocol::GenerateContent,
-        context_window: 1_000_000,
-        max_output_tokens,
-        conversation_capability: ConversationModelCapability {
-            context_window: 1_000_000,
-            max_output_tokens,
-            tool_calling: true,
-            reasoning: false,
-            prompt_cache: true,
-            streaming: true,
-            structured_output: false,
-            input_modalities: vec![ModelModality::Text],
-            output_modalities: vec![ModelModality::Text],
-        },
-        runtime_semantics: crate::ModelRuntimeSemantics::gemini_default(),
-        lifecycle: ModelLifecycle::Stable,
-        pricing: None,
     }
 }

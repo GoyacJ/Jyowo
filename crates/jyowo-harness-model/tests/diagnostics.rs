@@ -33,6 +33,7 @@ impl ModelProvider for ProbeTestProvider {
             protocol: ModelProtocol::Responses,
             context_window: 8_192,
             max_output_tokens: 1_024,
+            provider_declared_capability: ConversationModelCapability::default(),
             conversation_capability: ConversationModelCapability::default(),
             runtime_semantics: ModelRuntimeSemantics::openai_responses_default(),
             lifecycle: ModelLifecycle::Stable,

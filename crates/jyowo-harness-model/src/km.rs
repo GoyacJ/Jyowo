@@ -5,8 +5,8 @@ use harness_contracts::ModelError;
 
 use crate::openai_protocol::{OpenAiChatDialect, OpenAiProtocolClient, OpenAiProtocolProviderExt};
 use crate::{
-    ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
-    ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
+    InferContext, ModelCredentialResolver, ModelDescriptor, ModelProtocol, ModelProvider,
+    ModelRequest, ModelStream,
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.moonshot.cn";
@@ -54,18 +54,7 @@ impl ModelProvider for KmProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        // Verified 2026-06-21: https://platform.moonshot.ai/docs
-        vec![
-            descriptor("kimi-k2.7-code", "Kimi K2.7 Code", 200_000, 16_384),
-            descriptor(
-                "kimi-k2.7-code-highspeed",
-                "Kimi K2.7 Code Highspeed",
-                200_000,
-                16_384,
-            ),
-            descriptor("kimi-k2.6", "Kimi K2.6", 200_000, 16_384),
-            descriptor("kimi-k2.5", "Kimi K2.5", 200_000, 16_384),
-        ]
+        crate::catalog::provider_model_descriptors(PROVIDER_ID)
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
@@ -74,35 +63,5 @@ impl ModelProvider for KmProvider {
 
     fn default_protocol(&self) -> ModelProtocol {
         ModelProtocol::ChatCompletions
-    }
-}
-
-fn descriptor(
-    model_id: &str,
-    display_name: &str,
-    context_window: u32,
-    max_output_tokens: u32,
-) -> ModelDescriptor {
-    ModelDescriptor {
-        provider_id: PROVIDER_ID.to_owned(),
-        model_id: model_id.to_owned(),
-        display_name: display_name.to_owned(),
-        protocol: ModelProtocol::ChatCompletions,
-        context_window,
-        max_output_tokens,
-        conversation_capability: ConversationModelCapability {
-            context_window,
-            max_output_tokens,
-            tool_calling: true,
-            reasoning: false,
-            prompt_cache: false,
-            streaming: true,
-            structured_output: false,
-            input_modalities: vec![ModelModality::Text],
-            output_modalities: vec![ModelModality::Text],
-        },
-        runtime_semantics: crate::ModelRuntimeSemantics::openai_chat_plain(),
-        lifecycle: ModelLifecycle::Stable,
-        pricing: None,
     }
 }

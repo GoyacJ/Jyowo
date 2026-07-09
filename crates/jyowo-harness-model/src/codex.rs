@@ -4,9 +4,8 @@ use std::sync::Arc;
 
 use crate::openai_protocol::{OpenAiProtocolClient, OpenAiProtocolProviderExt};
 use crate::{
-    ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
-    ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
-    PromptCacheStyle,
+    InferContext, ModelCredentialResolver, ModelDescriptor, ModelProtocol, ModelProvider,
+    ModelRequest, ModelStream, PromptCacheStyle,
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
@@ -53,8 +52,7 @@ impl ModelProvider for CodexResponsesProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        // Verified 2026-06-21: https://developers.openai.com/api/docs/models/all
-        vec![descriptor("gpt-5.3-codex", "GPT-5.3 Codex")]
+        crate::catalog::provider_model_descriptors(PROVIDER_ID)
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
@@ -67,30 +65,5 @@ impl ModelProvider for CodexResponsesProvider {
 
     fn prompt_cache_style(&self) -> PromptCacheStyle {
         PromptCacheStyle::OpenAi { auto: true }
-    }
-}
-
-fn descriptor(model_id: &str, display_name: &str) -> ModelDescriptor {
-    ModelDescriptor {
-        provider_id: "codex".to_owned(),
-        model_id: model_id.to_owned(),
-        display_name: display_name.to_owned(),
-        protocol: ModelProtocol::Responses,
-        context_window: 200_000,
-        max_output_tokens: 32_000,
-        conversation_capability: ConversationModelCapability {
-            context_window: 200_000,
-            max_output_tokens: 32_000,
-            tool_calling: true,
-            reasoning: true,
-            prompt_cache: true,
-            streaming: true,
-            structured_output: true,
-            input_modalities: vec![ModelModality::Text],
-            output_modalities: vec![ModelModality::Text],
-        },
-        runtime_semantics: crate::ModelRuntimeSemantics::openai_responses_default(),
-        lifecycle: ModelLifecycle::Stable,
-        pricing: None,
     }
 }

@@ -64,20 +64,7 @@ impl ModelProvider for OpenRouterProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        // Verified 2026-06-21: https://openrouter.ai/api/v1/models
-        let mut models = vec![
-            descriptor("openai/gpt-5.5", "OpenAI GPT-5.5 via OpenRouter"),
-            descriptor("anthropic/claude-fable-5", "Claude Fable 5 via OpenRouter"),
-            descriptor(
-                "anthropic/claude-sonnet-4.6",
-                "Claude Sonnet 4.6 via OpenRouter",
-            ),
-            descriptor("google/gemini-2.5-pro", "Gemini 2.5 Pro via OpenRouter"),
-            descriptor("deepseek/deepseek-v4-pro", "DeepSeek V4 Pro via OpenRouter"),
-            descriptor("moonshotai/kimi-k2.7-code", "Kimi K2.7 Code via OpenRouter"),
-            descriptor("z-ai/glm-5.2", "GLM 5.2 via OpenRouter"),
-            descriptor("minimax/minimax-m3", "MiniMax M3 via OpenRouter"),
-        ];
+        let mut models = crate::catalog::provider_model_descriptors(PROVIDER_ID);
         for descriptor in &self.extra_models {
             if !models
                 .iter()
@@ -95,31 +82,6 @@ impl ModelProvider for OpenRouterProvider {
 
     fn default_protocol(&self) -> ModelProtocol {
         ModelProtocol::ChatCompletions
-    }
-}
-
-fn descriptor(model_id: &str, display_name: &str) -> ModelDescriptor {
-    ModelDescriptor {
-        provider_id: "openrouter".to_owned(),
-        model_id: model_id.to_owned(),
-        display_name: display_name.to_owned(),
-        protocol: ModelProtocol::ChatCompletions,
-        context_window: 128_000,
-        max_output_tokens: 8192,
-        conversation_capability: ConversationModelCapability {
-            context_window: 128_000,
-            max_output_tokens: 8192,
-            tool_calling: true,
-            reasoning: false,
-            prompt_cache: false,
-            streaming: true,
-            structured_output: false,
-            input_modalities: vec![ModelModality::Text],
-            output_modalities: vec![ModelModality::Text],
-        },
-        runtime_semantics: crate::ModelRuntimeSemantics::openai_chat_plain(),
-        lifecycle: ModelLifecycle::Stable,
-        pricing: None,
     }
 }
 
@@ -216,6 +178,7 @@ impl OpenRouterModelData {
             protocol: ModelProtocol::ChatCompletions,
             context_window,
             max_output_tokens,
+            provider_declared_capability: conversation_capability.clone(),
             conversation_capability,
             runtime_semantics: crate::ModelRuntimeSemantics::openai_chat_plain(),
             lifecycle: ModelLifecycle::Stable,

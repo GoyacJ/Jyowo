@@ -27,6 +27,7 @@ fn runtime_semantics_snapshot_preserves_descriptor_semantics() {
         protocol: ModelProtocol::ChatCompletions,
         context_window: 1_000_000,
         max_output_tokens: 384_000,
+        provider_declared_capability: ConversationModelCapability::default(),
         conversation_capability: ConversationModelCapability::default(),
         runtime_semantics: ModelRuntimeSemantics::openai_chat_deepseek(),
         lifecycle: ModelLifecycle::Stable,
