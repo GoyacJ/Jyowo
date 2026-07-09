@@ -37,6 +37,7 @@ impl ModelProvider for ProbeCountingProvider {
             protocol: ModelProtocol::Responses,
             context_window: 128_000,
             max_output_tokens: 16_384,
+            provider_declared_capability: ConversationModelCapability::default(),
             conversation_capability: ConversationModelCapability::default(),
             runtime_semantics: jyowo_harness_sdk::ext::ModelRuntimeSemantics::messages_default(
                 ModelProtocol::Responses,
@@ -69,8 +70,10 @@ fn sample_provider_config(api_key: &str) -> ProviderConfigRecord {
         display_name: "OpenAI Work".to_owned(),
         id: "openai-work".to_owned(),
         model_id: "gpt-5.4-mini".to_owned(),
+        model_options: harness_contracts::ModelRequestOptions::default(),
         official_quota_api_key: None,
         provider_id: "openai".to_owned(),
+        provider_defaults: None,
         model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
     }
 }

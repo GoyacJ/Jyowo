@@ -1,7 +1,8 @@
+use chrono::NaiveDate;
 use harness_model::{
-    build_provider, provider_catalog_entries, provider_inventory_entries, resolve_model_descriptor,
-    ConversationModelCapability, ModelRuntimeSemantics, ProviderBuildConfig, ProviderRegistryError,
-    ReasoningProtocolSemantics,
+    build_provider, model_catalog_entries, provider_catalog_entries, provider_inventory_entries,
+    resolve_model_descriptor, ConversationModelCapability, ModelLifecycle, ModelModality,
+    ModelRuntimeSemantics, ProviderBuildConfig, ProviderRegistryError, ReasoningProtocolSemantics,
 };
 
 #[test]
@@ -21,6 +22,7 @@ fn registry_rejects_unknown_provider_fail_closed() {
         api_key: "test-key".to_owned(),
         base_url: None,
         model_descriptor: None,
+        provider_defaults: None,
     })
     .err()
     .unwrap();
@@ -34,10 +36,102 @@ fn registry_rejects_unknown_provider_fail_closed() {
 fn provider_inventory_includes_source_metadata() {
     let entries = provider_inventory_entries();
 
+    let min_verified_date = chrono::NaiveDate::from_ymd_opt(2026, 6, 21).unwrap();
     assert!(entries.iter().all(|entry| !entry.source_url.is_empty()));
     assert!(entries
         .iter()
-        .all(|entry| entry.verified_date.to_string() == "2026-06-21"));
+        .all(|entry| entry.verified_date >= min_verified_date));
+    #[cfg(feature = "km")]
+    assert_eq!(
+        entries
+            .iter()
+            .find(|entry| entry.provider_id == "km")
+            .expect("km inventory should exist")
+            .verified_date,
+        chrono::NaiveDate::from_ymd_opt(2026, 7, 9).unwrap()
+    );
+    #[cfg(feature = "zhipu")]
+    assert_eq!(
+        entries
+            .iter()
+            .find(|entry| entry.provider_id == "zhipu")
+            .expect("zhipu inventory should exist")
+            .verified_date,
+        chrono::NaiveDate::from_ymd_opt(2026, 7, 9).unwrap()
+    );
+}
+
+#[test]
+fn model_catalog_entries_include_fresh_verification_metadata() {
+    let entries = model_catalog_entries();
+    let stale_cutoff = NaiveDate::from_ymd_opt(2026, 1, 9).expect("valid stale cutoff");
+
+    assert!(!entries.is_empty());
+    for entry in entries {
+        assert!(!entry.source_url.is_empty());
+        assert!(
+            entry.verified_at >= stale_cutoff,
+            "{}:{} verified_at {} is older than 180 days",
+            entry.provider_id,
+            entry.model_id,
+            entry.verified_at
+        );
+    }
+}
+
+#[test]
+fn model_catalog_distinguishes_declared_and_runtime_capabilities() {
+    let entries = model_catalog_entries();
+
+    assert!(entries.iter().any(|entry| {
+        entry
+            .provider_declared_capability
+            .input_modalities
+            .contains(&ModelModality::Image)
+            && !entry
+                .conversation_capability
+                .input_modalities
+                .contains(&ModelModality::Image)
+    }));
+}
+
+#[test]
+fn runtime_modalities_do_not_exceed_declared_provider_capabilities() {
+    for entry in model_catalog_entries() {
+        assert_modalities_subset(
+            &entry.provider_id,
+            &entry.model_id,
+            "input",
+            &entry.conversation_capability.input_modalities,
+            &entry.provider_declared_capability.input_modalities,
+        );
+        assert_modalities_subset(
+            &entry.provider_id,
+            &entry.model_id,
+            "output",
+            &entry.conversation_capability.output_modalities,
+            &entry.provider_declared_capability.output_modalities,
+        );
+    }
+
+    for provider in provider_catalog_entries() {
+        for descriptor in provider.models {
+            assert_modalities_subset(
+                &descriptor.provider_id,
+                &descriptor.model_id,
+                "input",
+                &descriptor.conversation_capability.input_modalities,
+                &descriptor.provider_declared_capability.input_modalities,
+            );
+            assert_modalities_subset(
+                &descriptor.provider_id,
+                &descriptor.model_id,
+                "output",
+                &descriptor.conversation_capability.output_modalities,
+                &descriptor.provider_declared_capability.output_modalities,
+            );
+        }
+    }
 }
 
 #[cfg(any(
@@ -90,7 +184,7 @@ fn every_runtime_descriptor_has_explicit_semantics() {
         for descriptor in entry.models {
             assert_eq!(
                 descriptor.runtime_semantics,
-                expected_runtime_semantics(&entry.provider_id),
+                expected_runtime_semantics(&entry.provider_id, &descriptor),
                 "{}:{} should use the provider's explicit runtime semantics",
                 entry.provider_id,
                 descriptor.model_id
@@ -139,27 +233,139 @@ fn provider_registry_resolves_deepseek_with_private_replay_semantics() {
     }
 
     #[cfg(not(feature = "deepseek"))]
-    assert_source_contains(
-        "deepseek.rs",
-        "ModelRuntimeSemantics::openai_chat_deepseek()",
+    assert_source_contains("catalog.rs", "RuntimeSemanticsKind::OpenAiChatDeepSeek");
+}
+
+#[test]
+fn provider_registry_resolves_kimi_with_private_replay_semantics() {
+    #[cfg(feature = "km")]
+    {
+        let k27 = resolve_model_descriptor("km", "kimi-k2.7-code")
+            .expect("Kimi K2.7 descriptor should resolve");
+        assert_eq!(
+            k27.runtime_semantics.reasoning_protocol,
+            ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind:
+                    harness_provider_state::ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: true,
+            }
+        );
+
+        let k26 = resolve_model_descriptor("km", "kimi-k2.6")
+            .expect("Kimi K2.6 descriptor should resolve");
+        assert_eq!(
+            k26.runtime_semantics.reasoning_protocol,
+            ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind:
+                    harness_provider_state::ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: false,
+            }
+        );
+    }
+
+    #[cfg(not(feature = "km"))]
+    assert_source_contains("catalog.rs", "RuntimeSemanticsKind::OpenAiChatKimi");
+}
+
+#[cfg(feature = "km")]
+#[test]
+fn kimi_provider_catalog_matches_official_capabilities() {
+    let descriptor =
+        resolve_model_descriptor("km", "kimi-k2.6").expect("Kimi K2.6 descriptor should resolve");
+    assert_eq!(descriptor.context_window, 256_000);
+    assert_eq!(descriptor.max_output_tokens, 32_768);
+    assert!(descriptor.conversation_capability.reasoning);
+    assert!(descriptor.conversation_capability.prompt_cache);
+    assert!(descriptor.conversation_capability.structured_output);
+    assert_eq!(
+        descriptor.conversation_capability.input_modalities,
+        vec![
+            harness_model::ModelModality::Text,
+            harness_model::ModelModality::Image,
+            harness_model::ModelModality::Video,
+        ]
     );
+
+    let moonshot = resolve_model_descriptor("km", "moonshot-v1-8k").unwrap();
+    assert_eq!(
+        moonshot.runtime_semantics.reasoning_protocol,
+        ReasoningProtocolSemantics::None
+    );
+    assert!(resolve_model_descriptor("km", "moonshot-v1-8k").is_ok());
+    assert!(resolve_model_descriptor("km", "moonshot-v1-32k").is_ok());
+    assert!(resolve_model_descriptor("km", "moonshot-v1-128k").is_ok());
+    assert!(resolve_model_descriptor("km", "moonshot-v1-8k-vision-preview").is_ok());
+    assert!(resolve_model_descriptor("km", "moonshot-v1-auto").is_err());
+}
+
+#[cfg(feature = "km")]
+#[test]
+fn kimi_provider_catalog_exposes_runtime_and_service_capabilities() {
+    let kimi = harness_model::provider_catalog_entries()
+        .into_iter()
+        .find(|entry| entry.provider_id == "km")
+        .expect("Kimi catalog should exist");
+
+    assert_eq!(kimi.default_base_url, "https://api.moonshot.cn");
+    assert!(kimi.runtime_capability.supports_live_validation);
+    assert!(kimi
+        .service_capabilities
+        .iter()
+        .any(|capability| capability.operation_id == "kimi.models.list"));
+    assert!(kimi
+        .service_capabilities
+        .iter()
+        .any(|capability| capability.operation_id == "kimi.tokenizers.estimate_token_count"));
+    assert!(kimi
+        .service_capabilities
+        .iter()
+        .any(|capability| capability.operation_id == "kimi.balance.retrieve"));
 }
 
 #[test]
 fn provider_registry_resolves_minimax_without_private_replay_requirement() {
     #[cfg(feature = "minimax")]
     {
-        let descriptor = resolve_model_descriptor("minimax", "MiniMax-M3")
+        let descriptor = resolve_model_descriptor("minimax", "MiniMax-M2.7")
             .expect("minimax descriptor should resolve");
 
         assert_eq!(
             descriptor.runtime_semantics.reasoning_protocol,
-            ReasoningProtocolSemantics::None
+            ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind:
+                    harness_provider_state::ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: false,
+            }
         );
     }
 
     #[cfg(not(feature = "minimax"))]
-    assert_source_contains("minimax.rs", "ModelRuntimeSemantics::openai_chat_minimax()");
+    assert_source_contains("catalog.rs", "RuntimeSemanticsKind::OpenAiChatMinimax");
+}
+
+#[test]
+fn provider_registry_resolves_zhipu_with_private_replay_semantics() {
+    #[cfg(feature = "zhipu")]
+    {
+        let descriptor =
+            resolve_model_descriptor("zhipu", "glm-5").expect("zhipu descriptor should resolve");
+
+        assert_eq!(
+            descriptor.runtime_semantics,
+            ModelRuntimeSemantics::openai_chat_zhipu()
+        );
+        assert_eq!(
+            descriptor.runtime_semantics.reasoning_protocol,
+            ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind:
+                    harness_provider_state::ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: true,
+            }
+        );
+    }
+
+    #[cfg(not(feature = "zhipu"))]
+    assert_source_contains("catalog.rs", "RuntimeSemanticsKind::OpenAiChatZhipu");
 }
 
 #[cfg(feature = "minimax")]
@@ -192,6 +398,230 @@ fn minimax_provider_catalog_exposes_runtime_and_service_capabilities() {
     assert!(!minimax.service_capabilities.iter().any(
         |capability| capability.execution == harness_model::ProviderServiceExecution::Websocket
     ));
+}
+
+#[cfg(feature = "zhipu")]
+#[test]
+fn zhipu_provider_catalog_matches_official_openapi_configuration() {
+    let zhipu = harness_model::provider_catalog_entries()
+        .into_iter()
+        .find(|entry| entry.provider_id == "zhipu")
+        .expect("zhipu catalog should exist");
+
+    assert_eq!(
+        zhipu.default_base_url,
+        "https://open.bigmodel.cn/api/paas/v4"
+    );
+    assert!(zhipu
+        .runtime_capability
+        .base_url_regions
+        .iter()
+        .any(|region| {
+            region.id == "default" && region.base_url == "https://open.bigmodel.cn/api/paas/v4"
+        }));
+    assert!(zhipu
+        .runtime_capability
+        .base_url_regions
+        .iter()
+        .any(|region| {
+            region.id == "coding-plan"
+                && region.base_url == "https://open.bigmodel.cn/api/coding/paas/v4"
+        }));
+    assert!(zhipu
+        .runtime_capability
+        .base_url_regions
+        .iter()
+        .any(|region| {
+            region.id == "zai-coding" && region.base_url == "https://api.z.ai/api/coding/paas/v4"
+        }));
+
+    let expected_models = [
+        (
+            "glm-5.2",
+            1_000_000,
+            131_072,
+            true,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-5.1",
+            200_000,
+            131_072,
+            true,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-5-turbo",
+            200_000,
+            131_072,
+            false,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-5",
+            200_000,
+            131_072,
+            true,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-4.7",
+            200_000,
+            131_072,
+            true,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-4.7-flash",
+            200_000,
+            131_072,
+            false,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-4.7-flashx",
+            200_000,
+            131_072,
+            false,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-4.6",
+            200_000,
+            131_072,
+            false,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-4.5-air",
+            128_000,
+            98_304,
+            false,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-4.5-airx",
+            128_000,
+            98_304,
+            false,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-4.5-flash",
+            128_000,
+            98_304,
+            false,
+            true,
+            true,
+            true,
+            ModelLifecycle::Retiring {
+                retirement_date: chrono::NaiveDate::from_ymd_opt(2026, 1, 30)
+                    .expect("valid retirement date"),
+            },
+        ),
+        (
+            "glm-4-flash-250414",
+            128_000,
+            16_384,
+            false,
+            false,
+            false,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-4-flashx-250414",
+            128_000,
+            16_384,
+            false,
+            false,
+            false,
+            true,
+            ModelLifecycle::Stable,
+        ),
+    ];
+
+    assert_eq!(zhipu.models.len(), expected_models.len());
+    for (
+        model_id,
+        context_window,
+        max_output_tokens,
+        tool_calling,
+        reasoning,
+        prompt_cache,
+        structured_output,
+        lifecycle,
+    ) in expected_models
+    {
+        let model = zhipu
+            .models
+            .iter()
+            .find(|model| model.model_id == model_id)
+            .unwrap_or_else(|| panic!("{model_id} should be listed"));
+        assert_eq!(model.context_window, context_window, "{model_id}");
+        assert_eq!(model.max_output_tokens, max_output_tokens, "{model_id}");
+        assert_eq!(
+            model.conversation_capability.tool_calling, tool_calling,
+            "{model_id}"
+        );
+        assert_eq!(
+            model.conversation_capability.reasoning, reasoning,
+            "{model_id}"
+        );
+        assert_eq!(
+            model.conversation_capability.prompt_cache, prompt_cache,
+            "{model_id}"
+        );
+        assert_eq!(
+            model.conversation_capability.structured_output, structured_output,
+            "{model_id}"
+        );
+        assert_eq!(model.lifecycle, lifecycle, "{model_id}");
+        assert_eq!(
+            model.conversation_capability.input_modalities,
+            vec![
+                ModelModality::Text,
+                ModelModality::Image,
+                ModelModality::Video
+            ],
+            "{model_id}"
+        );
+        assert_eq!(
+            model.conversation_capability.output_modalities,
+            vec![ModelModality::Text],
+            "{model_id}"
+        );
+    }
 }
 
 #[cfg(feature = "openai")]
@@ -240,17 +670,49 @@ fn catalog_auth_scheme(
         .auth_scheme
 }
 
-fn expected_runtime_semantics(provider_id: &str) -> ModelRuntimeSemantics {
+fn assert_modalities_subset(
+    provider_id: &str,
+    model_id: &str,
+    dimension: &str,
+    runtime_modalities: &[ModelModality],
+    declared_modalities: &[ModelModality],
+) {
+    for modality in runtime_modalities {
+        assert!(
+            declared_modalities.contains(modality),
+            "{provider_id}:{model_id} runtime {dimension} modality {modality:?} is not declared by provider"
+        );
+    }
+}
+
+fn expected_runtime_semantics(
+    provider_id: &str,
+    descriptor: &harness_model::ModelDescriptor,
+) -> ModelRuntimeSemantics {
     match provider_id {
         "anthropic" => ModelRuntimeSemantics::anthropic_messages_default(),
         "codex" | "openai" => ModelRuntimeSemantics::openai_responses_default(),
         "deepseek" => ModelRuntimeSemantics::openai_chat_deepseek(),
         "gemini" => ModelRuntimeSemantics::gemini_default(),
         "bedrock" => ModelRuntimeSemantics::bedrock_converse_default(),
-        "minimax" => ModelRuntimeSemantics::openai_chat_minimax(),
-        "doubao" | "km" | "local-llama" | "openrouter" | "qwen" | "zhipu" => {
-            ModelRuntimeSemantics::openai_chat_plain()
+        "km" if matches!(
+            descriptor.model_id.as_str(),
+            "kimi-k2.7-code" | "kimi-k2.7-code-highspeed"
+        ) =>
+        {
+            ModelRuntimeSemantics::openai_chat_kimi()
         }
+        "km" if descriptor.conversation_capability.reasoning => {
+            ModelRuntimeSemantics::openai_chat_kimi_optional_replay()
+        }
+        "km" => ModelRuntimeSemantics::openai_chat_kimi_plain(),
+        "minimax" if descriptor.model_id == "MiniMax-M3" => {
+            ModelRuntimeSemantics::openai_responses_default()
+        }
+        "minimax" => ModelRuntimeSemantics::openai_chat_minimax(),
+        "zhipu" => ModelRuntimeSemantics::openai_chat_zhipu(),
+        "qwen" => ModelRuntimeSemantics::openai_responses_default(),
+        "doubao" | "local-llama" | "openrouter" => ModelRuntimeSemantics::openai_chat_plain(),
         provider_id => {
             panic!("missing explicit runtime semantics expectation for provider {provider_id}")
         }
@@ -313,7 +775,12 @@ fn descriptor_block_end(source: &str, start: usize) -> Option<usize> {
     None
 }
 
-#[cfg(any(not(feature = "deepseek"), not(feature = "minimax")))]
+#[cfg(any(
+    not(feature = "deepseek"),
+    not(feature = "km"),
+    not(feature = "minimax"),
+    not(feature = "zhipu")
+))]
 fn assert_source_contains(relative_path: &str, needle: &str) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src")

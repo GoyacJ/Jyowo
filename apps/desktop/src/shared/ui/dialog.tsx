@@ -12,7 +12,10 @@ export const DialogClose = DialogPrimitive.Close
 function DialogOverlay({ className, ...props }: ComponentProps<typeof DialogPrimitive.Overlay>) {
   return (
     <DialogPrimitive.Overlay
-      className={cn('fixed inset-0 z-50 bg-background/80 backdrop-blur-sm', className)}
+      className={cn(
+        'fixed inset-0 z-50 bg-background/45 backdrop-blur-md transition-[opacity,backdrop-filter] duration-300',
+        className,
+      )}
       {...props}
     />
   )
@@ -30,13 +33,13 @@ export function DialogContent({
       <DialogOverlay />
       <DialogPrimitive.Content
         className={cn(
-          'fixed top-1/2 left-1/2 z-50 grid w-[min(calc(100vw-2rem),32rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg border border-border bg-surface p-6 shadow-lg outline-none',
+          'fixed top-1/2 left-1/2 z-50 grid w-[min(calc(100vw-2rem),32rem)] [transform:translate(-50%,-50%)] gap-4 rounded-md border border-border bg-popover p-6 text-popover-foreground shadow-lg outline-none animate-dialog-enter',
           className,
         )}
         {...props}
       >
         {children}
-        <DialogPrimitive.Close className="absolute top-4 right-4 rounded-sm opacity-70 outline-none transition-opacity hover:opacity-100 focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none">
+        <DialogPrimitive.Close className="absolute top-4 right-4 rounded-md p-1 opacity-70 outline-none transition-[background-color,opacity] duration-200 hover:bg-muted hover:opacity-100 focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none">
           <X aria-hidden="true" className="size-4" data-icon />
           <span className="sr-only">{t('close')}</span>
         </DialogPrimitive.Close>

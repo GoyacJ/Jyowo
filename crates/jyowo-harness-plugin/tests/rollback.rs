@@ -5,8 +5,9 @@ use futures::stream;
 use harness_contracts::{
     BudgetMetric, DeferPolicy, HookError, HookEventKind, McpServerId, McpServerSource,
     NetworkAccess, OverflowAction, PluginId, ProviderRestriction, ResultBudget, SemverString,
-    SkillId, ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
-    ToolOrigin, ToolProperties, ToolResult, TrustLevel, WorkspaceAccess,
+    SkillId, ToolActionPlan, ToolDescriptor, ToolDescriptorMetadata, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolIntegrationSource, ToolOrigin, ToolProperties, ToolResult,
+    TrustLevel, WorkspaceAccess,
 };
 use harness_hook::{HookContext, HookEvent, HookHandler, HookOutcome, HookRegistry};
 use harness_mcp::{McpRegistry, McpServerSpec, TransportChoice};
@@ -381,6 +382,10 @@ impl FakeTool {
                 },
                 search_hint: None,
                 service_binding: None,
+                metadata: ToolDescriptorMetadata {
+                    integration_source: ToolIntegrationSource::Plugin,
+                    ..Default::default()
+                },
             },
         }
     }

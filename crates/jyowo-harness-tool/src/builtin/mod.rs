@@ -1,6 +1,8 @@
 #[cfg(feature = "builtin-toolset")]
 mod bash;
 #[cfg(feature = "builtin-toolset")]
+mod brokered_platform;
+#[cfg(feature = "builtin-toolset")]
 mod clarify;
 #[cfg(feature = "builtin-toolset")]
 mod diagnostics;
@@ -8,6 +10,8 @@ mod diagnostics;
 mod edit;
 #[cfg(feature = "programmatic-tool-calling")]
 mod execute_code;
+#[cfg(feature = "builtin-toolset")]
+mod git;
 #[cfg(feature = "builtin-toolset")]
 mod glob;
 #[cfg(feature = "builtin-toolset")]
@@ -45,6 +49,12 @@ mod write;
 #[cfg(feature = "builtin-toolset")]
 pub use bash::BashTool;
 #[cfg(feature = "builtin-toolset")]
+pub use brokered_platform::{
+    brokered_platform_runtime_capability, ArtifactTool, AutomationTool, BrokeredPlatformRuntimeCap,
+    BrokeredPlatformRuntimeRequest, BrowserUseTool, ComputerUseTool, ImageGenerationTool, LspTool,
+    NotebookEditTool, SessionTool, WorkflowTool, WorktreeTool,
+};
+#[cfg(feature = "builtin-toolset")]
 pub use clarify::ClarifyTool;
 #[cfg(feature = "builtin-toolset")]
 pub use diagnostics::{parse_cargo_diagnostics, parse_typescript_diagnostics, DiagnosticsTool};
@@ -52,6 +62,11 @@ pub use diagnostics::{parse_cargo_diagnostics, parse_typescript_diagnostics, Dia
 pub use edit::FileEditTool;
 #[cfg(feature = "programmatic-tool-calling")]
 pub use execute_code::ExecuteCodeTool;
+#[cfg(feature = "builtin-toolset")]
+pub use git::{
+    GitBranchTool, GitCommitTool, GitDiffTool, GitLogTool, GitPullTool, GitPushTool, GitShowTool,
+    GitStageTool, GitStatusTool,
+};
 #[cfg(feature = "builtin-toolset")]
 pub use glob::GlobTool;
 #[cfg(feature = "builtin-toolset")]
@@ -185,6 +200,7 @@ pub(super) fn descriptor_with_binding(
         origin: ToolOrigin::Builtin,
         search_hint: Some(format!("{display_name} {description}")),
         service_binding,
+        metadata: Default::default(),
     }
 }
 

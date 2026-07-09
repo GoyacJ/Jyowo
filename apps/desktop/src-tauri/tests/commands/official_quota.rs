@@ -86,8 +86,10 @@ fn sample_openrouter_config(api_key: &str) -> ProviderConfigRecord {
         display_name: "OpenRouter Work".to_owned(),
         id: "openrouter-work".to_owned(),
         model_id: "openai/gpt-5.5".to_owned(),
+        model_options: harness_contracts::ModelRequestOptions::default(),
         official_quota_api_key: None,
         provider_id: "openrouter".to_owned(),
+        provider_defaults: None,
         model_descriptor: openai_descriptor_record("openai/gpt-5.5"),
     }
 }
@@ -146,8 +148,10 @@ async fn official_quota_refresh_persists_unsupported_snapshot_for_catalog_provid
                 display_name: "Gemini Work".to_owned(),
                 id: "gemini-work".to_owned(),
                 model_id: "gemini-2.5-pro".to_owned(),
+                model_options: harness_contracts::ModelRequestOptions::default(),
                 official_quota_api_key: None,
                 provider_id: "gemini".to_owned(),
+                provider_defaults: None,
                 model_descriptor: openai_descriptor_record("gemini-2.5-pro"),
             }],
         })

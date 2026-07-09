@@ -166,12 +166,29 @@ impl StorageLayout {
         self.global_config_root().join("provider-selection.json")
     }
 
+    pub fn global_provider_routes_file(&self) -> PathBuf {
+        self.global_config_root()
+            .join("provider-capability-routes.json")
+    }
+
     pub fn global_execution_defaults_file(&self) -> PathBuf {
         self.global_config_root().join("execution-defaults.json")
     }
 
+    pub fn global_mcp_servers_file(&self) -> PathBuf {
+        self.global_config_root().join("mcp-servers.json")
+    }
+
     pub fn global_mcp_presets_file(&self) -> PathBuf {
         self.global_config_root().join("mcp-presets.json")
+    }
+
+    pub fn global_automations_file(&self) -> PathBuf {
+        self.global_config_root().join("automations.json")
+    }
+
+    pub fn global_automation_runs_file(&self) -> PathBuf {
+        self.global_runtime_root().join("automation-runs.jsonl")
     }
 
     pub fn global_agent_profiles_file(&self) -> PathBuf {
@@ -463,12 +480,28 @@ mod tests {
             Path::new("/home/alice/.jyowo/config/provider-selection.json")
         );
         assert_eq!(
+            layout.global_provider_routes_file(),
+            Path::new("/home/alice/.jyowo/config/provider-capability-routes.json")
+        );
+        assert_eq!(
             layout.global_execution_defaults_file(),
             Path::new("/home/alice/.jyowo/config/execution-defaults.json")
         );
         assert_eq!(
+            layout.global_mcp_servers_file(),
+            Path::new("/home/alice/.jyowo/config/mcp-servers.json")
+        );
+        assert_eq!(
             layout.global_mcp_presets_file(),
             Path::new("/home/alice/.jyowo/config/mcp-presets.json")
+        );
+        assert_eq!(
+            layout.global_automations_file(),
+            Path::new("/home/alice/.jyowo/config/automations.json")
+        );
+        assert_eq!(
+            layout.global_automation_runs_file(),
+            Path::new("/home/alice/.jyowo/runtime/automation-runs.jsonl")
         );
         assert_eq!(
             layout.global_agent_profiles_file(),

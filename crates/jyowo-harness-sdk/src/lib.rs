@@ -620,6 +620,7 @@ pub mod agents_team {
             origin: ToolOrigin::Builtin,
             search_hint: Some(format!("team coordinator control {}", kind.name())),
             service_binding: None,
+            metadata: Default::default(),
         }
     }
 

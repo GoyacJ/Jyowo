@@ -150,7 +150,7 @@ async fn start_run_permission_mode_override_wins_over_saved_default() {
             agent_teams_enabled: false,
             background_agents_enabled: false,
         },
-        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        &execution_settings_store_for_workspace(state.workspace_root()),
         None,
     )
     .expect("execution settings should save");

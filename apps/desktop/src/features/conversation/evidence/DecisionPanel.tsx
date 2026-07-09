@@ -7,6 +7,7 @@ import type {
   DecisionRequestState,
   ResolvePermissionRequest,
 } from '@/shared/tauri/commands'
+import { Input } from '@/shared/ui/input'
 import { RedactedBody } from '../timeline/redacted-body'
 
 export function DecisionPanel({
@@ -25,6 +26,7 @@ export function DecisionPanel({
   const isSubmitting = decision.status === 'submitting'
   const approveOptions = decision.decisionOptions.filter((option) => option.decision === 'approve')
   const denyOption = decision.decisionOptions.find((option) => option.decision === 'deny')
+  const confirmationInputId = `permission-confirmation-${decision.requestId}`
 
   const riskLabel = t(`timeline.riskLevel.${decision.riskLevel}`)
   const operationLabel = operationLabelFor(decision.operation, t)
@@ -115,16 +117,17 @@ export function DecisionPanel({
 
       {/* Confirmation for high-risk */}
       {canResolve && decision.confirmation ? (
-        <label className="grid gap-1">
+        <label className="grid gap-1" htmlFor={confirmationInputId}>
           <span className="text-muted-foreground text-xs">
             {decision.confirmation.label}:{' '}
             <code className="rounded bg-background px-1 font-mono text-xs">
               {decision.confirmation.expectedText}
             </code>
           </span>
-          <input
+          <Input
             aria-label={t('timeline.confirmationInput')}
-            className="h-8 rounded-md border border-border bg-background px-2 text-foreground text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="h-8 text-xs"
+            id={confirmationInputId}
             onChange={(event) => setConfirmationText(event.currentTarget.value)}
             value={confirmationText}
           />

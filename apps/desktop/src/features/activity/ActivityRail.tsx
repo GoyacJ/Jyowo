@@ -26,11 +26,16 @@ export function ActivityRail({ activeRunId, errorMessage, onOpenSettings }: Acti
         >
           <Settings className="size-3.5" />
         </button>
-        <span className="flex items-center gap-2 text-foreground">
-          <span
-            aria-hidden="true"
-            className={`size-1.5 rounded-full ${running ? 'bg-warning' : 'bg-success'}`}
-          />
+        <span className="flex items-center gap-2 text-foreground font-medium">
+          <span className="relative flex size-2 items-center justify-center">
+            {running && (
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-warning/45 opacity-75"></span>
+            )}
+            <span
+              aria-hidden="true"
+              className={`relative size-2 rounded-full ${running ? 'bg-warning' : 'bg-success'}`}
+            />
+          </span>
           {running ? t('common:status.running') : t('common:status.ready')}
         </span>
       </div>

@@ -108,16 +108,17 @@ async fn turn_assembly_collects_tool_calls_without_losing_visible_text() {
 }
 
 #[tokio::test]
-async fn turn_assembly_drops_private_thinking_from_public_text() {
+async fn turn_assembly_keeps_private_thinking_out_of_public_text() {
     let run_id = RunId::new();
     let mut assembly = TurnAssembly::new(MessageId::new());
+    let provider_native = json!({ "provider_private": "secret" });
     let output = assembly.push_event(
         run_id,
         ModelStreamEvent::ContentBlockDelta {
             index: 0,
             delta: ContentDelta::Thinking(ThinkingDelta {
                 text: Some("private reasoning".to_owned()),
-                provider_native: Some(json!({ "provider_private": "secret" })),
+                provider_native: Some(provider_native.clone()),
                 signature: Some("signature".to_owned()),
             }),
         },
@@ -131,10 +132,75 @@ async fn turn_assembly_drops_private_thinking_from_public_text() {
             if matches!(
                 &event.delta,
                 DeltaChunk::Thought(thought)
-                    if thought.text.is_none()
+                    if thought.text.as_deref() == Some("private reasoning")
                         && thought.provider_id == "harness_model"
-                        && thought.provider_native.is_none()
-                        && thought.signature.is_none()
+                        && thought.provider_native.as_ref() == Some(&provider_native)
+                        && thought.signature.as_deref() == Some("signature")
+            )
+    ));
+}
+
+#[tokio::test]
+async fn turn_assembly_preserves_thinking_provider_native_in_delta() {
+    let run_id = RunId::new();
+    let mut assembly = TurnAssembly::new(MessageId::new());
+    let provider_native = json!({ "type": "response.web_search_call.searching" });
+
+    let output = assembly.push_event(
+        run_id,
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::Thinking(ThinkingDelta {
+                text: Some("web_search_call searching".to_owned()),
+                provider_native: Some(provider_native.clone()),
+                signature: Some("provider-signature".to_owned()),
+            }),
+        },
+    );
+
+    assert_eq!(assembly.assistant_text(), "");
+    assert_eq!(output.events.len(), 1);
+    assert!(matches!(
+        &output.events[0],
+        Event::AssistantDeltaProduced(event)
+            if matches!(
+                &event.delta,
+                DeltaChunk::Thought(thought)
+                    if thought.text.as_deref() == Some("web_search_call searching")
+                        && thought.provider_id == "harness_model"
+                        && thought.provider_native.as_ref() == Some(&provider_native)
+                        && thought.signature.as_deref() == Some("provider-signature")
+            )
+    ));
+}
+
+#[tokio::test]
+async fn turn_assembly_preserves_reasoning_summary_provider_native_in_delta() {
+    let run_id = RunId::new();
+    let mut assembly = TurnAssembly::new(MessageId::new());
+    let provider_native = json!({ "type": "reasoning_summary_text.delta" });
+
+    let output = assembly.push_event(
+        run_id,
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::ReasoningSummary(ReasoningSummaryDelta {
+                text: "checked".to_owned(),
+                provider_native: Some(provider_native.clone()),
+            }),
+        },
+    );
+
+    assert_eq!(output.events.len(), 1);
+    assert!(matches!(
+        &output.events[0],
+        Event::AssistantDeltaProduced(event)
+            if matches!(
+                &event.delta,
+                DeltaChunk::ReasoningSummary(summary)
+                    if summary.text == "checked"
+                        && summary.provider_id == "harness_model"
+                        && summary.provider_native.as_ref() == Some(&provider_native)
             )
     ));
 }

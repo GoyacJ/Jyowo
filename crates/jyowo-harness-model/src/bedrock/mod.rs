@@ -5,7 +5,7 @@ use async_stream::stream;
 use async_trait::async_trait;
 use aws_sdk_bedrockruntime::types as br;
 use aws_smithy_types::{Document, Number};
-#[cfg(any(test, feature = "testing"))]
+#[cfg(any(test, feature = "testing", feature = "bedrock"))]
 use futures::stream as futures_stream;
 use harness_contracts::{
     MessagePart, MessageRole, ModelError, StopReason, ToolDescriptor, ToolResult, UsageSnapshot,
@@ -13,10 +13,9 @@ use harness_contracts::{
 use serde_json::Value;
 
 use crate::{
-    wrap_stream_with_cancel_deadline, ContentDelta, ContentType, ConversationModelCapability,
-    ErrorClass, ErrorHints, HealthStatus, InferContext, ModelDescriptor, ModelLifecycle,
-    ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
-    ThinkingDelta,
+    wrap_stream_with_cancel_deadline, ContentDelta, ContentType, ErrorClass, ErrorHints,
+    HealthStatus, InferContext, ModelDescriptor, ModelProtocol, ModelProvider, ModelRequest,
+    ModelStream, ModelStreamEvent, ThinkingDelta,
 };
 
 const PROVIDER_ID: &str = "bedrock";
@@ -35,7 +34,7 @@ impl BedrockProvider {
 
     #[doc(hidden)]
     #[must_use]
-    #[cfg(any(test, feature = "testing"))]
+    #[cfg(any(test, feature = "testing", feature = "bedrock"))]
     pub fn from_events(events: Vec<ModelStreamEvent>) -> Self {
         Self {
             transport: Arc::new(StaticBedrockTransport { events }),
@@ -91,12 +90,12 @@ impl BedrockTransport for AwsBedrockTransport {
     }
 }
 
-#[cfg(any(test, feature = "testing"))]
+#[cfg(any(test, feature = "testing", feature = "bedrock"))]
 struct StaticBedrockTransport {
     events: Vec<ModelStreamEvent>,
 }
 
-#[cfg(any(test, feature = "testing"))]
+#[cfg(any(test, feature = "testing", feature = "bedrock"))]
 #[async_trait]
 impl BedrockTransport for StaticBedrockTransport {
     async fn infer(
@@ -391,10 +390,7 @@ impl ModelProvider for BedrockProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        vec![descriptor(
-            "anthropic.claude-3-5-sonnet-20241022-v2:0",
-            "Claude 3.5 Sonnet on Bedrock",
-        )]
+        crate::catalog::provider_model_descriptors(PROVIDER_ID)
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
@@ -426,29 +422,4 @@ fn validate_request(req: &ModelRequest, ctx: &InferContext) -> Result<(), ModelE
         }
     }
     bedrock_messages(req).map(|_| ())
-}
-
-fn descriptor(model_id: &str, display_name: &str) -> ModelDescriptor {
-    ModelDescriptor {
-        provider_id: "bedrock".to_owned(),
-        model_id: model_id.to_owned(),
-        display_name: display_name.to_owned(),
-        protocol: ModelProtocol::Messages,
-        context_window: 200_000,
-        max_output_tokens: 8192,
-        conversation_capability: ConversationModelCapability {
-            context_window: 200_000,
-            max_output_tokens: 8192,
-            tool_calling: true,
-            reasoning: true,
-            prompt_cache: false,
-            streaming: true,
-            structured_output: false,
-            input_modalities: vec![ModelModality::Text],
-            output_modalities: vec![ModelModality::Text],
-        },
-        runtime_semantics: crate::ModelRuntimeSemantics::bedrock_converse_default(),
-        lifecycle: ModelLifecycle::Stable,
-        pricing: None,
-    }
 }

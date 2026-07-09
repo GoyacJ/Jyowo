@@ -1,9 +1,41 @@
 use super::*;
 
+struct SkillTestHome {
+    skills_root: PathBuf,
+    selection_path: PathBuf,
+}
+
+impl SkillTestHome {
+    fn package_root(&self) -> PathBuf {
+        self.skills_root.join("packages")
+    }
+
+    fn package_path(&self, skill_id: &str) -> PathBuf {
+        self.package_root().join(skill_id)
+    }
+
+    fn index_path(&self) -> PathBuf {
+        self.skills_root.join("index.json")
+    }
+
+    fn selection_path(&self) -> PathBuf {
+        self.selection_path.clone()
+    }
+}
+
+fn skill_test_home(workspace: &Path) -> SkillTestHome {
+    let layout = test_storage_layout_for_workspace(workspace);
+    SkillTestHome {
+        skills_root: layout.global_skills_root(),
+        selection_path: layout.global_skills_file(),
+    }
+}
+
 #[tokio::test]
 async fn import_skill_persists_enabled_skill_without_exposing_source_path() {
     let workspace = unique_workspace("skill-import");
     std::fs::create_dir_all(&workspace).unwrap();
+    let home = skill_test_home(&workspace);
     let source_dir = unique_workspace("skill-source");
     let source_path = write_skill_package(
         &source_dir,
@@ -12,9 +44,7 @@ async fn import_skill_persists_enabled_skill_without_exposing_source_path() {
         "Summarize project notes",
         Some(("references/style.md", "Use concise bullets.")),
     );
-    let state = runtime_state_for_workspace(workspace.clone())
-        .await
-        .unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace.clone()).await;
 
     let imported = import_skill_with_runtime_state(
         ImportSkillRequest {
@@ -31,20 +61,16 @@ async fn import_skill_persists_enabled_skill_without_exposing_source_path() {
     assert!(imported.skill.manageable);
     assert_eq!(imported.skill.source_kind, "workspace");
     assert!(!serialized.contains(&source_dir.to_string_lossy().to_string()));
-    assert!(workspace
-        .join(".jyowo/skills/packages")
-        .join(&imported.skill.id)
+    assert!(home
+        .package_path(&imported.skill.id)
         .join("SKILL.md")
         .exists());
-    assert!(workspace
-        .join(".jyowo/skills/packages")
-        .join(&imported.skill.id)
+    assert!(home
+        .package_path(&imported.skill.id)
         .join("references/style.md")
         .exists());
-    let selection: harness_contracts::SkillSelectionRecord = serde_json::from_str(
-        &std::fs::read_to_string(workspace.join(".jyowo/config/skills.json")).unwrap(),
-    )
-    .unwrap();
+    let selection: harness_contracts::SkillSelectionRecord =
+        serde_json::from_str(&std::fs::read_to_string(home.selection_path()).unwrap()).unwrap();
     assert_eq!(selection.enabled, vec![imported.skill.id.clone()]);
 }
 
@@ -52,8 +78,9 @@ async fn import_skill_persists_enabled_skill_without_exposing_source_path() {
 async fn missing_skill_selection_uses_current_index_enabled_state() {
     let workspace = unique_workspace("skill-missing-selection-current-index");
     std::fs::create_dir_all(&workspace).unwrap();
+    let home = skill_test_home(&workspace);
     let skill_id = "current-skill";
-    let package_root = workspace.join(".jyowo/skills/packages");
+    let package_root = home.package_root();
     write_skill_package(
         &package_root,
         skill_id,
@@ -61,7 +88,7 @@ async fn missing_skill_selection_uses_current_index_enabled_state() {
         "Current package skill",
         None,
     );
-    let index_path = workspace.join(".jyowo/skills/index.json");
+    let index_path = home.index_path();
     std::fs::create_dir_all(index_path.parent().unwrap()).unwrap();
     std::fs::write(
         &index_path,
@@ -84,12 +111,10 @@ async fn missing_skill_selection_uses_current_index_enabled_state() {
     )
     .unwrap();
 
-    let state = runtime_state_for_workspace(workspace.clone())
-        .await
-        .unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace.clone()).await;
     let listed = list_skills_with_runtime_state(&state).await.unwrap();
 
-    assert!(!workspace.join(".jyowo/config/skills.json").exists());
+    assert!(!home.selection_path().exists());
     assert!(listed
         .skills
         .iter()
@@ -109,7 +134,7 @@ async fn import_skill_rejects_single_markdown_files() {
     )
     .unwrap();
     let source_path = source_path.canonicalize().unwrap();
-    let state = runtime_state_for_workspace(workspace).await.unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
 
     let error = import_skill_with_runtime_state(
         ImportSkillRequest {
@@ -143,7 +168,7 @@ async fn import_skill_rejects_symlink_source_package() {
     std::fs::create_dir_all(&link_dir).unwrap();
     let linked_path = link_dir.join("linked-package");
     std::os::unix::fs::symlink(&source_path, &linked_path).unwrap();
-    let state = runtime_state_for_workspace(workspace).await.unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
 
     let error = import_skill_with_runtime_state(
         ImportSkillRequest {
@@ -161,12 +186,11 @@ async fn import_skill_rejects_symlink_source_package() {
 async fn disabling_skill_moves_file_and_removes_it_from_runtime_list() {
     let workspace = unique_workspace("skill-disable");
     std::fs::create_dir_all(&workspace).unwrap();
+    let home = skill_test_home(&workspace);
     let source_dir = unique_workspace("skill-disable-source");
     let source_path =
         write_skill_package(&source_dir, "draft", "draft", "Draft release notes", None);
-    let state = runtime_state_for_workspace(workspace.clone())
-        .await
-        .unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace.clone()).await;
     let imported = import_skill_with_runtime_state(
         ImportSkillRequest {
             source_path: source_path.to_string_lossy().to_string(),
@@ -189,15 +213,12 @@ async fn disabling_skill_moves_file_and_removes_it_from_runtime_list() {
 
     assert!(!disabled.skill.enabled);
     assert_eq!(disabled.skill.status, "disabled");
-    assert!(workspace
-        .join(".jyowo/skills/packages")
-        .join(&imported.skill.id)
+    assert!(home
+        .package_path(&imported.skill.id)
         .join("SKILL.md")
         .exists());
-    let selection: harness_contracts::SkillSelectionRecord = serde_json::from_str(
-        &std::fs::read_to_string(workspace.join(".jyowo/config/skills.json")).unwrap(),
-    )
-    .unwrap();
+    let selection: harness_contracts::SkillSelectionRecord =
+        serde_json::from_str(&std::fs::read_to_string(home.selection_path()).unwrap()).unwrap();
     assert!(selection.enabled.is_empty());
     assert!(listed
         .skills
@@ -221,9 +242,8 @@ async fn disabling_skill_moves_file_and_removes_it_from_runtime_list() {
 
     assert!(enabled.skill.enabled);
     assert_eq!(enabled.skill.status, "ready");
-    assert!(workspace
-        .join(".jyowo/skills/packages")
-        .join(&imported.skill.id)
+    assert!(home
+        .package_path(&imported.skill.id)
         .join("SKILL.md")
         .exists());
     assert!(listed
@@ -236,8 +256,9 @@ async fn disabling_skill_moves_file_and_removes_it_from_runtime_list() {
 async fn enabling_skill_rejects_runtime_duplicate_name() {
     let workspace = unique_workspace("skill-enable-duplicate-runtime");
     std::fs::create_dir_all(&workspace).unwrap();
+    let home = skill_test_home(&workspace);
     let disabled_id = "managed-disabled";
-    let disabled_dir = workspace.join(".jyowo/skills/packages").join(disabled_id);
+    let disabled_dir = home.package_path(disabled_id);
     std::fs::create_dir_all(&disabled_dir).unwrap();
     std::fs::write(
         disabled_dir.join("SKILL.md"),
@@ -259,7 +280,7 @@ async fn enabling_skill_rejects_runtime_duplicate_name() {
         last_validation_error: None,
         origin: None,
     };
-    let index_path = workspace.join(".jyowo/skills/index.json");
+    let index_path = home.index_path();
     std::fs::create_dir_all(index_path.parent().unwrap()).unwrap();
     std::fs::write(
         &index_path,
@@ -283,12 +304,8 @@ async fn enabling_skill_rejects_runtime_duplicate_name() {
     assert!(error
         .message
         .contains("active skill name already exists: shared-name"));
-    assert!(workspace
-        .join(".jyowo/skills/packages")
-        .join(disabled_id)
-        .join("SKILL.md")
-        .exists());
-    let selection_path = workspace.join(".jyowo/config/skills.json");
+    assert!(home.package_path(disabled_id).join("SKILL.md").exists());
+    let selection_path = home.selection_path();
     if selection_path.exists() {
         let selection: harness_contracts::SkillSelectionRecord =
             serde_json::from_str(&std::fs::read_to_string(selection_path).unwrap()).unwrap();
@@ -300,6 +317,7 @@ async fn enabling_skill_rejects_runtime_duplicate_name() {
 async fn delete_skill_removes_managed_record_and_file() {
     let workspace = unique_workspace("skill-delete");
     std::fs::create_dir_all(&workspace).unwrap();
+    let home = skill_test_home(&workspace);
     let source_dir = unique_workspace("skill-delete-source");
     let source_path = write_skill_package(
         &source_dir,
@@ -308,9 +326,7 @@ async fn delete_skill_removes_managed_record_and_file() {
         "Clean up workspace",
         None,
     );
-    let state = runtime_state_for_workspace(workspace.clone())
-        .await
-        .unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace.clone()).await;
     let imported = import_skill_with_runtime_state(
         ImportSkillRequest {
             source_path: source_path.to_string_lossy().to_string(),
@@ -332,10 +348,7 @@ async fn delete_skill_removes_managed_record_and_file() {
 
     assert_eq!(deleted.id, imported.skill.id);
     assert_eq!(deleted.status, "deleted");
-    assert!(!workspace
-        .join(".jyowo/skills/packages")
-        .join(&imported.skill.id)
-        .exists());
+    assert!(!home.package_path(&imported.skill.id).exists());
     assert!(listed
         .skills
         .iter()
@@ -346,6 +359,7 @@ async fn delete_skill_removes_managed_record_and_file() {
 async fn delete_skill_keeps_record_and_package_when_selection_write_fails() {
     let workspace = unique_workspace("skill-delete-selection-fails");
     std::fs::create_dir_all(&workspace).unwrap();
+    let home = skill_test_home(&workspace);
     let source_dir = unique_workspace("skill-delete-selection-fails-source");
     let source_path = write_skill_package(
         &source_dir,
@@ -354,9 +368,7 @@ async fn delete_skill_keeps_record_and_package_when_selection_write_fails() {
         "Keep package when config write fails",
         None,
     );
-    let state = runtime_state_for_workspace(workspace.clone())
-        .await
-        .unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace.clone()).await;
     let imported = import_skill_with_runtime_state(
         ImportSkillRequest {
             source_path: source_path.to_string_lossy().to_string(),
@@ -365,7 +377,7 @@ async fn delete_skill_keeps_record_and_package_when_selection_write_fails() {
     )
     .await
     .unwrap();
-    let selection_path = workspace.join(".jyowo/config/skills.json");
+    let selection_path = home.selection_path();
     std::fs::remove_file(&selection_path).unwrap();
     std::fs::create_dir(&selection_path).unwrap();
 
@@ -379,15 +391,12 @@ async fn delete_skill_keeps_record_and_package_when_selection_write_fails() {
     .unwrap_err();
 
     assert!(error.code.starts_with("RUNTIME_"));
-    assert!(workspace
-        .join(".jyowo/skills/packages")
-        .join(&imported.skill.id)
+    assert!(home
+        .package_path(&imported.skill.id)
         .join("SKILL.md")
         .exists());
-    let records: Vec<SkillStoreRecord> = serde_json::from_str(
-        &std::fs::read_to_string(workspace.join(".jyowo/skills/index.json")).unwrap(),
-    )
-    .unwrap();
+    let records: Vec<SkillStoreRecord> =
+        serde_json::from_str(&std::fs::read_to_string(home.index_path()).unwrap()).unwrap();
     assert!(records.iter().any(|record| record.id == imported.skill.id));
 }
 
@@ -395,6 +404,7 @@ async fn delete_skill_keeps_record_and_package_when_selection_write_fails() {
 async fn delete_skill_removes_disabled_managed_record_and_file() {
     let workspace = unique_workspace("skill-delete-disabled");
     std::fs::create_dir_all(&workspace).unwrap();
+    let home = skill_test_home(&workspace);
     let source_dir = unique_workspace("skill-delete-disabled-source");
     let source_path = write_skill_package(
         &source_dir,
@@ -403,9 +413,7 @@ async fn delete_skill_removes_disabled_managed_record_and_file() {
         "Clean up disabled workspace",
         None,
     );
-    let state = runtime_state_for_workspace(workspace.clone())
-        .await
-        .unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace.clone()).await;
     let imported = import_skill_with_runtime_state(
         ImportSkillRequest {
             source_path: source_path.to_string_lossy().to_string(),
@@ -436,10 +444,7 @@ async fn delete_skill_removes_disabled_managed_record_and_file() {
 
     assert_eq!(deleted.id, imported.skill.id);
     assert_eq!(deleted.status, "deleted");
-    assert!(!workspace
-        .join(".jyowo/skills/packages")
-        .join(&imported.skill.id)
-        .exists());
+    assert!(!home.package_path(&imported.skill.id).exists());
     assert!(listed
         .skills
         .iter()
@@ -465,7 +470,7 @@ async fn get_skill_detail_and_file_return_managed_skill_metadata_lazily() {
     )
     .unwrap();
     let source_path = source_path.canonicalize().unwrap();
-    let state = runtime_state_for_workspace(workspace).await.unwrap();
+    let state = runtime_state_with_harness_for_workspace(workspace).await;
     let imported = import_skill_with_runtime_state(
         ImportSkillRequest {
             source_path: source_path.to_string_lossy().to_string(),

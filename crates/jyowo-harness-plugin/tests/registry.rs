@@ -10,8 +10,9 @@ use harness_contracts::{
     DeferPolicy, Event, HookFailureMode, ManifestOriginRef, McpServerId, McpServerSource,
     MemoryError, MemoryId, NetworkAccess, PluginId, PluginRecentEvent, ProviderRestriction,
     RejectionReason, SteeringBody, SteeringId, SteeringKind, SteeringPriority, SteeringRequest,
-    SteeringSource, ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
-    ToolOrigin, ToolProperties, TrustLevel, WorkspaceAccess,
+    SteeringSource, ToolActionPlan, ToolDescriptor, ToolDescriptorMetadata, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolIntegrationSource, ToolOrigin, ToolProperties, TrustLevel,
+    WorkspaceAccess,
 };
 use harness_hook::{
     HookContext, HookEvent, HookHandler, HookOrigin, HookOutcome, HookRegistrationKind,
@@ -2817,6 +2818,10 @@ impl FakeTool {
                 },
                 search_hint: None,
                 service_binding: None,
+                metadata: ToolDescriptorMetadata {
+                    integration_source: ToolIntegrationSource::Plugin,
+                    ..Default::default()
+                },
             },
         }
     }
@@ -2832,6 +2837,7 @@ impl FakeTool {
         let mut tool = Self::new(name);
         tool.descriptor.origin = ToolOrigin::Builtin;
         tool.descriptor.trust_level = TrustLevel::AdminTrusted;
+        tool.descriptor.metadata = ToolDescriptorMetadata::default();
         tool
     }
 }

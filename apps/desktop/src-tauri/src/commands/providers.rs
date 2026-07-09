@@ -30,6 +30,11 @@ use super::stores::*;
 use super::validation::*;
 use super::*;
 use harness_contracts::{ProviderSecretEntry, ProviderSelectionRecord};
+use harness_model::{
+    CacheProtocolSemantics, MediaProtocolSemantics, OutputProtocolSemantics,
+    ReasoningProtocolSemantics, StreamingProtocolSemantics, ToolProtocolSemantics,
+};
+use harness_provider_state::ProviderContinuationKind;
 use jyowo_harness_sdk::AgentCapabilityResolutionContext;
 
 #[derive(Clone)]
@@ -233,32 +238,21 @@ pub(crate) fn sync_runtime_provider_capability_routes(
 #[derive(Clone)]
 pub struct DesktopProviderSettingsStore {
     layout: crate::storage_layout::StorageLayout,
-    selection_scope: ProviderSettingsSelectionScope,
-}
-
-#[derive(Clone)]
-enum ProviderSettingsSelectionScope {
-    Project { workspace_root: PathBuf },
-    GlobalOnly,
 }
 
 impl DesktopProviderSettingsStore {
-    pub fn new(workspace_root: PathBuf) -> Self {
+    pub fn new(_workspace_root: PathBuf) -> Self {
         let home = execution_settings_home_dir();
-        Self::new_with_layout(
-            crate::storage_layout::StorageLayout::new(crate::storage_layout::JyowoHome::new(home)),
-            workspace_root,
-        )
+        Self::global_only_with_layout(crate::storage_layout::StorageLayout::new(
+            crate::storage_layout::JyowoHome::new(home),
+        ))
     }
 
     pub fn new_with_layout(
         layout: crate::storage_layout::StorageLayout,
-        workspace_root: PathBuf,
+        _workspace_root: PathBuf,
     ) -> Self {
-        Self {
-            layout,
-            selection_scope: ProviderSettingsSelectionScope::Project { workspace_root },
-        }
+        Self::global_only_with_layout(layout)
     }
 
     pub fn global_only() -> Self {
@@ -269,56 +263,37 @@ impl DesktopProviderSettingsStore {
     }
 
     pub fn global_only_with_layout(layout: crate::storage_layout::StorageLayout) -> Self {
-        Self {
-            layout,
-            selection_scope: ProviderSettingsSelectionScope::GlobalOnly,
-        }
+        Self { layout }
     }
 
-    pub fn from_runtime_layout(layout: &crate::storage_layout::RuntimeLayout) -> Self {
-        match layout.workspace_root.as_ref() {
-            Some(workspace_root) => Self::new(workspace_root.clone()),
-            None => Self::global_only(),
-        }
+    pub fn from_runtime_layout(_layout: &crate::storage_layout::RuntimeLayout) -> Self {
+        Self::global_only()
+    }
+
+    pub fn from_runtime_layout_with_layout(
+        storage_layout: crate::storage_layout::StorageLayout,
+        _runtime_layout: &crate::storage_layout::RuntimeLayout,
+    ) -> Self {
+        Self::global_only_with_layout(storage_layout)
     }
 
     fn global_config_store(&self) -> GlobalConfigStore {
         GlobalConfigStore::new(self.layout.clone())
     }
 
-    fn project_config_store(&self) -> Option<ProjectConfigStore> {
-        match &self.selection_scope {
-            ProviderSettingsSelectionScope::Project { workspace_root } => Some(
-                ProjectConfigStore::new(self.layout.clone(), workspace_root.clone()),
-            ),
-            ProviderSettingsSelectionScope::GlobalOnly => None,
-        }
-    }
-
     fn load_selection(&self) -> Result<ProviderSelectionRecord, CommandErrorPayload> {
-        if let Some(project_config) = self.project_config_store() {
-            project_config.load_project_provider_selection()
-        } else {
-            self.global_config_store().load_global_provider_selection()
-        }
+        self.global_config_store().load_global_provider_selection()
     }
 
     fn save_selection(&self, record: &ProviderSelectionRecord) -> Result<(), CommandErrorPayload> {
-        if let Some(project_config) = self.project_config_store() {
-            project_config.save_project_provider_selection(record)
-        } else {
-            self.global_config_store()
-                .save_global_provider_selection(record)
-        }
+        self.global_config_store()
+            .save_global_provider_selection(record)
     }
 }
 
 impl ProviderSettingsStore for DesktopProviderSettingsStore {
     fn selection_scope(&self) -> SettingsScope {
-        match self.selection_scope {
-            ProviderSettingsSelectionScope::Project { .. } => SettingsScope::Project,
-            ProviderSettingsSelectionScope::GlobalOnly => SettingsScope::Global,
-        }
+        SettingsScope::Global
     }
 
     fn load_record(&self) -> Result<Option<ProviderSettingsRecord>, CommandErrorPayload> {
@@ -372,19 +347,52 @@ fn provider_config_record_from_profile(
     profile: ProviderProfileDefinition,
     secret: Option<&ProviderSecretEntry>,
 ) -> Result<ProviderConfigRecord, CommandErrorPayload> {
+    let profile = migrate_provider_profile(profile);
+    let provider_defaults = profile
+        .provider_defaults
+        .map(provider_defaults_record_from_profile);
+    validate_provider_defaults(profile.provider_id.as_str(), provider_defaults.as_ref())?;
     Ok(ProviderConfigRecord {
         api_key: secret
             .map(|entry| entry.api_key.clone())
             .unwrap_or_default(),
         protocol: profile.protocol,
-        base_url: profile.base_url,
+        base_url: normalized_provider_base_url(&profile.provider_id, profile.base_url.as_deref())?,
         display_name: profile.display_name,
         id: profile.id,
         model_id: profile.model_id,
+        model_options: profile.model_options,
         official_quota_api_key: secret.and_then(|entry| entry.official_quota_api_key.clone()),
         provider_id: profile.provider_id,
+        provider_defaults,
         model_descriptor: provider_model_descriptor_record_from_profile(profile.model_descriptor)?,
     })
+}
+
+fn migrate_provider_profile(mut profile: ProviderProfileDefinition) -> ProviderProfileDefinition {
+    if profile.provider_id == "qwen" && profile.model_id == "qwen3.7-max-thinking" {
+        profile.model_id = "qwen3.7-max".to_owned();
+        profile.model_descriptor.model_id = "qwen3.7-max".to_owned();
+        profile.model_descriptor.display_name = "Qwen3.7 Max".to_owned();
+        let mut defaults = profile.provider_defaults.unwrap_or_default();
+        let mut body = defaults
+            .body
+            .and_then(|body| body.as_object().cloned())
+            .unwrap_or_default();
+        body.insert("enable_thinking".to_owned(), Value::Bool(true));
+        defaults.body = Some(Value::Object(body));
+        profile.provider_defaults = Some(defaults);
+    }
+    profile
+}
+
+fn provider_defaults_record_from_profile(
+    defaults: harness_contracts::ProviderProfileDefaults,
+) -> ProviderDefaultsRecord {
+    ProviderDefaultsRecord {
+        body: defaults.body,
+        headers: defaults.headers,
+    }
 }
 
 fn provider_model_descriptor_record_from_profile(
@@ -419,6 +427,7 @@ fn provider_model_descriptor_record_from_profile(
         max_output_tokens: descriptor.max_output_tokens,
         model_id: descriptor.model_id,
         provider_id: descriptor.provider_id,
+        runtime_semantics: descriptor.runtime_semantics,
     })
 }
 
@@ -456,24 +465,53 @@ fn provider_lifecycle_record_from_profile(
 
 #[derive(Clone)]
 pub struct DesktopProviderCapabilityRouteStore {
-    workspace_root: PathBuf,
+    layout: crate::storage_layout::StorageLayout,
+    workspace_root: Option<PathBuf>,
 }
 
 impl DesktopProviderCapabilityRouteStore {
     pub fn new(workspace_root: PathBuf) -> Self {
-        Self { workspace_root }
+        let home = execution_settings_home_dir();
+        Self::new_with_layout(
+            crate::storage_layout::StorageLayout::new(crate::storage_layout::JyowoHome::new(home)),
+            workspace_root,
+        )
+    }
+
+    pub fn new_with_layout(
+        layout: crate::storage_layout::StorageLayout,
+        workspace_root: PathBuf,
+    ) -> Self {
+        Self {
+            layout,
+            workspace_root: Some(workspace_root),
+        }
+    }
+
+    pub fn global_only() -> Self {
+        let home = execution_settings_home_dir();
+        Self::global_only_with_layout(crate::storage_layout::StorageLayout::new(
+            crate::storage_layout::JyowoHome::new(home),
+        ))
+    }
+
+    pub fn global_only_with_layout(layout: crate::storage_layout::StorageLayout) -> Self {
+        Self {
+            layout,
+            workspace_root: None,
+        }
     }
 
     #[must_use]
-    pub fn workspace_root(&self) -> &Path {
-        &self.workspace_root
+    pub fn workspace_root(&self) -> Option<&Path> {
+        self.workspace_root.as_deref()
     }
 
     fn settings_path(&self) -> PathBuf {
-        let home = execution_settings_home_dir();
-        let layout =
-            crate::storage_layout::StorageLayout::new(crate::storage_layout::JyowoHome::new(home));
-        layout.project_provider_routes_file(&self.workspace_root)
+        match &self.workspace_root {
+            Some(workspace_root) => self.layout.project_provider_routes_file(workspace_root),
+            None => self.layout.global_provider_routes_file(),
+        }
     }
 }
 
@@ -572,21 +610,15 @@ impl DesktopExecutionSettingsStore {
         }
     }
 
-    pub fn from_runtime_layout(layout: &crate::storage_layout::RuntimeLayout) -> Self {
-        match layout.workspace_root.as_ref() {
-            Some(workspace_root) => Self::new(workspace_root.clone()),
-            None => Self::global_only(),
-        }
+    pub fn from_runtime_layout(_layout: &crate::storage_layout::RuntimeLayout) -> Self {
+        Self::global_only()
     }
 
     pub fn from_runtime_layout_with_layout(
         storage_layout: crate::storage_layout::StorageLayout,
-        runtime_layout: &crate::storage_layout::RuntimeLayout,
+        _runtime_layout: &crate::storage_layout::RuntimeLayout,
     ) -> Self {
-        match runtime_layout.workspace_root.as_ref() {
-            Some(workspace_root) => Self::new_with_layout(storage_layout, workspace_root.clone()),
-            None => Self::global_only_with_layout(storage_layout),
-        }
+        Self::global_only_with_layout(storage_layout)
     }
 
     #[must_use]
@@ -1055,25 +1087,65 @@ pub(crate) fn model_provider_catalog_response(
     ModelProviderCatalogResponse {
         providers: entries
             .into_iter()
-            .map(|entry| ModelProviderCatalogEntry {
-                default_base_url: entry.default_base_url,
-                display_name: entry.display_name,
-                models: entry
-                    .models
-                    .into_iter()
-                    .map(model_descriptor_catalog_entry)
-                    .collect(),
-                provider_id: entry.provider_id,
-                runtime_capability: runtime_capability_payload(entry.runtime_capability),
-                service_capabilities: entry
-                    .service_capabilities
-                    .into_iter()
-                    .map(service_capability_payload)
-                    .collect(),
-                source_url: entry.source_url,
-                verified_date: entry.verified_date.to_string(),
+            .map(|entry| {
+                let default_base_url = desktop_default_base_url(&entry);
+                ModelProviderCatalogEntry {
+                    default_base_url,
+                    display_name: entry.display_name,
+                    models: entry
+                        .models
+                        .into_iter()
+                        .map(model_descriptor_catalog_entry)
+                        .collect(),
+                    provider_id: entry.provider_id,
+                    provider_defaults: None,
+                    runtime_capability: runtime_capability_payload(entry.runtime_capability),
+                    service_capabilities: entry
+                        .service_capabilities
+                        .into_iter()
+                        .map(service_capability_payload)
+                        .collect(),
+                    source_url: entry.source_url,
+                    verified_date: entry.verified_date.to_string(),
+                }
             })
             .collect(),
+    }
+}
+
+fn desktop_default_base_url(entry: &jyowo_harness_sdk::ext::ProviderCatalogEntry) -> String {
+    if entry.provider_id != "qwen" {
+        return entry.default_base_url.clone();
+    }
+    let timezone_id =
+        iana_time_zone::get_timezone().unwrap_or_else(|_| "America/New_York".to_owned());
+    let region_id = qwen_region_id_for_timezone(&timezone_id);
+    entry
+        .runtime_capability
+        .base_url_regions
+        .iter()
+        .find(|region| region.id == region_id)
+        .or_else(|| {
+            entry
+                .runtime_capability
+                .base_url_regions
+                .iter()
+                .find(|region| region.id == "us")
+        })
+        .map(|region| region.base_url.clone())
+        .unwrap_or_else(|| entry.default_base_url.clone())
+}
+
+fn qwen_region_id_for_timezone(timezone_id: &str) -> &'static str {
+    match timezone_id {
+        "Asia/Shanghai" => "beijing",
+        "Asia/Hong_Kong" | "Asia/Macau" => "hong-kong",
+        "Asia/Tokyo" => "japan",
+        "Asia/Singapore" | "Asia/Kuala_Lumpur" | "Asia/Jakarta" | "Asia/Bangkok"
+        | "Asia/Manila" | "Asia/Ho_Chi_Minh" => "singapore",
+        value if value.starts_with("Europe/") => "germany",
+        value if value.starts_with("America/") => "us",
+        _ => "us",
     }
 }
 
@@ -1253,12 +1325,7 @@ pub fn get_execution_settings_for_state_request(
     context: Option<&AgentCapabilityResolutionContext>,
 ) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
     let Some(workspace_path) = request.workspace_path else {
-        let record = state.effective_execution_settings(None)?;
-        let global_only = state.project_workspace_root().is_none();
-        let policy_root = state
-            .project_workspace_root()
-            .unwrap_or_else(|| state.runtime_root());
-        return execution_settings_response_from_record(&record, global_only, policy_root, context);
+        return get_execution_settings_with_store(state.execution_settings_store.as_ref(), context);
     };
     let workspace_root =
         canonical_workspace_root(PathBuf::from(workspace_path), "workspace path".to_owned())?;
@@ -1270,10 +1337,7 @@ pub fn get_execution_settings_for_state_request(
     {
         return Err(invalid_payload("project is not registered".to_owned()));
     }
-    let global = global_config_store_for_home();
-    let project = project_config_store_for_workspace(&workspace_root);
-    let record = resolve_effective_execution_settings(Some(&global), Some(&project), None, None)?;
-    execution_settings_response_from_record(&record, false, &workspace_root, context)
+    get_execution_settings_with_store(state.execution_settings_store.as_ref(), context)
 }
 
 pub fn get_execution_settings_for_request(
@@ -1295,8 +1359,7 @@ pub fn get_execution_settings_for_request(
     {
         return Err(invalid_payload("project is not registered".to_owned()));
     }
-    let store = DesktopExecutionSettingsStore::new(workspace_root);
-    get_execution_settings_with_store(&store, context)
+    get_execution_settings_with_store(active_store, context)
 }
 
 pub fn set_execution_settings_with_store(
@@ -1343,20 +1406,19 @@ pub fn set_execution_settings_with_store(
     })
 }
 
-/// Resolve effective execution settings by merging global defaults, project
-/// overrides, and optional run-level overrides.
+/// Resolve effective execution settings by merging global defaults and optional
+/// run-level overrides.
 ///
 /// Precedence (highest wins):
 /// 1. Run explicit params (`run_permission_mode`, `run_tool_profile`)
-/// 2. Project execution overrides
-/// 3. Global execution defaults
-/// 4. Contract defaults in [`harness_contracts::ExecutionDefaultsRecord::default`]
+/// 2. Global execution defaults
+/// 3. Contract defaults in [`harness_contracts::ExecutionDefaultsRecord::default`]
 ///
 /// This is the single source of truth for effective execution settings.
 /// Frontend code must not reimplement this overlay.
 pub fn resolve_effective_execution_settings(
     global_config: Option<&crate::commands::stores::GlobalConfigStore>,
-    project_config: Option<&crate::commands::stores::ProjectConfigStore>,
+    _project_config: Option<&crate::commands::stores::ProjectConfigStore>,
     run_permission_mode: Option<PermissionMode>,
     run_tool_profile: Option<ToolProfile>,
 ) -> Result<harness_contracts::ExecutionDefaultsRecord, CommandErrorPayload> {
@@ -1375,15 +1437,7 @@ pub fn resolve_effective_execution_settings(
         effective.background_agents_enabled = global_defaults.background_agents_enabled;
     }
 
-    // 3. Apply project overrides (overwrite global defaults where project has
-    //    explicit non-default values).
-    if let Some(project) = project_config {
-        let overrides = project.load_execution_overrides()?;
-        ensure_execution_overrides_structure(&overrides)?;
-        apply_execution_overrides(&mut effective, &overrides);
-    }
-
-    // 4. Apply run explicit params.
+    // 3. Apply run explicit params.
     if let Some(permission_mode) = run_permission_mode {
         effective.permission_mode = permission_mode;
     }
@@ -1942,7 +1996,7 @@ pub async fn save_provider_settings_with_store(
     store: &dyn ProviderSettingsStore,
 ) -> Result<SaveProviderSettingsResponse, CommandErrorPayload> {
     ensure_provider_settings(&request)?;
-    let base_url = normalized_base_url(request.base_url.as_deref())?;
+    let base_url = normalized_provider_base_url(&request.provider_id, request.base_url.as_deref())?;
     let mut record = store.load_record()?.unwrap_or_default();
     let config_id = provider_config_id(&record, &request);
     let previous_config = record
@@ -1992,6 +2046,27 @@ pub async fn save_provider_settings_with_store(
                 })
                 .and_then(|config| config.official_quota_api_key.clone())
         });
+    let provider_defaults = request.provider_defaults.clone().or_else(|| {
+        previous_config
+            .as_ref()
+            .filter(|config| {
+                config.provider_id == request.provider_id && config.base_url == base_url
+            })
+            .and_then(|config| config.provider_defaults.clone())
+    });
+    let model_options = match request.model_options.as_ref() {
+        Some(model_options) => model_options.clone(),
+        None if previous_config.as_ref().is_some_and(|config| {
+            config.provider_id == request.provider_id && config.base_url == base_url
+        }) =>
+        {
+            previous_config
+                .as_ref()
+                .map(|config| config.model_options.clone())
+                .unwrap_or_default()
+        }
+        None => harness_contracts::ModelRequestOptions::default(),
+    };
     let config = ProviderConfigRecord {
         api_key: config_api_key,
         protocol: descriptor.protocol,
@@ -2005,8 +2080,10 @@ pub async fn save_provider_settings_with_store(
             .unwrap_or_else(|| provider_display_name(&request.provider_id)),
         id: config_id.clone(),
         model_id: request.model_id.clone(),
+        model_options,
         official_quota_api_key,
         provider_id: request.provider_id.clone(),
+        provider_defaults,
         model_descriptor: model_descriptor_record(&descriptor),
     };
     record.configs.retain(|existing| existing.id != config_id);
@@ -2086,8 +2163,15 @@ pub(crate) async fn provider_settings_descriptor(
     previous_config: Option<&ProviderConfigRecord>,
 ) -> Result<ModelDescriptor, CommandErrorPayload> {
     ensure_provider_metadata_shape(&request.provider_id, &request.model_id)?;
+    let requested_protocol = request.protocol.or_else(|| {
+        previous_config
+            .filter(|config| {
+                config.provider_id == request.provider_id && config.model_id == request.model_id
+            })
+            .map(|config| config.protocol)
+    });
     match resolve_model_descriptor(&request.provider_id, &request.model_id) {
-        Ok(descriptor) => Ok(descriptor),
+        Ok(descriptor) => apply_protocol_override(descriptor, requested_protocol),
         Err(error) if request.provider_id == "openrouter" => {
             if let Some(previous_config) = previous_config {
                 if previous_config.provider_id == request.provider_id
@@ -2096,11 +2180,45 @@ pub(crate) async fn provider_settings_descriptor(
                     return provider_config_descriptor(previous_config);
                 }
             }
-            resolve_provider_model_descriptor(&request.provider_id, &request.model_id)
-                .await
-                .map_err(|_| provider_registry_error(error))
+            let descriptor =
+                resolve_provider_model_descriptor(&request.provider_id, &request.model_id)
+                    .await
+                    .map_err(|_| provider_registry_error(error))?;
+            apply_protocol_override(descriptor, requested_protocol)
         }
         Err(error) => Err(provider_registry_error(error)),
+    }
+}
+
+fn apply_protocol_override(
+    mut descriptor: ModelDescriptor,
+    protocol: Option<ModelProtocol>,
+) -> Result<ModelDescriptor, CommandErrorPayload> {
+    let Some(protocol) = protocol else {
+        return Ok(descriptor);
+    };
+    if protocol == descriptor.protocol {
+        return Ok(descriptor);
+    }
+    if descriptor.provider_id != "qwen" {
+        return Err(invalid_payload(
+            "protocol override is only supported for Qwen provider configs".to_owned(),
+        ));
+    }
+    match protocol {
+        ModelProtocol::ChatCompletions => {
+            descriptor.protocol = ModelProtocol::ChatCompletions;
+            descriptor.runtime_semantics = ModelRuntimeSemantics::openai_chat_qwen();
+            Ok(descriptor)
+        }
+        ModelProtocol::Responses => {
+            descriptor.protocol = ModelProtocol::Responses;
+            descriptor.runtime_semantics = ModelRuntimeSemantics::openai_responses_default();
+            Ok(descriptor)
+        }
+        _ => Err(invalid_payload(
+            "Qwen protocol must be chat_completions or responses".to_owned(),
+        )),
     }
 }
 
@@ -2189,6 +2307,7 @@ pub(crate) fn model_descriptor_record(
         max_output_tokens: descriptor.max_output_tokens,
         model_id: descriptor.model_id.clone(),
         provider_id: descriptor.provider_id.clone(),
+        runtime_semantics: Some(runtime_semantics_record(&descriptor.runtime_semantics)),
     }
 }
 
@@ -2240,6 +2359,8 @@ pub(crate) fn model_modality_record(modality: &ModelModality) -> ProviderModelMo
 pub(crate) fn model_descriptor_from_record(
     record: &ProviderModelDescriptorRecord,
 ) -> Result<ModelDescriptor, CommandErrorPayload> {
+    let conversation_capability =
+        conversation_capability_from_record(&record.conversation_capability);
     Ok(ModelDescriptor {
         provider_id: record.provider_id.clone(),
         model_id: record.model_id.clone(),
@@ -2247,13 +2368,238 @@ pub(crate) fn model_descriptor_from_record(
         protocol: record.protocol,
         context_window: record.context_window,
         max_output_tokens: record.max_output_tokens,
-        conversation_capability: conversation_capability_from_record(
-            &record.conversation_capability,
-        ),
-        runtime_semantics: ModelRuntimeSemantics::messages_default(record.protocol),
+        provider_declared_capability: conversation_capability.clone(),
+        conversation_capability,
+        runtime_semantics: runtime_semantics_from_record(record)?,
         lifecycle: model_lifecycle_from_record(&record.lifecycle)?,
         pricing: None,
     })
+}
+
+fn runtime_semantics_from_record(
+    record: &ProviderModelDescriptorRecord,
+) -> Result<ModelRuntimeSemantics, CommandErrorPayload> {
+    let Some(semantics) = &record.runtime_semantics else {
+        return Ok(runtime_semantics_fallback(
+            &record.provider_id,
+            record.protocol,
+        ));
+    };
+
+    Ok(ModelRuntimeSemantics {
+        protocol: semantics.protocol,
+        tool_protocol: tool_protocol_from_record(&semantics.tool_protocol)?,
+        reasoning_protocol: reasoning_protocol_from_record(&semantics.reasoning_protocol)?,
+        streaming_protocol: streaming_protocol_from_record(&semantics.streaming_protocol)?,
+        cache_protocol: cache_protocol_from_record(&semantics.cache_protocol)?,
+        media_protocol: media_protocol_from_record(&semantics.media_protocol)?,
+        output_protocol: output_protocol_from_record(&semantics.output_protocol)?,
+        provider_continuation_dialect: semantics.provider_continuation_dialect.clone(),
+    })
+}
+
+fn runtime_semantics_fallback(provider_id: &str, protocol: ModelProtocol) -> ModelRuntimeSemantics {
+    if provider_id == "openai" && protocol == ModelProtocol::Responses {
+        return ModelRuntimeSemantics::openai_responses_default();
+    }
+    ModelRuntimeSemantics::messages_default(protocol)
+}
+
+fn runtime_semantics_record(
+    semantics: &ModelRuntimeSemantics,
+) -> harness_contracts::ProviderRuntimeSemanticsDescriptor {
+    harness_contracts::ProviderRuntimeSemanticsDescriptor {
+        protocol: semantics.protocol,
+        tool_protocol: tool_protocol_record(&semantics.tool_protocol).to_owned(),
+        reasoning_protocol: reasoning_protocol_record(&semantics.reasoning_protocol),
+        streaming_protocol: streaming_protocol_record(&semantics.streaming_protocol).to_owned(),
+        cache_protocol: cache_protocol_record(&semantics.cache_protocol).to_owned(),
+        media_protocol: media_protocol_record(&semantics.media_protocol).to_owned(),
+        output_protocol: output_protocol_record(&semantics.output_protocol).to_owned(),
+        provider_continuation_dialect: semantics.provider_continuation_dialect.clone(),
+    }
+}
+
+fn tool_protocol_record(protocol: &ToolProtocolSemantics) -> &'static str {
+    match protocol {
+        ToolProtocolSemantics::None => "none",
+        ToolProtocolSemantics::OpenAiChatTools => "openai_chat_tools",
+        ToolProtocolSemantics::OpenAiResponsesTools => "openai_responses_tools",
+        ToolProtocolSemantics::AnthropicTools => "anthropic_tools",
+        ToolProtocolSemantics::GeminiTools => "gemini_tools",
+        ToolProtocolSemantics::BedrockConverseTools => "bedrock_converse_tools",
+    }
+}
+
+fn tool_protocol_from_record(value: &str) -> Result<ToolProtocolSemantics, CommandErrorPayload> {
+    match value {
+        "none" => Ok(ToolProtocolSemantics::None),
+        "openai_chat_tools" => Ok(ToolProtocolSemantics::OpenAiChatTools),
+        "openai_responses_tools" => Ok(ToolProtocolSemantics::OpenAiResponsesTools),
+        "anthropic_tools" => Ok(ToolProtocolSemantics::AnthropicTools),
+        "gemini_tools" => Ok(ToolProtocolSemantics::GeminiTools),
+        "bedrock_converse_tools" => Ok(ToolProtocolSemantics::BedrockConverseTools),
+        _ => Err(invalid_payload(format!(
+            "unknown runtime semantics toolProtocol: {value}"
+        ))),
+    }
+}
+
+fn reasoning_protocol_record(
+    protocol: &ReasoningProtocolSemantics,
+) -> harness_contracts::ProviderRuntimeReasoningProtocolDescriptor {
+    match protocol {
+        ReasoningProtocolSemantics::None => {
+            harness_contracts::ProviderRuntimeReasoningProtocolDescriptor::None
+        }
+        ReasoningProtocolSemantics::PublicThinking => {
+            harness_contracts::ProviderRuntimeReasoningProtocolDescriptor::PublicThinking
+        }
+        ReasoningProtocolSemantics::PublicSummary => {
+            harness_contracts::ProviderRuntimeReasoningProtocolDescriptor::PublicSummary
+        }
+        ReasoningProtocolSemantics::ProviderPrivateReplay {
+            continuation_kind,
+            required_for_assistant_tool_replay,
+        } => harness_contracts::ProviderRuntimeReasoningProtocolDescriptor::ProviderPrivateReplay {
+            continuation_kind: continuation_kind_record(continuation_kind),
+            required_for_assistant_tool_replay: *required_for_assistant_tool_replay,
+        },
+    }
+}
+
+fn reasoning_protocol_from_record(
+    protocol: &harness_contracts::ProviderRuntimeReasoningProtocolDescriptor,
+) -> Result<ReasoningProtocolSemantics, CommandErrorPayload> {
+    match protocol {
+        harness_contracts::ProviderRuntimeReasoningProtocolDescriptor::None => {
+            Ok(ReasoningProtocolSemantics::None)
+        }
+        harness_contracts::ProviderRuntimeReasoningProtocolDescriptor::PublicThinking => {
+            Ok(ReasoningProtocolSemantics::PublicThinking)
+        }
+        harness_contracts::ProviderRuntimeReasoningProtocolDescriptor::PublicSummary => {
+            Ok(ReasoningProtocolSemantics::PublicSummary)
+        }
+        harness_contracts::ProviderRuntimeReasoningProtocolDescriptor::ProviderPrivateReplay {
+            continuation_kind,
+            required_for_assistant_tool_replay,
+        } => Ok(ReasoningProtocolSemantics::ProviderPrivateReplay {
+            continuation_kind: continuation_kind_from_record(continuation_kind)?,
+            required_for_assistant_tool_replay: *required_for_assistant_tool_replay,
+        }),
+    }
+}
+
+fn continuation_kind_record(kind: &ProviderContinuationKind) -> String {
+    match kind {
+        ProviderContinuationKind::ReasoningReplay => "reasoning_replay".to_owned(),
+        ProviderContinuationKind::ToolReplay => "tool_replay".to_owned(),
+        ProviderContinuationKind::CacheReplay => "cache_replay".to_owned(),
+        ProviderContinuationKind::ProviderNative(value) => format!("provider_native:{value}"),
+    }
+}
+
+fn continuation_kind_from_record(
+    value: &str,
+) -> Result<ProviderContinuationKind, CommandErrorPayload> {
+    match value {
+        "reasoning_replay" => Ok(ProviderContinuationKind::ReasoningReplay),
+        "tool_replay" => Ok(ProviderContinuationKind::ToolReplay),
+        "cache_replay" => Ok(ProviderContinuationKind::CacheReplay),
+        _ => value
+            .strip_prefix("provider_native:")
+            .map(|native| ProviderContinuationKind::ProviderNative(native.to_owned()))
+            .ok_or_else(|| {
+                invalid_payload(format!(
+                    "unknown runtime semantics continuation kind: {value}"
+                ))
+            }),
+    }
+}
+
+fn streaming_protocol_record(protocol: &StreamingProtocolSemantics) -> &'static str {
+    match protocol {
+        StreamingProtocolSemantics::None => "none",
+        StreamingProtocolSemantics::Sse => "sse",
+        StreamingProtocolSemantics::JsonLines => "json_lines",
+        StreamingProtocolSemantics::ProviderNative => "provider_native",
+    }
+}
+
+fn streaming_protocol_from_record(
+    value: &str,
+) -> Result<StreamingProtocolSemantics, CommandErrorPayload> {
+    match value {
+        "none" => Ok(StreamingProtocolSemantics::None),
+        "sse" => Ok(StreamingProtocolSemantics::Sse),
+        "json_lines" => Ok(StreamingProtocolSemantics::JsonLines),
+        "provider_native" => Ok(StreamingProtocolSemantics::ProviderNative),
+        _ => Err(invalid_payload(format!(
+            "unknown runtime semantics streamingProtocol: {value}"
+        ))),
+    }
+}
+
+fn cache_protocol_record(protocol: &CacheProtocolSemantics) -> &'static str {
+    match protocol {
+        CacheProtocolSemantics::None => "none",
+        CacheProtocolSemantics::OpenAiAuto => "openai_auto",
+        CacheProtocolSemantics::AnthropicEphemeral => "anthropic_ephemeral",
+        CacheProtocolSemantics::GeminiContextCache => "gemini_context_cache",
+    }
+}
+
+fn cache_protocol_from_record(value: &str) -> Result<CacheProtocolSemantics, CommandErrorPayload> {
+    match value {
+        "none" => Ok(CacheProtocolSemantics::None),
+        "openai_auto" => Ok(CacheProtocolSemantics::OpenAiAuto),
+        "anthropic_ephemeral" => Ok(CacheProtocolSemantics::AnthropicEphemeral),
+        "gemini_context_cache" => Ok(CacheProtocolSemantics::GeminiContextCache),
+        _ => Err(invalid_payload(format!(
+            "unknown runtime semantics cacheProtocol: {value}"
+        ))),
+    }
+}
+
+fn media_protocol_record(protocol: &MediaProtocolSemantics) -> &'static str {
+    match protocol {
+        MediaProtocolSemantics::TextOnly => "text_only",
+        MediaProtocolSemantics::OpenAiContentParts => "openai_content_parts",
+        MediaProtocolSemantics::ProviderNative => "provider_native",
+    }
+}
+
+fn media_protocol_from_record(value: &str) -> Result<MediaProtocolSemantics, CommandErrorPayload> {
+    match value {
+        "text_only" => Ok(MediaProtocolSemantics::TextOnly),
+        "openai_content_parts" => Ok(MediaProtocolSemantics::OpenAiContentParts),
+        "provider_native" => Ok(MediaProtocolSemantics::ProviderNative),
+        _ => Err(invalid_payload(format!(
+            "unknown runtime semantics mediaProtocol: {value}"
+        ))),
+    }
+}
+
+fn output_protocol_record(protocol: &OutputProtocolSemantics) -> &'static str {
+    match protocol {
+        OutputProtocolSemantics::Text => "text",
+        OutputProtocolSemantics::TextAndToolUse => "text_and_tool_use",
+        OutputProtocolSemantics::StructuredJson => "structured_json",
+    }
+}
+
+fn output_protocol_from_record(
+    value: &str,
+) -> Result<OutputProtocolSemantics, CommandErrorPayload> {
+    match value {
+        "text" => Ok(OutputProtocolSemantics::Text),
+        "text_and_tool_use" => Ok(OutputProtocolSemantics::TextAndToolUse),
+        "structured_json" => Ok(OutputProtocolSemantics::StructuredJson),
+        _ => Err(invalid_payload(format!(
+            "unknown runtime semantics outputProtocol: {value}"
+        ))),
+    }
 }
 
 pub(crate) fn conversation_capability_from_record(
@@ -2318,6 +2664,7 @@ pub(crate) fn descriptor_from_inventory_model(
             protocol: model.protocol,
             context_window: model.context_window,
             max_output_tokens: model.max_output_tokens,
+            provider_declared_capability: model.provider_declared_capability,
             conversation_capability: model.conversation_capability,
             runtime_semantics: model.runtime_semantics,
             lifecycle: model.lifecycle,
@@ -2372,7 +2719,9 @@ pub(crate) fn provider_config_payload(
         id: config.id.clone(),
         is_default: default_config_id.is_some_and(|id| id == config.id),
         model_id: config.model_id.clone(),
+        model_options: config.model_options.clone(),
         provider_id: config.provider_id.clone(),
+        provider_defaults: config.provider_defaults.clone(),
         model_descriptor: model_descriptor_catalog_entry(descriptor),
     })
 }
@@ -2399,11 +2748,71 @@ pub(crate) fn ensure_provider_config_has_api_key(
         .map_or_else(|| Ok(config.api_key.trim()), Err)
 }
 
+pub(crate) fn provider_request_defaults(
+    config: &ProviderConfigRecord,
+) -> Option<ProviderRequestDefaults> {
+    config
+        .provider_defaults
+        .as_ref()
+        .map(|defaults| ProviderRequestDefaults {
+            body: defaults
+                .body
+                .clone()
+                .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
+            headers: defaults.headers.clone(),
+        })
+}
+
+pub(crate) fn provider_defaults_body(config: &ProviderConfigRecord) -> Value {
+    config
+        .provider_defaults
+        .as_ref()
+        .and_then(|defaults| defaults.body.clone())
+        .unwrap_or(Value::Null)
+}
+
+pub(crate) fn validate_provider_defaults(
+    provider_id: &str,
+    defaults: Option<&ProviderDefaultsRecord>,
+) -> Result<(), CommandErrorPayload> {
+    let Some(defaults) = defaults else {
+        return Ok(());
+    };
+    if provider_id != "qwen" {
+        return Err(invalid_payload(
+            "providerDefaults are only supported for Qwen provider configs".to_owned(),
+        ));
+    }
+    if let Some(body) = &defaults.body {
+        let Some(object) = body.as_object() else {
+            return Err(invalid_payload(
+                "providerDefaults.body must be an object".to_owned(),
+            ));
+        };
+        for forbidden in ["model", "messages", "input", "stream"] {
+            if object.contains_key(forbidden) {
+                return Err(invalid_payload(format!(
+                    "providerDefaults.body must not include core field {forbidden}"
+                )));
+            }
+        }
+    }
+    for (name, value) in &defaults.headers {
+        if !name.eq_ignore_ascii_case("x-dashscope-session-cache") || value != "enable" {
+            return Err(invalid_payload(
+                "providerDefaults.headers only supports x-dashscope-session-cache: enable"
+                    .to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn provider_config_descriptor(
     config: &ProviderConfigRecord,
 ) -> Result<ModelDescriptor, CommandErrorPayload> {
     match resolve_model_descriptor(&config.provider_id, &config.model_id) {
-        Ok(descriptor) => Ok(descriptor),
+        Ok(descriptor) => apply_protocol_override(descriptor, Some(config.protocol)),
         Err(_) if config.provider_id == "openrouter" => {
             let descriptor = model_descriptor_from_record(&config.model_descriptor)?;
             if descriptor.provider_id != config.provider_id
@@ -2453,6 +2862,27 @@ pub(crate) fn descriptor_has_runtime_supported_modalities(descriptor: &ModelDesc
             .conversation_capability
             .output_modalities
             .is_empty()
+}
+
+pub(crate) fn normalized_provider_base_url(
+    provider_id: &str,
+    value: Option<&str>,
+) -> Result<Option<String>, CommandErrorPayload> {
+    let normalized = normalized_base_url(value)?;
+    if provider_id == "qwen" {
+        if let Some(base_url) = normalized.as_deref() {
+            if base_url.contains("{WorkspaceId}") {
+                return Err(invalid_payload(
+                    "Qwen baseUrl template requires replacing {WorkspaceId} before saving"
+                        .to_owned(),
+                ));
+            }
+            return Ok(Some(jyowo_harness_sdk::builtin::normalize_qwen_base_url(
+                base_url,
+            )));
+        }
+    }
+    Ok(normalized)
 }
 
 pub(crate) fn normalized_base_url(
@@ -2506,12 +2936,13 @@ pub(crate) fn build_provider_for_config(
             "provider config has no api key".to_owned(),
         ));
     }
-    let base_url = normalized_base_url(config.base_url.as_deref())?;
+    let base_url = normalized_provider_base_url(&config.provider_id, config.base_url.as_deref())?;
     let provider = build_provider(ProviderBuildConfig {
         provider_id: config.provider_id.clone(),
         api_key: api_key.to_owned(),
         base_url,
         model_descriptor: Some(descriptor.clone()),
+        provider_defaults: provider_request_defaults(config),
     })
     .map_err(provider_registry_init_error)?;
     Ok((Arc::from(provider), descriptor.protocol))
@@ -2531,7 +2962,15 @@ pub(crate) fn provider_config_by_id<'a>(
 pub(crate) fn model_from_provider_settings(
     store: &dyn ProviderSettingsStore,
     selected_config_id: Option<&str>,
-) -> Result<Option<(Arc<dyn ModelProvider>, String, ModelProtocol)>, CommandErrorPayload> {
+) -> Result<
+    Option<(
+        Arc<dyn ModelProvider>,
+        String,
+        ModelProtocol,
+        harness_contracts::ModelRequestOptions,
+    )>,
+    CommandErrorPayload,
+> {
     let Some(record) = store.load_record()? else {
         if selected_config_id.is_some() {
             return Err(runtime_init_failed("provider config is missing".to_owned()));
@@ -2551,12 +2990,13 @@ pub(crate) fn model_from_provider_settings(
             "provider config has no api key".to_owned(),
         ));
     }
-    let base_url = normalized_base_url(config.base_url.as_deref())?;
+    let base_url = normalized_provider_base_url(&config.provider_id, config.base_url.as_deref())?;
     let provider = build_provider(ProviderBuildConfig {
         provider_id: config.provider_id.clone(),
         api_key: api_key.to_owned(),
         base_url,
         model_descriptor: Some(descriptor.clone()),
+        provider_defaults: provider_request_defaults(config),
     })
     .map_err(provider_registry_init_error)?;
     let protocol = descriptor.protocol;
@@ -2565,10 +3005,14 @@ pub(crate) fn model_from_provider_settings(
         Arc::from(provider),
         config.model_id.clone(),
         protocol,
+        config.model_options.clone(),
     )))
 }
 
-use harness_contracts::{ModelProtocol, ProviderProfileDefinition, ProviderProfileModelDescriptor};
+use harness_contracts::{
+    ModelProtocol, ProviderProfileDefaults, ProviderProfileDefinition,
+    ProviderProfileModelDescriptor,
+};
 
 fn provider_profile_definition_from_config(
     config: &ProviderConfigRecord,
@@ -2580,8 +3024,22 @@ fn provider_profile_definition_from_config(
         provider_id: config.provider_id.clone(),
         model_id: config.model_id.clone(),
         protocol: config.protocol,
+        model_options: config.model_options.clone(),
         base_url: config.base_url.clone(),
+        provider_defaults: config
+            .provider_defaults
+            .clone()
+            .map(provider_profile_defaults_from_record),
         model_descriptor: provider_profile_descriptor_from_config(config),
+    }
+}
+
+fn provider_profile_defaults_from_record(
+    defaults: ProviderDefaultsRecord,
+) -> ProviderProfileDefaults {
+    ProviderProfileDefaults {
+        body: defaults.body,
+        headers: defaults.headers,
     }
 }
 
@@ -2628,6 +3086,16 @@ fn provider_profile_descriptor_from_config(
                 .conversation_capability
                 .structured_output,
         },
+        runtime_semantics: config
+            .model_descriptor
+            .runtime_semantics
+            .clone()
+            .or_else(|| {
+                Some(runtime_semantics_record(&runtime_semantics_fallback(
+                    &config.model_descriptor.provider_id,
+                    config.model_descriptor.protocol,
+                )))
+            }),
     }
 }
 
@@ -2662,8 +3130,11 @@ fn modality_to_string(modality: &ProviderModelModalityRecord) -> String {
 
 #[cfg(test)]
 mod execution_settings_tests {
-    use harness_contracts::{PermissionMode, ToolProfile};
+    use harness_contracts::{
+        ModelProtocol, ModelRequestOptions, PermissionMode, ProviderSelectionRecord, ToolProfile,
+    };
 
+    use crate::commands::stores::ProjectConfigStore;
     use crate::storage_layout::{JyowoHome, StorageLayout};
 
     use super::*;
@@ -2678,6 +3149,195 @@ mod execution_settings_tests {
             .prefix("home-")
             .tempdir_in(base)
             .expect("home tempdir")
+    }
+
+    fn provider_config(id: &str) -> ProviderConfigRecord {
+        ProviderConfigRecord {
+            api_key: format!("{id}-api-key"),
+            base_url: None,
+            display_name: id.to_owned(),
+            id: id.to_owned(),
+            model_descriptor: ProviderModelDescriptorRecord {
+                context_window: 128_000,
+                conversation_capability: ConversationModelCapabilityRecord {
+                    context_window: 128_000,
+                    input_modalities: vec![ProviderModelModalityRecord::Text],
+                    max_output_tokens: 8_192,
+                    output_modalities: vec![ProviderModelModalityRecord::Text],
+                    prompt_cache: false,
+                    reasoning: false,
+                    streaming: true,
+                    structured_output: true,
+                    tool_calling: true,
+                },
+                display_name: "GPT".to_owned(),
+                lifecycle: ProviderModelLifecycleRecord::Stable,
+                max_output_tokens: 8_192,
+                model_id: "gpt-5.4-mini".to_owned(),
+                protocol: ModelProtocol::Responses,
+                provider_id: "openai".to_owned(),
+                runtime_semantics: None,
+            },
+            model_id: "gpt-5.4-mini".to_owned(),
+            model_options: ModelRequestOptions::default(),
+            official_quota_api_key: None,
+            protocol: ModelProtocol::Responses,
+            provider_defaults: None,
+            provider_id: "openai".to_owned(),
+        }
+    }
+
+    fn execution_record(
+        permission_mode: PermissionMode,
+        tool_profile: ToolProfile,
+    ) -> harness_contracts::ExecutionDefaultsRecord {
+        harness_contracts::ExecutionDefaultsRecord {
+            permission_mode,
+            tool_profile,
+            context_compression_trigger_ratio: 0.8,
+            subagents_enabled: false,
+            agent_teams_enabled: false,
+            background_agents_enabled: false,
+        }
+    }
+
+    #[test]
+    fn provider_settings_store_from_project_runtime_layout_uses_global_selection() {
+        let home = temp_execution_settings_home();
+        let layout = StorageLayout::new(JyowoHome::new(home.path().join(".jyowo")));
+        let workspace = home.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let runtime_layout = layout.runtime_layout_for_project(&workspace);
+        let configs = vec![
+            provider_config("global-default"),
+            provider_config("project-default"),
+        ];
+
+        DesktopProviderSettingsStore::global_only_with_layout(layout.clone())
+            .save_record(&ProviderSettingsRecord {
+                default_config_id: Some("global-default".to_owned()),
+                configs,
+            })
+            .expect("save global provider selection");
+        ProjectConfigStore::new(layout.clone(), workspace.clone())
+            .save_project_provider_selection(&ProviderSelectionRecord {
+                default_config_id: Some("project-default".to_owned()),
+            })
+            .expect("save stale project provider selection");
+
+        let store =
+            DesktopProviderSettingsStore::from_runtime_layout_with_layout(layout, &runtime_layout);
+        let record = store
+            .load_record()
+            .expect("load provider settings")
+            .expect("provider settings");
+
+        assert_eq!(store.selection_scope(), SettingsScope::Global);
+        assert_eq!(record.default_config_id.as_deref(), Some("global-default"));
+    }
+
+    #[test]
+    fn provider_settings_store_new_with_layout_uses_global_selection() {
+        let home = temp_execution_settings_home();
+        let layout = StorageLayout::new(JyowoHome::new(home.path().join(".jyowo")));
+        let workspace = home.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let configs = vec![
+            provider_config("global-default"),
+            provider_config("project-default"),
+        ];
+
+        DesktopProviderSettingsStore::global_only_with_layout(layout.clone())
+            .save_record(&ProviderSettingsRecord {
+                default_config_id: Some("global-default".to_owned()),
+                configs,
+            })
+            .expect("save global provider selection");
+        ProjectConfigStore::new(layout.clone(), workspace.clone())
+            .save_project_provider_selection(&ProviderSelectionRecord {
+                default_config_id: Some("project-default".to_owned()),
+            })
+            .expect("save stale project provider selection");
+
+        let store = DesktopProviderSettingsStore::new_with_layout(layout, workspace);
+        let record = store
+            .load_record()
+            .expect("load provider settings")
+            .expect("provider settings");
+
+        assert_eq!(store.selection_scope(), SettingsScope::Global);
+        assert_eq!(record.default_config_id.as_deref(), Some("global-default"));
+    }
+
+    #[test]
+    fn execution_settings_store_from_project_runtime_layout_uses_global_defaults() {
+        let home = temp_execution_settings_home();
+        let layout = StorageLayout::new(JyowoHome::new(home.path().join(".jyowo")));
+        let workspace = home.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let runtime_layout = layout.runtime_layout_for_project(&workspace);
+
+        DesktopExecutionSettingsStore::global_only_with_layout(layout.clone())
+            .save_record(
+                &execution_record(PermissionMode::BypassPermissions, ToolProfile::Coding),
+                None,
+            )
+            .expect("save global execution defaults");
+        DesktopExecutionSettingsStore::new_with_layout(layout.clone(), workspace.clone())
+            .save_record(
+                &execution_record(PermissionMode::Default, ToolProfile::Minimal),
+                None,
+            )
+            .expect("save stale project execution overrides");
+
+        let store =
+            DesktopExecutionSettingsStore::from_runtime_layout_with_layout(layout, &runtime_layout);
+        let response = get_execution_settings_with_store(&store, None).expect("load settings");
+
+        assert_eq!(response.scope, SettingsScope::Global);
+        assert_eq!(response.permission_mode, PermissionMode::BypassPermissions);
+        assert_eq!(response.tool_profile, ToolProfile::Coding);
+    }
+
+    #[test]
+    fn get_execution_settings_for_state_request_uses_global_defaults_with_active_project() {
+        let temp = temp_execution_settings_home();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+            .expect("runtime state should initialize");
+        state
+            .global_config_store
+            .as_ref()
+            .expect("global config store")
+            .save_execution_defaults(&execution_record(
+                PermissionMode::BypassPermissions,
+                ToolProfile::Coding,
+            ))
+            .expect("save global execution defaults");
+        state
+            .project_config_store
+            .as_ref()
+            .expect("project config store")
+            .save_execution_overrides(
+                &execution_record(PermissionMode::Default, ToolProfile::Minimal).into(),
+            )
+            .expect("save stale project execution overrides");
+        let registry = crate::project_registry::ProjectRegistry::load().expect("project registry");
+
+        let response = get_execution_settings_for_state_request(
+            GetExecutionSettingsRequest {
+                workspace_path: None,
+            },
+            &state,
+            &registry,
+            None,
+        )
+        .expect("load settings");
+
+        assert_eq!(response.scope, SettingsScope::Global);
+        assert_eq!(response.permission_mode, PermissionMode::BypassPermissions);
+        assert_eq!(response.tool_profile, ToolProfile::Coding);
     }
 
     #[test]

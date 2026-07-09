@@ -13,6 +13,11 @@ import {
 } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
+import { Card, CardContent } from '@/shared/ui/card'
+import { EmptyState } from '@/shared/ui/empty-state'
+import { FieldControl } from '@/shared/ui/field'
+import { Section, SectionDescription, SectionHeader, SectionTitle } from '@/shared/ui/section'
+import { Textarea } from '@/shared/ui/textarea'
 
 import { MemoryItemCard } from './MemoryItemCard'
 
@@ -112,13 +117,11 @@ export function MemoryBrowser() {
   }
 
   return (
-    <section className="space-y-5 rounded-md border border-border bg-background p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <Section>
+      <SectionHeader className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-semibold text-base">{t('title')}</h2>
-          <p className="mt-1 text-muted-foreground text-sm">
-            {t('visibleItems', { count: items.length })}
-          </p>
+          <SectionTitle>{t('title')}</SectionTitle>
+          <SectionDescription>{t('visibleItems', { count: items.length })}</SectionDescription>
         </div>
         <Button
           disabled={exportMutation.isPending}
@@ -129,7 +132,7 @@ export function MemoryBrowser() {
           <Download data-icon className="size-4" />
           {t('export')}
         </Button>
-      </div>
+      </SectionHeader>
 
       {memoryItemsQuery.isLoading ? (
         <div className="text-muted-foreground text-sm">{t('loading')}</div>
@@ -142,9 +145,7 @@ export function MemoryBrowser() {
       ) : null}
 
       {!memoryItemsQuery.isLoading && !memoryItemsQuery.isError && items.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border bg-surface px-4 py-6 text-center text-muted-foreground text-sm">
-          {t('empty')}
-        </div>
+        <EmptyState>{t('empty')}</EmptyState>
       ) : null}
 
       {exportMutation.isError ? (
@@ -184,61 +185,60 @@ export function MemoryBrowser() {
             ) : null}
 
             {selectedItem ? (
-              <section
-                aria-label={t('detail')}
-                className="space-y-4 rounded-md border border-border bg-surface p-4"
-              >
-                <div className="space-y-1 text-sm">
-                  <div className="font-medium">{selectedItem.kind}</div>
-                  <div className="text-muted-foreground">
-                    {t('source', { source: selectedItem.source })}
-                  </div>
-                  <div className="text-muted-foreground">
-                    {t('visibility', { visibility: selectedItem.visibility })}
-                  </div>
-                  {selectedItem.providerId ? (
+              <Card aria-label={t('detail')} role="region">
+                <CardContent className="space-y-4 pt-4">
+                  <div className="space-y-1 text-sm">
+                    <div className="font-medium">{selectedItem.kind}</div>
                     <div className="text-muted-foreground">
-                      {t('provider', { provider: selectedItem.providerId })}
+                      {t('source', { source: selectedItem.source })}
                     </div>
-                  ) : null}
-                  <div className="break-all text-muted-foreground">
-                    {t('contentHash', { value: selectedItem.contentHash })}
+                    <div className="text-muted-foreground">
+                      {t('visibility', { visibility: selectedItem.visibility })}
+                    </div>
+                    {selectedItem.providerId ? (
+                      <div className="text-muted-foreground">
+                        {t('provider', { provider: selectedItem.providerId })}
+                      </div>
+                    ) : null}
+                    <div className="break-all text-muted-foreground">
+                      {t('contentHash', { value: selectedItem.contentHash })}
+                    </div>
+                    {selectedItem.expiresAt ? (
+                      <div className="text-muted-foreground">
+                        {t('expiresAt', { value: selectedItem.expiresAt })}
+                      </div>
+                    ) : null}
+                    {selectedItem.lastAccessedAt ? (
+                      <div className="text-muted-foreground">
+                        {t('lastAccessedAt', { value: selectedItem.lastAccessedAt })}
+                      </div>
+                    ) : null}
+                    {selectedItem.deleted ? (
+                      <div className="text-muted-foreground">{t('deleted')}</div>
+                    ) : null}
                   </div>
-                  {selectedItem.expiresAt ? (
-                    <div className="text-muted-foreground">
-                      {t('expiresAt', { value: selectedItem.expiresAt })}
-                    </div>
-                  ) : null}
-                  {selectedItem.lastAccessedAt ? (
-                    <div className="text-muted-foreground">
-                      {t('lastAccessedAt', { value: selectedItem.lastAccessedAt })}
-                    </div>
-                  ) : null}
-                  {selectedItem.deleted ? (
-                    <div className="text-muted-foreground">{t('deleted')}</div>
-                  ) : null}
-                </div>
 
-                <label className="block space-y-2 text-sm">
-                  <span className="font-medium">{t('content')}</span>
-                  <textarea
-                    className="min-h-36 w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    onChange={(event) => setDraftContent(event.target.value)}
-                    value={draftContent}
-                  />
-                </label>
+                  <FieldControl fieldId="memory-content" label={t('content')}>
+                    <Textarea
+                      className="min-h-36"
+                      id="memory-content"
+                      onChange={(event) => setDraftContent(event.target.value)}
+                      value={draftContent}
+                    />
+                  </FieldControl>
 
-                <div className="flex flex-wrap justify-end gap-2">
-                  <Button
-                    disabled={updateMutation.isPending || draftContent.trim().length === 0}
-                    onClick={saveMemoryItem}
-                    type="button"
-                  >
-                    <Save data-icon className="size-4" />
-                    {t('save')}
-                  </Button>
-                </div>
-              </section>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Button
+                      disabled={updateMutation.isPending || draftContent.trim().length === 0}
+                      onClick={saveMemoryItem}
+                      type="button"
+                    >
+                      <Save data-icon className="size-4" />
+                      {t('save')}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
             ) : null}
 
             {deleteCandidateId ? (
@@ -279,6 +279,6 @@ export function MemoryBrowser() {
           </aside>
         </div>
       ) : null}
-    </section>
+    </Section>
   )
 }

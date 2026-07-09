@@ -21,6 +21,7 @@ impl Default for OpenAiChatDialect {
 #[cfg(test)]
 mod provider_dialect_tests {
     use super::OpenAiChatDialect;
+    #[allow(unused_imports)]
     use crate::openai_protocol::{OpenAiProtocolClient, OpenAiProtocolProviderExt};
 
     #[test]
@@ -35,7 +36,7 @@ mod provider_dialect_tests {
     fn minimax_provider_uses_minimax_dialect() {
         let provider = crate::minimax::MinimaxProvider::from_api_key("provider-key");
 
-        assert_eq!(provider.client().chat_dialect(), OpenAiChatDialect::MiniMax);
+        assert_eq!(provider.chat_dialect_for_test(), OpenAiChatDialect::MiniMax);
     }
 
     #[cfg(feature = "deepseek")]

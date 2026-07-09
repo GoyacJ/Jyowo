@@ -392,6 +392,7 @@ impl BackgroundAgentTool {
                 origin: ToolOrigin::Builtin,
                 search_hint: Some("start durable background agent".to_owned()),
                 service_binding: None,
+                metadata: Default::default(),
             },
             agent_tool_policy,
             model_config_id,
@@ -573,6 +574,7 @@ impl Default for AgentTeamTool {
                 origin: ToolOrigin::Builtin,
                 search_hint: Some("start coordinated agent team".to_owned()),
                 service_binding: None,
+                metadata: Default::default(),
             },
         }
     }

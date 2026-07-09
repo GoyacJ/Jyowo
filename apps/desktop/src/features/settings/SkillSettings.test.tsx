@@ -3,7 +3,7 @@ import '@testing-library/jest-dom/vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { AppI18nProvider } from '@/shared/i18n/i18n'
 import type { SkillSummary } from '@/shared/tauri/commands'
@@ -11,6 +11,27 @@ import { CommandClientProvider } from '@/shared/tauri/react'
 import { createTestCommandClient } from '@/testing/command-client'
 
 import { SkillSettingsPage } from './SkillSettings'
+
+const routerSpy = vi.hoisted(() => ({
+  navigate: vi.fn(async ({ search, to }: { search?: Record<string, string>; to: string }) => {
+    const nextSearch = search ? `?${new URLSearchParams(search).toString()}` : ''
+    window.history.pushState(null, '', `${to}${nextSearch}`)
+  }),
+}))
+
+vi.mock('@tanstack/react-router', async () => ({
+  useNavigate: () => routerSpy.navigate,
+  useRouterState: ({
+    select,
+  }: {
+    select: (state: { location: { search: Record<string, unknown> } }) => unknown
+  }) =>
+    select({
+      location: {
+        search: Object.fromEntries(new URLSearchParams(window.location.search)),
+      },
+    }),
+}))
 
 function renderSkillSettingsPage(skills?: SkillSummary[]) {
   const queryClient = new QueryClient({
@@ -35,6 +56,11 @@ function renderSkillSettingsPage(skills?: SkillSummary[]) {
 }
 
 describe('SkillSettingsPage', () => {
+  beforeEach(() => {
+    routerSpy.navigate.mockClear()
+    window.history.replaceState(null, '', '/skills')
+  })
+
   it('renders the plugins tab alongside skills, tools, and MCP', async () => {
     renderSkillSettingsPage()
 

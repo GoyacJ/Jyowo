@@ -2,7 +2,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use harness_contracts::{ToolDescriptor, ToolName, ToolProperties};
+use harness_contracts::{
+    ToolDescriptor, ToolGroup, ToolIntegrationSource, ToolName, ToolProperties,
+};
 
 #[async_trait]
 pub trait ToolSearchScorer: Send + Sync + 'static {
@@ -19,6 +21,13 @@ pub trait ToolSearchScorer: Send + Sync + 'static {
 pub struct ScoringTerms {
     pub optional: Vec<String>,
     pub required: Vec<String>,
+    pub filters: Vec<ScoringFilter>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScoringFilter {
+    pub key: String,
+    pub value: String,
 }
 
 impl ScoringTerms {
@@ -30,7 +39,14 @@ impl ScoringTerms {
             if normalized.is_empty() {
                 continue;
             }
-            if let Some(required) = normalized.strip_prefix('+') {
+            if let Some((key, value)) = normalized.split_once(':') {
+                if !key.is_empty() && !value.is_empty() {
+                    terms.filters.push(ScoringFilter {
+                        key: key.to_owned(),
+                        value: value.to_owned(),
+                    });
+                }
+            } else if let Some(required) = normalized.strip_prefix('+') {
                 if !required.is_empty() {
                     terms.required.push(required.to_owned());
                 }
@@ -69,6 +85,7 @@ pub struct ScoringWeights {
     pub search_hint: u32,
     pub description: u32,
     pub required_capability: u32,
+    pub metadata: u32,
     pub discovered_penalty_ratio: f32,
 }
 
@@ -83,6 +100,7 @@ impl Default for ScoringWeights {
             search_hint: 4,
             description: 2,
             required_capability: 3,
+            metadata: 4,
             discovered_penalty_ratio: 0.3,
         }
     }
@@ -109,8 +127,17 @@ impl ToolSearchScorer for DefaultScorer {
             .unwrap_or_default()
             .to_ascii_lowercase();
         let capabilities = required_capability_text(tool);
+        let metadata = metadata_terms(tool);
         let is_mcp = name.starts_with("mcp__");
         let parts = parse_tool_name_parts(&tool.name);
+
+        if !terms
+            .filters
+            .iter()
+            .all(|filter| metadata_filter_matches(tool, filter))
+        {
+            return 0;
+        }
 
         if !terms.required.iter().all(|term| {
             matches_any(
@@ -119,6 +146,7 @@ impl ToolSearchScorer for DefaultScorer {
                 &description,
                 &search_hint,
                 &capabilities,
+                &metadata,
                 &parts,
             )
         }) {
@@ -133,6 +161,7 @@ impl ToolSearchScorer for DefaultScorer {
                 &description,
                 &search_hint,
                 &capabilities,
+                &metadata,
                 &parts,
                 is_mcp,
                 self.weights,
@@ -159,12 +188,14 @@ fn matches_any(
     description: &str,
     search_hint: &str,
     capabilities: &str,
+    metadata: &str,
     parts: &[String],
 ) -> bool {
     name.contains(term)
         || description.contains(term)
         || search_hint.contains(term)
         || capabilities.contains(term)
+        || metadata.contains(term)
         || parts.iter().any(|part| part.contains(term))
 }
 
@@ -174,6 +205,7 @@ fn score_term(
     description: &str,
     search_hint: &str,
     capabilities: &str,
+    metadata: &str,
     parts: &[String],
     is_mcp: bool,
     weights: ScoringWeights,
@@ -206,6 +238,9 @@ fn score_term(
     if capabilities.contains(term) {
         score += weights.required_capability;
     }
+    if !metadata.is_empty() && metadata.contains(term) {
+        score += weights.metadata;
+    }
     score
 }
 
@@ -215,6 +250,81 @@ fn required_capability_text(tool: &ToolDescriptor) -> String {
         .map(|capability| format!("{capability:?}").to_ascii_lowercase())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn metadata_terms(tool: &ToolDescriptor) -> String {
+    let metadata = &tool.metadata;
+    let mut terms = Vec::new();
+    terms.extend(metadata.aliases.iter().cloned());
+    terms.extend(metadata.families.iter().cloned());
+    terms.extend(metadata.platforms.iter().cloned());
+    terms.extend(metadata.examples.iter().cloned());
+    terms.extend(metadata.effects.iter().cloned());
+    terms.extend(metadata.modalities.iter().cloned());
+    terms.push(format!("{:?}", metadata.risk_level));
+    terms.push(format!("{:?}", metadata.integration_source));
+    terms.join(" ").to_ascii_lowercase()
+}
+
+fn metadata_filter_matches(tool: &ToolDescriptor, filter: &ScoringFilter) -> bool {
+    let value = filter.value.as_str();
+    match filter.key.as_str() {
+        "group" => group_wire_name(&tool.group) == value,
+        "family" | "families" => contains_normalized(&tool.metadata.families, value),
+        "platform" | "platforms" => contains_normalized(&tool.metadata.platforms, value),
+        "effect" | "effects" => contains_normalized(&tool.metadata.effects, value),
+        "modality" | "modalities" => contains_normalized(&tool.metadata.modalities, value),
+        "risk" | "risk_level" => {
+            format!("{:?}", tool.metadata.risk_level).eq_ignore_ascii_case(value)
+        }
+        "source" | "integration" | "integration_source" => {
+            integration_source_wire_name(tool.metadata.integration_source) == value
+        }
+        _ => true,
+    }
+}
+
+fn contains_normalized(values: &[String], needle: &str) -> bool {
+    values
+        .iter()
+        .any(|value| value.eq_ignore_ascii_case(needle))
+}
+
+fn integration_source_wire_name(source: ToolIntegrationSource) -> &'static str {
+    match source {
+        ToolIntegrationSource::Builtin => "builtin",
+        ToolIntegrationSource::Mcp => "mcp",
+        ToolIntegrationSource::Plugin => "plugin",
+        ToolIntegrationSource::Brokered => "brokered",
+        ToolIntegrationSource::External => "external",
+    }
+}
+
+fn group_wire_name(group: &ToolGroup) -> &str {
+    match group {
+        ToolGroup::FileSystem => "file_system",
+        ToolGroup::Search => "search",
+        ToolGroup::Network => "network",
+        ToolGroup::Shell => "shell",
+        ToolGroup::Git => "git",
+        ToolGroup::Worktree => "worktree",
+        ToolGroup::Session => "session",
+        ToolGroup::Artifact => "artifact",
+        ToolGroup::Browser => "browser",
+        ToolGroup::Computer => "computer",
+        ToolGroup::Image => "image",
+        ToolGroup::Notebook => "notebook",
+        ToolGroup::Lsp => "lsp",
+        ToolGroup::Automation => "automation",
+        ToolGroup::Workflow => "workflow",
+        ToolGroup::Agent => "agent",
+        ToolGroup::Coordinator => "coordinator",
+        ToolGroup::Memory => "memory",
+        ToolGroup::Clarification => "clarification",
+        ToolGroup::Meta => "meta",
+        ToolGroup::Custom(value) => value.as_str(),
+        _ => "",
+    }
 }
 
 #[must_use]

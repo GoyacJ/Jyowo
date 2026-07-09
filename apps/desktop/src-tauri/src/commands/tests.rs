@@ -97,6 +97,7 @@ mod tests {
             Arc::new(harness),
             "test-model".to_owned(),
             ModelProtocol::ChatCompletions,
+            harness_contracts::ModelRequestOptions::default(),
         );
         state
     }
@@ -1534,17 +1535,17 @@ exit 0
     #[tokio::test]
     async fn global_plugin_selection_id_does_not_enable_project_record_collision() {
         let workspace = tempfile::tempdir().unwrap();
-        let state =
-            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        let workspace_root = workspace.path().canonicalize().unwrap();
+        let state = DesktopRuntimeState::with_workspace_for_test(workspace_root.clone()).unwrap();
         let plugin_id = PluginId("shared-collision@0.1.0".to_owned());
-        let global_store = DesktopPluginStore::global(
-            state
-                .global_config_store
-                .as_ref()
-                .expect("global config")
-                .layout()
-                .clone(),
-        );
+        let layout = state
+            .global_config_store
+            .as_ref()
+            .expect("global config")
+            .layout()
+            .clone();
+        let global_store = DesktopPluginStore::global(layout.clone());
+        let project_store = DesktopPluginStore::project(layout, workspace_root);
         let global_source = tempfile::tempdir().unwrap();
         write_desktop_plugin_package(global_source.path(), "shared-collision");
         let package_dir = plugin_package_dir_name(&plugin_id);
@@ -1571,12 +1572,10 @@ exit 0
             .expect("save global plugin index");
         let project_source = tempfile::tempdir().unwrap();
         write_desktop_plugin_package(project_source.path(), "shared-collision");
-        let project_content_hash = state
-            .plugin_store
+        let project_content_hash = project_store
             .write_plugin_package(&package_dir, &project_source.path().canonicalize().unwrap())
             .expect("write project plugin package");
-        state
-            .plugin_store
+        project_store
             .save_record(&PluginSettingsRecord {
                 records: vec![PluginStoreRecord {
                     plugin_id: plugin_id.clone(),
@@ -1600,7 +1599,7 @@ exit 0
             .expect("project config")
             .save_project_plugin_selection(&harness_contracts::PluginSelectionRecord {
                 allow_project_plugins: false,
-                enabled: vec![plugin_id.0],
+                enabled: vec![plugin_id.0.clone()],
             })
             .expect("save project plugin selection");
 
@@ -1611,35 +1610,44 @@ exit 0
             .find(|plugin| plugin.name == "shared-collision")
             .expect("shared plugin should be discovered");
 
-        assert!(!plugin.enabled);
-        assert!(matches!(plugin.state, PluginProductState::Disabled { .. }));
+        assert_eq!(plugin.id, plugin_id);
+        assert!(plugin.enabled);
     }
 
     #[tokio::test]
     async fn project_record_cannot_override_global_disabled_plugin_name() {
         let workspace = tempfile::tempdir().unwrap();
-        let state =
-            DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
+        let workspace_root = workspace.path().canonicalize().unwrap();
+        let state = DesktopRuntimeState::with_workspace_for_test(workspace_root.clone()).unwrap();
         let global_plugin_id = PluginId("shared-tools@0.1.0".to_owned());
         let project_plugin_id = PluginId("shared-tools@0.1.1".to_owned());
-        let global_store = DesktopPluginStore::global(
-            state
-                .global_config_store
-                .as_ref()
-                .expect("global config")
-                .layout()
-                .clone(),
-        );
+        let layout = state
+            .global_config_store
+            .as_ref()
+            .expect("global config")
+            .layout()
+            .clone();
+        let global_store = DesktopPluginStore::global(layout.clone());
+        let project_store = DesktopPluginStore::project(layout, workspace_root);
+        let global_source = tempfile::tempdir().unwrap();
+        write_desktop_plugin_package(global_source.path(), "shared-tools");
+        let global_package_dir = "shared-tools_0.1.0".to_owned();
+        let global_content_hash = global_store
+            .write_plugin_package(
+                &global_package_dir,
+                &global_source.path().canonicalize().unwrap(),
+            )
+            .expect("write global plugin package");
         global_store
             .save_record(&PluginSettingsRecord {
                 records: vec![PluginStoreRecord {
-                    plugin_id: global_plugin_id,
+                    plugin_id: global_plugin_id.clone(),
                     name: "shared-tools".to_owned(),
                     version: "0.1.0".to_owned(),
                     enabled: false,
-                    package_dir: "shared-tools_0.1.0".to_owned(),
+                    package_dir: global_package_dir,
                     source_path: "<local-plugin>".to_owned(),
-                    content_hash: "hash".to_owned(),
+                    content_hash: global_content_hash,
                     imported_at: "2026-01-01T00:00:00Z".to_owned(),
                     updated_at: "2026-01-01T00:00:00Z".to_owned(),
                     config: Value::Null,
@@ -1651,15 +1659,13 @@ exit 0
         let project_source = tempfile::tempdir().unwrap();
         write_desktop_plugin_package(project_source.path(), "shared-tools");
         let project_package_dir = "shared-tools_0.1.1".to_owned();
-        let project_content_hash = state
-            .plugin_store
+        let project_content_hash = project_store
             .write_plugin_package(
                 &project_package_dir,
                 &project_source.path().canonicalize().unwrap(),
             )
             .expect("write project plugin package");
-        state
-            .plugin_store
+        project_store
             .save_record(&PluginSettingsRecord {
                 records: vec![PluginStoreRecord {
                     plugin_id: project_plugin_id.clone(),
@@ -1683,7 +1689,7 @@ exit 0
             .expect("project config")
             .save_project_plugin_selection(&harness_contracts::PluginSelectionRecord {
                 allow_project_plugins: false,
-                enabled: vec![project_plugin_id.0],
+                enabled: vec![project_plugin_id.0.clone()],
             })
             .expect("save project plugin selection");
 
@@ -1694,8 +1700,14 @@ exit 0
             .find(|plugin| plugin.name == "shared-tools")
             .expect("shared plugin should be discovered");
 
+        assert_eq!(plugin.id, global_plugin_id);
+        assert_eq!(plugin.version, "0.1.0");
         assert!(!plugin.enabled);
         assert!(matches!(plugin.state, PluginProductState::Disabled { .. }));
+        assert!(listed
+            .plugins
+            .iter()
+            .all(|plugin| plugin.id != project_plugin_id));
     }
 
     #[tokio::test]
@@ -1769,10 +1781,13 @@ exit 0
 
     #[tokio::test]
     async fn create_conversation_does_not_wait_for_start_run_lock() {
+        let _lock = HOME_ENV_LOCK.lock().expect("home env lock");
+        let home = tempfile::tempdir().expect("home tempdir");
+        let _home = HomeEnvGuard::set(home.path());
         let workspace = std::env::temp_dir().join(format!("jyowo-create-lock-{}", RunId::new()));
         std::fs::create_dir_all(&workspace).unwrap();
         let workspace = workspace.canonicalize().unwrap();
-        DesktopProviderSettingsStore::new(workspace.clone())
+        DesktopProviderSettingsStore::global_only()
             .save_record(&ProviderSettingsRecord {
                 default_config_id: Some("openai-work".to_owned()),
                 configs: vec![ProviderConfigRecord {
@@ -1782,8 +1797,10 @@ exit 0
                     display_name: "OpenAI Work".to_owned(),
                     id: "openai-work".to_owned(),
                     model_id: "gpt-5.4-mini".to_owned(),
+                    model_options: harness_contracts::ModelRequestOptions::default(),
                     official_quota_api_key: None,
                     provider_id: "openai".to_owned(),
+                    provider_defaults: None,
                     model_descriptor: ProviderModelDescriptorRecord {
                         protocol: ModelProtocol::Responses,
                         conversation_capability: ConversationModelCapabilityRecord {
@@ -1803,6 +1820,7 @@ exit 0
                         max_output_tokens: 16_384,
                         model_id: "gpt-5.4-mini".to_owned(),
                         provider_id: "openai".to_owned(),
+                        runtime_semantics: None,
                     },
                 }],
             })

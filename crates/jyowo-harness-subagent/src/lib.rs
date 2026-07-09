@@ -986,6 +986,7 @@ fn aux_summary_request(
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::Messages,
         extra: Value::Null,
+        options: harness_contracts::ModelRequestOptions::default(),
         provider_context: harness_model::ProviderRequestContext::default(),
     }
 }
@@ -2118,6 +2119,7 @@ impl Default for AgentTool {
                 origin: ToolOrigin::Builtin,
                 search_hint: Some("delegate task to subagent".to_owned()),
                 service_binding: None,
+                metadata: Default::default(),
             },
         }
     }

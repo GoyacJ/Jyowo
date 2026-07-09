@@ -279,6 +279,7 @@ mod tests {
                 prompt_cache: false,
                 structured_output: true,
             },
+            runtime_semantics: None,
         }
     }
 
@@ -293,7 +294,9 @@ mod tests {
             provider_id: "openai".to_owned(),
             model_id: "gpt-5".to_owned(),
             protocol: ModelProtocol::ChatCompletions,
+            model_options: harness_contracts::ModelRequestOptions::default(),
             base_url: None,
+            provider_defaults: None,
             model_descriptor: make_model_descriptor(),
         };
 
@@ -595,7 +598,9 @@ mod tests {
                 provider_id: "openai".to_owned(),
                 model_id: "gpt-5".to_owned(),
                 protocol: ModelProtocol::ChatCompletions,
+                model_options: harness_contracts::ModelRequestOptions::default(),
                 base_url: None,
+                provider_defaults: None,
                 model_descriptor: make_model_descriptor(),
             }])
             .expect("save");

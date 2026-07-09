@@ -207,17 +207,27 @@ function useSetDefaultProviderConfig() {
       configId: string
       displayName: string
       modelId: string
+      providerDefaults?: ProviderSettingsRequest['providerDefaults']
+      modelOptions?: ProviderSettingsRequest['modelOptions']
       providerId: string
+      protocol?: ProviderSettingsRequest['protocol']
     }) => {
       const payload: ProviderSettingsRequest = {
         configId: request.configId,
         displayName: request.displayName,
         modelId: request.modelId,
+        modelOptions: request.modelOptions,
         providerId: request.providerId,
         setDefault: true,
       }
       if (request.baseUrl) {
         payload.baseUrl = request.baseUrl
+      }
+      if (request.protocol) {
+        payload.protocol = request.protocol
+      }
+      if (request.providerDefaults) {
+        payload.providerDefaults = request.providerDefaults
       }
 
       return saveProviderSettings(payload, commandClient)
@@ -233,7 +243,10 @@ function useSetDefaultProviderConfig() {
       configId: string
       displayName: string
       modelId: string
+      providerDefaults?: ProviderSettingsRequest['providerDefaults']
+      modelOptions?: ProviderSettingsRequest['modelOptions']
       providerId: string
+      protocol?: ProviderSettingsRequest['protocol']
     }) => {
       if (pendingConfigIdRef.current !== null) {
         throw new ModelSettingsMutationBlockedError(request.configId, 'default')

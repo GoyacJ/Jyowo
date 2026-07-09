@@ -27,6 +27,7 @@ fn runtime_semantics_snapshot_preserves_descriptor_semantics() {
         protocol: ModelProtocol::ChatCompletions,
         context_window: 1_000_000,
         max_output_tokens: 384_000,
+        provider_declared_capability: ConversationModelCapability::default(),
         conversation_capability: ConversationModelCapability::default(),
         runtime_semantics: ModelRuntimeSemantics::openai_chat_deepseek(),
         lifecycle: ModelLifecycle::Stable,
@@ -53,10 +54,30 @@ fn runtime_semantics_deepseek_requires_private_reasoning_replay() {
 }
 
 #[test]
+fn runtime_semantics_zhipu_requires_private_reasoning_replay() {
+    assert_eq!(
+        ModelRuntimeSemantics::openai_chat_zhipu().reasoning_protocol,
+        ReasoningProtocolSemantics::ProviderPrivateReplay {
+            continuation_kind: ProviderContinuationKind::ReasoningReplay,
+            required_for_assistant_tool_replay: true,
+        }
+    );
+    assert_eq!(
+        ModelRuntimeSemantics::openai_chat_zhipu()
+            .provider_continuation_dialect
+            .as_deref(),
+        Some("openai_chat.zhipu")
+    );
+}
+
+#[test]
 fn runtime_semantics_minimax_plain_chat_does_not_require_private_replay() {
     assert_eq!(
         ModelRuntimeSemantics::openai_chat_minimax().reasoning_protocol,
-        ReasoningProtocolSemantics::None
+        ReasoningProtocolSemantics::ProviderPrivateReplay {
+            continuation_kind: ProviderContinuationKind::ReasoningReplay,
+            required_for_assistant_tool_replay: false,
+        }
     );
     assert_eq!(
         ModelRuntimeSemantics::openai_chat_minimax()

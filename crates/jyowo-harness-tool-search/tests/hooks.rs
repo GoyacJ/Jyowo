@@ -168,6 +168,7 @@ fn descriptor(name: &str) -> ToolDescriptor {
         origin: ToolOrigin::Builtin,
         search_hint: None,
         service_binding: None,
+        metadata: Default::default(),
     }
 }
 

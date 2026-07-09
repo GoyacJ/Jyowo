@@ -7,20 +7,31 @@ use super::provider_support::*;
 use super::support::*;
 use super::*;
 
-fn write_test_supervisor_lock(workspace: &Path) -> TestSupervisorControl {
+fn write_test_supervisor_lock_for_project(workspace: &Path) -> TestSupervisorControl {
+    let runtime_dir = workspace.join(".jyowo/runtime");
+    let identity = format!("project:{}", workspace.display());
+    write_test_supervisor_lock_for_runtime_dir(&runtime_dir, &identity)
+}
+
+fn write_test_supervisor_lock_for_runtime_root(runtime_root: &Path) -> TestSupervisorControl {
+    let identity = format!("runtime:{}", runtime_root.display());
+    write_test_supervisor_lock_for_runtime_dir(runtime_root, &identity)
+}
+
+fn write_test_supervisor_lock_for_runtime_dir(
+    runtime_dir: &Path,
+    identity: &str,
+) -> TestSupervisorControl {
     use std::io::Write;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("control bind");
     listener.set_nonblocking(true).expect("control nonblocking");
     let control_addr = listener.local_addr().expect("control addr");
-    let runtime_dir = workspace.join(".jyowo/runtime");
     std::fs::create_dir_all(&runtime_dir).unwrap();
     let token = "test-background-supervisor-token";
     let token_hash = blake3::hash(token.as_bytes()).to_hex().to_string();
-    let workspace_id = blake3::hash(format!("project:{}", workspace.display()).as_bytes())
-        .to_hex()
-        .to_string();
+    let workspace_id = blake3::hash(identity.as_bytes()).to_hex().to_string();
     std::fs::write(
         runtime_dir.join("agent-supervisor.token"),
         serde_json::json!({
@@ -162,7 +173,7 @@ async fn enable_subagents_in_execution_settings(state: &DesktopRuntimeState) {
             agent_teams_enabled: true,
             background_agents_enabled: false,
         },
-        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        &execution_settings_store_for_workspace(state.workspace_root()),
         Some(&AgentCapabilityResolutionContext {
             stream_permission_runtime_available: true,
         }),
@@ -182,7 +193,7 @@ async fn start_run_agent_policy_uses_disabled_settings_without_per_run_enable() 
             agent_teams_enabled: false,
             background_agents_enabled: false,
         },
-        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        &execution_settings_store_for_workspace(state.workspace_root()),
         Some(&AgentCapabilityResolutionContext {
             stream_permission_runtime_available: true,
         }),
@@ -325,7 +336,10 @@ async fn agent_team_runtime_tool_persists_team_task_and_mailbox() {
 #[tokio::test]
 async fn start_run_stays_foreground_when_background_agents_enabled() {
     let state = runtime_state_with_harness().await;
-    let supervisor = write_test_supervisor_lock(state.workspace_root());
+    let settings_store = execution_settings_store_for_workspace(state.workspace_root());
+    let global_supervisor =
+        write_test_supervisor_lock_for_runtime_root(settings_store.workspace_root());
+    let project_supervisor = write_test_supervisor_lock_for_project(state.workspace_root());
     set_execution_settings_with_store(
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::Default,
@@ -335,7 +349,7 @@ async fn start_run_stays_foreground_when_background_agents_enabled() {
             agent_teams_enabled: false,
             background_agents_enabled: true,
         },
-        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        &settings_store,
         Some(&AgentCapabilityResolutionContext {
             stream_permission_runtime_available: true,
         }),
@@ -372,7 +386,8 @@ async fn start_run_stays_foreground_when_background_agents_enabled() {
     .expect("background list succeeds");
     assert!(listed.agents.is_empty());
 
-    supervisor.shutdown().await;
+    project_supervisor.shutdown().await;
+    global_supervisor.shutdown().await;
 }
 
 #[tokio::test]
@@ -399,7 +414,10 @@ async fn background_agent_tool_creates_durable_record() {
         ])],
     )
     .await;
-    let supervisor = write_test_supervisor_lock(state.workspace_root());
+    let settings_store = execution_settings_store_for_workspace(state.workspace_root());
+    let global_supervisor =
+        write_test_supervisor_lock_for_runtime_root(settings_store.workspace_root());
+    let project_supervisor = write_test_supervisor_lock_for_project(state.workspace_root());
     set_execution_settings_with_store(
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::Default,
@@ -409,7 +427,7 @@ async fn background_agent_tool_creates_durable_record() {
             agent_teams_enabled: true,
             background_agents_enabled: true,
         },
-        &DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf()),
+        &settings_store,
         Some(&AgentCapabilityResolutionContext {
             stream_permission_runtime_available: true,
         }),
@@ -488,7 +506,8 @@ async fn background_agent_tool_creates_durable_record() {
         "Continue this investigation later"
     );
 
-    supervisor.shutdown().await;
+    project_supervisor.shutdown().await;
+    global_supervisor.shutdown().await;
 }
 
 #[tokio::test]

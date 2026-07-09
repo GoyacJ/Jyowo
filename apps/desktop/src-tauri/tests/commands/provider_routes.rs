@@ -124,8 +124,10 @@ async fn provider_capability_route_rejects_provider_mismatch() {
             display_name: "OpenAI".to_owned(),
             id: "openai-image".to_owned(),
             model_id: "gpt-5.4-mini".to_owned(),
+            model_options: harness_contracts::ModelRequestOptions::default(),
             official_quota_api_key: None,
             provider_id: "openai".to_owned(),
+            provider_defaults: None,
             model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
         }],
     };
@@ -724,6 +726,10 @@ mod capability_route_conversation {
                 protocol: ModelProtocol::Messages,
                 context_window: 128_000,
                 max_output_tokens: 8_192,
+                provider_declared_capability: ConversationModelCapability {
+                    tool_calling: false,
+                    ..ConversationModelCapability::default()
+                },
                 conversation_capability: ConversationModelCapability {
                     tool_calling: false,
                     ..ConversationModelCapability::default()

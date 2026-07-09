@@ -157,6 +157,11 @@ pub struct ConversationRunOptions {
     pub interactivity: InteractivityLevel,
     pub context_compression_trigger_ratio: f32,
     pub model_extra: Value,
+    #[serde(
+        default,
+        skip_serializing_if = "harness_contracts::ModelRequestOptions::is_empty"
+    )]
+    pub model_options: harness_contracts::ModelRequestOptions,
     pub max_iterations: u32,
     pub system_prompt_addendum: Option<String>,
     #[cfg(feature = "agents-subagent")]
@@ -175,6 +180,7 @@ impl Default for ConversationRunOptions {
             interactivity: InteractivityLevel::NoInteractive,
             context_compression_trigger_ratio: 0.8,
             model_extra: Value::Null,
+            model_options: harness_contracts::ModelRequestOptions::default(),
             max_iterations: 0,
             system_prompt_addendum: None,
             #[cfg(feature = "agents-subagent")]
@@ -196,6 +202,7 @@ impl ConversationRunOptions {
             interactivity: options.interactivity,
             context_compression_trigger_ratio: options.context_compression_trigger_ratio,
             model_extra: options.model_extra.clone(),
+            model_options: options.model_options.clone(),
             max_iterations: options.max_iterations,
             system_prompt_addendum: options.system_prompt_addendum.clone(),
             #[cfg(feature = "agents-subagent")]
@@ -242,6 +249,15 @@ impl ConversationRunOptions {
     #[must_use]
     pub fn with_context_compression_trigger_ratio(mut self, ratio: f32) -> Self {
         self.context_compression_trigger_ratio = ratio;
+        self
+    }
+
+    #[must_use]
+    pub fn with_model_options(
+        mut self,
+        model_options: harness_contracts::ModelRequestOptions,
+    ) -> Self {
+        self.model_options = model_options;
         self
     }
 }

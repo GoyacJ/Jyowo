@@ -688,5 +688,6 @@ fn tool_search_descriptor() -> ToolDescriptor {
         origin: ToolOrigin::Builtin,
         search_hint: None,
         service_binding: None,
+        metadata: Default::default(),
     }
 }

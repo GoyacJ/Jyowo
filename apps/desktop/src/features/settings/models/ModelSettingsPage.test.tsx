@@ -370,7 +370,7 @@ describe('ModelSettingsPage', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Safe backend error')
   })
 
-  it('renders project scope badge when provider selection is project scoped', async () => {
+  it('keeps provider settings labeled as global even if a stale project scope is returned', async () => {
     renderModelSettingsPage(
       readyClient({
         providerSettingsList: {
@@ -380,7 +380,8 @@ describe('ModelSettingsPage', () => {
       }),
     )
 
-    expect(await screen.findByText('Project overrides')).toBeInTheDocument()
+    expect(await screen.findByText('Global defaults')).toBeInTheDocument()
+    expect(screen.queryByText('Project overrides')).not.toBeInTheDocument()
   })
 
   it('renders summary band and matrix rows with backend usage, connectivity, and quota state', async () => {
@@ -471,6 +472,7 @@ describe('ModelSettingsPage', () => {
         configId: 'cfg-openai',
         displayName: 'Primary OpenAI Edited',
         modelId: 'gpt-4.1',
+        modelOptions: {},
         providerId: 'openai',
         setDefault: true,
       }),

@@ -5,7 +5,7 @@ use crate::storage_layout::{JyowoHome, StorageLayout};
 pub struct DesktopAutomationStore {
     layout: StorageLayout,
     retention_limit: usize,
-    workspace_root: PathBuf,
+    workspace_root: Option<PathBuf>,
 }
 
 impl DesktopAutomationStore {
@@ -21,6 +21,18 @@ impl DesktopAutomationStore {
         Self::new_with_layout_and_limit(layout, workspace_root, AUTOMATION_RUN_RETENTION_LIMIT)
     }
 
+    pub fn global_with_layout(layout: StorageLayout) -> Self {
+        Self::global_with_layout_and_limit(layout, AUTOMATION_RUN_RETENTION_LIMIT)
+    }
+
+    pub fn global_with_layout_and_limit(layout: StorageLayout, retention_limit: usize) -> Self {
+        Self {
+            layout,
+            retention_limit,
+            workspace_root: None,
+        }
+    }
+
     pub fn new_with_layout_and_limit(
         layout: StorageLayout,
         workspace_root: PathBuf,
@@ -29,7 +41,7 @@ impl DesktopAutomationStore {
         Self {
             layout,
             retention_limit,
-            workspace_root,
+            workspace_root: Some(workspace_root),
         }
     }
 
@@ -37,19 +49,25 @@ impl DesktopAutomationStore {
         Self {
             layout: StorageLayout::new(JyowoHome::new(default_jyowo_home())),
             retention_limit,
-            workspace_root,
+            workspace_root: Some(workspace_root),
         }
     }
 
     fn automations_path(&self) -> PathBuf {
-        self.layout.project_automations_file(&self.workspace_root)
+        match &self.workspace_root {
+            Some(workspace_root) => self.layout.project_automations_file(workspace_root),
+            None => self.layout.global_automations_file(),
+        }
     }
 
     fn runs_path(&self) -> PathBuf {
-        self.workspace_root
-            .join(".jyowo")
-            .join("runtime")
-            .join("automation-runs.jsonl")
+        match &self.workspace_root {
+            Some(workspace_root) => workspace_root
+                .join(".jyowo")
+                .join("runtime")
+                .join("automation-runs.jsonl"),
+            None => self.layout.global_automation_runs_file(),
+        }
     }
 }
 

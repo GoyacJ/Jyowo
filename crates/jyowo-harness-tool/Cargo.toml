@@ -14,7 +14,7 @@ doctest = false
 workspace = true
 
 [features]
-default = []
+default = ["builtin-toolset"]
 skill-tools = []
 builtin-toolset = ["jyowo-harness-permission/dangerous"]
 programmatic-tool-calling = ["builtin-toolset", "jyowo-harness-sandbox/code-runtime"]

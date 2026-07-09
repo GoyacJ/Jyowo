@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 
 use chrono::NaiveDate;
@@ -37,6 +38,13 @@ pub struct ProviderBuildConfig {
     pub api_key: String,
     pub base_url: Option<String>,
     pub model_descriptor: Option<ModelDescriptor>,
+    pub provider_defaults: Option<ProviderRequestDefaults>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProviderRequestDefaults {
+    pub body: serde_json::Value,
+    pub headers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,7 +152,7 @@ pub fn provider_catalog_entries() -> Vec<ProviderCatalogEntry> {
     entries.push(entry(
         "qwen",
         "Qwen",
-        "https://dashscope.aliyuncs.com/compatible-mode",
+        crate::qwen::DEFAULT_BASE_URL,
         crate::QwenProvider::from_api_key("").supported_models(),
     ));
     #[cfg(feature = "zhipu")]
@@ -257,6 +265,11 @@ pub fn build_provider(
     }
     #[cfg(feature = "km")]
     if provider_id == "km" {
+        let api_key = if api_key.trim().is_empty() {
+            crate::kimi_api_key_from_env().unwrap_or(api_key)
+        } else {
+            api_key
+        };
         let provider = crate::KmProvider::from_api_key(api_key);
         return Ok(Box::new(match base_url {
             Some(base_url) => provider.with_base_url(base_url),
@@ -300,7 +313,9 @@ pub fn build_provider(
     }
     #[cfg(feature = "qwen")]
     if provider_id == "qwen" {
-        let provider = crate::QwenProvider::from_api_key(api_key);
+        let defaults = config.provider_defaults.unwrap_or_default();
+        let provider =
+            crate::QwenProvider::from_api_key(api_key).with_default_headers(defaults.headers);
         return Ok(Box::new(match base_url {
             Some(base_url) => provider.with_base_url(base_url),
             None => provider,
@@ -358,6 +373,26 @@ fn runtime_capability(
                 base_url: "https://api.minimax.io".to_owned(),
             },
         ]
+    } else if provider_id == "zhipu" {
+        vec![
+            ProviderBaseUrlRegion {
+                id: "default".to_owned(),
+                label: "BigModel Chat".to_owned(),
+                base_url: default_base_url.to_owned(),
+            },
+            ProviderBaseUrlRegion {
+                id: "coding-plan".to_owned(),
+                label: "BigModel Coding Plan".to_owned(),
+                base_url: "https://open.bigmodel.cn/api/coding/paas/v4".to_owned(),
+            },
+            ProviderBaseUrlRegion {
+                id: "zai-coding".to_owned(),
+                label: "Z.ai Coding".to_owned(),
+                base_url: "https://api.z.ai/api/coding/paas/v4".to_owned(),
+            },
+        ]
+    } else if provider_id == "qwen" {
+        qwen_base_url_regions()
     } else {
         vec![ProviderBaseUrlRegion {
             id: "default".to_owned(),
@@ -369,10 +404,55 @@ fn runtime_capability(
     ProviderRuntimeCapability {
         auth_scheme: provider_auth_scheme(provider_id),
         base_url_regions,
-        supports_live_validation: false,
+        supports_live_validation: provider_id == "km",
         supports_streaming_validation: true,
         secret_reveal_supported: true,
     }
+}
+
+fn qwen_base_url_regions() -> Vec<ProviderBaseUrlRegion> {
+    vec![
+        ProviderBaseUrlRegion {
+            id: "us".to_owned(),
+            label: "US Virginia".to_owned(),
+            base_url: "https://dashscope-us.aliyuncs.com/compatible-mode/v1".to_owned(),
+        },
+        ProviderBaseUrlRegion {
+            id: "beijing".to_owned(),
+            label: "China Beijing".to_owned(),
+            base_url: "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+                .to_owned(),
+        },
+        ProviderBaseUrlRegion {
+            id: "singapore".to_owned(),
+            label: "Singapore".to_owned(),
+            base_url: "https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+                .to_owned(),
+        },
+        ProviderBaseUrlRegion {
+            id: "hong-kong".to_owned(),
+            label: "Hong Kong".to_owned(),
+            base_url: "https://{WorkspaceId}.cn-hongkong.maas.aliyuncs.com/compatible-mode/v1"
+                .to_owned(),
+        },
+        ProviderBaseUrlRegion {
+            id: "germany".to_owned(),
+            label: "Germany Frankfurt".to_owned(),
+            base_url: "https://{WorkspaceId}.eu-central-1.maas.aliyuncs.com/compatible-mode/v1"
+                .to_owned(),
+        },
+        ProviderBaseUrlRegion {
+            id: "japan".to_owned(),
+            label: "Japan Tokyo".to_owned(),
+            base_url: "https://{WorkspaceId}.ap-northeast-1.maas.aliyuncs.com/compatible-mode/v1"
+                .to_owned(),
+        },
+        ProviderBaseUrlRegion {
+            id: "legacy".to_owned(),
+            label: "Legacy DashScope".to_owned(),
+            base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_owned(),
+        },
+    ]
 }
 
 fn provider_auth_scheme(provider_id: &str) -> ProviderAuthScheme {
@@ -387,10 +467,47 @@ fn provider_auth_scheme(provider_id: &str) -> ProviderAuthScheme {
 
 fn service_capabilities(provider_id: &str) -> Vec<ProviderServiceCapability> {
     match provider_id {
+        "km" => kimi_service_capabilities(),
         "minimax" => minimax_service_capabilities(),
         "doubao" => seedance_service_capabilities(),
         _ => Vec::new(),
     }
+}
+
+fn kimi_service_capabilities() -> Vec<ProviderServiceCapability> {
+    vec![
+        kimi_service(
+            "kimi.models.list",
+            ProviderServiceCategory::Model,
+            vec![ModelModality::Text],
+            ModelModality::Text,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        kimi_service(
+            "kimi.tokenizers.estimate_token_count",
+            ProviderServiceCategory::Conversation,
+            vec![
+                ModelModality::Text,
+                ModelModality::Image,
+                ModelModality::Video,
+            ],
+            ModelModality::Text,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        kimi_service(
+            "kimi.balance.retrieve",
+            ProviderServiceCategory::Model,
+            vec![ModelModality::Text],
+            ModelModality::Text,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+    ]
 }
 
 fn minimax_service_capabilities() -> Vec<ProviderServiceCapability> {
@@ -710,24 +827,36 @@ fn doubao_service(
     }
 }
 
+fn kimi_service(
+    operation_id: &str,
+    category: ProviderServiceCategory,
+    input_modalities: Vec<ModelModality>,
+    output_artifact: ModelModality,
+    execution: ProviderServiceExecution,
+    requires_polling: bool,
+    cost_risk: ProviderServiceCostRisk,
+) -> ProviderServiceCapability {
+    ProviderServiceCapability {
+        operation_id: operation_id.to_owned(),
+        category,
+        input_modalities,
+        output_artifact,
+        execution,
+        requires_polling,
+        permission_subject: "network:kimi".to_owned(),
+        cost_risk,
+    }
+}
+
 fn provider_source(provider_id: &str) -> (&'static str, NaiveDate) {
-    let verified_date = NaiveDate::from_ymd_opt(2026, 6, 21).expect("valid verification date");
-    let source_url = match provider_id {
-        "anthropic" => "https://docs.anthropic.com/en/docs/about-claude/models/overview",
-        "codex" => "https://developers.openai.com/api/docs/models/all",
-        "deepseek" => "https://api-docs.deepseek.com/quick_start/pricing",
-        "doubao" => "https://www.volcengine.com/docs/82379/1494384",
-        "gemini" => "https://ai.google.dev/gemini-api/docs/models",
-        "km" => "https://platform.moonshot.ai/docs",
-        "local-llama" => "https://ollama.com/library",
-        "minimax" => "https://platform.minimax.io/docs/api-reference/text-chat-openai",
-        "openai" => "https://platform.openai.com/docs/models",
-        "openrouter" => "https://openrouter.ai/api/v1/models",
-        "qwen" => "https://help.aliyun.com/zh/model-studio/models",
-        "zhipu" => "https://docs.bigmodel.cn/api-reference/模型-api/对话补全",
-        _ => "https://jyowo.local/provider-catalog",
-    };
-    (source_url, verified_date)
+    crate::catalog::provider_metadata(provider_id)
+        .map(|metadata| (metadata.source_url, metadata.verified_at))
+        .unwrap_or_else(|| {
+            (
+                "https://jyowo.local/provider-catalog",
+                NaiveDate::from_ymd_opt(2026, 6, 21).expect("valid verification date"),
+            )
+        })
 }
 
 fn inventory_only_models(provider_id: &str) -> Vec<ModelInventoryEntry> {
@@ -784,16 +913,57 @@ fn inventory_only_models(provider_id: &str) -> Vec<ModelInventoryEntry> {
                 "audio output is not supported by the current runtime",
             ),
         ],
-        "qwen" => vec![unsupported_model(
-            "qwen",
-            "qwen-image-2.0-pro",
-            "Qwen Image 2.0 Pro",
-            vec![ModelModality::Text, ModelModality::Image],
-            vec![ModelModality::Image],
-            "image generation output is not supported by the current runtime",
-        )],
+        "qwen" => qwen_unsupported_image_models(),
         _ => Vec::new(),
     }
+}
+
+fn qwen_unsupported_image_models() -> Vec<ModelInventoryEntry> {
+    [
+        ("qwen-image-2.0-pro", "Qwen Image 2.0 Pro"),
+        (
+            "qwen-image-2.0-pro-2026-03-03",
+            "Qwen Image 2.0 Pro 2026-03-03",
+        ),
+        (
+            "qwen-image-2.0-pro-2026-04-22",
+            "Qwen Image 2.0 Pro 2026-04-22",
+        ),
+        ("qwen-image-2.0", "Qwen Image 2.0"),
+        ("qwen-image-2.0-2026-03-03", "Qwen Image 2.0 2026-03-03"),
+        ("qwen-image-max", "Qwen Image Max"),
+        ("qwen-image-max-2025-12-30", "Qwen Image Max 2025-12-30"),
+        ("qwen-image-plus", "Qwen Image Plus"),
+        ("qwen-image-plus-2026-01-09", "Qwen Image Plus 2026-01-09"),
+        ("qwen-image", "Qwen Image"),
+        ("qwen-image-edit-max", "Qwen Image Edit Max"),
+        (
+            "qwen-image-edit-max-2026-01-16",
+            "Qwen Image Edit Max 2026-01-16",
+        ),
+        ("qwen-image-edit-plus", "Qwen Image Edit Plus"),
+        (
+            "qwen-image-edit-plus-2025-12-15",
+            "Qwen Image Edit Plus 2025-12-15",
+        ),
+        (
+            "qwen-image-edit-plus-2025-10-30",
+            "Qwen Image Edit Plus 2025-10-30",
+        ),
+        ("qwen-image-edit", "Qwen Image Edit"),
+    ]
+    .into_iter()
+    .map(|(model_id, display_name)| {
+        unsupported_model(
+            "qwen",
+            model_id,
+            display_name,
+            vec![ModelModality::Text, ModelModality::Image],
+            vec![ModelModality::Image],
+            "image output is not supported by the current runtime",
+        )
+    })
+    .collect()
 }
 
 fn unsupported_model(
@@ -833,6 +1003,7 @@ pub fn runnable_inventory_models(models: &[ModelInventoryEntry]) -> Vec<ModelDes
                 protocol: model.protocol,
                 context_window: model.context_window,
                 max_output_tokens: model.max_output_tokens,
+                provider_declared_capability: model.provider_declared_capability.clone(),
                 conversation_capability: model.conversation_capability.clone(),
                 runtime_semantics: model.runtime_semantics.clone(),
                 lifecycle: model.lifecycle.clone(),

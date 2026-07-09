@@ -218,7 +218,7 @@ impl DeepSeekReplayHarness {
                 event_store.clone(),
             ))
             .with_workspace_root(workspace.path())
-            .with_model_id("deepseek-chat")
+            .with_model_id("deepseek-v4-flash")
             .with_protocol(ModelProtocol::ChatCompletions)
             .with_provider_continuation_store(store.clone())
             .with_cap_registry(Arc::new(CapabilityRegistry::default()))
@@ -262,8 +262,8 @@ impl DeepSeekReplayHarness {
             .with_model_snapshot(RunModelSnapshot {
                 model_config_id: Some(MODEL_CONFIG_ID.to_owned()),
                 provider_id: "deepseek".to_owned(),
-                model_id: "deepseek-chat".to_owned(),
-                display_name: "DeepSeek Chat".to_owned(),
+                model_id: "deepseek-v4-flash".to_owned(),
+                display_name: "DeepSeek V4 Flash".to_owned(),
                 protocol: ModelProtocol::ChatCompletions,
                 context_window: 8_000,
                 max_output_tokens: 1_000,
@@ -340,11 +340,12 @@ impl ModelProvider for ScriptedDeepSeekProvider {
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             provider_id: "deepseek".to_owned(),
-            model_id: "deepseek-chat".to_owned(),
-            display_name: "DeepSeek Chat".to_owned(),
+            model_id: "deepseek-v4-flash".to_owned(),
+            display_name: "DeepSeek V4 Flash".to_owned(),
             protocol: ModelProtocol::ChatCompletions,
             context_window: 8_000,
             max_output_tokens: 1_000,
+            provider_declared_capability: ConversationModelCapability::default(),
             conversation_capability: ConversationModelCapability::default(),
             runtime_semantics: ModelRuntimeSemantics::openai_chat_deepseek(),
             lifecycle: ModelLifecycle::Stable,
@@ -496,11 +497,12 @@ async fn tool_pool(
 fn model_snapshot() -> harness_model::ModelRuntimeSnapshot {
     harness_model::ModelRuntimeSnapshot {
         provider_id: "deepseek".to_owned(),
-        model_id: "deepseek-chat".to_owned(),
-        display_name: "DeepSeek Chat".to_owned(),
+        model_id: "deepseek-v4-flash".to_owned(),
+        display_name: "DeepSeek V4 Flash".to_owned(),
         protocol: ModelProtocol::ChatCompletions,
         context_window: 8_000,
         max_output_tokens: 1_000,
+        provider_declared_capability: ConversationModelCapability::default(),
         conversation_capability: ConversationModelCapability::default(),
         runtime_semantics: ModelRuntimeSemantics::openai_chat_deepseek(),
         lifecycle: ModelLifecycle::Stable,
@@ -602,6 +604,7 @@ fn lookup_descriptor() -> ToolDescriptor {
         origin: ToolOrigin::Builtin,
         search_hint: None,
         service_binding: None,
+        metadata: harness_contracts::ToolDescriptorMetadata::default(),
     }
 }
 

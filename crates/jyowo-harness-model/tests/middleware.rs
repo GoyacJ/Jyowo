@@ -26,6 +26,7 @@ fn request() -> ModelRequest {
         cache_breakpoints: Vec::new(),
         protocol: harness_model::ModelProtocol::Messages,
         extra: json!({}),
+        options: harness_contracts::ModelRequestOptions::default(),
         provider_context: harness_model::ProviderRequestContext::default(),
     }
 }

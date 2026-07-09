@@ -12,11 +12,7 @@ type CapabilityRoutesPanelProps = {
   onConfigure: (route: CapabilityRouteRow) => void
 }
 
-export function CapabilityRoutesPanel({
-  hasProjectScope = true,
-  onConfigure,
-  routeSection,
-}: CapabilityRoutesPanelProps) {
+export function CapabilityRoutesPanel({ onConfigure, routeSection }: CapabilityRoutesPanelProps) {
   const { t } = useTranslation('settings')
 
   if (routeSection.status === 'loading') {
@@ -58,9 +54,7 @@ export function CapabilityRoutesPanel({
       <section className="rounded-md border border-border bg-surface p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="font-semibold text-base">{t('models.routes.title')}</h2>
-          <Badge variant="outline">
-            {hasProjectScope ? t('scope.projectOverrides') : t('scope.runtimeDiagnostics')}
-          </Badge>
+          <Badge variant="outline">{t('scope.globalDefaults')}</Badge>
         </div>
         <p className="mt-2 text-muted-foreground text-sm">{t('models.routes.empty')}</p>
       </section>
@@ -73,9 +67,7 @@ export function CapabilityRoutesPanel({
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="font-semibold text-base">{t('models.routes.title')}</h2>
-            <Badge variant="outline">
-              {hasProjectScope ? t('scope.projectOverrides') : t('scope.runtimeDiagnostics')}
-            </Badge>
+            <Badge variant="outline">{t('scope.globalDefaults')}</Badge>
           </div>
           <p className="mt-1 text-muted-foreground text-sm">{t('models.routes.description')}</p>
         </div>

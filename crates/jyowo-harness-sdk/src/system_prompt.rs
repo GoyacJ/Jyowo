@@ -758,6 +758,10 @@ mod tests {
             protocol: ModelProtocol::Messages,
             context_window: 200_000,
             max_output_tokens: 8_192,
+            provider_declared_capability: ConversationModelCapability {
+                tool_calling: true,
+                ..ConversationModelCapability::default()
+            },
             conversation_capability: ConversationModelCapability {
                 tool_calling: true,
                 ..ConversationModelCapability::default()

@@ -134,10 +134,10 @@ impl TurnAssembly {
                     step.events.push(self.assistant_delta(
                         run_id,
                         DeltaChunk::Thought(harness_contracts::ThoughtChunk {
-                            text: None,
+                            text: thinking.text,
                             provider_id: "harness_model".to_owned(),
-                            provider_native: None,
-                            signature: None,
+                            provider_native: thinking.provider_native,
+                            signature: thinking.signature,
                         }),
                     ));
                 }
@@ -162,7 +162,7 @@ impl TurnAssembly {
                         DeltaChunk::ReasoningSummary(harness_contracts::ReasoningSummaryChunk {
                             text: summary.text,
                             provider_id: "harness_model".to_owned(),
-                            provider_native: None,
+                            provider_native: summary.provider_native,
                         }),
                     ));
                 }

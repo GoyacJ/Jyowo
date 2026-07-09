@@ -17,14 +17,13 @@ import {
   listPlugins,
   reloadPlugin,
   setPluginEnabled,
-  setProjectPluginsEnabled,
   uninstallPlugin,
   updatePluginConfig,
   validatePluginFromPath,
 } from '@/shared/tauri/commands'
 import { pickPluginPackagePath } from '@/shared/tauri/file-dialog'
 import { useCommandClient } from '@/shared/tauri/react'
-import { Badge, type BadgeProps } from '@/shared/ui/badge'
+import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 import { Checkbox } from '@/shared/ui/checkbox'
 import {
@@ -35,6 +34,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/shared/ui/dialog'
+import { IconButton } from '@/shared/ui/icon-button'
+import { Input } from '@/shared/ui/input'
+import { Section, SectionDescription, SectionHeader, SectionTitle } from '@/shared/ui/section'
+import { StatusBadge, type StatusBadgeProps } from '@/shared/ui/status-badge'
 import { Switch } from '@/shared/ui/switch'
 
 const pluginQueryKeys = {
@@ -105,12 +108,6 @@ export function PluginsManager({
       await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.all })
     },
   })
-  const setProjectPluginsMutation = useMutation({
-    mutationFn: (enabled: boolean) => setProjectPluginsEnabled(enabled, commandClient),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.list() })
-    },
-  })
   const [installReport, setInstallReport] = useState<PluginInstallReport | null>(null)
   const [installSourcePath, setInstallSourcePath] = useState<string | null>(null)
   const [installDialogOpen, setInstallDialogOpen] = useState(false)
@@ -118,7 +115,6 @@ export function PluginsManager({
   const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null)
   const [pendingUninstall, setPendingUninstall] = useState<PluginSummary | null>(null)
   const plugins = pluginsQuery.data?.plugins ?? []
-  const allowProjectPlugins = pluginsQuery.data?.allowProjectPlugins ?? false
 
   useEffect(() => {
     if (openPluginRequest) {
@@ -174,17 +170,17 @@ export function PluginsManager({
   }
 
   return (
-    <section className="space-y-5 rounded-md border border-border bg-surface p-5">
+    <Section>
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
+        <SectionHeader className="flex items-start gap-3">
           <div className="rounded-md border border-border bg-background p-2 text-muted-foreground">
             <Plug className="size-4" />
           </div>
           <div>
-            <h2 className="font-semibold text-base">{t('plugins.title')}</h2>
-            <p className="mt-1 text-muted-foreground text-sm">{t('plugins.description')}</p>
+            <SectionTitle>{t('plugins.title')}</SectionTitle>
+            <SectionDescription>{t('plugins.description')}</SectionDescription>
           </div>
-        </div>
+        </SectionHeader>
 
         <Button
           disabled={validateMutation.isPending || installMutation.isPending}
@@ -203,31 +199,9 @@ export function PluginsManager({
 
       {pluginsQuery.isError ? <ErrorMessage>{t('plugins.loadError')}</ErrorMessage> : null}
 
-      {setEnabledMutation.isError ||
-      reloadMutation.isError ||
-      uninstallMutation.isError ||
-      setProjectPluginsMutation.isError ? (
+      {setEnabledMutation.isError || reloadMutation.isError || uninstallMutation.isError ? (
         <ErrorMessage>{t('plugins.operationError')}</ErrorMessage>
       ) : null}
-
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-3">
-        <div>
-          <div className="font-medium text-sm">{t('plugins.projectGate.title')}</div>
-          <p className="mt-1 text-muted-foreground text-xs">
-            {t('plugins.projectGate.description')}
-          </p>
-        </div>
-        <Switch
-          aria-label={t(
-            allowProjectPlugins
-              ? 'plugins.actions.disableProjectPlugins'
-              : 'plugins.actions.enableProjectPlugins',
-          )}
-          checked={allowProjectPlugins}
-          disabled={pluginsQuery.isLoading || setProjectPluginsMutation.isPending}
-          onCheckedChange={(enabled) => setProjectPluginsMutation.mutate(enabled)}
-        />
-      </div>
 
       {!pluginsQuery.isLoading && !pluginsQuery.isError && plugins.length === 0 ? (
         <div className="rounded-md border border-dashed border-border bg-background px-4 py-6 text-center text-muted-foreground text-sm">
@@ -318,7 +292,7 @@ export function PluginsManager({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </section>
+    </Section>
   )
 }
 
@@ -357,9 +331,9 @@ function PluginCard({
           <div className="mt-3 flex flex-wrap gap-1.5">
             <Badge variant="outline">{t(`plugins.source.${plugin.source}`)}</Badge>
             <Badge variant="outline">{t(`plugins.trust.${plugin.trustLevel}`)}</Badge>
-            <Badge variant={stateBadgeVariant(plugin.state)}>
+            <StatusBadge tone={stateBadgeTone(plugin.state)}>
               {pluginStateLabel(plugin.state, t)}
-            </Badge>
+            </StatusBadge>
             {plugin.capabilities.map((capability) => (
               <Badge key={capabilityLabel(capability)} variant="outline">
                 {capabilityLabel(capability)}
@@ -388,37 +362,32 @@ function PluginCard({
               onCheckedChange={(enabled) => onToggle(plugin.id, enabled)}
             />
           ) : null}
-          <Button
-            aria-label={t('plugins.actions.viewDetailsFor', { name: plugin.name })}
+          <IconButton
+            icon={Settings}
+            label={t('plugins.actions.viewDetailsFor', { name: plugin.name })}
             onClick={() => onOpenDetail(plugin.id)}
-            size="icon"
             type="button"
             variant="ghost"
-          >
-            <Settings data-icon className="size-4" />
-          </Button>
+          />
           {manageable ? (
             <>
-              <Button
-                aria-label={t('plugins.actions.reloadPlugin', { name: plugin.name })}
+              <IconButton
                 disabled={operationPending}
+                icon={RefreshCw}
+                label={t('plugins.actions.reloadPlugin', { name: plugin.name })}
                 onClick={() => onReload(plugin.id)}
-                size="icon"
                 type="button"
                 variant="ghost"
-              >
-                <RefreshCw data-icon className="size-4" />
-              </Button>
-              <Button
-                aria-label={t('plugins.actions.uninstallPlugin', { name: plugin.name })}
+              />
+              <IconButton
                 disabled={operationPending}
+                icon={Trash2}
+                iconClassName="text-destructive"
+                label={t('plugins.actions.uninstallPlugin', { name: plugin.name })}
                 onClick={() => onUninstall(plugin)}
-                size="icon"
                 type="button"
                 variant="ghost"
-              >
-                <Trash2 data-icon className="size-4 text-destructive" />
-              </Button>
+              />
             </>
           ) : null}
         </div>
@@ -787,12 +756,12 @@ function ConfigInput({
   }
 
   return (
-    <label className="block space-y-2 text-sm">
+    <label className="block space-y-2 text-sm" htmlFor={inputId}>
       <span className="font-medium">{field.name}</span>
-      <input
+      <Input
         aria-label={field.name}
-        className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
         disabled={disabled}
+        id={inputId}
         onChange={(event) => {
           if (field.type === 'number') {
             onChange(Number(event.target.value))
@@ -913,7 +882,7 @@ function pluginStateLabel(
   return t('plugins.state.disabled')
 }
 
-function stateBadgeVariant(state: PluginSummary['state']): BadgeProps['variant'] {
+function stateBadgeTone(state: PluginSummary['state']): StatusBadgeProps['tone'] {
   if (state === 'activated') {
     return 'success'
   }
@@ -921,9 +890,9 @@ function stateBadgeVariant(state: PluginSummary['state']): BadgeProps['variant']
     return 'destructive'
   }
   if (typeof state !== 'string') {
-    return 'outline'
+    return 'neutral'
   }
-  return 'secondary'
+  return 'info'
 }
 
 function manifestOriginLabel(detail: PluginDetail): string {

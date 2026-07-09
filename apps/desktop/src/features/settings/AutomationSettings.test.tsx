@@ -81,7 +81,7 @@ describe('AutomationSettings', () => {
     expect(await screen.findByText('暂无自动化任务。')).toBeInTheDocument()
   })
 
-  it('renders runtime diagnostics without project write controls when no project is active', async () => {
+  it('shows global write controls when no project is active', async () => {
     renderAutomationSettings(
       createTestCommandClient({
         automationRuns: { runs: [] },
@@ -90,9 +90,9 @@ describe('AutomationSettings', () => {
       }),
     )
 
-    expect(await screen.findByText('运行时诊断')).toBeInTheDocument()
-    expect(screen.queryByLabelText('任务 ID')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '保存自动化任务' })).not.toBeInTheDocument()
+    expect(await screen.findByLabelText('任务 ID')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '保存自动化任务' })).toBeInTheDocument()
+    expect(screen.queryByText('项目覆盖')).not.toBeInTheDocument()
     expect(await screen.findByText('暂无自动化任务。')).toBeInTheDocument()
   })
 

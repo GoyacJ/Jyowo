@@ -134,19 +134,14 @@ describe('PluginsManager', () => {
     expect(screen.getByRole('button', { name: 'Install local plugin' })).toBeInTheDocument()
   })
 
-  it('toggles project plugin discovery through the command client', async () => {
-    const setProjectPluginsEnabled = vi.fn().mockResolvedValue({
-      allowProjectPlugins: true,
-    })
-    renderPluginsManager({
-      ...createTestCommandClient({ plugins: { allowProjectPlugins: false, plugins: [] } }),
-      setProjectPluginsEnabled,
-    })
+  it('does not render project plugin discovery controls', async () => {
+    renderPluginsManager(
+      createTestCommandClient({ plugins: { allowProjectPlugins: true, plugins: [] } }),
+    )
 
     expect(await screen.findByText('No plugins installed.')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('switch', { name: 'Enable project plugins' }))
-
-    await waitFor(() => expect(setProjectPluginsEnabled).toHaveBeenCalledWith(true))
+    expect(screen.queryByText('Project plugin discovery')).not.toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: /project plugins/i })).not.toBeInTheDocument()
   })
 
   it('shows plugin state, trust, source, capabilities, details, and config fields', async () => {

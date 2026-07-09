@@ -1151,6 +1151,7 @@ where
             })?;
             query_tool_result_from_response(
                 response,
+                &client,
                 &ctx,
                 media_operation_id,
                 artifact_kind,
@@ -1309,6 +1310,7 @@ async fn media_tool_result_from_response(
 
 async fn query_tool_result_from_response(
     response: Value,
+    client: &MinimaxApiClient,
     ctx: &ToolContext,
     operation_id: &str,
     modality: ModelModality,
@@ -1321,8 +1323,21 @@ async fn query_tool_result_from_response(
         let blob_ref = write_media_blob(ctx, media.bytes, &mime_type).await?;
         return Ok(artifact_tool_result(modality, mime_type, blob_ref, title));
     }
+    if let Some(file_id) = extract_file_id(&response) {
+        let media =
+            resolve_minimax_file_media(&file_id, client, operation_id, modality, downloader)
+                .await?;
+        let mime_type = validate_media_bytes(&media.bytes, modality, Some(&media.mime_type))?;
+        let blob_ref = write_media_blob(ctx, media.bytes, &mime_type).await?;
+        return Ok(artifact_tool_result(modality, mime_type, blob_ref, title));
+    }
     if is_pending_task_status(&response) {
         return Ok(ToolResult::Structured(response));
+    }
+    if let Some(status) = failed_task_status(&response) {
+        return Err(ToolError::Message(format!(
+            "MiniMax task ended with failure status: {status}"
+        )));
     }
     Ok(ToolResult::Structured(response))
 }
@@ -1383,6 +1398,28 @@ fn extract_task_id(value: &Value) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn extract_file_id(value: &Value) -> Option<String> {
+    value
+        .get("file_id")
+        .or_else(|| value.pointer("/data/file_id"))
+        .or_else(|| value.pointer("/file/file_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|file_id| !file_id.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn extract_download_url(value: &Value) -> Option<String> {
+    value
+        .pointer("/file/download_url")
+        .or_else(|| value.pointer("/data/file/download_url"))
+        .or_else(|| value.get("download_url"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn is_pending_task_status(value: &Value) -> bool {
     if let Some(status) = value.get("status").and_then(Value::as_str) {
         return matches!(
@@ -1391,6 +1428,12 @@ fn is_pending_task_status(value: &Value) -> bool {
         );
     }
     false
+}
+
+fn failed_task_status(value: &Value) -> Option<String> {
+    let status = value.get("status").and_then(Value::as_str)?;
+    let normalized_status = status.to_ascii_lowercase();
+    matches!(normalized_status.as_str(), "fail" | "failed" | "expired").then(|| status.to_owned())
 }
 
 async fn write_media_blob(
@@ -1432,6 +1475,7 @@ async fn write_media_blob(
 enum MediaCandidate {
     DataUrl(String),
     Base64(String),
+    Hex(String),
     HttpsUrl(String),
 }
 
@@ -1446,6 +1490,7 @@ fn media_candidate_priority(candidate: &MediaCandidate) -> u8 {
     match candidate {
         MediaCandidate::DataUrl(_) => 0,
         MediaCandidate::Base64(_) => 1,
+        MediaCandidate::Hex(_) => 1,
         MediaCandidate::HttpsUrl(_) => 2,
     }
 }
@@ -1473,6 +1518,10 @@ fn collect_media_candidates(
                 candidates.push(MediaCandidate::Base64(trimmed.to_owned()));
                 return;
             }
+            if key_hint.is_some_and(|key| is_likely_hex_media_key(key, modality)) {
+                candidates.push(MediaCandidate::Hex(trimmed.to_owned()));
+                return;
+            }
             if key_hint.is_some_and(|key| is_likely_media_url_key(key, modality))
                 && is_collectible_media_url(trimmed)
             {
@@ -1491,6 +1540,10 @@ fn collect_media_candidates(
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
+}
+
+fn is_likely_hex_media_key(key: &str, modality: ModelModality) -> bool {
+    key.eq_ignore_ascii_case("audio") && modality == ModelModality::Audio
 }
 
 fn is_collectible_media_url(value: &str) -> bool {
@@ -1541,6 +1594,7 @@ async fn resolve_media_candidate(
     match candidate {
         MediaCandidate::DataUrl(value) => decode_data_url_media(&value, modality),
         MediaCandidate::Base64(value) => decode_base64_media(&value, modality),
+        MediaCandidate::Hex(value) => decode_hex_media(&value, modality),
         MediaCandidate::HttpsUrl(value) => {
             download_provider_https_media(
                 ProviderMediaDownloadRequest {
@@ -1556,6 +1610,29 @@ async fn resolve_media_candidate(
             .await
         }
     }
+}
+
+async fn resolve_minimax_file_media(
+    file_id: &str,
+    client: &MinimaxApiClient,
+    operation_id: &str,
+    modality: ModelModality,
+    downloader: &dyn ProviderMediaDownloader,
+) -> Result<ProviderMediaBytes, ToolError> {
+    let file = client
+        .file_retrieve(file_id)
+        .await
+        .map_err(provider_client_error)?;
+    let download_url = extract_download_url(&file).ok_or_else(|| {
+        ToolError::Message("MiniMax file retrieve response did not include download_url".to_owned())
+    })?;
+    resolve_media_candidate(
+        MediaCandidate::HttpsUrl(download_url),
+        operation_id,
+        modality,
+        downloader,
+    )
+    .await
 }
 
 fn decode_data_url_media(
@@ -1588,6 +1665,52 @@ fn decode_base64_media(
     let bytes = decode_base64_bytes(value)?;
     let mime_type = validate_media_bytes(&bytes, modality, None)?;
     Ok(ProviderMediaBytes { bytes, mime_type })
+}
+
+fn decode_hex_media(value: &str, modality: ModelModality) -> Result<ProviderMediaBytes, ToolError> {
+    let bytes = decode_hex_bytes(value)?;
+    let mime_type = validate_media_bytes(&bytes, modality, None)?;
+    Ok(ProviderMediaBytes { bytes, mime_type })
+}
+
+fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, ToolError> {
+    let value = value.trim();
+    if value.len() % 2 != 0 {
+        return Err(ToolError::Message(
+            "MiniMax media payload is not valid hex".to_owned(),
+        ));
+    }
+    let decoded_len = u64::try_from(value.len() / 2).unwrap_or(u64::MAX);
+    if decoded_len > MAX_MINIMAX_MEDIA_BYTES {
+        return Err(ToolError::ResultTooLarge {
+            original: decoded_len,
+            limit: MAX_MINIMAX_MEDIA_BYTES,
+            metric: BudgetMetric::Bytes,
+        });
+    }
+
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|digits| decode_hex_pair(digits[0], digits[1]))
+        .collect()
+}
+
+fn decode_hex_pair(high: u8, low: u8) -> Result<u8, ToolError> {
+    let high = decode_hex_digit(high)?;
+    let low = decode_hex_digit(low)?;
+    Ok((high << 4) | low)
+}
+
+fn decode_hex_digit(digit: u8) -> Result<u8, ToolError> {
+    match digit {
+        b'0'..=b'9' => Ok(digit - b'0'),
+        b'a'..=b'f' => Ok(digit - b'a' + 10),
+        b'A'..=b'F' => Ok(digit - b'A' + 10),
+        _ => Err(ToolError::Message(
+            "MiniMax media payload is not valid hex".to_owned(),
+        )),
+    }
 }
 
 fn decode_base64_bytes(value: &str) -> Result<Vec<u8>, ToolError> {

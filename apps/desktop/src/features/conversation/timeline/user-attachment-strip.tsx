@@ -55,8 +55,10 @@ function AttachmentPreviewOrChip({
     <img
       alt={attachment.name}
       className="h-14 w-40 rounded-md border border-border bg-surface object-cover shadow-sm sm:h-[72px] sm:w-48"
+      height={72}
       src={previewQuery.data.dataUrl}
       title={`${attachment.name} · ${attachment.mimeType} · ${formatBytes(attachment.sizeBytes)}`}
+      width={192}
     />
   )
 }

@@ -254,8 +254,20 @@ fn write_provider_settings_json(workspace: &Path, value: Value) {
     .unwrap();
 }
 
+fn temp_home_guard(label: &str) -> (std::sync::MutexGuard<'static, ()>, EnvVarGuard) {
+    let lock = HOME_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let home = unique_workspace(label);
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let guard = EnvVarGuard::set(HOME_ENV, home.as_os_str());
+    (lock, guard)
+}
+
 #[tokio::test]
 async fn start_run_uses_request_model_config_for_first_draft_run() {
+    let (_home_lock, _home_guard) = temp_home_guard("run-model-config-home");
     let server = mounted_chat_completion_server().await;
     let state = runtime_state_with_provider_configs(&server.uri()).await;
     let created = create_conversation_with_runtime_state(&state)
@@ -299,6 +311,7 @@ async fn start_run_uses_request_model_config_for_first_draft_run() {
 
 #[tokio::test]
 async fn start_run_allows_active_conversation_to_switch_models_per_run() {
+    let (_home_lock, _home_guard) = temp_home_guard("run-model-switch-home");
     let server = mounted_chat_completion_server().await;
     let state = runtime_state_with_provider_configs(&server.uri()).await;
     let created = create_conversation_with_runtime_state(&state)
@@ -351,6 +364,7 @@ async fn start_run_allows_active_conversation_to_switch_models_per_run() {
 
 #[tokio::test]
 async fn start_run_rebuilds_harness_for_same_provider_model_with_different_config() {
+    let (_home_lock, _home_guard) = temp_home_guard("run-model-duplicate-home");
     let primary_server = mounted_chat_completion_server().await;
     let secondary_server = mounted_chat_completion_server().await;
     let state = runtime_state_with_duplicate_minimax_configs(
@@ -407,6 +421,7 @@ async fn start_run_rebuilds_harness_for_same_provider_model_with_different_confi
 
 #[tokio::test]
 async fn start_run_rejects_invalid_model_config_without_activating_draft() {
+    let (_home_lock, _home_guard) = temp_home_guard("run-model-invalid-home");
     let server = mounted_chat_completion_server().await;
     let state = runtime_state_with_provider_configs(&server.uri()).await;
     let created = create_conversation_with_runtime_state(&state)
@@ -522,8 +537,10 @@ async fn create_conversation_with_runtime_state_does_not_bind_default_model_conf
                 display_name: "OpenAI Work".to_owned(),
                 id: "openai-work".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                model_options: harness_contracts::ModelRequestOptions::default(),
                 official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
+                provider_defaults: None,
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
         })
@@ -716,7 +733,12 @@ async fn get_and_delete_conversation_with_runtime_state_survive_runtime_option_c
     let harness = state
         .harness()
         .expect("runtime state should retain the configured harness");
-    state.replace_harness(harness, "test-model".to_owned(), ModelProtocol::Responses);
+    state.replace_harness(
+        harness,
+        "test-model".to_owned(),
+        ModelProtocol::Responses,
+        harness_contracts::ModelRequestOptions::default(),
+    );
 
     let detail = get_conversation_with_runtime_state(
         GetConversationRequest {

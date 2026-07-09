@@ -23,8 +23,8 @@ use harness_contracts::{
     PermissionActorSource, SubagentContextReport, TranscriptRef, UsageSnapshot,
 };
 use harness_contracts::{
-    BlobStore, CapabilityRegistry, Event, MemoryModelRequestPreview, MessageId, ModelRef, RunId,
-    ToolCapability,
+    BlobStore, CapabilityRegistry, Event, MemoryModelRequestPreview, MessageId, ModelRef,
+    ModelRequestOptions, RunId, ToolCapability,
 };
 #[cfg(feature = "programmatic-tool-calling")]
 use harness_contracts::{
@@ -110,6 +110,7 @@ pub struct Engine {
     pub(crate) project_workspace_root: Option<PathBuf>,
     pub(crate) model_id: String,
     pub(crate) model_extra: Value,
+    pub(crate) model_options: ModelRequestOptions,
     pub(crate) protocol: ModelProtocol,
     pub(crate) system_prompt: Option<String>,
     pub(crate) authorization_service: Arc<AuthorizationService>,
@@ -144,6 +145,7 @@ pub struct EngineBuilder {
     project_workspace_root: Option<PathBuf>,
     model_id: Option<String>,
     model_extra: Value,
+    model_options: ModelRequestOptions,
     protocol: ModelProtocol,
     system_prompt: Option<String>,
     sandbox: Option<Arc<dyn SandboxBackend>>,
@@ -194,6 +196,7 @@ impl Engine {
             project_workspace_root: self.project_workspace_root,
             model_id: Some(self.model_id),
             model_extra: self.model_extra,
+            model_options: self.model_options,
             protocol: self.protocol,
             system_prompt: self.system_prompt,
             sandbox: self.sandbox,
@@ -235,6 +238,7 @@ impl Default for EngineBuilder {
             project_workspace_root: None,
             model_id: None,
             model_extra: Value::Null,
+            model_options: ModelRequestOptions::default(),
             protocol: ModelProtocol::Messages,
             system_prompt: None,
             sandbox: None,
@@ -361,6 +365,12 @@ impl EngineBuilder {
     #[must_use]
     pub fn with_model_extra(mut self, model_extra: Value) -> Self {
         self.model_extra = model_extra;
+        self
+    }
+
+    #[must_use]
+    pub fn with_model_options(mut self, model_options: ModelRequestOptions) -> Self {
+        self.model_options = model_options;
         self
     }
 
@@ -591,6 +601,7 @@ impl EngineBuilder {
             project_workspace_root: self.project_workspace_root,
             model_id,
             model_extra: self.model_extra,
+            model_options: self.model_options,
             protocol: self.protocol,
             system_prompt: self.system_prompt,
             authorization_service,

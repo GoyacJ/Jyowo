@@ -37,6 +37,7 @@ fn sample_request(stream: bool) -> ModelRequest {
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::Messages,
         extra: Value::Null,
+        options: harness_contracts::ModelRequestOptions::default(),
         provider_context: harness_model::ProviderRequestContext::default(),
     }
 }
@@ -76,6 +77,7 @@ fn tool_descriptor() -> ToolDescriptor {
         origin: harness_contracts::ToolOrigin::Builtin,
         search_hint: None,
         service_binding: None,
+        metadata: harness_contracts::ToolDescriptorMetadata::default(),
     }
 }
 

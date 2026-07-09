@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use harness_contracts::{
-    DeferPolicy, ProviderRestriction, ToolCapability, ToolDescriptor, ToolGroup, ToolOrigin,
-    ToolProperties, TrustLevel,
+    DeferPolicy, ProviderRestriction, ToolCapability, ToolDescriptor, ToolDescriptorMetadata,
+    ToolGroup, ToolIntegrationSource, ToolOrigin, ToolProperties, ToolRiskLevel, TrustLevel,
 };
 use harness_tool_search::{
     parse_tool_name_parts, DefaultScorer, ScoringContext, ScoringTerms, ToolSearchScorer,
@@ -98,6 +98,20 @@ async fn discovered_tools_are_penalized_but_still_searchable() {
 }
 
 #[tokio::test]
+async fn aliases_and_examples_are_searchable() {
+    let scorer = DefaultScorer::default();
+    let context = ScoringContext::default();
+    let terms = ScoringTerms::parse("commit");
+    let mut tool = descriptor("GitStage", "Stage files", None);
+    tool.metadata.aliases = vec!["git add".to_owned()];
+    tool.metadata.examples = vec!["Stage files before commit".to_owned()];
+
+    let score = scorer.score(&tool, &props(), &terms, &context).await;
+
+    assert!(score > 0);
+}
+
+#[tokio::test]
 async fn required_capabilities_contribute_to_score() {
     let scorer = DefaultScorer::default();
     let context = ScoringContext::default();
@@ -108,6 +122,23 @@ async fn required_capabilities_contribute_to_score() {
     let score = scorer.score(&tool, &props(), &terms, &context).await;
 
     assert!(score > 0);
+}
+
+#[tokio::test]
+async fn metadata_filters_select_matching_tools() {
+    let scorer = DefaultScorer::default();
+    let context = ScoringContext::default();
+    let terms = ScoringTerms::parse("status group:git family:git platform:codex effect:reads_git risk:low modality:text source:builtin");
+    let matching = git_descriptor("GitStatus", "Show git status");
+    let mut missing = descriptor("WebSearch", "Search the web", None);
+    missing.group = ToolGroup::Network;
+    missing.metadata.platforms = vec!["codex".to_owned()];
+
+    let matching_score = scorer.score(&matching, &props(), &terms, &context).await;
+    let missing_score = scorer.score(&missing, &props(), &terms, &context).await;
+
+    assert!(matching_score > 0);
+    assert_eq!(missing_score, 0);
 }
 
 fn descriptor(name: &str, description: &str, search_hint: Option<&str>) -> ToolDescriptor {
@@ -129,7 +160,24 @@ fn descriptor(name: &str, description: &str, search_hint: Option<&str>) -> ToolD
         origin: ToolOrigin::Builtin,
         search_hint: search_hint.map(str::to_owned),
         service_binding: None,
+        metadata: ToolDescriptorMetadata::default(),
     }
+}
+
+fn git_descriptor(name: &str, description: &str) -> ToolDescriptor {
+    let mut descriptor = descriptor(name, description, None);
+    descriptor.group = ToolGroup::Git;
+    descriptor.metadata = ToolDescriptorMetadata {
+        aliases: vec!["git status".to_owned()],
+        families: vec!["git".to_owned()],
+        platforms: vec!["codex".to_owned()],
+        examples: vec!["Check repository status".to_owned()],
+        risk_level: ToolRiskLevel::Low,
+        effects: vec!["reads_git".to_owned()],
+        modalities: vec!["text".to_owned()],
+        integration_source: ToolIntegrationSource::Builtin,
+    };
+    descriptor
 }
 
 fn props() -> ToolProperties {

@@ -1147,7 +1147,7 @@ async fn run_claimed_background_record(
             backend.scope.runtime_root().to_path_buf(),
         )
     };
-    let (harness, model_id, protocol) = crate::commands::build_desktop_harness(
+    let (harness, model_id, protocol, model_options) = crate::commands::build_desktop_harness(
         &layout,
         Arc::clone(stream_permission_runtime),
         Some(&execution.model_config_id),
@@ -1160,6 +1160,7 @@ async fn run_claimed_background_record(
     let mut session_options = session_options;
     session_options.model_id = Some(model_id.clone());
     session_options.protocol = Some(protocol);
+    session_options.model_options = model_options.clone();
     session_options.agent_profiles = background_agent_profiles(backend)?;
     harness
         .open_or_create_conversation_session(session_options.clone())

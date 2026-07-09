@@ -48,12 +48,6 @@ pub async fn list_skills_with_runtime_state(
 fn load_skill_selection_for_state(
     state: &DesktopRuntimeState,
 ) -> Result<SkillSelectionRecord, CommandErrorPayload> {
-    if let Some(project_config) = &state.project_config_store {
-        if let Some(selection) = project_config.load_project_skill_selection_if_present()? {
-            return Ok(selection);
-        }
-        return skill_selection_from_store_records(state.skill_store.as_ref());
-    }
     if let Some(global_config) = &state.global_config_store {
         if let Some(selection) = global_config.load_global_skill_selection_if_present()? {
             return Ok(selection);
@@ -80,9 +74,6 @@ fn save_skill_selection_for_state(
     state: &DesktopRuntimeState,
     selection: &SkillSelectionRecord,
 ) -> Result<(), CommandErrorPayload> {
-    if let Some(project_config) = &state.project_config_store {
-        return project_config.save_project_skill_selection(selection);
-    }
     let global_config = state.global_config_store.as_ref().ok_or_else(|| {
         runtime_operation_failed("skill selection config store is unavailable".to_owned())
     })?;
@@ -842,24 +833,6 @@ pub(crate) async fn reload_managed_skills(
     state: &DesktopRuntimeState,
     harness: &Harness,
 ) -> Result<(), CommandErrorPayload> {
-    // Reload project-managed (workspace) skills only for project runtimes.
-    if state.project_workspace_root().is_some() {
-        let project_allowed = match &state.project_config_store {
-            Some(store) => store
-                .load_project_skill_selection_if_present()?
-                .map(|selection| selection.enabled.into_iter().collect()),
-            None => None,
-        };
-        harness
-            .reload_workspace_managed_skills_with_allowed_package_ids(
-                state.skill_store.enabled_dir(),
-                project_allowed,
-            )
-            .await
-            .map_err(|error| runtime_operation_failed(format!("skill reload failed: {error}")))?;
-    }
-
-    // Reload global user-managed skills if a global config store is available.
     if let Some(global_config) = &state.global_config_store {
         let global_skill_store = DesktopSkillStore::global(global_config.layout().clone());
         let global_allowed = global_config

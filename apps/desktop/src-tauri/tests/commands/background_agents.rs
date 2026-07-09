@@ -246,7 +246,7 @@ async fn background_agent_tool_persists_record_without_copying_parent_context() 
     )
     .await;
     let supervisor = enable_background_agents(&state).await;
-    let settings_store = DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf());
+    let settings_store = execution_settings_store_for_workspace(state.workspace_root());
     let settings_context = AgentCapabilityResolutionContext {
         stream_permission_runtime_available: true,
     };
@@ -476,7 +476,9 @@ async fn background_agent_manager_rejects_recovered_permission_without_live_pend
 }
 
 async fn enable_background_agents(state: &DesktopRuntimeState) -> TestSupervisorControl {
-    let supervisor = TestSupervisorControl::start(state.workspace_root());
+    let store = execution_settings_store_for_workspace(state.workspace_root());
+    let global_supervisor = TestSupervisorControl::start_runtime(store.workspace_root());
+    let supervisor = TestSupervisorControl::start_project(state.workspace_root());
     let request = SetExecutionSettingsRequest {
         permission_mode: PermissionMode::Default,
         tool_profile: ToolProfile::Full,
@@ -485,7 +487,6 @@ async fn enable_background_agents(state: &DesktopRuntimeState) -> TestSupervisor
         agent_teams_enabled: false,
         background_agents_enabled: true,
     };
-    let store = DesktopExecutionSettingsStore::new(state.workspace_root().to_path_buf());
     let context = AgentCapabilityResolutionContext {
         stream_permission_runtime_available: true,
     };
@@ -502,6 +503,7 @@ async fn enable_background_agents(state: &DesktopRuntimeState) -> TestSupervisor
             Err(error) => panic!("background settings should save: {error:?}"),
         }
     }
+    global_supervisor.shutdown().await;
     supervisor
 }
 
@@ -511,20 +513,28 @@ struct TestSupervisorControl {
 }
 
 impl TestSupervisorControl {
-    fn start(workspace: &Path) -> Self {
+    fn start_project(workspace: &Path) -> Self {
+        let runtime_dir = workspace.join(".jyowo/runtime");
+        let identity = format!("project:{}", workspace.display());
+        Self::start_for_runtime_dir(&runtime_dir, &identity)
+    }
+
+    fn start_runtime(runtime_root: &Path) -> Self {
+        let identity = format!("runtime:{}", runtime_root.display());
+        Self::start_for_runtime_dir(runtime_root, &identity)
+    }
+
+    fn start_for_runtime_dir(runtime_dir: &Path, identity: &str) -> Self {
         use std::io::{Read, Write};
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("control bind");
         listener.set_nonblocking(true).expect("control nonblocking");
         let control_addr = listener.local_addr().expect("control addr");
-        let runtime_dir = workspace.join(".jyowo/runtime");
         std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
         let token = "test-background-supervisor-token";
         let token_hash = blake3::hash(token.as_bytes()).to_hex().to_string();
-        let workspace_id = blake3::hash(format!("project:{}", workspace.display()).as_bytes())
-            .to_hex()
-            .to_string();
+        let workspace_id = blake3::hash(identity.as_bytes()).to_hex().to_string();
         std::fs::write(
             runtime_dir.join("agent-supervisor.token"),
             serde_json::json!({

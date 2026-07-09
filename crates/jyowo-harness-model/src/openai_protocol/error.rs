@@ -65,6 +65,11 @@ pub(crate) async fn map_response_error(
             class: ErrorClass::RateLimited { retry_after },
             retry_after,
         },
+        StatusCode::PAYMENT_REQUIRED => OpenAiProtocolError {
+            error: ModelError::InsufficientBalance(message),
+            class: ErrorClass::Fatal,
+            retry_after: None,
+        },
         StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => OpenAiProtocolError {
             error: ModelError::InvalidRequest(message),
             class: ErrorClass::Fatal,

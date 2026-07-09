@@ -22,8 +22,10 @@ fn desktop_provider_settings_store_rejects_config_without_api_key() {
                 display_name: "OpenAI Work".to_owned(),
                 id: "openai-work".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                model_options: harness_contracts::ModelRequestOptions::default(),
                 official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
+                provider_defaults: None,
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
         })
@@ -51,8 +53,10 @@ fn desktop_provider_settings_store_writes_owner_only_file_permissions() {
                 display_name: "OpenAI Work".to_owned(),
                 id: "openai-work".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                model_options: harness_contracts::ModelRequestOptions::default(),
                 official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
+                provider_defaults: None,
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
         })
@@ -123,8 +127,10 @@ fn desktop_provider_settings_store_rejects_symlink_settings_file() {
                 display_name: "OpenAI".to_owned(),
                 id: "openai".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                model_options: harness_contracts::ModelRequestOptions::default(),
                 official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
+                provider_defaults: None,
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
         })

@@ -4,9 +4,8 @@ use std::sync::Arc;
 
 use crate::openai_protocol::{OpenAiProtocolClient, OpenAiProtocolProviderExt};
 use crate::{
-    ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
-    ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
-    PromptCacheStyle,
+    InferContext, ModelCredentialResolver, ModelDescriptor, ModelProtocol, ModelProvider,
+    ModelRequest, ModelStream, PromptCacheStyle,
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
@@ -53,15 +52,7 @@ impl ModelProvider for OpenAiProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        // Verified 2026-06-21: https://platform.openai.com/docs/models
-        vec![
-            descriptor("gpt-5.5-pro", "GPT-5.5 Pro", 1_050_000, 128_000),
-            descriptor("gpt-5.5", "GPT-5.5", 1_000_000, 128_000),
-            descriptor("gpt-5.4-pro", "GPT-5.4 Pro", 1_050_000, 128_000),
-            descriptor("gpt-5.4", "GPT-5.4", 1_000_000, 128_000),
-            descriptor("gpt-5.4-mini", "GPT-5.4 mini", 400_000, 128_000),
-            descriptor("gpt-5.4-nano", "GPT-5.4 nano", 400_000, 128_000),
-        ]
+        crate::catalog::provider_model_descriptors(PROVIDER_ID)
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
@@ -74,35 +65,5 @@ impl ModelProvider for OpenAiProvider {
 
     fn prompt_cache_style(&self) -> PromptCacheStyle {
         PromptCacheStyle::OpenAi { auto: true }
-    }
-}
-
-fn descriptor(
-    model_id: &str,
-    display_name: &str,
-    context_window: u32,
-    max_output_tokens: u32,
-) -> ModelDescriptor {
-    ModelDescriptor {
-        provider_id: "openai".to_owned(),
-        model_id: model_id.to_owned(),
-        display_name: display_name.to_owned(),
-        protocol: ModelProtocol::Responses,
-        context_window,
-        max_output_tokens,
-        conversation_capability: ConversationModelCapability {
-            context_window,
-            max_output_tokens,
-            tool_calling: true,
-            reasoning: false,
-            prompt_cache: true,
-            streaming: true,
-            structured_output: true,
-            input_modalities: vec![ModelModality::Text],
-            output_modalities: vec![ModelModality::Text],
-        },
-        runtime_semantics: crate::ModelRuntimeSemantics::openai_responses_default(),
-        lifecycle: ModelLifecycle::Stable,
-        pricing: None,
     }
 }

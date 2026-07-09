@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use harness_contracts::{
     BudgetMetric, McpOrigin, McpServerId, McpServerSource, OverflowAction, ProviderRestriction,
-    ResultBudget, ToolCapability, ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties,
-    TrustLevel,
+    ResultBudget, ToolCapability, ToolDescriptor, ToolDescriptorMetadata, ToolGroup,
+    ToolIntegrationSource, ToolOrigin, ToolProperties, TrustLevel,
 };
 use harness_subagent::{DelegationPolicy, McpServerRef, SubagentSpec};
 
@@ -69,6 +69,17 @@ fn delegation_policy_rejects_child_mcp_tools_without_matching_origin() {
 }
 
 fn descriptor(name: &str, origin: ToolOrigin) -> ToolDescriptor {
+    let metadata = match &origin {
+        ToolOrigin::Mcp(_) => ToolDescriptorMetadata {
+            integration_source: ToolIntegrationSource::Mcp,
+            ..Default::default()
+        },
+        ToolOrigin::Plugin { .. } => ToolDescriptorMetadata {
+            integration_source: ToolIntegrationSource::Plugin,
+            ..Default::default()
+        },
+        _ => ToolDescriptorMetadata::default(),
+    };
     ToolDescriptor {
         name: name.to_owned(),
         display_name: name.to_owned(),
@@ -99,5 +110,6 @@ fn descriptor(name: &str, origin: ToolOrigin) -> ToolDescriptor {
         origin,
         search_hint: None,
         service_binding: None,
+        metadata,
     }
 }

@@ -413,8 +413,7 @@ pub(crate) fn conversation_model_config_id(
 ///
 /// Precedence:
 /// 1. Explicit `model_config_id` in the run request (non-empty) wins.
-/// 2. Project-level provider selection from `<workspace>/.jyowo/config/provider-selection.json`.
-/// 3. Global provider selection from `~/.jyowo/config/provider-selection.json`.
+/// 2. Global provider selection from `~/.jyowo/config/provider-selection.json`.
 /// Fails closed if no effective selection can be resolved.
 pub(crate) fn resolve_effective_model_config_id(
     model_config_id: Option<&str>,
@@ -428,18 +427,7 @@ pub(crate) fn resolve_effective_model_config_id(
         }
     }
 
-    // 2. Project-level provider selection.
-    if let Some(ref project_config) = state.project_config_store {
-        let selection = project_config.load_project_provider_selection()?;
-        if let Some(ref id) = selection.default_config_id {
-            let id = id.trim();
-            if !id.is_empty() {
-                return Ok(id.to_owned());
-            }
-        }
-    }
-
-    // 3. Global provider selection.
+    // 2. Global provider selection.
     if let Some(ref global_config) = state.global_config_store {
         let selection = global_config.load_global_provider_selection()?;
         if let Some(ref id) = selection.default_config_id {
@@ -462,7 +450,7 @@ pub(crate) fn default_model_config_id_for_conversation_or_provider(
     if let Some(model_config_id) = conversation_model_config_id(session_id, state)? {
         return Ok(model_config_id);
     }
-    // Delegate to the effective resolution chain (project selection → global selection → fail).
+    // Delegate to the effective resolution chain (global selection → fail).
     resolve_effective_model_config_id(None, state)
 }
 
@@ -483,7 +471,16 @@ pub(crate) async fn runtime_for_model_config(
     session_id: SessionId,
     model_config_id: &str,
     state: &DesktopRuntimeState,
-) -> Result<(Arc<Harness>, SessionOptions, String, ModelProtocol), CommandErrorPayload> {
+) -> Result<
+    (
+        Arc<Harness>,
+        SessionOptions,
+        String,
+        ModelProtocol,
+        harness_contracts::ModelRequestOptions,
+    ),
+    CommandErrorPayload,
+> {
     let config = provider_config_for_run(model_config_id, state)?;
     let provider_config_fingerprint = provider_config_runtime_fingerprint(&config)?;
     if let Some((harness, options)) = state.active_conversation_runtime_for_model_config(
@@ -491,7 +488,13 @@ pub(crate) async fn runtime_for_model_config(
         model_config_id,
         provider_config_fingerprint,
     )? {
-        return Ok((harness, options, config.model_id.clone(), config.protocol));
+        return Ok((
+            harness,
+            options,
+            config.model_id.clone(),
+            config.protocol,
+            config.model_options.clone(),
+        ));
     }
     let stream_permission_runtime = state
         .stream_permission_runtime
@@ -505,7 +508,7 @@ pub(crate) async fn runtime_for_model_config(
             state.runtime_root().to_path_buf(),
         )
     };
-    let (harness, model_id, protocol) = build_desktop_harness(
+    let (harness, model_id, protocol, model_options) = build_desktop_harness(
         &layout,
         Arc::clone(stream_permission_runtime),
         Some(model_config_id),
@@ -513,9 +516,19 @@ pub(crate) async fn runtime_for_model_config(
         Some(Arc::clone(&state.provider_settings_store)),
     )
     .await?;
-    let options =
-        state.conversation_session_options_for_model(session_id, model_id.clone(), protocol)?;
-    Ok((Arc::new(harness), options, model_id, protocol))
+    let options = state.conversation_session_options_for_model(
+        session_id,
+        model_id.clone(),
+        protocol,
+        model_options.clone(),
+    )?;
+    Ok((
+        Arc::new(harness),
+        options,
+        model_id,
+        protocol,
+        model_options,
+    ))
 }
 
 pub(crate) fn conversation_metadata_record(
@@ -714,7 +727,7 @@ pub async fn start_run_with_runtime_state(
     }
 
     // Resolve effective model config id before any run activation.
-    // Falls back to project selection → global selection → fail closed.
+    // Falls back to global selection → fail closed.
     let model_config_id =
         resolve_effective_model_config_id(request.model_config_id.as_deref(), state)?;
 
@@ -722,7 +735,7 @@ pub async fn start_run_with_runtime_state(
     let agent_policy = resolve_start_run_agent_policy(&request, state)?;
     let input = build_conversation_turn_input(&request, state).await?;
     let _start_run_guard = state.start_run_lock.lock().await;
-    let (harness, options, model_id, protocol) =
+    let (harness, options, model_id, protocol, _model_options) =
         runtime_for_model_config(session_id, &model_config_id, state).await?;
     harness
         .open_or_create_conversation_session(options.clone())
@@ -4989,6 +5002,42 @@ pub async fn export_conversation_evidence_with_runtime_state(
         byte_length: export_result.byte_length,
         exported_at,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use harness_contracts::ProviderSelectionRecord;
+
+    #[test]
+    fn resolve_effective_model_config_id_uses_global_selection_with_project_config_present() {
+        let temp = tempfile::tempdir().expect("workspace tempdir");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+            .expect("runtime state should initialize");
+        state
+            .global_config_store
+            .as_ref()
+            .expect("global config store")
+            .save_global_provider_selection(&ProviderSelectionRecord {
+                default_config_id: Some("global-config".to_owned()),
+            })
+            .expect("save global selection");
+        state
+            .project_config_store
+            .as_ref()
+            .expect("project config store")
+            .save_project_provider_selection(&ProviderSelectionRecord {
+                default_config_id: Some("project-config".to_owned()),
+            })
+            .expect("save stale project selection");
+
+        let resolved =
+            resolve_effective_model_config_id(None, &state).expect("resolve default model config");
+
+        assert_eq!(resolved, "global-config");
+    }
 }
 
 struct EvidenceExportWriteResult {

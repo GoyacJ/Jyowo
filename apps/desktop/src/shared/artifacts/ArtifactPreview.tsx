@@ -90,7 +90,9 @@ export function ArtifactPreview({
           <img
             alt={title}
             className="h-full max-h-96 max-w-full rounded-sm object-contain"
+            height={384}
             src={imageDataUrl}
+            width={682}
           />
         </div>
       ) : isHtmlPreview ? (

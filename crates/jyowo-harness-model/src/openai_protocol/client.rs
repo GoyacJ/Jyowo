@@ -1,9 +1,10 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use harness_contracts::ModelError;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
 use tokio::sync::{Mutex, Semaphore};
@@ -15,11 +16,19 @@ use crate::{
 };
 
 use super::chat_codec;
+use super::continuation::OpenAiResponsesContinuationCapture;
 use super::dialect::OpenAiChatDialect;
 use super::error::{map_response_error, map_transport_error, OpenAiProtocolError};
 use super::{responses_codec, streaming};
 
 const DEFAULT_CREDENTIAL_RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(60);
+
+fn responses_continuation_capture(req: &ModelRequest) -> OpenAiResponsesContinuationCapture {
+    OpenAiResponsesContinuationCapture {
+        model_id: req.model_id.clone(),
+        setup_fingerprint: req.provider_context.setup_fingerprint.clone(),
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct OpenAiProtocolClient {
@@ -32,6 +41,7 @@ pub(crate) struct OpenAiProtocolClient {
     protocol: ModelProtocol,
     max_tokens_field: &'static str,
     dialect: OpenAiChatDialect,
+    extra_headers: BTreeMap<String, String>,
     cooldown_until: Arc<Mutex<Option<Instant>>>,
     concurrency: Option<Arc<Semaphore>>,
 }
@@ -72,6 +82,7 @@ impl OpenAiProtocolClient {
             protocol,
             max_tokens_field: "max_tokens",
             dialect: OpenAiChatDialect::Plain,
+            extra_headers: BTreeMap::new(),
             cooldown_until: Arc::new(Mutex::new(None)),
             concurrency: None,
         }
@@ -123,6 +134,12 @@ impl OpenAiProtocolClient {
 
     pub(crate) fn chat_dialect(&self) -> OpenAiChatDialect {
         self.dialect
+    }
+
+    #[must_use]
+    pub(crate) fn with_extra_headers(mut self, headers: BTreeMap<String, String>) -> Self {
+        self.extra_headers = headers;
+        self
     }
 
     #[must_use]
@@ -183,9 +200,10 @@ impl OpenAiProtocolClient {
                             ModelProtocol::ChatCompletions => {
                                 streaming::response_to_stream(response, self.dialect)
                             }
-                            ModelProtocol::Responses => {
-                                responses_codec::response_to_stream(response)
-                            }
+                            ModelProtocol::Responses => responses_codec::response_to_stream(
+                                response,
+                                responses_continuation_capture(&req),
+                            ),
                             _ => unreachable!("validated OpenAI protocol API mode"),
                         };
                         return Ok(wrap_stream_with_cancel_deadline(stream, &ctx));
@@ -199,9 +217,10 @@ impl OpenAiProtocolClient {
                         ModelProtocol::ChatCompletions => {
                             chat_codec::chat_response_to_stream(response, self.dialect)
                         }
-                        ModelProtocol::Responses => {
-                            responses_codec::json_response_to_stream(response)
-                        }
+                        ModelProtocol::Responses => responses_codec::json_response_to_stream(
+                            response,
+                            responses_continuation_capture(&req),
+                        ),
                         _ => unreachable!("validated OpenAI protocol API mode"),
                     };
                 }
@@ -251,9 +270,107 @@ impl OpenAiProtocolClient {
         }
     }
 
+    pub(crate) async fn get_json(
+        &self,
+        path: &str,
+        model_id: Option<&str>,
+        ctx: &InferContext,
+    ) -> Result<Value, ModelError> {
+        check_context(ctx)?;
+        let credential = self
+            .pick_credential_for_model(model_id.unwrap_or_default().to_owned(), ctx)
+            .await?;
+        check_context(ctx)?;
+        let mut headers = self
+            .headers(credential.as_ref().map(|picked| &picked.value))
+            .map_err(|error| error.error)?;
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        let response = self
+            .http
+            .get(self.url(path))
+            .headers(headers)
+            .send()
+            .await
+            .map_err(map_transport_error)
+            .map_err(|error| error.error)?;
+        self.response_json(response, credential.as_ref(), ctx).await
+    }
+
+    pub(crate) async fn post_json(
+        &self,
+        path: &str,
+        body: &Value,
+        model_id: Option<&str>,
+        ctx: &InferContext,
+    ) -> Result<Value, ModelError> {
+        check_context(ctx)?;
+        let credential = self
+            .pick_credential_for_model(model_id.unwrap_or_default().to_owned(), ctx)
+            .await?;
+        check_context(ctx)?;
+        let mut headers = self
+            .headers(credential.as_ref().map(|picked| &picked.value))
+            .map_err(|error| error.error)?;
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        let response = self
+            .http
+            .post(self.url(path))
+            .headers(headers)
+            .json(body)
+            .send()
+            .await
+            .map_err(map_transport_error)
+            .map_err(|error| error.error)?;
+        self.response_json(response, credential.as_ref(), ctx).await
+    }
+
+    async fn response_json(
+        &self,
+        response: reqwest::Response,
+        credential: Option<&PickedCredential>,
+        ctx: &InferContext,
+    ) -> Result<Value, ModelError> {
+        if !response.status().is_success() {
+            let credential_secret = credential
+                .map(|credential| credential.value.secret.expose_secret())
+                .or_else(|| self.api_key.as_ref().map(|api_key| api_key.expose_secret()));
+            let error = map_response_error(response, credential_secret).await;
+            if let (Some(resolver), Some(picked)) = (self.credential_resolver.as_ref(), credential)
+            {
+                match error.class {
+                    ErrorClass::AuthExpired => resolver.mark_banned(&picked.key),
+                    ErrorClass::RateLimited { retry_after } => resolver.mark_rate_limited(
+                        &picked.key,
+                        retry_after.unwrap_or(DEFAULT_CREDENTIAL_RATE_LIMIT_COOLDOWN),
+                    ),
+                    _ => {}
+                }
+            } else if let Some(retry_after) = error.retry_after {
+                self.set_cooldown(retry_after).await;
+            }
+            return Err(error.error);
+        }
+        let headers = response.headers().clone();
+        apply_response_headers_middlewares(&headers, ctx).await?;
+        response
+            .json()
+            .await
+            .map_err(map_transport_error)
+            .map_err(|error| error.error)
+    }
+
     async fn pick_credential(
         &self,
         req: &ModelRequest,
+        ctx: &InferContext,
+    ) -> Result<Option<PickedCredential>, ModelError> {
+        self.pick_credential_for_model(req.model_id.clone(), ctx)
+            .await
+    }
+
+    async fn pick_credential_for_model(
+        &self,
+        model_id: String,
         ctx: &InferContext,
     ) -> Result<Option<PickedCredential>, ModelError> {
         let Some(resolver) = &self.credential_resolver else {
@@ -263,7 +380,7 @@ impl OpenAiProtocolClient {
             .pick(ModelCredentialPickContext {
                 tenant_id: ctx.tenant_id,
                 provider_id: self.provider_id.clone(),
-                model_id: req.model_id.clone(),
+                model_id,
             })
             .await
             .map(Some)
@@ -287,11 +404,7 @@ impl OpenAiProtocolClient {
         };
         let response = self
             .http
-            .post(format!(
-                "{}{}",
-                self.base_url.trim_end_matches('/'),
-                normalize_path(&self.path)
-            ))
+            .post(self.url(&self.path))
             .headers(self.headers(credential)?)
             .json(body)
             .send()
@@ -306,6 +419,14 @@ impl OpenAiProtocolClient {
         }
 
         Ok(response)
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!(
+            "{}{}",
+            self.base_url.trim_end_matches('/'),
+            normalize_path(path)
+        )
     }
 
     fn headers(
@@ -326,6 +447,24 @@ impl OpenAiProtocolClient {
             headers.insert(AUTHORIZATION, auth);
         }
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        for (name, value) in &self.extra_headers {
+            let name =
+                HeaderName::from_bytes(name.as_bytes()).map_err(|error| OpenAiProtocolError {
+                    error: ModelError::InvalidRequest(format!(
+                        "invalid provider header name: {error}"
+                    )),
+                    class: ErrorClass::Fatal,
+                    retry_after: None,
+                })?;
+            let value = HeaderValue::from_str(value).map_err(|error| OpenAiProtocolError {
+                error: ModelError::InvalidRequest(format!(
+                    "invalid provider header value: {error}"
+                )),
+                class: ErrorClass::Fatal,
+                retry_after: None,
+            })?;
+            headers.insert(name, value);
+        }
         Ok(headers)
     }
 
@@ -383,6 +522,17 @@ fn normalize_path(path: &str) -> String {
     }
 }
 
+fn check_context(ctx: &InferContext) -> Result<(), ModelError> {
+    if ctx.cancel.is_cancelled() {
+        return Err(ModelError::Cancelled);
+    }
+    if let Some(deadline) = ctx.deadline {
+        if Instant::now() >= deadline {
+            return Err(ModelError::DeadlineExceeded(Duration::ZERO));
+        }
+    }
+    Ok(())
+}
 #[async_trait]
 pub(crate) trait OpenAiProtocolProviderExt: Send + Sync + 'static {
     fn client(&self) -> &OpenAiProtocolClient;
@@ -767,6 +917,7 @@ mod credential_pool_tests {
             cache_breakpoints: Vec::new(),
             protocol: ModelProtocol::ChatCompletions,
             extra: Value::Null,
+            options: harness_contracts::ModelRequestOptions::default(),
             provider_context: crate::ProviderRequestContext::default(),
         }
     }

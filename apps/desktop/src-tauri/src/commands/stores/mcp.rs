@@ -1,29 +1,40 @@
 use super::*;
 use crate::storage_layout::StorageLayout;
 
-/// Project-scoped MCP server store.
+/// Scope-aware MCP server store.
 ///
-/// Stores enabled/custom MCP server configurations under
-/// `<workspace>/.jyowo/config/mcp-servers.json`.
+/// Global settings live under `~/.jyowo/config/mcp-servers.json`.
+/// Project settings support is kept for the future project settings module.
 ///
 /// New saves through this store are validated by the command layer and should
 /// not contain raw inline secrets.
 #[derive(Clone)]
 pub(crate) struct DesktopMcpServerStore {
     layout: StorageLayout,
-    workspace_root: PathBuf,
+    workspace_root: Option<PathBuf>,
 }
 
 impl DesktopMcpServerStore {
+    #[allow(dead_code)]
     pub(crate) fn new(layout: StorageLayout, workspace_root: PathBuf) -> Self {
         Self {
             layout,
-            workspace_root,
+            workspace_root: Some(workspace_root),
+        }
+    }
+
+    pub(crate) fn global(layout: StorageLayout) -> Self {
+        Self {
+            layout,
+            workspace_root: None,
         }
     }
 
     fn settings_path(&self) -> PathBuf {
-        self.layout.project_mcp_servers_file(&self.workspace_root)
+        match &self.workspace_root {
+            Some(workspace_root) => self.layout.project_mcp_servers_file(workspace_root),
+            None => self.layout.global_mcp_servers_file(),
+        }
     }
 }
 
@@ -46,27 +57,6 @@ impl McpServerStore for DesktopMcpServerStore {
         let mut records = self.load_records()?;
         records.retain(|existing| existing.id != id);
         write_mcp_server_records(&self.settings_path(), &records)
-    }
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct NoWorkspaceMcpServerStore;
-
-impl McpServerStore for NoWorkspaceMcpServerStore {
-    fn load_records(&self) -> Result<Vec<McpServerConfigRecord>, CommandErrorPayload> {
-        Ok(Vec::new())
-    }
-
-    fn save_record(&self, _record: &McpServerConfigRecord) -> Result<(), CommandErrorPayload> {
-        Err(invalid_payload(
-            "custom MCP servers require an active project workspace".to_owned(),
-        ))
-    }
-
-    fn delete_record(&self, _id: &str) -> Result<(), CommandErrorPayload> {
-        Err(invalid_payload(
-            "custom MCP servers require an active project workspace".to_owned(),
-        ))
     }
 }
 

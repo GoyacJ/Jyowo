@@ -7,8 +7,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 use futures::stream::BoxStream;
 use harness_contracts::{
     BlobStore, ConversationModelCapability, Message, MessageId, ModelError, ModelProtocol,
-    ModelRef, PricingId, PricingSnapshotId, RequestId, RunId, SessionId, StopReason, TenantId,
-    ToolDescriptor, ToolUseId, UsageSnapshot,
+    ModelRef, ModelRequestOptions, PricingId, PricingSnapshotId, RequestId, RunId, SessionId,
+    StopReason, TenantId, ToolDescriptor, ToolUseId, UsageSnapshot,
 };
 use harness_provider_state::{ProviderContinuationKind, ProviderContinuationRecord};
 use http::HeaderMap;
@@ -154,6 +154,7 @@ pub struct ModelDescriptor {
     pub protocol: ModelProtocol,
     pub context_window: u32,
     pub max_output_tokens: u32,
+    pub provider_declared_capability: ConversationModelCapability,
     pub conversation_capability: ConversationModelCapability,
     pub runtime_semantics: ModelRuntimeSemantics,
     pub lifecycle: ModelLifecycle,
@@ -168,6 +169,7 @@ pub struct ModelRuntimeSnapshot {
     pub protocol: ModelProtocol,
     pub context_window: u32,
     pub max_output_tokens: u32,
+    pub provider_declared_capability: ConversationModelCapability,
     pub conversation_capability: ConversationModelCapability,
     pub runtime_semantics: ModelRuntimeSemantics,
     pub lifecycle: ModelLifecycle,
@@ -184,6 +186,7 @@ impl ModelRuntimeSnapshot {
             protocol: descriptor.protocol,
             context_window: descriptor.context_window,
             max_output_tokens: descriptor.max_output_tokens,
+            provider_declared_capability: descriptor.provider_declared_capability,
             conversation_capability: descriptor.conversation_capability,
             runtime_semantics: descriptor.runtime_semantics,
             lifecycle: descriptor.lifecycle,
@@ -259,6 +262,10 @@ impl ModelRuntimeSemantics {
     #[must_use]
     pub fn openai_chat_minimax() -> Self {
         Self {
+            reasoning_protocol: ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind: ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: false,
+            },
             provider_continuation_dialect: Some("openai_chat.minimax".to_owned()),
             ..Self::openai_chat_plain()
         }
@@ -271,7 +278,64 @@ impl ModelRuntimeSemantics {
                 continuation_kind: ProviderContinuationKind::ReasoningReplay,
                 required_for_assistant_tool_replay: true,
             },
+            cache_protocol: CacheProtocolSemantics::OpenAiAuto,
             provider_continuation_dialect: Some("openai_chat.deepseek".to_owned()),
+            ..Self::openai_chat_plain()
+        }
+    }
+
+    #[must_use]
+    pub fn openai_chat_kimi_plain() -> Self {
+        Self {
+            provider_continuation_dialect: Some("openai_chat.kimi".to_owned()),
+            ..Self::openai_chat_plain()
+        }
+    }
+
+    #[must_use]
+    pub fn openai_chat_kimi_optional_replay() -> Self {
+        Self {
+            reasoning_protocol: ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind: ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: false,
+            },
+            cache_protocol: CacheProtocolSemantics::OpenAiAuto,
+            provider_continuation_dialect: Some("openai_chat.kimi".to_owned()),
+            ..Self::openai_chat_plain()
+        }
+    }
+
+    #[must_use]
+    pub fn openai_chat_kimi() -> Self {
+        Self {
+            reasoning_protocol: ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind: ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: true,
+            },
+            cache_protocol: CacheProtocolSemantics::OpenAiAuto,
+            provider_continuation_dialect: Some("openai_chat.kimi".to_owned()),
+            ..Self::openai_chat_plain()
+        }
+    }
+
+    #[must_use]
+    pub fn openai_chat_zhipu() -> Self {
+        Self {
+            reasoning_protocol: ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind: ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: true,
+            },
+            cache_protocol: CacheProtocolSemantics::OpenAiAuto,
+            provider_continuation_dialect: Some("openai_chat.zhipu".to_owned()),
+            ..Self::openai_chat_plain()
+        }
+    }
+
+    #[must_use]
+    pub fn openai_chat_qwen() -> Self {
+        Self {
+            reasoning_protocol: ReasoningProtocolSemantics::PublicThinking,
+            provider_continuation_dialect: Some("openai_chat.qwen".to_owned()),
             ..Self::openai_chat_plain()
         }
     }
@@ -392,6 +456,7 @@ pub struct ModelInventoryEntry {
     pub protocol: ModelProtocol,
     pub context_window: u32,
     pub max_output_tokens: u32,
+    pub provider_declared_capability: ConversationModelCapability,
     pub conversation_capability: ConversationModelCapability,
     pub runtime_semantics: ModelRuntimeSemantics,
     pub lifecycle: ModelLifecycle,
@@ -409,6 +474,7 @@ impl ModelInventoryEntry {
             protocol: descriptor.protocol,
             context_window: descriptor.context_window,
             max_output_tokens: descriptor.max_output_tokens,
+            provider_declared_capability: descriptor.provider_declared_capability,
             conversation_capability: descriptor.conversation_capability,
             runtime_semantics: descriptor.runtime_semantics,
             lifecycle: descriptor.lifecycle,
@@ -433,6 +499,7 @@ impl ModelInventoryEntry {
             protocol,
             context_window: 0,
             max_output_tokens: 0,
+            provider_declared_capability: conversation_capability.clone(),
             conversation_capability,
             runtime_semantics: ModelRuntimeSemantics::messages_default(protocol),
             lifecycle: ModelLifecycle::Stable,
@@ -498,6 +565,7 @@ pub struct ModelRequest {
     pub cache_breakpoints: Vec<CacheBreakpoint>,
     pub protocol: ModelProtocol,
     pub extra: Value,
+    pub options: ModelRequestOptions,
     pub provider_context: ProviderRequestContext,
 }
 
@@ -518,6 +586,7 @@ impl fmt::Debug for ModelRequest {
             .field("cache_breakpoint_count", &self.cache_breakpoints.len())
             .field("protocol", &self.protocol)
             .field("extra_present", &(!self.extra.is_null()))
+            .field("options_present", &(!self.options.is_empty()))
             .field("provider_context", &self.provider_context)
             .finish()
     }
@@ -528,6 +597,7 @@ pub struct ProviderRequestContext {
     pub provider_id: String,
     pub model_config_id: Option<String>,
     pub dialect: Option<String>,
+    pub setup_fingerprint: Option<String>,
     pub continuations: Vec<ProviderContinuationRecord>,
 }
 
@@ -538,6 +608,7 @@ impl fmt::Debug for ProviderRequestContext {
             .field("provider_id", &self.provider_id)
             .field("model_config_id", &self.model_config_id)
             .field("dialect", &self.dialect)
+            .field("setup_fingerprint", &self.setup_fingerprint)
             .field("continuation_count", &self.continuations.len())
             .finish()
     }
@@ -732,6 +803,7 @@ impl ModelErrorExt for ModelError {
     fn classify(&self) -> ErrorClass {
         match self {
             Self::RateLimited(_) => ErrorClass::RateLimited { retry_after: None },
+            Self::InsufficientBalance(_) => ErrorClass::Fatal,
             Self::ContextTooLong { .. } => ErrorClass::ContextOverflow,
             Self::AuthExpired(_) => ErrorClass::AuthExpired,
             Self::ProviderUnavailable(_) | Self::Io(_) => ErrorClass::Transient,

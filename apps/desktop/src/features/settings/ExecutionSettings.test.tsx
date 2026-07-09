@@ -216,10 +216,10 @@ describe('ExecutionSettings', () => {
       }),
     )
 
-    expect(screen.getByText('Loading default permission mode...')).toBeInTheDocument()
+    expect(screen.getByText('Loading default permission mode…')).toBeInTheDocument()
   })
 
-  it('renders project scope badge when execution settings are project scoped', async () => {
+  it('keeps settings labeled as global even if a stale project scope is returned', async () => {
     uiStore.getState().setLocale('en-US')
 
     renderExecutionSettings(
@@ -231,7 +231,8 @@ describe('ExecutionSettings', () => {
       }),
     )
 
-    expect(await screen.findByText('Project overrides')).toBeInTheDocument()
+    expect(await screen.findByText('Global defaults')).toBeInTheDocument()
+    expect(screen.queryByText('Project overrides')).not.toBeInTheDocument()
   })
 
   it('renders available agent switches off', async () => {

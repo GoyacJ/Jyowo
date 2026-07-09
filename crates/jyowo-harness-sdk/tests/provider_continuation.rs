@@ -358,11 +358,12 @@ impl ModelProvider for DeepSeekSemanticsProvider {
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             provider_id: "deepseek".to_owned(),
-            model_id: "deepseek-chat".to_owned(),
-            display_name: "DeepSeek Chat".to_owned(),
+            model_id: "deepseek-v4-flash".to_owned(),
+            display_name: "DeepSeek V4 Flash".to_owned(),
             protocol: ModelProtocol::ChatCompletions,
             context_window: 128_000,
             max_output_tokens: 8_192,
+            provider_declared_capability: ConversationModelCapability::default(),
             conversation_capability: ConversationModelCapability::default(),
             runtime_semantics: ModelRuntimeSemantics::openai_chat_deepseek(),
             lifecycle: ModelLifecycle::Stable,
@@ -409,6 +410,7 @@ impl TestTool {
                 budget: default_result_budget(),
                 provider_restriction: ProviderRestriction::All,
                 origin: ToolOrigin::Builtin,
+                metadata: Default::default(),
                 search_hint: None,
                 service_binding: None,
             },

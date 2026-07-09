@@ -17,11 +17,12 @@ use harness_contracts::{
     HookOutcomeInconsistentEvent, HookOutcomeSummary, HookReturnedUnsupportedEvent,
     HookRewroteInputEvent, HookTriggeredEvent, MemoryId, MemoryModelRequestPreview,
     MemoryModelRequestPreviewSection, MemorySource, MemoryTraceId, Message, MessageContent,
-    MessageId, MessageMetadata, MessagePart, MessageRole, ModelError, ModelRef, PermissionMode,
-    PricingSnapshotId, RedactRules, Redactor, RequestId, RunEndedEvent, RunId, RunModelSnapshot,
-    RunStartedEvent, SessionId, TeamId, TenantId, ToolDescriptor, ToolError, ToolErrorPayload,
-    ToolResult, ToolResultPart, ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent,
-    ToolUseId, ToolUseRequestedEvent, TrustLevel, TurnInput, UsageAccumulatedEvent, UsageSnapshot,
+    MessageId, MessageMetadata, MessagePart, MessageRole, ModelError, ModelRef,
+    ModelRequestOptions, PermissionMode, PricingSnapshotId, RedactRules, Redactor, RequestId,
+    RunEndedEvent, RunId, RunModelSnapshot, RunStartedEvent, SessionId, TeamId, TenantId,
+    ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolResultPart, ToolUseCompletedEvent,
+    ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, TrustLevel,
+    TurnInput, UsageAccumulatedEvent, UsageSnapshot,
 };
 use harness_execution::{AuthorizationContext, ExecutionError};
 use harness_hook::{
@@ -53,6 +54,7 @@ use crate::{
 
 const MISSING_PROVIDER_CONTINUATION_ERROR: &str =
     "provider continuation required for assistant tool replay but missing";
+const OPENAI_RESPONSES_PREVIOUS_RESPONSE_KIND: &str = "openai.responses.previous_response";
 
 pub(crate) async fn run_turn(
     engine: &Engine,
@@ -258,10 +260,9 @@ pub(crate) async fn run_turn(
             engine,
             &session,
             &ctx,
+            assembled.system.as_deref(),
             &assembled.messages,
-            assembled_tools
-                .as_ref()
-                .is_some_and(|tools| !tools.is_empty()),
+            assembled_tools.as_deref().unwrap_or(&[]),
         )
         .await?;
 
@@ -280,6 +281,7 @@ pub(crate) async fn run_turn(
                 ctx.run_id,
                 iterations,
             ),
+            options: engine.model_options.clone(),
             provider_context,
         };
         let mut infer_ctx = InferContext::for_test();
@@ -390,10 +392,9 @@ pub(crate) async fn run_turn(
                     engine,
                     &session,
                     &ctx,
+                    compacted.prompt.system.as_deref(),
                     &compacted.prompt.messages,
-                    compacted_tools
-                        .as_ref()
-                        .is_some_and(|tools| !tools.is_empty()),
+                    compacted_tools.as_deref().unwrap_or(&[]),
                 )
                 .await?;
                 request = ModelRequest {
@@ -411,6 +412,7 @@ pub(crate) async fn run_turn(
                         ctx.run_id,
                         iterations,
                     ),
+                    options: engine.model_options.clone(),
                     provider_context,
                 };
                 if let Err(error) =
@@ -1941,8 +1943,8 @@ fn provider_continuation_query_for_prompt(
     tenant_id: TenantId,
     session_id: SessionId,
     final_messages: &[Message],
+    continuation_kind: ProviderContinuationKind,
 ) -> Option<ProviderContinuationQuery> {
-    let continuation_kind = required_private_replay_kind(model_snapshot)?;
     let message_ids = assistant_tool_replay_message_ids(final_messages);
     if message_ids.is_empty() {
         return None;
@@ -1964,8 +1966,9 @@ async fn provider_request_context_for_prompt(
     engine: &Engine,
     session: &SessionHandle,
     ctx: &RunContext,
+    system: Option<&str>,
     final_messages: &[Message],
-    tools_can_produce_assistant_tool_replay: bool,
+    tools: &[ToolDescriptor],
 ) -> Result<ProviderRequestContext, EngineError> {
     let model_config_id = ctx.model_config_id.clone();
     let dialect = provider_continuation_dialect(&engine.model_snapshot);
@@ -1973,17 +1976,31 @@ async fn provider_request_context_for_prompt(
         provider_id: engine.model_snapshot.provider_id.clone(),
         model_config_id: model_config_id.clone(),
         dialect: Some(dialect),
+        setup_fingerprint: Some(setup_fingerprint_for_request(
+            &engine.model_snapshot,
+            &engine.model_options,
+            system,
+            tools,
+        )),
         continuations: Vec::new(),
     };
+
+    if engine.model_snapshot.protocol == harness_contracts::ModelProtocol::Responses
+        && engine.model_snapshot.provider_id == "openai"
+    {
+        provider_context.continuations =
+            load_openai_response_continuation_records(engine, session, ctx, final_messages).await?;
+    }
 
     let Some(continuation_kind) = required_private_replay_kind(&engine.model_snapshot) else {
         return Ok(provider_context);
     };
+    let replay_required = private_replay_required(&engine.model_snapshot);
 
     let replay_message_ids = assistant_tool_replay_message_ids(final_messages);
-    let requires_store = !replay_message_ids.is_empty() || tools_can_produce_assistant_tool_replay;
+    let requires_store = !replay_message_ids.is_empty() || !tools.is_empty();
     let Some(store) = engine.provider_continuation_store.as_ref() else {
-        if requires_store {
+        if requires_store && replay_required {
             return Err(engine_error(ModelError::InvalidRequest(
                 MISSING_PROVIDER_CONTINUATION_ERROR.to_owned(),
             )));
@@ -1997,24 +2014,81 @@ async fn provider_request_context_for_prompt(
         session.tenant_id,
         session.session_id,
         final_messages,
+        continuation_kind.clone(),
     ) else {
         return Ok(provider_context);
     };
 
     let records = store.load_for_messages(query).await.map_err(engine_error)?;
-    let exact_matches: HashSet<(MessageId, ProviderContinuationKind)> = records
-        .iter()
-        .map(|record| (record.message_id, record.kind.clone()))
-        .collect();
-    for message_id in replay_message_ids {
-        if !exact_matches.contains(&(message_id, continuation_kind.clone())) {
-            return Err(engine_error(ModelError::InvalidRequest(
-                MISSING_PROVIDER_CONTINUATION_ERROR.to_owned(),
-            )));
+    if replay_required {
+        let exact_matches: HashSet<(MessageId, ProviderContinuationKind)> = records
+            .iter()
+            .map(|record| (record.message_id, record.kind.clone()))
+            .collect();
+        for message_id in replay_message_ids {
+            if !exact_matches.contains(&(message_id, continuation_kind.clone())) {
+                return Err(engine_error(ModelError::InvalidRequest(
+                    MISSING_PROVIDER_CONTINUATION_ERROR.to_owned(),
+                )));
+            }
         }
     }
     provider_context.continuations = records;
     Ok(provider_context)
+}
+
+async fn load_openai_response_continuation_records(
+    engine: &Engine,
+    session: &SessionHandle,
+    ctx: &RunContext,
+    final_messages: &[Message],
+) -> Result<Vec<ProviderContinuationRecord>, EngineError> {
+    let Some(store) = engine.provider_continuation_store.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let message_ids = final_messages
+        .iter()
+        .filter(|message| message.role == MessageRole::Assistant)
+        .map(|message| message.id)
+        .collect::<Vec<_>>();
+    if message_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    store
+        .load_for_messages(ProviderContinuationQuery {
+            provider_id: engine.model_snapshot.provider_id.clone(),
+            model_config_id: ctx.model_config_id.clone(),
+            protocol: engine.model_snapshot.protocol,
+            dialect: provider_continuation_dialect(&engine.model_snapshot),
+            tenant_id: session.tenant_id,
+            session_id: session.session_id,
+            message_ids,
+            kinds: vec![ProviderContinuationKind::ProviderNative(
+                OPENAI_RESPONSES_PREVIOUS_RESPONSE_KIND.to_owned(),
+            )],
+        })
+        .await
+        .map_err(engine_error)
+}
+
+fn setup_fingerprint_for_request(
+    model_snapshot: &ModelRuntimeSnapshot,
+    model_options: &ModelRequestOptions,
+    system: Option<&str>,
+    tools: &[ToolDescriptor],
+) -> String {
+    let tools_value = serde_json::to_value(tools).unwrap_or(Value::Null);
+    let options_value = serde_json::to_value(model_options).unwrap_or(Value::Null);
+    let bytes = serde_json::to_vec(&json!({
+        "providerId": model_snapshot.provider_id,
+        "modelId": model_snapshot.model_id,
+        "protocol": model_snapshot.protocol,
+        "system": system,
+        "tools": tools_value,
+        "modelOptions": options_value,
+    }))
+    .unwrap_or_default();
+    blake3::hash(&bytes).to_hex().to_string()
 }
 
 fn required_private_replay_kind(
@@ -2022,11 +2096,20 @@ fn required_private_replay_kind(
 ) -> Option<ProviderContinuationKind> {
     match &model_snapshot.runtime_semantics.reasoning_protocol {
         ReasoningProtocolSemantics::ProviderPrivateReplay {
-            continuation_kind,
-            required_for_assistant_tool_replay: true,
+            continuation_kind, ..
         } => Some(continuation_kind.clone()),
         _ => None,
     }
+}
+
+fn private_replay_required(model_snapshot: &ModelRuntimeSnapshot) -> bool {
+    matches!(
+        &model_snapshot.runtime_semantics.reasoning_protocol,
+        ReasoningProtocolSemantics::ProviderPrivateReplay {
+            required_for_assistant_tool_replay: true,
+            ..
+        }
+    )
 }
 
 fn provider_continuation_dialect(model_snapshot: &ModelRuntimeSnapshot) -> String {
@@ -2062,6 +2145,13 @@ async fn store_provider_continuations(
         return Ok(());
     }
     let Some(store) = engine.provider_continuation_store.as_ref() else {
+        if assembly
+            .provider_continuations()
+            .iter()
+            .all(|capture| is_openai_responses_previous_response_kind(&capture.kind))
+        {
+            return Ok(());
+        }
         return Err(engine_error(ModelError::InvalidRequest(
             MISSING_PROVIDER_CONTINUATION_ERROR.to_owned(),
         )));
@@ -2090,6 +2180,14 @@ async fn store_provider_continuations(
         })
         .collect();
     store.append_batch(records).await.map_err(engine_error)
+}
+
+fn is_openai_responses_previous_response_kind(kind: &ProviderContinuationKind) -> bool {
+    matches!(
+        kind,
+        ProviderContinuationKind::ProviderNative(value)
+            if value == OPENAI_RESPONSES_PREVIOUS_RESPONSE_KIND
+    )
 }
 
 fn validate_model_input_modalities(
@@ -2937,6 +3035,7 @@ fn model_error_class(error: &ModelError) -> &'static str {
     match error {
         ModelError::Message(_) => "message",
         ModelError::RateLimited(_) => "rate_limited",
+        ModelError::InsufficientBalance(_) => "insufficient_balance",
         ModelError::ContextTooLong { .. } => "context_too_long",
         ModelError::InvalidRequest(_) => "invalid_request",
         ModelError::AllCredentialsBanned => "all_credentials_banned",

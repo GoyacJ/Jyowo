@@ -4,6 +4,7 @@ use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{Message, MessageId, MessagePart, MessageRole, ModelError};
 use harness_model::{codex::CodexResponsesProvider, *};
+use serde_json::json;
 use serde_json::Value;
 use wiremock::{
     matchers::{header, method, path},
@@ -27,6 +28,7 @@ fn request(stream: bool) -> ModelRequest {
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::Responses,
         extra: Value::Null,
+        options: harness_contracts::ModelRequestOptions::default(),
         provider_context: harness_model::ProviderRequestContext::default(),
     }
 }
@@ -123,7 +125,10 @@ async fn codex_streams_responses_text_reasoning_tool_and_usage() {
     assert_eq!(body["model"], "gpt-5.3-codex");
     assert_eq!(body["stream"], true);
     assert_eq!(body["input"][0]["role"], "system");
-    assert_eq!(body["input"][1]["content"], "build");
+    assert_eq!(
+        body["input"][1]["content"],
+        json!([{ "type": "input_text", "text": "build" }])
+    );
 }
 
 #[tokio::test]
