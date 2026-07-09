@@ -33,7 +33,7 @@ export function DialogContent({
       <DialogOverlay />
       <DialogPrimitive.Content
         className={cn(
-          'fixed top-1/2 left-1/2 z-50 grid w-[min(calc(100vw-2rem),32rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-md border border-border bg-popover p-6 text-popover-foreground shadow-lg outline-none animate-dialog-enter',
+          'fixed top-1/2 left-1/2 z-50 grid w-[min(calc(100vw-2rem),32rem)] [transform:translate(-50%,-50%)] gap-4 rounded-md border border-border bg-popover p-6 text-popover-foreground shadow-lg outline-none animate-dialog-enter',
           className,
         )}
         {...props}
