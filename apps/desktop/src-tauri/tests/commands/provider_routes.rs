@@ -724,6 +724,10 @@ mod capability_route_conversation {
                 protocol: ModelProtocol::Messages,
                 context_window: 128_000,
                 max_output_tokens: 8_192,
+                provider_declared_capability: ConversationModelCapability {
+                    tool_calling: false,
+                    ..ConversationModelCapability::default()
+                },
                 conversation_capability: ConversationModelCapability {
                     tool_calling: false,
                     ..ConversationModelCapability::default()

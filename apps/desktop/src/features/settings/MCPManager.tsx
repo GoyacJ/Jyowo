@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next'
 import { z } from 'zod'
 
 import { useActiveProjectPath } from '@/features/workspace/use-active-project-path'
+import { formatTime } from '@/shared/formatters'
 import type {
   BrowserMcpPreset,
   McpDiagnosticRecord,
@@ -36,6 +37,10 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/shared/ui/dialog'
+import { IconButton as SharedIconButton } from '@/shared/ui/icon-button'
+import { Input } from '@/shared/ui/input'
+import { Section, SectionDescription, SectionHeader, SectionTitle } from '@/shared/ui/section'
+import { Select } from '@/shared/ui/select'
 
 import { MCPServerCard } from './MCPServerCard'
 
@@ -353,20 +358,20 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     : null
 
   return (
-    <section className="space-y-5 rounded-md border border-border bg-surface p-5">
+    <Section>
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
+        <SectionHeader className="flex items-start gap-3">
           <div className="rounded-md border border-border bg-background p-2 text-muted-foreground">
             <Server className="size-4" />
           </div>
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="font-semibold text-base">{t('mcp.title')}</h2>
+              <SectionTitle>{t('mcp.title')}</SectionTitle>
               <Badge variant="outline">
                 {hasProjectScope ? t('scope.projectOverrides') : t('scope.runtimeDiagnostics')}
               </Badge>
             </div>
-            <p className="mt-1 text-muted-foreground text-sm">{t('mcp.description')}</p>
+            <SectionDescription>{t('mcp.description')}</SectionDescription>
             <a
               className="mt-2 inline-flex items-center gap-1 text-muted-foreground text-xs hover:text-foreground"
               href="https://modelcontextprotocol.io"
@@ -377,7 +382,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
               <ExternalLink className="size-3" />
             </a>
           </div>
-        </div>
+        </SectionHeader>
 
         {hasProjectScope ? (
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -399,7 +404,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                     label={t('mcp.serverName')}
                     message={errors.displayName?.message}
                   >
-                    <input
+                    <Input
                       className={inputClassName}
                       disabled={isSubmitting || isConfigLoading}
                       id="mcp-server-name"
@@ -414,7 +419,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                     label={t('mcp.scope')}
                     message={errors.scope?.message}
                   >
-                    <select
+                    <Select
                       className={inputClassName}
                       disabled={isSubmitting || isConfigLoading}
                       id="mcp-server-scope"
@@ -423,7 +428,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                       <option value="global">{t('mcp.global')}</option>
                       <option value="session">{t('mcp.session')}</option>
                       <option value="agent">{t('mcp.agent')}</option>
-                    </select>
+                    </Select>
                   </Field>
                   <div className="space-y-2 text-sm">
                     <span className="font-medium">{t('mcp.transport')}</span>
@@ -454,7 +459,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                       label={t('mcp.command')}
                       message={errors.command?.message}
                     >
-                      <input
+                      <Input
                         className={inputClassName}
                         disabled={isSubmitting || isConfigLoading}
                         id="mcp-server-command"
@@ -467,7 +472,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                       label={t('mcp.workingDir')}
                       message={errors.workingDir?.message}
                     >
-                      <input
+                      <Input
                         className={inputClassName}
                         disabled={isSubmitting || isConfigLoading}
                         id="mcp-server-working-dir"
@@ -484,17 +489,21 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                     >
                       {argumentFields.fields.map((field, index) => (
                         <div className="flex gap-2" key={field.id}>
-                          <input
+                          <Input
                             aria-label={t('mcp.argument')}
                             className={inputClassName}
                             disabled={isSubmitting || isConfigLoading}
                             placeholder="mcp-server"
                             {...register(`args.${index}.value`)}
                           />
-                          <IconButton
+                          <SharedIconButton
+                            className="shrink-0"
                             disabled={isSubmitting || isConfigLoading}
+                            icon={Trash2}
                             label={t('mcp.removeArgument')}
                             onClick={() => argumentFields.remove(index)}
+                            type="button"
+                            variant="outline"
                           />
                         </div>
                       ))}
@@ -508,17 +517,21 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                     >
                       {inheritEnvFields.fields.map((field, index) => (
                         <div className="flex gap-2" key={field.id}>
-                          <input
+                          <Input
                             aria-label={t('mcp.inheritedEnvVar')}
                             className={inputClassName}
                             disabled={isSubmitting || isConfigLoading}
                             placeholder="GITHUB_TOKEN"
                             {...register(`inheritEnv.${index}.value`)}
                           />
-                          <IconButton
+                          <SharedIconButton
+                            className="shrink-0"
                             disabled={isSubmitting || isConfigLoading}
+                            icon={Trash2}
                             label={t('mcp.removeInheritedEnv')}
                             onClick={() => inheritEnvFields.remove(index)}
+                            type="button"
+                            variant="outline"
                           />
                         </div>
                       ))}
@@ -533,7 +546,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                       >
                         {envFields.fields.map((field, index) => (
                           <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto]" key={field.id}>
-                            <input
+                            <Input
                               aria-label={t('mcp.envName')}
                               className={inputClassName}
                               disabled={isSubmitting || isConfigLoading}
@@ -542,7 +555,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                                 onChange: () => setValue(`env.${index}.preserveExisting`, false),
                               })}
                             />
-                            <input
+                            <Input
                               aria-label={t('mcp.envValue')}
                               className={inputClassName}
                               disabled={isSubmitting || isConfigLoading}
@@ -551,10 +564,14 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                                 onChange: () => setValue(`env.${index}.preserveExisting`, false),
                               })}
                             />
-                            <IconButton
+                            <SharedIconButton
+                              className="shrink-0"
                               disabled={isSubmitting || isConfigLoading}
+                              icon={Trash2}
                               label={t('mcp.removeEnv')}
                               onClick={() => envFields.remove(index)}
+                              type="button"
+                              variant="outline"
                             />
                           </div>
                         ))}
@@ -569,7 +586,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                         label={t('mcp.url')}
                         message={errors.url?.message}
                       >
-                        <input
+                        <Input
                           className={inputClassName}
                           disabled={isSubmitting || isConfigLoading}
                           id="mcp-server-url"
@@ -583,7 +600,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                       label={t('mcp.bearerTokenEnvVar')}
                       message={errors.bearerTokenEnvVar?.message}
                     >
-                      <input
+                      <Input
                         className={inputClassName}
                         disabled={isSubmitting || isConfigLoading}
                         id="mcp-server-bearer-token-env-var"
@@ -600,7 +617,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                     >
                       {headerFields.fields.map((field, index) => (
                         <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto]" key={field.id}>
-                          <input
+                          <Input
                             aria-label={t('mcp.headerName')}
                             className={inputClassName}
                             disabled={isSubmitting || isConfigLoading}
@@ -609,7 +626,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                               onChange: () => setValue(`headers.${index}.preserveExisting`, false),
                             })}
                           />
-                          <input
+                          <Input
                             aria-label={t('mcp.headerValue')}
                             className={inputClassName}
                             disabled={isSubmitting || isConfigLoading}
@@ -618,10 +635,14 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                               onChange: () => setValue(`headers.${index}.preserveExisting`, false),
                             })}
                           />
-                          <IconButton
+                          <SharedIconButton
+                            className="shrink-0"
                             disabled={isSubmitting || isConfigLoading}
+                            icon={Trash2}
                             label={t('mcp.removeHeader')}
                             onClick={() => headerFields.remove(index)}
+                            type="button"
+                            variant="outline"
                           />
                         </div>
                       ))}
@@ -636,24 +657,28 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                       >
                         {headerEnvFields.fields.map((field, index) => (
                           <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto]" key={field.id}>
-                            <input
+                            <Input
                               aria-label={t('mcp.envHeaderName')}
                               className={inputClassName}
                               disabled={isSubmitting || isConfigLoading}
                               placeholder="X-Api-Key"
                               {...register(`headersFromEnv.${index}.key`)}
                             />
-                            <input
+                            <Input
                               aria-label={t('mcp.envHeaderVariable')}
                               className={inputClassName}
                               disabled={isSubmitting || isConfigLoading}
                               placeholder="MCP_CONTEXT7_TOKEN"
                               {...register(`headersFromEnv.${index}.envVar`)}
                             />
-                            <IconButton
+                            <SharedIconButton
+                              className="shrink-0"
                               disabled={isSubmitting || isConfigLoading}
+                              icon={Trash2}
                               label={t('mcp.removeHeaderFromEnv')}
                               onClick={() => headerEnvFields.remove(index)}
+                              type="button"
+                              variant="outline"
                             />
                           </div>
                         ))}
@@ -804,7 +829,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
             <Badge variant="outline">{t('scope.runtimeDiagnostics')}</Badge>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <select
+            <Select
               aria-label={t('mcp.diagnostics.filter')}
               className="h-8 rounded-md border border-border bg-background px-2 text-sm"
               onChange={(event) => setDiagnosticServerId(event.target.value || null)}
@@ -816,7 +841,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                   {server.displayName}
                 </option>
               ))}
-            </select>
+            </Select>
             <Button
               disabled={clearDiagnosticsMutation.isPending || diagnostics.length === 0}
               onClick={() => clearDiagnosticsMutation.mutate()}
@@ -855,7 +880,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           </div>
         ) : null}
       </section>
-    </section>
+    </Section>
   )
 }
 
@@ -956,30 +981,6 @@ function RepeatableField({
       <div className="space-y-2">{children}</div>
       {message ? <span className="block text-destructive text-xs">{message}</span> : null}
     </div>
-  )
-}
-
-function IconButton({
-  disabled,
-  label,
-  onClick,
-}: {
-  disabled: boolean
-  label: string
-  onClick: () => void
-}) {
-  return (
-    <Button
-      aria-label={label}
-      className="shrink-0"
-      disabled={disabled}
-      onClick={onClick}
-      size="icon"
-      type="button"
-      variant="outline"
-    >
-      <Trash2 className="size-4" />
-    </Button>
   )
 }
 
@@ -1200,7 +1201,7 @@ function formatDiagnosticTime(value: string): string {
   if (Number.isNaN(date.getTime())) {
     return value
   }
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return formatTime(date)
 }
 
 function severityVariant(severity: McpDiagnosticRecord['severity']): BadgeProps['variant'] {

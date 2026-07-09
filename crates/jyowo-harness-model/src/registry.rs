@@ -729,55 +729,14 @@ fn doubao_service(
 }
 
 fn provider_source(provider_id: &str) -> (&'static str, NaiveDate) {
-    let default_verified_date =
-        NaiveDate::from_ymd_opt(2026, 6, 21).expect("valid verification date");
-    let zhipu_verified_date = NaiveDate::from_ymd_opt(2026, 7, 9).expect("valid verification date");
-    let (source_url, verified_date) = match provider_id {
-        "anthropic" => (
-            "https://docs.anthropic.com/en/docs/about-claude/models/overview",
-            default_verified_date,
-        ),
-        "codex" => (
-            "https://developers.openai.com/api/docs/models/all",
-            default_verified_date,
-        ),
-        "deepseek" => (
-            "https://api-docs.deepseek.com/quick_start/pricing",
-            default_verified_date,
-        ),
-        "doubao" => (
-            "https://www.volcengine.com/docs/82379/1494384",
-            default_verified_date,
-        ),
-        "gemini" => (
-            "https://ai.google.dev/gemini-api/docs/models",
-            default_verified_date,
-        ),
-        "km" => ("https://platform.moonshot.ai/docs", default_verified_date),
-        "local-llama" => ("https://ollama.com/library", default_verified_date),
-        "minimax" => (
-            "https://platform.minimax.io/docs/api-reference/text-chat-openai",
-            default_verified_date,
-        ),
-        "openai" => (
-            "https://platform.openai.com/docs/models",
-            default_verified_date,
-        ),
-        "openrouter" => ("https://openrouter.ai/api/v1/models", default_verified_date),
-        "qwen" => (
-            "https://help.aliyun.com/zh/model-studio/models",
-            default_verified_date,
-        ),
-        "zhipu" => (
-            "https://docs.bigmodel.cn/api-reference/模型-api/对话补全",
-            zhipu_verified_date,
-        ),
-        _ => (
-            "https://jyowo.local/provider-catalog",
-            default_verified_date,
-        ),
-    };
-    (source_url, verified_date)
+    crate::catalog::provider_metadata(provider_id)
+        .map(|metadata| (metadata.source_url, metadata.verified_at))
+        .unwrap_or_else(|| {
+            (
+                "https://jyowo.local/provider-catalog",
+                NaiveDate::from_ymd_opt(2026, 6, 21).expect("valid verification date"),
+            )
+        })
 }
 
 fn inventory_only_models(provider_id: &str) -> Vec<ModelInventoryEntry> {
@@ -883,6 +842,7 @@ pub fn runnable_inventory_models(models: &[ModelInventoryEntry]) -> Vec<ModelDes
                 protocol: model.protocol,
                 context_window: model.context_window,
                 max_output_tokens: model.max_output_tokens,
+                provider_declared_capability: model.provider_declared_capability.clone(),
                 conversation_capability: model.conversation_capability.clone(),
                 runtime_semantics: model.runtime_semantics.clone(),
                 lifecycle: model.lifecycle.clone(),

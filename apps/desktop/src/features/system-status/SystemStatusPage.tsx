@@ -4,8 +4,9 @@ import { useTranslation } from 'react-i18next'
 
 import { getAppInfo, getHarnessHealthcheck } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
-import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
+import { Section } from '@/shared/ui/section'
+import { StatusBadge } from '@/shared/ui/status-badge'
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -28,26 +29,20 @@ export function SystemStatusPage() {
 
   if (isLoading) {
     return (
-      <section
-        aria-labelledby="app-title"
-        className="rounded-lg border border-border bg-surface p-6 shadow-sm"
-      >
+      <Section aria-labelledby="app-title" className="p-6">
         <p className="text-muted-foreground text-sm">{t('loading')}</p>
-      </section>
+      </Section>
     )
   }
 
   if (error) {
     return (
-      <section
-        aria-labelledby="app-title"
-        className="rounded-lg border border-destructive/30 bg-destructive/5 p-6"
-      >
+      <Section aria-labelledby="app-title" className="border-destructive/30 bg-destructive/5 p-6">
         <h1 id="app-title" className="font-semibold text-2xl tracking-normal">
           Jyowo
         </h1>
         <p className="mt-3 text-destructive text-sm">{getErrorMessage(error)}</p>
-      </section>
+      </Section>
     )
   }
 
@@ -59,17 +54,14 @@ export function SystemStatusPage() {
   }
 
   return (
-    <section
-      aria-labelledby="app-title"
-      className="rounded-lg border border-border bg-surface p-6 shadow-sm"
-    >
+    <Section aria-labelledby="app-title" className="p-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center gap-3">
             <h1 id="app-title" className="font-semibold text-3xl tracking-normal">
               {appInfo.name}
             </h1>
-            <Badge variant="success">{healthcheck.status}</Badge>
+            <StatusBadge tone="success">{healthcheck.status}</StatusBadge>
           </div>
           <p className="text-muted-foreground text-sm">{appInfo.harness.sdkCrate}</p>
         </div>
@@ -108,6 +100,6 @@ export function SystemStatusPage() {
           <dd className="mt-2 overflow-wrap-anywhere font-medium">{appInfo.harness.mode}</dd>
         </div>
       </dl>
-    </section>
+    </Section>
   )
 }

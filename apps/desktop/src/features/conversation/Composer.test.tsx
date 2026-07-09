@@ -58,7 +58,7 @@ describe('Composer', () => {
 
     render(<Composer modelConfigId="provider-config-001" onSubmit={onSubmit} />)
 
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: 'Continue the setup' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
@@ -79,7 +79,7 @@ describe('Composer', () => {
 
     render(<Composer onSubmit={onSubmit} />)
 
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: 'Start without a project model override' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
@@ -99,7 +99,7 @@ describe('Composer', () => {
 
     render(<Composer modelConfigId="provider-config-001" onSubmit={onSubmit} />)
 
-    const input = screen.getByPlaceholderText('Ask Jyowo anything about this project...')
+    const input = screen.getByPlaceholderText('Ask Jyowo anything about this project…')
     fireEvent.change(input, {
       target: { value: 'First line' },
     })
@@ -133,7 +133,7 @@ describe('Composer', () => {
 
     fireEvent.pointerDown(screen.getByRole('button', { name: 'Permission mode: Request approval' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: /Full access/i }))
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: 'Run without prompts' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
@@ -167,7 +167,7 @@ describe('Composer', () => {
 
     render(<Composer modelConfigId="provider-config-001" onSubmit={onSubmit} />)
 
-    const input = screen.getByPlaceholderText('Ask Jyowo anything about this project...')
+    const input = screen.getByPlaceholderText('Ask Jyowo anything about this project…')
     fireEvent.change(input, {
       target: { value: '输入中' },
     })
@@ -294,7 +294,7 @@ describe('Composer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Attach file' }))
     expect(await screen.findByText('notes.txt')).toBeInTheDocument()
 
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: 'Use this file' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
@@ -324,7 +324,7 @@ describe('Composer', () => {
     expect(screen.getByText('Composer.tsx')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove reference Composer.tsx' }))
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: 'No reference now' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
@@ -341,7 +341,7 @@ describe('Composer', () => {
   it('opens the slash command menu from the editor trigger', async () => {
     render(<Composer modelConfigId="provider-config-001" onSubmit={vi.fn()} />)
 
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: '/' },
     })
 
@@ -360,7 +360,7 @@ describe('Composer', () => {
       />,
     )
 
-    const input = screen.getByPlaceholderText('Ask Jyowo anything about this project...')
+    const input = screen.getByPlaceholderText('Ask Jyowo anything about this project…')
     fireEvent.change(input, { target: { value: '@' } })
     expect(await screen.findByRole('listbox', { name: 'Reference project object' })).toBeVisible()
 
@@ -379,7 +379,7 @@ describe('Composer', () => {
       />,
     )
 
-    const input = screen.getByPlaceholderText('Ask Jyowo anything about this project...')
+    const input = screen.getByPlaceholderText('Ask Jyowo anything about this project…')
     fireEvent.change(input, { target: { value: 'Use @comp' } })
 
     expect(await screen.findByRole('listbox', { name: 'Reference project object' })).toBeVisible()
@@ -403,7 +403,7 @@ describe('Composer', () => {
       />,
     )
 
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: 'Use this context' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Reference project object' }))
@@ -431,7 +431,7 @@ describe('Composer', () => {
       />,
     )
 
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: 'Use this context' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Reference project object' }))
@@ -462,7 +462,7 @@ describe('Composer', () => {
       />,
     )
 
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: 'Use this context' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Reference project object' }))
@@ -486,7 +486,7 @@ describe('Composer', () => {
       />,
     )
 
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: '/' },
     })
     expect(await screen.findByRole('menu', { name: 'Slash commands' })).toBeInTheDocument()
@@ -519,7 +519,7 @@ describe('Composer', () => {
     expect(screen.getByText('Search files')).toBeInTheDocument()
     expect(screen.getByText('Filesystem MCP')).toBeInTheDocument()
 
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: 'Use these capabilities' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
@@ -570,7 +570,7 @@ describe('Composer', () => {
       />,
     )
 
-    expect(screen.getByPlaceholderText('Ask Jyowo anything about this project...')).toBeDisabled()
+    expect(screen.getByPlaceholderText('Ask Jyowo anything about this project…')).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
 
     rerender(
@@ -581,7 +581,7 @@ describe('Composer', () => {
       />,
     )
 
-    expect(screen.getByPlaceholderText('Ask Jyowo anything about this project...')).toBeEnabled()
+    expect(screen.getByPlaceholderText('Ask Jyowo anything about this project…')).toBeEnabled()
   })
 
   it('shows a cancel action while a run is active', () => {
@@ -614,7 +614,7 @@ describe('Composer', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Attach file' }))
     expect(await screen.findByText('notes.txt')).toBeInTheDocument()
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: 'Keep this draft' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
@@ -659,7 +659,7 @@ describe('Composer', () => {
 
     render(<Composer modelConfigId="provider-config-001" onSubmit={onSubmit} />)
 
-    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project...'), {
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: 'Plain run' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))

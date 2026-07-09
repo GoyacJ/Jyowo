@@ -68,7 +68,7 @@ fn provider_continuation_request_context_debug_redacts_payload() {
 #[test]
 fn provider_continuation_model_request_debug_redacts_payload() {
     let request = ModelRequest {
-        model_id: "deepseek-reasoner".to_owned(),
+        model_id: "deepseek-v4-flash".to_owned(),
         messages: vec![Message {
             id: MessageId::new(),
             role: MessageRole::User,

@@ -73,7 +73,7 @@ function appendLine(line: string, state: JsonPreviewState, maxLength: number) {
   if (state.length + line.length > maxLength) {
     const remaining = Math.max(0, maxLength - state.length)
     if (remaining > 0) {
-      state.lines.push(`${line.slice(0, remaining)}...`)
+      state.lines.push(`${line.slice(0, remaining)}…`)
     }
     state.truncated = true
     return
@@ -230,7 +230,7 @@ function quoteJsonStringPreview(
 
   if (value.length > maxRawLength) {
     return {
-      text: `"${escapeJsonString(value.slice(0, maxRawLength))}..."`,
+      text: `"${escapeJsonString(value.slice(0, maxRawLength))}…"`,
       truncated: true,
     }
   }

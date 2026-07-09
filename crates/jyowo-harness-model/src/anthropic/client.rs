@@ -15,10 +15,9 @@ use tokio::sync::Mutex;
 
 use crate::{
     apply_response_headers_middlewares, wrap_stream_with_cancel_deadline, AnthropicCacheMode,
-    Backoff, ContentDelta, ContentType, ConversationModelCapability, CredentialValue, ErrorClass,
-    InferContext, ModelCredentialPickContext, ModelCredentialResolver, ModelDescriptor,
-    ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
-    ModelStreamEvent, PickedCredential, PromptCacheStyle,
+    Backoff, ContentDelta, ContentType, CredentialValue, ErrorClass, InferContext,
+    ModelCredentialPickContext, ModelCredentialResolver, ModelDescriptor, ModelProtocol,
+    ModelProvider, ModelRequest, ModelStream, ModelStreamEvent, PickedCredential, PromptCacheStyle,
 };
 
 use super::error::{map_response_error, map_transport_error, AnthropicError};
@@ -251,13 +250,7 @@ impl ModelProvider for AnthropicProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        // Verified 2026-06-21: https://platform.claude.com/docs/en/about-claude/models/overview
-        vec![
-            descriptor("claude-fable-5", "Claude Fable 5", 1_000_000, 128_000),
-            descriptor("claude-opus-4-8", "Claude Opus 4.8", 1_000_000, 128_000),
-            descriptor("claude-sonnet-4-6", "Claude Sonnet 4.6", 1_000_000, 64_000),
-            descriptor("claude-haiku-4-5", "Claude Haiku 4.5", 200_000, 64_000),
-        ]
+        crate::catalog::provider_model_descriptors(PROVIDER_ID)
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
@@ -272,36 +265,6 @@ impl ModelProvider for AnthropicProvider {
         PromptCacheStyle::Anthropic {
             mode: AnthropicCacheMode::SystemAnd3,
         }
-    }
-}
-
-fn descriptor(
-    model_id: &str,
-    display_name: &str,
-    context_window: u32,
-    max_output_tokens: u32,
-) -> ModelDescriptor {
-    ModelDescriptor {
-        provider_id: "anthropic".to_owned(),
-        model_id: model_id.to_owned(),
-        display_name: display_name.to_owned(),
-        protocol: ModelProtocol::Messages,
-        context_window,
-        max_output_tokens,
-        conversation_capability: ConversationModelCapability {
-            context_window,
-            max_output_tokens,
-            tool_calling: true,
-            reasoning: true,
-            prompt_cache: true,
-            streaming: true,
-            structured_output: false,
-            input_modalities: vec![ModelModality::Text],
-            output_modalities: vec![ModelModality::Text],
-        },
-        runtime_semantics: crate::ModelRuntimeSemantics::anthropic_messages_default(),
-        lifecycle: ModelLifecycle::Stable,
-        pricing: None,
     }
 }
 

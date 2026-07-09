@@ -14,6 +14,7 @@ pub mod aux;
 pub mod bedrock;
 #[cfg(feature = "cassette")]
 pub mod cassette;
+pub mod catalog;
 #[cfg(feature = "codex")]
 pub mod codex;
 pub mod credential;
@@ -61,6 +62,7 @@ pub use aux::*;
 pub use bedrock::*;
 #[cfg(feature = "cassette")]
 pub use cassette::*;
+pub use catalog::*;
 #[cfg(feature = "codex")]
 pub use codex::*;
 pub use credential::*;

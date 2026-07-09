@@ -14,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/shared/ui/dialog'
+import { RadioCard } from '@/shared/ui/radio-card-group'
 
 import { costRiskLabel, executionLabel, routeKindLabel } from './CapabilityRoutesPanel'
 import type { CapabilityRouteRow } from './model-settings-view-model'
@@ -92,39 +93,34 @@ export function CapabilityRouteEditorDrawer({
               {route.eligibleTargets.length > 0 ? (
                 <div className="space-y-2">
                   {route.eligibleTargets.map((target) => (
-                    <label
-                      className="flex items-start gap-3 rounded-md border border-border bg-background p-3"
+                    <RadioCard
+                      aria-label={target.displayName}
+                      checked={selectedConfigId === target.configId}
+                      className="p-3"
                       key={target.configId}
+                      name="capability-route-target"
+                      onChange={() => setSelectedConfigId(target.configId)}
+                      value={target.configId}
                     >
-                      <input
-                        aria-label={target.displayName}
-                        checked={selectedConfigId === target.configId}
-                        className="mt-1 size-4 accent-primary"
-                        name="capability-route-target"
-                        onChange={() => setSelectedConfigId(target.configId)}
-                        type="radio"
-                      />
-                      <span className="grid gap-1">
-                        <span className="font-medium">{target.displayName}</span>
-                        <span className="text-muted-foreground text-xs">
-                          {target.providerDisplayName} / {target.modelId}
-                        </span>
-                        <span className="flex flex-wrap gap-2 text-xs">
-                          <Badge variant="outline">{executionLabel(target.execution, t)}</Badge>
-                          <Badge variant="outline">{costRiskLabel(target.costRisk, t)}</Badge>
-                          <Badge variant="outline">
-                            {t('models.routes.operationCount', {
-                              count: target.operationIds.length,
-                            })}
-                          </Badge>
-                        </span>
-                        <span className="text-muted-foreground text-xs">
-                          {t('models.routes.editor.operationIds', {
-                            operationIds: target.operationIds.join(', '),
-                          })}
-                        </span>
+                      <span className="block font-medium">{target.displayName}</span>
+                      <span className="block text-muted-foreground text-xs">
+                        {target.providerDisplayName} / {target.modelId}
                       </span>
-                    </label>
+                      <span className="flex flex-wrap gap-2 text-xs">
+                        <Badge variant="outline">{executionLabel(target.execution, t)}</Badge>
+                        <Badge variant="outline">{costRiskLabel(target.costRisk, t)}</Badge>
+                        <Badge variant="outline">
+                          {t('models.routes.operationCount', {
+                            count: target.operationIds.length,
+                          })}
+                        </Badge>
+                      </span>
+                      <span className="block text-muted-foreground text-xs">
+                        {t('models.routes.editor.operationIds', {
+                          operationIds: target.operationIds.join(', '),
+                        })}
+                      </span>
+                    </RadioCard>
                   ))}
                 </div>
               ) : (
@@ -137,23 +133,19 @@ export function CapabilityRouteEditorDrawer({
                 <h3 className="font-medium text-sm">{t('models.routes.editor.unavailable')}</h3>
                 <div className="space-y-2">
                   {route.unavailableTargets.map((target) => (
-                    <label
-                      className="flex items-start gap-3 rounded-md border border-border bg-muted p-3 text-muted-foreground"
+                    <RadioCard
+                      aria-label={target.displayName}
+                      className="bg-muted p-3 text-muted-foreground"
+                      disabled
                       key={`${target.configId}:${target.operationId}`}
+                      name="capability-route-target"
                     >
-                      <input
-                        aria-label={target.displayName}
-                        className="mt-1 size-4"
-                        disabled
-                        name="capability-route-target"
-                        type="radio"
-                      />
-                      <span className="grid gap-1">
-                        <span className="font-medium text-foreground">{target.displayName}</span>
-                        <span className="text-xs">{target.modelId}</span>
-                        <span className="text-xs">{target.reason}</span>
+                      <span className="block font-medium text-foreground">
+                        {target.displayName}
                       </span>
-                    </label>
+                      <span className="block text-xs">{target.modelId}</span>
+                      <span className="block text-xs">{target.reason}</span>
+                    </RadioCard>
                   ))}
                 </div>
               </section>

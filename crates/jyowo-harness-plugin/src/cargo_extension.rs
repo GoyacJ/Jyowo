@@ -17,8 +17,9 @@ use harness_contracts::{
     McpServerSource, NetworkAccess, NoopRedactor, PermissionSubject, PluginRuntimeRpcError,
     PluginRuntimeRpcRequest, PluginRuntimeRpcResponse, ProviderRestriction, RedactRules,
     ResourceLimits, RunId, SandboxError, SandboxExitStatus, SandboxMode, SandboxPolicy,
-    SandboxScope, SessionId, TenantId, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError,
-    ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult, WorkspaceAccess,
+    SandboxScope, SessionId, TenantId, ToolActionPlan, ToolCapability, ToolDescriptor,
+    ToolDescriptorMetadata, ToolError, ToolExecutionChannel, ToolGroup, ToolIntegrationSource,
+    ToolOrigin, ToolProperties, ToolResult, WorkspaceAccess,
 };
 use harness_hook::{
     ContextPatch, ContextPatchRole, HookContext, HookEvent, HookHandler, HookOutcome,
@@ -1392,6 +1393,10 @@ fn tool_descriptor_for(manifest: &PluginManifest, entry: &ToolManifestEntry) -> 
             trust: manifest.trust_level,
         },
         search_hint: None,
+        metadata: ToolDescriptorMetadata {
+            integration_source: ToolIntegrationSource::Plugin,
+            ..Default::default()
+        },
     }
 }
 

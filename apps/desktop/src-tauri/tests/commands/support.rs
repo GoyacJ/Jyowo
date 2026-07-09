@@ -64,6 +64,7 @@ impl NeedsPermissionTool {
                 origin: jyowo_harness_sdk::ext::ToolOrigin::Builtin,
                 search_hint: None,
                 service_binding: None,
+                metadata: Default::default(),
             },
         }
     }

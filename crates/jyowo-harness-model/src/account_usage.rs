@@ -1002,6 +1002,7 @@ struct DeepSeekBalanceInfo {
 ))]
 mod tests {
     use super::*;
+    #[cfg(any(feature = "openai", feature = "codex"))]
     use chrono::TimeZone;
 
     #[test]

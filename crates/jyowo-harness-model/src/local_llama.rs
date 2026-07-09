@@ -6,8 +6,8 @@ use harness_contracts::ModelError;
 
 use crate::openai_protocol::{OpenAiChatDialect, OpenAiProtocolClient, OpenAiProtocolProviderExt};
 use crate::{
-    ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
-    ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
+    InferContext, ModelCredentialResolver, ModelDescriptor, ModelProtocol, ModelProvider,
+    ModelRequest, ModelStream,
 };
 
 const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8080";
@@ -78,10 +78,7 @@ impl ModelProvider for LocalLlamaProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        vec![
-            descriptor("llama3.1", "Local Llama 3.1"),
-            descriptor("llama3.1:8b", "Local Llama 3.1 8B"),
-        ]
+        crate::catalog::provider_model_descriptors(PROVIDER_ID)
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
@@ -90,30 +87,5 @@ impl ModelProvider for LocalLlamaProvider {
 
     fn default_protocol(&self) -> ModelProtocol {
         ModelProtocol::ChatCompletions
-    }
-}
-
-fn descriptor(model_id: &str, display_name: &str) -> ModelDescriptor {
-    ModelDescriptor {
-        provider_id: "local-llama".to_owned(),
-        model_id: model_id.to_owned(),
-        display_name: display_name.to_owned(),
-        protocol: ModelProtocol::ChatCompletions,
-        context_window: 128_000,
-        max_output_tokens: 8192,
-        conversation_capability: ConversationModelCapability {
-            context_window: 128_000,
-            max_output_tokens: 8192,
-            tool_calling: true,
-            reasoning: false,
-            prompt_cache: false,
-            streaming: true,
-            structured_output: false,
-            input_modalities: vec![ModelModality::Text],
-            output_modalities: vec![ModelModality::Text],
-        },
-        runtime_semantics: crate::ModelRuntimeSemantics::openai_chat_plain(),
-        lifecycle: ModelLifecycle::Stable,
-        pricing: None,
     }
 }

@@ -384,7 +384,7 @@ impl ProviderContinuationHarness {
                 event_store.clone(),
             ))
             .with_workspace_root(workspace.path())
-            .with_model_id("deepseek-chat")
+            .with_model_id("deepseek-v4-flash")
             .with_protocol(ModelProtocol::ChatCompletions)
             .with_cap_registry(Arc::new(CapabilityRegistry::default()));
         if configure_store {
@@ -516,10 +516,11 @@ impl ModelProvider for RecordingModel {
             protocol: ModelProtocol::ChatCompletions,
             lifecycle: ModelLifecycle::Stable,
             provider_id: "deepseek".to_owned(),
-            model_id: "deepseek-chat".to_owned(),
-            display_name: "DeepSeek Chat".to_owned(),
+            model_id: "deepseek-v4-flash".to_owned(),
+            display_name: "DeepSeek V4 Flash".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_000,
+            provider_declared_capability: ConversationModelCapability::default(),
             conversation_capability: ConversationModelCapability::default(),
             runtime_semantics: ModelRuntimeSemantics::openai_chat_deepseek(),
             pricing: None,
@@ -587,11 +588,12 @@ fn model_snapshot() -> harness_model::ModelRuntimeSnapshot {
 fn runtime_model_snapshot_for_provider(provider_id: &str) -> harness_model::ModelRuntimeSnapshot {
     harness_model::ModelRuntimeSnapshot {
         provider_id: provider_id.to_owned(),
-        model_id: "deepseek-chat".to_owned(),
-        display_name: "DeepSeek Chat".to_owned(),
+        model_id: "deepseek-v4-flash".to_owned(),
+        display_name: "DeepSeek V4 Flash".to_owned(),
         protocol: ModelProtocol::ChatCompletions,
         context_window: 8_000,
         max_output_tokens: 1_000,
+        provider_declared_capability: ConversationModelCapability::default(),
         conversation_capability: ConversationModelCapability::default(),
         runtime_semantics: ModelRuntimeSemantics::openai_chat_deepseek(),
         lifecycle: ModelLifecycle::Stable,
@@ -619,8 +621,8 @@ fn model_snapshot_for_provider(provider_id: &str) -> RunModelSnapshot {
     RunModelSnapshot {
         model_config_id: Some(MODEL_CONFIG_ID.to_owned()),
         provider_id: provider_id.to_owned(),
-        model_id: "deepseek-chat".to_owned(),
-        display_name: "DeepSeek Chat".to_owned(),
+        model_id: "deepseek-v4-flash".to_owned(),
+        display_name: "DeepSeek V4 Flash".to_owned(),
         protocol: ModelProtocol::ChatCompletions,
         context_window: 8_000,
         max_output_tokens: 1_000,

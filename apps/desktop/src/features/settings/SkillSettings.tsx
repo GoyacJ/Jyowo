@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   ChevronLeft,
   ChevronRight,
@@ -48,6 +49,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/shared/ui/dialog'
+import { Input } from '@/shared/ui/input'
+import { Select } from '@/shared/ui/select'
 import { Switch } from '@/shared/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/shared/ui/tooltip'
@@ -416,15 +419,32 @@ function createCatalogInstallOperationId() {
 
 export function SkillSettingsPage() {
   const { t } = useTranslation('skills')
-  const [activeTab, setActiveTab] = useState<SkillSettingsTab>('skills')
+  const navigate = useNavigate()
+  const requestedTab = useRouterState({
+    select: (state) => state.location.search.tab,
+  })
+  const [activeTab, setActiveTab] = useState<SkillSettingsTab>(
+    isSkillSettingsTab(requestedTab) ? requestedTab : 'skills',
+  )
   const [openPluginRequest, setOpenPluginRequest] = useState<PluginOpenRequest | null>(null)
+
+  useEffect(() => {
+    if (isSkillSettingsTab(requestedTab) && requestedTab !== activeTab) {
+      setActiveTab(requestedTab)
+    }
+  }, [activeTab, requestedTab])
 
   function openPlugin(pluginId: string) {
     setOpenPluginRequest((current) => ({
       pluginId,
       requestId: (current?.requestId ?? 0) + 1,
     }))
-    setActiveTab('plugins')
+    selectTab('plugins')
+  }
+
+  function selectTab(tab: SkillSettingsTab) {
+    setActiveTab(tab)
+    void navigate({ search: { tab }, to: '/skills' })
   }
 
   return (
@@ -432,7 +452,11 @@ export function SkillSettingsPage() {
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 pb-6">
         <Tabs
           className="min-h-0"
-          onValueChange={(value) => setActiveTab(value as SkillSettingsTab)}
+          onValueChange={(value) => {
+            if (isSkillSettingsTab(value)) {
+              selectTab(value)
+            }
+          }}
           value={activeTab}
         >
           <TabsList aria-label={t('tabs.label')}>
@@ -458,6 +482,10 @@ export function SkillSettingsPage() {
       </div>
     </section>
   )
+}
+
+function isSkillSettingsTab(value: unknown): value is SkillSettingsTab {
+  return value === 'skills' || value === 'tools' || value === 'mcp' || value === 'plugins'
 }
 
 export function SkillsManager({
@@ -591,20 +619,22 @@ function InstalledSkillsManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: st
   return (
     <section className="space-y-5">
       <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_160px_auto]">
-        <label className="relative block text-sm">
+        <label className="relative block text-sm" htmlFor="skill-settings-search">
           <span className="sr-only">{t('filters.search')}</span>
           <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <input
-            className="h-10 w-full rounded-md border border-border bg-background pl-9 pr-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          <Input
+            className="h-10 pl-9"
+            id="skill-settings-search"
             onChange={(event) => updateSearch(event.target.value)}
             placeholder={t('filters.search')}
             value={search}
           />
         </label>
-        <label className="block text-sm">
+        <label className="block text-sm" htmlFor="skill-settings-status-filter">
           <span className="sr-only">{t('filters.status')}</span>
-          <select
-            className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          <Select
+            className="h-10"
+            id="skill-settings-status-filter"
             onChange={(event) => updateStatusFilter(event.target.value as SkillStatusFilter)}
             value={statusFilter}
           >
@@ -613,12 +643,13 @@ function InstalledSkillsManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: st
             <option value="disabled">{t('status.disabled')}</option>
             <option value="prerequisite_missing">{t('status.prerequisite_missing')}</option>
             <option value="rejected">{t('status.rejected')}</option>
-          </select>
+          </Select>
         </label>
-        <label className="block text-sm">
+        <label className="block text-sm" htmlFor="skill-settings-source-filter">
           <span className="sr-only">{t('filters.source')}</span>
-          <select
-            className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          <Select
+            className="h-10"
+            id="skill-settings-source-filter"
             onChange={(event) => updateSourceFilter(event.target.value as SkillSourceFilter)}
             value={sourceFilter}
           >
@@ -628,7 +659,7 @@ function InstalledSkillsManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: st
             <option value="bundled">{t('source.bundled')}</option>
             <option value="plugin">{t('source.plugin')}</option>
             <option value="mcp">{t('source.mcp')}</option>
-          </select>
+          </Select>
         </label>
         <Button
           className="h-10"
@@ -1026,11 +1057,12 @@ function SkillCatalogManager() {
         className="flex min-h-0 flex-col rounded-md border border-border bg-background"
       >
         <div className="border-border border-b p-2">
-          <label className="relative block text-sm">
+          <label className="relative block text-sm" htmlFor="skill-catalog-search">
             <span className="sr-only">{t('catalog.search')}</span>
             <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              className="h-10 w-full rounded-md border border-border bg-background pl-9 pr-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            <Input
+              className="h-10 pl-9"
+              id="skill-catalog-search"
               onChange={(event) => updateCatalogSearch(event.target.value)}
               placeholder={t('catalog.search')}
               value={search}

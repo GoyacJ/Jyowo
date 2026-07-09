@@ -13,7 +13,7 @@ export function Checkbox({ className, ...props }: ComponentProps<typeof Checkbox
       )}
       {...props}
     >
-      <CheckboxPrimitive.Indicator>
+      <CheckboxPrimitive.Indicator className="flex items-center justify-center text-current animate-in fade-in-0 zoom-in-75 duration-150">
         <Check aria-hidden="true" className="size-3" data-icon />
       </CheckboxPrimitive.Indicator>
     </CheckboxPrimitive.Root>

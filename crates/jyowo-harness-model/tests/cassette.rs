@@ -255,6 +255,142 @@ async fn provider_continuation_cassette_does_not_record_private_payload() {
     let _ = std::fs::remove_file(path);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn provider_continuation_cassette_records_private_payload_when_explicitly_enabled() {
+    let _guard = env_lock().lock().unwrap();
+    if std::env::var_os("CI").is_some() {
+        return;
+    }
+
+    let path = cassette_path();
+    let req = request();
+    let sentinel = "cassette-private-reasoning-sentinel";
+    let recorded_events = vec![
+        ModelStreamEvent::ProviderContinuationDelta {
+            kind: ProviderContinuationKind::ReasoningReplay,
+            payload: serde_json::json!({ "reasoning_content": sentinel }),
+        },
+        ModelStreamEvent::MessageStop,
+    ];
+    let provider = CassetteProvider::new_with_options(
+        Arc::new(CountingProvider {
+            hits: Arc::new(AtomicUsize::new(0)),
+            events: recorded_events.clone(),
+        }),
+        path.clone(),
+        CassetteMode::Record,
+        CassetteProviderOptions {
+            continuation_recording: ProviderContinuationRecording::RecordPayloadForLocalTests,
+        },
+    );
+
+    provider
+        .infer(req.clone(), InferContext::for_test())
+        .await
+        .expect("record should call inner provider")
+        .collect::<Vec<_>>()
+        .await;
+
+    let cassette_json = std::fs::read_to_string(&path).expect("cassette should be written");
+    let cassette: serde_json::Value =
+        serde_json::from_str(&cassette_json).expect("cassette should be valid json");
+    assert!(cassette_json.contains(sentinel));
+    assert_eq!(
+        cassette["metadata"]["contains_private_provider_state"],
+        serde_json::Value::Bool(true)
+    );
+    assert_eq!(
+        cassette["metadata"]["provider_continuation_payloads"],
+        serde_json::Value::String("recorded_local_test_only".to_owned())
+    );
+
+    let replay_provider = CassetteProvider::new(
+        Arc::new(CountingProvider {
+            hits: Arc::new(AtomicUsize::new(0)),
+            events: Vec::new(),
+        }),
+        path.clone(),
+        CassetteMode::Replay,
+    );
+    let replay_events = replay_provider
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("replay should read cassette")
+        .collect::<Vec<_>>()
+        .await;
+
+    assert_eq!(replay_events, recorded_events);
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn provider_continuation_cassette_keeps_private_metadata_when_default_record_adds_entry() {
+    let _guard = env_lock().lock().unwrap();
+    if std::env::var_os("CI").is_some() {
+        return;
+    }
+
+    let path = cassette_path();
+    let private_req = request();
+    let public_req = {
+        let mut req = request();
+        req.max_tokens = Some(17);
+        req
+    };
+    let private_events = vec![ModelStreamEvent::ProviderContinuationDelta {
+        kind: ProviderContinuationKind::ReasoningReplay,
+        payload: serde_json::json!({ "reasoning_content": "private" }),
+    }];
+
+    let private_provider = CassetteProvider::new_with_options(
+        Arc::new(CountingProvider {
+            hits: Arc::new(AtomicUsize::new(0)),
+            events: private_events,
+        }),
+        path.clone(),
+        CassetteMode::Record,
+        CassetteProviderOptions {
+            continuation_recording: ProviderContinuationRecording::RecordPayloadForLocalTests,
+        },
+    );
+    private_provider
+        .infer(private_req, InferContext::for_test())
+        .await
+        .expect("private record should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    let public_provider = CassetteProvider::new(
+        Arc::new(CountingProvider {
+            hits: Arc::new(AtomicUsize::new(0)),
+            events: vec![ModelStreamEvent::MessageStop],
+        }),
+        path.clone(),
+        CassetteMode::Record,
+    );
+    public_provider
+        .infer(public_req, InferContext::for_test())
+        .await
+        .expect("public record should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    let cassette_json = std::fs::read_to_string(&path).expect("cassette should be written");
+    let cassette: serde_json::Value =
+        serde_json::from_str(&cassette_json).expect("cassette should be valid json");
+    assert_eq!(
+        cassette["metadata"]["contains_private_provider_state"],
+        serde_json::Value::Bool(true)
+    );
+    assert_eq!(
+        cassette["metadata"]["provider_continuation_payloads"],
+        serde_json::Value::String("recorded_local_test_only".to_owned())
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
 fn private_reasoning_key() -> String {
     ["reasoning", "_", "content"].concat()
 }

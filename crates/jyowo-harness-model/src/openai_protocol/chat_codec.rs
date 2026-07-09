@@ -7,7 +7,9 @@ use crate::{ContentDelta, ContentType, InferContext, ModelRequest, ModelStream, 
 
 use super::continuation;
 use super::dialect::OpenAiChatDialect;
-use super::request::{chat_message, merge_extra_object, openai_tool, DEFAULT_MAX_TOKENS};
+use super::request::{
+    chat_message_for_dialect, merge_extra_object, openai_tool, DEFAULT_MAX_TOKENS,
+};
 
 pub(super) async fn chat_request_body(
     req: &ModelRequest,
@@ -23,7 +25,7 @@ pub(super) async fn chat_request_body(
         }));
     }
     for message in &req.messages {
-        let mut encoded = chat_message(message, ctx).await?;
+        let mut encoded = chat_message_for_dialect(message, ctx, dialect).await?;
         continuation::apply_chat_message_continuation(
             &mut encoded,
             message,
@@ -40,6 +42,10 @@ pub(super) async fn chat_request_body(
     });
     body[max_tokens_field] = json!(req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS));
 
+    if dialect == OpenAiChatDialect::MiniMax && req.extra.get("reasoning_split").is_none() {
+        body["reasoning_split"] = json!(true);
+    }
+
     if req.stream {
         body["stream_options"] = json!({ "include_usage": true });
     }
@@ -50,6 +56,9 @@ pub(super) async fn chat_request_body(
         body["tools"] = Value::Array(tools.iter().map(openai_tool).collect());
     }
     merge_extra_object(&mut body, &req.extra)?;
+    if matches!(dialect, OpenAiChatDialect::DeepSeek) && deepseek_thinking_enabled(&body) {
+        remove_deepseek_sampling_parameters(&mut body);
+    }
 
     Ok(body)
 }
@@ -62,7 +71,7 @@ pub(super) fn chat_response_to_stream(
     let response: ChatCompletionResponse = serde_json::from_value(response).map_err(|error| {
         ModelError::UnexpectedResponse(format!("invalid OpenAI protocol response: {error}"))
     })?;
-    let usage = usage(response.usage.as_ref());
+    let usage = usage_for_dialect(response.usage.as_ref(), dialect);
     let choice = response.choices.into_iter().next().ok_or_else(|| {
         ModelError::UnexpectedResponse("OpenAI protocol response had no choices".to_owned())
     })?;
@@ -120,7 +129,33 @@ pub(super) fn chat_response_to_stream(
     Ok(Box::pin(stream::iter(events)))
 }
 
-pub(crate) fn usage(value: Option<&OpenAiUsage>) -> UsageSnapshot {
+pub(crate) fn usage_for_dialect(
+    value: Option<&OpenAiUsage>,
+    dialect: OpenAiChatDialect,
+) -> UsageSnapshot {
+    match dialect {
+        OpenAiChatDialect::DeepSeek => deepseek_usage(value),
+        _ => openai_compatible_usage(value),
+    }
+}
+
+fn deepseek_usage(value: Option<&OpenAiUsage>) -> UsageSnapshot {
+    if let Some(usage) = value {
+        if usage.prompt_cache_miss_tokens.is_some() || usage.prompt_cache_hit_tokens.is_some() {
+            return UsageSnapshot {
+                input_tokens: usage.prompt_cache_miss_tokens.unwrap_or_default(),
+                output_tokens: usage.completion_tokens.unwrap_or_default(),
+                cache_read_tokens: usage.prompt_cache_hit_tokens.unwrap_or_default(),
+                cache_write_tokens: 0,
+                cost_micros: 0,
+                tool_calls: 0,
+            };
+        }
+    }
+    openai_compatible_usage(value)
+}
+
+fn openai_compatible_usage(value: Option<&OpenAiUsage>) -> UsageSnapshot {
     UsageSnapshot {
         input_tokens: value
             .and_then(|usage| usage.prompt_tokens)
@@ -138,11 +173,31 @@ pub(crate) fn usage(value: Option<&OpenAiUsage>) -> UsageSnapshot {
     }
 }
 
+fn deepseek_thinking_enabled(body: &Value) -> bool {
+    body.pointer("/thinking/disabled").and_then(Value::as_bool) != Some(true)
+}
+
+fn remove_deepseek_sampling_parameters(body: &mut Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    for key in [
+        "temperature",
+        "top_p",
+        "presence_penalty",
+        "frequency_penalty",
+    ] {
+        object.remove(key);
+    }
+}
+
 pub(crate) fn stop_reason(reason: &str) -> StopReason {
     match reason {
         "stop" => StopReason::EndTurn,
         "tool_calls" | "function_call" => StopReason::ToolUse,
         "length" => StopReason::MaxIterations,
+        "content_filter" => StopReason::ContentFiltered,
+        "insufficient_system_resource" => StopReason::ProviderResourceExhausted,
         _ => StopReason::Error(reason.to_owned()),
     }
 }
@@ -186,6 +241,8 @@ pub(crate) struct OpenAiUsage {
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
     prompt_tokens_details: Option<PromptTokensDetails>,
+    prompt_cache_miss_tokens: Option<u64>,
+    prompt_cache_hit_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

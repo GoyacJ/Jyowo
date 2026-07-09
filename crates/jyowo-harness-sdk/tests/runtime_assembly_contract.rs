@@ -449,7 +449,7 @@ fn runtime_assembly_conversation_allows_provider_model_switch_per_run() {
                 ConversationModelCapability::default(),
                 vec![vec![ModelStreamEvent::MessageStop]],
             )
-            .with_identity("deepseek", "deepseek-chat", "DeepSeek Chat"),
+            .with_identity("deepseek", "deepseek-v4-flash", "DeepSeek V4 Flash"),
         );
         let minimax = Arc::new(
             CapabilityScriptedProvider::new(
@@ -475,7 +475,7 @@ fn runtime_assembly_conversation_allows_provider_model_switch_per_run() {
             .await
             .expect("minimax harness should build");
         let identity_options = SessionOptions::new(&workspace).with_session_id(session_id);
-        let deepseek_options = identity_options.clone().with_model_id("deepseek-chat");
+        let deepseek_options = identity_options.clone().with_model_id("deepseek-v4-flash");
         deepseek_harness
             .open_or_create_conversation_session(deepseek_options.clone())
             .await
@@ -521,7 +521,7 @@ fn runtime_assembly_conversation_allows_provider_model_switch_per_run() {
             .await;
         assert_eq!(run_models.len(), 2);
         assert_eq!(run_models[0].provider_id, "deepseek");
-        assert_eq!(run_models[0].model_id, "deepseek-chat");
+        assert_eq!(run_models[0].model_id, "deepseek-v4-flash");
         assert_eq!(
             run_models[0].model_config_id.as_deref(),
             Some("deepseek-config")

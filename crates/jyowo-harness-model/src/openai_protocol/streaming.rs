@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::{ContentDelta, ContentType, ErrorClass, ErrorHints, ModelStream, ModelStreamEvent};
 
-use super::chat_codec::{stop_reason, usage, OpenAiUsage};
+use super::chat_codec::{stop_reason, usage_for_dialect, OpenAiUsage};
 use super::continuation;
 use super::dialect::OpenAiChatDialect;
 
@@ -160,7 +160,7 @@ struct OpenAiStreamState {
     text_started: bool,
     text_stopped: bool,
     next_block_index: u32,
-    reasoning_replay_buffer: String,
+    reasoning_replay_payloads: Vec<Value>,
     continuation_emitted: bool,
     tool_calls: BTreeMap<u32, ToolCallState>,
 }
@@ -187,10 +187,10 @@ impl OpenAiStreamState {
             Ok(payload) => payload,
             Err(error) => return vec![error],
         };
-        if let Some(reasoning_delta) =
-            continuation::stream_reasoning_delta(self.dialect, &payload_value)
+        if let Some(payload) =
+            continuation::stream_reasoning_continuation_payload(self.dialect, &payload_value)
         {
-            self.reasoning_replay_buffer.push_str(&reasoning_delta);
+            self.reasoning_replay_payloads.push(payload);
         }
         let payload = match serde_json::from_value::<ChatCompletionChunk>(payload_value) {
             Ok(payload) => payload,
@@ -203,7 +203,7 @@ impl OpenAiStreamState {
             self.started = true;
             events.push(ModelStreamEvent::MessageStart {
                 message_id: payload.id.clone().unwrap_or_default(),
-                usage: usage(None),
+                usage: usage_for_dialect(None, self.dialect),
             });
         }
 
@@ -245,7 +245,7 @@ impl OpenAiStreamState {
                 }
                 events.push(ModelStreamEvent::MessageDelta {
                     stop_reason: Some(stop_reason(&reason)),
-                    usage_delta: usage(payload.usage.as_ref()),
+                    usage_delta: usage_for_dialect(payload.usage.as_ref(), self.dialect),
                 });
                 self.terminal_pending = true;
             }
@@ -255,7 +255,7 @@ impl OpenAiStreamState {
             if !self.stopped && !finish_reason_seen {
                 events.push(ModelStreamEvent::MessageDelta {
                     stop_reason: None,
-                    usage_delta: usage(Some(usage_value)),
+                    usage_delta: usage_for_dialect(Some(usage_value), self.dialect),
                 });
             }
             events.extend(self.finish_message());
@@ -270,9 +270,10 @@ impl OpenAiStreamState {
         }
         let mut events = Vec::new();
         if !self.continuation_emitted {
-            if let Some(event) =
-                continuation::stream_continuation_event(self.dialect, &self.reasoning_replay_buffer)
-            {
+            if let Some(event) = continuation::stream_continuation_event(
+                self.dialect,
+                &self.reasoning_replay_payloads,
+            ) {
                 events.push(event);
             }
             self.continuation_emitted = true;

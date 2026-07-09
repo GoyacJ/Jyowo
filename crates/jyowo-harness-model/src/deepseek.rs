@@ -1,21 +1,27 @@
 use std::sync::Arc;
 
+use async_stream::stream;
 use async_trait::async_trait;
+use futures::StreamExt;
 use harness_contracts::ModelError;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::openai_protocol::{OpenAiChatDialect, OpenAiProtocolClient, OpenAiProtocolProviderExt};
 use crate::{
-    ConversationModelCapability, InferContext, ModelCredentialResolver, ModelDescriptor,
-    ModelLifecycle, ModelModality, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
+    InferContext, ModelCredentialResolver, ModelDescriptor, ModelProtocol, ModelProvider,
+    ModelRequest, ModelStream, PromptCacheStyle,
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.deepseek.com";
 const PROVIDER_ID: &str = "deepseek";
+const DEFAULT_PRO_CONCURRENCY_LIMIT: usize = 500;
+const DEFAULT_FLASH_CONCURRENCY_LIMIT: usize = 2_500;
 pub const DEEPSEEK_API_KEY_ENV: &str = "DEEPSEEK_API_KEY";
 
 #[derive(Clone)]
 pub struct DeepSeekProvider {
     client: OpenAiProtocolClient,
+    concurrency: DeepSeekModelConcurrency,
 }
 
 impl DeepSeekProvider {
@@ -24,7 +30,11 @@ impl DeepSeekProvider {
             client: OpenAiProtocolClient::from_api_key(api_key, DEFAULT_BASE_URL)
                 .with_provider_id(PROVIDER_ID)
                 .with_chat_dialect(OpenAiChatDialect::DeepSeek)
-                .with_chat_completions_path("/v1/chat/completions"),
+                .with_chat_completions_path("/chat/completions"),
+            concurrency: DeepSeekModelConcurrency::new(
+                DEFAULT_PRO_CONCURRENCY_LIMIT,
+                DEFAULT_FLASH_CONCURRENCY_LIMIT,
+            ),
         }
     }
 
@@ -37,6 +47,12 @@ impl DeepSeekProvider {
     #[must_use]
     pub fn with_credential_resolver(mut self, resolver: Arc<dyn ModelCredentialResolver>) -> Self {
         self.client = self.client.with_credential_resolver(resolver);
+        self
+    }
+
+    #[must_use]
+    pub fn with_model_concurrency_limits(mut self, pro_limit: usize, flash_limit: usize) -> Self {
+        self.concurrency = DeepSeekModelConcurrency::new(pro_limit, flash_limit);
         self
     }
 }
@@ -54,48 +70,73 @@ impl ModelProvider for DeepSeekProvider {
     }
 
     fn supported_models(&self) -> Vec<ModelDescriptor> {
-        // Verified 2026-06-21: https://api-docs.deepseek.com/quick_start/pricing
-        vec![
-            descriptor("deepseek-v4-flash", "DeepSeek V4 Flash", 1_000_000, 384_000),
-            descriptor("deepseek-v4-pro", "DeepSeek V4 Pro", 1_000_000, 384_000),
-        ]
+        crate::catalog::provider_model_descriptors(PROVIDER_ID)
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
-        self.infer_openai_protocol(req, ctx).await
+        let permit = self.concurrency.acquire(&req.model_id).await?;
+        let stream = self.infer_openai_protocol(req, ctx).await?;
+        Ok(hold_concurrency_permit(stream, permit))
     }
 
     fn default_protocol(&self) -> ModelProtocol {
         ModelProtocol::ChatCompletions
     }
+
+    fn prompt_cache_style(&self) -> PromptCacheStyle {
+        PromptCacheStyle::OpenAi { auto: true }
+    }
 }
 
-fn descriptor(
-    model_id: &str,
-    display_name: &str,
-    context_window: u32,
-    max_output_tokens: u32,
-) -> ModelDescriptor {
-    ModelDescriptor {
-        provider_id: PROVIDER_ID.to_owned(),
-        model_id: model_id.to_owned(),
-        display_name: display_name.to_owned(),
-        protocol: ModelProtocol::ChatCompletions,
-        context_window,
-        max_output_tokens,
-        conversation_capability: ConversationModelCapability {
-            context_window,
-            max_output_tokens,
-            tool_calling: true,
-            reasoning: model_id.contains("reasoner"),
-            prompt_cache: false,
-            streaming: true,
-            structured_output: false,
-            input_modalities: vec![ModelModality::Text],
-            output_modalities: vec![ModelModality::Text],
-        },
-        runtime_semantics: crate::ModelRuntimeSemantics::openai_chat_deepseek(),
-        lifecycle: ModelLifecycle::Stable,
-        pricing: None,
+#[derive(Clone)]
+struct DeepSeekModelConcurrency {
+    pro: Option<Arc<Semaphore>>,
+    flash: Option<Arc<Semaphore>>,
+}
+
+impl DeepSeekModelConcurrency {
+    fn new(pro_limit: usize, flash_limit: usize) -> Self {
+        Self {
+            pro: (pro_limit > 0).then(|| Arc::new(Semaphore::new(pro_limit))),
+            flash: (flash_limit > 0).then(|| Arc::new(Semaphore::new(flash_limit))),
+        }
     }
+
+    async fn acquire(&self, model_id: &str) -> Result<Option<OwnedSemaphorePermit>, ModelError> {
+        let Some(semaphore) = self.semaphore_for_model(model_id) else {
+            return Ok(None);
+        };
+        semaphore
+            .acquire_owned()
+            .await
+            .map(Some)
+            .map_err(|error| ModelError::ProviderUnavailable(error.to_string()))
+    }
+
+    fn semaphore_for_model(&self, model_id: &str) -> Option<Arc<Semaphore>> {
+        if model_id.ends_with("-pro") {
+            self.pro.clone()
+        } else if model_id.ends_with("-flash") {
+            self.flash.clone()
+        } else {
+            None
+        }
+    }
+}
+
+fn hold_concurrency_permit(
+    stream: ModelStream,
+    permit: Option<OwnedSemaphorePermit>,
+) -> ModelStream {
+    let Some(permit) = permit else {
+        return stream;
+    };
+
+    Box::pin(stream! {
+        let _permit = permit;
+        let mut stream = stream;
+        while let Some(event) = stream.next().await {
+            yield event;
+        }
+    })
 }

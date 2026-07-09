@@ -24,6 +24,7 @@ impl ModelProvider for TestProvider {
             display_name: "Test model".to_owned(),
             context_window: 128_000,
             max_output_tokens: 8192,
+            provider_declared_capability: ConversationModelCapability::default(),
             conversation_capability: ConversationModelCapability::default(),
             runtime_semantics: ModelRuntimeSemantics::messages_default(ModelProtocol::Messages),
             pricing: None,
@@ -64,6 +65,41 @@ fn model_provider_is_dyn_safe_with_prompt_cache_default() {
         provider.supported_models()[0].conversation_capability,
         ConversationModelCapability::default()
     );
+}
+
+#[test]
+fn model_descriptor_keeps_declared_and_runtime_capabilities_separate() {
+    let runtime_capability = ConversationModelCapability::default();
+    let mut provider_declared_capability = runtime_capability.clone();
+    provider_declared_capability
+        .input_modalities
+        .push(ModelModality::Image);
+
+    let descriptor = ModelDescriptor {
+        protocol: harness_model::ModelProtocol::Messages,
+        lifecycle: harness_model::ModelLifecycle::Stable,
+        provider_id: "test".to_owned(),
+        model_id: "test-model".to_owned(),
+        display_name: "Test model".to_owned(),
+        context_window: 128_000,
+        max_output_tokens: 8192,
+        provider_declared_capability: provider_declared_capability.clone(),
+        conversation_capability: runtime_capability.clone(),
+        runtime_semantics: ModelRuntimeSemantics::messages_default(ModelProtocol::Messages),
+        pricing: None,
+    };
+
+    let snapshot = ModelRuntimeSnapshot::from_descriptor(descriptor);
+
+    assert_eq!(
+        snapshot.provider_declared_capability,
+        provider_declared_capability
+    );
+    assert_eq!(snapshot.conversation_capability, runtime_capability);
+    assert!(!snapshot
+        .conversation_capability
+        .input_modalities
+        .contains(&ModelModality::Image));
 }
 
 #[test]
@@ -163,6 +199,7 @@ fn model_request_accepts_contract_tool_descriptor() {
             origin: ToolOrigin::Builtin,
             search_hint: None,
             service_binding: None,
+            metadata: harness_contracts::ToolDescriptorMetadata::default(),
         }]),
         system: None,
         temperature: None,

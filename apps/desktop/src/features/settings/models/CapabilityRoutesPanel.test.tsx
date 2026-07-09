@@ -76,7 +76,7 @@ describe('CapabilityRoutesPanel', () => {
       </AppI18nProvider>,
     )
 
-    expect(screen.getByRole('status')).toHaveTextContent('Loading capability routes...')
+    expect(screen.getByRole('status')).toHaveTextContent('Loading capability routes…')
   })
 
   it('renders an unavailable fallback when route state cannot be built', () => {
