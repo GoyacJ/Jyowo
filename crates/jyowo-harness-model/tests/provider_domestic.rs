@@ -7,15 +7,20 @@
     feature = "km"
 ))]
 
+use std::ffi::OsString;
+use std::sync::Mutex;
+
 use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{Message, MessageId, MessagePart, MessageRole, StopReason, UsageSnapshot};
 use harness_model::*;
-use serde_json::Value;
+use serde_json::{json, Value};
 use wiremock::{
     matchers::{header, method, path},
     Mock, MockServer, ResponseTemplate,
 };
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn request(model_id: &str) -> ModelRequest {
     ModelRequest {
@@ -63,17 +68,18 @@ async fn assert_streaming_provider<P>(
         .mount(server)
         .await;
 
-    assert_eq!(provider.prompt_cache_style(), PromptCacheStyle::None);
+    if provider.provider_id() == "zhipu" {
+        assert_eq!(
+            provider.prompt_cache_style(),
+            PromptCacheStyle::OpenAi { auto: true }
+        );
+    } else {
+        assert_eq!(provider.prompt_cache_style(), PromptCacheStyle::None);
+    }
     assert!(provider
         .supported_models()
         .iter()
-        .any(|model| model.model_id == model_id
-            && model.conversation_capability.tool_calling
-            && !model
-                .conversation_capability
-                .input_modalities
-                .contains(&ModelModality::Image)
-            && !model.conversation_capability.reasoning));
+        .any(|model| model.model_id == model_id && model.conversation_capability.tool_calling));
 
     let events = provider
         .infer(request(model_id), InferContext::for_test())
@@ -262,6 +268,80 @@ provider_test!(
     "glm-5",
     "/chat/completions"
 );
+
+#[cfg(feature = "zhipu")]
+#[tokio::test]
+async fn provider_zhipu_passes_official_extra_without_forcing_clear_thinking() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    concat!(
+                        "data: {\"id\":\"chat_1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}\n\n",
+                        "data: [DONE]\n\n",
+                    ),
+                    "text/event-stream",
+                ),
+        )
+        .mount(&server)
+        .await;
+    let provider = ZhipuProvider::from_api_key("provider-key").with_base_url(server.uri());
+    let mut req = request("glm-5.2");
+    req.extra = json!({
+        "thinking": { "type": "enabled" },
+        "reasoning_effort": "high",
+        "do_sample": false,
+        "top_p": 0.7,
+        "tool_stream": true,
+        "response_format": { "type": "json_object" },
+        "request_id": "req123",
+        "user_id": "user123",
+    });
+
+    provider
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("stream request should start")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["thinking"]["type"], "enabled");
+    assert!(body["thinking"].get("clear_thinking").is_none());
+    assert_eq!(body["reasoning_effort"], "high");
+    assert_eq!(body["do_sample"], false);
+    assert_eq!(body["top_p"], 0.7);
+    assert_eq!(body["tool_stream"], true);
+    assert_eq!(body["response_format"]["type"], "json_object");
+    assert_eq!(body["request_id"], "req123");
+    assert_eq!(body["user_id"], "user123");
+}
+
+#[cfg(feature = "zhipu")]
+#[test]
+fn provider_zhipu_accepts_zai_api_key_as_fallback_alias() {
+    let _lock = ENV_LOCK.lock().expect("env lock should not be poisoned");
+    let _zhipu = EnvVarGuard::unset(ZHIPU_API_KEY_ENV);
+    let _zai = EnvVarGuard::set(ZAI_API_KEY_ENV, "alias-key");
+
+    assert_eq!(zhipu_api_key_from_env().as_deref(), Some("alias-key"));
+}
+
+#[cfg(feature = "zhipu")]
+#[test]
+fn provider_zhipu_api_key_env_prefers_zhipu_over_zai() {
+    let _lock = ENV_LOCK.lock().expect("env lock should not be poisoned");
+    let _zhipu = EnvVarGuard::set(ZHIPU_API_KEY_ENV, "primary-key");
+    let _zai = EnvVarGuard::set(ZAI_API_KEY_ENV, "alias-key");
+
+    assert_eq!(zhipu_api_key_from_env().as_deref(), Some("primary-key"));
+    assert_eq!(ZHIPU_API_KEY_ENVS, ["ZHIPU_API_KEY", "ZAI_API_KEY"]);
+}
+
 provider_test!(
     "km",
     provider_km_streams_chat_completions,
@@ -272,3 +352,31 @@ provider_test!(
     "kimi-k2.5",
     "/v1/chat/completions"
 );
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}

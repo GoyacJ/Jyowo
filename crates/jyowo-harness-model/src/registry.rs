@@ -358,6 +358,24 @@ fn runtime_capability(
                 base_url: "https://api.minimax.io".to_owned(),
             },
         ]
+    } else if provider_id == "zhipu" {
+        vec![
+            ProviderBaseUrlRegion {
+                id: "default".to_owned(),
+                label: "BigModel Chat".to_owned(),
+                base_url: default_base_url.to_owned(),
+            },
+            ProviderBaseUrlRegion {
+                id: "coding-plan".to_owned(),
+                label: "BigModel Coding Plan".to_owned(),
+                base_url: "https://open.bigmodel.cn/api/coding/paas/v4".to_owned(),
+            },
+            ProviderBaseUrlRegion {
+                id: "zai-coding".to_owned(),
+                label: "Z.ai Coding".to_owned(),
+                base_url: "https://api.z.ai/api/coding/paas/v4".to_owned(),
+            },
+        ]
     } else {
         vec![ProviderBaseUrlRegion {
             id: "default".to_owned(),
@@ -711,21 +729,53 @@ fn doubao_service(
 }
 
 fn provider_source(provider_id: &str) -> (&'static str, NaiveDate) {
-    let verified_date = NaiveDate::from_ymd_opt(2026, 6, 21).expect("valid verification date");
-    let source_url = match provider_id {
-        "anthropic" => "https://docs.anthropic.com/en/docs/about-claude/models/overview",
-        "codex" => "https://developers.openai.com/api/docs/models/all",
-        "deepseek" => "https://api-docs.deepseek.com/quick_start/pricing",
-        "doubao" => "https://www.volcengine.com/docs/82379/1494384",
-        "gemini" => "https://ai.google.dev/gemini-api/docs/models",
-        "km" => "https://platform.moonshot.ai/docs",
-        "local-llama" => "https://ollama.com/library",
-        "minimax" => "https://platform.minimax.io/docs/api-reference/text-chat-openai",
-        "openai" => "https://platform.openai.com/docs/models",
-        "openrouter" => "https://openrouter.ai/api/v1/models",
-        "qwen" => "https://help.aliyun.com/zh/model-studio/models",
-        "zhipu" => "https://docs.bigmodel.cn/api-reference/模型-api/对话补全",
-        _ => "https://jyowo.local/provider-catalog",
+    let default_verified_date =
+        NaiveDate::from_ymd_opt(2026, 6, 21).expect("valid verification date");
+    let zhipu_verified_date = NaiveDate::from_ymd_opt(2026, 7, 9).expect("valid verification date");
+    let (source_url, verified_date) = match provider_id {
+        "anthropic" => (
+            "https://docs.anthropic.com/en/docs/about-claude/models/overview",
+            default_verified_date,
+        ),
+        "codex" => (
+            "https://developers.openai.com/api/docs/models/all",
+            default_verified_date,
+        ),
+        "deepseek" => (
+            "https://api-docs.deepseek.com/quick_start/pricing",
+            default_verified_date,
+        ),
+        "doubao" => (
+            "https://www.volcengine.com/docs/82379/1494384",
+            default_verified_date,
+        ),
+        "gemini" => (
+            "https://ai.google.dev/gemini-api/docs/models",
+            default_verified_date,
+        ),
+        "km" => ("https://platform.moonshot.ai/docs", default_verified_date),
+        "local-llama" => ("https://ollama.com/library", default_verified_date),
+        "minimax" => (
+            "https://platform.minimax.io/docs/api-reference/text-chat-openai",
+            default_verified_date,
+        ),
+        "openai" => (
+            "https://platform.openai.com/docs/models",
+            default_verified_date,
+        ),
+        "openrouter" => ("https://openrouter.ai/api/v1/models", default_verified_date),
+        "qwen" => (
+            "https://help.aliyun.com/zh/model-studio/models",
+            default_verified_date,
+        ),
+        "zhipu" => (
+            "https://docs.bigmodel.cn/api-reference/模型-api/对话补全",
+            zhipu_verified_date,
+        ),
+        _ => (
+            "https://jyowo.local/provider-catalog",
+            default_verified_date,
+        ),
     };
     (source_url, verified_date)
 }

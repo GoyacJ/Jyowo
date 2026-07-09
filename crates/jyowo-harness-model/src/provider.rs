@@ -277,6 +277,19 @@ impl ModelRuntimeSemantics {
     }
 
     #[must_use]
+    pub fn openai_chat_zhipu() -> Self {
+        Self {
+            reasoning_protocol: ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind: ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: true,
+            },
+            cache_protocol: CacheProtocolSemantics::OpenAiAuto,
+            provider_continuation_dialect: Some("openai_chat.zhipu".to_owned()),
+            ..Self::openai_chat_plain()
+        }
+    }
+
+    #[must_use]
     pub fn openai_responses_default() -> Self {
         Self {
             protocol: ModelProtocol::Responses,

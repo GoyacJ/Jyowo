@@ -53,6 +53,23 @@ fn runtime_semantics_deepseek_requires_private_reasoning_replay() {
 }
 
 #[test]
+fn runtime_semantics_zhipu_requires_private_reasoning_replay() {
+    assert_eq!(
+        ModelRuntimeSemantics::openai_chat_zhipu().reasoning_protocol,
+        ReasoningProtocolSemantics::ProviderPrivateReplay {
+            continuation_kind: ProviderContinuationKind::ReasoningReplay,
+            required_for_assistant_tool_replay: true,
+        }
+    );
+    assert_eq!(
+        ModelRuntimeSemantics::openai_chat_zhipu()
+            .provider_continuation_dialect
+            .as_deref(),
+        Some("openai_chat.zhipu")
+    );
+}
+
+#[test]
 fn runtime_semantics_minimax_plain_chat_does_not_require_private_replay() {
     assert_eq!(
         ModelRuntimeSemantics::openai_chat_minimax().reasoning_protocol,

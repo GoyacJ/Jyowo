@@ -1,7 +1,7 @@
 use harness_model::{
     build_provider, provider_catalog_entries, provider_inventory_entries, resolve_model_descriptor,
-    ConversationModelCapability, ModelRuntimeSemantics, ProviderBuildConfig, ProviderRegistryError,
-    ReasoningProtocolSemantics,
+    ConversationModelCapability, ModelLifecycle, ModelModality, ModelRuntimeSemantics,
+    ProviderBuildConfig, ProviderRegistryError, ReasoningProtocolSemantics,
 };
 
 #[test]
@@ -34,10 +34,20 @@ fn registry_rejects_unknown_provider_fail_closed() {
 fn provider_inventory_includes_source_metadata() {
     let entries = provider_inventory_entries();
 
+    let min_verified_date = chrono::NaiveDate::from_ymd_opt(2026, 6, 21).unwrap();
     assert!(entries.iter().all(|entry| !entry.source_url.is_empty()));
     assert!(entries
         .iter()
-        .all(|entry| entry.verified_date.to_string() == "2026-06-21"));
+        .all(|entry| entry.verified_date >= min_verified_date));
+    #[cfg(feature = "zhipu")]
+    assert_eq!(
+        entries
+            .iter()
+            .find(|entry| entry.provider_id == "zhipu")
+            .expect("zhipu inventory should exist")
+            .verified_date,
+        chrono::NaiveDate::from_ymd_opt(2026, 7, 9).unwrap()
+    );
 }
 
 #[cfg(any(
@@ -162,6 +172,31 @@ fn provider_registry_resolves_minimax_without_private_replay_requirement() {
     assert_source_contains("minimax.rs", "ModelRuntimeSemantics::openai_chat_minimax()");
 }
 
+#[test]
+fn provider_registry_resolves_zhipu_with_private_replay_semantics() {
+    #[cfg(feature = "zhipu")]
+    {
+        let descriptor =
+            resolve_model_descriptor("zhipu", "glm-5").expect("zhipu descriptor should resolve");
+
+        assert_eq!(
+            descriptor.runtime_semantics,
+            ModelRuntimeSemantics::openai_chat_zhipu()
+        );
+        assert_eq!(
+            descriptor.runtime_semantics.reasoning_protocol,
+            ReasoningProtocolSemantics::ProviderPrivateReplay {
+                continuation_kind:
+                    harness_provider_state::ProviderContinuationKind::ReasoningReplay,
+                required_for_assistant_tool_replay: true,
+            }
+        );
+    }
+
+    #[cfg(not(feature = "zhipu"))]
+    assert_source_contains("zhipu.rs", "ModelRuntimeSemantics::openai_chat_zhipu()");
+}
+
 #[cfg(feature = "minimax")]
 #[test]
 fn minimax_provider_catalog_exposes_runtime_and_service_capabilities() {
@@ -192,6 +227,230 @@ fn minimax_provider_catalog_exposes_runtime_and_service_capabilities() {
     assert!(!minimax.service_capabilities.iter().any(
         |capability| capability.execution == harness_model::ProviderServiceExecution::Websocket
     ));
+}
+
+#[cfg(feature = "zhipu")]
+#[test]
+fn zhipu_provider_catalog_matches_official_openapi_configuration() {
+    let zhipu = harness_model::provider_catalog_entries()
+        .into_iter()
+        .find(|entry| entry.provider_id == "zhipu")
+        .expect("zhipu catalog should exist");
+
+    assert_eq!(
+        zhipu.default_base_url,
+        "https://open.bigmodel.cn/api/paas/v4"
+    );
+    assert!(zhipu
+        .runtime_capability
+        .base_url_regions
+        .iter()
+        .any(|region| {
+            region.id == "default" && region.base_url == "https://open.bigmodel.cn/api/paas/v4"
+        }));
+    assert!(zhipu
+        .runtime_capability
+        .base_url_regions
+        .iter()
+        .any(|region| {
+            region.id == "coding-plan"
+                && region.base_url == "https://open.bigmodel.cn/api/coding/paas/v4"
+        }));
+    assert!(zhipu
+        .runtime_capability
+        .base_url_regions
+        .iter()
+        .any(|region| {
+            region.id == "zai-coding" && region.base_url == "https://api.z.ai/api/coding/paas/v4"
+        }));
+
+    let expected_models = [
+        (
+            "glm-5.2",
+            1_000_000,
+            131_072,
+            true,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-5.1",
+            200_000,
+            131_072,
+            true,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-5-turbo",
+            200_000,
+            131_072,
+            false,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-5",
+            200_000,
+            131_072,
+            true,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-4.7",
+            200_000,
+            131_072,
+            true,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-4.7-flash",
+            200_000,
+            131_072,
+            false,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-4.7-flashx",
+            200_000,
+            131_072,
+            false,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-4.6",
+            200_000,
+            131_072,
+            false,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-4.5-air",
+            128_000,
+            98_304,
+            false,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-4.5-airx",
+            128_000,
+            98_304,
+            false,
+            true,
+            true,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-4.5-flash",
+            128_000,
+            98_304,
+            false,
+            true,
+            true,
+            true,
+            ModelLifecycle::Retiring {
+                retirement_date: chrono::NaiveDate::from_ymd_opt(2026, 1, 30)
+                    .expect("valid retirement date"),
+            },
+        ),
+        (
+            "glm-4-flash-250414",
+            128_000,
+            16_384,
+            false,
+            false,
+            false,
+            true,
+            ModelLifecycle::Stable,
+        ),
+        (
+            "glm-4-flashx-250414",
+            128_000,
+            16_384,
+            false,
+            false,
+            false,
+            true,
+            ModelLifecycle::Stable,
+        ),
+    ];
+
+    assert_eq!(zhipu.models.len(), expected_models.len());
+    for (
+        model_id,
+        context_window,
+        max_output_tokens,
+        tool_calling,
+        reasoning,
+        prompt_cache,
+        structured_output,
+        lifecycle,
+    ) in expected_models
+    {
+        let model = zhipu
+            .models
+            .iter()
+            .find(|model| model.model_id == model_id)
+            .unwrap_or_else(|| panic!("{model_id} should be listed"));
+        assert_eq!(model.context_window, context_window, "{model_id}");
+        assert_eq!(model.max_output_tokens, max_output_tokens, "{model_id}");
+        assert_eq!(
+            model.conversation_capability.tool_calling, tool_calling,
+            "{model_id}"
+        );
+        assert_eq!(
+            model.conversation_capability.reasoning, reasoning,
+            "{model_id}"
+        );
+        assert_eq!(
+            model.conversation_capability.prompt_cache, prompt_cache,
+            "{model_id}"
+        );
+        assert_eq!(
+            model.conversation_capability.structured_output, structured_output,
+            "{model_id}"
+        );
+        assert_eq!(model.lifecycle, lifecycle, "{model_id}");
+        assert_eq!(
+            model.conversation_capability.input_modalities,
+            vec![
+                ModelModality::Text,
+                ModelModality::Image,
+                ModelModality::Video
+            ],
+            "{model_id}"
+        );
+        assert_eq!(
+            model.conversation_capability.output_modalities,
+            vec![ModelModality::Text],
+            "{model_id}"
+        );
+    }
 }
 
 #[cfg(feature = "openai")]
@@ -248,7 +507,8 @@ fn expected_runtime_semantics(provider_id: &str) -> ModelRuntimeSemantics {
         "gemini" => ModelRuntimeSemantics::gemini_default(),
         "bedrock" => ModelRuntimeSemantics::bedrock_converse_default(),
         "minimax" => ModelRuntimeSemantics::openai_chat_minimax(),
-        "doubao" | "km" | "local-llama" | "openrouter" | "qwen" | "zhipu" => {
+        "zhipu" => ModelRuntimeSemantics::openai_chat_zhipu(),
+        "doubao" | "km" | "local-llama" | "openrouter" | "qwen" => {
             ModelRuntimeSemantics::openai_chat_plain()
         }
         provider_id => {
@@ -313,7 +573,11 @@ fn descriptor_block_end(source: &str, start: usize) -> Option<usize> {
     None
 }
 
-#[cfg(any(not(feature = "deepseek"), not(feature = "minimax")))]
+#[cfg(any(
+    not(feature = "deepseek"),
+    not(feature = "minimax"),
+    not(feature = "zhipu")
+))]
 fn assert_source_contains(relative_path: &str, needle: &str) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src")

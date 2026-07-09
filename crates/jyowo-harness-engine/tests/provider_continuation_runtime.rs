@@ -34,6 +34,7 @@ const SAFE_MISSING_CONTINUATION_ERROR: &str =
 const PRIVATE_SENTINEL: &str = "PRIVATE_PROVIDER_CONTINUATION_SENTINEL";
 const MODEL_CONFIG_ID: &str = "deepseek-config";
 const DEEPSEEK_CONTINUATION_DIALECT: &str = "openai_chat.deepseek";
+const ZHIPU_CONTINUATION_DIALECT: &str = "openai_chat.zhipu";
 
 mod authorization_support;
 
@@ -248,6 +249,56 @@ mod provider_continuation {
         assert_eq!(
             requests[0].provider_context.continuations[0].dialect,
             DEEPSEEK_CONTINUATION_DIALECT
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_loads_zhipu_reasoning_replay_with_zhipu_dialect() {
+        let mut runtime_snapshot = runtime_model_snapshot_for_provider("zhipu-protocol");
+        runtime_snapshot.model_id = "glm-5".to_owned();
+        runtime_snapshot.display_name = "GLM-5".to_owned();
+        runtime_snapshot.runtime_semantics = ModelRuntimeSemantics::openai_chat_zhipu();
+        let harness = ProviderContinuationHarness::new_with_model_snapshot(
+            ContextEngine::builder().build().unwrap(),
+            RecordingModel::events(text_events("done")),
+            true,
+            runtime_snapshot,
+        )
+        .await;
+        let assistant_id = MessageId::new();
+        harness
+            .append_records(vec![continuation_record_for_provider_and_dialect(
+                "zhipu-protocol",
+                ZHIPU_CONTINUATION_DIALECT,
+                harness.tenant_id,
+                harness.session_id,
+                assistant_id,
+                json!({"private": PRIVATE_SENTINEL}),
+            )])
+            .await;
+        let mut model_snapshot = model_snapshot_for_provider("zhipu-protocol");
+        model_snapshot.model_id = "glm-5".to_owned();
+        model_snapshot.display_name = "GLM-5".to_owned();
+
+        let events = harness
+            .run_with_seed_and_model_snapshot(
+                vec![assistant_tool_message(assistant_id)],
+                model_snapshot,
+            )
+            .await;
+
+        assert!(completed(&events));
+        let requests = harness.model.requests().await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].provider_context.provider_id, "zhipu-protocol");
+        assert_eq!(
+            requests[0].provider_context.dialect.as_deref(),
+            Some(ZHIPU_CONTINUATION_DIALECT)
+        );
+        assert_eq!(requests[0].provider_context.continuations.len(), 1);
+        assert_eq!(
+            requests[0].provider_context.continuations[0].dialect,
+            ZHIPU_CONTINUATION_DIALECT
         );
     }
 
@@ -593,11 +644,29 @@ fn continuation_record_for_provider(
     message_id: MessageId,
     payload: serde_json::Value,
 ) -> ProviderContinuationRecord {
+    continuation_record_for_provider_and_dialect(
+        provider_id,
+        DEEPSEEK_CONTINUATION_DIALECT,
+        tenant_id,
+        session_id,
+        message_id,
+        payload,
+    )
+}
+
+fn continuation_record_for_provider_and_dialect(
+    provider_id: &str,
+    dialect: &str,
+    tenant_id: TenantId,
+    session_id: SessionId,
+    message_id: MessageId,
+    payload: serde_json::Value,
+) -> ProviderContinuationRecord {
     ProviderContinuationRecord {
         provider_id: provider_id.to_owned(),
         model_config_id: Some(MODEL_CONFIG_ID.to_owned()),
         protocol: ModelProtocol::ChatCompletions,
-        dialect: DEEPSEEK_CONTINUATION_DIALECT.to_owned(),
+        dialect: dialect.to_owned(),
         tenant_id,
         session_id,
         producing_run_id: RunId::new(),

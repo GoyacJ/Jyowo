@@ -77,6 +77,29 @@ fn list_model_provider_catalog_payload_exposes_models_and_default_base_urls() {
         .iter()
         .any(|model| model["modelId"] == "kimi-k2.5"));
 
+    let zhipu = providers
+        .iter()
+        .find(|provider| provider["providerId"] == "zhipu")
+        .unwrap();
+    assert_eq!(zhipu["displayName"], "Zhipu");
+    assert_eq!(
+        zhipu["defaultBaseUrl"],
+        "https://open.bigmodel.cn/api/paas/v4"
+    );
+    assert!(zhipu["models"].as_array().unwrap().iter().any(|model| {
+        model["modelId"] == "glm-5" && model["conversationCapability"]["promptCache"] == true
+    }));
+    assert!(zhipu["runtimeCapability"]["baseUrlRegions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|region| region["baseUrl"] == "https://open.bigmodel.cn/api/coding/paas/v4"));
+    assert!(zhipu["runtimeCapability"]["baseUrlRegions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|region| region["baseUrl"] == "https://api.z.ai/api/coding/paas/v4"));
+
     let minimax = providers
         .iter()
         .find(|provider| provider["providerId"] == "minimax")

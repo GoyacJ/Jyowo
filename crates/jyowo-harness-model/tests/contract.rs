@@ -19,7 +19,9 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use futures::StreamExt;
-use harness_contracts::{Message, MessageId, MessagePart, MessageRole, ModelError};
+use harness_contracts::{
+    Message, MessageId, MessagePart, MessageRole, ModelError, StopReason, UsageSnapshot,
+};
 use harness_model::*;
 use serde_json::Value;
 
@@ -263,13 +265,72 @@ domestic_contract!(
     "doubao-seed-1.6",
     "/chat/completions"
 );
-domestic_contract!(
-    "zhipu",
-    contract_zhipu_provider,
-    ZhipuProvider,
-    "glm-5",
-    "/chat/completions"
-);
+#[cfg(feature = "zhipu")]
+#[tokio::test]
+async fn contract_zhipu_provider() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    concat!(
+                        "data: {\"id\":\"chat_1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1,\"prompt_tokens_details\":{\"cached_tokens\":3}}}\n\n",
+                        "data: [DONE]\n\n",
+                    ),
+                    "text/event-stream",
+                ),
+        )
+        .mount(&server)
+        .await;
+    let req = request("glm-5", ModelProtocol::ChatCompletions);
+
+    run_contract_tests(
+        ZhipuProvider::from_api_key("test-key").with_base_url(server.uri()),
+        req,
+    )
+    .await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    concat!(
+                        "data: {\"id\":\"chat_1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1,\"prompt_tokens_details\":{\"cached_tokens\":3}}}\n\n",
+                        "data: [DONE]\n\n",
+                    ),
+                    "text/event-stream",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let events = ZhipuProvider::from_api_key("test-key")
+        .with_base_url(server.uri())
+        .infer(
+            request("glm-5", ModelProtocol::ChatCompletions),
+            InferContext::for_test(),
+        )
+        .await
+        .expect("zhipu stream should start")
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.contains(&ModelStreamEvent::MessageDelta {
+        stop_reason: Some(StopReason::EndTurn),
+        usage_delta: UsageSnapshot {
+            input_tokens: 5,
+            output_tokens: 1,
+            cache_read_tokens: 3,
+            cache_write_tokens: 0,
+            cost_micros: 0,
+            tool_calls: 0,
+        },
+    }));
+}
 domestic_contract!(
     "km",
     contract_km_provider,

@@ -58,8 +58,7 @@ pub(super) fn chat_response_to_stream(
     response: Value,
     dialect: OpenAiChatDialect,
 ) -> Result<ModelStream, ModelError> {
-    let continuation_event =
-        continuation::deepseek_chat_response_continuation_event(dialect, &response);
+    let continuation_event = continuation::chat_response_continuation_event(dialect, &response);
     let response: ChatCompletionResponse = serde_json::from_value(response).map_err(|error| {
         ModelError::UnexpectedResponse(format!("invalid OpenAI protocol response: {error}"))
     })?;
