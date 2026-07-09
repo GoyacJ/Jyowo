@@ -5,12 +5,15 @@
 //! wrap them for IPC camelCase shape, but the persisted schema is owned
 //! here.
 
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// A provider profile definition stored in `~/.jyowo/config/provider-profiles.json`.
 /// Secrets are stored separately in `provider-secrets.json`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ProviderProfileDefinition {
     pub id: String,
@@ -20,7 +23,18 @@ pub struct ProviderProfileDefinition {
     pub protocol: crate::ModelProtocol,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_defaults: Option<ProviderProfileDefaults>,
     pub model_descriptor: ProviderProfileModelDescriptor,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderProfileDefaults {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
 }
 
 /// Model descriptor embedded in a provider profile definition.

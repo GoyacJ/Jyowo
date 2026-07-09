@@ -662,6 +662,7 @@ fn write_test_provider_settings(workspace: &Path) -> DesktopProviderSettingsStor
                 model_id: "test-model".to_owned(),
                 official_quota_api_key: None,
                 provider_id: "test".to_owned(),
+                provider_defaults: None,
                 model_descriptor: ProviderModelDescriptorRecord {
                     protocol: ModelProtocol::Messages,
                     conversation_capability: ConversationModelCapabilityRecord {

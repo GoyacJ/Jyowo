@@ -36,10 +36,19 @@ pub(super) async fn responses_request_body(
     if let Some(temperature) = req.temperature {
         body["temperature"] = json!(temperature);
     }
-    if let Some(tools) = &req.tools {
-        body["tools"] = Value::Array(tools.iter().map(responses_tool).collect());
-    }
     merge_extra_object(&mut body, &req.extra)?;
+    if let Some(tools) = &req.tools {
+        let local_tools = tools.iter().map(responses_tool);
+        match body.get_mut("tools") {
+            Some(Value::Array(existing)) => existing.extend(local_tools),
+            Some(_) => {
+                return Err(ModelError::InvalidRequest(
+                    "Responses API tools extra must be an array".to_owned(),
+                ));
+            }
+            None => body["tools"] = Value::Array(local_tools.collect()),
+        }
+    }
 
     Ok(body)
 }
@@ -158,6 +167,23 @@ pub(super) fn json_response_to_stream(value: Value) -> Result<ModelStream, Model
                     events.push(ModelStreamEvent::ContentBlockStop { index });
                 }
             }
+        } else if is_builtin_tool_output(&item.kind) {
+            let index = next_index;
+            next_index += 1;
+            let status = item.raw.get("status").and_then(Value::as_str);
+            events.push(ModelStreamEvent::ContentBlockStart {
+                index,
+                content_type: ContentType::Thinking,
+            });
+            events.push(ModelStreamEvent::ContentBlockDelta {
+                index,
+                delta: ContentDelta::Thinking(ThinkingDelta {
+                    text: Some(builtin_tool_status_text(&item.kind, status)),
+                    provider_native: Some(item.provider_native()),
+                    signature: None,
+                }),
+            });
+            events.push(ModelStreamEvent::ContentBlockStop { index });
         } else if item.kind == "function_call" {
             let index = next_index;
             next_index += 1;
@@ -320,7 +346,8 @@ impl ResponsesStreamState {
             }
             "response.output_item.added" => {
                 let item = data.get("item").unwrap_or(&data);
-                if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                let item_type = item.get("type").and_then(Value::as_str);
+                if item_type == Some("function_call") {
                     let index = self.ensure_tool_block(&mut events);
                     events.push(ModelStreamEvent::ContentBlockDelta {
                         index,
@@ -338,6 +365,31 @@ impl ResponsesStreamState {
                                 .to_owned(),
                         },
                     });
+                } else if let Some(item_type) =
+                    item_type.filter(|kind| is_builtin_tool_output(kind))
+                {
+                    let status = item.get("status").and_then(Value::as_str).or(Some("added"));
+                    self.push_builtin_tool_event(
+                        &mut events,
+                        item_type,
+                        status,
+                        provider_native_with_type(item, item_type),
+                    );
+                }
+            }
+            "response.output_item.done" => {
+                let item = data.get("item").unwrap_or(&data);
+                if let Some(item_type) = item
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .filter(|kind| is_builtin_tool_output(kind))
+                {
+                    self.push_builtin_tool_event(
+                        &mut events,
+                        item_type,
+                        Some("done"),
+                        provider_native_with_type(item, item_type),
+                    );
                 }
             }
             "response.function_call_arguments.delta" => {
@@ -352,6 +404,15 @@ impl ResponsesStreamState {
                         delta: ContentDelta::ToolUseInputJson(delta.to_owned()),
                     });
                 }
+            }
+            event_name if builtin_tool_stream_event(event_name).is_some() => {
+                let (item_type, status) = builtin_tool_stream_event(event_name).unwrap();
+                self.push_builtin_tool_event(
+                    &mut events,
+                    item_type,
+                    Some(status),
+                    provider_native_with_type(&data, event_name),
+                );
             }
             "response.completed" => {
                 self.close_blocks(&mut events);
@@ -394,6 +455,24 @@ impl ResponsesStreamState {
 
     fn ensure_tool_block(&mut self, events: &mut Vec<ModelStreamEvent>) -> u32 {
         self.ensure_block(events, ContentType::ToolUse, BlockKind::Tool)
+    }
+
+    fn push_builtin_tool_event(
+        &mut self,
+        events: &mut Vec<ModelStreamEvent>,
+        item_type: &str,
+        status: Option<&str>,
+        provider_native: Value,
+    ) {
+        let index = self.ensure_thinking_block(events);
+        events.push(ModelStreamEvent::ContentBlockDelta {
+            index,
+            delta: ContentDelta::Thinking(ThinkingDelta {
+                text: Some(builtin_tool_status_text(item_type, status)),
+                provider_native: Some(provider_native),
+                signature: None,
+            }),
+        });
     }
 
     fn ensure_block(
@@ -492,6 +571,61 @@ struct ResponseOutputItem {
     raw: Value,
 }
 
+impl ResponseOutputItem {
+    fn provider_native(&self) -> Value {
+        let mut value = provider_native_with_type(&self.raw, &self.kind);
+        if let Value::Object(object) = &mut value {
+            object.insert("id".to_owned(), Value::String(self.id.clone()));
+            if let Some(call_id) = &self.call_id {
+                object.insert("call_id".to_owned(), Value::String(call_id.clone()));
+            }
+            if let Some(name) = &self.name {
+                object.insert("name".to_owned(), Value::String(name.clone()));
+            }
+            if let Some(arguments) = &self.arguments {
+                object.insert("arguments".to_owned(), Value::String(arguments.clone()));
+            }
+            if let Some(summary) = &self.summary {
+                object.insert("summary".to_owned(), Value::String(summary.clone()));
+            }
+        }
+        value
+    }
+}
+
+fn is_builtin_tool_output(kind: &str) -> bool {
+    matches!(
+        kind,
+        "web_search_call" | "web_extractor_call" | "code_interpreter_call"
+    )
+}
+
+fn builtin_tool_stream_event(event_name: &str) -> Option<(&str, &str)> {
+    let rest = event_name.strip_prefix("response.")?;
+    let (item_type, status) = rest.rsplit_once('.')?;
+    is_builtin_tool_output(item_type).then_some((item_type, status))
+}
+
+fn builtin_tool_status_text(item_type: &str, status: Option<&str>) -> String {
+    status.map_or_else(
+        || item_type.to_owned(),
+        |status| format!("{item_type} {status}"),
+    )
+}
+
+fn provider_native_with_type(value: &Value, kind: &str) -> Value {
+    let mut native = value.clone();
+    match &mut native {
+        Value::Object(object) => {
+            object.insert("type".to_owned(), Value::String(kind.to_owned()));
+        }
+        _ => {
+            native = json!({ "type": kind, "value": value });
+        }
+    }
+    native
+}
+
 #[derive(Debug, Deserialize)]
 struct ResponseContent {
     #[serde(rename = "type")]
@@ -508,8 +642,10 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    use super::{response_to_stream, ResponsesStreamState, SseEvent};
-    use crate::ModelStreamEvent;
+    use serde_json::json;
+
+    use super::{json_response_to_stream, response_to_stream, ResponsesStreamState, SseEvent};
+    use crate::{ContentDelta, ContentType, ModelStreamEvent};
 
     #[test]
     fn completed_marks_stream_stopped_after_message_stop() {
@@ -522,6 +658,81 @@ mod tests {
 
         assert!(events.contains(&ModelStreamEvent::MessageStop));
         assert!(state.stopped);
+    }
+
+    #[tokio::test]
+    async fn json_response_maps_builtin_tool_output_as_provider_native_thinking() {
+        let stream = json_response_to_stream(json!({
+            "id": "resp_1",
+            "output": [
+                {
+                    "id": "ws_1",
+                    "type": "web_search_call",
+                    "status": "completed",
+                    "action": {
+                        "type": "search",
+                        "query": "qwen responses"
+                    }
+                }
+            ],
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 2
+            }
+        }))
+        .expect("Responses JSON should parse");
+
+        let events = stream.collect::<Vec<_>>().await;
+
+        assert!(events.contains(&ModelStreamEvent::ContentBlockStart {
+            index: 0,
+            content_type: ContentType::Thinking,
+        }));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelStreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: ContentDelta::Thinking(thinking),
+            } if thinking.text.as_deref() == Some("web_search_call completed")
+                && thinking.provider_native.as_ref().and_then(|value| value.get("type")).and_then(serde_json::Value::as_str) == Some("web_search_call")
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            ModelStreamEvent::ContentBlockDelta {
+                delta: ContentDelta::ToolUseStart { .. },
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn sse_builtin_tool_status_is_provider_native_thinking() {
+        let mut state = ResponsesStreamState::default();
+
+        let events = state.map_event(SseEvent {
+            event: Some("response.web_search_call.searching".to_owned()),
+            data: r#"{"response":{"id":"resp_1"},"type":"response.web_search_call.searching","item_id":"ws_1"}"#.to_owned(),
+        });
+
+        assert!(events.contains(&ModelStreamEvent::ContentBlockStart {
+            index: 0,
+            content_type: ContentType::Thinking,
+        }));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelStreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: ContentDelta::Thinking(thinking),
+            } if thinking.text.as_deref() == Some("web_search_call searching")
+                && thinking.provider_native.as_ref().and_then(|value| value.get("type")).and_then(serde_json::Value::as_str) == Some("response.web_search_call.searching")
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            ModelStreamEvent::ContentBlockDelta {
+                delta: ContentDelta::ToolUseStart { .. },
+                ..
+            }
+        )));
     }
 
     #[tokio::test]

@@ -508,6 +508,7 @@ const catalog: ModelProviderCatalogResponse = {
 const sharedUsageRow: ModelAssetRow = {
   configId: 'cfg-openai',
   providerId: 'openai',
+  protocol: 'responses',
   modelId: 'gpt-4.1',
   modelDescriptor,
   displayName: 'Primary OpenAI',

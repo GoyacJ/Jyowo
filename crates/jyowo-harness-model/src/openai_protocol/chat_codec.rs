@@ -3,7 +3,10 @@ use harness_contracts::{ModelError, StopReason, UsageSnapshot};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{ContentDelta, ContentType, InferContext, ModelRequest, ModelStream, ModelStreamEvent};
+use crate::{
+    ContentDelta, ContentType, InferContext, ModelRequest, ModelStream, ModelStreamEvent,
+    ThinkingDelta,
+};
 
 use super::continuation;
 use super::dialect::OpenAiChatDialect;
@@ -46,10 +49,19 @@ pub(super) async fn chat_request_body(
     if let Some(temperature) = req.temperature {
         body["temperature"] = json!(temperature);
     }
-    if let Some(tools) = &req.tools {
-        body["tools"] = Value::Array(tools.iter().map(openai_tool).collect());
-    }
     merge_extra_object(&mut body, &req.extra)?;
+    if let Some(tools) = &req.tools {
+        let local_tools = tools.iter().map(openai_tool);
+        match body.get_mut("tools") {
+            Some(Value::Array(existing)) => existing.extend(local_tools),
+            Some(_) => {
+                return Err(ModelError::InvalidRequest(
+                    "Chat Completions tools extra must be an array".to_owned(),
+                ));
+            }
+            None => body["tools"] = Value::Array(local_tools.collect()),
+        }
+    }
 
     Ok(body)
 }
@@ -75,6 +87,27 @@ pub(super) fn chat_response_to_stream(
         events.push(event);
     }
     let mut index = 0;
+
+    if dialect == OpenAiChatDialect::Qwen {
+        if let Some(reasoning_content) = choice.message.reasoning_content {
+            if !reasoning_content.is_empty() {
+                events.push(ModelStreamEvent::ContentBlockStart {
+                    index,
+                    content_type: ContentType::Thinking,
+                });
+                events.push(ModelStreamEvent::ContentBlockDelta {
+                    index,
+                    delta: ContentDelta::Thinking(ThinkingDelta {
+                        text: Some(reasoning_content),
+                        provider_native: None,
+                        signature: None,
+                    }),
+                });
+                events.push(ModelStreamEvent::ContentBlockStop { index });
+                index += 1;
+            }
+        }
+    }
 
     if let Some(content) = choice.message.content {
         if !content.is_empty() {
@@ -165,6 +198,7 @@ struct ChatCompletionChoice {
 #[derive(Debug, Default, Deserialize)]
 struct ChatMessageResponse {
     content: Option<String>,
+    reasoning_content: Option<String>,
     #[serde(default)]
     tool_calls: Vec<ChatToolCall>,
 }

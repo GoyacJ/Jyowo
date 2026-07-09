@@ -78,8 +78,21 @@ pub struct ProviderSettingsRequest {
     #[serde(default)]
     pub official_quota_api_key: Option<String>,
     pub provider_id: String,
+    #[serde(default)]
+    pub protocol: Option<ModelProtocol>,
+    #[serde(default)]
+    pub provider_defaults: Option<ProviderDefaultsRecord>,
     #[serde(default = "default_true")]
     pub set_default: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderDefaultsRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -97,7 +110,7 @@ pub struct ValidateProviderSettingsResponse {
     pub status: &'static str,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveProviderSettingsResponse {
     pub config: ProviderConfigPayload,
@@ -199,7 +212,7 @@ impl std::fmt::Debug for GetProviderConfigApiKeyResponse {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ProviderConfigRecord {
     pub api_key: String,
@@ -212,6 +225,8 @@ pub struct ProviderConfigRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub official_quota_api_key: Option<String>,
     pub provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_defaults: Option<ProviderDefaultsRecord>,
     pub model_descriptor: ProviderModelDescriptorRecord,
 }
 
@@ -229,6 +244,7 @@ impl std::fmt::Debug for ProviderConfigRecord {
                 &self.official_quota_api_key.as_ref().map(|_| "[REDACTED]"),
             )
             .field("provider_id", &self.provider_id)
+            .field("provider_defaults", &self.provider_defaults)
             .field("model_descriptor", &self.model_descriptor)
             .finish()
     }
@@ -280,7 +296,7 @@ pub enum ProviderModelModalityRecord {
     Embedding,
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSettingsRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -359,7 +375,7 @@ impl<'de> Deserialize<'de> for ProviderSettingsRecord {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfigPayload {
     pub protocol: ModelProtocol,
@@ -372,6 +388,8 @@ pub struct ProviderConfigPayload {
     pub is_default: bool,
     pub model_id: String,
     pub provider_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_defaults: Option<ProviderDefaultsRecord>,
     pub model_descriptor: ModelCatalogEntry,
 }
 
@@ -382,7 +400,7 @@ pub enum SettingsScope {
     Project,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListProviderSettingsResponse {
     pub default_config_id: Option<String>,
@@ -390,19 +408,21 @@ pub struct ListProviderSettingsResponse {
     pub configs: Vec<ProviderConfigPayload>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelProviderCatalogResponse {
     pub providers: Vec<ModelProviderCatalogEntry>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelProviderCatalogEntry {
     pub default_base_url: String,
     pub display_name: String,
     pub models: Vec<ModelCatalogEntry>,
     pub provider_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_defaults: Option<ProviderDefaultsRecord>,
     pub runtime_capability: ProviderRuntimeCapabilityPayload,
     pub service_capabilities: Vec<ProviderServiceCapabilityPayload>,
     pub source_url: String,
@@ -2881,6 +2901,7 @@ mod debug_redaction_tests {
             model_id: "gpt-5.4-mini".to_owned(),
             official_quota_api_key: Some("quota-secret-token".to_owned()),
             provider_id: "openai".to_owned(),
+            provider_defaults: None,
             model_descriptor: ProviderModelDescriptorRecord {
                 protocol: ModelProtocol::Responses,
                 conversation_capability: ConversationModelCapabilityRecord {

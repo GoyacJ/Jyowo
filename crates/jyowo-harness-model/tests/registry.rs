@@ -21,6 +21,7 @@ fn registry_rejects_unknown_provider_fail_closed() {
         api_key: "test-key".to_owned(),
         base_url: None,
         model_descriptor: None,
+        provider_defaults: None,
     })
     .err()
     .unwrap();
@@ -248,7 +249,8 @@ fn expected_runtime_semantics(provider_id: &str) -> ModelRuntimeSemantics {
         "gemini" => ModelRuntimeSemantics::gemini_default(),
         "bedrock" => ModelRuntimeSemantics::bedrock_converse_default(),
         "minimax" => ModelRuntimeSemantics::openai_chat_minimax(),
-        "doubao" | "km" | "local-llama" | "openrouter" | "qwen" | "zhipu" => {
+        "qwen" => ModelRuntimeSemantics::openai_responses_default(),
+        "doubao" | "km" | "local-llama" | "openrouter" | "zhipu" => {
             ModelRuntimeSemantics::openai_chat_plain()
         }
         provider_id => {

@@ -277,6 +277,15 @@ impl ModelRuntimeSemantics {
     }
 
     #[must_use]
+    pub fn openai_chat_qwen() -> Self {
+        Self {
+            reasoning_protocol: ReasoningProtocolSemantics::PublicThinking,
+            provider_continuation_dialect: Some("openai_chat.qwen".to_owned()),
+            ..Self::openai_chat_plain()
+        }
+    }
+
+    #[must_use]
     pub fn openai_responses_default() -> Self {
         Self {
             protocol: ModelProtocol::Responses,

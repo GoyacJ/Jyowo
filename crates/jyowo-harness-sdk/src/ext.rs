@@ -54,8 +54,8 @@ pub use harness_model::{
     PricingSnapshotResolveContext, PricingSnapshotResolver, PricingSource, ProviderAuthScheme,
     ProviderBaseUrlRegion, ProviderBuildConfig, ProviderCatalogEntry, ProviderInventoryEntry,
     ProviderProbeInput, ProviderProbeOutcome, ProviderProbeRunner, ProviderRegistryError,
-    ProviderRuntimeCapability, ProviderServiceCapability, ProviderServiceCategory,
-    ProviderServiceCostRisk, ProviderServiceExecution, ThinkingDelta,
+    ProviderRequestDefaults, ProviderRuntimeCapability, ProviderServiceCapability,
+    ProviderServiceCategory, ProviderServiceCostRisk, ProviderServiceExecution, ThinkingDelta,
 };
 pub use harness_observability::{Observer, ObserverBuilder, Tracer, UsageAccumulator, UsageScope};
 pub use harness_permission::{

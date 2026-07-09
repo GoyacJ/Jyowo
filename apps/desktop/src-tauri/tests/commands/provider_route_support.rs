@@ -86,6 +86,7 @@ pub(crate) fn provider_settings_with_openai_and_minimax(
                 model_id: "gpt-5.4-mini".to_owned(),
                 official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
+                provider_defaults: None,
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             },
             ProviderConfigRecord {
@@ -97,6 +98,7 @@ pub(crate) fn provider_settings_with_openai_and_minimax(
                 model_id: "minimax-text-01".to_owned(),
                 official_quota_api_key: None,
                 provider_id: "minimax".to_owned(),
+                provider_defaults: None,
                 model_descriptor: ProviderModelDescriptorRecord {
                     protocol: ModelProtocol::ChatCompletions,
                     conversation_capability: ConversationModelCapabilityRecord {

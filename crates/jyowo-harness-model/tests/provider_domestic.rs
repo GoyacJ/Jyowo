@@ -73,7 +73,7 @@ async fn assert_streaming_provider<P>(
                 .conversation_capability
                 .input_modalities
                 .contains(&ModelModality::Image)
-            && !model.conversation_capability.reasoning));
+            && (provider.provider_id() == "qwen" || !model.conversation_capability.reasoning)));
 
     let events = provider
         .infer(request(model_id), InferContext::for_test())
@@ -106,7 +106,7 @@ async fn assert_streaming_provider<P>(
     assert_eq!(body["stream_options"]["include_usage"], true);
     assert_eq!(body["messages"][0]["role"], "user");
     assert_eq!(body["messages"][0]["content"], "hello");
-    if provider.provider_id() == "minimax" {
+    if matches!(provider.provider_id(), "minimax" | "qwen") {
         assert_eq!(body["max_completion_tokens"], 64);
         assert!(body.get("max_tokens").is_none());
     } else {
@@ -237,11 +237,70 @@ provider_test!(
     provider_qwen_streams_chat_completions,
     QwenProvider,
     "qwen",
-    QWEN_API_KEY_ENV,
-    "QWEN_API_KEY",
+    DASHSCOPE_API_KEY_ENV,
+    "DASHSCOPE_API_KEY",
     "qwen3.7-max",
-    "/v1/chat/completions"
+    "/chat/completions"
 );
+
+#[cfg(feature = "qwen")]
+#[test]
+fn provider_qwen_catalog_matches_official_text_generation_capabilities() {
+    let provider = QwenProvider::from_api_key("provider-key");
+    let models = provider.supported_models();
+    let model_ids = models
+        .iter()
+        .map(|model| model.model_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for model_id in [
+        "qwen3-max",
+        "qwen3-max-2026-01-23",
+        "qwen3.7-max",
+        "qwen3.7-max-preview",
+        "qwen3.7-max-2026-06-08",
+        "qwen3.7-max-2026-05-20",
+        "qwen3.7-max-2026-05-17",
+        "qwen3.7-plus",
+        "qwen3.6-plus",
+        "qwen3.5-plus",
+        "qwen3.6-flash",
+        "qwen3.5-flash",
+        "qwen-plus",
+        "qwen-flash",
+        "qwen3-coder-plus",
+        "qwen3-coder-flash",
+        "qwen3-coder-next",
+    ] {
+        assert!(model_ids.contains(model_id), "{model_id} should be listed");
+    }
+    assert!(!model_ids.contains("qwen3.7-max-2026-01-23"));
+
+    let qwen3_max = models
+        .iter()
+        .find(|model| model.model_id == "qwen3-max")
+        .expect("qwen3-max should be listed");
+    assert_eq!(qwen3_max.context_window, 256_000);
+
+    let qwen3_coder_next = models
+        .iter()
+        .find(|model| model.model_id == "qwen3-coder-next")
+        .expect("qwen3-coder-next should be listed");
+    assert_eq!(qwen3_coder_next.context_window, 256_000);
+
+    let qwen37_max = models
+        .iter()
+        .find(|model| model.model_id == "qwen3.7-max")
+        .expect("qwen3.7-max should be listed");
+    assert!(!qwen37_max.conversation_capability.structured_output);
+
+    let qwen37_plus = models
+        .iter()
+        .find(|model| model.model_id == "qwen3.7-plus")
+        .expect("qwen3.7-plus should be listed");
+    assert!(qwen37_plus.conversation_capability.structured_output);
+    assert_eq!(qwen37_plus.context_window, 1_000_000);
+}
 provider_test!(
     "doubao",
     provider_doubao_streams_chat_completions,

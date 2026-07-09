@@ -1,9 +1,10 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use harness_contracts::ModelError;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
 use tokio::sync::{Mutex, Semaphore};
@@ -32,6 +33,7 @@ pub(crate) struct OpenAiProtocolClient {
     protocol: ModelProtocol,
     max_tokens_field: &'static str,
     dialect: OpenAiChatDialect,
+    extra_headers: BTreeMap<String, String>,
     cooldown_until: Arc<Mutex<Option<Instant>>>,
     concurrency: Option<Arc<Semaphore>>,
 }
@@ -72,6 +74,7 @@ impl OpenAiProtocolClient {
             protocol,
             max_tokens_field: "max_tokens",
             dialect: OpenAiChatDialect::Plain,
+            extra_headers: BTreeMap::new(),
             cooldown_until: Arc::new(Mutex::new(None)),
             concurrency: None,
         }
@@ -123,6 +126,12 @@ impl OpenAiProtocolClient {
 
     pub(crate) fn chat_dialect(&self) -> OpenAiChatDialect {
         self.dialect
+    }
+
+    #[must_use]
+    pub(crate) fn with_extra_headers(mut self, headers: BTreeMap<String, String>) -> Self {
+        self.extra_headers = headers;
+        self
     }
 
     #[must_use]
@@ -326,6 +335,24 @@ impl OpenAiProtocolClient {
             headers.insert(AUTHORIZATION, auth);
         }
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        for (name, value) in &self.extra_headers {
+            let name =
+                HeaderName::from_bytes(name.as_bytes()).map_err(|error| OpenAiProtocolError {
+                    error: ModelError::InvalidRequest(format!(
+                        "invalid provider header name: {error}"
+                    )),
+                    class: ErrorClass::Fatal,
+                    retry_after: None,
+                })?;
+            let value = HeaderValue::from_str(value).map_err(|error| OpenAiProtocolError {
+                error: ModelError::InvalidRequest(format!(
+                    "invalid provider header value: {error}"
+                )),
+                class: ErrorClass::Fatal,
+                retry_after: None,
+            })?;
+            headers.insert(name, value);
+        }
         Ok(headers)
     }
 

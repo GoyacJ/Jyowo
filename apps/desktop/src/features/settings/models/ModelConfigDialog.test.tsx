@@ -235,6 +235,141 @@ describe('ModelConfigDialog', () => {
       providerId: 'openai',
     })
   })
+
+  it('saves Qwen Chat Completions search and code interpreter as extra body fields', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: qwenProfile,
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: qwenProfile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    fireEvent.change(within(dialog).getByLabelText('API mode'), {
+      target: { value: 'chat_completions' },
+    })
+    fireEvent.click(within(dialog).getByLabelText('web_search'))
+    fireEvent.click(within(dialog).getByLabelText('code_interpreter'))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      configId: 'cfg-qwen',
+      protocol: 'chat_completions',
+      providerDefaults: {
+        body: {
+          enable_code_interpreter: true,
+          enable_search: true,
+        },
+      },
+    })
+    expect(saveProviderSettings.mock.calls[0][0].providerDefaults.body).not.toHaveProperty('tools')
+    expect(saveProviderSettings.mock.calls[0][0].providerDefaults.body).not.toHaveProperty('search_options')
+  })
+
+  it('saves Qwen Chat Completions web extractor only for agent max capable models', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: qwen3MaxProfile,
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: qwen3MaxProfile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    fireEvent.change(within(dialog).getByLabelText('API mode'), {
+      target: { value: 'chat_completions' },
+    })
+    fireEvent.click(within(dialog).getByLabelText('web_extractor'))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      configId: 'cfg-qwen-max',
+      protocol: 'chat_completions',
+      providerDefaults: {
+        body: {
+          enable_search: true,
+          enable_thinking: true,
+          search_options: {
+            search_strategy: 'agent_max',
+          },
+        },
+      },
+    })
+  })
+
+  it('does not save Qwen Chat Completions web extractor fields for non-agent-max models', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: qwenProfile,
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: qwenProfile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    fireEvent.change(within(dialog).getByLabelText('API mode'), {
+      target: { value: 'chat_completions' },
+    })
+
+    expect(within(dialog).getByLabelText('web_extractor')).toBeDisabled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0].providerDefaults.body).not.toHaveProperty(
+      'search_options',
+    )
+    expect(saveProviderSettings.mock.calls[0][0].providerDefaults.body).not.toHaveProperty(
+      'enable_search',
+    )
+  })
+
+  it('saves Qwen Responses reasoning effort values from the official enum', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: qwenProfile,
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: qwenProfile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    const reasoningEffort = within(dialog).getByLabelText('Reasoning effort')
+    expect(within(reasoningEffort).getByRole('option', { name: 'None' })).toBeInTheDocument()
+    expect(within(reasoningEffort).getByRole('option', { name: 'Minimal' })).toBeInTheDocument()
+
+    fireEvent.change(reasoningEffort, { target: { value: 'minimal' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      configId: 'cfg-qwen',
+      protocol: 'responses',
+      providerDefaults: {
+        body: {
+          reasoning: { effort: 'minimal' },
+        },
+      },
+    })
+  })
 })
 
 const modelCapability: ConversationModelCapability = {
@@ -258,6 +393,18 @@ const gpt41 = {
   maxOutputTokens: 8192,
   modelId: 'gpt-4.1',
   runtimeStatus: { kind: 'runnable' as const },
+}
+
+const qwen37Max = {
+  ...gpt41,
+  displayName: 'Qwen3.7 Max',
+  modelId: 'qwen3.7-max',
+}
+
+const qwen3Max = {
+  ...gpt41,
+  displayName: 'Qwen3 Max',
+  modelId: 'qwen3-max',
 }
 
 const catalog: ModelProviderCatalogResponse = {
@@ -302,6 +449,28 @@ const catalog: ModelProviderCatalogResponse = {
       sourceUrl: 'https://docs.anthropic.com',
       verifiedDate: '2026-06-30',
     },
+    {
+      defaultBaseUrl: 'https://dashscope-us.aliyuncs.com/compatible-mode/v1',
+      displayName: 'Qwen',
+      models: [qwen37Max, qwen3Max],
+      providerId: 'qwen',
+      runtimeCapability: {
+        authScheme: 'bearer',
+        baseUrlRegions: [
+          {
+            id: 'default',
+            label: 'Default',
+            baseUrl: 'https://dashscope-us.aliyuncs.com/compatible-mode/v1',
+          },
+        ],
+        supportsLiveValidation: true,
+        supportsStreamingValidation: true,
+        secretRevealSupported: true,
+      },
+      serviceCapabilities: [],
+      sourceUrl: 'https://help.aliyun.com/zh/model-studio/',
+      verifiedDate: '2026-07-09',
+    },
   ],
 }
 
@@ -316,4 +485,29 @@ const existingProfile: ProviderConfig = {
   isDefault: true,
   protocol: 'responses',
   modelDescriptor: gpt41,
+}
+
+const qwenProfile: ProviderConfig = {
+  id: 'cfg-qwen',
+  providerId: 'qwen',
+  modelId: 'qwen3.7-max',
+  displayName: 'Primary Qwen',
+  baseUrl: 'https://dashscope-us.aliyuncs.com/compatible-mode/v1',
+  hasApiKey: true,
+  hasOfficialQuotaApiKey: false,
+  isDefault: false,
+  protocol: 'responses',
+  providerDefaults: {
+    body: {},
+    headers: {},
+  },
+  modelDescriptor: qwen37Max,
+}
+
+const qwen3MaxProfile: ProviderConfig = {
+  ...qwenProfile,
+  id: 'cfg-qwen-max',
+  modelId: 'qwen3-max',
+  displayName: 'Primary Qwen Max',
+  modelDescriptor: qwen3Max,
 }

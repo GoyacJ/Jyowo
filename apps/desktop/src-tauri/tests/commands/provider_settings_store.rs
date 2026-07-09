@@ -24,6 +24,7 @@ fn desktop_provider_settings_store_rejects_config_without_api_key() {
                 model_id: "gpt-5.4-mini".to_owned(),
                 official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
+                provider_defaults: None,
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
         })
@@ -53,6 +54,7 @@ fn desktop_provider_settings_store_writes_owner_only_file_permissions() {
                 model_id: "gpt-5.4-mini".to_owned(),
                 official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
+                provider_defaults: None,
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
         })
@@ -125,6 +127,7 @@ fn desktop_provider_settings_store_rejects_symlink_settings_file() {
                 model_id: "gpt-5.4-mini".to_owned(),
                 official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
+                provider_defaults: None,
                 model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
             }],
         })

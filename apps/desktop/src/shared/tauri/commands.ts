@@ -1684,6 +1684,13 @@ const providerServiceCapabilitySchema = z
   })
   .strict()
 
+const providerDefaultsSchema = z
+  .object({
+    body: z.record(z.string(), z.unknown()).optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+  })
+  .strict()
+
 const providerSettingsRequestSchema = z
   .object({
     apiKey: z.string().trim().min(1).optional(),
@@ -1693,6 +1700,8 @@ const providerSettingsRequestSchema = z
     modelId: z.string().trim().min(1),
     officialQuotaApiKey: z.string().trim().min(1).optional(),
     providerId: providerIdSchema,
+    protocol: modelProtocolSchema.optional(),
+    providerDefaults: providerDefaultsSchema.optional(),
     setDefault: z.boolean().optional(),
   })
   .strict()
@@ -1731,6 +1740,7 @@ const modelProviderCatalogEntrySchema = z
     displayName: z.string().min(1),
     models: z.array(modelCatalogEntrySchema),
     providerId: providerIdSchema,
+    providerDefaults: providerDefaultsSchema.optional(),
     runtimeCapability: providerRuntimeCapabilitySchema,
     serviceCapabilities: z.array(providerServiceCapabilitySchema),
     sourceUrl: z.string().min(1),
@@ -1755,6 +1765,7 @@ const providerConfigSchema = z
     isDefault: z.boolean(),
     modelId: z.string().min(1),
     modelDescriptor: modelCatalogEntrySchema,
+    providerDefaults: providerDefaultsSchema.optional(),
     providerId: providerIdSchema,
   })
   .strict()
