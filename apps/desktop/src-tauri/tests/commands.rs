@@ -59,9 +59,10 @@ use jyowo_desktop_shell::commands::{
     list_mcp_servers_with_runtime_state, list_memory_items_with_runtime_state,
     list_model_provider_catalog_payload, list_provider_capability_route_options_from_inputs,
     list_provider_capability_routes_with_store, list_provider_settings_with_store,
-    list_reference_candidates_with_runtime_state, list_skills_with_runtime_state,
-    mcp_diagnostic_record_from_event, page_conversation_timeline_with_runtime_state,
-    page_conversation_worktree_with_runtime_state, pause_background_agent_with_runtime_state,
+    list_reference_candidates_with_runtime_state, list_runtime_tools_with_runtime_state,
+    list_skills_with_runtime_state, mcp_diagnostic_record_from_event,
+    page_conversation_timeline_with_runtime_state, page_conversation_worktree_with_runtime_state,
+    pause_background_agent_with_runtime_state,
     request_provider_config_api_key_reveal_with_runtime_state,
     request_provider_config_api_key_reveal_with_store, resolve_effective_execution_settings,
     resolve_permission_for_window_with_runtime_state, resolve_permission_payload,
@@ -229,6 +230,8 @@ mod run_subscriptions;
 mod runs;
 #[path = "commands/runtime_execution_status.rs"]
 mod runtime_execution_status;
+#[path = "commands/runtime_tools.rs"]
+mod runtime_tools;
 #[path = "commands/skills.rs"]
 mod skills;
 #[path = "commands/support.rs"]

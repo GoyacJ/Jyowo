@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppI18nProvider } from '@/shared/i18n/i18n'
 import type { SkillSummary } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
-import { createTestCommandClient } from '@/testing/command-client'
+import { createTestCommandClient, type TestCommandClientOptions } from '@/testing/command-client'
 
 import { SkillSettingsPage } from './SkillSettings'
 
@@ -33,7 +33,11 @@ vi.mock('@tanstack/react-router', async () => ({
     }),
 }))
 
-function renderSkillSettingsPage(skills?: SkillSummary[]) {
+type SkillSettingsRenderOptions = Omit<TestCommandClientOptions, 'skills'> & {
+  skillSummaries?: SkillSummary[]
+}
+
+function renderSkillSettingsPage(options: SkillSettingsRenderOptions = {}) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -43,7 +47,10 @@ function renderSkillSettingsPage(skills?: SkillSummary[]) {
   function Wrapper({ children }: { children: ReactNode }) {
     return (
       <CommandClientProvider
-        client={createTestCommandClient(skills ? { skills: { skills } } : undefined)}
+        client={createTestCommandClient({
+          ...options,
+          skills: options.skillSummaries ? { skills: options.skillSummaries } : undefined,
+        })}
       >
         <QueryClientProvider client={queryClient}>
           <AppI18nProvider>{children}</AppI18nProvider>
@@ -62,7 +69,33 @@ describe('SkillSettingsPage', () => {
   })
 
   it('renders the plugins tab alongside skills, tools, and MCP', async () => {
-    renderSkillSettingsPage()
+    renderSkillSettingsPage({
+      runtimeTools: {
+        generation: 7,
+        tools: [
+          {
+            name: 'MiniMaxTextToImage',
+            displayName: 'MiniMax text to image',
+            description: 'Generate images with MiniMax.',
+            category: 'builtin',
+            group: 'network',
+            groupLabel: 'Network',
+            originKind: 'builtin',
+            originId: null,
+            access: 'mutating',
+            executionChannel: 'httpBroker',
+            requiredCapabilities: ['provider_credential_resolver'],
+            deferPolicy: 'alwaysLoad',
+            longRunning: true,
+            serviceBinding: {
+              providerId: 'minimax',
+              operationId: 'minimax.image_generation',
+              routeKind: 'imageGeneration',
+            },
+          },
+        ],
+      },
+    })
 
     expect(screen.getByRole('tab', { name: '技能' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: '工具' })).toBeInTheDocument()
@@ -72,22 +105,90 @@ describe('SkillSettingsPage', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: '插件' }))
 
     expect(await screen.findByRole('heading', { name: '插件' })).toBeInTheDocument()
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '工具' }))
+
+    expect(await screen.findByRole('heading', { name: '运行时工具' })).toBeInTheDocument()
+    expect(await screen.findByText('MiniMaxTextToImage')).toBeInTheDocument()
+  })
+
+  it('localizes known runtime tool group labels', async () => {
+    renderSkillSettingsPage({
+      runtimeTools: {
+        generation: 8,
+        tools: [
+          {
+            name: 'FileRead',
+            displayName: 'File read',
+            description: 'Read a workspace file.',
+            category: 'builtin',
+            group: 'fileSystem',
+            groupLabel: 'File system',
+            originKind: 'builtin',
+            originId: null,
+            access: 'readOnly',
+            executionChannel: 'directAuthorizedRust',
+            requiredCapabilities: [],
+            deferPolicy: 'alwaysLoad',
+            longRunning: false,
+            serviceBinding: null,
+          },
+        ],
+      },
+    })
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '工具' }))
+
+    expect(await screen.findByText('文件系统')).toBeInTheDocument()
+    expect(screen.queryByText('File system')).not.toBeInTheDocument()
+  })
+
+  it('falls back to backend labels for custom runtime tool groups', async () => {
+    renderSkillSettingsPage({
+      runtimeTools: {
+        generation: 9,
+        tools: [
+          {
+            name: 'custom_tool',
+            displayName: 'Custom tool',
+            description: 'Runs a custom workflow.',
+            category: 'custom',
+            group: 'teamWorkflow',
+            groupLabel: 'Team workflow',
+            originKind: 'custom',
+            originId: null,
+            access: 'mutating',
+            executionChannel: 'directAuthorizedRust',
+            requiredCapabilities: [],
+            deferPolicy: 'alwaysLoad',
+            longRunning: false,
+            serviceBinding: null,
+          },
+        ],
+      },
+    })
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '工具' }))
+
+    expect(await screen.findByText('Team workflow')).toBeInTheDocument()
   })
 
   it('jumps from a plugin-provided skill to plugin details', async () => {
-    renderSkillSettingsPage([
-      {
-        description: 'Formats workspace files.',
-        enabled: true,
-        id: 'format-file',
-        manageable: false,
-        name: 'format-file',
-        sourceKind: 'plugin',
-        sourcePluginId: 'formatter@1.0.0',
-        status: 'ready',
-        tags: ['formatting'],
-      },
-    ])
+    renderSkillSettingsPage({
+      skillSummaries: [
+        {
+          description: 'Formats workspace files.',
+          enabled: true,
+          id: 'format-file',
+          manageable: false,
+          name: 'format-file',
+          sourceKind: 'plugin',
+          sourcePluginId: 'formatter@1.0.0',
+          status: 'ready',
+          tags: ['formatting'],
+        },
+      ],
+    })
 
     const card = await screen.findByText('format-file')
     fireEvent.click(

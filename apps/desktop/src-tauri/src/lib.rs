@@ -80,6 +80,7 @@ pub fn run() {
             commands::get_replay_timeline,
             commands::harness_healthcheck,
             commands::get_runtime_execution_status,
+            commands::list_runtime_tools,
             commands::import_skill,
             commands::install_plugin_from_path,
             commands::install_skill_from_catalog,

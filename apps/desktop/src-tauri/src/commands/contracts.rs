@@ -63,6 +63,40 @@ pub struct HarnessHealthcheckPayload {
     pub sdk_crate: &'static str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListRuntimeToolsResponse {
+    pub generation: u64,
+    pub tools: Vec<RuntimeToolSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeToolSummary {
+    pub name: String,
+    pub display_name: String,
+    pub description: String,
+    pub category: String,
+    pub group: String,
+    pub group_label: String,
+    pub origin_kind: String,
+    pub origin_id: Option<String>,
+    pub access: String,
+    pub execution_channel: String,
+    pub required_capabilities: Vec<String>,
+    pub defer_policy: String,
+    pub long_running: bool,
+    pub service_binding: Option<RuntimeToolServiceBindingSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeToolServiceBindingSummary {
+    pub provider_id: String,
+    pub operation_id: String,
+    pub route_kind: String,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSettingsRequest {

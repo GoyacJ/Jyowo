@@ -12,7 +12,7 @@ import {
   Upload,
   Wrench,
 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -25,10 +25,12 @@ import {
   importSkill,
   installSkillFromCatalog,
   listenSkillCatalogInstallProgress,
+  listRuntimeTools,
   listSkillCatalogEntries,
   listSkillCatalogInstallTasks,
   listSkillCatalogSources,
   listSkills,
+  type RuntimeToolSummary,
   type SkillCatalogEntry,
   type SkillCatalogInstallProgressPayload,
   type SkillCatalogInstallTask,
@@ -57,33 +59,6 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/shar
 
 import { MCPManager } from './MCPManager'
 import { type PluginOpenRequest, PluginsManager } from './PluginsManager'
-
-type BuiltinTool = {
-  name: string
-  displayName: string
-  group: string
-  access: 'readOnly' | 'mutating' | 'destructive'
-}
-
-const BUILTIN_TOOLS: BuiltinTool[] = [
-  { name: 'FileRead', displayName: 'File read', group: 'fileSystem', access: 'readOnly' },
-  { name: 'FileEdit', displayName: 'File edit', group: 'fileSystem', access: 'destructive' },
-  { name: 'FileWrite', displayName: 'File write', group: 'fileSystem', access: 'destructive' },
-  { name: 'ListDir', displayName: 'List directory', group: 'fileSystem', access: 'readOnly' },
-  { name: 'Grep', displayName: 'Grep', group: 'search', access: 'readOnly' },
-  { name: 'Glob', displayName: 'Glob', group: 'search', access: 'readOnly' },
-  { name: 'ReadBlob', displayName: 'Read blob', group: 'meta', access: 'readOnly' },
-  { name: 'Bash', displayName: 'Bash', group: 'shell', access: 'destructive' },
-  { name: 'WebFetch', displayName: 'Web fetch', group: 'network', access: 'readOnly' },
-  { name: 'WebSearch', displayName: 'Web search', group: 'network', access: 'readOnly' },
-  { name: 'Clarify', displayName: 'Clarify', group: 'clarification', access: 'mutating' },
-  { name: 'SendMessage', displayName: 'Send message', group: 'network', access: 'mutating' },
-  { name: 'Todo', displayName: 'Todo', group: 'memory', access: 'mutating' },
-  { name: 'TaskStop', displayName: 'Task stop', group: 'agent', access: 'mutating' },
-  { name: 'skills_list', displayName: 'List skills', group: 'meta', access: 'readOnly' },
-  { name: 'skills_view', displayName: 'View skill', group: 'meta', access: 'readOnly' },
-  { name: 'skills_invoke', displayName: 'Invoke skill', group: 'meta', access: 'readOnly' },
-]
 
 const skillQueryKeys = {
   all: ['skills'] as const,
@@ -470,7 +445,7 @@ export function SkillSettingsPage() {
             <SkillsManager onOpenPlugin={openPlugin} />
           </TabsContent>
           <TabsContent className="space-y-5 pt-3" value="tools">
-            <BuiltinToolsList />
+            <RuntimeToolsList />
           </TabsContent>
           <TabsContent className="space-y-5 pt-3" value="mcp">
             <MCPManager onOpenPlugin={openPlugin} />
@@ -1769,8 +1744,41 @@ function SkillDetailPanel({
   )
 }
 
-export function BuiltinToolsList() {
+export function RuntimeToolsList() {
   const { t } = useTranslation('skills')
+  const commandClient = useCommandClient()
+  const [query, setQuery] = useState('')
+  const toolsQuery = useQuery({
+    queryKey: ['runtime-tools'],
+    queryFn: () => listRuntimeTools(commandClient),
+  })
+  const tools = toolsQuery.data?.tools ?? []
+  const normalizedQuery = query.trim().toLowerCase()
+  const groupLabelForTool = useCallback(
+    (tool: RuntimeToolSummary) =>
+      t(`tools.groups.${tool.group}`, { defaultValue: tool.groupLabel }),
+    [t],
+  )
+  const filteredTools = useMemo(() => {
+    if (!normalizedQuery) {
+      return tools
+    }
+    return tools.filter((tool) =>
+      [
+        tool.name,
+        tool.displayName,
+        tool.description,
+        tool.group,
+        groupLabelForTool(tool),
+        tool.originKind,
+        tool.originId ?? '',
+        tool.executionChannel,
+      ]
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedQuery),
+    )
+  }, [groupLabelForTool, normalizedQuery, tools])
 
   return (
     <section className="rounded-md border border-border bg-surface">
@@ -1785,52 +1793,89 @@ export function BuiltinToolsList() {
           </div>
         </div>
         <Badge className="mt-0.5" variant="secondary">
-          {t('tools.count', { count: BUILTIN_TOOLS.length })}
+          {t('tools.count', { count: tools.length })}
         </Badge>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[720px] border-collapse text-left text-sm">
-          <thead className="bg-background text-muted-foreground">
-            <tr className="border-border border-b">
-              <th className="px-5 py-3 font-medium">{t('tools.columns.tool')}</th>
-              <th className="px-5 py-3 font-medium">{t('tools.columns.group')}</th>
-              <th className="px-5 py-3 font-medium">{t('tools.columns.access')}</th>
-              <th className="px-5 py-3 font-medium">{t('tools.columns.description')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {BUILTIN_TOOLS.map((tool) => (
-              <tr className="border-border border-b last:border-b-0" key={tool.name}>
-                <td className="px-5 py-3 align-top">
-                  <div className="font-medium text-foreground">{tool.displayName}</div>
-                  {tool.name !== tool.displayName ? (
-                    <div className="mt-0.5 font-mono text-muted-foreground text-xs">
-                      {tool.name}
-                    </div>
-                  ) : null}
-                </td>
-                <td className="px-5 py-3 align-top text-muted-foreground">
-                  {t(`tools.groups.${tool.group}`)}
-                </td>
-                <td className="px-5 py-3 align-top">
-                  <Badge variant={accessBadgeVariant(tool.access)}>
-                    {t(`tools.access.${tool.access}`)}
-                  </Badge>
-                </td>
-                <td className="max-w-md px-5 py-3 align-top text-muted-foreground">
-                  {t(`tools.items.${tool.name}.description`)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="border-border border-b p-4">
+        <div className="relative">
+          <Search className="-translate-y-1/2 pointer-events-none absolute top-1/2 left-3 size-4 text-muted-foreground" />
+          <Input
+            aria-label={t('tools.searchLabel')}
+            className="pl-9"
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={t('tools.searchPlaceholder')}
+            value={query}
+          />
+        </div>
       </div>
+
+      {toolsQuery.isLoading ? (
+        <p className="p-5 text-muted-foreground text-sm">{t('tools.loading')}</p>
+      ) : toolsQuery.isError ? (
+        <p className="p-5 text-destructive text-sm">{t('tools.error')}</p>
+      ) : filteredTools.length === 0 ? (
+        <p className="p-5 text-muted-foreground text-sm">{t('tools.empty')}</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[960px] border-collapse text-left text-sm">
+            <thead className="bg-background text-muted-foreground">
+              <tr className="border-border border-b">
+                <th className="px-5 py-3 font-medium">{t('tools.columns.tool')}</th>
+                <th className="px-5 py-3 font-medium">{t('tools.columns.group')}</th>
+                <th className="px-5 py-3 font-medium">{t('tools.columns.origin')}</th>
+                <th className="px-5 py-3 font-medium">{t('tools.columns.access')}</th>
+                <th className="px-5 py-3 font-medium">{t('tools.columns.execution')}</th>
+                <th className="px-5 py-3 font-medium">{t('tools.columns.description')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredTools.map((tool) => {
+                const groupLabel = groupLabelForTool(tool)
+                return (
+                  <tr className="border-border border-b last:border-b-0" key={tool.name}>
+                    <td className="px-5 py-3 align-top">
+                      <div className="font-medium text-foreground">{tool.displayName}</div>
+                      {tool.name !== tool.displayName ? (
+                        <div className="mt-0.5 font-mono text-muted-foreground text-xs">
+                          {tool.name}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td className="px-5 py-3 align-top text-muted-foreground">{groupLabel}</td>
+                    <td className="px-5 py-3 align-top">
+                      <div className="text-muted-foreground">
+                        {t(`tools.origin.${tool.originKind}`)}
+                      </div>
+                      {tool.originId ? (
+                        <div className="mt-0.5 max-w-40 truncate font-mono text-muted-foreground text-xs">
+                          {tool.originId}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td className="px-5 py-3 align-top">
+                      <Badge variant={accessBadgeVariant(tool.access)}>
+                        {t(`tools.access.${tool.access}`)}
+                      </Badge>
+                    </td>
+                    <td className="px-5 py-3 align-top text-muted-foreground">
+                      {t(`tools.execution.${tool.executionChannel}`)}
+                    </td>
+                    <td className="max-w-md px-5 py-3 align-top text-muted-foreground">
+                      {tool.description}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </section>
   )
 }
 
-function accessBadgeVariant(access: BuiltinTool['access']) {
+function accessBadgeVariant(access: RuntimeToolSummary['access']) {
   if (access === 'destructive') {
     return 'destructive'
   }
