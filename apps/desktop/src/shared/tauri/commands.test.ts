@@ -276,6 +276,7 @@ import {
   getMemoryRecallTrace,
   getMemorySettings,
   getModelRequestPreview,
+  getModelSettingsPage,
   getModelUsageSummary,
   getPluginDetail,
   getProviderConfigApiKey,
@@ -326,6 +327,7 @@ import {
   parseAgentToolPolicy,
   pauseBackgroundAgent,
   probeProviderConfig,
+  refreshModelProviderCatalog,
   refreshOfficialQuota,
   rejectMemoryCandidate,
   reloadPlugin,
@@ -3962,6 +3964,115 @@ describe('CommandClient', () => {
     const client = createInvokeCommandClient(invoke)
 
     await expect(listModelProviderCatalog(client)).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('validates model settings page and explicit catalog refresh payloads', async () => {
+    const catalog = {
+      providers: [
+        {
+          defaultBaseUrl: 'https://api.openai.com',
+          displayName: 'OpenAI',
+          models: [openAiModelDescriptor],
+          providerId: 'openai',
+          runtimeCapability: {
+            authScheme: 'bearer',
+            baseUrlRegions: [
+              { id: 'default', label: 'Default', baseUrl: 'https://api.openai.com' },
+            ],
+            supportsLiveValidation: true,
+            supportsStreamingValidation: true,
+            secretRevealSupported: true,
+          },
+          serviceCapabilities: [],
+          sourceUrl: 'https://platform.openai.com/docs/models',
+          verifiedDate: '2026-06-21',
+        },
+      ],
+    }
+    const usageTotal = {
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costMicros: 0,
+      inputTokens: 1,
+      outputTokens: 2,
+      toolCalls: 0,
+    }
+    const usageWindow = {
+      period: 'today',
+      periodStart: '2026-06-30T00:00:00Z',
+      periodEnd: '2026-06-30T12:00:00Z',
+      total: usageTotal,
+      byModel: [],
+    }
+    const providerSettings = {
+      defaultConfigId: 'openai',
+      selectionScope: 'global',
+      configs: [
+        {
+          displayName: 'OpenAI',
+          hasApiKey: true,
+          hasOfficialQuotaApiKey: false,
+          id: 'openai',
+          isDefault: true,
+          modelDescriptor: openAiModelDescriptor,
+          modelId: 'gpt-5.4-mini',
+          protocol: 'responses',
+          providerId: 'openai',
+        },
+      ],
+    }
+    const pagePayload = {
+      catalog,
+      catalogSnapshot: {
+        source: 'snapshot',
+        lastSuccessfulRefreshAt: '2026-06-30T12:00:00Z',
+        lastAttemptAt: '2026-06-30T12:00:00Z',
+      },
+      providerSettings,
+      probeSnapshots: { status: 'ready', data: { snapshots: [] } },
+      usageSummary: {
+        status: 'ready',
+        data: {
+          timezoneId: 'UTC',
+          timezoneOffsetMinutes: 0,
+          today: usageWindow,
+          monthToDate: { ...usageWindow, period: 'month_to_date' },
+          allTime: {
+            ...usageWindow,
+            period: 'all_time',
+            periodStart: undefined,
+            periodEnd: undefined,
+          },
+          generatedAt: '2026-06-30T12:00:00Z',
+        },
+      },
+      quotaSnapshots: { status: 'error', safeMessage: 'Quota unavailable' },
+      capabilityRoutes: { status: 'ready', data: { version: 1, routes: [] } },
+      capabilityRouteOptions: { status: 'rebuilding', safeMessage: 'Routes rebuilding' },
+      generatedAt: '2026-06-30T12:00:00Z',
+    }
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'refresh_model_provider_catalog') {
+        return {
+          catalog,
+          catalogSnapshot: {
+            source: 'snapshot',
+            lastSuccessfulRefreshAt: '2026-06-30T12:00:00Z',
+            lastAttemptAt: '2026-06-30T12:00:00Z',
+          },
+        }
+      }
+      return pagePayload
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(getModelSettingsPage(client)).resolves.toEqual(pagePayload)
+    await expect(refreshModelProviderCatalog(client)).resolves.toHaveProperty(
+      'catalogSnapshot.source',
+      'snapshot',
+    )
+    expect(invoke).toHaveBeenCalledWith('get_model_settings_page')
+    expect(invoke).toHaveBeenCalledWith('refresh_model_provider_catalog')
   })
 
   it('rejects provider configs without model descriptors', async () => {

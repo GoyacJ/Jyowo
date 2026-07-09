@@ -5,7 +5,8 @@ use harness_contracts::{
     Event, ModelRef, NoopRedactor, SessionId, TenantId, UsageAccumulatedEvent, UsageSnapshot,
 };
 use jyowo_desktop_shell::commands::{
-    collect_persisted_usage_events, get_model_usage_summary_with_runtime_state,
+    collect_persisted_usage_events, get_model_settings_page_with_runtime_state,
+    get_model_usage_summary_with_runtime_state, project_usage_events_into_rollup_for_test,
 };
 use jyowo_harness_sdk::ext::EventStore;
 use jyowo_harness_sdk::testing::InMemoryEventStore;
@@ -112,4 +113,72 @@ async fn collect_persisted_usage_events_reads_all_tenant_events() {
             .sum::<u64>(),
         8
     );
+}
+
+#[tokio::test]
+async fn model_settings_page_reads_usage_from_rollup_without_harness_scan() {
+    let workspace = super::unique_workspace("model-settings-page-rollup");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state =
+        jyowo_desktop_shell::commands::DesktopRuntimeState::with_workspace_for_test(workspace)
+            .unwrap();
+    let model = ModelRef {
+        provider_id: "openai".to_owned(),
+        model_id: "gpt-4.1".to_owned(),
+    };
+    project_usage_events_into_rollup_for_test(
+        &state,
+        &[match usage_event(model, 17, false) {
+            Event::UsageAccumulated(event) => event,
+            _ => unreachable!(),
+        }],
+    )
+    .expect("rollup seed should succeed");
+
+    let page = get_model_settings_page_with_runtime_state(&state)
+        .await
+        .expect("page read should succeed without active harness");
+
+    assert_eq!(page.usage_summary.status, "ready");
+    let usage = page
+        .usage_summary
+        .data
+        .expect("ready usage slice should include data");
+    assert_eq!(usage.all_time.total.input_tokens, 17);
+}
+
+#[tokio::test]
+async fn projected_usage_rollup_ignores_diagnostic_events_incrementally() {
+    let workspace = super::unique_workspace("model-usage-rollup-incremental");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state =
+        jyowo_desktop_shell::commands::DesktopRuntimeState::with_workspace_for_test(workspace)
+            .unwrap();
+    let model = ModelRef {
+        provider_id: "openai".to_owned(),
+        model_id: "gpt-4.1".to_owned(),
+    };
+    let events = [
+        match usage_event(model.clone(), 11, false) {
+            Event::UsageAccumulated(event) => event,
+            _ => unreachable!(),
+        },
+        match usage_event(model, 99, true) {
+            Event::UsageAccumulated(event) => event,
+            _ => unreachable!(),
+        },
+    ];
+
+    project_usage_events_into_rollup_for_test(&state, &events).expect("rollup update should work");
+    let page = get_model_settings_page_with_runtime_state(&state)
+        .await
+        .expect("page read should succeed");
+    let usage = page
+        .usage_summary
+        .data
+        .expect("ready usage slice should include data");
+
+    assert_eq!(usage.all_time.total.input_tokens, 11);
+    assert_eq!(usage.all_time.by_model.len(), 1);
+    assert_eq!(usage.all_time.by_model[0].key, "openai/gpt-4.1");
 }

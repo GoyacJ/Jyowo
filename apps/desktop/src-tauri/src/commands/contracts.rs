@@ -2738,6 +2738,102 @@ impl From<ModelUsageSummary> for GetModelUsageSummaryResponse {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSettingsPageSlice<T> {
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safe_message: Option<String>,
+}
+
+impl<T> ModelSettingsPageSlice<T> {
+    pub fn ready(data: T) -> Self {
+        Self {
+            status: "ready",
+            data: Some(data),
+            safe_message: None,
+        }
+    }
+
+    pub fn error(message: impl Into<String>) -> Self {
+        Self {
+            status: "error",
+            data: None,
+            safe_message: Some(message.into()),
+        }
+    }
+
+    pub fn rebuilding(message: impl Into<String>) -> Self {
+        Self {
+            status: "rebuilding",
+            data: None,
+            safe_message: Some(message.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSettingsCatalogSnapshotPayload {
+    pub source: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_successful_refresh_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_attempt_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSettingsPageResponse {
+    pub catalog: ModelProviderCatalogResponse,
+    pub catalog_snapshot: ModelSettingsCatalogSnapshotPayload,
+    pub provider_settings: ListProviderSettingsResponse,
+    pub probe_snapshots: ModelSettingsPageSlice<ListProviderProbeSnapshotsResponse>,
+    pub usage_summary: ModelSettingsPageSlice<GetModelUsageSummaryResponse>,
+    pub quota_snapshots: ModelSettingsPageSlice<ListOfficialQuotaSnapshotsResponse>,
+    pub capability_routes: ModelSettingsPageSlice<ListProviderCapabilityRoutesResponse>,
+    pub capability_route_options:
+        ModelSettingsPageSlice<ListProviderCapabilityRouteOptionsResponse>,
+    pub generated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshModelProviderCatalogResponse {
+    pub catalog: ModelProviderCatalogResponse,
+    pub catalog_snapshot: ModelSettingsCatalogSnapshotPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderCatalogSnapshotRecord {
+    pub openrouter_models_api_json: serde_json::Value,
+    pub last_successful_refresh_at: chrono::DateTime<chrono::Utc>,
+    pub last_attempt_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub trait ProviderCatalogSnapshotStore: Send + Sync {
+    fn load_record(&self) -> Result<Option<ProviderCatalogSnapshotRecord>, CommandErrorPayload>;
+    fn save_record(
+        &self,
+        record: &ProviderCatalogSnapshotRecord,
+    ) -> Result<(), CommandErrorPayload>;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelUsageRollupRecord {
+    pub schema_version: u32,
+    pub dirty: bool,
+    pub summary: ModelUsageSummary,
+}
+
+pub trait ModelUsageRollupStore: Send + Sync {
+    fn load_record(&self) -> Result<Option<ModelUsageRollupRecord>, CommandErrorPayload>;
+    fn save_record(&self, record: &ModelUsageRollupRecord) -> Result<(), CommandErrorPayload>;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderDiagnosticsRecord {
     pub snapshots: Vec<ProviderProbeSnapshot>,

@@ -2326,6 +2326,77 @@ impl super::ProviderQuotaCacheStore for DesktopProviderQuotaCacheStore {
 }
 
 #[derive(Clone)]
+pub struct DesktopProviderCatalogSnapshotStore {
+    runtime_root: PathBuf,
+}
+
+impl DesktopProviderCatalogSnapshotStore {
+    pub fn new_runtime_root(runtime_root: PathBuf) -> Self {
+        Self { runtime_root }
+    }
+
+    fn snapshot_path(&self) -> PathBuf {
+        self.runtime_root.join("provider-catalog-snapshot.json")
+    }
+}
+
+impl ProviderCatalogSnapshotStore for DesktopProviderCatalogSnapshotStore {
+    fn load_record(&self) -> Result<Option<ProviderCatalogSnapshotRecord>, CommandErrorPayload> {
+        read_json_file_or_remove_invalid(&self.snapshot_path(), "provider catalog snapshot")
+    }
+
+    fn save_record(
+        &self,
+        record: &ProviderCatalogSnapshotRecord,
+    ) -> Result<(), CommandErrorPayload> {
+        let bytes = serde_json::to_vec_pretty(record).map_err(|error| {
+            runtime_operation_failed(format!(
+                "provider catalog snapshot serialization failed: {error}"
+            ))
+        })?;
+        write_atomic_runtime_file(
+            &self.snapshot_path(),
+            "provider-catalog-snapshot.json",
+            "provider catalog snapshot",
+            &bytes,
+        )
+    }
+}
+
+#[derive(Clone)]
+pub struct DesktopModelUsageRollupStore {
+    runtime_root: PathBuf,
+}
+
+impl DesktopModelUsageRollupStore {
+    pub fn new_runtime_root(runtime_root: PathBuf) -> Self {
+        Self { runtime_root }
+    }
+
+    fn rollup_path(&self) -> PathBuf {
+        self.runtime_root.join("model-usage-rollup.json")
+    }
+}
+
+impl ModelUsageRollupStore for DesktopModelUsageRollupStore {
+    fn load_record(&self) -> Result<Option<ModelUsageRollupRecord>, CommandErrorPayload> {
+        read_json_file_or_remove_invalid(&self.rollup_path(), "model usage rollup")
+    }
+
+    fn save_record(&self, record: &ModelUsageRollupRecord) -> Result<(), CommandErrorPayload> {
+        let bytes = serde_json::to_vec_pretty(record).map_err(|error| {
+            runtime_operation_failed(format!("model usage rollup serialization failed: {error}"))
+        })?;
+        write_atomic_runtime_file(
+            &self.rollup_path(),
+            "model-usage-rollup.json",
+            "model usage rollup",
+            &bytes,
+        )
+    }
+}
+
+#[derive(Clone)]
 pub struct DesktopRuntimeState {
     pub(crate) active_runtime: Arc<RwLock<DesktopActiveRuntime>>,
     pub(crate) automation_lock: Arc<tokio::sync::Mutex<()>>,
@@ -2352,6 +2423,8 @@ pub struct DesktopRuntimeState {
     pub(crate) provider_diagnostics_store: Arc<dyn ProviderDiagnosticsStore>,
     pub(crate) provider_probe_flights: ProviderProbeFlights,
     pub(crate) provider_quota_cache_store: Arc<dyn ProviderQuotaCacheStore>,
+    pub(crate) provider_catalog_snapshot_store: Arc<dyn ProviderCatalogSnapshotStore>,
+    pub(crate) model_usage_rollup_store: Arc<dyn ModelUsageRollupStore>,
     pub(crate) official_quota_flights: OfficialQuotaFlights,
     pub(crate) account_usage_registry: Arc<ProviderAccountUsageRegistry>,
     pub(crate) provider_capability_route_store: Arc<dyn ProviderCapabilityRouteStore>,

@@ -708,6 +708,8 @@ export const zhCN = {
         refreshingQuota: '正在刷新 {{name}} 的配额',
         refreshQuotaShort: '刷新官方配额',
         refreshingQuotaShort: '正在刷新配额',
+        refreshCatalog: '刷新目录',
+        refreshingCatalog: '正在刷新目录',
         details: '查看 {{name}} 的详情',
         detailsShort: '查看详情',
         edit: '编辑 {{name}}',

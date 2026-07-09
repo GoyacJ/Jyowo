@@ -710,6 +710,8 @@ export const enUS = {
         refreshingQuota: 'Refreshing quota for {{name}}',
         refreshQuotaShort: 'Refresh official quota',
         refreshingQuotaShort: 'Refreshing quota',
+        refreshCatalog: 'Refresh catalog',
+        refreshingCatalog: 'Refreshing catalog',
         details: 'View details for {{name}}',
         detailsShort: 'View details',
         edit: 'Edit {{name}}',

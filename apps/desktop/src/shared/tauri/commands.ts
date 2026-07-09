@@ -2465,6 +2465,60 @@ const listProviderCapabilityRouteOptionsResponseSchema = z
   })
   .strict()
 
+const modelSettingsCatalogSnapshotSchema = z
+  .object({
+    source: z.enum(['bundled', 'snapshot']),
+    lastSuccessfulRefreshAt: isoDateTimeSchema.optional(),
+    lastAttemptAt: isoDateTimeSchema.optional(),
+  })
+  .strict()
+
+function modelSettingsPageSliceSchema<T extends z.ZodTypeAny>(dataSchema: T) {
+  return z.discriminatedUnion('status', [
+    z
+      .object({
+        status: z.literal('ready'),
+        data: dataSchema,
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal('rebuilding'),
+        safeMessage: z.string().min(1),
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal('error'),
+        safeMessage: z.string().min(1),
+      })
+      .strict(),
+  ])
+}
+
+const modelSettingsPageResponseSchema = z
+  .object({
+    catalog: modelProviderCatalogResponseSchema,
+    catalogSnapshot: modelSettingsCatalogSnapshotSchema,
+    providerSettings: listProviderSettingsResponseSchema,
+    probeSnapshots: modelSettingsPageSliceSchema(listProviderProbeSnapshotsResponseSchema),
+    usageSummary: modelSettingsPageSliceSchema(getModelUsageSummaryResponseSchema),
+    quotaSnapshots: modelSettingsPageSliceSchema(listOfficialQuotaSnapshotsResponseSchema),
+    capabilityRoutes: modelSettingsPageSliceSchema(listProviderCapabilityRoutesResponseSchema),
+    capabilityRouteOptions: modelSettingsPageSliceSchema(
+      listProviderCapabilityRouteOptionsResponseSchema,
+    ),
+    generatedAt: isoDateTimeSchema,
+  })
+  .strict()
+
+const refreshModelProviderCatalogResponseSchema = z
+  .object({
+    catalog: modelProviderCatalogResponseSchema,
+    catalogSnapshot: modelSettingsCatalogSnapshotSchema,
+  })
+  .strict()
+
 const saveProviderCapabilityRouteRequestSchema = z
   .object({
     route: providerCapabilityRouteSchema,
@@ -4296,6 +4350,10 @@ export type ListProviderCapabilityRoutesResponse = z.infer<
 export type ListProviderCapabilityRouteOptionsResponse = z.infer<
   typeof listProviderCapabilityRouteOptionsResponseSchema
 >
+export type ModelSettingsPageResponse = z.infer<typeof modelSettingsPageResponseSchema>
+export type RefreshModelProviderCatalogResponse = z.infer<
+  typeof refreshModelProviderCatalogResponseSchema
+>
 export type SaveProviderCapabilityRouteRequest = z.infer<
   typeof saveProviderCapabilityRouteRequestSchema
 >
@@ -4475,7 +4533,9 @@ export interface CommandClient {
   getAppInfo: () => Promise<AppInfo>
   getHarnessHealthcheck: () => Promise<HarnessHealthcheck>
   getRuntimeExecutionStatus: () => Promise<RuntimeExecutionStatus>
+  getModelSettingsPage: () => Promise<ModelSettingsPageResponse>
   getModelUsageSummary: () => Promise<GetModelUsageSummaryResponse>
+  refreshModelProviderCatalog: () => Promise<RefreshModelProviderCatalogResponse>
   listOfficialQuotaSnapshots: () => Promise<ListOfficialQuotaSnapshotsResponse>
   getMemoryItem: (id: string) => Promise<GetMemoryItemResponse>
   getMemorySettings: (request?: GetMemorySettingsRequest) => Promise<GetMemorySettingsResponse>
@@ -4931,9 +4991,17 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'get_runtime_execution_status'
       return parsePayload(command, runtimeExecutionStatusSchema, await invoke(command))
     },
+    async getModelSettingsPage() {
+      const command = 'get_model_settings_page'
+      return parsePayload(command, modelSettingsPageResponseSchema, await invoke(command))
+    },
     async getModelUsageSummary() {
       const command = 'get_model_usage_summary'
       return parsePayload(command, getModelUsageSummaryResponseSchema, await invoke(command))
+    },
+    async refreshModelProviderCatalog() {
+      const command = 'refresh_model_provider_catalog'
+      return parsePayload(command, refreshModelProviderCatalogResponseSchema, await invoke(command))
     },
     async listOfficialQuotaSnapshots() {
       const command = 'list_official_quota_snapshots'
@@ -5709,6 +5777,18 @@ export function listModelProviderCatalog(
   client: CommandClient = tauriCommandClient,
 ): Promise<ModelProviderCatalogResponse> {
   return client.listModelProviderCatalog()
+}
+
+export function getModelSettingsPage(
+  client: CommandClient = tauriCommandClient,
+): Promise<ModelSettingsPageResponse> {
+  return client.getModelSettingsPage()
+}
+
+export function refreshModelProviderCatalog(
+  client: CommandClient = tauriCommandClient,
+): Promise<RefreshModelProviderCatalogResponse> {
+  return client.refreshModelProviderCatalog()
 }
 
 export function listArtifacts(

@@ -4,15 +4,11 @@ import { useCallback, useRef, useState } from 'react'
 import {
   type DeleteProviderCapabilityRouteRequest,
   deleteProviderCapabilityRoute,
-  getModelUsageSummary,
-  listModelProviderCatalog,
-  listOfficialQuotaSnapshots,
-  listProviderCapabilityRouteOptions,
-  listProviderCapabilityRoutes,
-  listProviderProbeSnapshots,
-  listProviderSettings,
+  getModelSettingsPage,
+  type ModelSettingsPageResponse,
   type ProviderSettingsRequest,
   probeProviderConfig,
+  refreshModelProviderCatalog,
   refreshOfficialQuota,
   type SaveProviderCapabilityRouteRequest,
   saveProviderCapabilityRoute,
@@ -42,81 +38,15 @@ export class ModelSettingsMutationBlockedError extends Error {
 
 const modelSettingsQueryKeys = {
   all: ['model-settings'] as const,
-  catalog: () => [...modelSettingsQueryKeys.all, 'catalog'] as const,
-  providerSettings: () => [...modelSettingsQueryKeys.all, 'provider-settings'] as const,
-  probeSnapshots: () => [...modelSettingsQueryKeys.all, 'probe-snapshots'] as const,
-  usageSummary: () => [...modelSettingsQueryKeys.all, 'usage-summary'] as const,
-  quotaSnapshots: () => [...modelSettingsQueryKeys.all, 'quota-snapshots'] as const,
-  capabilityRoutes: () => [...modelSettingsQueryKeys.all, 'capability-routes'] as const,
-  capabilityRouteOptions: () =>
-    [...modelSettingsQueryKeys.all, 'capability-route-options'] as const,
+  page: () => [...modelSettingsQueryKeys.all, 'page'] as const,
 }
 
-function useModelProviderCatalog() {
+function useModelSettingsPageQuery() {
   const commandClient = useCommandClient()
 
   return useQuery({
-    queryKey: modelSettingsQueryKeys.catalog(),
-    queryFn: () => listModelProviderCatalog(commandClient),
-  })
-}
-
-function useProviderSettings() {
-  const commandClient = useCommandClient()
-
-  return useQuery({
-    queryKey: modelSettingsQueryKeys.providerSettings(),
-    queryFn: () => listProviderSettings(commandClient),
-  })
-}
-
-function useProviderProbeSnapshots(enabled: boolean) {
-  const commandClient = useCommandClient()
-
-  return useQuery({
-    enabled,
-    queryKey: modelSettingsQueryKeys.probeSnapshots(),
-    queryFn: () => listProviderProbeSnapshots(commandClient),
-  })
-}
-
-function useModelUsageSummary(enabled: boolean) {
-  const commandClient = useCommandClient()
-
-  return useQuery({
-    enabled,
-    queryKey: modelSettingsQueryKeys.usageSummary(),
-    queryFn: () => getModelUsageSummary(commandClient),
-  })
-}
-
-function useOfficialQuotaSnapshots(enabled: boolean) {
-  const commandClient = useCommandClient()
-
-  return useQuery({
-    enabled,
-    queryKey: modelSettingsQueryKeys.quotaSnapshots(),
-    queryFn: () => listOfficialQuotaSnapshots(commandClient),
-  })
-}
-
-function useProviderCapabilityRoutes(enabled: boolean) {
-  const commandClient = useCommandClient()
-
-  return useQuery({
-    enabled,
-    queryKey: modelSettingsQueryKeys.capabilityRoutes(),
-    queryFn: () => listProviderCapabilityRoutes(commandClient),
-  })
-}
-
-function useProviderCapabilityRouteOptions(enabled: boolean) {
-  const commandClient = useCommandClient()
-
-  return useQuery({
-    enabled,
-    queryKey: modelSettingsQueryKeys.capabilityRouteOptions(),
-    queryFn: () => listProviderCapabilityRouteOptions(commandClient),
+    queryKey: modelSettingsQueryKeys.page(),
+    queryFn: () => getModelSettingsPage(commandClient),
   })
 }
 
@@ -142,34 +72,68 @@ function toQuerySlice<T>(query: {
   return { status: 'ready', data: query.data }
 }
 
+function fromPageSlice<T>(
+  slice: ModelSettingsPageResponse[keyof Pick<
+    ModelSettingsPageResponse,
+    | 'probeSnapshots'
+    | 'usageSummary'
+    | 'quotaSnapshots'
+    | 'capabilityRoutes'
+    | 'capabilityRouteOptions'
+  >],
+): QuerySlice<T> {
+  if (slice.status === 'ready') {
+    return { status: 'ready', data: slice.data as T }
+  }
+  if (slice.status === 'error') {
+    return { status: 'error', safeMessage: slice.safeMessage }
+  }
+  return { status: 'loading' }
+}
+
+function inputsFromPageQuery(
+  query: ReturnType<typeof useModelSettingsPageQuery>,
+): ModelSettingsQueryInputs {
+  const page = toQuerySlice(query)
+  if (page.status !== 'ready') {
+    return {
+      catalog: page,
+      providerSettings: page,
+      probeSnapshots: page,
+      usageSummary: page,
+      quotaSnapshots: page,
+      routes: page,
+      routeOptions: page,
+    }
+  }
+
+  return {
+    catalog: { status: 'ready', data: page.data.catalog },
+    providerSettings: { status: 'ready', data: page.data.providerSettings },
+    probeSnapshots: fromPageSlice(page.data.probeSnapshots),
+    usageSummary: fromPageSlice(page.data.usageSummary),
+    quotaSnapshots: fromPageSlice(page.data.quotaSnapshots),
+    routes: fromPageSlice(page.data.capabilityRoutes),
+    routeOptions: fromPageSlice(page.data.capabilityRouteOptions),
+  }
+}
+
 export function useModelSettingsViewModel() {
-  const catalogQuery = useModelProviderCatalog()
-  const settingsQuery = useProviderSettings()
-  const criticalQueriesReady = catalogQuery.isSuccess && settingsQuery.isSuccess
-  const probeSnapshotsQuery = useProviderProbeSnapshots(criticalQueriesReady)
-  const usageSummaryQuery = useModelUsageSummary(criticalQueriesReady)
-  const quotaSnapshotsQuery = useOfficialQuotaSnapshots(criticalQueriesReady)
-  const routesQuery = useProviderCapabilityRoutes(criticalQueriesReady)
-  const routeOptionsQuery = useProviderCapabilityRouteOptions(criticalQueriesReady)
+  const pageQuery = useModelSettingsPageQuery()
   const probeMutation = useProbeProviderConfig()
+  const catalogMutation = useRefreshModelProviderCatalog()
   const quotaMutation = useRefreshOfficialQuota()
   const routeMutation = useCapabilityRouteMutations()
   const defaultMutation = useSetDefaultProviderConfig()
 
-  const inputs: ModelSettingsQueryInputs = {
-    catalog: toQuerySlice(catalogQuery),
-    providerSettings: toQuerySlice(settingsQuery),
-    probeSnapshots: toQuerySlice(probeSnapshotsQuery),
-    usageSummary: toQuerySlice(usageSummaryQuery),
-    quotaSnapshots: toQuerySlice(quotaSnapshotsQuery),
-    routes: toQuerySlice(routesQuery),
-    routeOptions: toQuerySlice(routeOptionsQuery),
-  }
+  const inputs = inputsFromPageQuery(pageQuery)
 
   const pageState: ModelSettingsPageState = buildModelSettingsPageState(inputs)
 
   return {
     pageState,
+    refreshCatalog: catalogMutation.refreshCatalog,
+    isCatalogRefreshPending: catalogMutation.isPending,
     probeConfig: probeMutation.probeConfig,
     isProbePending: probeMutation.isPendingForConfig,
     refreshQuota: quotaMutation.refreshQuota,
@@ -180,17 +144,7 @@ export function useModelSettingsViewModel() {
     isSetDefaultPending: defaultMutation.isPendingForConfig,
     isAnySetDefaultPending: defaultMutation.isPending,
     refetchAll: async () => {
-      const refetches: Array<Promise<unknown>> = [catalogQuery.refetch(), settingsQuery.refetch()]
-      if (criticalQueriesReady) {
-        refetches.push(
-          probeSnapshotsQuery.refetch(),
-          usageSummaryQuery.refetch(),
-          quotaSnapshotsQuery.refetch(),
-          routesQuery.refetch(),
-          routeOptionsQuery.refetch(),
-        )
-      }
-      await Promise.all(refetches)
+      await pageQuery.refetch()
     },
   }
 }
@@ -233,7 +187,7 @@ function useSetDefaultProviderConfig() {
       return saveProviderSettings(payload, commandClient)
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: modelSettingsQueryKeys.providerSettings() })
+      await queryClient.invalidateQueries({ queryKey: modelSettingsQueryKeys.page() })
     },
   })
 
@@ -275,7 +229,7 @@ function useCapabilityRouteMutations() {
     mutationFn: (request: SaveProviderCapabilityRouteRequest) =>
       saveProviderCapabilityRoute(request, commandClient),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: modelSettingsQueryKeys.capabilityRoutes() })
+      await queryClient.invalidateQueries({ queryKey: modelSettingsQueryKeys.page() })
     },
   })
 
@@ -283,7 +237,7 @@ function useCapabilityRouteMutations() {
     mutationFn: (request: DeleteProviderCapabilityRouteRequest) =>
       deleteProviderCapabilityRoute(request, commandClient),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: modelSettingsQueryKeys.capabilityRoutes() })
+      await queryClient.invalidateQueries({ queryKey: modelSettingsQueryKeys.page() })
     },
   })
 
@@ -313,7 +267,7 @@ export function useProbeProviderConfig() {
       pendingConfigIdsRef.current.delete(variables.configId)
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: modelSettingsQueryKeys.probeSnapshots() })
+      await queryClient.invalidateQueries({ queryKey: modelSettingsQueryKeys.page() })
     },
   })
 
@@ -344,6 +298,23 @@ export function useProbeProviderConfig() {
   }
 }
 
+function useRefreshModelProviderCatalog() {
+  const commandClient = useCommandClient()
+  const queryClient = useQueryClient()
+
+  const mutation = useMutation({
+    mutationFn: () => refreshModelProviderCatalog(commandClient),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: modelSettingsQueryKeys.page() })
+    },
+  })
+
+  return {
+    refreshCatalog: () => mutation.mutateAsync(),
+    isPending: mutation.isPending,
+  }
+}
+
 export function useRefreshOfficialQuota() {
   const commandClient = useCommandClient()
   const queryClient = useQueryClient()
@@ -362,7 +333,7 @@ export function useRefreshOfficialQuota() {
       pendingConfigIdsRef.current.delete(variables.configId)
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: modelSettingsQueryKeys.quotaSnapshots() })
+      await queryClient.invalidateQueries({ queryKey: modelSettingsQueryKeys.page() })
     },
   })
 

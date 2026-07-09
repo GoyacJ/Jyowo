@@ -212,25 +212,25 @@ pub use contracts::{
     McpServerConfigTransportPayload, McpServerStore, McpServerSummaryPayload,
     McpServerTransportConfig, MemoryItemPayload, MemoryItemSummaryPayload, ModelCatalogEntry,
     ModelLifecyclePayload, ModelProviderCatalogEntry, ModelProviderCatalogResponse,
-    ModelRuntimeStatusPayload, OfficialQuotaScopePayload, OfficialQuotaSnapshotPayload,
-    OfficialQuotaStatusPayload, PageConversationTimelineRequest, PageConversationTimelineResponse,
-    PageConversationWorktreeDirection, PageConversationWorktreeRequest, PermissionDecision,
-    PermissionRequestedRunEventPayload, PermissionResolver, PluginSettingsRecord, PluginStore,
-    PluginStoreRecord, ProbeProviderConfigRequest, ProbeProviderConfigResponse,
-    ProviderBaseUrlRegionPayload, ProviderCapabilityRouteStore,
-    ProviderCapabilityRouteValidationToken, ProviderConfigPayload, ProviderConfigRecord,
-    ProviderDefaultsRecord, ProviderDiagnosticsStore, ProviderModelDescriptorRecord,
-    ProviderModelLifecycleRecord, ProviderModelModalityRecord, ProviderProbeErrorKindPayload,
-    ProviderProbeSnapshotPayload, ProviderProbeStatusPayload, ProviderQuotaCacheRecord,
-    ProviderQuotaCacheStore, ProviderRuntimeCapabilityPayload, ProviderServiceCapabilityPayload,
-    ProviderSettingsRecord, ProviderSettingsRequest, ProviderSettingsStore,
-    ReferenceCandidatePayload, RefreshOfficialQuotaRequest, RefreshOfficialQuotaResponse,
-    ReloadPluginRequest, ReplayTimelineRequest, ReplayTimelineResponse,
-    RequestProviderConfigApiKeyRevealRequest, RequestProviderConfigApiKeyRevealResponse,
-    ResolvePermissionRequest, ResolvePermissionResponse, RestartMcpServerRequest,
-    RestartMcpServerResponse, RunAutomationNowRequest, RunAutomationNowResponse,
-    RunEvalCaseRequest, RunEvalCaseResponse, RunEventBodyPayload, RunEventPayload,
-    SaveAgentProfileResponse, SaveAutomationRequest, SaveAutomationResponse,
+    ModelRuntimeStatusPayload, ModelSettingsPageResponse, OfficialQuotaScopePayload,
+    OfficialQuotaSnapshotPayload, OfficialQuotaStatusPayload, PageConversationTimelineRequest,
+    PageConversationTimelineResponse, PageConversationWorktreeDirection,
+    PageConversationWorktreeRequest, PermissionDecision, PermissionRequestedRunEventPayload,
+    PermissionResolver, PluginSettingsRecord, PluginStore, PluginStoreRecord,
+    ProbeProviderConfigRequest, ProbeProviderConfigResponse, ProviderBaseUrlRegionPayload,
+    ProviderCapabilityRouteStore, ProviderCapabilityRouteValidationToken, ProviderConfigPayload,
+    ProviderConfigRecord, ProviderDefaultsRecord, ProviderDiagnosticsStore,
+    ProviderModelDescriptorRecord, ProviderModelLifecycleRecord, ProviderModelModalityRecord,
+    ProviderProbeErrorKindPayload, ProviderProbeSnapshotPayload, ProviderProbeStatusPayload,
+    ProviderQuotaCacheRecord, ProviderQuotaCacheStore, ProviderRuntimeCapabilityPayload,
+    ProviderServiceCapabilityPayload, ProviderSettingsRecord, ProviderSettingsRequest,
+    ProviderSettingsStore, ReferenceCandidatePayload, RefreshModelProviderCatalogResponse,
+    RefreshOfficialQuotaRequest, RefreshOfficialQuotaResponse, ReloadPluginRequest,
+    ReplayTimelineRequest, ReplayTimelineResponse, RequestProviderConfigApiKeyRevealRequest,
+    RequestProviderConfigApiKeyRevealResponse, ResolvePermissionRequest, ResolvePermissionResponse,
+    RestartMcpServerRequest, RestartMcpServerResponse, RunAutomationNowRequest,
+    RunAutomationNowResponse, RunEvalCaseRequest, RunEvalCaseResponse, RunEventBodyPayload,
+    RunEventPayload, SaveAgentProfileResponse, SaveAutomationRequest, SaveAutomationResponse,
     SaveBrowserMcpPresetRequest, SaveBrowserMcpPresetResponse, SaveMcpServerRequest,
     SaveMcpServerResponse, SaveMcpServerTransportConfig, SaveProviderCapabilityRouteRequest,
     SaveProviderCapabilityRouteResponse, SaveProviderSettingsResponse,
@@ -300,10 +300,11 @@ pub use memory_settings::{
     update_memory_settings_with_runtime_state, update_thread_memory_settings_with_runtime_state,
 };
 pub use model_settings::{
-    collect_persisted_usage_events, get_model_usage_summary_with_runtime_state,
-    list_official_quota_snapshots_with_runtime_state,
+    collect_persisted_usage_events, get_model_settings_page_with_runtime_state,
+    get_model_usage_summary_with_runtime_state, list_official_quota_snapshots_with_runtime_state,
     list_provider_probe_snapshots_with_runtime_state, probe_provider_config_with_provider,
-    probe_provider_config_with_runtime_state, refresh_official_quota_with_runtime_state,
+    probe_provider_config_with_runtime_state, project_usage_events_into_rollup_for_test,
+    refresh_model_provider_catalog_with_runtime_state, refresh_official_quota_with_runtime_state,
 };
 pub use plugins::{
     get_plugin_detail_with_runtime_state, install_plugin_from_path_with_runtime_state,
@@ -357,9 +358,9 @@ pub use skills::{
     set_skill_enabled_with_runtime_state, start_skill_catalog_install_task_with_runtime_state,
 };
 pub use stores::{
-    DesktopAutomationStore, DesktopMcpDiagnosticStore, DesktopPluginStore,
-    DesktopProviderDiagnosticsStore, DesktopProviderQuotaCacheStore, DesktopRuntimeState,
-    DesktopSkillStore,
+    DesktopAutomationStore, DesktopMcpDiagnosticStore, DesktopModelUsageRollupStore,
+    DesktopPluginStore, DesktopProviderCatalogSnapshotStore, DesktopProviderDiagnosticsStore,
+    DesktopProviderQuotaCacheStore, DesktopRuntimeState, DesktopSkillStore,
 };
 
 #[tauri::command]
@@ -728,6 +729,22 @@ pub async fn get_model_usage_summary(
 ) -> Result<GetModelUsageSummaryResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
     model_settings::get_model_usage_summary_with_runtime_state(&*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_model_settings_page(
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ModelSettingsPageResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    model_settings::get_model_settings_page_with_runtime_state(&*runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn refresh_model_provider_catalog(
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<RefreshModelProviderCatalogResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    model_settings::refresh_model_provider_catalog_with_runtime_state(&*runtime_state).await
 }
 
 #[tauri::command(rename_all = "camelCase")]

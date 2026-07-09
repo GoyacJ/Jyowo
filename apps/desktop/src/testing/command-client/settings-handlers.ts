@@ -3,6 +3,8 @@ import type {
   DeleteProviderCapabilityRouteResponse,
   ListAutomationRunsResponse,
   ListAutomationsResponse,
+  ModelSettingsPageResponse,
+  RefreshModelProviderCatalogResponse,
   RequestProviderConfigApiKeyRevealResponse,
   RunEvalCaseResponse,
   SaveProviderCapabilityRouteResponse,
@@ -33,6 +35,7 @@ type SettingsCommandKeys =
   | 'deleteProject'
   | 'deleteProviderCapabilityRoute'
   | 'getProviderConfigApiKey'
+  | 'getModelSettingsPage'
   | 'getModelUsageSummary'
   | 'listAutomationRuns'
   | 'listAutomations'
@@ -46,6 +49,7 @@ type SettingsCommandKeys =
   | 'listProviderSettings'
   | 'moveProject'
   | 'probeProviderConfig'
+  | 'refreshModelProviderCatalog'
   | 'refreshOfficialQuota'
   | 'requestProviderConfigApiKeyReveal'
   | 'runAutomationNow'
@@ -145,6 +149,35 @@ export function createSettingsCommandHandlers(
       await wait(state.options.delayMs)
       return cloneResponse(state.options.modelUsageSummary ?? fixtureGetModelUsageSummary)
     },
+    async getModelSettingsPage() {
+      await wait(state.options.delayMs)
+      return cloneResponse(
+        state.options.modelSettingsPage ??
+          ({
+            catalog: state.options.modelProviderCatalog ?? fixtureModelProviderCatalog,
+            catalogSnapshot: { source: 'bundled' },
+            providerSettings: state.providerSettings,
+            probeSnapshots: {
+              status: 'ready',
+              data: state.options.providerProbeSnapshots ?? fixtureListProviderProbeSnapshots,
+            },
+            usageSummary: {
+              status: 'ready',
+              data: state.options.modelUsageSummary ?? fixtureGetModelUsageSummary,
+            },
+            quotaSnapshots: {
+              status: 'ready',
+              data: state.options.officialQuotaSnapshots ?? fixtureListOfficialQuotaSnapshots,
+            },
+            capabilityRoutes: { status: 'ready', data: state.providerCapabilityRoutes },
+            capabilityRouteOptions: {
+              status: 'ready',
+              data: state.providerCapabilityRouteOptions,
+            },
+            generatedAt: timestamp,
+          } satisfies ModelSettingsPageResponse),
+      )
+    },
     async listAutomationRuns(automationId) {
       await wait(state.options.delayMs)
       const runs =
@@ -202,6 +235,16 @@ export function createSettingsCommandHandlers(
     async refreshOfficialQuota() {
       await wait(state.options.delayMs)
       return cloneResponse(state.options.officialQuotaRefresh ?? fixtureRefreshOfficialQuota)
+    },
+    async refreshModelProviderCatalog() {
+      await wait(state.options.delayMs)
+      return cloneResponse(
+        state.options.modelProviderCatalogRefresh ??
+          ({
+            catalog: state.options.modelProviderCatalog ?? fixtureModelProviderCatalog,
+            catalogSnapshot: { source: 'bundled' },
+          } satisfies RefreshModelProviderCatalogResponse),
+      )
     },
     async requestProviderConfigApiKeyReveal(configId) {
       await wait(state.options.delayMs)
