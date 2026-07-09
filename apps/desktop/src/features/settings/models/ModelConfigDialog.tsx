@@ -37,6 +37,9 @@ type ModelConfigFormValues = {
   codeInterpreter: boolean
   displayName: string
   enableThinking: boolean
+  thinkingType: string
+  thinkingDisplay: string
+  cacheTtl: string
   modelId: string
   outputEffort: string
   performanceLatency: string
@@ -51,6 +54,16 @@ type ModelConfigFormValues = {
   thinkingBudget: string
   topK: string
   topP: string
+  toolChoice: string
+  toolName: string
+  metadataJson: string
+  anthropicBeta: string
+  anthropicUserProfileId: string
+  inferenceGeo: string
+  speed: string
+  fallbacksJson: string
+  contextManagementJson: string
+  anthropicAdvancedJson: string
   webExtractor: boolean
   webSearch: boolean
 }
@@ -86,6 +99,7 @@ export function ModelConfigDialog({
     [defaultProvider, providerId, providers],
   )
   const isQwen = selectedProvider?.providerId === 'qwen'
+  const isAnthropic = selectedProvider?.providerId === 'anthropic'
   const protocol = watch('protocol')
   const qwenChatWebExtractorEnabled =
     protocol !== 'chat_completions' || supportsQwenChatWebExtractor(modelId)
@@ -108,6 +122,10 @@ export function ModelConfigDialog({
     () => modelOptions.find((model) => model.modelId === modelId) ?? modelOptions[0],
     [modelId, modelOptions],
   )
+  const providerCapabilityMetadata = getAnthropicCapabilityMetadata(
+    selectedModel?.providerCapabilityMetadata,
+  )
+  const anthropicSamplingLocked = providerCapabilityMetadata?.samplingLocked === true
   const supportedParameters = useMemo(
     () => new Set(selectedModel?.supportedParameters ?? []),
     [selectedModel],
@@ -164,7 +182,15 @@ export function ModelConfigDialog({
       request.protocol = values.protocol
       request.providerDefaults = providerDefaultsFromValues(values)
     } else {
-      const providerDefaults = providerDefaultsFromValues(values)
+      let providerDefaults: ProviderSettingsRequest['providerDefaults']
+      try {
+        providerDefaults = providerDefaultsFromValues(values)
+      } catch (error) {
+        setError('root', {
+          message: error instanceof Error ? error.message : 'Invalid provider defaults',
+        })
+        return
+      }
       if (hasProviderDefaults(providerDefaults)) {
         request.providerDefaults = providerDefaults
       }
@@ -335,6 +361,35 @@ export function ModelConfigDialog({
                     <option value="low">Low</option>
                     <option value="medium">Medium</option>
                     <option value="high">High</option>
+                    {isAnthropic ? <option value="xhigh">XHigh</option> : null}
+                    {isAnthropic ? <option value="max">Max</option> : null}
+                  </Select>
+                </label>
+              ) : null}
+              {isAnthropic ? (
+                <label className="grid gap-1" htmlFor="provider-thinking-type">
+                  <span className="font-medium">Thinking type</span>
+                  <Select id="provider-thinking-type" {...register('thinkingType')}>
+                    <option value="">{t('provider.default')}</option>
+                    {(providerCapabilityMetadata?.thinkingModes ?? [
+                      'adaptive',
+                      'enabled',
+                      'disabled',
+                    ]).map((mode) => (
+                      <option key={mode} value={mode}>
+                        {mode}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+              ) : null}
+              {isAnthropic ? (
+                <label className="grid gap-1" htmlFor="provider-thinking-display">
+                  <span className="font-medium">Thinking display</span>
+                  <Select id="provider-thinking-display" {...register('thinkingDisplay')}>
+                    <option value="">{t('provider.default')}</option>
+                    <option value="summarized">summarized</option>
+                    <option value="omitted">omitted</option>
                   </Select>
                 </label>
               ) : null}
@@ -351,13 +406,23 @@ export function ModelConfigDialog({
               {supportsAny(supportedParameters, ['top_p', 'topP']) ? (
                 <label className="grid gap-1" htmlFor="provider-top-p">
                   <span className="font-medium">{t('provider.topP')}</span>
-                  <Input id="provider-top-p" inputMode="decimal" {...register('topP')} />
+                  <Input
+                    id="provider-top-p"
+                    disabled={anthropicSamplingLocked}
+                    inputMode="decimal"
+                    {...register('topP')}
+                  />
                 </label>
               ) : null}
               {supportsAny(supportedParameters, ['top_k', 'topK']) ? (
                 <label className="grid gap-1" htmlFor="provider-top-k">
                   <span className="font-medium">{t('provider.topK')}</span>
-                  <Input id="provider-top-k" inputMode="numeric" {...register('topK')} />
+                  <Input
+                    id="provider-top-k"
+                    disabled={anthropicSamplingLocked}
+                    inputMode="numeric"
+                    {...register('topK')}
+                  />
                 </label>
               ) : null}
               {supportedParameters.has('seed') ? (
@@ -371,6 +436,73 @@ export function ModelConfigDialog({
                   <span className="font-medium">{t('provider.stopSequences')}</span>
                   <Input id="provider-stop-sequences" {...register('stopSequences')} />
                 </label>
+              ) : null}
+              {isAnthropic ? (
+                <>
+                  <label className="grid gap-1" htmlFor="provider-tool-choice">
+                    <span className="font-medium">Tool choice</span>
+                    <Select id="provider-tool-choice" {...register('toolChoice')}>
+                      <option value="">{t('provider.default')}</option>
+                      <option value="auto">auto</option>
+                      <option value="none">none</option>
+                      <option value="any">any</option>
+                      <option value="tool">tool</option>
+                    </Select>
+                  </label>
+                  <label className="grid gap-1" htmlFor="provider-tool-name">
+                    <span className="font-medium">Tool name</span>
+                    <Input id="provider-tool-name" {...register('toolName')} />
+                  </label>
+                  <label className="grid gap-1" htmlFor="provider-cache-ttl">
+                    <span className="font-medium">Cache TTL</span>
+                    <Select id="provider-cache-ttl" {...register('cacheTtl')}>
+                      <option value="">{t('provider.default')}</option>
+                      <option value="5m">5m</option>
+                      <option value="1h">1h</option>
+                    </Select>
+                  </label>
+                  <label className="grid gap-1" htmlFor="provider-anthropic-beta">
+                    <span className="font-medium">Anthropic beta</span>
+                    <Input id="provider-anthropic-beta" {...register('anthropicBeta')} />
+                  </label>
+                  <label className="grid gap-1" htmlFor="provider-user-profile-id">
+                    <span className="font-medium">User profile ID</span>
+                    <Input
+                      id="provider-user-profile-id"
+                      {...register('anthropicUserProfileId')}
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="provider-inference-geo">
+                    <span className="font-medium">Inference geo</span>
+                    <Input id="provider-inference-geo" {...register('inferenceGeo')} />
+                  </label>
+                  <label className="grid gap-1" htmlFor="provider-speed">
+                    <span className="font-medium">Speed</span>
+                    <Input id="provider-speed" {...register('speed')} />
+                  </label>
+                  <label className="grid gap-1" htmlFor="provider-metadata-json">
+                    <span className="font-medium">Metadata JSON</span>
+                    <Input id="provider-metadata-json" {...register('metadataJson')} />
+                  </label>
+                  <label className="grid gap-1" htmlFor="provider-fallbacks-json">
+                    <span className="font-medium">Fallbacks JSON</span>
+                    <Input id="provider-fallbacks-json" {...register('fallbacksJson')} />
+                  </label>
+                  <label className="grid gap-1" htmlFor="provider-context-management-json">
+                    <span className="font-medium">Context management JSON</span>
+                    <Input
+                      id="provider-context-management-json"
+                      {...register('contextManagementJson')}
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="provider-anthropic-advanced-json">
+                    <span className="font-medium">Advanced Anthropic JSON</span>
+                    <Input
+                      id="provider-anthropic-advanced-json"
+                      {...register('anthropicAdvancedJson')}
+                    />
+                  </label>
+                </>
               ) : null}
               {supportedParameters.has('responseMimeType') ? (
                 <label className="grid gap-1" htmlFor="provider-response-mime-type">
@@ -462,9 +594,17 @@ function formValuesFromProfile(
   const providerDefaults = providerOptionDefaultsFromProfile(profile)
   return {
     baseUrl: profile?.baseUrl ?? defaultProvider?.defaultBaseUrl ?? '',
+    anthropicAdvancedJson: providerDefaults.anthropicAdvancedJson,
+    anthropicBeta: providerDefaults.anthropicBeta,
+    anthropicUserProfileId: providerDefaults.anthropicUserProfileId,
+    cacheTtl: providerDefaults.cacheTtl,
     codeInterpreter: defaults.codeInterpreter,
+    contextManagementJson: providerDefaults.contextManagementJson,
     displayName: profile?.displayName ?? '',
     enableThinking: defaults.enableThinking || providerDefaults.enableThinking,
+    fallbacksJson: providerDefaults.fallbacksJson,
+    inferenceGeo: providerDefaults.inferenceGeo,
+    metadataJson: providerDefaults.metadataJson,
     modelId: profile?.modelId ?? defaultModel?.modelId ?? '',
     outputEffort: providerDefaults.outputEffort,
     performanceLatency: providerDefaults.performanceLatency,
@@ -477,8 +617,13 @@ function formValuesFromProfile(
     sessionCache: defaults.sessionCache,
     stopSequences: providerDefaults.stopSequences,
     thinkingBudget: providerDefaults.thinkingBudget,
+    thinkingDisplay: providerDefaults.thinkingDisplay,
+    thinkingType: providerDefaults.thinkingType,
     topK: providerDefaults.topK,
     topP: providerDefaults.topP,
+    toolChoice: providerDefaults.toolChoice,
+    toolName: providerDefaults.toolName,
+    speed: providerDefaults.speed,
     webExtractor: defaults.webExtractor,
     webSearch: defaults.webSearch,
   }
@@ -526,6 +671,8 @@ function providerOptionDefaultsFromProfile(profile: ProviderConfig | null | unde
   const outputConfig = isRecord(body.output_config) ? body.output_config : null
   const inferenceConfig = isRecord(body.inferenceConfig) ? body.inferenceConfig : null
   const performanceConfig = isRecord(body.performanceConfig) ? body.performanceConfig : null
+  const cacheControl = isRecord(body.cache_control) ? body.cache_control : null
+  const toolChoice = isRecord(body.tool_choice) ? body.tool_choice : null
   const topP = firstStringable(body.top_p, body.topP, inferenceConfig?.topP)
   const topK = firstStringable(body.top_k, body.topK)
   const stopSequences = firstArray(
@@ -540,6 +687,14 @@ function providerOptionDefaultsFromProfile(profile: ProviderConfig | null | unde
       thinkingConfig !== null ||
       body.enable_thinking === true ||
       body.enableThinking === true,
+    anthropicAdvancedJson: '',
+    anthropicBeta: headerValue(profile, 'anthropic-beta'),
+    anthropicUserProfileId: headerValue(profile, 'anthropic-user-profile-id'),
+    cacheTtl: typeof cacheControl?.ttl === 'string' ? cacheControl.ttl : '',
+    contextManagementJson: jsonField(body.context_management),
+    fallbacksJson: jsonField(body.fallbacks),
+    inferenceGeo: typeof body.inference_geo === 'string' ? body.inference_geo : '',
+    metadataJson: jsonField(body.metadata),
     outputEffort: typeof outputConfig?.effort === 'string' ? outputConfig.effort : '',
     performanceLatency:
       typeof performanceConfig?.latency === 'string' ? performanceConfig.latency : '',
@@ -548,8 +703,13 @@ function providerOptionDefaultsFromProfile(profile: ProviderConfig | null | unde
     serviceTier: typeof body.service_tier === 'string' ? body.service_tier : '',
     stopSequences: stopSequences.join(','),
     thinkingBudget: firstStringable(thinking?.budget_tokens, thinkingConfig?.thinkingBudget),
+    thinkingDisplay: typeof thinking?.display === 'string' ? thinking.display : '',
+    thinkingType: typeof thinking?.type === 'string' ? thinking.type : '',
     topK,
     topP,
+    toolChoice: typeof toolChoice?.type === 'string' ? toolChoice.type : '',
+    toolName: typeof toolChoice?.name === 'string' ? toolChoice.name : '',
+    speed: typeof body.speed === 'string' ? body.speed : '',
   }
 }
 
@@ -568,11 +728,13 @@ function providerDefaultsFromValues(
     const thinkingBudget = parseNumber(values.thinkingBudget)
 
     if (values.providerId === 'anthropic') {
-      if (values.enableThinking) {
-        body.thinking =
-          thinkingBudget !== null
-            ? { type: 'enabled', budget_tokens: thinkingBudget }
-            : { type: 'enabled' }
+      const thinkingType = values.thinkingType || (values.enableThinking ? 'enabled' : '')
+      if (thinkingType) {
+        body.thinking = {
+          type: thinkingType,
+          ...(thinkingBudget !== null ? { budget_tokens: thinkingBudget } : {}),
+          ...(values.thinkingDisplay ? { display: values.thinkingDisplay } : {}),
+        }
       }
       if (values.outputEffort) {
         body.output_config = { effort: values.outputEffort }
@@ -588,6 +750,45 @@ function providerDefaultsFromValues(
       }
       if (topK !== null) {
         body.top_k = topK
+      }
+      if (values.toolChoice) {
+        if (values.toolChoice === 'tool' && !values.toolName.trim()) {
+          throw new Error('Tool name is required when tool_choice is tool')
+        }
+        body.tool_choice =
+          values.toolChoice === 'tool'
+            ? { type: 'tool', name: values.toolName.trim() }
+            : { type: values.toolChoice }
+      }
+      if (values.cacheTtl) {
+        body.cache_control = { type: 'ephemeral', ttl: values.cacheTtl }
+      }
+      if (values.metadataJson.trim()) {
+        body.metadata = parseJsonObject(values.metadataJson, 'Metadata JSON')
+      }
+      if (values.inferenceGeo.trim()) {
+        body.inference_geo = values.inferenceGeo.trim()
+      }
+      if (values.speed.trim()) {
+        body.speed = values.speed.trim()
+      }
+      if (values.fallbacksJson.trim()) {
+        body.fallbacks = parseJsonValue(values.fallbacksJson, 'Fallbacks JSON')
+      }
+      if (values.contextManagementJson.trim()) {
+        body.context_management = parseJsonValue(
+          values.contextManagementJson,
+          'Context management JSON',
+        )
+      }
+      if (values.anthropicBeta.trim()) {
+        headers['anthropic-beta'] = values.anthropicBeta.trim()
+      }
+      if (values.anthropicUserProfileId.trim()) {
+        headers['anthropic-user-profile-id'] = values.anthropicUserProfileId.trim()
+      }
+      if (values.anthropicAdvancedJson.trim()) {
+        mergeAdvancedAnthropicBody(body, values.anthropicAdvancedJson)
       }
       return { body, headers }
     }
@@ -697,6 +898,9 @@ function hasProviderDefaults(defaults: ProviderSettingsRequest['providerDefaults
 
 function resetProviderOptionFields(setValue: UseFormSetValue<ModelConfigFormValues>) {
   setValue('enableThinking', false)
+  setValue('thinkingType', '')
+  setValue('thinkingDisplay', '')
+  setValue('cacheTtl', '')
   setValue('outputEffort', '')
   setValue('performanceLatency', '')
   setValue('reasoningEffort', '')
@@ -707,10 +911,78 @@ function resetProviderOptionFields(setValue: UseFormSetValue<ModelConfigFormValu
   setValue('thinkingBudget', '')
   setValue('topK', '')
   setValue('topP', '')
+  setValue('toolChoice', '')
+  setValue('toolName', '')
+  setValue('metadataJson', '')
+  setValue('anthropicBeta', '')
+  setValue('anthropicUserProfileId', '')
+  setValue('inferenceGeo', '')
+  setValue('speed', '')
+  setValue('fallbacksJson', '')
+  setValue('contextManagementJson', '')
+  setValue('anthropicAdvancedJson', '')
   setValue('webSearch', false)
   setValue('codeInterpreter', false)
   setValue('webExtractor', false)
   setValue('sessionCache', false)
+}
+
+type AnthropicCapabilityMetadata = {
+  thinkingModes?: string[]
+  samplingLocked?: boolean
+}
+
+function getAnthropicCapabilityMetadata(value: unknown): AnthropicCapabilityMetadata | null {
+  if (!isRecord(value) || value.provider !== 'anthropic') {
+    return null
+  }
+  return {
+    thinkingModes: Array.isArray(value.thinkingModes)
+      ? value.thinkingModes.filter((mode): mode is string => typeof mode === 'string')
+      : undefined,
+    samplingLocked: value.samplingLocked === true,
+  }
+}
+
+function headerValue(profile: ProviderConfig | null | undefined, name: string): string {
+  const headers = profile?.providerDefaults?.headers ?? {}
+  const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase())
+  return entry?.[1] ?? ''
+}
+
+function jsonField(value: unknown): string {
+  return value === undefined || value === null ? '' : JSON.stringify(value)
+}
+
+function parseJsonValue(value: string, label: string): unknown {
+  try {
+    return JSON.parse(value)
+  } catch {
+    throw new Error(`${label} must be valid JSON`)
+  }
+}
+
+function parseJsonObject(value: string, label: string): Record<string, unknown> {
+  const parsed = parseJsonValue(value, label)
+  if (!isRecord(parsed)) {
+    throw new Error(`${label} must be a JSON object`)
+  }
+  return parsed
+}
+
+function mergeAdvancedAnthropicBody(body: Record<string, unknown>, value: string) {
+  const advanced = parseJsonObject(value, 'Advanced Anthropic JSON')
+  for (const forbidden of ['model', 'messages', 'input', 'contents', 'stream', 'max_tokens']) {
+    if (Object.prototype.hasOwnProperty.call(advanced, forbidden)) {
+      throw new Error(`Advanced Anthropic JSON must not include ${forbidden}`)
+    }
+  }
+  for (const [key, fieldValue] of Object.entries(advanced)) {
+    if (Object.prototype.hasOwnProperty.call(body, key)) {
+      throw new Error(`Advanced Anthropic JSON duplicates ${key}`)
+    }
+    body[key] = fieldValue
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

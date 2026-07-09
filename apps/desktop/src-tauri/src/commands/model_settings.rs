@@ -24,10 +24,11 @@ use jyowo_harness_sdk::ext::{
 };
 
 use super::contracts::{
-    ModelSettingsCatalogSnapshotPayload, ModelSettingsPageResponse, ModelSettingsPageSlice,
-    ModelUsageRollupRecord, ModelUsageRollupStore, ProviderCatalogSnapshotRecord,
-    ProviderProbeSnapshotPayload, RefreshModelProviderCatalogResponse,
-    RefreshOfficialQuotaResponse,
+    ConversationModelCapabilityRecord, ModelCatalogEntry, ModelLifecyclePayload,
+    ModelRuntimeStatusPayload, ModelSettingsCatalogSnapshotPayload, ModelSettingsPageResponse,
+    ModelSettingsPageSlice, ModelUsageRollupRecord, ModelUsageRollupStore,
+    ProviderCatalogSnapshotRecord, ProviderModelModalityRecord, ProviderProbeSnapshotPayload,
+    RefreshModelProviderCatalogResponse, RefreshOfficialQuotaResponse,
 };
 use super::error::{
     invalid_payload, runtime_operation_failed, runtime_unavailable, CommandErrorPayload,
@@ -305,6 +306,8 @@ pub async fn refresh_model_provider_catalog_with_runtime_state(
 ) -> Result<RefreshModelProviderCatalogResponse, CommandErrorPayload> {
     let now = Utc::now();
     let models_api_json = fetch_openrouter_models_api_json().await?;
+    let anthropic_models_api_json =
+        fetch_anthropic_models_api_json_for_runtime_state(runtime_state).await?;
     let bytes = serde_json::to_vec(&models_api_json).map_err(|error| {
         runtime_operation_failed(format!(
             "provider catalog refresh serialization failed: {error}"
@@ -317,6 +320,7 @@ pub async fn refresh_model_provider_catalog_with_runtime_state(
         .provider_catalog_snapshot_store
         .save_record(&ProviderCatalogSnapshotRecord {
             openrouter_models_api_json: models_api_json,
+            anthropic_models_api_json,
             last_successful_refresh_at: now,
             last_attempt_at: now,
         })?;
@@ -324,6 +328,79 @@ pub async fn refresh_model_provider_catalog_with_runtime_state(
     Ok(RefreshModelProviderCatalogResponse {
         catalog,
         catalog_snapshot,
+    })
+}
+
+async fn fetch_anthropic_models_api_json_for_runtime_state(
+    runtime_state: &DesktopRuntimeState,
+) -> Result<Option<serde_json::Value>, CommandErrorPayload> {
+    let Some(record) = runtime_state.provider_settings_store.load_record()? else {
+        return Ok(None);
+    };
+    let Some(config) = record
+        .configs
+        .iter()
+        .find(|config| config.provider_id == "anthropic" && !config.api_key.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let base_url = config
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.anthropic.com");
+    match fetch_anthropic_models_api_json(base_url, &config.api_key).await {
+        Ok(value) => Ok(Some(value)),
+        Err(error) => {
+            log::warn!("Anthropic model catalog refresh skipped: {}", error.message);
+            Ok(None)
+        }
+    }
+}
+
+async fn fetch_anthropic_models_api_json(
+    base_url: &str,
+    api_key: &str,
+) -> Result<serde_json::Value, CommandErrorPayload> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|error| {
+            runtime_operation_failed(format!("Anthropic model catalog client failed: {error}"))
+        })?;
+    let mut response = client
+        .get(format!("{}/v1/models", base_url.trim_end_matches('/')))
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .send()
+        .await
+        .map_err(|error| {
+            runtime_operation_failed(format!("Anthropic model catalog fetch failed: {error}"))
+        })?
+        .error_for_status()
+        .map_err(|error| {
+            runtime_operation_failed(format!("Anthropic model catalog fetch failed: {error}"))
+        })?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_OPENROUTER_MODELS_API_BYTES as u64)
+    {
+        return Err(runtime_operation_failed(
+            "Anthropic model catalog response is too large".to_owned(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        runtime_operation_failed(format!("Anthropic model catalog read failed: {error}"))
+    })? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_OPENROUTER_MODELS_API_BYTES {
+            return Err(runtime_operation_failed(
+                "Anthropic model catalog response is too large".to_owned(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|error| {
+        runtime_operation_failed(format!("Anthropic model catalog parse failed: {error}"))
     })
 }
 
@@ -425,6 +502,9 @@ pub(crate) fn local_model_provider_catalog(
             .map(model_descriptor_catalog_entry)
             .collect();
     }
+    if let Some(anthropic_models_api_json) = snapshot.anthropic_models_api_json.as_ref() {
+        merge_anthropic_models_api_catalog(&mut catalog, anthropic_models_api_json);
+    }
 
     Ok((
         catalog,
@@ -434,6 +514,339 @@ pub(crate) fn local_model_provider_catalog(
             last_attempt_at: Some(snapshot.last_attempt_at.to_rfc3339()),
         },
     ))
+}
+
+fn merge_anthropic_models_api_catalog(
+    catalog: &mut ModelProviderCatalogResponse,
+    models_api_json: &serde_json::Value,
+) {
+    let Some(anthropic) = catalog
+        .providers
+        .iter_mut()
+        .find(|provider| provider.provider_id == "anthropic")
+    else {
+        return;
+    };
+    let Some(models) = models_api_json
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return;
+    };
+    let default_supported_parameters = anthropic
+        .models
+        .first()
+        .map(|model| model.supported_parameters.clone())
+        .unwrap_or_default();
+
+    for api_model in models {
+        let Some(model_id) = api_model
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let existing_index = anthropic
+            .models
+            .iter()
+            .position(|model| model.model_id == model_id);
+        let existing = existing_index.and_then(|index| anthropic.models.get(index));
+        let Some(entry) =
+            anthropic_models_api_catalog_entry(api_model, existing, &default_supported_parameters)
+        else {
+            continue;
+        };
+        if let Some(index) = existing_index {
+            anthropic.models[index] = entry;
+        } else {
+            anthropic.models.push(entry);
+        }
+    }
+}
+
+fn anthropic_models_api_catalog_entry(
+    api_model: &serde_json::Value,
+    existing: Option<&ModelCatalogEntry>,
+    default_supported_parameters: &[String],
+) -> Option<ModelCatalogEntry> {
+    let model_id = api_model
+        .get("id")
+        .and_then(serde_json::Value::as_str)?
+        .trim()
+        .to_owned();
+    let display_name = api_model
+        .get("display_name")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            api_model
+                .get("displayName")
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| existing.map(|model| model.display_name.clone()))
+        .unwrap_or_else(|| model_id.clone());
+    let context_window = u32_field(api_model, &["max_input_tokens", "context_window"])
+        .or_else(|| existing.map(|model| model.context_window))
+        .unwrap_or(200_000);
+    let max_output_tokens = u32_field(api_model, &["max_tokens", "max_output_tokens"])
+        .or_else(|| existing.map(|model| model.max_output_tokens))
+        .unwrap_or(64_000);
+    let conversation_capability = anthropic_models_api_conversation_capability(
+        api_model,
+        existing,
+        context_window,
+        max_output_tokens,
+    );
+
+    Some(ModelCatalogEntry {
+        protocol: existing
+            .map(|model| model.protocol)
+            .unwrap_or(ModelProtocol::Messages),
+        supported_parameters: existing
+            .map(|model| model.supported_parameters.clone())
+            .filter(|values| !values.is_empty())
+            .unwrap_or_else(|| default_supported_parameters.to_vec()),
+        provider_capability_metadata: Some(anthropic_models_api_metadata(api_model, existing)),
+        conversation_capability,
+        context_window,
+        display_name,
+        lifecycle: existing
+            .map(|model| model.lifecycle.clone())
+            .unwrap_or(ModelLifecyclePayload {
+                kind: "stable",
+                retirement_date: None,
+            }),
+        max_output_tokens,
+        model_id,
+        runtime_status: ModelRuntimeStatusPayload {
+            kind: "runnable",
+            reason: None,
+        },
+    })
+}
+
+fn anthropic_models_api_conversation_capability(
+    api_model: &serde_json::Value,
+    existing: Option<&ModelCatalogEntry>,
+    context_window: u32,
+    max_output_tokens: u32,
+) -> ConversationModelCapabilityRecord {
+    let existing_capability = existing.map(|model| &model.conversation_capability);
+    let capabilities = api_model.get("capabilities");
+    let mut input_modalities = existing_capability
+        .map(|capability| capability.input_modalities.clone())
+        .unwrap_or_else(|| vec![ProviderModelModalityRecord::Text]);
+    if capability_bool(capabilities, &["image_input"]).unwrap_or(false)
+        && !input_modalities.contains(&ProviderModelModalityRecord::Image)
+    {
+        input_modalities.push(ProviderModelModalityRecord::Image);
+    }
+    if (capability_bool(capabilities, &["pdf_input", "document_input", "files_api"])
+        .unwrap_or(false))
+        && !input_modalities.contains(&ProviderModelModalityRecord::File)
+    {
+        input_modalities.push(ProviderModelModalityRecord::File);
+    }
+
+    ConversationModelCapabilityRecord {
+        input_modalities,
+        output_modalities: existing_capability
+            .map(|capability| capability.output_modalities.clone())
+            .unwrap_or_else(|| vec![ProviderModelModalityRecord::Text]),
+        context_window,
+        max_output_tokens,
+        streaming: existing_capability
+            .map(|capability| capability.streaming)
+            .unwrap_or(true),
+        tool_calling: capability_bool(capabilities, &["tool_use", "tools"])
+            .or_else(|| existing_capability.map(|capability| capability.tool_calling))
+            .unwrap_or(true),
+        reasoning: capability_bool(
+            capabilities,
+            &["thinking", "extended_thinking", "reasoning"],
+        )
+        .or_else(|| {
+            capability_string_array(capabilities, &["effort_levels", "effortLevels"])
+                .map(|values| !values.is_empty())
+        })
+        .or_else(|| existing_capability.map(|capability| capability.reasoning))
+        .unwrap_or(false),
+        prompt_cache: capability_bool(capabilities, &["prompt_caching", "prompt_cache"])
+            .or_else(|| existing_capability.map(|capability| capability.prompt_cache))
+            .unwrap_or(true),
+        structured_output: capability_bool(
+            capabilities,
+            &["structured_outputs", "structured_output"],
+        )
+        .or_else(|| existing_capability.map(|capability| capability.structured_output))
+        .unwrap_or(false),
+    }
+}
+
+fn anthropic_models_api_metadata(
+    api_model: &serde_json::Value,
+    existing: Option<&ModelCatalogEntry>,
+) -> serde_json::Value {
+    let mut metadata = existing
+        .and_then(|model| model.provider_capability_metadata.as_ref())
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    metadata.insert(
+        "provider".to_owned(),
+        serde_json::Value::String("anthropic".to_owned()),
+    );
+    let capabilities = api_model.get("capabilities");
+    if let Some(capabilities) = capabilities {
+        metadata.insert("rawCapabilities".to_owned(), capabilities.clone());
+    }
+    metadata.insert(
+        "modelsApi".to_owned(),
+        serde_json::json!({
+            "id": api_model.get("id").cloned().unwrap_or(serde_json::Value::Null),
+            "type": api_model.get("type").cloned().unwrap_or(serde_json::Value::Null),
+            "createdAt": api_model.get("created_at").cloned().unwrap_or(serde_json::Value::Null),
+        }),
+    );
+    set_metadata_bool(
+        &mut metadata,
+        "supportsImageInput",
+        capabilities,
+        &["image_input"],
+    );
+    set_metadata_bool(
+        &mut metadata,
+        "supportsPdfInput",
+        capabilities,
+        &["pdf_input"],
+    );
+    set_metadata_bool(
+        &mut metadata,
+        "supportsFilesApi",
+        capabilities,
+        &["files_api", "pdf_input", "document_input"],
+    );
+    set_metadata_bool(
+        &mut metadata,
+        "supportsBatches",
+        capabilities,
+        &["batch", "batches"],
+    );
+    set_metadata_bool(
+        &mut metadata,
+        "supportsContextManagement",
+        capabilities,
+        &["context_management"],
+    );
+    set_metadata_bool(
+        &mut metadata,
+        "supportsCodeExecution",
+        capabilities,
+        &["code_execution"],
+    );
+    set_metadata_bool(
+        &mut metadata,
+        "supportsCitations",
+        capabilities,
+        &["citations"],
+    );
+    set_metadata_bool(
+        &mut metadata,
+        "supportsStructuredOutputs",
+        capabilities,
+        &["structured_outputs", "structured_output"],
+    );
+    if let Some(values) = capability_string_array(capabilities, &["effort_levels", "effortLevels"])
+    {
+        metadata.insert("effortLevels".to_owned(), serde_json::json!(values));
+    }
+    if let Some(values) =
+        capability_string_array(capabilities, &["thinking_types", "thinkingTypes"])
+    {
+        metadata.insert("thinkingModes".to_owned(), serde_json::json!(values));
+    }
+    serde_json::Value::Object(metadata)
+}
+
+fn set_metadata_bool(
+    metadata: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    capabilities: Option<&serde_json::Value>,
+    names: &[&str],
+) {
+    if let Some(value) = capability_bool(capabilities, names) {
+        metadata.insert(key.to_owned(), serde_json::Value::Bool(value));
+    }
+}
+
+fn u32_field(value: &serde_json::Value, names: &[&str]) -> Option<u32> {
+    names.iter().find_map(|name| {
+        let raw = value.get(*name)?;
+        let number = raw
+            .as_u64()
+            .or_else(|| raw.as_str().and_then(|value| value.parse::<u64>().ok()))?;
+        u32::try_from(number).ok()
+    })
+}
+
+fn capability_bool(capabilities: Option<&serde_json::Value>, names: &[&str]) -> Option<bool> {
+    let capabilities = capabilities?;
+    names
+        .iter()
+        .find_map(|name| capability_path_value(capabilities, name))
+        .and_then(|value| {
+            value.as_bool().or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|value| match value.to_ascii_lowercase().as_str() {
+                        "true" | "supported" | "enabled" => Some(true),
+                        "false" | "unsupported" | "disabled" => Some(false),
+                        _ => None,
+                    })
+            })
+        })
+}
+
+fn capability_string_array(
+    capabilities: Option<&serde_json::Value>,
+    names: &[&str],
+) -> Option<Vec<String>> {
+    let capabilities = capabilities?;
+    names
+        .iter()
+        .find_map(|name| capability_path_value(capabilities, name))
+        .and_then(|value| {
+            value.as_array().map(|values| {
+                values
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+        })
+}
+
+fn capability_path_value<'a>(
+    capabilities: &'a serde_json::Value,
+    name: &str,
+) -> Option<&'a serde_json::Value> {
+    let value = capabilities.get(name)?;
+    if let Some(enabled) = value.get("enabled") {
+        return Some(enabled);
+    }
+    if let Some(values) = value.get("values") {
+        return Some(values);
+    }
+    if let Some(types) = value.get("types") {
+        return Some(types);
+    }
+    Some(value)
 }
 
 fn usage_summary_slice_from_rollup(

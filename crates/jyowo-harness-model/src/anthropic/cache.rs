@@ -26,11 +26,13 @@ pub(super) fn apply_prompt_cache(body: &mut Value, req: &ModelRequest) -> Result
         }
     }
 
+    let cache_control = cache_control_value(req)?;
+
     if let Some(system) = &req.system {
         body["system"] = json!([{
             "type": "text",
             "text": system,
-            "cache_control": { "type": "ephemeral" },
+            "cache_control": cache_control,
         }]);
     }
 
@@ -45,16 +47,37 @@ pub(super) fn apply_prompt_cache(body: &mut Value, req: &ModelRequest) -> Result
                     breakpoint.after_message_id
                 ))
             })?;
-        inject_message_cache_control(body, index, &req.messages[index])?;
+        inject_message_cache_control(body, index, &req.messages[index], &cache_control)?;
     }
 
     Ok(())
+}
+
+fn cache_control_value(req: &ModelRequest) -> Result<Value, ModelError> {
+    let Some(cache_control) = req.extra.get("cache_control") else {
+        return Ok(json!({ "type": "ephemeral" }));
+    };
+    let Some(object) = cache_control.as_object() else {
+        return Err(ModelError::InvalidRequest(
+            "Anthropic cache_control must be an object".to_owned(),
+        ));
+    };
+    let ttl = object.get("ttl").and_then(Value::as_str);
+    if let Some(ttl) = ttl {
+        if ttl != "5m" && ttl != "1h" {
+            return Err(ModelError::InvalidRequest(
+                "Anthropic cache_control ttl must be 5m or 1h".to_owned(),
+            ));
+        }
+    }
+    Ok(cache_control.clone())
 }
 
 fn inject_message_cache_control(
     body: &mut Value,
     index: usize,
     source: &Message,
+    cache_control: &Value,
 ) -> Result<(), ModelError> {
     let content = body
         .pointer_mut(&format!("/messages/{index}/content"))
@@ -78,11 +101,6 @@ fn inject_message_cache_control(
             source.id
         )));
     };
-    object.insert(
-        "cache_control".to_owned(),
-        json!({
-            "type": "ephemeral",
-        }),
-    );
+    object.insert("cache_control".to_owned(), cache_control.clone());
     Ok(())
 }

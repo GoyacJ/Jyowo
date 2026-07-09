@@ -377,6 +377,7 @@ const validBlobRef = {
 }
 const openAiModelDescriptor = {
   protocol: 'responses',
+  supportedParameters: [],
   conversationCapability: {
     inputModalities: ['text'],
     outputModalities: ['text'],
@@ -3836,6 +3837,7 @@ describe('CommandClient', () => {
               models: [
                 {
                   protocol: 'responses',
+                  supportedParameters: [],
                   conversationCapability: {
                     inputModalities: ['text'],
                     outputModalities: ['text'],
@@ -3892,6 +3894,7 @@ describe('CommandClient', () => {
             modelId: 'gpt-5.4-mini',
             modelDescriptor: {
               protocol: 'responses',
+              supportedParameters: [],
               conversationCapability: {
                 inputModalities: ['text'],
                 outputModalities: ['text'],

@@ -154,15 +154,141 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
     ),
     messages_declared_input_model(
         "anthropic",
+        "claude-sonnet-5",
+        "Claude Sonnet 5",
+        1_000_000,
+        128_000,
+        true,
+        true,
+        true,
+        TEXT_IMAGE_FILE,
+        RuntimeSemanticsKind::AnthropicMessages,
+    ),
+    messages_declared_input_model(
+        "anthropic",
+        "claude-opus-4-7",
+        "Claude Opus 4.7",
+        1_000_000,
+        128_000,
+        true,
+        true,
+        true,
+        TEXT_IMAGE_FILE,
+        RuntimeSemanticsKind::AnthropicMessages,
+    ),
+    messages_declared_input_model(
+        "anthropic",
+        "claude-opus-4-6",
+        "Claude Opus 4.6",
+        1_000_000,
+        128_000,
+        true,
+        true,
+        true,
+        TEXT_IMAGE_FILE,
+        RuntimeSemanticsKind::AnthropicMessages,
+    ),
+    messages_declared_input_model(
+        "anthropic",
         "claude-sonnet-4-6",
         "Claude Sonnet 4.6",
         1_000_000,
+        128_000,
+        true,
+        true,
+        true,
+        TEXT_IMAGE_FILE,
+        RuntimeSemanticsKind::AnthropicMessages,
+    ),
+    messages_declared_input_model(
+        "anthropic",
+        "claude-sonnet-4-5",
+        "Claude Sonnet 4.5",
+        200_000,
         64_000,
         true,
         true,
         true,
-        TEXT_IMAGE,
+        TEXT_IMAGE_FILE,
         RuntimeSemanticsKind::AnthropicMessages,
+    ),
+    messages_declared_input_model(
+        "anthropic",
+        "claude-sonnet-4-5-20250929",
+        "Claude Sonnet 4.5 20250929",
+        200_000,
+        64_000,
+        true,
+        true,
+        true,
+        TEXT_IMAGE_FILE,
+        RuntimeSemanticsKind::AnthropicMessages,
+    ),
+    messages_declared_input_model(
+        "anthropic",
+        "claude-opus-4-5",
+        "Claude Opus 4.5",
+        200_000,
+        64_000,
+        true,
+        true,
+        true,
+        TEXT_IMAGE_FILE,
+        RuntimeSemanticsKind::AnthropicMessages,
+    ),
+    messages_declared_input_model(
+        "anthropic",
+        "claude-opus-4-5-20251101",
+        "Claude Opus 4.5 20251101",
+        200_000,
+        64_000,
+        true,
+        true,
+        true,
+        TEXT_IMAGE_FILE,
+        RuntimeSemanticsKind::AnthropicMessages,
+    ),
+    model_with_lifecycle(
+        "anthropic",
+        "claude-opus-4-1",
+        "Claude Opus 4.1",
+        ModelProtocol::Messages,
+        200_000,
+        32_000,
+        true,
+        true,
+        true,
+        true,
+        true,
+        TEXT_IMAGE_FILE,
+        TEXT,
+        TEXT_IMAGE_FILE,
+        TEXT,
+        RuntimeSemanticsKind::AnthropicMessages,
+        ModelLifecycleSpec::Retiring {
+            retirement_date: date(2026, 8, 5),
+        },
+    ),
+    model_with_lifecycle(
+        "anthropic",
+        "claude-opus-4-1-20250805",
+        "Claude Opus 4.1 20250805",
+        ModelProtocol::Messages,
+        200_000,
+        32_000,
+        true,
+        true,
+        true,
+        true,
+        true,
+        TEXT_IMAGE_FILE,
+        TEXT,
+        TEXT_IMAGE_FILE,
+        TEXT,
+        RuntimeSemanticsKind::AnthropicMessages,
+        ModelLifecycleSpec::Retiring {
+            retirement_date: date(2026, 8, 5),
+        },
     ),
     messages_declared_input_model(
         "anthropic",
@@ -173,7 +299,19 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
         true,
         true,
         true,
-        TEXT_IMAGE,
+        TEXT_IMAGE_FILE,
+        RuntimeSemanticsKind::AnthropicMessages,
+    ),
+    messages_declared_input_model(
+        "anthropic",
+        "claude-haiku-4-5-20251001",
+        "Claude Haiku 4.5 20251001",
+        200_000,
+        64_000,
+        true,
+        true,
+        true,
+        TEXT_IMAGE_FILE,
         RuntimeSemanticsKind::AnthropicMessages,
     ),
     messages_declared_input_model(
@@ -1088,6 +1226,15 @@ fn supported_parameters(spec: &ModelCatalogSpec) -> Vec<String> {
             "top_p",
             "tool_choice",
             "metadata",
+            "container",
+            "context_management",
+            "mcp_servers",
+            "inference_geo",
+            "speed",
+            "fallbacks",
+            "cache_control",
+            "anthropic_beta",
+            "anthropic_user_profile_id",
         ],
         "bedrock" => &[
             "inferenceConfig",
@@ -1155,6 +1302,9 @@ fn pricing(spec: &ModelCatalogSpec) -> Option<ModelPricing> {
     if spec.provider_id == "openai" {
         return openai_pricing(spec);
     }
+    if spec.provider_id == "anthropic" {
+        return anthropic_pricing(spec);
+    }
     if spec.provider_id != "deepseek" {
         return None;
     }
@@ -1189,6 +1339,51 @@ fn pricing(spec: &ModelCatalogSpec) -> Option<ModelPricing> {
         source: PricingSource::Hardcoded,
         billing_mode: BillingMode::Cached {
             cache_read_discount: discount,
+        },
+    })
+}
+
+fn anthropic_pricing(spec: &ModelCatalogSpec) -> Option<ModelPricing> {
+    let (input_per_million, output_per_million) = match spec.model_id {
+        "claude-fable-5" => (Decimal::new(10, 0), Decimal::new(50, 0)),
+        "claude-sonnet-5" => {
+            let introductory_until = date(2026, 8, 31);
+            if Utc::now().date_naive() <= introductory_until {
+                (Decimal::new(2, 0), Decimal::new(10, 0))
+            } else {
+                (Decimal::new(3, 0), Decimal::new(15, 0))
+            }
+        }
+        "claude-opus-4-8"
+        | "claude-opus-4-7"
+        | "claude-opus-4-6"
+        | "claude-opus-4-5"
+        | "claude-opus-4-5-20251101" => (Decimal::new(5, 0), Decimal::new(25, 0)),
+        "claude-sonnet-4-6" | "claude-sonnet-4-5" | "claude-sonnet-4-5-20250929" => {
+            (Decimal::new(3, 0), Decimal::new(15, 0))
+        }
+        "claude-haiku-4-5" | "claude-haiku-4-5-20251001" => {
+            (Decimal::new(1, 0), Decimal::new(5, 0))
+        }
+        "claude-opus-4-1" | "claude-opus-4-1-20250805" => {
+            (Decimal::new(15, 0), Decimal::new(75, 0))
+        }
+        _ => return None,
+    };
+
+    Some(ModelPricing {
+        pricing_id: format!("anthropic:{}", spec.model_id),
+        pricing_version: 20260709,
+        currency: Currency::Usd,
+        input_per_million,
+        output_per_million,
+        cache_creation_per_million: Some(input_per_million * Decimal::new(125, 2)),
+        cache_read_per_million: Some(input_per_million * Decimal::new(1, 1)),
+        image_per_image: None,
+        last_updated: pricing_last_updated(),
+        source: PricingSource::Hardcoded,
+        billing_mode: BillingMode::Cached {
+            cache_read_discount: Ratio(0.1),
         },
     })
 }
@@ -1582,6 +1777,47 @@ const fn model(
         runtime_output_modalities,
         runtime_semantics,
         lifecycle: ModelLifecycleSpec::Stable,
+    }
+}
+
+#[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)]
+const fn model_with_lifecycle(
+    provider_id: &'static str,
+    model_id: &'static str,
+    display_name: &'static str,
+    protocol: ModelProtocol,
+    context_window: u32,
+    max_output_tokens: u32,
+    tool_calling: bool,
+    reasoning: bool,
+    prompt_cache: bool,
+    streaming: bool,
+    structured_output: bool,
+    declared_input_modalities: &'static [ModelModality],
+    declared_output_modalities: &'static [ModelModality],
+    runtime_input_modalities: &'static [ModelModality],
+    runtime_output_modalities: &'static [ModelModality],
+    runtime_semantics: RuntimeSemanticsKind,
+    lifecycle: ModelLifecycleSpec,
+) -> ModelCatalogSpec {
+    ModelCatalogSpec {
+        provider_id,
+        model_id,
+        display_name,
+        protocol,
+        context_window,
+        max_output_tokens,
+        tool_calling,
+        reasoning,
+        prompt_cache,
+        streaming,
+        structured_output,
+        declared_input_modalities,
+        declared_output_modalities,
+        runtime_input_modalities,
+        runtime_output_modalities,
+        runtime_semantics,
+        lifecycle,
     }
 }
 

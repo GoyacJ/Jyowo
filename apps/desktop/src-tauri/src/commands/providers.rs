@@ -2267,10 +2267,12 @@ pub(crate) fn provider_display_name(provider_id: &str) -> String {
 }
 
 pub(crate) fn model_descriptor_catalog_entry(descriptor: ModelDescriptor) -> ModelCatalogEntry {
+    let provider_capability_metadata = provider_capability_metadata_for_model(&descriptor);
     let conversation_capability = descriptor.conversation_capability;
     ModelCatalogEntry {
         protocol: descriptor.protocol,
         supported_parameters: descriptor.supported_parameters,
+        provider_capability_metadata,
         conversation_capability: conversation_capability_record(&conversation_capability),
         context_window: descriptor.context_window,
         display_name: descriptor.display_name,
@@ -2282,6 +2284,56 @@ pub(crate) fn model_descriptor_catalog_entry(descriptor: ModelDescriptor) -> Mod
             reason: None,
         },
     }
+}
+
+fn provider_capability_metadata_for_model(descriptor: &ModelDescriptor) -> Option<Value> {
+    if descriptor.provider_id != "anthropic" {
+        return None;
+    }
+    let effort_levels = if descriptor.model_id.contains("sonnet-5")
+        || descriptor.model_id.contains("fable-5")
+        || descriptor.model_id.contains("opus-4-8")
+        || descriptor.model_id.contains("opus-4-7")
+        || descriptor.model_id.contains("opus-4-6")
+        || descriptor.model_id.contains("sonnet-4-6")
+    {
+        vec!["low", "medium", "high", "xhigh", "max"]
+    } else {
+        vec!["low", "medium", "high"]
+    };
+    let thinking_modes = if descriptor.model_id.contains("fable-5") {
+        vec!["adaptive"]
+    } else if descriptor.model_id.contains("sonnet-5")
+        || descriptor.model_id.contains("opus-4-8")
+        || descriptor.model_id.contains("opus-4-7")
+    {
+        vec!["adaptive", "disabled"]
+    } else {
+        vec!["adaptive", "enabled", "disabled"]
+    };
+    let sampling_locked = descriptor.model_id.contains("fable-5")
+        || descriptor.model_id.contains("sonnet-5")
+        || descriptor.model_id.contains("opus-4-8")
+        || descriptor.model_id.contains("opus-4-7");
+    Some(serde_json::json!({
+        "provider": "anthropic",
+        "thinkingModes": thinking_modes,
+        "thinkingDisplayModes": ["", "summarized", "omitted"],
+        "effortLevels": effort_levels,
+        "serviceTiers": ["auto", "standard_only"],
+        "cacheTtls": ["5m", "1h"],
+        "toolChoiceModes": ["auto", "none", "any", "tool"],
+        "supportsFilesApi": true,
+        "supportsBatches": true,
+        "supportsCountTokens": true,
+        "supportsProviderFiles": true,
+        "samplingLocked": sampling_locked,
+        "disabledParameters": if sampling_locked {
+            serde_json::json!(["temperature", "top_p", "top_k"])
+        } else {
+            serde_json::json!([])
+        },
+    }))
 }
 
 pub(crate) fn model_lifecycle_payload(lifecycle: ModelLifecycle) -> ModelLifecyclePayload {
@@ -2838,17 +2890,67 @@ pub(crate) fn validate_provider_defaults(
         }
     }
     for (name, value) in &defaults.headers {
-        if provider_id != "qwen"
-            || !name.eq_ignore_ascii_case("x-dashscope-session-cache")
-            || value != "enable"
-        {
-            return Err(invalid_payload(
-                "providerDefaults.headers only supports x-dashscope-session-cache: enable for Qwen"
-                    .to_owned(),
-            ));
+        match provider_id {
+            "qwen"
+                if name.eq_ignore_ascii_case("x-dashscope-session-cache") && value == "enable" => {}
+            "anthropic" if is_valid_anthropic_default_header(name, value) => {}
+            _ => {
+                return Err(invalid_payload(format!(
+                    "providerDefaults.headers includes unsupported header {name} for provider {provider_id}"
+                )));
+            }
         }
     }
     Ok(())
+}
+
+fn is_valid_anthropic_default_header(name: &str, value: &str) -> bool {
+    if name.eq_ignore_ascii_case("anthropic-user-profile-id") {
+        return !value.trim().is_empty();
+    }
+    if !name.eq_ignore_ascii_case("anthropic-beta") {
+        return false;
+    }
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .all(is_valid_anthropic_beta_token)
+}
+
+fn is_valid_anthropic_beta_token(token: &str) -> bool {
+    matches!(
+        token,
+        "files-api-2025-04-14"
+            | "output-300k-2026-03-24"
+            | "fast-mode-2026-02-01"
+            | "server-side-fallback-2026-06-01"
+            | "fallback-credit-2026-06-01"
+            | "user-profiles-2026-03-24"
+            | "context-management-2025-06-27"
+    ) || is_dated_anthropic_beta_token(token)
+}
+
+fn is_dated_anthropic_beta_token(token: &str) -> bool {
+    let Some((name, date)) = token.rsplit_once('-') else {
+        return false;
+    };
+    let Some((name, month)) = name.rsplit_once('-') else {
+        return false;
+    };
+    let Some((name, year)) = name.rsplit_once('-') else {
+        return false;
+    };
+    !name.is_empty()
+        && year.len() == 4
+        && month.len() == 2
+        && date.len() == 2
+        && year.chars().all(|ch| ch.is_ascii_digit())
+        && month.chars().all(|ch| ch.is_ascii_digit())
+        && date.chars().all(|ch| ch.is_ascii_digit())
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
 }
 
 fn provider_default_body_fields(provider_id: &str) -> &'static [&'static str] {
@@ -2862,6 +2964,13 @@ fn provider_default_body_fields(provider_id: &str) -> &'static [&'static str] {
             "top_p",
             "tool_choice",
             "metadata",
+            "container",
+            "context_management",
+            "mcp_servers",
+            "inference_geo",
+            "speed",
+            "fallbacks",
+            "cache_control",
         ],
         "bedrock" => &[
             "inferenceConfig",
