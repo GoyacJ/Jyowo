@@ -29,6 +29,60 @@ pub struct ProviderServiceAdapterAvailability {
     pub bindings: Vec<ToolServiceBinding>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolRiskLevel {
+    #[default]
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolIntegrationSource {
+    #[default]
+    Builtin,
+    Mcp,
+    Plugin,
+    Brokered,
+    External,
+}
+
+#[derive(Debug, Clone, Default, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolDescriptorMetadata {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub families: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<String>,
+    #[serde(default)]
+    pub risk_level: ToolRiskLevel,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modalities: Vec<String>,
+    #[serde(default)]
+    pub integration_source: ToolIntegrationSource,
+}
+
+impl ToolDescriptorMetadata {
+    pub fn is_empty(&self) -> bool {
+        self.aliases.is_empty()
+            && self.families.is_empty()
+            && self.platforms.is_empty()
+            && self.examples.is_empty()
+            && self.risk_level == ToolRiskLevel::Low
+            && self.effects.is_empty()
+            && self.modalities.is_empty()
+            && self.integration_source == ToolIntegrationSource::Builtin
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolDescriptor {
     pub name: ToolName,
@@ -49,6 +103,8 @@ pub struct ToolDescriptor {
     pub search_hint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_binding: Option<ToolServiceBinding>,
+    #[serde(default, skip_serializing_if = "ToolDescriptorMetadata::is_empty")]
+    pub metadata: ToolDescriptorMetadata,
 }
 
 #[non_exhaustive]

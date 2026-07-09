@@ -2,14 +2,17 @@
 
 use std::{path::Path, sync::Arc};
 
-use futures::StreamExt;
+use futures::{future::BoxFuture, StreamExt};
 use harness_contracts::{
-    CapabilityRegistry, DecisionScope, TenantId, ToolActionPlan, ToolCapability, ToolError,
-    ToolGroup, ToolResult, ToolUseId,
+    ActionResource, CapabilityRegistry, DecisionScope, NetworkAccess, PermissionSubject, TenantId,
+    ToolActionPlan, ToolCapability, ToolError, ToolExecutionChannel, ToolGroup, ToolResult,
+    ToolUseId, WorkspaceAccess,
 };
 use harness_tool::{
     builtin::{
-        FileEditTool, GlobTool, GrepTool, ListDirTool, TaskStopTool, TodoTool, WebFetchTool,
+        brokered_platform_runtime_capability, ArtifactTool, BrokeredPlatformRuntimeCap,
+        BrokeredPlatformRuntimeRequest, BrowserUseTool, FileEditTool, GitStageTool, GitStatusTool,
+        GlobTool, GrepTool, ImageGenerationTool, ListDirTool, TaskStopTool, TodoTool, WebFetchTool,
     },
     AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset, InterruptToken, Tool,
     ToolContext, ToolRegistry,
@@ -41,9 +44,301 @@ fn default_builtin_toolset_registers_architecture_m0_tools() {
         "ProcessStop",
         "Clarify",
         "SendMessage",
+        "GitStatus",
+        "GitDiff",
+        "GitShow",
+        "GitLog",
+        "GitStage",
+        "GitCommit",
+        "GitBranch",
+        "GitPull",
+        "GitPush",
+        "Worktree",
+        "Session",
+        "Artifact",
+        "BrowserUse",
+        "ComputerUse",
+        "ImageGeneration",
+        "NotebookEdit",
+        "LSP",
+        "Automation",
+        "Workflow",
     ] {
         assert!(registry.get(name).is_some(), "{name} should be registered");
     }
+}
+
+#[test]
+fn git_status_descriptor_exposes_git_metadata() {
+    let tool = GitStatusTool::default();
+    let descriptor = tool.descriptor();
+
+    assert_eq!(descriptor.group, ToolGroup::Git);
+    assert!(descriptor.properties.is_read_only);
+    assert_eq!(descriptor.metadata.families, ["git"]);
+    assert!(descriptor
+        .metadata
+        .aliases
+        .iter()
+        .any(|alias| alias == "git status"));
+    assert!(descriptor
+        .metadata
+        .effects
+        .iter()
+        .any(|effect| effect == "reads_git"));
+}
+
+#[test]
+fn brokered_platform_descriptors_expose_searchable_metadata() {
+    let artifact = ArtifactTool::default();
+    assert_eq!(artifact.descriptor().group, ToolGroup::Artifact);
+    assert!(!artifact.descriptor().properties.is_read_only);
+    assert_eq!(artifact.descriptor().metadata.families, ["artifact"]);
+    assert!(artifact
+        .descriptor()
+        .metadata
+        .aliases
+        .iter()
+        .any(|alias| alias == "artifact"));
+
+    let browser = BrowserUseTool::default();
+    assert_eq!(browser.descriptor().group, ToolGroup::Browser);
+    assert!(!browser.descriptor().properties.is_read_only);
+    assert!(browser
+        .descriptor()
+        .metadata
+        .platforms
+        .iter()
+        .any(|platform| platform == "codex"));
+    assert!(browser
+        .descriptor()
+        .metadata
+        .effects
+        .iter()
+        .any(|effect| effect == "external_interaction"));
+}
+
+#[tokio::test]
+async fn brokered_platform_tool_fails_closed_without_runtime_capability() {
+    assert!(matches!(
+        execute_error(
+            &ImageGenerationTool::default(),
+            json!({ "prompt": "diagram" }),
+            tool_ctx(CapabilityRegistry::default()),
+        )
+        .await,
+        ToolError::CapabilityMissing(capability)
+            if capability == brokered_platform_runtime_capability()
+    ));
+}
+
+#[tokio::test]
+async fn brokered_platform_tool_dispatches_to_runtime_capability() {
+    let mut caps = CapabilityRegistry::default();
+    caps.install::<dyn BrokeredPlatformRuntimeCap>(
+        brokered_platform_runtime_capability(),
+        Arc::new(EchoBrokeredPlatformRuntime),
+    );
+
+    let result = execute_final(
+        &ImageGenerationTool::default(),
+        json!({ "prompt": "diagram" }),
+        tool_ctx(caps),
+    )
+    .await;
+
+    let ToolResult::Structured(value) = result else {
+        panic!("expected structured brokered platform result");
+    };
+    assert_eq!(value["tool"], "ImageGeneration");
+    assert_eq!(value["input"]["prompt"], "diagram");
+}
+
+#[tokio::test]
+async fn brokered_platform_execute_uses_authorized_input_snapshot() {
+    let mut caps = CapabilityRegistry::default();
+    caps.install::<dyn BrokeredPlatformRuntimeCap>(
+        brokered_platform_runtime_capability(),
+        Arc::new(EchoBrokeredPlatformRuntime),
+    );
+    let tool = ImageGenerationTool::default();
+    let ctx = tool_ctx(caps);
+    let plan = tool
+        .plan(&json!({ "prompt": "authorized" }), &ctx)
+        .await
+        .unwrap();
+    let authorized = AuthorizedToolInput::new(
+        json!({ "prompt": "mutated" }),
+        plan.clone(),
+        ticket_for(&plan),
+    )
+    .unwrap();
+
+    let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
+    let Some(harness_tool::ToolEvent::Final(ToolResult::Structured(value))) = stream.next().await
+    else {
+        panic!("expected structured brokered platform result");
+    };
+
+    assert_eq!(value["input"]["prompt"], "authorized");
+}
+
+#[tokio::test]
+async fn git_status_plan_is_read_only_fixed_command() {
+    let workspace = tempfile::tempdir().unwrap();
+    let tool = GitStatusTool::default();
+    let ctx = tool_ctx_at(workspace.path(), CapabilityRegistry::default());
+
+    let plan = tool.plan(&json!({}), &ctx).await.unwrap();
+
+    assert_eq!(plan.tool_name, "GitStatus");
+    assert_eq!(plan.scope, DecisionScope::ToolName("GitStatus".to_owned()));
+    assert!(matches!(
+        plan.subject,
+        PermissionSubject::ToolInvocation { ref tool, .. } if tool == "GitStatus"
+    ));
+    assert_eq!(plan.workspace_access, WorkspaceAccess::ReadOnly);
+    assert_eq!(plan.network_access, NetworkAccess::None);
+    assert_eq!(
+        plan.execution_channel,
+        ToolExecutionChannel::DirectAuthorizedRust
+    );
+    assert!(matches!(
+        plan.resources.as_slice(),
+        [ActionResource::Command {
+            command,
+            argv,
+            cwd: Some(cwd),
+            ..
+        }] if command == "git"
+            && argv == &vec!["status".to_owned(), "--short".to_owned(), "--branch".to_owned()]
+            && cwd == workspace.path()
+    ));
+}
+
+#[tokio::test]
+async fn git_stage_plan_requires_exact_command_permission() {
+    let workspace = tempfile::tempdir().unwrap();
+    let tool = GitStageTool::default();
+    let ctx = tool_ctx_at(workspace.path(), CapabilityRegistry::default());
+
+    let plan = tool
+        .plan(&json!({ "paths": ["src/lib.rs", "README.md"] }), &ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(plan.tool_name, "GitStage");
+    assert!(matches!(
+        plan.scope,
+        DecisionScope::ExactCommand {
+            ref command,
+            cwd: Some(ref cwd)
+        } if command == "git add -- src/lib.rs README.md" && cwd == workspace.path()
+    ));
+    assert!(matches!(
+        plan.subject,
+        PermissionSubject::CommandExec {
+            ref command,
+            ref argv,
+            cwd: Some(ref cwd),
+            fingerprint: Some(_),
+        } if command == "git"
+            && argv == &vec![
+                "add".to_owned(),
+                "--".to_owned(),
+                "src/lib.rs".to_owned(),
+                "README.md".to_owned()
+            ]
+            && cwd == workspace.path()
+    ));
+    assert!(matches!(
+        plan.workspace_access,
+        WorkspaceAccess::ReadWrite {
+            allowed_writable_subpaths: ref paths
+        } if paths.is_empty()
+    ));
+    assert_eq!(plan.network_access, NetworkAccess::None);
+    assert_eq!(
+        plan.execution_channel,
+        ToolExecutionChannel::DirectAuthorizedRust
+    );
+    assert!(matches!(
+        plan.resources.as_slice(),
+        [ActionResource::Command {
+            command,
+            argv,
+            cwd: Some(cwd),
+            ..
+        }] if command == "git"
+            && argv == &vec![
+                "add".to_owned(),
+                "--".to_owned(),
+                "src/lib.rs".to_owned(),
+                "README.md".to_owned()
+            ]
+            && cwd == workspace.path()
+    ));
+}
+
+#[tokio::test]
+async fn git_execute_uses_authorized_command_resource_not_raw_input() {
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let workspace = tempfile::tempdir().unwrap();
+    std::process::Command::new("git")
+        .arg("init")
+        .current_dir(workspace.path())
+        .output()
+        .unwrap();
+    std::fs::write(workspace.path().join("a.txt"), "a").unwrap();
+    std::fs::write(workspace.path().join("b.txt"), "b").unwrap();
+
+    let tool = GitStageTool::default();
+    let ctx = tool_ctx_at(workspace.path(), CapabilityRegistry::default());
+    let plan = tool
+        .plan(&json!({ "paths": ["a.txt"] }), &ctx)
+        .await
+        .unwrap();
+    let authorized = AuthorizedToolInput::new(
+        json!({ "paths": ["b.txt"] }),
+        plan.clone(),
+        ticket_for(&plan),
+    )
+    .unwrap();
+    let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
+    match stream.next().await {
+        Some(harness_tool::ToolEvent::Final(_)) => {}
+        other => panic!("expected final result, got {other:?}"),
+    }
+
+    let staged = std::process::Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(workspace.path())
+        .output()
+        .unwrap();
+    assert!(staged.status.success());
+    assert_eq!(String::from_utf8_lossy(&staged.stdout), "a.txt\n");
+}
+
+#[tokio::test]
+async fn git_plan_rejects_cwd_outside_workspace() {
+    let workspace = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let tool = GitStatusTool::default();
+    let ctx = tool_ctx_at(workspace.path(), CapabilityRegistry::default());
+
+    assert!(matches!(
+        tool.plan(&json!({ "cwd": outside.path() }), &ctx)
+            .await
+            .unwrap_err(),
+        ToolError::PermissionDenied(_)
+    ));
 }
 
 #[tokio::test]
@@ -323,5 +618,21 @@ fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
         ledger
             .consume(ticket.id, &claims, chrono::Utc::now())
             .expect("test ticket should consume")
+    }
+}
+
+struct EchoBrokeredPlatformRuntime;
+
+impl BrokeredPlatformRuntimeCap for EchoBrokeredPlatformRuntime {
+    fn execute(
+        &self,
+        request: BrokeredPlatformRuntimeRequest,
+    ) -> BoxFuture<'static, Result<Value, ToolError>> {
+        Box::pin(async move {
+            Ok(json!({
+                "tool": request.tool_name,
+                "input": request.input,
+            }))
+        })
     }
 }

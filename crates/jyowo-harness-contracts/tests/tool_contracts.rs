@@ -37,13 +37,88 @@ fn tool_descriptor_is_contract_surface() {
         origin: ToolOrigin::Builtin,
         search_hint: Some("read file path".to_owned()),
         service_binding: None,
+        metadata: ToolDescriptorMetadata {
+            aliases: vec!["Read".to_owned()],
+            families: vec!["filesystem".to_owned()],
+            platforms: vec!["codex".to_owned()],
+            examples: vec!["Read src/lib.rs".to_owned()],
+            risk_level: ToolRiskLevel::Low,
+            effects: vec!["reads_files".to_owned()],
+            modalities: vec!["text".to_owned()],
+            integration_source: ToolIntegrationSource::Builtin,
+        },
     };
 
     let value = serde_json::to_value(&descriptor).unwrap();
     assert_eq!(value["name"], "read_file");
+    assert_eq!(value["metadata"]["aliases"], json!(["Read"]));
+    assert_eq!(value["metadata"]["riskLevel"], "low");
+    assert_eq!(value["metadata"]["integrationSource"], "builtin");
 
     let roundtrip: ToolDescriptor = serde_json::from_value(value).unwrap();
     assert_eq!(roundtrip, descriptor);
+}
+
+#[test]
+fn tool_descriptor_metadata_defaults_when_missing() {
+    let value = json!({
+        "name": "read_file",
+        "display_name": "Read file",
+        "description": "Read a workspace file",
+        "category": "filesystem",
+        "group": "file_system",
+        "version": "1.0.0",
+        "input_schema": { "type": "object" },
+        "output_schema": null,
+        "dynamic_schema": false,
+        "properties": {
+            "is_concurrency_safe": true,
+            "is_read_only": true,
+            "is_destructive": false,
+            "long_running": null,
+            "defer_policy": "always_load"
+        },
+        "trust_level": "admin_trusted",
+        "required_capabilities": [],
+        "budget": {
+            "metric": "chars",
+            "limit": 8192,
+            "on_overflow": "offload",
+            "preview_head_chars": 1024,
+            "preview_tail_chars": 1024
+        },
+        "provider_restriction": "all",
+        "origin": "builtin",
+        "search_hint": null
+    });
+
+    let descriptor: ToolDescriptor = serde_json::from_value(value).unwrap();
+    assert_eq!(descriptor.metadata, ToolDescriptorMetadata::default());
+}
+
+#[test]
+fn new_tool_groups_have_stable_wire_names() {
+    let cases = [
+        (ToolGroup::Git, "git"),
+        (ToolGroup::Worktree, "worktree"),
+        (ToolGroup::Session, "session"),
+        (ToolGroup::Artifact, "artifact"),
+        (ToolGroup::Browser, "browser"),
+        (ToolGroup::Computer, "computer"),
+        (ToolGroup::Image, "image"),
+        (ToolGroup::Notebook, "notebook"),
+        (ToolGroup::Lsp, "lsp"),
+        (ToolGroup::Automation, "automation"),
+        (ToolGroup::Workflow, "workflow"),
+    ];
+
+    for (group, wire) in cases {
+        assert_eq!(serde_json::to_value(&group).unwrap(), json!(wire));
+        assert_eq!(
+            serde_json::from_value::<ToolGroup>(json!(wire)).unwrap(),
+            group
+        );
+    }
 }
 
 #[test]

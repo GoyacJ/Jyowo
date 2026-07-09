@@ -51,6 +51,25 @@ impl ToolRegistryBuilder {
                     registry.register(Box::<crate::builtin::GrepTool>::default())?;
                     registry.register(Box::<crate::builtin::GlobTool>::default())?;
                     registry.register(Box::<crate::builtin::ReadBlobTool>::default())?;
+                    registry.register(Box::<crate::builtin::GitStatusTool>::default())?;
+                    registry.register(Box::<crate::builtin::GitDiffTool>::default())?;
+                    registry.register(Box::<crate::builtin::GitShowTool>::default())?;
+                    registry.register(Box::<crate::builtin::GitLogTool>::default())?;
+                    registry.register(Box::<crate::builtin::GitStageTool>::default())?;
+                    registry.register(Box::<crate::builtin::GitCommitTool>::default())?;
+                    registry.register(Box::<crate::builtin::GitBranchTool>::default())?;
+                    registry.register(Box::<crate::builtin::GitPullTool>::default())?;
+                    registry.register(Box::<crate::builtin::GitPushTool>::default())?;
+                    registry.register(Box::<crate::builtin::WorktreeTool>::default())?;
+                    registry.register(Box::<crate::builtin::SessionTool>::default())?;
+                    registry.register(Box::<crate::builtin::ArtifactTool>::default())?;
+                    registry.register(Box::<crate::builtin::BrowserUseTool>::default())?;
+                    registry.register(Box::<crate::builtin::ComputerUseTool>::default())?;
+                    registry.register(Box::<crate::builtin::ImageGenerationTool>::default())?;
+                    registry.register(Box::<crate::builtin::NotebookEditTool>::default())?;
+                    registry.register(Box::<crate::builtin::LspTool>::default())?;
+                    registry.register(Box::<crate::builtin::AutomationTool>::default())?;
+                    registry.register(Box::<crate::builtin::WorkflowTool>::default())?;
                     registry.register_with_journal_authority(
                         Box::<crate::builtin::BashTool>::default(),
                         ToolJournalAuthority::Sandbox,
