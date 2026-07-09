@@ -85,15 +85,24 @@ describe('SkillsPage', () => {
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '工具' }))
 
-    expect(screen.getByRole('heading', { name: '内置工具' })).toBeInTheDocument()
-    expect(screen.getByText('FileRead')).toBeInTheDocument()
-    expect(screen.getByText('Bash')).toBeInTheDocument()
-    expect(screen.getByText('skills_invoke')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '运行时工具' })).toBeInTheDocument()
+    expect(await screen.findByText('FileRead')).toBeInTheDocument()
+    expect(await screen.findByText('Bash')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Provider 设置' })).not.toBeInTheDocument()
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'MCP' }))
 
     expect(await screen.findByRole('heading', { name: 'MCP 服务器' })).toBeInTheDocument()
+  })
+
+  it('opens runtime tools from the tools route search', async () => {
+    window.history.replaceState(null, '', '/skills?tab=tools')
+
+    renderSkillsPage()
+
+    expect(screen.getByRole('tab', { name: '工具' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByRole('heading', { name: '运行时工具' })).toBeInTheDocument()
+    expect(await screen.findByText('FileRead')).toBeInTheDocument()
   })
 
   it('renders loading, empty, and error states for skill list', async () => {

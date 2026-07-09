@@ -3,11 +3,16 @@ import {
   fixtureAppInfo,
   fixtureHarnessHealthcheck,
   fixtureRuntimeExecutionStatus,
+  fixtureRuntimeTools,
   wait,
 } from './base'
 import type { TestCommandClientState, TestCommandHandlers } from './state'
 
-type BaseCommandKeys = 'getAppInfo' | 'getHarnessHealthcheck' | 'getRuntimeExecutionStatus'
+type BaseCommandKeys =
+  | 'getAppInfo'
+  | 'getHarnessHealthcheck'
+  | 'getRuntimeExecutionStatus'
+  | 'listRuntimeTools'
 
 export function createBaseCommandHandlers(
   state: TestCommandClientState,
@@ -24,6 +29,10 @@ export function createBaseCommandHandlers(
     async getRuntimeExecutionStatus() {
       await wait(state.options.delayMs)
       return cloneResponse(state.options.runtimeExecutionStatus ?? fixtureRuntimeExecutionStatus)
+    },
+    async listRuntimeTools() {
+      await wait(state.options.delayMs)
+      return cloneResponse(state.options.runtimeTools ?? fixtureRuntimeTools)
     },
   }
 }

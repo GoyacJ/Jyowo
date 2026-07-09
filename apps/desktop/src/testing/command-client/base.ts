@@ -41,6 +41,7 @@ import type {
   ListProviderProbeSnapshotsResponse,
   ListProviderSettingsResponse,
   ListReferenceCandidatesResponse,
+  ListRuntimeToolsResponse,
   ListSkillCatalogEntriesResponse,
   ListSkillCatalogInstallTasksResponse,
   ListSkillCatalogSourcesResponse,
@@ -109,6 +110,44 @@ export const fixtureRuntimeExecutionStatus: RuntimeExecutionStatus = {
       toolName: 'WebFetch',
       available: false,
       unavailableReason: 'HTTP broker is not registered',
+    },
+  ],
+}
+
+export const fixtureRuntimeTools: ListRuntimeToolsResponse = {
+  generation: 1,
+  tools: [
+    {
+      name: 'FileRead',
+      displayName: 'File read',
+      description: 'Read a UTF-8 workspace file.',
+      category: 'builtin',
+      group: 'fileSystem',
+      groupLabel: 'File system',
+      originKind: 'builtin',
+      originId: null,
+      access: 'readOnly',
+      executionChannel: 'directAuthorizedRust',
+      requiredCapabilities: [],
+      deferPolicy: 'alwaysLoad',
+      longRunning: false,
+      serviceBinding: null,
+    },
+    {
+      name: 'Bash',
+      displayName: 'Bash',
+      description: 'Execute a shell command through the configured sandbox.',
+      category: 'builtin',
+      group: 'shell',
+      groupLabel: 'Shell',
+      originKind: 'builtin',
+      originId: null,
+      access: 'destructive',
+      executionChannel: 'processSandbox',
+      requiredCapabilities: [],
+      deferPolicy: 'alwaysLoad',
+      longRunning: true,
+      serviceBinding: null,
     },
   ],
 }
@@ -213,6 +252,7 @@ export interface TestCommandClientOptions {
   referenceCandidates?: ListReferenceCandidatesResponse
   replayTimeline?: ReplayTimelineResponse
   runtimeExecutionStatus?: RuntimeExecutionStatus
+  runtimeTools?: ListRuntimeToolsResponse
   conversationTimelinePage?: PageConversationTimelineResponse
   conversationInspectorItem?: TestCommandResponseOverride<
     CommandClient['getConversationInspectorItem']

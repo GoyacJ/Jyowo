@@ -190,6 +190,45 @@ export const runtimeExecutionStatusSchema = z
   })
   .strict()
 
+const runtimeToolAccessSchema = z.enum(['readOnly', 'mutating', 'destructive'])
+const runtimeToolExecutionChannelSchema = z.enum([
+  'directAuthorizedRust',
+  'processSandbox',
+  'httpBroker',
+  'externalCapability',
+])
+const runtimeToolServiceBindingSchema = z
+  .object({
+    providerId: z.string().min(1),
+    operationId: z.string().min(1),
+    routeKind: z.string().min(1),
+  })
+  .strict()
+const runtimeToolSummarySchema = z
+  .object({
+    name: z.string().min(1),
+    displayName: z.string().min(1),
+    description: z.string(),
+    category: z.string(),
+    group: z.string().min(1),
+    groupLabel: z.string().min(1),
+    originKind: z.enum(['builtin', 'plugin', 'mcp', 'skill', 'custom']),
+    originId: z.string().min(1).nullable(),
+    access: runtimeToolAccessSchema,
+    executionChannel: runtimeToolExecutionChannelSchema,
+    requiredCapabilities: z.array(z.string().min(1)),
+    deferPolicy: z.enum(['alwaysLoad', 'autoDefer', 'forceDefer']),
+    longRunning: z.boolean(),
+    serviceBinding: runtimeToolServiceBindingSchema.nullable(),
+  })
+  .strict()
+export const listRuntimeToolsResponseSchema = z
+  .object({
+    generation: z.number().int().nonnegative(),
+    tools: z.array(runtimeToolSummarySchema),
+  })
+  .strict()
+
 const conversationSummarySchema = z
   .object({
     id: z.string().min(1),
@@ -4210,6 +4249,8 @@ export type AppInfo = z.infer<typeof appInfoSchema>
 export type HarnessHealthcheck = z.infer<typeof harnessHealthcheckSchema>
 export type RuntimeExecutionStatus = z.infer<typeof runtimeExecutionStatusSchema>
 export type ToolRuntimeStatus = z.infer<typeof toolRuntimeStatusSchema>
+export type RuntimeToolSummary = z.infer<typeof runtimeToolSummarySchema>
+export type ListRuntimeToolsResponse = z.infer<typeof listRuntimeToolsResponseSchema>
 export type ListConversationsResponse = z.infer<typeof listConversationsResponseSchema>
 export type ListProjectConversationGroupsResponse = z.infer<
   typeof listProjectConversationGroupsResponseSchema
@@ -4534,6 +4575,7 @@ export interface CommandClient {
   getHarnessHealthcheck: () => Promise<HarnessHealthcheck>
   getRuntimeExecutionStatus: () => Promise<RuntimeExecutionStatus>
   getModelSettingsPage: () => Promise<ModelSettingsPageResponse>
+  listRuntimeTools: () => Promise<ListRuntimeToolsResponse>
   getModelUsageSummary: () => Promise<GetModelUsageSummaryResponse>
   refreshModelProviderCatalog: () => Promise<RefreshModelProviderCatalogResponse>
   listOfficialQuotaSnapshots: () => Promise<ListOfficialQuotaSnapshotsResponse>
@@ -4994,6 +5036,10 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
     async getModelSettingsPage() {
       const command = 'get_model_settings_page'
       return parsePayload(command, modelSettingsPageResponseSchema, await invoke(command))
+    },
+    async listRuntimeTools() {
+      const command = 'list_runtime_tools'
+      return parsePayload(command, listRuntimeToolsResponseSchema, await invoke(command))
     },
     async getModelUsageSummary() {
       const command = 'get_model_usage_summary'
@@ -5734,6 +5780,12 @@ export function getRuntimeExecutionStatus(
   client: CommandClient = tauriCommandClient,
 ): Promise<RuntimeExecutionStatus> {
   return client.getRuntimeExecutionStatus()
+}
+
+export function listRuntimeTools(
+  client: CommandClient = tauriCommandClient,
+): Promise<ListRuntimeToolsResponse> {
+  return client.listRuntimeTools()
 }
 
 export function listConversations(

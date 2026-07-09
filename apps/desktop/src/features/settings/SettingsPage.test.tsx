@@ -127,7 +127,7 @@ describe('SettingsPage', () => {
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '工具' }))
 
-    expect(screen.getByRole('heading', { name: '内置工具' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '运行时工具' })).toBeInTheDocument()
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '自动化' }))
 
@@ -176,6 +176,27 @@ describe('SettingsPage', () => {
 
   it('renders backend-authored runtime execution status in the tools tab', async () => {
     renderSettingsPage({
+      runtimeTools: {
+        generation: 4,
+        tools: [
+          {
+            name: 'GitStatus',
+            displayName: 'Git status',
+            description: 'Show repository status.',
+            category: 'builtin',
+            group: 'git',
+            groupLabel: 'Git',
+            originKind: 'builtin',
+            originId: null,
+            access: 'readOnly',
+            executionChannel: 'directAuthorizedRust',
+            requiredCapabilities: [],
+            deferPolicy: 'alwaysLoad',
+            longRunning: false,
+            serviceBinding: null,
+          },
+        ],
+      },
       runtimeExecutionStatus: {
         processSandbox: {
           backendId: 'routing',
@@ -206,6 +227,8 @@ describe('SettingsPage', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: '工具' }))
 
     expect(await screen.findByRole('heading', { name: '运行时执行状态' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '运行时工具' })).toBeInTheDocument()
+    expect(screen.getByText('GitStatus')).toBeInTheDocument()
     expect(await screen.findByText('routing')).toBeInTheDocument()
     expect(screen.getByText('local-process')).toBeInTheDocument()
     expect(screen.getByText('docker-process')).toBeInTheDocument()
@@ -214,6 +237,38 @@ describe('SettingsPage', () => {
     ).toBeInTheDocument()
     expect(screen.getAllByText('WebFetch').length).toBeGreaterThan(0)
     expect(screen.getByText('HTTP broker is not registered')).toBeInTheDocument()
+  })
+
+  it('opens runtime tools from the tools route search', async () => {
+    window.history.replaceState(null, '', '/settings?tab=tools')
+
+    renderSettingsPage({
+      runtimeTools: {
+        generation: 5,
+        tools: [
+          {
+            name: 'GitStatus',
+            displayName: 'Git status',
+            description: 'Show repository status.',
+            category: 'builtin',
+            group: 'git',
+            groupLabel: 'Git',
+            originKind: 'builtin',
+            originId: null,
+            access: 'readOnly',
+            executionChannel: 'directAuthorizedRust',
+            requiredCapabilities: [],
+            deferPolicy: 'alwaysLoad',
+            longRunning: false,
+            serviceBinding: null,
+          },
+        ],
+      },
+    })
+
+    expect(screen.getByRole('tab', { name: '工具' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByRole('heading', { name: '运行时工具' })).toBeInTheDocument()
+    expect(await screen.findByText('GitStatus')).toBeInTheDocument()
   })
 
   it('owns the right pane scroll container', () => {

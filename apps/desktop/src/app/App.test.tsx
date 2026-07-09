@@ -177,6 +177,47 @@ describe('App', () => {
     })
     const commandClient = createTestCommandClient({
       providerSettingsList: emptyProviderSettingsList,
+      runtimeTools: {
+        generation: 3,
+        tools: [
+          {
+            name: 'FileRead',
+            displayName: 'Read file',
+            description: 'Read a file from the workspace.',
+            category: 'builtin',
+            group: 'fileSystem',
+            groupLabel: 'File system',
+            originKind: 'builtin',
+            originId: null,
+            access: 'readOnly',
+            executionChannel: 'directAuthorizedRust',
+            requiredCapabilities: [],
+            deferPolicy: 'alwaysLoad',
+            longRunning: false,
+            serviceBinding: null,
+          },
+          {
+            name: 'MiniMaxTextToImage',
+            displayName: 'MiniMax text to image',
+            description: 'Generate images with MiniMax.',
+            category: 'builtin',
+            group: 'network',
+            groupLabel: 'Network',
+            originKind: 'builtin',
+            originId: null,
+            access: 'mutating',
+            executionChannel: 'httpBroker',
+            requiredCapabilities: ['provider_credential_resolver'],
+            deferPolicy: 'alwaysLoad',
+            longRunning: true,
+            serviceBinding: {
+              providerId: 'minimax',
+              operationId: 'minimax.image_generation',
+              routeKind: 'imageGeneration',
+            },
+          },
+        ],
+      },
     })
 
     window.history.pushState(null, '', '/skills')
@@ -193,10 +234,9 @@ describe('App', () => {
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Tools' }))
 
-    expect(screen.getByRole('heading', { name: 'Built-in tools' })).toBeInTheDocument()
-    expect(screen.getByText('FileRead')).toBeInTheDocument()
-    expect(screen.getByText('Bash')).toBeInTheDocument()
-    expect(screen.getByText('skills_invoke')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Runtime tools' })).toBeInTheDocument()
+    expect(await screen.findByText('FileRead')).toBeInTheDocument()
+    expect(await screen.findByText('MiniMaxTextToImage')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Model configuration' })).not.toBeInTheDocument()
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'MCP' }))
