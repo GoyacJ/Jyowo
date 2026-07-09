@@ -12,6 +12,7 @@ import type {
   ListProviderProbeSnapshotsResponse,
   ListProviderSettingsResponse,
   ModelProviderCatalogResponse,
+  ModelSettingsPageResponse,
 } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
 import { createTestCommandClient } from '@/testing/command-client'
@@ -70,10 +71,12 @@ export const Ready: Story = {
 export const PartialData: Story = {
   decorators: [
     withClient(() =>
-      failingNonCriticalClient({
-        getModelUsageSummary: true,
-        listOfficialQuotaSnapshots: true,
-        listProviderProbeSnapshots: true,
+      readyClient({
+        modelSettingsPage: readyModelSettingsPage({
+          probeSnapshots: { status: 'error', safeMessage: 'Probe snapshots unavailable.' },
+          usageSummary: { status: 'error', safeMessage: 'Usage summary unavailable.' },
+          quotaSnapshots: { status: 'error', safeMessage: 'Quota snapshots unavailable.' },
+        }),
       }),
     ),
   ],
@@ -84,7 +87,7 @@ export const ErrorState: Story = {
   decorators: [
     withClient(() => ({
       ...readyClient(),
-      listProviderSettings: async () => {
+      getModelSettingsPage: async () => {
         throw new globalThis.Error('Provider settings could not be read safely.')
       },
     })),
@@ -120,32 +123,6 @@ function StoryFrame({ children }: { children: ReactNode }) {
   return <main className="min-h-screen bg-background p-4 text-foreground">{children}</main>
 }
 
-function failingNonCriticalClient(failures: {
-  getModelUsageSummary?: boolean
-  listOfficialQuotaSnapshots?: boolean
-  listProviderProbeSnapshots?: boolean
-}) {
-  const client = readyClient()
-  return {
-    ...client,
-    getModelUsageSummary: failures.getModelUsageSummary
-      ? async () => {
-          throw new globalThis.Error('Usage summary unavailable.')
-        }
-      : client.getModelUsageSummary,
-    listOfficialQuotaSnapshots: failures.listOfficialQuotaSnapshots
-      ? async () => {
-          throw new globalThis.Error('Quota snapshots unavailable.')
-        }
-      : client.listOfficialQuotaSnapshots,
-    listProviderProbeSnapshots: failures.listProviderProbeSnapshots
-      ? async () => {
-          throw new globalThis.Error('Probe snapshots unavailable.')
-        }
-      : client.listProviderProbeSnapshots,
-  } satisfies CommandClient
-}
-
 function readyClient(overrides: Parameters<typeof createTestCommandClient>[0] = {}) {
   return createTestCommandClient({
     modelProviderCatalog: catalog,
@@ -155,6 +132,23 @@ function readyClient(overrides: Parameters<typeof createTestCommandClient>[0] = 
     officialQuotaSnapshots: quotaSnapshots,
     ...overrides,
   })
+}
+
+function readyModelSettingsPage(
+  overrides: Partial<ModelSettingsPageResponse> = {},
+): ModelSettingsPageResponse {
+  return {
+    catalog,
+    catalogSnapshot: { source: 'bundled' },
+    providerSettings: settings,
+    probeSnapshots: { status: 'ready', data: probeSnapshots },
+    usageSummary: { status: 'ready', data: usageSummary },
+    quotaSnapshots: { status: 'ready', data: quotaSnapshots },
+    capabilityRoutes: { status: 'ready', data: { version: 1, routes: [] } },
+    capabilityRouteOptions: { status: 'ready', data: { options: [] } },
+    generatedAt: '2026-06-30T12:00:00Z',
+    ...overrides,
+  }
 }
 
 const modelCapability: ConversationModelCapability = {

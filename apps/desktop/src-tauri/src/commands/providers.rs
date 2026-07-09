@@ -1666,7 +1666,7 @@ pub(crate) async fn provider_capability_route_runtime_context(
             .provider_settings_store
             .load_record()?
             .unwrap_or_default(),
-        list_model_provider_catalog_payload_with_remote().await,
+        super::model_settings::local_model_provider_catalog(runtime_state)?.0,
         desktop_provider_service_adapter_availability(runtime_state),
     ))
 }

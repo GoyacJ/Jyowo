@@ -1,4 +1,4 @@
-import { Plus } from 'lucide-react'
+import { Plus, RefreshCw } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -28,11 +28,13 @@ export function ModelSettingsPage() {
   const { t } = useTranslation('settings')
   const {
     isAnySetDefaultPending,
+    isCatalogRefreshPending,
     isProbePending,
     isQuotaRefreshPending,
     isSetDefaultPending,
     pageState,
     probeConfig,
+    refreshCatalog,
     refreshQuota,
     refetchAll,
     deleteCapabilityRoute,
@@ -106,10 +108,27 @@ export function ModelSettingsPage() {
           <h1 className="font-semibold text-xl">{t('models.title')}</h1>
           <Badge variant="outline">{t('scope.globalDefaults')}</Badge>
         </div>
-        <Button onClick={() => setCreateConfigOpen(true)} type="button">
-          <Plus aria-hidden="true" className="size-4" data-icon />
-          {t('provider.newConfig')}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            disabled={isCatalogRefreshPending}
+            onClick={() => void refreshCatalog().catch(() => undefined)}
+            type="button"
+            variant="outline"
+          >
+            <RefreshCw
+              aria-hidden="true"
+              className={`size-4 ${isCatalogRefreshPending ? 'animate-spin' : ''}`}
+              data-icon
+            />
+            {isCatalogRefreshPending
+              ? t('models.actions.refreshingCatalog')
+              : t('models.actions.refreshCatalog')}
+          </Button>
+          <Button onClick={() => setCreateConfigOpen(true)} type="button">
+            <Plus aria-hidden="true" className="size-4" data-icon />
+            {t('provider.newConfig')}
+          </Button>
+        </div>
       </div>
 
       <Tabs onValueChange={setActiveSurface} value={activeSurface}>

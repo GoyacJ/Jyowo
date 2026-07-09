@@ -46,11 +46,13 @@ import type {
   ListSkillCatalogSourcesResponse,
   ListSkillsResponse,
   ModelProviderCatalogResponse,
+  ModelSettingsPageResponse,
   PageConversationTimelineResponse,
   PageConversationWorktreeResponse,
   PluginInstallReport,
   PluginOperationResult,
   ProbeProviderConfigResponse,
+  RefreshModelProviderCatalogResponse,
   RefreshOfficialQuotaResponse,
   ReplayTimelineResponse,
   RequestProviderConfigApiKeyRevealResponse,
@@ -187,6 +189,8 @@ export interface TestCommandClientOptions {
   mcpServer?: SaveMcpServerResponse
   mcpServers?: ListMcpServersResponse
   modelProviderCatalog?: ModelProviderCatalogResponse
+  modelSettingsPage?: ModelSettingsPageResponse
+  modelProviderCatalogRefresh?: RefreshModelProviderCatalogResponse
   pluginDetail?: GetPluginDetailResponse
   pluginInstallReport?: PluginInstallReport
   pluginOperation?: PluginOperationResult

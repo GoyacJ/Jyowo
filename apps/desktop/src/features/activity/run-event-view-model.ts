@@ -92,6 +92,8 @@ function getActivityLabel(event: RunEvent): string {
     case 'tool.completed':
     case 'tool.failed':
       return event.payload?.toolUseId ?? 'tool'
+    case 'tool.deferred_pool_changed':
+      return 'tool pool'
     case 'permission.requested':
     case 'permission.resolved':
       return event.payload?.requestId ?? 'permission'
@@ -170,6 +172,7 @@ function getWithheldActivityLabel(event: RunEvent): string {
     case 'tool.denied':
     case 'tool.completed':
     case 'tool.failed':
+    case 'tool.deferred_pool_changed':
       return 'tool'
     case 'permission.requested':
     case 'permission.resolved':
@@ -336,6 +339,7 @@ function getActivityStatus(event: RunEvent): ActivityRailItem['status'] {
     case 'permission.resolved':
     case 'run.ended':
     case 'tool.completed':
+    case 'tool.deferred_pool_changed':
       return 'success'
     default:
       return assertNever(event)
@@ -431,6 +435,7 @@ function getDetails(event: RunEvent): RunEventViewModel['details'] {
     case 'tool.denied':
     case 'tool.completed':
     case 'tool.failed':
+    case 'tool.deferred_pool_changed':
     case 'artifact.created':
     case 'artifact.updated':
     case 'background.started':

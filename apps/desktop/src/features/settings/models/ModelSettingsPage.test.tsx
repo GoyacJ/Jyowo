@@ -17,6 +17,7 @@ import type {
   ListProviderProbeSnapshotsResponse,
   ListProviderSettingsResponse,
   ModelProviderCatalogResponse,
+  ModelSettingsPageResponse,
 } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
 import { createTestCommandClient } from '@/testing/command-client'
@@ -348,6 +349,23 @@ function readyClient(overrides: Parameters<typeof createTestCommandClient>[0] = 
   })
 }
 
+function readyModelSettingsPage(
+  overrides: Partial<ModelSettingsPageResponse> = {},
+): ModelSettingsPageResponse {
+  return {
+    catalog,
+    catalogSnapshot: { source: 'bundled' },
+    providerSettings: settings,
+    probeSnapshots: { status: 'ready', data: probeSnapshots },
+    usageSummary: { status: 'ready', data: usageSummary },
+    quotaSnapshots: { status: 'ready', data: quotaSnapshots },
+    capabilityRoutes: { status: 'ready', data: capabilityRoutes },
+    capabilityRouteOptions: { status: 'ready', data: capabilityRouteOptions },
+    generatedAt: '2026-06-30T12:00:00Z',
+    ...overrides,
+  }
+}
+
 describe('ModelSettingsPage', () => {
   it('renders loading, empty, and safe error states', async () => {
     const { unmount } = renderModelSettingsPage(readyClient({ delayMs: 50 }))
@@ -364,7 +382,7 @@ describe('ModelSettingsPage', () => {
 
     const errorClient = {
       ...readyClient(),
-      listProviderSettings: vi.fn().mockRejectedValue(new Error('Safe backend error')),
+      getModelSettingsPage: vi.fn().mockRejectedValue(new Error('Safe backend error')),
     } satisfies CommandClient
     renderModelSettingsPage(errorClient)
     expect(await screen.findByRole('alert')).toHaveTextContent('Safe backend error')
@@ -387,7 +405,7 @@ describe('ModelSettingsPage', () => {
   it('renders summary band and matrix rows with backend usage, connectivity, and quota state', async () => {
     renderModelSettingsPage()
 
-    expect(await screen.findByRole('heading', { name: 'Models' })).toBeInTheDocument()
+    expect(await screen.findByRole('row', { name: /Primary OpenAI/ })).toBeInTheDocument()
     expect(await screen.findByRole('row', { name: /Primary OpenAI/ })).toBeInTheDocument()
     expect(await screen.findByText('3 configured')).toBeInTheDocument()
     expect(await screen.findByText('1 available')).toBeInTheDocument()
@@ -420,6 +438,24 @@ describe('ModelSettingsPage', () => {
 
     expect(screen.getByRole('row', { name: /Research Claude.*Unsupported/ })).toBeInTheDocument()
     expect(screen.getByRole('row', { name: /Backup OpenAI.*Failed/ })).toBeInTheDocument()
+  })
+
+  it('refreshes the provider catalog only from the explicit catalog action', async () => {
+    const refreshModelProviderCatalog = vi.fn().mockResolvedValue({
+      catalog,
+      catalogSnapshot: { source: 'bundled' },
+    })
+    renderModelSettingsPage({
+      ...readyClient(),
+      refreshModelProviderCatalog,
+    })
+
+    expect(await screen.findByRole('row', { name: /Primary OpenAI/ })).toBeInTheDocument()
+    expect(refreshModelProviderCatalog).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh catalog' }))
+
+    await waitFor(() => expect(refreshModelProviderCatalog).toHaveBeenCalledTimes(1))
   })
 
   it('does not present metadata validation as a connectivity check', async () => {
@@ -649,13 +685,15 @@ describe('ModelSettingsPage', () => {
   })
 
   it('keeps partial probe, usage, and quota failures local to affected metrics', async () => {
-    const client = {
-      ...readyClient(),
-      getModelUsageSummary: vi.fn().mockRejectedValue(new Error('Usage unavailable')),
-      listOfficialQuotaSnapshots: vi.fn().mockRejectedValue(new Error('Quota unavailable')),
-      listProviderProbeSnapshots: vi.fn().mockRejectedValue(new Error('Probe unavailable')),
-    } satisfies CommandClient
-    renderModelSettingsPage(client)
+    renderModelSettingsPage(
+      readyClient({
+        modelSettingsPage: readyModelSettingsPage({
+          probeSnapshots: { status: 'error', safeMessage: 'Probe unavailable' },
+          usageSummary: { status: 'error', safeMessage: 'Usage unavailable' },
+          quotaSnapshots: { status: 'error', safeMessage: 'Quota unavailable' },
+        }),
+      }),
+    )
 
     expect(await screen.findByRole('row', { name: /Primary OpenAI/ })).toBeInTheDocument()
     await waitFor(() => expect(screen.getAllByText('Unavailable').length).toBeGreaterThanOrEqual(3))

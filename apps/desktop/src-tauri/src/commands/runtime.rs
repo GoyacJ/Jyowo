@@ -298,6 +298,14 @@ impl DesktopRuntimeState {
             provider_quota_cache_store: Arc::new(DesktopProviderQuotaCacheStore::new_runtime_root(
                 runtime_layout.runtime_root.clone(),
             )),
+            provider_catalog_snapshot_store: Arc::new(
+                DesktopProviderCatalogSnapshotStore::new_runtime_root(
+                    runtime_layout.runtime_root.clone(),
+                ),
+            ),
+            model_usage_rollup_store: Arc::new(DesktopModelUsageRollupStore::new_runtime_root(
+                runtime_layout.runtime_root.clone(),
+            )),
             official_quota_flights: new_official_quota_flights(),
             account_usage_registry: Arc::new(default_account_usage_registry()),
             provider_capability_route_store: Arc::new(
@@ -535,6 +543,14 @@ impl DesktopRuntimeState {
             ),
             provider_probe_flights: new_provider_probe_flights(),
             provider_quota_cache_store: Arc::new(DesktopProviderQuotaCacheStore::new_runtime_root(
+                runtime_layout.runtime_root.clone(),
+            )),
+            provider_catalog_snapshot_store: Arc::new(
+                DesktopProviderCatalogSnapshotStore::new_runtime_root(
+                    runtime_layout.runtime_root.clone(),
+                ),
+            ),
+            model_usage_rollup_store: Arc::new(DesktopModelUsageRollupStore::new_runtime_root(
                 runtime_layout.runtime_root.clone(),
             )),
             official_quota_flights: new_official_quota_flights(),
@@ -1309,7 +1325,7 @@ pub(crate) async fn build_desktop_harness(
             ))
         })?,
     );
-    let event_store: Arc<dyn EventStore> = Arc::new(
+    let base_event_store: Arc<dyn EventStore> = Arc::new(
         JsonlEventStore::open(
             runtime_root.join("events"),
             Arc::new(DefaultRedactor::default()),
@@ -1319,6 +1335,13 @@ pub(crate) async fn build_desktop_harness(
             runtime_init_failed(format!("event store initialization failed: {error}"))
         })?,
     );
+    let model_usage_rollup_store: Arc<dyn ModelUsageRollupStore> = Arc::new(
+        DesktopModelUsageRollupStore::new_runtime_root(runtime_root.clone()),
+    );
+    let event_store: Arc<dyn EventStore> = Arc::new(ProjectingEventStore::new(
+        base_event_store,
+        Arc::clone(&model_usage_rollup_store),
+    ));
     let mcp_server_records =
         DesktopMcpServerStore::global(storage_layout_for_home()).load_records()?;
     let mcp_diagnostic_store: Arc<dyn McpDiagnosticStore> = Arc::new(
