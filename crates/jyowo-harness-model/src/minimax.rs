@@ -3,10 +3,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use harness_contracts::ModelError;
 
-use crate::openai_protocol::{OpenAiChatDialect, OpenAiProtocolClient, OpenAiProtocolProviderExt};
+use crate::openai_protocol::{OpenAiChatDialect, OpenAiProtocolClient};
 use crate::{
     InferContext, ModelCredentialResolver, ModelDescriptor, ModelProtocol, ModelProvider,
-    ModelRequest, ModelStream,
+    ModelRequest, ModelStream, PromptCacheStyle,
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.minimaxi.com";
@@ -15,36 +15,45 @@ pub const MINIMAX_API_KEY_ENV: &str = "MINIMAX_API_KEY";
 
 #[derive(Clone)]
 pub struct MinimaxProvider {
-    client: OpenAiProtocolClient,
+    chat_client: OpenAiProtocolClient,
+    responses_client: OpenAiProtocolClient,
 }
 
 impl MinimaxProvider {
     pub fn from_api_key(api_key: impl Into<String>) -> Self {
+        let api_key = api_key.into();
         Self {
-            client: OpenAiProtocolClient::from_api_key(api_key, DEFAULT_BASE_URL)
+            chat_client: OpenAiProtocolClient::from_api_key(api_key.clone(), DEFAULT_BASE_URL)
                 .with_provider_id(PROVIDER_ID)
                 .with_chat_dialect(OpenAiChatDialect::MiniMax)
                 .with_chat_completions_path("/v1/chat/completions")
                 .with_max_tokens_field("max_completion_tokens"),
+            responses_client: OpenAiProtocolClient::from_api_key(api_key, DEFAULT_BASE_URL)
+                .with_provider_id(PROVIDER_ID)
+                .with_responses_path("/v1/responses"),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn chat_dialect_for_test(&self) -> OpenAiChatDialect {
+        self.chat_client.chat_dialect()
     }
 
     #[must_use]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.client = self.client.with_base_url(base_url);
+        let base_url = base_url.into();
+        self.chat_client = self.chat_client.with_base_url(base_url.clone());
+        self.responses_client = self.responses_client.with_base_url(base_url);
         self
     }
 
     #[must_use]
     pub fn with_credential_resolver(mut self, resolver: Arc<dyn ModelCredentialResolver>) -> Self {
-        self.client = self.client.with_credential_resolver(resolver);
+        self.chat_client = self
+            .chat_client
+            .with_credential_resolver(Arc::clone(&resolver));
+        self.responses_client = self.responses_client.with_credential_resolver(resolver);
         self
-    }
-}
-
-impl OpenAiProtocolProviderExt for MinimaxProvider {
-    fn client(&self) -> &OpenAiProtocolClient {
-        &self.client
     }
 }
 
@@ -59,10 +68,20 @@ impl ModelProvider for MinimaxProvider {
     }
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
-        self.infer_openai_protocol(req, ctx).await
+        match req.protocol {
+            ModelProtocol::Responses => self.responses_client.infer(req, ctx).await,
+            ModelProtocol::ChatCompletions => self.chat_client.infer(req, ctx).await,
+            protocol => Err(ModelError::InvalidRequest(format!(
+                "MiniMax provider supports Responses and ChatCompletions, got {protocol:?}"
+            ))),
+        }
     }
 
     fn default_protocol(&self) -> ModelProtocol {
-        ModelProtocol::ChatCompletions
+        ModelProtocol::Responses
+    }
+
+    fn prompt_cache_style(&self) -> PromptCacheStyle {
+        PromptCacheStyle::OpenAi { auto: true }
     }
 }

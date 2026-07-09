@@ -345,6 +345,7 @@ impl ModelProvider for ScriptedDeepSeekProvider {
             protocol: ModelProtocol::ChatCompletions,
             context_window: 8_000,
             max_output_tokens: 1_000,
+            provider_declared_capability: ConversationModelCapability::default(),
             conversation_capability: ConversationModelCapability::default(),
             runtime_semantics: ModelRuntimeSemantics::openai_chat_deepseek(),
             lifecycle: ModelLifecycle::Stable,
@@ -501,6 +502,7 @@ fn model_snapshot() -> harness_model::ModelRuntimeSnapshot {
         protocol: ModelProtocol::ChatCompletions,
         context_window: 8_000,
         max_output_tokens: 1_000,
+        provider_declared_capability: ConversationModelCapability::default(),
         conversation_capability: ConversationModelCapability::default(),
         runtime_semantics: ModelRuntimeSemantics::openai_chat_deepseek(),
         lifecycle: ModelLifecycle::Stable,
@@ -602,6 +604,7 @@ fn lookup_descriptor() -> ToolDescriptor {
         origin: ToolOrigin::Builtin,
         search_hint: None,
         service_binding: None,
+        metadata: harness_contracts::ToolDescriptorMetadata::default(),
     }
 }
 

@@ -500,6 +500,7 @@ impl ModelProvider for RecordingModelProvider {
             display_name: "Test model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_000,
+            provider_declared_capability: ConversationModelCapability::default(),
             conversation_capability: ConversationModelCapability::default(),
             runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
                 harness_model::ModelProtocol::Messages,
@@ -652,6 +653,7 @@ impl InterruptibleTool {
                 origin: ToolOrigin::Builtin,
                 search_hint: None,
                 service_binding: None,
+                metadata: harness_contracts::ToolDescriptorMetadata::default(),
             },
             executed,
             started,

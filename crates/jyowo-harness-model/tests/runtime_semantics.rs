@@ -57,7 +57,10 @@ fn runtime_semantics_deepseek_requires_private_reasoning_replay() {
 fn runtime_semantics_minimax_plain_chat_does_not_require_private_replay() {
     assert_eq!(
         ModelRuntimeSemantics::openai_chat_minimax().reasoning_protocol,
-        ReasoningProtocolSemantics::None
+        ReasoningProtocolSemantics::ProviderPrivateReplay {
+            continuation_kind: ProviderContinuationKind::ReasoningReplay,
+            required_for_assistant_tool_replay: false,
+        }
     );
     assert_eq!(
         ModelRuntimeSemantics::openai_chat_minimax()

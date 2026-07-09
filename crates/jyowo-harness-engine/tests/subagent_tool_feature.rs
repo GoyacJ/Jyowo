@@ -1653,6 +1653,7 @@ impl ModelProvider for EmptyModel {
             display_name: "Empty Model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_024,
+            provider_declared_capability: ConversationModelCapability::default(),
             conversation_capability: ConversationModelCapability::default(),
             runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
                 harness_model::ModelProtocol::Messages,
@@ -1825,6 +1826,7 @@ impl ModelProvider for DelegatingModel {
             display_name: "Delegating Model".to_owned(),
             context_window: 8_000,
             max_output_tokens: 1_024,
+            provider_declared_capability: ConversationModelCapability::default(),
             conversation_capability: ConversationModelCapability::default(),
             runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
                 harness_model::ModelProtocol::Messages,
@@ -1934,6 +1936,7 @@ impl TestTool {
                 origin,
                 search_hint: None,
                 service_binding: None,
+                metadata: harness_contracts::ToolDescriptorMetadata::default(),
             },
         }
     }

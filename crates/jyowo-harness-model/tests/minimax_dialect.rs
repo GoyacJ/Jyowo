@@ -54,9 +54,18 @@ async fn minimax_dialect_does_not_emit_or_replay_deepseek_private_payload() {
             name: "search".to_owned(),
         },
     }));
-    assert!(!events
+    let continuation_payload = events
         .iter()
-        .any(|event| matches!(event, ModelStreamEvent::ProviderContinuationDelta { .. })));
+        .find_map(|event| match event {
+            ModelStreamEvent::ProviderContinuationDelta { payload, .. } => Some(payload),
+            _ => None,
+        })
+        .expect("MiniMax reasoning_content should be captured as MiniMax continuation");
+    assert_eq!(
+        continuation_payload["format"],
+        json!("minimax.reasoning_details.v1")
+    );
+    assert_eq!(continuation_payload["reasoningContent"], json!("ignored"));
 
     let requests = server.received_requests().await.unwrap();
     let body: Value = requests[0].body_json().unwrap();

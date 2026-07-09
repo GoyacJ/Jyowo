@@ -248,6 +248,7 @@ impl ModelProvider for ScriptedMiniMaxProvider {
             protocol: ModelProtocol::ChatCompletions,
             context_window: 1_000_000,
             max_output_tokens: 8_192,
+            provider_declared_capability: ConversationModelCapability::default(),
             conversation_capability: ConversationModelCapability::default(),
             runtime_semantics: ModelRuntimeSemantics::openai_chat_minimax(),
             lifecycle: ModelLifecycle::Stable,
@@ -375,6 +376,7 @@ fn model_snapshot() -> harness_model::ModelRuntimeSnapshot {
         protocol: ModelProtocol::ChatCompletions,
         context_window: 1_000_000,
         max_output_tokens: 8_192,
+        provider_declared_capability: ConversationModelCapability::default(),
         conversation_capability: ConversationModelCapability::default(),
         runtime_semantics: ModelRuntimeSemantics::openai_chat_minimax(),
         lifecycle: ModelLifecycle::Stable,
@@ -463,6 +465,7 @@ fn lookup_descriptor() -> ToolDescriptor {
         origin: ToolOrigin::Builtin,
         search_hint: None,
         service_binding: None,
+        metadata: harness_contracts::ToolDescriptorMetadata::default(),
     }
 }
 
