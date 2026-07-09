@@ -16,6 +16,7 @@ use crate::{
 };
 
 use super::chat_codec;
+use super::completions_codec;
 use super::continuation::OpenAiResponsesContinuationCapture;
 use super::dialect::OpenAiChatDialect;
 use super::error::{map_response_error, map_transport_error, OpenAiProtocolError};
@@ -106,6 +107,17 @@ impl OpenAiProtocolClient {
         self.protocol = ModelProtocol::Responses;
         self.path = path.into();
         self
+    }
+
+    #[must_use]
+    pub(crate) fn with_completions_path(mut self, path: impl Into<String>) -> Self {
+        self.protocol = ModelProtocol::Completions;
+        self.path = path.into();
+        self
+    }
+
+    pub(crate) fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     #[must_use]
@@ -200,6 +212,9 @@ impl OpenAiProtocolClient {
                             ModelProtocol::ChatCompletions => {
                                 streaming::response_to_stream(response, self.dialect)
                             }
+                            ModelProtocol::Completions => {
+                                completions_codec::response_to_stream(response)
+                            }
                             ModelProtocol::Responses => responses_codec::response_to_stream(
                                 response,
                                 responses_continuation_capture(&req),
@@ -216,6 +231,9 @@ impl OpenAiProtocolClient {
                     return match self.protocol {
                         ModelProtocol::ChatCompletions => {
                             chat_codec::chat_response_to_stream(response, self.dialect)
+                        }
+                        ModelProtocol::Completions => {
+                            completions_codec::json_response_to_stream(response)
                         }
                         ModelProtocol::Responses => responses_codec::json_response_to_stream(
                             response,
@@ -492,6 +510,7 @@ impl OpenAiProtocolClient {
             ModelProtocol::ChatCompletions => {
                 chat_codec::chat_request_body(req, self.max_tokens_field, self.dialect, ctx).await
             }
+            ModelProtocol::Completions => completions_codec::completions_request_body(req),
             ModelProtocol::Responses => responses_codec::responses_request_body(req, ctx).await,
             _ => Err(ModelError::InvalidRequest(
                 "unsupported OpenAI protocol API mode".to_owned(),
@@ -533,7 +552,9 @@ fn check_context(ctx: &InferContext) -> Result<(), ModelError> {
     }
     Ok(())
 }
+
 #[async_trait]
+#[allow(dead_code)]
 pub(crate) trait OpenAiProtocolProviderExt: Send + Sync + 'static {
     fn client(&self) -> &OpenAiProtocolClient;
 

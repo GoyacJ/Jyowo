@@ -923,12 +923,14 @@ impl ModelProvider for DummyModelProvider {
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             protocol: harness_model::ModelProtocol::Messages,
+            supported_parameters: Vec::new(),
             lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "dummy".to_owned(),
             model_id: "dummy-aux".to_owned(),
             display_name: "Dummy Aux".to_owned(),
             context_window: 1_000,
             max_output_tokens: 100,
+            provider_declared_capability: Default::default(),
             conversation_capability: ConversationModelCapability::default(),
             runtime_semantics: harness_model::ModelRuntimeSemantics::messages_default(
                 harness_model::ModelProtocol::Messages,

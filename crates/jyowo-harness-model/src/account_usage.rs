@@ -972,7 +972,7 @@ fn deepseek_official_balance_url(base_url: Option<&str>) -> Result<String, Accou
         && parsed.host_str() == Some("api.deepseek.com")
         && matches!(parsed.port_or_known_default(), Some(443));
     let path = parsed.path().trim_end_matches('/');
-    if !is_official_origin || !matches!(path, "" | "/" | "/v1") {
+    if !is_official_origin || !matches!(path, "" | "/" | "/v1" | "/beta" | "/anthropic") {
         return Err(AccountUsageError::Failed {
             safe_message: "DeepSeek official quota requires the official DeepSeek API endpoint."
                 .to_owned(),
@@ -1134,7 +1134,7 @@ struct KimiBalanceData {
 ))]
 mod tests {
     use super::*;
-    #[cfg(any(feature = "anthropic", feature = "codex", feature = "openai"))]
+    #[cfg(any(feature = "codex", feature = "openai"))]
     use chrono::TimeZone;
 
     #[test]
@@ -1200,6 +1200,14 @@ mod tests {
         let configured_url =
             deepseek_official_balance_url(Some("https://api.deepseek.com/v1")).unwrap();
         assert_eq!(configured_url, default_url);
+
+        let beta_url =
+            deepseek_official_balance_url(Some("https://api.deepseek.com/beta")).unwrap();
+        assert_eq!(beta_url, default_url);
+
+        let anthropic_url =
+            deepseek_official_balance_url(Some("https://api.deepseek.com/anthropic")).unwrap();
+        assert_eq!(anthropic_url, default_url);
 
         let custom = deepseek_official_balance_url(Some("https://gateway.example.com/v1"));
         assert!(matches!(custom, Err(AccountUsageError::Failed { .. })));

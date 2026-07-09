@@ -75,21 +75,24 @@ describe('ToolInvocationCard', () => {
     expect(screen.queryByText(/secret-token/)).not.toBeInTheDocument()
   })
 
-  it.each(['text', 'structured', 'blob', 'mixed', 'offloaded'] as const)(
-    'shows %s result kind',
-    (resultKind) => {
-      render(
-        <ToolInvocationCard
-          attempt={toolAttempt({
-            outputSummary: undefined,
-            resultKind,
-          })}
-        />,
-      )
+  it.each([
+    'text',
+    'structured',
+    'blob',
+    'mixed',
+    'offloaded',
+  ] as const)('shows %s result kind', (resultKind) => {
+    render(
+      <ToolInvocationCard
+        attempt={toolAttempt({
+          outputSummary: undefined,
+          resultKind,
+        })}
+      />,
+    )
 
-      expect(screen.getByText(resultKind)).toBeInTheDocument()
-    },
-  )
+    expect(screen.getByText(resultKind)).toBeInTheDocument()
+  })
 
   it('shows capability missing failures as a distinct tool state', () => {
     render(

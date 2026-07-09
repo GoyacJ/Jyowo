@@ -394,6 +394,7 @@ const openAiModelDescriptor = {
   maxOutputTokens: 16384,
   modelId: 'gpt-5.4-mini',
   runtimeStatus: { kind: 'runnable' },
+  supportedParameters: [],
 } as const
 const openAiRunModelSnapshot = {
   modelConfigId: 'provider-config-001',
@@ -3853,6 +3854,7 @@ describe('CommandClient', () => {
                   maxOutputTokens: 16384,
                   modelId: 'gpt-5.4-mini',
                   runtimeStatus: { kind: 'runnable' },
+                  supportedParameters: [],
                 },
               ],
               providerId: 'openai',
@@ -3909,6 +3911,7 @@ describe('CommandClient', () => {
               maxOutputTokens: 16384,
               modelId: 'gpt-5.4-mini',
               runtimeStatus: { kind: 'runnable' },
+              supportedParameters: [],
             },
             providerId: 'openai',
           },

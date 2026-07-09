@@ -370,6 +370,34 @@ impl ModelRuntimeSemantics {
     }
 
     #[must_use]
+    pub fn deepseek_anthropic_messages() -> Self {
+        Self {
+            protocol: ModelProtocol::Messages,
+            tool_protocol: ToolProtocolSemantics::AnthropicTools,
+            reasoning_protocol: ReasoningProtocolSemantics::PublicThinking,
+            streaming_protocol: StreamingProtocolSemantics::Sse,
+            cache_protocol: CacheProtocolSemantics::None,
+            media_protocol: MediaProtocolSemantics::TextOnly,
+            output_protocol: OutputProtocolSemantics::TextAndToolUse,
+            provider_continuation_dialect: None,
+        }
+    }
+
+    #[must_use]
+    pub fn text_completions_default() -> Self {
+        Self {
+            protocol: ModelProtocol::Completions,
+            tool_protocol: ToolProtocolSemantics::None,
+            reasoning_protocol: ReasoningProtocolSemantics::None,
+            streaming_protocol: StreamingProtocolSemantics::Sse,
+            cache_protocol: CacheProtocolSemantics::None,
+            media_protocol: MediaProtocolSemantics::TextOnly,
+            output_protocol: OutputProtocolSemantics::Text,
+            provider_continuation_dialect: None,
+        }
+    }
+
+    #[must_use]
     pub fn gemini_default() -> Self {
         Self {
             protocol: ModelProtocol::GenerateContent,

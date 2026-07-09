@@ -352,12 +352,23 @@ fn provider_config_record_from_profile(
         .provider_defaults
         .map(provider_defaults_record_from_profile);
     validate_provider_defaults(profile.provider_id.as_str(), provider_defaults.as_ref())?;
+    validate_provider_defaults_for_protocol(
+        profile.provider_id.as_str(),
+        profile.protocol,
+        provider_defaults.as_ref(),
+    )?;
+    let base_url = normalized_provider_base_url(&profile.provider_id, profile.base_url.as_deref())?;
+    validate_provider_protocol_base_url(
+        &profile.provider_id,
+        profile.protocol,
+        base_url.as_deref(),
+    )?;
     Ok(ProviderConfigRecord {
         api_key: secret
             .map(|entry| entry.api_key.clone())
             .unwrap_or_default(),
         protocol: profile.protocol,
-        base_url: normalized_provider_base_url(&profile.provider_id, profile.base_url.as_deref())?,
+        base_url,
         display_name: profile.display_name,
         id: profile.id,
         model_id: profile.model_id,
@@ -2003,6 +2014,11 @@ pub async fn save_provider_settings_with_store(
         .find(|config| config.id == config_id)
         .cloned();
     let descriptor = provider_settings_descriptor(&request, previous_config.as_ref()).await?;
+    validate_provider_protocol_base_url(
+        &request.provider_id,
+        descriptor.protocol,
+        base_url.as_deref(),
+    )?;
     let api_key = request
         .api_key
         .as_deref()
@@ -2061,6 +2077,11 @@ pub async fn save_provider_settings_with_store(
             })
             .and_then(|config| config.provider_defaults.clone())
     });
+    validate_provider_defaults_for_protocol(
+        &request.provider_id,
+        descriptor.protocol,
+        provider_defaults.as_ref(),
+    )?;
     let model_options = match request.model_options.as_ref() {
         Some(model_options) => model_options.clone(),
         None if previous_config.as_ref().is_some_and(|config| {
@@ -2207,6 +2228,9 @@ fn apply_protocol_override(
     if protocol == descriptor.protocol {
         return Ok(descriptor);
     }
+    if descriptor.provider_id == "deepseek" {
+        return apply_deepseek_protocol_override(descriptor, protocol);
+    }
     if descriptor.provider_id != "qwen" {
         return Err(invalid_payload(
             "protocol override is only supported for Qwen provider configs".to_owned(),
@@ -2225,6 +2249,27 @@ fn apply_protocol_override(
         }
         _ => Err(invalid_payload(
             "Qwen protocol must be chat_completions or responses".to_owned(),
+        )),
+    }
+}
+
+fn apply_deepseek_protocol_override(
+    mut descriptor: ModelDescriptor,
+    protocol: ModelProtocol,
+) -> Result<ModelDescriptor, CommandErrorPayload> {
+    match protocol {
+        ModelProtocol::ChatCompletions => {
+            descriptor.protocol = ModelProtocol::ChatCompletions;
+            descriptor.runtime_semantics = ModelRuntimeSemantics::openai_chat_deepseek();
+            Ok(descriptor)
+        }
+        ModelProtocol::Messages => {
+            descriptor.protocol = ModelProtocol::Messages;
+            descriptor.runtime_semantics = ModelRuntimeSemantics::deepseek_anthropic_messages();
+            Ok(descriptor)
+        }
+        _ => Err(invalid_payload(
+            "DeepSeek provider configs support chat_completions or messages".to_owned(),
         )),
     }
 }
@@ -2398,6 +2443,7 @@ fn supported_parameters_for_provider_model(
         "gemini" => provider_default_body_fields("gemini"),
         "qwen" => provider_default_body_fields("qwen"),
         "codex" | "openai" => provider_default_body_fields("openai"),
+        "deepseek" => provider_default_body_fields("deepseek"),
         _ if protocol == ModelProtocol::ChatCompletions => {
             provider_default_body_fields("__openai_compatible")
         }
@@ -2851,6 +2897,66 @@ pub(crate) fn validate_provider_defaults(
     Ok(())
 }
 
+pub(crate) fn validate_provider_defaults_for_protocol(
+    provider_id: &str,
+    protocol: ModelProtocol,
+    defaults: Option<&ProviderDefaultsRecord>,
+) -> Result<(), CommandErrorPayload> {
+    let Some(defaults) = defaults else {
+        return Ok(());
+    };
+    let Some(body) = defaults
+        .body
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Ok(());
+    };
+    let Some(allowed) = provider_default_body_fields_for_protocol(provider_id, protocol) else {
+        return Ok(());
+    };
+    for key in body.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(invalid_payload(format!(
+                "providerDefaults.body includes unsupported field {key} for provider {provider_id} protocol {protocol:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn provider_default_body_fields_for_protocol(
+    provider_id: &str,
+    protocol: ModelProtocol,
+) -> Option<&'static [&'static str]> {
+    match (provider_id, protocol) {
+        ("deepseek", ModelProtocol::ChatCompletions) => Some(&[
+            "thinking",
+            "reasoning_effort",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "stop",
+            "response_format",
+            "tool_choice",
+            "stream_options",
+            "frequency_penalty",
+            "presence_penalty",
+        ]),
+        ("deepseek", ModelProtocol::Messages) => Some(&[
+            "thinking",
+            "output_config",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "stop_sequences",
+            "tool_choice",
+            "metadata",
+        ]),
+        _ => None,
+    }
+}
+
 fn provider_default_body_fields(provider_id: &str) -> &'static [&'static str] {
     match provider_id {
         "anthropic" => &[
@@ -2901,6 +3007,22 @@ fn provider_default_body_fields(provider_id: &str) -> &'static [&'static str] {
             "parallel_tool_calls",
             "tool_choice",
             "response_format",
+        ],
+        "deepseek" => &[
+            "thinking",
+            "reasoning_effort",
+            "temperature",
+            "top_p",
+            "output_config",
+            "max_tokens",
+            "stop",
+            "stop_sequences",
+            "response_format",
+            "tool_choice",
+            "stream_options",
+            "frequency_penalty",
+            "presence_penalty",
+            "metadata",
         ],
         _ => &[
             "temperature",
@@ -3001,6 +3123,31 @@ pub(crate) fn normalized_provider_base_url(
         }
     }
     Ok(normalized)
+}
+
+fn validate_provider_protocol_base_url(
+    provider_id: &str,
+    protocol: ModelProtocol,
+    base_url: Option<&str>,
+) -> Result<(), CommandErrorPayload> {
+    if provider_id != "deepseek" {
+        return Ok(());
+    }
+    let Some(base_url) = base_url else {
+        return Ok(());
+    };
+    let base_url = base_url.trim_end_matches('/');
+    if protocol == ModelProtocol::Messages && !base_url.ends_with("/anthropic") {
+        return Err(invalid_payload(
+            "DeepSeek Anthropic Messages requires an /anthropic baseUrl".to_owned(),
+        ));
+    }
+    if protocol == ModelProtocol::ChatCompletions && base_url.ends_with("/anthropic") {
+        return Err(invalid_payload(
+            "DeepSeek Chat Completions must not use the /anthropic baseUrl".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn normalized_base_url(
