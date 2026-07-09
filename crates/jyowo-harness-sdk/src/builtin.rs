@@ -79,3 +79,9 @@ pub use harness_tool::{
 };
 #[cfg(any(feature = "builtin-toolset", feature = "skill-tools"))]
 pub use harness_tool::{SkillsInvokeTool, SkillsListTool, SkillsViewTool};
+#[cfg(feature = "zhipu-tools")]
+pub use harness_tool::{
+    ZhipuImageGenerationAsyncTool, ZhipuImageGenerationQueryTool, ZhipuImageGenerationTool,
+    ZhipuSpeechToTextTool, ZhipuTextToSpeechTool, ZhipuVideoGenerationQueryTool,
+    ZhipuVideoGenerationTool,
+};

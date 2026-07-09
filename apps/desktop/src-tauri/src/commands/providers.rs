@@ -2496,6 +2496,7 @@ fn supported_parameters_for_provider_model(
         "qwen" => provider_default_body_fields("qwen"),
         "codex" | "openai" => provider_default_body_fields("openai"),
         "deepseek" => provider_default_body_fields("deepseek"),
+        "zhipu" => provider_default_body_fields("zhipu"),
         _ if protocol == ModelProtocol::ChatCompletions => {
             provider_default_body_fields("__openai_compatible")
         }
@@ -3132,6 +3133,18 @@ fn provider_default_body_fields(provider_id: &str) -> &'static [&'static str] {
             "frequency_penalty",
             "presence_penalty",
             "metadata",
+        ],
+        "zhipu" => &[
+            "thinking",
+            "reasoning_effort",
+            "do_sample",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "tool_stream",
+            "stop",
+            "response_format",
+            "user_id",
         ],
         _ => &[
             "temperature",

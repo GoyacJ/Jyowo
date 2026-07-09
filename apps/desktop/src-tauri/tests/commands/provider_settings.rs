@@ -110,6 +110,30 @@ fn list_model_provider_catalog_payload_exposes_models_and_default_base_urls() {
     assert!(zhipu["models"].as_array().unwrap().iter().any(|model| {
         model["modelId"] == "glm-5" && model["conversationCapability"]["promptCache"] == true
     }));
+    let zhipu_glm_5 = zhipu["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["modelId"] == "glm-5")
+        .unwrap();
+    assert_eq!(
+        zhipu_glm_5["conversationCapability"]["inputModalities"],
+        json!(["text"])
+    );
+    assert!(zhipu_glm_5["supportedParameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|parameter| parameter == "do_sample"));
+    assert!(zhipu["models"].as_array().unwrap().iter().any(|model| {
+        model["modelId"] == "glm-5v-turbo"
+            && model["conversationCapability"]["inputModalities"] == json!(["text", "image"])
+    }));
+    assert!(zhipu["serviceCapabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|service| service["operationId"] == "zhipu.image_generation"));
     assert!(zhipu["runtimeCapability"]["baseUrlRegions"]
         .as_array()
         .unwrap()
@@ -143,6 +167,84 @@ fn list_model_provider_catalog_payload_exposes_models_and_default_base_urls() {
         .unwrap()
         .iter()
         .any(|service| service["execution"] == "websocket"));
+}
+
+#[tokio::test]
+async fn save_provider_settings_payload_accepts_zhipu_official_provider_defaults() {
+    let store = RecordingProviderSettingsStore::default();
+    let payload = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some("zhipu-key".to_owned()),
+            base_url: None,
+            config_id: Some("zhipu-glm".to_owned()),
+            display_name: Some("GLM".to_owned()),
+            model_id: "glm-5.2".to_owned(),
+            model_options: Some(harness_contracts::ModelRequestOptions::default()),
+            official_quota_api_key: None,
+            provider_id: "zhipu".to_owned(),
+            protocol: None,
+            provider_defaults: Some(ProviderDefaultsRecord {
+                body: Some(json!({
+                    "thinking": {
+                        "type": "enabled",
+                        "clear_thinking": false
+                    },
+                    "reasoning_effort": "high",
+                    "do_sample": false,
+                    "tool_stream": true,
+                    "temperature": 0.8,
+                    "top_p": 0.7,
+                    "max_tokens": 4096,
+                    "stop": ["END"],
+                    "response_format": { "type": "json_object" },
+                    "user_id": "user-1"
+                })),
+                headers: Default::default(),
+            }),
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap();
+
+    let body = payload.config.provider_defaults.unwrap().body.unwrap();
+    assert_eq!(body["thinking"]["clear_thinking"], false);
+    assert_eq!(body["do_sample"], false);
+    assert_eq!(body["tool_stream"], true);
+}
+
+#[tokio::test]
+async fn save_provider_settings_rejects_zhipu_tool_defaults() {
+    let store = RecordingProviderSettingsStore::default();
+
+    let error = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some("zhipu-key".to_owned()),
+            base_url: None,
+            config_id: Some("zhipu-glm".to_owned()),
+            display_name: Some("GLM".to_owned()),
+            model_id: "glm-5.2".to_owned(),
+            model_options: Some(harness_contracts::ModelRequestOptions::default()),
+            official_quota_api_key: None,
+            provider_id: "zhipu".to_owned(),
+            protocol: None,
+            provider_defaults: Some(ProviderDefaultsRecord {
+                body: Some(json!({
+                    "tools": [],
+                    "tool_choice": "auto"
+                })),
+                headers: Default::default(),
+            }),
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("tool"));
 }
 
 #[tokio::test]

@@ -196,19 +196,33 @@ impl GitTool {
         description: &str,
         is_read_only: bool,
         is_destructive: bool,
-        input_schema: Value,
+        mut input_schema: Value,
     ) -> Self {
-        let mut descriptor = super::descriptor(
-            name,
-            display_name,
-            description,
-            ToolGroup::Git,
-            false,
-            is_read_only,
-            is_destructive,
-            256_000,
-            Vec::new(),
-            input_schema,
+        input_schema["additionalProperties"] = Value::Bool(false);
+        let mut descriptor = super::with_output_schema(
+            super::descriptor(
+                name,
+                display_name,
+                description,
+                ToolGroup::Git,
+                false,
+                is_read_only,
+                is_destructive,
+                256_000,
+                Vec::new(),
+                input_schema,
+            ),
+            json!({
+                "type": "object",
+                "required": ["status", "success", "stdout", "stderr"],
+                "properties": {
+                    "status": { "type": ["integer", "null"] },
+                    "success": { "type": "boolean" },
+                    "stdout": { "type": "string" },
+                    "stderr": { "type": "string" }
+                },
+                "additionalProperties": false
+            }),
         );
         descriptor.metadata = ToolDescriptorMetadata {
             aliases: vec![operation.alias().to_owned()],

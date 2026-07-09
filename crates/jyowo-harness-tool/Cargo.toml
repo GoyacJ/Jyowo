@@ -33,6 +33,14 @@ seedance-tools = [
   "dep:reqwest",
   "jyowo-harness-model/doubao",
 ]
+zhipu-tools = [
+  "builtin-toolset",
+  "dep:base64",
+  "dep:jyowo-harness-model",
+  "dep:reqwest",
+  "dep:secrecy",
+  "jyowo-harness-model/zhipu",
+]
 
 [dependencies]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }

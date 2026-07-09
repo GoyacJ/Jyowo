@@ -1054,7 +1054,7 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
         "GLM-5 Turbo",
         200_000,
         131_072,
-        false,
+        true,
         true,
         true,
         true,
@@ -1087,7 +1087,7 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
         "GLM-4.7 Flash",
         200_000,
         131_072,
-        false,
+        true,
         true,
         true,
         true,
@@ -1098,7 +1098,7 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
         "GLM-4.7 FlashX",
         200_000,
         131_072,
-        false,
+        true,
         true,
         true,
         true,
@@ -1109,7 +1109,7 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
         "GLM-4.6",
         200_000,
         131_072,
-        false,
+        true,
         true,
         true,
         true,
@@ -1120,7 +1120,7 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
         "GLM-4.5 Air",
         128_000,
         98_304,
-        false,
+        true,
         true,
         true,
         true,
@@ -1131,7 +1131,7 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
         "GLM-4.5 AirX",
         128_000,
         98_304,
-        false,
+        true,
         true,
         true,
         true,
@@ -1142,7 +1142,7 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
         "GLM-4.5 Flash",
         128_000,
         98_304,
-        false,
+        true,
         true,
         true,
         true,
@@ -1155,7 +1155,7 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
         "GLM-4 Flash 250414",
         128_000,
         16_384,
-        false,
+        true,
         false,
         false,
         true,
@@ -1166,9 +1166,73 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
         "GLM-4 FlashX 250414",
         128_000,
         16_384,
+        true,
         false,
         false,
+        true,
+        ModelLifecycleSpec::Stable,
+    ),
+    zhipu_vision_model(
+        "glm-5v-turbo",
+        "GLM-5V Turbo",
+        200_000,
+        131_072,
+        true,
+        ModelLifecycleSpec::Stable,
+    ),
+    zhipu_vision_model(
+        "glm-4.6v",
+        "GLM-4.6V",
+        128_000,
+        32_768,
+        true,
+        ModelLifecycleSpec::Stable,
+    ),
+    zhipu_vision_model(
+        "autoglm-phone",
+        "AutoGLM Phone",
+        20_000,
+        2048,
         false,
+        ModelLifecycleSpec::Stable,
+    ),
+    zhipu_vision_model(
+        "glm-4.6v-flash",
+        "GLM-4.6V Flash",
+        128_000,
+        32_768,
+        true,
+        ModelLifecycleSpec::Stable,
+    ),
+    zhipu_vision_model(
+        "glm-4.6v-flashx",
+        "GLM-4.6V FlashX",
+        128_000,
+        32_768,
+        true,
+        ModelLifecycleSpec::Stable,
+    ),
+    zhipu_vision_model(
+        "glm-4v-flash",
+        "GLM-4V Flash",
+        16_000,
+        1024,
+        false,
+        ModelLifecycleSpec::Stable,
+    ),
+    zhipu_vision_model(
+        "glm-4.1v-thinking-flashx",
+        "GLM-4.1V Thinking FlashX",
+        64_000,
+        16_384,
+        true,
+        ModelLifecycleSpec::Stable,
+    ),
+    zhipu_vision_model(
+        "glm-4.1v-thinking-flash",
+        "GLM-4.1V Thinking Flash",
+        64_000,
+        16_384,
         true,
         ModelLifecycleSpec::Stable,
     ),
@@ -1311,6 +1375,7 @@ fn supported_parameters(spec: &ModelCatalogSpec) -> Vec<String> {
             "frequency_penalty",
             "presence_penalty",
         ],
+        "zhipu" => return zhipu_supported_parameters(spec),
         _ if spec.protocol == ModelProtocol::ChatCompletions => &[
             "temperature",
             "top_p",
@@ -1332,6 +1397,40 @@ fn supported_parameters(spec: &ModelCatalogSpec) -> Vec<String> {
         ],
         _ => &[],
     };
+    values.iter().map(|value| (*value).to_owned()).collect()
+}
+
+fn zhipu_supported_parameters(spec: &ModelCatalogSpec) -> Vec<String> {
+    let mut values = vec![
+        "thinking",
+        "do_sample",
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "tools",
+        "tool_choice",
+        "stop",
+        "user_id",
+    ];
+    if spec.model_id == "glm-5.2" {
+        values.push("reasoning_effort");
+    }
+    if matches!(
+        spec.model_id,
+        "glm-5.2"
+            | "glm-5.1"
+            | "glm-5"
+            | "glm-5-turbo"
+            | "glm-4.7"
+            | "glm-4.7-flash"
+            | "glm-4.7-flashx"
+            | "glm-4.6"
+    ) {
+        values.push("tool_stream");
+    }
+    if spec.declared_input_modalities == TEXT {
+        values.push("response_format");
+    }
     values.iter().map(|value| (*value).to_owned()).collect()
 }
 
@@ -1714,9 +1813,39 @@ const fn zhipu_chat_model(
         prompt_cache,
         streaming: true,
         structured_output,
-        declared_input_modalities: TEXT_IMAGE_VIDEO,
+        declared_input_modalities: TEXT,
         declared_output_modalities: TEXT,
-        runtime_input_modalities: TEXT_IMAGE_VIDEO,
+        runtime_input_modalities: TEXT,
+        runtime_output_modalities: TEXT,
+        runtime_semantics: RuntimeSemanticsKind::OpenAiChatZhipu,
+        lifecycle,
+    }
+}
+
+#[allow(clippy::fn_params_excessive_bools)]
+const fn zhipu_vision_model(
+    model_id: &'static str,
+    display_name: &'static str,
+    context_window: u32,
+    max_output_tokens: u32,
+    reasoning: bool,
+    lifecycle: ModelLifecycleSpec,
+) -> ModelCatalogSpec {
+    ModelCatalogSpec {
+        provider_id: "zhipu",
+        model_id,
+        display_name,
+        protocol: ModelProtocol::ChatCompletions,
+        context_window,
+        max_output_tokens,
+        tool_calling: true,
+        reasoning,
+        prompt_cache: true,
+        streaming: true,
+        structured_output: false,
+        declared_input_modalities: TEXT_IMAGE,
+        declared_output_modalities: TEXT,
+        runtime_input_modalities: TEXT_IMAGE,
         runtime_output_modalities: TEXT,
         runtime_semantics: RuntimeSemanticsKind::OpenAiChatZhipu,
         lifecycle,

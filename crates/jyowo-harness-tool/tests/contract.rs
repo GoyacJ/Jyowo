@@ -78,33 +78,58 @@ fn default_builtin_toolset_name_snapshot_is_stable() {
         .map(|(name, _)| name.as_str())
         .collect::<Vec<_>>();
 
-    assert_eq!(
-        names,
-        vec![
-            "Bash",
-            "Clarify",
-            "Diagnostics",
-            "FileEdit",
-            "FileRead",
-            "FileWrite",
-            "Glob",
-            "Grep",
-            "ListDir",
-            "ProcessRead",
-            "ProcessStart",
-            "ProcessStop",
-            "ReadBlob",
-            "SendMessage",
-            "TaskStop",
-            "Todo",
-            "WebFetch",
-            "WebSearch",
-            "memory",
-            "skills_invoke",
-            "skills_list",
-            "skills_view",
-        ]
-    );
+    let mut expected = vec![
+        "Artifact",
+        "Automation",
+        "Bash",
+        "BrowserUse",
+        "Clarify",
+        "ComputerUse",
+        "Diagnostics",
+        "FileEdit",
+        "FileRead",
+        "FileWrite",
+        "GitBranch",
+        "GitCommit",
+        "GitDiff",
+        "GitLog",
+        "GitPull",
+        "GitPush",
+        "GitShow",
+        "GitStage",
+        "GitStatus",
+        "Glob",
+        "Grep",
+        "ImageGeneration",
+        "LSP",
+        "ListDir",
+        "NotebookEdit",
+        "ProcessRead",
+        "ProcessStart",
+        "ProcessStop",
+        "ReadBlob",
+        "SendMessage",
+        "Session",
+        "TaskStop",
+        "Todo",
+        "WebFetch",
+        "WebSearch",
+        "Workflow",
+        "Worktree",
+    ];
+    #[cfg(feature = "zhipu-tools")]
+    expected.extend([
+        "ZhipuImageGeneration",
+        "ZhipuImageGenerationAsync",
+        "ZhipuImageGenerationQuery",
+        "ZhipuSpeechToText",
+        "ZhipuTextToSpeech",
+        "ZhipuVideoGeneration",
+        "ZhipuVideoGenerationQuery",
+    ]);
+    expected.extend(["memory", "skills_invoke", "skills_list", "skills_view"]);
+
+    assert_eq!(names, expected);
 }
 
 #[test]

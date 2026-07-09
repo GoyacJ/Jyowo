@@ -45,6 +45,8 @@ mod web_search;
 mod workspace_path;
 #[cfg(feature = "builtin-toolset")]
 mod write;
+#[cfg(feature = "zhipu-tools")]
+mod zhipu;
 
 #[cfg(feature = "builtin-toolset")]
 pub use bash::BashTool;
@@ -117,6 +119,12 @@ pub use web_search::{
 };
 #[cfg(feature = "builtin-toolset")]
 pub use write::FileWriteTool;
+#[cfg(feature = "zhipu-tools")]
+pub use zhipu::{
+    ZhipuImageGenerationAsyncTool, ZhipuImageGenerationQueryTool, ZhipuImageGenerationTool,
+    ZhipuSpeechToTextTool, ZhipuTextToSpeechTool, ZhipuVideoGenerationQueryTool,
+    ZhipuVideoGenerationTool,
+};
 
 use harness_contracts::{
     ActionResource, BudgetMetric, DeferPolicy, LongRunningPolicy, NetworkAccess, OverflowAction,

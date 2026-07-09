@@ -477,6 +477,95 @@ describe('ModelConfigDialog', () => {
       'chat_prefix',
     )
   })
+
+  it('saves Zhipu official chat provider defaults from structured controls', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: zhipuProfile,
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: zhipuProfile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    const reasoningEffort = within(dialog).getByLabelText('Reasoning effort')
+    expect(within(reasoningEffort).getByRole('option', { name: 'Max' })).toBeInTheDocument()
+    expect(within(reasoningEffort).getByRole('option', { name: 'None' })).toBeInTheDocument()
+
+    fireEvent.change(within(dialog).getByLabelText('Thinking'), { target: { value: 'enabled' } })
+    fireEvent.change(within(dialog).getByLabelText('Clear thinking'), {
+      target: { value: 'false' },
+    })
+    fireEvent.change(reasoningEffort, { target: { value: 'xhigh' } })
+    fireEvent.change(within(dialog).getByLabelText('Sample output'), {
+      target: { value: 'false' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Tool stream'), { target: { value: 'true' } })
+    fireEvent.change(within(dialog).getByLabelText('Temperature'), { target: { value: '0.8' } })
+    fireEvent.change(within(dialog).getByLabelText('Top P'), { target: { value: '0.7' } })
+    fireEvent.change(within(dialog).getByLabelText('Max tokens'), { target: { value: '4096' } })
+    fireEvent.change(within(dialog).getByLabelText('Stop sequences'), {
+      target: { value: 'DONE,STOP' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Response format'), {
+      target: { value: 'json_object' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('User ID'), { target: { value: 'user-1' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      configId: 'cfg-zhipu',
+      providerId: 'zhipu',
+      providerDefaults: {
+        body: {
+          thinking: { type: 'enabled', clear_thinking: false },
+          reasoning_effort: 'xhigh',
+          do_sample: false,
+          tool_stream: true,
+          temperature: 0.8,
+          top_p: 0.7,
+          max_tokens: 4096,
+          stop: ['DONE', 'STOP'],
+          response_format: { type: 'json_object' },
+          user_id: 'user-1',
+        },
+        headers: {},
+      },
+    })
+  })
+
+  it('round trips Zhipu disabled thinking and stop defaults', async () => {
+    const profile: ProviderConfig = {
+      ...zhipuProfile,
+      providerDefaults: {
+        body: { thinking: { type: 'disabled', clear_thinking: false }, stop: ['DONE'] },
+        headers: {},
+      },
+    }
+    const saveProviderSettings = vi.fn().mockResolvedValue({ config: profile, status: 'saved' })
+    renderDialog({
+      client: { ...createTestCommandClient(), saveProviderSettings },
+      profile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    expect(within(dialog).getByLabelText('Thinking')).toHaveValue('disabled')
+    expect(within(dialog).getByLabelText('Clear thinking')).toHaveValue('false')
+    expect(within(dialog).getByLabelText('Stop sequences')).toHaveValue('DONE')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      providerDefaults: {
+        body: { thinking: { type: 'disabled', clear_thinking: false }, stop: ['DONE'] },
+      },
+    })
+  })
 })
 
 const modelCapability: ConversationModelCapability = {
@@ -527,6 +616,27 @@ const deepseekModel = {
     'stop',
     'response_format',
     'tool_choice',
+  ],
+}
+
+const zhipuGlm52 = {
+  ...gpt41,
+  displayName: 'GLM-5.2',
+  modelId: 'glm-5.2',
+  protocol: 'chat_completions' as const,
+  supportedParameters: [
+    'thinking',
+    'reasoning_effort',
+    'do_sample',
+    'temperature',
+    'top_p',
+    'max_tokens',
+    'tool_stream',
+    'tools',
+    'tool_choice',
+    'stop',
+    'response_format',
+    'user_id',
   ],
 }
 
@@ -625,6 +735,28 @@ const catalog: ModelProviderCatalogResponse = {
       sourceUrl: 'https://api-docs.deepseek.com',
       verifiedDate: '2026-07-09',
     },
+    {
+      defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+      displayName: 'Zhipu',
+      models: [zhipuGlm52],
+      providerId: 'zhipu',
+      runtimeCapability: {
+        authScheme: 'bearer',
+        baseUrlRegions: [
+          {
+            id: 'default',
+            label: 'Default',
+            baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+          },
+        ],
+        supportsLiveValidation: true,
+        supportsStreamingValidation: true,
+        secretRevealSupported: true,
+      },
+      serviceCapabilities: [],
+      sourceUrl: 'https://docs.bigmodel.cn/api-reference/模型-api/对话补全',
+      verifiedDate: '2026-07-09',
+    },
   ],
 }
 
@@ -698,4 +830,21 @@ const deepseekProfile: ProviderConfig = {
     headers: {},
   },
   modelDescriptor: deepseekModel,
+}
+
+const zhipuProfile: ProviderConfig = {
+  id: 'cfg-zhipu',
+  providerId: 'zhipu',
+  modelId: 'glm-5.2',
+  displayName: 'Primary GLM',
+  baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+  hasApiKey: true,
+  hasOfficialQuotaApiKey: false,
+  isDefault: false,
+  protocol: 'chat_completions',
+  providerDefaults: {
+    body: {},
+    headers: {},
+  },
+  modelDescriptor: zhipuGlm52,
 }

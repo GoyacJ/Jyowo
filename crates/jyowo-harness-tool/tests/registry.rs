@@ -215,3 +215,109 @@ mod minimax_service_binding {
         assert_eq!(binding.route_kind, CapabilityRouteKind::MusicGeneration);
     }
 }
+
+#[cfg(feature = "zhipu-tools")]
+mod zhipu_service_binding {
+    use harness_contracts::{CapabilityRouteKind, ModelModality};
+    use harness_tool::{
+        provider_service_adapter_availability_from_snapshot, BuiltinToolset, Tool,
+        ToolRegistryBuilder, ZhipuImageGenerationQueryTool, ZhipuImageGenerationTool,
+        ZhipuSpeechToTextTool, ZhipuTextToSpeechTool, ZhipuVideoGenerationQueryTool,
+        ZhipuVideoGenerationTool,
+    };
+
+    #[test]
+    fn zhipu_media_tools_have_route_bindings() {
+        let image = ZhipuImageGenerationTool::default()
+            .descriptor()
+            .service_binding
+            .clone()
+            .expect("image tool should declare service binding");
+        assert_eq!(image.provider_id, "zhipu");
+        assert_eq!(image.operation_id, "zhipu.image_generation");
+        assert_eq!(image.route_kind, CapabilityRouteKind::ImageGeneration);
+        assert_eq!(image.output_artifact, ModelModality::Image);
+
+        let image_async = harness_tool::ZhipuImageGenerationAsyncTool::default()
+            .descriptor()
+            .service_binding
+            .clone()
+            .expect("async image tool should declare service binding");
+        assert_eq!(image_async.operation_id, "zhipu.image_generation.async");
+        assert_eq!(image_async.route_kind, CapabilityRouteKind::ImageGeneration);
+
+        let image_query = ZhipuImageGenerationQueryTool::default()
+            .descriptor()
+            .service_binding
+            .clone()
+            .expect("image query tool should declare service binding");
+        assert_eq!(image_query.operation_id, "zhipu.image_generation.query");
+        assert_eq!(image_query.route_kind, CapabilityRouteKind::ImageGeneration);
+
+        let video = ZhipuVideoGenerationTool::default()
+            .descriptor()
+            .service_binding
+            .clone()
+            .expect("video tool should declare service binding");
+        assert_eq!(video.operation_id, "zhipu.video_generation");
+        assert_eq!(video.route_kind, CapabilityRouteKind::VideoGeneration);
+        assert_eq!(video.output_artifact, ModelModality::Video);
+
+        let video_query = ZhipuVideoGenerationQueryTool::default()
+            .descriptor()
+            .service_binding
+            .clone()
+            .expect("video query tool should declare service binding");
+        assert_eq!(video_query.operation_id, "zhipu.video_generation.query");
+        assert_eq!(video_query.route_kind, CapabilityRouteKind::VideoGeneration);
+
+        let tts = ZhipuTextToSpeechTool::default()
+            .descriptor()
+            .service_binding
+            .clone()
+            .expect("tts tool should declare service binding");
+        assert_eq!(tts.operation_id, "zhipu.text_to_speech");
+        assert_eq!(tts.route_kind, CapabilityRouteKind::TextToSpeech);
+        assert_eq!(tts.output_artifact, ModelModality::Audio);
+
+        let stt = ZhipuSpeechToTextTool::default()
+            .descriptor()
+            .service_binding
+            .clone()
+            .expect("stt tool should declare service binding");
+        assert_eq!(stt.operation_id, "zhipu.speech_to_text");
+        assert_eq!(stt.route_kind, CapabilityRouteKind::SpeechToText);
+    }
+
+    #[test]
+    fn adapter_availability_reports_zhipu_runtime_support_from_descriptors() {
+        let registry = ToolRegistryBuilder::new()
+            .with_builtin_toolset(BuiltinToolset::Default)
+            .build()
+            .expect("default tool registry should build");
+        let availability =
+            provider_service_adapter_availability_from_snapshot(&registry.snapshot());
+
+        for operation_id in [
+            "zhipu.image_generation",
+            "zhipu.image_generation.async",
+            "zhipu.image_generation.query",
+            "zhipu.video_generation",
+            "zhipu.video_generation.query",
+            "zhipu.text_to_speech",
+            "zhipu.speech_to_text",
+        ] {
+            assert!(
+                availability
+                    .bindings
+                    .iter()
+                    .any(|binding| binding.operation_id == operation_id),
+                "{operation_id} should have a runtime adapter"
+            );
+        }
+        assert!(!availability
+            .bindings
+            .iter()
+            .any(|binding| binding.operation_id == "zhipu.embeddings"));
+    }
+}
