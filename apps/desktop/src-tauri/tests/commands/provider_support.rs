@@ -28,6 +28,7 @@ pub(crate) fn openrouter_descriptor_record(
         max_output_tokens: 8_192,
         model_id: model_id.to_owned(),
         provider_id: "openrouter".to_owned(),
+        runtime_semantics: None,
     }
 }
 
@@ -51,6 +52,7 @@ pub(crate) fn openai_descriptor_record(model_id: &str) -> ProviderModelDescripto
         max_output_tokens: 16_384,
         model_id: model_id.to_owned(),
         provider_id: "openai".to_owned(),
+        runtime_semantics: None,
     }
 }
 
@@ -71,6 +73,7 @@ pub(crate) fn provider_settings_record_with_minimax_config(
             display_name: "MiniMax service".to_owned(),
             id: config_id.to_owned(),
             model_id: "minimax-text-01".to_owned(),
+            model_options: harness_contracts::ModelRequestOptions::default(),
             official_quota_api_key: None,
             provider_id: "minimax".to_owned(),
             provider_defaults: None,
@@ -93,6 +96,7 @@ pub(crate) fn provider_settings_record_with_minimax_config(
                 max_output_tokens: 8_192,
                 model_id: "minimax-text-01".to_owned(),
                 provider_id: "minimax".to_owned(),
+                runtime_semantics: None,
             },
         }],
     }
@@ -108,6 +112,7 @@ pub(crate) fn test_provider_settings_record() -> ProviderSettingsRecord {
             display_name: "Test provider".to_owned(),
             id: TEST_MODEL_CONFIG_ID.to_owned(),
             model_id: "test-model".to_owned(),
+            model_options: harness_contracts::ModelRequestOptions::default(),
             official_quota_api_key: None,
             provider_id: "test".to_owned(),
             provider_defaults: None,
@@ -130,6 +135,7 @@ pub(crate) fn test_provider_settings_record() -> ProviderSettingsRecord {
                 max_output_tokens: 16_384,
                 model_id: "test-model".to_owned(),
                 provider_id: "test".to_owned(),
+                runtime_semantics: None,
             },
         }],
     }
@@ -150,6 +156,7 @@ pub(crate) fn chat_provider_config_record(
         display_name: display_name.to_owned(),
         id: config_id.to_owned(),
         model_id: model_id.to_owned(),
+        model_options: harness_contracts::ModelRequestOptions::default(),
         official_quota_api_key: None,
         provider_id: provider_id.to_owned(),
         provider_defaults: None,
@@ -172,6 +179,7 @@ pub(crate) fn chat_provider_config_record(
             max_output_tokens: 8192,
             model_id: model_id.to_owned(),
             provider_id: provider_id.to_owned(),
+            runtime_semantics: None,
         },
     }
 }

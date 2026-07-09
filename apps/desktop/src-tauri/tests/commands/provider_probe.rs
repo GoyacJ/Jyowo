@@ -70,6 +70,7 @@ fn sample_provider_config(api_key: &str) -> ProviderConfigRecord {
         display_name: "OpenAI Work".to_owned(),
         id: "openai-work".to_owned(),
         model_id: "gpt-5.4-mini".to_owned(),
+        model_options: harness_contracts::ModelRequestOptions::default(),
         official_quota_api_key: None,
         provider_id: "openai".to_owned(),
         provider_defaults: None,

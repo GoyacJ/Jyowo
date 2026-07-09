@@ -289,6 +289,7 @@ function defaultRequestFromRow(row: ModelAssetRow) {
     configId: row.configId,
     displayName: row.displayName,
     modelId: row.modelId,
+    modelOptions: row.modelOptions,
     providerId: row.providerId,
   }
 }

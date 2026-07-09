@@ -97,6 +97,7 @@ mod tests {
             Arc::new(harness),
             "test-model".to_owned(),
             ModelProtocol::ChatCompletions,
+            harness_contracts::ModelRequestOptions::default(),
         );
         state
     }
@@ -1796,6 +1797,7 @@ exit 0
                     display_name: "OpenAI Work".to_owned(),
                     id: "openai-work".to_owned(),
                     model_id: "gpt-5.4-mini".to_owned(),
+                    model_options: harness_contracts::ModelRequestOptions::default(),
                     official_quota_api_key: None,
                     provider_id: "openai".to_owned(),
                     provider_defaults: None,
@@ -1818,6 +1820,7 @@ exit 0
                         max_output_tokens: 16_384,
                         model_id: "gpt-5.4-mini".to_owned(),
                         provider_id: "openai".to_owned(),
+                        runtime_semantics: None,
                     },
                 }],
             })

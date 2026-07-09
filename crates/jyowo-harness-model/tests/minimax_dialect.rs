@@ -239,6 +239,7 @@ fn assistant_tool_replay_request(assistant_id: MessageId, stream: bool) -> Model
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::ChatCompletions,
         extra: Value::Null,
+        options: harness_contracts::ModelRequestOptions::default(),
         provider_context: ProviderRequestContext::default(),
     }
 }

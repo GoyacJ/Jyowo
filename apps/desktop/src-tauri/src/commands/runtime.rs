@@ -196,6 +196,7 @@ pub(crate) struct DesktopActiveRuntime {
     default_model_config_id: Option<String>,
     default_model_id: String,
     default_protocol: ModelProtocol,
+    default_model_options: harness_contracts::ModelRequestOptions,
     provider_config_fingerprint: Option<[u8; 32]>,
     runtime_scope: RuntimeScope,
     harness: Option<Arc<Harness>>,
@@ -213,11 +214,15 @@ pub(crate) struct McpDiagnosticSubscriptionHandle {
 }
 
 fn active_runtime_provider_binding(
-    _project_workspace_root: Option<&Path>,
+    project_workspace_root: Option<&Path>,
     default_model_id: &str,
     default_protocol: ModelProtocol,
-) -> Result<Option<(String, [u8; 32])>, CommandErrorPayload> {
-    let store = DesktopProviderSettingsStore::global_only();
+) -> Result<Option<(String, [u8; 32], harness_contracts::ModelRequestOptions)>, CommandErrorPayload>
+{
+    let store = project_workspace_root.map_or_else(
+        DesktopProviderSettingsStore::global_only,
+        |workspace_root| DesktopProviderSettingsStore::new(workspace_root.to_path_buf()),
+    );
     let Some(record) = store.load_record()? else {
         return Ok(None);
     };
@@ -231,6 +236,7 @@ fn active_runtime_provider_binding(
     Ok(Some((
         config.id.clone(),
         provider_config_runtime_fingerprint(config)?,
+        config.model_options.clone(),
     )))
 }
 
@@ -252,6 +258,7 @@ impl DesktopRuntimeState {
                 default_model_config_id: None,
                 default_model_id: "llama3.1".to_owned(),
                 default_protocol: ModelProtocol::ChatCompletions,
+                default_model_options: harness_contracts::ModelRequestOptions::default(),
                 provider_config_fingerprint: None,
                 runtime_scope: runtime_layout.scope.clone(),
                 harness: None,
@@ -374,6 +381,11 @@ impl DesktopRuntimeState {
             .snapshot_for_model(&default_model_id)
             .map_err(|error| runtime_init_failed(error.to_string()))?
             .protocol;
+        let default_model_options = harness
+            .options()
+            .default_session_options
+            .model_options
+            .clone();
         let runtime_layout =
             global_conversation_runtime_layout_with_runtime_root(conversation_id, runtime_root);
         Self::with_harness_stream_permission_runtime_and_model_for_layout(
@@ -382,6 +394,7 @@ impl DesktopRuntimeState {
             stream_permission_runtime,
             default_model_id,
             default_protocol,
+            default_model_options,
         )
     }
 
@@ -405,12 +418,18 @@ impl DesktopRuntimeState {
             .snapshot_for_model(&default_model_id)
             .map_err(|error| runtime_init_failed(error.to_string()))?
             .protocol;
+        let default_model_options = harness
+            .options()
+            .default_session_options
+            .model_options
+            .clone();
         Self::with_harness_stream_permission_runtime_and_model_for_workspace(
             workspace_root,
             harness,
             stream_permission_runtime,
             default_model_id,
             default_protocol,
+            default_model_options,
         )
     }
 
@@ -420,6 +439,7 @@ impl DesktopRuntimeState {
         stream_permission_runtime: Arc<StreamPermissionRuntime>,
         default_model_id: String,
         default_protocol: ModelProtocol,
+        default_model_options: harness_contracts::ModelRequestOptions,
     ) -> Result<Self, CommandErrorPayload> {
         let runtime_layout = project_runtime_layout(&workspace_root);
         Self::with_harness_stream_permission_runtime_and_model_for_layout(
@@ -428,6 +448,7 @@ impl DesktopRuntimeState {
             stream_permission_runtime,
             default_model_id,
             default_protocol,
+            default_model_options,
         )
     }
 
@@ -437,6 +458,7 @@ impl DesktopRuntimeState {
         stream_permission_runtime: Arc<StreamPermissionRuntime>,
         default_model_id: String,
         default_protocol: ModelProtocol,
+        default_model_options: harness_contracts::ModelRequestOptions,
     ) -> Result<Self, CommandErrorPayload> {
         let Some(permission_broker) = harness.permission_broker() else {
             return Err(runtime_unavailable(
@@ -472,6 +494,10 @@ impl DesktopRuntimeState {
                     .map(|binding| binding.0.clone()),
                 default_model_id,
                 default_protocol,
+                default_model_options: active_runtime_binding
+                    .as_ref()
+                    .map(|binding| binding.2.clone())
+                    .unwrap_or(default_model_options),
                 provider_config_fingerprint: active_runtime_binding.map(|binding| binding.1),
                 runtime_scope: runtime_layout.scope.clone(),
                 harness: Some(harness),
@@ -597,6 +623,7 @@ impl DesktopRuntimeState {
         harness: Arc<Harness>,
         default_model_id: String,
         default_protocol: ModelProtocol,
+        default_model_options: harness_contracts::ModelRequestOptions,
     ) {
         let active_runtime_binding = active_runtime_provider_binding(
             self.runtime_layout.workspace_root.as_deref(),
@@ -614,6 +641,10 @@ impl DesktopRuntimeState {
                 .map(|binding| binding.0.clone()),
             default_model_id,
             default_protocol,
+            default_model_options: active_runtime_binding
+                .as_ref()
+                .map(|binding| binding.2.clone())
+                .unwrap_or(default_model_options),
             provider_config_fingerprint: active_runtime_binding.map(|binding| binding.1),
             runtime_scope: self.runtime_layout.scope.clone(),
             harness: Some(harness),
@@ -644,6 +675,7 @@ impl DesktopRuntimeState {
             session_id,
             active_runtime.default_model_id.clone(),
             active_runtime.default_protocol,
+            active_runtime.default_model_options.clone(),
         )?;
         Ok(Some((harness, options)))
     }
@@ -666,6 +698,7 @@ impl DesktopRuntimeState {
             session_id,
             active_runtime.default_model_id.clone(),
             active_runtime.default_protocol,
+            active_runtime.default_model_options.clone(),
         )?;
         Ok(Some((harness, options)))
     }
@@ -701,6 +734,7 @@ impl DesktopRuntimeState {
             session_id,
             active_runtime.default_model_id.clone(),
             active_runtime.default_protocol,
+            active_runtime.default_model_options.clone(),
         )
     }
 
@@ -709,6 +743,7 @@ impl DesktopRuntimeState {
         session_id: SessionId,
         model_id: String,
         protocol: ModelProtocol,
+        model_options: harness_contracts::ModelRequestOptions,
     ) -> Result<SessionOptions, CommandErrorPayload> {
         let execution_settings = self.effective_execution_settings(None)?;
         let mut options = SessionOptions::new(self.conversation_cwd_for_session(session_id))
@@ -718,6 +753,7 @@ impl DesktopRuntimeState {
             .with_interactivity(InteractivityLevel::FullyInteractive)
             .with_model_id(model_id)
             .with_protocol(protocol)
+            .with_model_options(model_options)
             .with_tool_profile(execution_settings.tool_profile)
             .with_context_compression_trigger_ratio(
                 execution_settings.context_compression_trigger_ratio,
@@ -876,7 +912,7 @@ async fn runtime_state_for_global_conversation_layout(
     let provider_capability_routes = Arc::new(ParkingRwLock::new(
         empty_provider_capability_route_settings(),
     ));
-    let (harness, model_id, protocol) = build_desktop_harness(
+    let (harness, model_id, protocol, model_options) = build_desktop_harness(
         &layout,
         Arc::clone(&stream_permission_runtime),
         None,
@@ -891,6 +927,7 @@ async fn runtime_state_for_global_conversation_layout(
         stream_permission_runtime,
         model_id,
         protocol,
+        model_options,
     )
 }
 
@@ -929,7 +966,7 @@ async fn runtime_state_from_stream_permission_runtime_inner(
     let route_store = DesktopProviderCapabilityRouteStore::new(workspace_root.clone());
     let provider_capability_routes = shared_provider_capability_routes_from_store(&route_store)?;
     let layout = project_runtime_layout(&workspace_root);
-    let (harness, model_id, protocol) = build_desktop_harness(
+    let (harness, model_id, protocol, model_options) = build_desktop_harness(
         &layout,
         Arc::clone(&stream_permission_runtime),
         None,
@@ -945,6 +982,7 @@ async fn runtime_state_from_stream_permission_runtime_inner(
             stream_permission_runtime,
             model_id,
             protocol,
+            model_options,
         )?;
     if let Some(provider_settings_store) = provider_settings_store_override {
         state.set_provider_settings_store_for_test(provider_settings_store);
@@ -1250,7 +1288,15 @@ pub(crate) async fn build_desktop_harness(
     model_config_id: Option<&str>,
     provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
     provider_settings_store_override: Option<Arc<dyn ProviderSettingsStore>>,
-) -> Result<(Harness, String, ModelProtocol), CommandErrorPayload> {
+) -> Result<
+    (
+        Harness,
+        String,
+        ModelProtocol,
+        harness_contracts::ModelRequestOptions,
+    ),
+    CommandErrorPayload,
+> {
     let project_workspace_root = layout.workspace_root.as_deref();
     let execution_cwd = layout.conversation_cwd.as_path();
     let runtime_root = &layout.runtime_root;
@@ -1297,13 +1343,14 @@ pub(crate) async fn build_desktop_harness(
         .unwrap_or(Value::Null);
     let conversation_metadata_store =
         DesktopConversationMetadataStore::new_runtime_root(runtime_root.clone());
-    let (model_provider, model_id, protocol) =
+    let (model_provider, model_id, protocol, model_options) =
         model_from_provider_settings(provider_settings_store.as_ref(), model_config_id)?
             .unwrap_or_else(|| {
                 (
                     Arc::new(LocalLlamaProvider::default()) as Arc<dyn ModelProvider>,
                     "llama3.1".to_owned(),
                     ModelProtocol::ChatCompletions,
+                    harness_contracts::ModelRequestOptions::default(),
                 )
             });
     let storage_layout = storage_layout_for_home();
@@ -1457,7 +1504,8 @@ pub(crate) async fn build_desktop_harness(
     let mut default_session_options = SessionOptions::new(execution_cwd)
         .with_agent_runtime_root(runtime_root)
         .with_model_id(model_id.clone())
-        .with_protocol(protocol);
+        .with_protocol(protocol)
+        .with_model_options(model_options.clone());
     if provider_defaults_extra != Value::Null {
         default_session_options = default_session_options.with_model_extra(provider_defaults_extra);
     }
@@ -1520,7 +1568,7 @@ pub(crate) async fn build_desktop_harness(
         .await
         .map_err(|error| runtime_init_failed(format!("harness initialization failed: {error}")))?;
 
-    Ok((harness, model_id, protocol))
+    Ok((harness, model_id, protocol, model_options))
 }
 
 fn ensure_desktop_runtime_store_paths(runtime_root: &Path) -> Result<(), CommandErrorPayload> {
@@ -2121,7 +2169,7 @@ pub(crate) async fn reload_desktop_harness_after_plugin_change_locked(
         return Ok(());
     };
     let layout = state.runtime_layout().clone();
-    let (harness, model_id, protocol) = build_desktop_harness(
+    let (harness, model_id, protocol, model_options) = build_desktop_harness(
         &layout,
         Arc::clone(stream_permission_runtime),
         None,
@@ -2136,7 +2184,7 @@ pub(crate) async fn reload_desktop_harness_after_plugin_change_locked(
             }
         }
     }
-    state.replace_harness(Arc::new(harness), model_id, protocol);
+    state.replace_harness(Arc::new(harness), model_id, protocol, model_options);
     Ok(())
 }
 
@@ -3143,6 +3191,7 @@ esac
                 provider_id: "openai".to_owned(),
                 model_id: "gpt-5".to_owned(),
                 protocol: ModelProtocol::ChatCompletions,
+                model_options: harness_contracts::ModelRequestOptions::default(),
                 base_url: None,
                 provider_defaults: None,
                 model_descriptor: ProviderProfileModelDescriptor {
@@ -3165,6 +3214,7 @@ esac
                             prompt_cache: false,
                             structured_output: false,
                         },
+                    runtime_semantics: None,
                 },
             }])
             .expect("save global provider profile");

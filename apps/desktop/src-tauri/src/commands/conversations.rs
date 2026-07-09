@@ -471,7 +471,16 @@ pub(crate) async fn runtime_for_model_config(
     session_id: SessionId,
     model_config_id: &str,
     state: &DesktopRuntimeState,
-) -> Result<(Arc<Harness>, SessionOptions, String, ModelProtocol), CommandErrorPayload> {
+) -> Result<
+    (
+        Arc<Harness>,
+        SessionOptions,
+        String,
+        ModelProtocol,
+        harness_contracts::ModelRequestOptions,
+    ),
+    CommandErrorPayload,
+> {
     let config = provider_config_for_run(model_config_id, state)?;
     let provider_config_fingerprint = provider_config_runtime_fingerprint(&config)?;
     if let Some((harness, options)) = state.active_conversation_runtime_for_model_config(
@@ -479,7 +488,13 @@ pub(crate) async fn runtime_for_model_config(
         model_config_id,
         provider_config_fingerprint,
     )? {
-        return Ok((harness, options, config.model_id.clone(), config.protocol));
+        return Ok((
+            harness,
+            options,
+            config.model_id.clone(),
+            config.protocol,
+            config.model_options.clone(),
+        ));
     }
     let stream_permission_runtime = state
         .stream_permission_runtime
@@ -493,7 +508,7 @@ pub(crate) async fn runtime_for_model_config(
             state.runtime_root().to_path_buf(),
         )
     };
-    let (harness, model_id, protocol) = build_desktop_harness(
+    let (harness, model_id, protocol, model_options) = build_desktop_harness(
         &layout,
         Arc::clone(stream_permission_runtime),
         Some(model_config_id),
@@ -501,9 +516,19 @@ pub(crate) async fn runtime_for_model_config(
         Some(Arc::clone(&state.provider_settings_store)),
     )
     .await?;
-    let options =
-        state.conversation_session_options_for_model(session_id, model_id.clone(), protocol)?;
-    Ok((Arc::new(harness), options, model_id, protocol))
+    let options = state.conversation_session_options_for_model(
+        session_id,
+        model_id.clone(),
+        protocol,
+        model_options.clone(),
+    )?;
+    Ok((
+        Arc::new(harness),
+        options,
+        model_id,
+        protocol,
+        model_options,
+    ))
 }
 
 pub(crate) fn conversation_metadata_record(
@@ -710,7 +735,7 @@ pub async fn start_run_with_runtime_state(
     let agent_policy = resolve_start_run_agent_policy(&request, state)?;
     let input = build_conversation_turn_input(&request, state).await?;
     let _start_run_guard = state.start_run_lock.lock().await;
-    let (harness, options, model_id, protocol) =
+    let (harness, options, model_id, protocol, _model_options) =
         runtime_for_model_config(session_id, &model_config_id, state).await?;
     harness
         .open_or_create_conversation_session(options.clone())

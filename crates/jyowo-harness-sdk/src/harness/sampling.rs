@@ -63,6 +63,7 @@ impl SamplingProvider for HarnessSamplingProvider {
                 "request_id": request.request_id,
                 "prompt_cache_namespace": request.prompt_cache_namespace,
             }),
+            options: harness_contracts::ModelRequestOptions::default(),
             provider_context: harness_model::ProviderRequestContext::default(),
         };
         let mut context = InferContext::for_test();

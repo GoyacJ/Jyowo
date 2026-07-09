@@ -1691,6 +1691,46 @@ const providerDefaultsSchema = z
   })
   .strict()
 
+const openAiTextFormatSchema = z
+  .object({
+    type: z.literal('json_schema'),
+    name: z.string().min(1),
+    schema: z.unknown(),
+    strict: z.boolean().optional(),
+  })
+  .strict()
+
+const openAiResponsesOptionsSchema = z
+  .object({
+    reasoning: z
+      .object({
+        effort: z.string().min(1).optional(),
+        summary: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
+    text: z
+      .object({
+        verbosity: z.string().min(1).optional(),
+        format: openAiTextFormatSchema.optional(),
+      })
+      .strict()
+      .optional(),
+    toolChoice: z.unknown().optional(),
+    parallelToolCalls: z.boolean().optional(),
+    truncation: z.string().min(1).optional(),
+    store: z.boolean().optional(),
+    metadata: z.record(z.string(), z.string()).optional(),
+    strictToolSchemas: z.boolean().optional(),
+  })
+  .strict()
+
+const modelRequestOptionsSchema = z
+  .object({
+    openaiResponses: openAiResponsesOptionsSchema.optional(),
+  })
+  .strict()
+
 const providerSettingsRequestSchema = z
   .object({
     apiKey: z.string().trim().min(1).optional(),
@@ -1698,6 +1738,7 @@ const providerSettingsRequestSchema = z
     configId: z.string().trim().min(1).optional(),
     displayName: z.string().trim().min(1).optional(),
     modelId: z.string().trim().min(1),
+    modelOptions: modelRequestOptionsSchema.optional(),
     officialQuotaApiKey: z.string().trim().min(1).optional(),
     providerId: providerIdSchema,
     protocol: modelProtocolSchema.optional(),
@@ -1764,6 +1805,7 @@ const providerConfigSchema = z
     id: z.string().min(1),
     isDefault: z.boolean(),
     modelId: z.string().min(1),
+    modelOptions: modelRequestOptionsSchema.optional(),
     modelDescriptor: modelCatalogEntrySchema,
     providerDefaults: providerDefaultsSchema.optional(),
     providerId: providerIdSchema,

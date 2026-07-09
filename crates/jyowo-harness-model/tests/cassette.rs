@@ -31,6 +31,7 @@ fn request() -> ModelRequest {
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::ChatCompletions,
         extra: serde_json::Value::Null,
+        options: harness_contracts::ModelRequestOptions::default(),
         provider_context: harness_model::ProviderRequestContext::default(),
     }
 }

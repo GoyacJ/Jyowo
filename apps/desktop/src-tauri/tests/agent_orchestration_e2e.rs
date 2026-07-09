@@ -660,6 +660,7 @@ fn write_test_provider_settings(workspace: &Path) -> DesktopProviderSettingsStor
                 display_name: "Test provider".to_owned(),
                 id: TEST_MODEL_CONFIG_ID.to_owned(),
                 model_id: "test-model".to_owned(),
+                model_options: harness_contracts::ModelRequestOptions::default(),
                 official_quota_api_key: None,
                 provider_id: "test".to_owned(),
                 provider_defaults: None,
@@ -682,6 +683,7 @@ fn write_test_provider_settings(workspace: &Path) -> DesktopProviderSettingsStor
                     max_output_tokens: 8192,
                     model_id: "test-model".to_owned(),
                     provider_id: "test".to_owned(),
+                    runtime_semantics: None,
                 },
             }],
         })

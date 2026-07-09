@@ -718,6 +718,7 @@ impl Harness {
                 options.model_extra.clone(),
                 run_options.model_extra.clone(),
             ))
+            .with_model_options(run_options.model_options.clone())
             .with_protocol(protocol)
             .with_system_prompt(
                 self.session_system_prompt(
@@ -871,6 +872,7 @@ pub(super) fn session_options_for_run(
         options.model_extra =
             merge_model_extra(options.model_extra.clone(), run_options.model_extra.clone());
     }
+    options.model_options = run_options.model_options.clone();
     options.permission_mode = run_options.permission_mode;
     options.interactivity = run_options.interactivity;
     options.system_prompt_addendum = run_options.system_prompt_addendum.clone();
@@ -964,6 +966,9 @@ fn apply_non_default_session_options(options: &mut SessionOptions, defaults: &Se
     if defaults.model_extra != Value::Null {
         options.model_extra = defaults.model_extra.clone();
     }
+    if !defaults.model_options.is_empty() {
+        options.model_options = defaults.model_options.clone();
+    }
     if defaults.permission_mode != PermissionMode::Default {
         options.permission_mode = defaults.permission_mode;
     }
@@ -1024,6 +1029,9 @@ fn apply_explicit_session_options(options: &mut SessionOptions, explicit: &Sessi
     if explicit.model_extra != Value::Null {
         options.model_extra =
             merge_model_extra(options.model_extra.clone(), explicit.model_extra.clone());
+    }
+    if !explicit.model_options.is_empty() {
+        options.model_options = explicit.model_options.clone();
     }
     if explicit.permission_mode != PermissionMode::Default {
         options.permission_mode = explicit.permission_mode;

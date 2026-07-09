@@ -9,9 +9,9 @@ use harness_contracts::MemoryThreadSettings;
 use harness_contracts::{
     AgentProfile, ConfigHash, ContextPatchRequest, ConversationAttachmentReference,
     DeferredToolsDeltaAttachment, EndReason, Event, InteractivityLevel, Message, MessageId,
-    MessagePart, ModelProtocol, PermissionActorSource, PermissionMode, RunId, RunModelSnapshot,
-    SessionCreatedEvent, SessionEndedEvent, SessionError, SessionId, SnapshotId, TeamId, TenantId,
-    ToolProfile, ToolSearchMode, UsageSnapshot, WorkspaceId,
+    MessagePart, ModelProtocol, ModelRequestOptions, PermissionActorSource, PermissionMode, RunId,
+    RunModelSnapshot, SessionCreatedEvent, SessionEndedEvent, SessionError, SessionId, SnapshotId,
+    TeamId, TenantId, ToolProfile, ToolSearchMode, UsageSnapshot, WorkspaceId,
 };
 use harness_journal::EventStore;
 use harness_skill::SkillRegistration;
@@ -111,6 +111,8 @@ pub struct SessionOptions {
     pub protocol: Option<ModelProtocol>,
     #[serde(default)]
     pub model_extra: Value,
+    #[serde(default, skip_serializing_if = "ModelRequestOptions::is_empty")]
+    pub model_options: ModelRequestOptions,
     #[serde(default = "default_permission_mode")]
     pub permission_mode: PermissionMode,
     #[serde(default = "default_interactivity")]
@@ -147,6 +149,7 @@ impl SessionOptions {
             model_id: None,
             protocol: None,
             model_extra: Value::Null,
+            model_options: ModelRequestOptions::default(),
             permission_mode: PermissionMode::Default,
             interactivity: InteractivityLevel::NoInteractive,
             user_id: None,
@@ -223,6 +226,12 @@ impl SessionOptions {
     #[must_use]
     pub fn with_model_extra(mut self, model_extra: Value) -> Self {
         self.model_extra = model_extra;
+        self
+    }
+
+    #[must_use]
+    pub fn with_model_options(mut self, model_options: ModelRequestOptions) -> Self {
+        self.model_options = model_options;
         self
     }
 

@@ -75,6 +75,11 @@ enum ModelLifecycleSpec {
 
 const TEXT: &[ModelModality] = &[ModelModality::Text];
 const TEXT_IMAGE: &[ModelModality] = &[ModelModality::Text, ModelModality::Image];
+const TEXT_IMAGE_FILE: &[ModelModality] = &[
+    ModelModality::Text,
+    ModelModality::Image,
+    ModelModality::File,
+];
 const TEXT_IMAGE_VIDEO: &[ModelModality] = &[
     ModelModality::Text,
     ModelModality::Image,
@@ -103,7 +108,11 @@ pub(crate) const PROVIDER_METADATA: &[ProviderCatalogMetadata] = &[
         "minimax",
         "https://platform.minimax.io/docs/guides/models-intro",
     ),
-    provider("openai", "https://platform.openai.com/docs/models"),
+    provider_with_date(
+        "openai",
+        "https://developers.openai.com/api/docs/models",
+        date(2026, 7, 9),
+    ),
     provider("openrouter", "https://openrouter.ai/api/v1/models"),
     provider_with_date(
         "qwen",
@@ -536,48 +545,12 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
         false,
         RuntimeSemanticsKind::OpenAiChatMinimax,
     ),
-    responses_model(
-        "openai",
-        "gpt-5.5-pro",
-        "GPT-5.5 Pro",
-        1_050_000,
-        128_000,
-        false,
-        true,
-    ),
-    responses_model(
-        "openai", "gpt-5.5", "GPT-5.5", 1_000_000, 128_000, false, true,
-    ),
-    responses_model(
-        "openai",
-        "gpt-5.4-pro",
-        "GPT-5.4 Pro",
-        1_050_000,
-        128_000,
-        false,
-        true,
-    ),
-    responses_model(
-        "openai", "gpt-5.4", "GPT-5.4", 1_000_000, 128_000, false, true,
-    ),
-    responses_model(
-        "openai",
-        "gpt-5.4-mini",
-        "GPT-5.4 mini",
-        400_000,
-        128_000,
-        false,
-        true,
-    ),
-    responses_model(
-        "openai",
-        "gpt-5.4-nano",
-        "GPT-5.4 nano",
-        400_000,
-        128_000,
-        false,
-        true,
-    ),
+    openai_responses_model("openai", "gpt-5.5-pro", "GPT-5.5 Pro", 1_050_000, 128_000),
+    openai_responses_model("openai", "gpt-5.5", "GPT-5.5", 1_050_000, 128_000),
+    openai_responses_model("openai", "gpt-5.4-pro", "GPT-5.4 Pro", 1_050_000, 128_000),
+    openai_responses_model("openai", "gpt-5.4", "GPT-5.4", 1_050_000, 128_000),
+    openai_responses_model("openai", "gpt-5.4-mini", "GPT-5.4 mini", 400_000, 128_000),
+    openai_responses_model("openai", "gpt-5.4-nano", "GPT-5.4 nano", 400_000, 128_000),
     chat_model(
         "openrouter",
         "openai/gpt-5.5",
@@ -1101,6 +1074,9 @@ impl From<&ModelCatalogSpec> for ModelDescriptor {
 }
 
 fn pricing(spec: &ModelCatalogSpec) -> Option<ModelPricing> {
+    if spec.provider_id == "openai" {
+        return openai_pricing(spec);
+    }
     if spec.provider_id != "deepseek" {
         return None;
     }
@@ -1136,6 +1112,53 @@ fn pricing(spec: &ModelCatalogSpec) -> Option<ModelPricing> {
         billing_mode: BillingMode::Cached {
             cache_read_discount: discount,
         },
+    })
+}
+
+fn openai_pricing(spec: &ModelCatalogSpec) -> Option<ModelPricing> {
+    let (input_per_million, cache_read_per_million, output_per_million) = match spec.model_id {
+        "gpt-5.5-pro" | "gpt-5.4-pro" => (Decimal::new(30, 0), None, Decimal::new(180, 0)),
+        "gpt-5.5" => (
+            Decimal::new(5, 0),
+            Some(Decimal::new(5, 1)),
+            Decimal::new(30, 0),
+        ),
+        "gpt-5.4" => (
+            Decimal::new(25, 1),
+            Some(Decimal::new(25, 2)),
+            Decimal::new(15, 0),
+        ),
+        "gpt-5.4-mini" => (
+            Decimal::new(75, 2),
+            Some(Decimal::new(75, 3)),
+            Decimal::new(45, 1),
+        ),
+        "gpt-5.4-nano" => (
+            Decimal::new(20, 2),
+            Some(Decimal::new(2, 2)),
+            Decimal::new(125, 2),
+        ),
+        _ => return None,
+    };
+
+    Some(ModelPricing {
+        pricing_id: format!("openai:{}", spec.model_id),
+        pricing_version: 20260709,
+        currency: Currency::Usd,
+        input_per_million,
+        output_per_million,
+        cache_creation_per_million: None,
+        cache_read_per_million,
+        image_per_image: None,
+        last_updated: DateTime::parse_from_rfc3339("2026-07-09T00:00:00Z")
+            .expect("hardcoded OpenAI pricing timestamp should parse")
+            .with_timezone(&Utc),
+        source: PricingSource::Hardcoded,
+        billing_mode: cache_read_per_million.map_or(BillingMode::Standard, |_| {
+            BillingMode::Cached {
+                cache_read_discount: Ratio(0.1),
+            }
+        }),
     })
 }
 
@@ -1228,6 +1251,33 @@ const fn responses_model(
         TEXT,
         TEXT,
         TEXT,
+        TEXT,
+        RuntimeSemanticsKind::OpenAiResponses,
+    )
+}
+
+const fn openai_responses_model(
+    provider_id: &'static str,
+    model_id: &'static str,
+    display_name: &'static str,
+    context_window: u32,
+    max_output_tokens: u32,
+) -> ModelCatalogSpec {
+    model(
+        provider_id,
+        model_id,
+        display_name,
+        ModelProtocol::Responses,
+        context_window,
+        max_output_tokens,
+        true,
+        true,
+        true,
+        true,
+        true,
+        TEXT_IMAGE_FILE,
+        TEXT,
+        TEXT_IMAGE_FILE,
         TEXT,
         RuntimeSemanticsKind::OpenAiResponses,
     )

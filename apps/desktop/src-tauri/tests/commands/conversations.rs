@@ -537,6 +537,7 @@ async fn create_conversation_with_runtime_state_does_not_bind_default_model_conf
                 display_name: "OpenAI Work".to_owned(),
                 id: "openai-work".to_owned(),
                 model_id: "gpt-5.4-mini".to_owned(),
+                model_options: harness_contracts::ModelRequestOptions::default(),
                 official_quota_api_key: None,
                 provider_id: "openai".to_owned(),
                 provider_defaults: None,
@@ -732,7 +733,12 @@ async fn get_and_delete_conversation_with_runtime_state_survive_runtime_option_c
     let harness = state
         .harness()
         .expect("runtime state should retain the configured harness");
-    state.replace_harness(harness, "test-model".to_owned(), ModelProtocol::Responses);
+    state.replace_harness(
+        harness,
+        "test-model".to_owned(),
+        ModelProtocol::Responses,
+        harness_contracts::ModelRequestOptions::default(),
+    );
 
     let detail = get_conversation_with_runtime_state(
         GetConversationRequest {

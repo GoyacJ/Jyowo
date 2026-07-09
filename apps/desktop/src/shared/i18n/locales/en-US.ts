@@ -852,6 +852,7 @@ export const enUS = {
       profileName: 'Configuration name',
       provider: 'Provider',
       model: 'Model',
+      modelOptions: 'Model options',
       baseUrl: 'Base URL',
       baseUrlRegion: 'Base URL region',
       baseUrlInternational: 'International',
@@ -894,6 +895,7 @@ export const enUS = {
       },
       errors: {
         apiKeyRequired: 'API key is required.',
+        modelOptionsInvalid: 'Model options must be valid JSON.',
         modelRequired: 'Model is required.',
         providerRequired: 'Provider is required.',
       },

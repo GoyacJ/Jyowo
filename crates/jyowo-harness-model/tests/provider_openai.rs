@@ -9,8 +9,9 @@ use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
     BudgetMetric, DeferPolicy, Message, MessageId, MessagePart, MessageRole, ModelError,
-    OverflowAction, ProviderRestriction, ResultBudget, StopReason, ToolDescriptor, ToolGroup,
-    ToolOrigin, ToolProperties, TrustLevel, UsageSnapshot,
+    OpenAiResponsesOptions, OpenAiTextFormat, OpenAiTextOptions, OverflowAction,
+    ProviderRestriction, ResultBudget, StopReason, ToolDescriptor, ToolGroup, ToolOrigin,
+    ToolProperties, TrustLevel, UsageSnapshot,
 };
 use harness_model::{openai::OpenAiProvider, *};
 use serde_json::{json, Value};
@@ -43,6 +44,7 @@ fn request(stream: bool) -> ModelRequest {
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::Responses,
         extra: Value::Null,
+        options: harness_contracts::ModelRequestOptions::default(),
         provider_context: harness_model::ProviderRequestContext::default(),
     }
 }
@@ -128,7 +130,11 @@ fn openai_provider_metadata_is_stable() {
         .iter()
         .any(|model| model.model_id == "gpt-5.4-mini"
             && model.conversation_capability.tool_calling
-            && !model.conversation_capability.reasoning));
+            && model.conversation_capability.reasoning
+            && model
+                .conversation_capability
+                .input_modalities
+                .contains(&ModelModality::File)));
     assert_eq!(provider.default_protocol(), ModelProtocol::Responses);
 }
 
@@ -208,11 +214,114 @@ async fn openai_non_stream_request_posts_responses_and_maps_events() {
     assert_eq!(body["max_output_tokens"], 128);
     assert!((body["temperature"].as_f64().unwrap() - 0.2).abs() < 0.0001);
     assert_eq!(body["input"][0]["role"], "system");
-    assert_eq!(body["input"][0]["content"], "You are precise.");
+    assert_eq!(
+        body["input"][0]["content"],
+        json!([{ "type": "input_text", "text": "You are precise." }])
+    );
     assert_eq!(body["input"][1]["role"], "user");
-    assert_eq!(body["input"][1]["content"], "hello");
+    assert_eq!(
+        body["input"][1]["content"],
+        json!([{ "type": "input_text", "text": "hello" }])
+    );
     assert_eq!(body["tools"][0]["type"], "function");
     assert_eq!(body["tools"][0]["name"], "search");
+}
+
+#[tokio::test]
+async fn openai_responses_options_use_official_text_format_shape() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "resp_1",
+            "output": [{
+                "type": "message",
+                "id": "msg_1",
+                "content": [{ "type": "output_text", "text": "{}" }]
+            }],
+            "usage": {}
+        })))
+        .mount(&server)
+        .await;
+
+    let mut req = request(false);
+    req.options.openai_responses = Some(OpenAiResponsesOptions {
+        text: Some(OpenAiTextOptions {
+            format: Some(OpenAiTextFormat::JsonSchema {
+                name: "answer".to_owned(),
+                schema: json!({
+                    "type": "object",
+                    "properties": { "answer": { "type": "string" } },
+                    "required": ["answer"],
+                    "additionalProperties": false,
+                }),
+                strict: Some(true),
+            }),
+            ..OpenAiTextOptions::default()
+        }),
+        ..OpenAiResponsesOptions::default()
+    });
+
+    provider(&server)
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(
+        body["text"]["format"],
+        json!({
+            "type": "json_schema",
+            "name": "answer",
+            "schema": {
+                "type": "object",
+                "properties": { "answer": { "type": "string" } },
+                "required": ["answer"],
+                "additionalProperties": false
+            },
+            "strict": true
+        })
+    );
+    assert!(body["text"]["format"].get("json_schema").is_none());
+}
+
+#[tokio::test]
+async fn openai_non_stream_reasoning_summary_array_maps_to_summary_delta() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "resp_1",
+            "output": [{
+                "type": "reasoning",
+                "id": "rs_1",
+                "summary": [{
+                    "type": "summary_text",
+                    "text": "Checked constraints."
+                }]
+            }],
+            "usage": {}
+        })))
+        .mount(&server)
+        .await;
+
+    let events = provider(&server)
+        .infer(request(false), InferContext::for_test())
+        .await
+        .expect("reasoning summary array should parse")
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ModelStreamEvent::ContentBlockDelta {
+            delta: ContentDelta::ReasoningSummary(summary),
+            ..
+        } if summary.text == "Checked constraints."
+    )));
 }
 
 #[tokio::test]

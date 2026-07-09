@@ -88,6 +88,7 @@ export type ModelAssetRow = {
   protocol: ProviderConfig['protocol']
   providerDefaults?: ProviderConfig['providerDefaults']
   modelId: string
+  modelOptions?: ProviderConfig['modelOptions']
   modelDescriptor?: ProviderConfig['modelDescriptor']
   displayName: string
   providerDisplayName: string
@@ -411,6 +412,7 @@ function buildModelAssetRow({
     protocol: config.protocol,
     providerDefaults: config.providerDefaults,
     modelId: config.modelId,
+    modelOptions: config.modelOptions,
     modelDescriptor: config.modelDescriptor,
     displayName: config.displayName,
     providerDisplayName,

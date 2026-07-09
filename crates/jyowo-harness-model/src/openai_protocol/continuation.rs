@@ -1,4 +1,4 @@
-use harness_contracts::{Message, MessageRole, ModelError};
+use harness_contracts::{Message, MessageId, MessageRole, ModelError};
 use harness_provider_state::{ProviderContinuationKind, ProviderContinuationRecord};
 use serde_json::{json, Value};
 
@@ -13,6 +13,21 @@ const KIMI_REASONING_PAYLOAD_FORMAT: &str = "kimi.reasoning_content.v1";
 const MINIMAX_REASONING_CONTENT_FIELD: &str = "reasoning_content";
 const MINIMAX_REASONING_DETAILS_FIELD: &str = "reasoning_details";
 const MINIMAX_REASONING_PAYLOAD_FORMAT: &str = "minimax.reasoning_details.v1";
+pub(super) const OPENAI_RESPONSES_PREVIOUS_RESPONSE_KIND: &str =
+    "openai.responses.previous_response";
+const OPENAI_RESPONSES_PREVIOUS_RESPONSE_FORMAT: &str = "openai.responses.previous_response.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct OpenAiResponsesContinuationCapture {
+    pub model_id: String,
+    pub setup_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct OpenAiResponsesPreviousResponse {
+    pub response_id: String,
+    pub after_message_id: MessageId,
+}
 
 #[derive(Clone, Copy)]
 struct ReasoningReplayConfig {
@@ -71,6 +86,72 @@ pub(super) fn chat_response_continuation_event(
         OpenAiChatDialect::MiniMax => minimax_chat_response_continuation_event(response),
         _ => None,
     }
+}
+
+pub(super) fn openai_responses_previous_response_event(
+    response_id: &str,
+    capture: &OpenAiResponsesContinuationCapture,
+) -> Option<ModelStreamEvent> {
+    if response_id.is_empty() {
+        return None;
+    }
+    Some(ModelStreamEvent::ProviderContinuationDelta {
+        kind: ProviderContinuationKind::ProviderNative(
+            OPENAI_RESPONSES_PREVIOUS_RESPONSE_KIND.to_owned(),
+        ),
+        payload: json!({
+            "format": OPENAI_RESPONSES_PREVIOUS_RESPONSE_FORMAT,
+            "responseId": response_id,
+            "modelId": capture.model_id,
+            "setupFingerprint": capture.setup_fingerprint,
+        }),
+    })
+}
+
+pub(super) fn find_openai_responses_previous_response(
+    continuations: &[ProviderContinuationRecord],
+    model_id: &str,
+    setup_fingerprint: Option<&str>,
+) -> Option<OpenAiResponsesPreviousResponse> {
+    continuations
+        .iter()
+        .filter(|record| {
+            record.kind
+                == ProviderContinuationKind::ProviderNative(
+                    OPENAI_RESPONSES_PREVIOUS_RESPONSE_KIND.to_owned(),
+                )
+        })
+        .filter_map(|record| {
+            let payload = &record.payload;
+            let format_matches = payload
+                .get("format")
+                .and_then(Value::as_str)
+                .is_some_and(|format| format == OPENAI_RESPONSES_PREVIOUS_RESPONSE_FORMAT);
+            if !format_matches {
+                return None;
+            }
+            let payload_model_id = payload.get("modelId").and_then(Value::as_str)?;
+            if payload_model_id != model_id {
+                return None;
+            }
+            let payload_setup = payload.get("setupFingerprint").and_then(Value::as_str);
+            if payload_setup != setup_fingerprint {
+                return None;
+            }
+            let response_id = payload.get("responseId").and_then(Value::as_str)?;
+            if response_id.is_empty() {
+                return None;
+            }
+            Some((
+                record.created_at,
+                OpenAiResponsesPreviousResponse {
+                    response_id: response_id.to_owned(),
+                    after_message_id: record.message_id,
+                },
+            ))
+        })
+        .max_by_key(|(created_at, _)| *created_at)
+        .map(|(_, continuation)| continuation)
 }
 
 pub(super) fn apply_chat_message_continuation(

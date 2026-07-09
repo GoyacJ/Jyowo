@@ -208,6 +208,7 @@ function useSetDefaultProviderConfig() {
       displayName: string
       modelId: string
       providerDefaults?: ProviderSettingsRequest['providerDefaults']
+      modelOptions?: ProviderSettingsRequest['modelOptions']
       providerId: string
       protocol?: ProviderSettingsRequest['protocol']
     }) => {
@@ -215,6 +216,7 @@ function useSetDefaultProviderConfig() {
         configId: request.configId,
         displayName: request.displayName,
         modelId: request.modelId,
+        modelOptions: request.modelOptions,
         providerId: request.providerId,
         setDefault: true,
       }
@@ -242,6 +244,7 @@ function useSetDefaultProviderConfig() {
       displayName: string
       modelId: string
       providerDefaults?: ProviderSettingsRequest['providerDefaults']
+      modelOptions?: ProviderSettingsRequest['modelOptions']
       providerId: string
       protocol?: ProviderSettingsRequest['protocol']
     }) => {

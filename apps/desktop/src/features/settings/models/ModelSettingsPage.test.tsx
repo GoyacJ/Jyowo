@@ -472,6 +472,7 @@ describe('ModelSettingsPage', () => {
         configId: 'cfg-openai',
         displayName: 'Primary OpenAI Edited',
         modelId: 'gpt-4.1',
+        modelOptions: {},
         providerId: 'openai',
         setDefault: true,
       }),

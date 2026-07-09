@@ -147,6 +147,7 @@ mod provider_continuation_leak {
             provider_id: "deepseek".to_owned(),
             model_config_id: Some(MODEL_CONFIG_ID.to_owned()),
             dialect: Some(DEEPSEEK_CONTINUATION_DIALECT.to_owned()),
+            setup_fingerprint: None,
             continuations: vec![record.clone()],
         };
         let request = ModelRequest {
@@ -160,6 +161,7 @@ mod provider_continuation_leak {
             cache_breakpoints: Vec::new(),
             protocol: ModelProtocol::ChatCompletions,
             extra: Value::Null,
+            options: harness_contracts::ModelRequestOptions::default(),
             provider_context,
         };
         let stream_event = ModelStreamEvent::ProviderContinuationDelta {

@@ -597,6 +597,7 @@ Session: {}\nRun: {}\nExcerpt:\n{}",
         cache_breakpoints: Vec::new(),
         protocol,
         extra: json!({ "source": "memory_extraction" }),
+        options: harness_contracts::ModelRequestOptions::default(),
         provider_context: ProviderRequestContext::default(),
     };
     let mut context = InferContext::for_test();

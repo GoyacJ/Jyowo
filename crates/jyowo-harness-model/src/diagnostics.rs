@@ -58,6 +58,7 @@ impl ProviderProbeRunner {
             cache_breakpoints: Vec::new(),
             protocol,
             extra: serde_json::Value::Null,
+            options: harness_contracts::ModelRequestOptions::default(),
             provider_context: crate::ProviderRequestContext::default(),
         };
 
