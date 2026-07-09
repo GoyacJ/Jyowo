@@ -10,6 +10,7 @@ use harness_model::{
 #[cfg(any(
     feature = "anthropic",
     feature = "deepseek",
+    feature = "km",
     feature = "openai",
     feature = "openrouter"
 ))]
@@ -17,6 +18,7 @@ use wiremock::matchers::{method, path_regex};
 #[cfg(any(
     feature = "anthropic",
     feature = "deepseek",
+    feature = "km",
     feature = "openai",
     feature = "openrouter"
 ))]
@@ -166,6 +168,28 @@ async fn deepseek_quota_rejects_non_official_base_url_before_sending_api_key() {
 
     let registry = default_account_usage_registry();
     let mut request = sample_request("deepseek", "provider-key");
+    request.base_url = Some(server.uri());
+
+    let snapshot = fetch_official_quota(&registry, request).await;
+    assert_eq!(snapshot.status, OfficialQuotaStatus::Failed);
+    assert!(!snapshot.source_url.is_empty());
+    assert!(snapshot.safe_message.is_some());
+    let requests = server.received_requests().await.unwrap();
+    assert!(requests.is_empty());
+}
+
+#[tokio::test]
+#[cfg(feature = "km")]
+async fn kimi_quota_rejects_non_official_base_url_before_sending_api_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(".*"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    let registry = default_account_usage_registry();
+    let mut request = sample_request("km", "provider-key");
     request.base_url = Some(server.uri());
 
     let snapshot = fetch_official_quota(&registry, request).await;

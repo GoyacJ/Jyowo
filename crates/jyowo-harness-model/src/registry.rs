@@ -257,6 +257,11 @@ pub fn build_provider(
     }
     #[cfg(feature = "km")]
     if provider_id == "km" {
+        let api_key = if api_key.trim().is_empty() {
+            crate::kimi_api_key_from_env().unwrap_or(api_key)
+        } else {
+            api_key
+        };
         let provider = crate::KmProvider::from_api_key(api_key);
         return Ok(Box::new(match base_url {
             Some(base_url) => provider.with_base_url(base_url),
@@ -369,7 +374,7 @@ fn runtime_capability(
     ProviderRuntimeCapability {
         auth_scheme: provider_auth_scheme(provider_id),
         base_url_regions,
-        supports_live_validation: false,
+        supports_live_validation: provider_id == "km",
         supports_streaming_validation: true,
         secret_reveal_supported: true,
     }
@@ -387,10 +392,47 @@ fn provider_auth_scheme(provider_id: &str) -> ProviderAuthScheme {
 
 fn service_capabilities(provider_id: &str) -> Vec<ProviderServiceCapability> {
     match provider_id {
+        "km" => kimi_service_capabilities(),
         "minimax" => minimax_service_capabilities(),
         "doubao" => seedance_service_capabilities(),
         _ => Vec::new(),
     }
+}
+
+fn kimi_service_capabilities() -> Vec<ProviderServiceCapability> {
+    vec![
+        kimi_service(
+            "kimi.models.list",
+            ProviderServiceCategory::Model,
+            vec![ModelModality::Text],
+            ModelModality::Text,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        kimi_service(
+            "kimi.tokenizers.estimate_token_count",
+            ProviderServiceCategory::Conversation,
+            vec![
+                ModelModality::Text,
+                ModelModality::Image,
+                ModelModality::Video,
+            ],
+            ModelModality::Text,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        kimi_service(
+            "kimi.balance.retrieve",
+            ProviderServiceCategory::Model,
+            vec![ModelModality::Text],
+            ModelModality::Text,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+    ]
 }
 
 fn minimax_service_capabilities() -> Vec<ProviderServiceCapability> {
@@ -710,15 +752,38 @@ fn doubao_service(
     }
 }
 
+fn kimi_service(
+    operation_id: &str,
+    category: ProviderServiceCategory,
+    input_modalities: Vec<ModelModality>,
+    output_artifact: ModelModality,
+    execution: ProviderServiceExecution,
+    requires_polling: bool,
+    cost_risk: ProviderServiceCostRisk,
+) -> ProviderServiceCapability {
+    ProviderServiceCapability {
+        operation_id: operation_id.to_owned(),
+        category,
+        input_modalities,
+        output_artifact,
+        execution,
+        requires_polling,
+        permission_subject: "network:kimi".to_owned(),
+        cost_risk,
+    }
+}
+
 fn provider_source(provider_id: &str) -> (&'static str, NaiveDate) {
-    let verified_date = NaiveDate::from_ymd_opt(2026, 6, 21).expect("valid verification date");
+    let default_verified_date =
+        NaiveDate::from_ymd_opt(2026, 6, 21).expect("valid verification date");
+    let kimi_verified_date = NaiveDate::from_ymd_opt(2026, 7, 9).expect("valid verification date");
     let source_url = match provider_id {
         "anthropic" => "https://docs.anthropic.com/en/docs/about-claude/models/overview",
         "codex" => "https://developers.openai.com/api/docs/models/all",
         "deepseek" => "https://api-docs.deepseek.com/quick_start/pricing",
         "doubao" => "https://www.volcengine.com/docs/82379/1494384",
         "gemini" => "https://ai.google.dev/gemini-api/docs/models",
-        "km" => "https://platform.moonshot.ai/docs",
+        "km" => "https://platform.kimi.com/docs",
         "local-llama" => "https://ollama.com/library",
         "minimax" => "https://platform.minimax.io/docs/api-reference/text-chat-openai",
         "openai" => "https://platform.openai.com/docs/models",
@@ -726,6 +791,11 @@ fn provider_source(provider_id: &str) -> (&'static str, NaiveDate) {
         "qwen" => "https://help.aliyun.com/zh/model-studio/models",
         "zhipu" => "https://docs.bigmodel.cn/api-reference/模型-api/对话补全",
         _ => "https://jyowo.local/provider-catalog",
+    };
+    let verified_date = if provider_id == "km" {
+        kimi_verified_date
+    } else {
+        default_verified_date
     };
     (source_url, verified_date)
 }

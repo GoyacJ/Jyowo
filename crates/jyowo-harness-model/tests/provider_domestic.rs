@@ -7,6 +7,8 @@
     feature = "km"
 ))]
 
+use std::sync::Mutex;
+
 use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{Message, MessageId, MessagePart, MessageRole, StopReason, UsageSnapshot};
@@ -16,6 +18,8 @@ use wiremock::{
     matchers::{header, method, path},
     Mock, MockServer, ResponseTemplate,
 };
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn request(model_id: &str) -> ModelRequest {
     ModelRequest {
@@ -67,13 +71,7 @@ async fn assert_streaming_provider<P>(
     assert!(provider
         .supported_models()
         .iter()
-        .any(|model| model.model_id == model_id
-            && model.conversation_capability.tool_calling
-            && !model
-                .conversation_capability
-                .input_modalities
-                .contains(&ModelModality::Image)
-            && !model.conversation_capability.reasoning));
+        .any(|model| model.model_id == model_id && model.conversation_capability.tool_calling));
 
     let events = provider
         .infer(request(model_id), InferContext::for_test())
@@ -106,11 +104,14 @@ async fn assert_streaming_provider<P>(
     assert_eq!(body["stream_options"]["include_usage"], true);
     assert_eq!(body["messages"][0]["role"], "user");
     assert_eq!(body["messages"][0]["content"], "hello");
-    if provider.provider_id() == "minimax" {
+    if matches!(provider.provider_id(), "minimax" | "km") {
         assert_eq!(body["max_completion_tokens"], 64);
         assert!(body.get("max_tokens").is_none());
     } else {
         assert_eq!(body["max_tokens"], 64);
+    }
+    if provider.provider_id() == "km" {
+        assert!(body.get("temperature").is_none());
     }
 }
 
@@ -272,3 +273,31 @@ provider_test!(
     "kimi-k2.5",
     "/v1/chat/completions"
 );
+
+#[cfg(feature = "km")]
+#[test]
+fn provider_km_exposes_official_api_key_alias() {
+    assert_eq!(MOONSHOT_API_KEY_ENV, "MOONSHOT_API_KEY");
+    assert_eq!(KIMI_API_KEY_ENVS, &["MOONSHOT_API_KEY", "KM_API_KEY"]);
+}
+
+#[cfg(feature = "km")]
+#[test]
+fn provider_km_reads_official_api_key_alias_before_legacy_alias() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let original_moonshot = std::env::var_os(MOONSHOT_API_KEY_ENV);
+    let original_km = std::env::var_os(KM_API_KEY_ENV);
+
+    std::env::set_var(MOONSHOT_API_KEY_ENV, "moonshot-key");
+    std::env::set_var(KM_API_KEY_ENV, "legacy-key");
+    assert_eq!(kimi_api_key_from_env().as_deref(), Some("moonshot-key"));
+
+    match original_moonshot {
+        Some(value) => std::env::set_var(MOONSHOT_API_KEY_ENV, value),
+        None => std::env::remove_var(MOONSHOT_API_KEY_ENV),
+    }
+    match original_km {
+        Some(value) => std::env::set_var(KM_API_KEY_ENV, value),
+        None => std::env::remove_var(KM_API_KEY_ENV),
+    }
+}

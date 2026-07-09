@@ -188,7 +188,7 @@ impl OpenAiStreamState {
             Err(error) => return vec![error],
         };
         if let Some(reasoning_delta) =
-            continuation::deepseek_stream_reasoning_delta(self.dialect, &payload_value)
+            continuation::stream_reasoning_delta(self.dialect, &payload_value)
         {
             self.reasoning_replay_buffer.push_str(&reasoning_delta);
         }
@@ -270,10 +270,9 @@ impl OpenAiStreamState {
         }
         let mut events = Vec::new();
         if !self.continuation_emitted {
-            if let Some(event) = continuation::deepseek_stream_continuation_event(
-                self.dialect,
-                &self.reasoning_replay_buffer,
-            ) {
+            if let Some(event) =
+                continuation::stream_continuation_event(self.dialect, &self.reasoning_replay_buffer)
+            {
                 events.push(event);
             }
             self.continuation_emitted = true;

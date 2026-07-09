@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use harness_contracts::ModelError;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
 use tokio::sync::{Mutex, Semaphore};
@@ -251,9 +251,107 @@ impl OpenAiProtocolClient {
         }
     }
 
+    pub(crate) async fn get_json(
+        &self,
+        path: &str,
+        model_id: Option<&str>,
+        ctx: &InferContext,
+    ) -> Result<Value, ModelError> {
+        check_context(ctx)?;
+        let credential = self
+            .pick_credential_for_model(model_id.unwrap_or_default().to_owned(), ctx)
+            .await?;
+        check_context(ctx)?;
+        let mut headers = self
+            .headers(credential.as_ref().map(|picked| &picked.value))
+            .map_err(|error| error.error)?;
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        let response = self
+            .http
+            .get(self.url(path))
+            .headers(headers)
+            .send()
+            .await
+            .map_err(map_transport_error)
+            .map_err(|error| error.error)?;
+        self.response_json(response, credential.as_ref(), ctx).await
+    }
+
+    pub(crate) async fn post_json(
+        &self,
+        path: &str,
+        body: &Value,
+        model_id: Option<&str>,
+        ctx: &InferContext,
+    ) -> Result<Value, ModelError> {
+        check_context(ctx)?;
+        let credential = self
+            .pick_credential_for_model(model_id.unwrap_or_default().to_owned(), ctx)
+            .await?;
+        check_context(ctx)?;
+        let mut headers = self
+            .headers(credential.as_ref().map(|picked| &picked.value))
+            .map_err(|error| error.error)?;
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        let response = self
+            .http
+            .post(self.url(path))
+            .headers(headers)
+            .json(body)
+            .send()
+            .await
+            .map_err(map_transport_error)
+            .map_err(|error| error.error)?;
+        self.response_json(response, credential.as_ref(), ctx).await
+    }
+
+    async fn response_json(
+        &self,
+        response: reqwest::Response,
+        credential: Option<&PickedCredential>,
+        ctx: &InferContext,
+    ) -> Result<Value, ModelError> {
+        if !response.status().is_success() {
+            let credential_secret = credential
+                .map(|credential| credential.value.secret.expose_secret())
+                .or_else(|| self.api_key.as_ref().map(|api_key| api_key.expose_secret()));
+            let error = map_response_error(response, credential_secret).await;
+            if let (Some(resolver), Some(picked)) = (self.credential_resolver.as_ref(), credential)
+            {
+                match error.class {
+                    ErrorClass::AuthExpired => resolver.mark_banned(&picked.key),
+                    ErrorClass::RateLimited { retry_after } => resolver.mark_rate_limited(
+                        &picked.key,
+                        retry_after.unwrap_or(DEFAULT_CREDENTIAL_RATE_LIMIT_COOLDOWN),
+                    ),
+                    _ => {}
+                }
+            } else if let Some(retry_after) = error.retry_after {
+                self.set_cooldown(retry_after).await;
+            }
+            return Err(error.error);
+        }
+        let headers = response.headers().clone();
+        apply_response_headers_middlewares(&headers, ctx).await?;
+        response
+            .json()
+            .await
+            .map_err(map_transport_error)
+            .map_err(|error| error.error)
+    }
+
     async fn pick_credential(
         &self,
         req: &ModelRequest,
+        ctx: &InferContext,
+    ) -> Result<Option<PickedCredential>, ModelError> {
+        self.pick_credential_for_model(req.model_id.clone(), ctx)
+            .await
+    }
+
+    async fn pick_credential_for_model(
+        &self,
+        model_id: String,
         ctx: &InferContext,
     ) -> Result<Option<PickedCredential>, ModelError> {
         let Some(resolver) = &self.credential_resolver else {
@@ -263,7 +361,7 @@ impl OpenAiProtocolClient {
             .pick(ModelCredentialPickContext {
                 tenant_id: ctx.tenant_id,
                 provider_id: self.provider_id.clone(),
-                model_id: req.model_id.clone(),
+                model_id,
             })
             .await
             .map(Some)
@@ -287,11 +385,7 @@ impl OpenAiProtocolClient {
         };
         let response = self
             .http
-            .post(format!(
-                "{}{}",
-                self.base_url.trim_end_matches('/'),
-                normalize_path(&self.path)
-            ))
+            .post(self.url(&self.path))
             .headers(self.headers(credential)?)
             .json(body)
             .send()
@@ -306,6 +400,14 @@ impl OpenAiProtocolClient {
         }
 
         Ok(response)
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!(
+            "{}{}",
+            self.base_url.trim_end_matches('/'),
+            normalize_path(path)
+        )
     }
 
     fn headers(
@@ -381,6 +483,18 @@ fn normalize_path(path: &str) -> String {
     } else {
         format!("/{path}")
     }
+}
+
+fn check_context(ctx: &InferContext) -> Result<(), ModelError> {
+    if ctx.cancel.is_cancelled() {
+        return Err(ModelError::Cancelled);
+    }
+    if let Some(deadline) = ctx.deadline {
+        if Instant::now() >= deadline {
+            return Err(ModelError::DeadlineExceeded(Duration::ZERO));
+        }
+    }
+    Ok(())
 }
 
 #[async_trait]

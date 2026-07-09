@@ -5,7 +5,7 @@ use async_stream::stream;
 use async_trait::async_trait;
 use aws_sdk_bedrockruntime::types as br;
 use aws_smithy_types::{Document, Number};
-#[cfg(any(test, feature = "testing"))]
+#[cfg(any(test, feature = "testing", feature = "bedrock"))]
 use futures::stream as futures_stream;
 use harness_contracts::{
     MessagePart, MessageRole, ModelError, StopReason, ToolDescriptor, ToolResult, UsageSnapshot,
@@ -35,7 +35,7 @@ impl BedrockProvider {
 
     #[doc(hidden)]
     #[must_use]
-    #[cfg(any(test, feature = "testing"))]
+    #[cfg(any(test, feature = "testing", feature = "bedrock"))]
     pub fn from_events(events: Vec<ModelStreamEvent>) -> Self {
         Self {
             transport: Arc::new(StaticBedrockTransport { events }),
@@ -91,12 +91,12 @@ impl BedrockTransport for AwsBedrockTransport {
     }
 }
 
-#[cfg(any(test, feature = "testing"))]
+#[cfg(any(test, feature = "testing", feature = "bedrock"))]
 struct StaticBedrockTransport {
     events: Vec<ModelStreamEvent>,
 }
 
-#[cfg(any(test, feature = "testing"))]
+#[cfg(any(test, feature = "testing", feature = "bedrock"))]
 #[async_trait]
 impl BedrockTransport for StaticBedrockTransport {
     async fn infer(
