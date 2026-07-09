@@ -244,11 +244,11 @@ Git：
 - `Clarify` -> `crates/jyowo-harness-tool/src/builtin/clarify.rs`
 - `SendMessage` -> `crates/jyowo-harness-tool/src/builtin/send_message.rs`
 - `Todo` -> `crates/jyowo-harness-tool/src/builtin/todo.rs`
-- `Memory` -> `crates/jyowo-harness-tool/src/builtin/memory.rs`
+- `Memory` (`memory`) -> `crates/jyowo-harness-tool/src/builtin/memory.rs`
 - `TaskStop` -> `crates/jyowo-harness-tool/src/builtin/task_stop.rs`
-- `SkillsList` -> `crates/jyowo-harness-tool/src/builtin/skills.rs`
-- `SkillsView` -> `crates/jyowo-harness-tool/src/builtin/skills.rs`
-- `SkillsInvoke` -> `crates/jyowo-harness-tool/src/builtin/skills.rs`
+- `SkillsList` (`skills_list`) -> `crates/jyowo-harness-tool/src/builtin/skills.rs`
+- `SkillsView` (`skills_view`) -> `crates/jyowo-harness-tool/src/builtin/skills.rs`
+- `SkillsInvoke` (`skills_invoke`) -> `crates/jyowo-harness-tool/src/builtin/skills.rs`
 
 宿主平台代理工具：
 
@@ -278,6 +278,18 @@ Git：
 - `MiniMaxTextToVideoTool`
 - `MiniMaxImageToVideoTool`
 - `MiniMaxFirstLastFrameToVideoTool`
+
+### Zhipu 工具
+
+这些工具需要 `zhipu-tools` feature，并经由 `ToolNetworkBrokerCap` 访问智谱官方 API。
+
+- `ZhipuImageGeneration` -> `crates/jyowo-harness-tool/src/builtin/zhipu.rs`
+- `ZhipuImageGenerationAsync` -> `crates/jyowo-harness-tool/src/builtin/zhipu.rs`
+- `ZhipuImageGenerationQuery` -> `crates/jyowo-harness-tool/src/builtin/zhipu.rs`
+- `ZhipuVideoGeneration` -> `crates/jyowo-harness-tool/src/builtin/zhipu.rs`
+- `ZhipuVideoGenerationQuery` -> `crates/jyowo-harness-tool/src/builtin/zhipu.rs`
+- `ZhipuTextToSpeech` -> `crates/jyowo-harness-tool/src/builtin/zhipu.rs`
+- `ZhipuSpeechToText` -> `crates/jyowo-harness-tool/src/builtin/zhipu.rs`
 - `MiniMaxSubjectReferenceVideoTool`
 - `MiniMaxVideoGenerationQueryTool`
 - `MiniMaxVideoTemplateTool`

@@ -34,23 +34,31 @@ type ModelProtocol = NonNullable<ProviderSettingsRequest['protocol']>
 
 type ModelConfigFormValues = {
   baseUrl: string
+  clearThinking: string
   codeInterpreter: boolean
   displayName: string
+  doSample: string
   enableThinking: boolean
+  maxTokens: string
   modelId: string
   outputEffort: string
   performanceLatency: string
   protocol: ModelProtocol
   providerId: string
   reasoningEffort: string
+  responseFormat: string
   responseMimeType: string
   seed: string
   serviceTier: string
   sessionCache: boolean
   stopSequences: string
   thinkingBudget: string
+  thinkingMode: string
+  temperature: string
+  toolStream: string
   topK: string
   topP: string
+  userId: string
   webExtractor: boolean
   webSearch: boolean
 }
@@ -86,6 +94,7 @@ export function ModelConfigDialog({
     [defaultProvider, providerId, providers],
   )
   const isQwen = selectedProvider?.providerId === 'qwen'
+  const isZhipu = selectedProvider?.providerId === 'zhipu'
   const protocol = watch('protocol')
   const qwenChatWebExtractorEnabled =
     protocol !== 'chat_completions' || supportsQwenChatWebExtractor(modelId)
@@ -311,13 +320,33 @@ export function ModelConfigDialog({
           {!isQwen && supportedParameters.size > 0 ? (
             <div className="grid gap-3 rounded-sm border border-border p-3 text-sm">
               <span className="font-medium">{t('provider.providerOptions')}</span>
-              {supportsAny(supportedParameters, ['thinking', 'thinkingConfig']) ? (
+              {isZhipu && supportedParameters.has('thinking') ? (
+                <label className="grid gap-1" htmlFor="provider-thinking-mode">
+                  <span className="font-medium">{t('provider.enableThinking')}</span>
+                  <Select id="provider-thinking-mode" {...register('thinkingMode')}>
+                    <option value="">{t('provider.default')}</option>
+                    <option value="enabled">{t('provider.enabled')}</option>
+                    <option value="disabled">{t('provider.disabled')}</option>
+                  </Select>
+                </label>
+              ) : null}
+              {!isZhipu && supportsAny(supportedParameters, ['thinking', 'thinkingConfig']) ? (
                 <label className="flex items-center gap-2">
                   <input type="checkbox" {...register('enableThinking')} />
                   <span>{t('provider.enableThinking')}</span>
                 </label>
               ) : null}
-              {supportsAny(supportedParameters, ['thinking', 'thinkingConfig']) ? (
+              {isZhipu && supportedParameters.has('thinking') ? (
+                <label className="grid gap-1" htmlFor="provider-clear-thinking">
+                  <span className="font-medium">{t('provider.clearThinking')}</span>
+                  <Select id="provider-clear-thinking" {...register('clearThinking')}>
+                    <option value="">{t('provider.default')}</option>
+                    <option value="true">{t('provider.enabled')}</option>
+                    <option value="false">{t('provider.disabled')}</option>
+                  </Select>
+                </label>
+              ) : null}
+              {!isZhipu && supportsAny(supportedParameters, ['thinking', 'thinkingConfig']) ? (
                 <label className="grid gap-1" htmlFor="provider-thinking-budget">
                   <span className="font-medium">{t('provider.thinkingBudget')}</span>
                   <Input
@@ -325,6 +354,41 @@ export function ModelConfigDialog({
                     inputMode="numeric"
                     {...register('thinkingBudget')}
                   />
+                </label>
+              ) : null}
+              {supportedParameters.has('reasoning_effort') ? (
+                <label className="grid gap-1" htmlFor="provider-reasoning-effort">
+                  <span className="font-medium">{t('provider.reasoningEffort')}</span>
+                  <Select id="provider-reasoning-effort" {...register('reasoningEffort')}>
+                    <option value="">{t('provider.default')}</option>
+                    <option value="max">Max</option>
+                    <option value="xhigh">XHigh</option>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                    <option value="minimal">Minimal</option>
+                    <option value="none">None</option>
+                  </Select>
+                </label>
+              ) : null}
+              {supportedParameters.has('do_sample') ? (
+                <label className="grid gap-1" htmlFor="provider-do-sample">
+                  <span className="font-medium">{t('provider.doSample')}</span>
+                  <Select id="provider-do-sample" {...register('doSample')}>
+                    <option value="">{t('provider.default')}</option>
+                    <option value="true">{t('provider.enabled')}</option>
+                    <option value="false">{t('provider.disabled')}</option>
+                  </Select>
+                </label>
+              ) : null}
+              {supportedParameters.has('tool_stream') ? (
+                <label className="grid gap-1" htmlFor="provider-tool-stream">
+                  <span className="font-medium">{t('provider.toolStream')}</span>
+                  <Select id="provider-tool-stream" {...register('toolStream')}>
+                    <option value="">{t('provider.default')}</option>
+                    <option value="true">{t('provider.enabled')}</option>
+                    <option value="false">{t('provider.disabled')}</option>
+                  </Select>
                 </label>
               ) : null}
               {supportedParameters.has('output_config') ? (
@@ -348,10 +412,22 @@ export function ModelConfigDialog({
                   </Select>
                 </label>
               ) : null}
+              {supportedParameters.has('temperature') ? (
+                <label className="grid gap-1" htmlFor="provider-temperature">
+                  <span className="font-medium">{t('provider.temperature')}</span>
+                  <Input id="provider-temperature" inputMode="decimal" {...register('temperature')} />
+                </label>
+              ) : null}
               {supportsAny(supportedParameters, ['top_p', 'topP']) ? (
                 <label className="grid gap-1" htmlFor="provider-top-p">
                   <span className="font-medium">{t('provider.topP')}</span>
                   <Input id="provider-top-p" inputMode="decimal" {...register('topP')} />
+                </label>
+              ) : null}
+              {supportedParameters.has('max_tokens') ? (
+                <label className="grid gap-1" htmlFor="provider-max-tokens">
+                  <span className="font-medium">{t('provider.maxTokens')}</span>
+                  <Input id="provider-max-tokens" inputMode="numeric" {...register('maxTokens')} />
                 </label>
               ) : null}
               {supportsAny(supportedParameters, ['top_k', 'topK']) ? (
@@ -366,16 +442,31 @@ export function ModelConfigDialog({
                   <Input id="provider-seed" inputMode="numeric" {...register('seed')} />
                 </label>
               ) : null}
-              {supportsAny(supportedParameters, ['stop_sequences', 'stopSequences']) ? (
+              {supportsAny(supportedParameters, ['stop_sequences', 'stopSequences', 'stop']) ? (
                 <label className="grid gap-1" htmlFor="provider-stop-sequences">
                   <span className="font-medium">{t('provider.stopSequences')}</span>
                   <Input id="provider-stop-sequences" {...register('stopSequences')} />
+                </label>
+              ) : null}
+              {supportedParameters.has('response_format') ? (
+                <label className="grid gap-1" htmlFor="provider-response-format">
+                  <span className="font-medium">{t('provider.responseFormat')}</span>
+                  <Select id="provider-response-format" {...register('responseFormat')}>
+                    <option value="">{t('provider.default')}</option>
+                    <option value="json_object">JSON object</option>
+                  </Select>
                 </label>
               ) : null}
               {supportedParameters.has('responseMimeType') ? (
                 <label className="grid gap-1" htmlFor="provider-response-mime-type">
                   <span className="font-medium">{t('provider.responseMimeType')}</span>
                   <Input id="provider-response-mime-type" {...register('responseMimeType')} />
+                </label>
+              ) : null}
+              {supportedParameters.has('user_id') ? (
+                <label className="grid gap-1" htmlFor="provider-user-id">
+                  <span className="font-medium">{t('provider.userId')}</span>
+                  <Input id="provider-user-id" {...register('userId')} />
                 </label>
               ) : null}
               {supportedParameters.has('performanceConfig') ? (
@@ -462,23 +553,31 @@ function formValuesFromProfile(
   const providerDefaults = providerOptionDefaultsFromProfile(profile)
   return {
     baseUrl: profile?.baseUrl ?? defaultProvider?.defaultBaseUrl ?? '',
+    clearThinking: providerDefaults.clearThinking,
     codeInterpreter: defaults.codeInterpreter,
     displayName: profile?.displayName ?? '',
+    doSample: providerDefaults.doSample,
     enableThinking: defaults.enableThinking || providerDefaults.enableThinking,
+    maxTokens: providerDefaults.maxTokens,
     modelId: profile?.modelId ?? defaultModel?.modelId ?? '',
     outputEffort: providerDefaults.outputEffort,
     performanceLatency: providerDefaults.performanceLatency,
     protocol: profile?.protocol ?? defaultProtocolForProvider(defaultProvider),
     providerId: profile?.providerId ?? defaultProvider?.providerId ?? '',
-    reasoningEffort: defaults.reasoningEffort,
+    reasoningEffort: defaults.reasoningEffort || providerDefaults.reasoningEffort,
+    responseFormat: providerDefaults.responseFormat,
     responseMimeType: providerDefaults.responseMimeType,
     seed: providerDefaults.seed,
     serviceTier: providerDefaults.serviceTier,
     sessionCache: defaults.sessionCache,
     stopSequences: providerDefaults.stopSequences,
     thinkingBudget: providerDefaults.thinkingBudget,
+    thinkingMode: providerDefaults.thinkingMode,
+    temperature: providerDefaults.temperature,
+    toolStream: providerDefaults.toolStream,
     topK: providerDefaults.topK,
     topP: providerDefaults.topP,
+    userId: providerDefaults.userId,
     webExtractor: defaults.webExtractor,
     webSearch: defaults.webSearch,
   }
@@ -529,27 +628,41 @@ function providerOptionDefaultsFromProfile(profile: ProviderConfig | null | unde
   const topP = firstStringable(body.top_p, body.topP, inferenceConfig?.topP)
   const topK = firstStringable(body.top_k, body.topK)
   const stopSequences = firstArray(
+    body.stop,
     body.stop_sequences,
     body.stopSequences,
     inferenceConfig?.stopSequences,
   )
 
   return {
+    clearThinking:
+      typeof thinking?.clear_thinking === 'boolean' ? String(thinking.clear_thinking) : '',
+    doSample: typeof body.do_sample === 'boolean' ? String(body.do_sample) : '',
     enableThinking:
       thinking !== null ||
       thinkingConfig !== null ||
       body.enable_thinking === true ||
       body.enableThinking === true,
+    maxTokens: firstStringable(body.max_tokens, body.max_completion_tokens),
     outputEffort: typeof outputConfig?.effort === 'string' ? outputConfig.effort : '',
     performanceLatency:
       typeof performanceConfig?.latency === 'string' ? performanceConfig.latency : '',
+    reasoningEffort: typeof body.reasoning_effort === 'string' ? body.reasoning_effort : '',
+    responseFormat:
+      isRecord(body.response_format) && typeof body.response_format.type === 'string'
+        ? body.response_format.type
+        : '',
     responseMimeType: typeof body.responseMimeType === 'string' ? body.responseMimeType : '',
     seed: firstStringable(body.seed),
     serviceTier: typeof body.service_tier === 'string' ? body.service_tier : '',
     stopSequences: stopSequences.join(','),
+    temperature: firstStringable(body.temperature),
     thinkingBudget: firstStringable(thinking?.budget_tokens, thinkingConfig?.thinkingBudget),
+    thinkingMode: typeof thinking?.type === 'string' ? thinking.type : '',
+    toolStream: typeof body.tool_stream === 'boolean' ? String(body.tool_stream) : '',
     topK,
     topP,
+    userId: typeof body.user_id === 'string' ? body.user_id : '',
   }
 }
 
@@ -566,6 +679,8 @@ function providerDefaultsFromValues(
     const topK = parseNumber(values.topK)
     const seed = parseNumber(values.seed)
     const thinkingBudget = parseNumber(values.thinkingBudget)
+    const temperature = parseNumber(values.temperature)
+    const maxTokens = parseNumber(values.maxTokens)
 
     if (values.providerId === 'anthropic') {
       if (values.enableThinking) {
@@ -628,6 +743,47 @@ function providerDefaultsFromValues(
       }
       if (values.performanceLatency) {
         body.performanceConfig = { latency: values.performanceLatency }
+      }
+      return { body, headers }
+    }
+
+    if (values.providerId === 'zhipu') {
+      if (values.thinkingMode || values.clearThinking) {
+        body.thinking = {
+          ...(values.thinkingMode ? { type: values.thinkingMode } : {}),
+          ...(values.clearThinking ? { clear_thinking: values.clearThinking === 'true' } : {}),
+        }
+      }
+      if (values.reasoningEffort) {
+        body.reasoning_effort = values.reasoningEffort
+      }
+      if (values.doSample === 'true') {
+        body.do_sample = true
+      } else if (values.doSample === 'false') {
+        body.do_sample = false
+      }
+      if (values.toolStream === 'true') {
+        body.tool_stream = true
+      } else if (values.toolStream === 'false') {
+        body.tool_stream = false
+      }
+      if (temperature !== null) {
+        body.temperature = temperature
+      }
+      if (topP !== null) {
+        body.top_p = topP
+      }
+      if (maxTokens !== null) {
+        body.max_tokens = maxTokens
+      }
+      if (stopSequences.length > 0) {
+        body.stop = stopSequences
+      }
+      if (values.responseFormat) {
+        body.response_format = { type: values.responseFormat }
+      }
+      if (values.userId.trim()) {
+        body.user_id = values.userId.trim()
       }
       return { body, headers }
     }
@@ -696,17 +852,25 @@ function hasProviderDefaults(defaults: ProviderSettingsRequest['providerDefaults
 }
 
 function resetProviderOptionFields(setValue: UseFormSetValue<ModelConfigFormValues>) {
+  setValue('clearThinking', '')
+  setValue('doSample', '')
   setValue('enableThinking', false)
+  setValue('maxTokens', '')
   setValue('outputEffort', '')
   setValue('performanceLatency', '')
   setValue('reasoningEffort', '')
+  setValue('responseFormat', '')
   setValue('responseMimeType', '')
   setValue('seed', '')
   setValue('serviceTier', '')
   setValue('stopSequences', '')
+  setValue('temperature', '')
   setValue('thinkingBudget', '')
+  setValue('thinkingMode', '')
+  setValue('toolStream', '')
   setValue('topK', '')
   setValue('topP', '')
+  setValue('userId', '')
   setValue('webSearch', false)
   setValue('codeInterpreter', false)
   setValue('webExtractor', false)

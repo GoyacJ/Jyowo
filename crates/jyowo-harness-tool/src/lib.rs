@@ -18,6 +18,8 @@ pub mod process_registry;
 pub mod provider_media;
 #[cfg(feature = "minimax-tools")]
 mod provider_minimax;
+#[cfg(feature = "zhipu-tools")]
+mod provider_zhipu;
 pub mod registry;
 pub mod result_budget;
 pub mod skill_script;

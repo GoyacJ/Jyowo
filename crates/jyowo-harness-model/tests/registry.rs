@@ -4,7 +4,8 @@ use harness_model::ModelLifecycle;
 use harness_model::{
     build_provider, model_catalog_entries, provider_catalog_entries, provider_inventory_entries,
     resolve_model_descriptor, ConversationModelCapability, ModelModality, ModelRuntimeSemantics,
-    ProviderBuildConfig, ProviderRegistryError, ReasoningProtocolSemantics,
+    ProviderBuildConfig, ProviderRegistryError, ProviderServiceCategory, ProviderServiceExecution,
+    ReasoningProtocolSemantics,
 };
 
 #[test]
@@ -477,7 +478,7 @@ fn zhipu_provider_catalog_matches_official_openapi_configuration() {
             "glm-5-turbo",
             200_000,
             131_072,
-            false,
+            true,
             true,
             true,
             true,
@@ -507,7 +508,7 @@ fn zhipu_provider_catalog_matches_official_openapi_configuration() {
             "glm-4.7-flash",
             200_000,
             131_072,
-            false,
+            true,
             true,
             true,
             true,
@@ -517,7 +518,7 @@ fn zhipu_provider_catalog_matches_official_openapi_configuration() {
             "glm-4.7-flashx",
             200_000,
             131_072,
-            false,
+            true,
             true,
             true,
             true,
@@ -527,7 +528,7 @@ fn zhipu_provider_catalog_matches_official_openapi_configuration() {
             "glm-4.6",
             200_000,
             131_072,
-            false,
+            true,
             true,
             true,
             true,
@@ -537,7 +538,7 @@ fn zhipu_provider_catalog_matches_official_openapi_configuration() {
             "glm-4.5-air",
             128_000,
             98_304,
-            false,
+            true,
             true,
             true,
             true,
@@ -547,7 +548,7 @@ fn zhipu_provider_catalog_matches_official_openapi_configuration() {
             "glm-4.5-airx",
             128_000,
             98_304,
-            false,
+            true,
             true,
             true,
             true,
@@ -557,7 +558,7 @@ fn zhipu_provider_catalog_matches_official_openapi_configuration() {
             "glm-4.5-flash",
             128_000,
             98_304,
-            false,
+            true,
             true,
             true,
             true,
@@ -570,7 +571,7 @@ fn zhipu_provider_catalog_matches_official_openapi_configuration() {
             "glm-4-flash-250414",
             128_000,
             16_384,
-            false,
+            true,
             false,
             false,
             true,
@@ -580,7 +581,7 @@ fn zhipu_provider_catalog_matches_official_openapi_configuration() {
             "glm-4-flashx-250414",
             128_000,
             16_384,
-            false,
+            true,
             false,
             false,
             true,
@@ -588,7 +589,10 @@ fn zhipu_provider_catalog_matches_official_openapi_configuration() {
         ),
     ];
 
-    assert_eq!(zhipu.models.len(), expected_models.len());
+    assert!(
+        zhipu.models.len() >= expected_models.len(),
+        "zhipu should include text and vision chat models"
+    );
     for (
         model_id,
         context_window,
@@ -626,11 +630,7 @@ fn zhipu_provider_catalog_matches_official_openapi_configuration() {
         assert_eq!(model.lifecycle, lifecycle, "{model_id}");
         assert_eq!(
             model.conversation_capability.input_modalities,
-            vec![
-                ModelModality::Text,
-                ModelModality::Image,
-                ModelModality::Video
-            ],
+            vec![ModelModality::Text],
             "{model_id}"
         );
         assert_eq!(
@@ -638,6 +638,206 @@ fn zhipu_provider_catalog_matches_official_openapi_configuration() {
             vec![ModelModality::Text],
             "{model_id}"
         );
+        assert!(model.supported_parameters.contains(&"do_sample".to_owned()));
+        if matches!(
+            model_id,
+            "glm-5.2"
+                | "glm-5.1"
+                | "glm-5"
+                | "glm-5-turbo"
+                | "glm-4.7"
+                | "glm-4.7-flash"
+                | "glm-4.7-flashx"
+                | "glm-4.6"
+        ) {
+            assert!(model
+                .supported_parameters
+                .contains(&"tool_stream".to_owned()));
+        } else {
+            assert!(!model
+                .supported_parameters
+                .contains(&"tool_stream".to_owned()));
+        }
+        if model_id == "glm-5.2" {
+            assert!(model
+                .supported_parameters
+                .contains(&"reasoning_effort".to_owned()));
+        } else {
+            assert!(!model
+                .supported_parameters
+                .contains(&"reasoning_effort".to_owned()));
+        }
+        assert!(model
+            .supported_parameters
+            .contains(&"response_format".to_owned()));
+        assert!(model.supported_parameters.contains(&"user_id".to_owned()));
+        assert!(!model
+            .supported_parameters
+            .contains(&"request_id".to_owned()));
+    }
+
+    for model_id in [
+        "glm-5v-turbo",
+        "glm-4.6v",
+        "autoglm-phone",
+        "glm-4.6v-flash",
+        "glm-4.6v-flashx",
+        "glm-4v-flash",
+        "glm-4.1v-thinking-flashx",
+        "glm-4.1v-thinking-flash",
+    ] {
+        let model = zhipu
+            .models
+            .iter()
+            .find(|model| model.model_id == model_id)
+            .unwrap_or_else(|| panic!("{model_id} should be listed"));
+        assert!(
+            model
+                .conversation_capability
+                .input_modalities
+                .contains(&ModelModality::Image),
+            "{model_id} should be a vision chat model"
+        );
+        assert_eq!(
+            model.conversation_capability.output_modalities,
+            vec![ModelModality::Text],
+            "{model_id}"
+        );
+        assert!(!model
+            .supported_parameters
+            .contains(&"response_format".to_owned()));
+        assert!(!model
+            .supported_parameters
+            .contains(&"reasoning_effort".to_owned()));
+        assert!(!model
+            .supported_parameters
+            .contains(&"tool_stream".to_owned()));
+    }
+}
+
+#[cfg(feature = "zhipu")]
+#[test]
+fn zhipu_provider_catalog_exposes_official_service_capabilities() {
+    let zhipu = harness_model::provider_catalog_entries()
+        .into_iter()
+        .find(|entry| entry.provider_id == "zhipu")
+        .expect("zhipu catalog should exist");
+
+    for (operation_id, category, execution) in [
+        (
+            "zhipu.image_generation",
+            ProviderServiceCategory::Image,
+            ProviderServiceExecution::Sync,
+        ),
+        (
+            "zhipu.image_generation.async",
+            ProviderServiceCategory::Image,
+            ProviderServiceExecution::AsyncJob,
+        ),
+        (
+            "zhipu.image_generation.query",
+            ProviderServiceCategory::Image,
+            ProviderServiceExecution::Sync,
+        ),
+        (
+            "zhipu.video_generation",
+            ProviderServiceCategory::Video,
+            ProviderServiceExecution::AsyncJob,
+        ),
+        (
+            "zhipu.video_generation.query",
+            ProviderServiceCategory::Video,
+            ProviderServiceExecution::Sync,
+        ),
+        (
+            "zhipu.text_to_speech",
+            ProviderServiceCategory::Audio,
+            ProviderServiceExecution::Sync,
+        ),
+        (
+            "zhipu.speech_to_text",
+            ProviderServiceCategory::Audio,
+            ProviderServiceExecution::Sync,
+        ),
+        (
+            "zhipu.voice.clone",
+            ProviderServiceCategory::Audio,
+            ProviderServiceExecution::Sync,
+        ),
+        (
+            "zhipu.voice.list",
+            ProviderServiceCategory::Audio,
+            ProviderServiceExecution::Sync,
+        ),
+        (
+            "zhipu.voice.delete",
+            ProviderServiceCategory::Audio,
+            ProviderServiceExecution::Sync,
+        ),
+        (
+            "zhipu.embeddings",
+            ProviderServiceCategory::Model,
+            ProviderServiceExecution::Sync,
+        ),
+        (
+            "zhipu.rerank",
+            ProviderServiceCategory::Model,
+            ProviderServiceExecution::Sync,
+        ),
+        (
+            "zhipu.tokenizer",
+            ProviderServiceCategory::Model,
+            ProviderServiceExecution::Sync,
+        ),
+        (
+            "zhipu.web_search",
+            ProviderServiceCategory::Model,
+            ProviderServiceExecution::Sync,
+        ),
+        (
+            "zhipu.reader",
+            ProviderServiceCategory::Model,
+            ProviderServiceExecution::Sync,
+        ),
+        (
+            "zhipu.moderations",
+            ProviderServiceCategory::Model,
+            ProviderServiceExecution::Sync,
+        ),
+        (
+            "zhipu.files.upload",
+            ProviderServiceCategory::File,
+            ProviderServiceExecution::Sync,
+        ),
+        (
+            "zhipu.files.ocr",
+            ProviderServiceCategory::File,
+            ProviderServiceExecution::Sync,
+        ),
+        (
+            "zhipu.batches.create",
+            ProviderServiceCategory::Model,
+            ProviderServiceExecution::AsyncJob,
+        ),
+        (
+            "zhipu.agents.invoke",
+            ProviderServiceCategory::Conversation,
+            ProviderServiceExecution::AsyncJob,
+        ),
+        (
+            "zhipu.knowledge.retrieve",
+            ProviderServiceCategory::File,
+            ProviderServiceExecution::Sync,
+        ),
+    ] {
+        let capability = zhipu
+            .service_capabilities
+            .iter()
+            .find(|capability| capability.operation_id == operation_id)
+            .unwrap_or_else(|| panic!("{operation_id} should be listed"));
+        assert_eq!(capability.category, category, "{operation_id}");
+        assert_eq!(capability.execution, execution, "{operation_id}");
+        assert_eq!(capability.permission_subject, "network:zhipu");
     }
 }
 

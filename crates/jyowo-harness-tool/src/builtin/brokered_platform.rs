@@ -353,17 +353,20 @@ impl BrokeredPlatformTool {
         network_access: NetworkAccess,
         input_schema: Value,
     ) -> Self {
-        let mut descriptor = super::descriptor(
-            name,
-            display_name,
-            description,
-            group,
-            false,
-            is_read_only,
-            !is_read_only,
-            256_000,
-            vec![brokered_platform_runtime_capability()],
-            input_schema,
+        let mut descriptor = super::with_output_schema(
+            super::descriptor(
+                name,
+                display_name,
+                description,
+                group,
+                false,
+                is_read_only,
+                !is_read_only,
+                256_000,
+                vec![brokered_platform_runtime_capability()],
+                input_schema,
+            ),
+            json!({ "type": "object" }),
         );
         descriptor.metadata = ToolDescriptorMetadata {
             aliases: aliases.iter().map(|value| (*value).to_owned()).collect(),
@@ -474,6 +477,7 @@ fn brokered_schema(required: &[&str], properties: Value) -> Value {
     json!({
         "type": "object",
         "required": required,
-        "properties": properties
+        "properties": properties,
+        "additionalProperties": false
     })
 }

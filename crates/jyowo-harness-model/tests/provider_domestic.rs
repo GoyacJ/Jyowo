@@ -84,7 +84,7 @@ async fn assert_streaming_provider<P>(
             && model.conversation_capability.tool_calling
             && match provider.provider_id() {
                 "zhipu" => {
-                    model
+                    !model
                         .conversation_capability
                         .input_modalities
                         .contains(&ModelModality::Image)

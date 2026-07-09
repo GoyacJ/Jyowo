@@ -187,6 +187,26 @@ impl ToolRegistryBuilder {
                             Box::<crate::builtin::SeedanceVideoGenerationQueryTool>::default(),
                         )?;
                     }
+                    #[cfg(feature = "zhipu-tools")]
+                    {
+                        registry
+                            .register(Box::<crate::builtin::ZhipuImageGenerationTool>::default())?;
+                        registry.register(
+                            Box::<crate::builtin::ZhipuImageGenerationAsyncTool>::default(),
+                        )?;
+                        registry.register(
+                            Box::<crate::builtin::ZhipuImageGenerationQueryTool>::default(),
+                        )?;
+                        registry
+                            .register(Box::<crate::builtin::ZhipuVideoGenerationTool>::default())?;
+                        registry.register(
+                            Box::<crate::builtin::ZhipuVideoGenerationQueryTool>::default(),
+                        )?;
+                        registry
+                            .register(Box::<crate::builtin::ZhipuTextToSpeechTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::ZhipuSpeechToTextTool>::default())?;
+                    }
                 }
             }
             BuiltinToolset::Clarification => {
