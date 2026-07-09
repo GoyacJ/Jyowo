@@ -714,7 +714,10 @@ impl Harness {
             .with_workspace_root(&options.workspace_root)
             .with_model_id(model_id)
             .with_model_snapshot(model_snapshot.clone())
-            .with_model_extra(run_options.model_extra.clone())
+            .with_model_extra(merge_model_extra(
+                options.model_extra.clone(),
+                run_options.model_extra.clone(),
+            ))
             .with_protocol(protocol)
             .with_system_prompt(
                 self.session_system_prompt(
@@ -864,13 +867,28 @@ pub(super) fn session_options_for_run(
     options.tool_profile = run_options.tool_profile.clone();
     options.model_id = run_options.model_id.clone();
     options.protocol = run_options.protocol;
-    options.model_extra = run_options.model_extra.clone();
+    if run_options.model_extra != Value::Null {
+        options.model_extra =
+            merge_model_extra(options.model_extra.clone(), run_options.model_extra.clone());
+    }
     options.permission_mode = run_options.permission_mode;
     options.interactivity = run_options.interactivity;
     options.system_prompt_addendum = run_options.system_prompt_addendum.clone();
     options.max_iterations = run_options.max_iterations;
     options.context_compression_trigger_ratio = run_options.context_compression_trigger_ratio;
     options
+}
+
+fn merge_model_extra(base: Value, overlay: Value) -> Value {
+    match (base, overlay) {
+        (Value::Object(mut base), Value::Object(overlay)) => {
+            for (key, value) in overlay {
+                base.insert(key, value);
+            }
+            Value::Object(base)
+        }
+        (_, overlay) => overlay,
+    }
 }
 
 pub(super) fn conversation_run_options_hash(run_options: &ConversationRunOptions) -> [u8; 32] {
@@ -1004,7 +1022,8 @@ fn apply_explicit_session_options(options: &mut SessionOptions, explicit: &Sessi
         options.protocol = explicit.protocol;
     }
     if explicit.model_extra != Value::Null {
-        options.model_extra = explicit.model_extra.clone();
+        options.model_extra =
+            merge_model_extra(options.model_extra.clone(), explicit.model_extra.clone());
     }
     if explicit.permission_mode != PermissionMode::Default {
         options.permission_mode = explicit.permission_mode;

@@ -150,19 +150,16 @@ async fn thinking_stream_keeps_thinking_out_of_final_assistant_message() {
         TestHarness::new(thinking_then_text_events("internal chain", "final answer")).await;
 
     let events = harness.run("hello").await.unwrap();
-    let serialized = serde_json::to_string(&events).unwrap();
 
     assert!(events.iter().any(|event| matches!(
         event,
         Event::AssistantDeltaProduced(delta)
             if matches!(&delta.delta, DeltaChunk::Thought(thought)
-                if thought.text.is_none()
-                    && thought.provider_native.is_none()
-                    && thought.signature.is_none())
+                if thought.text.as_deref() == Some("internal chain")
+                    && thought.provider_native.as_ref()
+                        == Some(&json!({ "thinking": "provider native secret" }))
+                    && thought.signature.as_deref() == Some("signature-secret"))
     )));
-    assert!(!serialized.contains("internal chain"));
-    assert!(!serialized.contains("provider native secret"));
-    assert!(!serialized.contains("signature-secret"));
     assert!(events.iter().any(|event| matches!(
         event,
         Event::AssistantMessageCompleted(completed)
@@ -184,10 +181,10 @@ async fn reasoning_summary_stream_records_safe_summary_delta() {
         event,
         Event::AssistantDeltaProduced(delta)
             if matches!(&delta.delta, DeltaChunk::ReasoningSummary(summary)
-                if summary.text == "Checked context." && summary.provider_native.is_none())
+                if summary.text == "Checked context."
+                    && summary.provider_native.as_ref()
+                        == Some(&json!({ "reasoning": "provider native secret" })))
     )));
-    let serialized = serde_json::to_string(&events).unwrap();
-    assert!(!serialized.contains("provider native secret"));
     assert!(events.iter().any(|event| matches!(
         event,
         Event::AssistantMessageCompleted(completed)

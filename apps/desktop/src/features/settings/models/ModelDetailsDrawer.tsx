@@ -195,6 +195,12 @@ export function ModelDetailsDrawer({
       providerId,
       setDefault: row.isDefault,
     }
+    if (providerId === 'qwen') {
+      request.protocol = row.protocol
+      if (row.providerDefaults) {
+        request.providerDefaults = row.providerDefaults
+      }
+    }
     const trimmedDisplayName = displayName.trim()
     const trimmedBaseUrl = baseUrl.trim()
     const apiKey = readSecretFormValue(form, 'apiKey')

@@ -1283,6 +1283,18 @@ pub(crate) async fn build_desktop_harness(
             as Arc<dyn ProviderSettingsStore>;
     let provider_settings_store =
         provider_settings_store_override.unwrap_or(default_provider_settings_store);
+    let provider_settings_record = provider_settings_store.load_record()?;
+    let provider_defaults_extra = provider_settings_record
+        .as_ref()
+        .and_then(|record| {
+            let config_id = model_config_id.or(record.default_config_id.as_deref())?;
+            record
+                .configs
+                .iter()
+                .find(|config| config.id == config_id)
+                .map(provider_defaults_body)
+        })
+        .unwrap_or(Value::Null);
     let conversation_metadata_store =
         DesktopConversationMetadataStore::new_runtime_root(runtime_root.clone());
     let (model_provider, model_id, protocol) =
@@ -1446,6 +1458,9 @@ pub(crate) async fn build_desktop_harness(
         .with_agent_runtime_root(runtime_root)
         .with_model_id(model_id.clone())
         .with_protocol(protocol);
+    if provider_defaults_extra != Value::Null {
+        default_session_options = default_session_options.with_model_extra(provider_defaults_extra);
+    }
     if let Some(project_workspace_root) = project_workspace_root {
         default_session_options =
             default_session_options.with_project_workspace_root(project_workspace_root);
@@ -3129,6 +3144,7 @@ esac
                 model_id: "gpt-5".to_owned(),
                 protocol: ModelProtocol::ChatCompletions,
                 base_url: None,
+                provider_defaults: None,
                 model_descriptor: ProviderProfileModelDescriptor {
                     protocol: ModelProtocol::ChatCompletions,
                     context_window: 128000,

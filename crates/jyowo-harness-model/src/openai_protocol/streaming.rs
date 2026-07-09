@@ -7,7 +7,9 @@ use harness_contracts::ModelError;
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 
-use crate::{ContentDelta, ContentType, ErrorClass, ErrorHints, ModelStream, ModelStreamEvent};
+use crate::{
+    ContentDelta, ContentType, ErrorClass, ErrorHints, ModelStream, ModelStreamEvent, ThinkingDelta,
+};
 
 use super::chat_codec::{stop_reason, usage_for_dialect, OpenAiUsage};
 use super::continuation;
@@ -159,6 +161,10 @@ struct OpenAiStreamState {
     terminal_pending: bool,
     text_started: bool,
     text_stopped: bool,
+    text_block_index: Option<u32>,
+    thinking_started: bool,
+    thinking_stopped: bool,
+    thinking_block_index: Option<u32>,
     next_block_index: u32,
     reasoning_replay_payloads: Vec<Value>,
     continuation_emitted: bool,
@@ -208,18 +214,27 @@ impl OpenAiStreamState {
         }
 
         for choice in payload.choices {
-            if let Some(content) = choice.delta.content {
-                if !content.is_empty() {
-                    if !self.text_started {
-                        self.text_started = true;
-                        self.next_block_index = self.next_block_index.max(1);
-                        events.push(ModelStreamEvent::ContentBlockStart {
-                            index: 0,
-                            content_type: ContentType::Text,
+            if self.dialect == OpenAiChatDialect::Qwen {
+                if let Some(reasoning_content) = choice.delta.reasoning_content {
+                    if !reasoning_content.is_empty() {
+                        let index = self.ensure_thinking_block(&mut events);
+                        events.push(ModelStreamEvent::ContentBlockDelta {
+                            index,
+                            delta: ContentDelta::Thinking(ThinkingDelta {
+                                text: Some(reasoning_content),
+                                provider_native: None,
+                                signature: None,
+                            }),
                         });
                     }
+                }
+            }
+
+            if let Some(content) = choice.delta.content {
+                if !content.is_empty() {
+                    let index = self.ensure_text_block(&mut events);
                     events.push(ModelStreamEvent::ContentBlockDelta {
-                        index: 0,
+                        index,
                         delta: ContentDelta::Text(content),
                     });
                 }
@@ -233,7 +248,15 @@ impl OpenAiStreamState {
                 finish_reason_seen = true;
                 if self.text_started && !self.text_stopped {
                     self.text_stopped = true;
-                    events.push(ModelStreamEvent::ContentBlockStop { index: 0 });
+                    if let Some(index) = self.text_block_index {
+                        events.push(ModelStreamEvent::ContentBlockStop { index });
+                    }
+                }
+                if self.thinking_started && !self.thinking_stopped {
+                    self.thinking_stopped = true;
+                    if let Some(index) = self.thinking_block_index {
+                        events.push(ModelStreamEvent::ContentBlockStop { index });
+                    }
                 }
                 for state in self.tool_calls.values_mut() {
                     if state.started && !state.stopped {
@@ -269,6 +292,12 @@ impl OpenAiStreamState {
             return Vec::new();
         }
         let mut events = Vec::new();
+        if self.thinking_started && !self.thinking_stopped {
+            self.thinking_stopped = true;
+            if let Some(index) = self.thinking_block_index {
+                events.push(ModelStreamEvent::ContentBlockStop { index });
+            }
+        }
         if !self.continuation_emitted {
             if let Some(event) = continuation::stream_continuation_event(
                 self.dialect,
@@ -282,6 +311,36 @@ impl OpenAiStreamState {
         self.terminal_pending = false;
         events.push(ModelStreamEvent::MessageStop);
         events
+    }
+
+    fn ensure_text_block(&mut self, events: &mut Vec<ModelStreamEvent>) -> u32 {
+        if let Some(index) = self.text_block_index {
+            return index;
+        }
+        let index = self.next_block_index;
+        self.next_block_index = index + 1;
+        self.text_started = true;
+        self.text_block_index = Some(index);
+        events.push(ModelStreamEvent::ContentBlockStart {
+            index,
+            content_type: ContentType::Text,
+        });
+        index
+    }
+
+    fn ensure_thinking_block(&mut self, events: &mut Vec<ModelStreamEvent>) -> u32 {
+        if let Some(index) = self.thinking_block_index {
+            return index;
+        }
+        let index = self.next_block_index;
+        self.next_block_index = index + 1;
+        self.thinking_started = true;
+        self.thinking_block_index = Some(index);
+        events.push(ModelStreamEvent::ContentBlockStart {
+            index,
+            content_type: ContentType::Thinking,
+        });
+        index
     }
 
     fn map_tool_call(&mut self, delta: StreamToolCallDelta) -> Vec<ModelStreamEvent> {
@@ -368,6 +427,7 @@ struct StreamChoice {
 #[derive(Debug, Default, Deserialize)]
 struct StreamDelta {
     content: Option<String>,
+    reasoning_content: Option<String>,
     #[serde(default)]
     tool_calls: Vec<StreamToolCallDelta>,
 }

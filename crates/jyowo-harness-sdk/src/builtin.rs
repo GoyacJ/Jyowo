@@ -20,10 +20,10 @@ pub use harness_model::MinimaxProvider;
 pub use harness_model::OpenAiProvider;
 #[cfg(feature = "provider-openrouter")]
 pub use harness_model::OpenRouterProvider;
-#[cfg(feature = "provider-qwen")]
-pub use harness_model::QwenProvider;
 #[cfg(feature = "provider-zhipu")]
 pub use harness_model::ZhipuProvider;
+#[cfg(feature = "provider-qwen")]
+pub use harness_model::{normalize_qwen_base_url, QwenProvider};
 
 #[cfg(feature = "blob-file")]
 pub use harness_journal::FileBlobStore;

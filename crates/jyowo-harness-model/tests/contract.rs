@@ -256,7 +256,7 @@ domestic_contract!(
     contract_qwen_provider,
     QwenProvider,
     "qwen3.7-max",
-    "/v1/chat/completions"
+    "/chat/completions"
 );
 domestic_contract!(
     "doubao",

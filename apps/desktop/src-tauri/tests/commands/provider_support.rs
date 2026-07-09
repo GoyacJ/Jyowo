@@ -73,6 +73,7 @@ pub(crate) fn provider_settings_record_with_minimax_config(
             model_id: "minimax-text-01".to_owned(),
             official_quota_api_key: None,
             provider_id: "minimax".to_owned(),
+            provider_defaults: None,
             model_descriptor: ProviderModelDescriptorRecord {
                 protocol: ModelProtocol::ChatCompletions,
                 conversation_capability: ConversationModelCapabilityRecord {
@@ -109,6 +110,7 @@ pub(crate) fn test_provider_settings_record() -> ProviderSettingsRecord {
             model_id: "test-model".to_owned(),
             official_quota_api_key: None,
             provider_id: "test".to_owned(),
+            provider_defaults: None,
             model_descriptor: ProviderModelDescriptorRecord {
                 protocol: ModelProtocol::Messages,
                 conversation_capability: ConversationModelCapabilityRecord {
@@ -150,6 +152,7 @@ pub(crate) fn chat_provider_config_record(
         model_id: model_id.to_owned(),
         official_quota_api_key: None,
         provider_id: provider_id.to_owned(),
+        provider_defaults: None,
         model_descriptor: ProviderModelDescriptorRecord {
             protocol: ModelProtocol::ChatCompletions,
             conversation_capability: ConversationModelCapabilityRecord {

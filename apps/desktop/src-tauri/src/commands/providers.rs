@@ -342,19 +342,51 @@ fn provider_config_record_from_profile(
     profile: ProviderProfileDefinition,
     secret: Option<&ProviderSecretEntry>,
 ) -> Result<ProviderConfigRecord, CommandErrorPayload> {
+    let profile = migrate_provider_profile(profile);
+    let provider_defaults = profile
+        .provider_defaults
+        .map(provider_defaults_record_from_profile);
+    validate_provider_defaults(profile.provider_id.as_str(), provider_defaults.as_ref())?;
     Ok(ProviderConfigRecord {
         api_key: secret
             .map(|entry| entry.api_key.clone())
             .unwrap_or_default(),
         protocol: profile.protocol,
-        base_url: profile.base_url,
+        base_url: normalized_provider_base_url(&profile.provider_id, profile.base_url.as_deref())?,
         display_name: profile.display_name,
         id: profile.id,
         model_id: profile.model_id,
         official_quota_api_key: secret.and_then(|entry| entry.official_quota_api_key.clone()),
         provider_id: profile.provider_id,
+        provider_defaults,
         model_descriptor: provider_model_descriptor_record_from_profile(profile.model_descriptor)?,
     })
+}
+
+fn migrate_provider_profile(mut profile: ProviderProfileDefinition) -> ProviderProfileDefinition {
+    if profile.provider_id == "qwen" && profile.model_id == "qwen3.7-max-thinking" {
+        profile.model_id = "qwen3.7-max".to_owned();
+        profile.model_descriptor.model_id = "qwen3.7-max".to_owned();
+        profile.model_descriptor.display_name = "Qwen3.7 Max".to_owned();
+        let mut defaults = profile.provider_defaults.unwrap_or_default();
+        let mut body = defaults
+            .body
+            .and_then(|body| body.as_object().cloned())
+            .unwrap_or_default();
+        body.insert("enable_thinking".to_owned(), Value::Bool(true));
+        defaults.body = Some(Value::Object(body));
+        profile.provider_defaults = Some(defaults);
+    }
+    profile
+}
+
+fn provider_defaults_record_from_profile(
+    defaults: harness_contracts::ProviderProfileDefaults,
+) -> ProviderDefaultsRecord {
+    ProviderDefaultsRecord {
+        body: defaults.body,
+        headers: defaults.headers,
+    }
 }
 
 fn provider_model_descriptor_record_from_profile(
@@ -1048,25 +1080,65 @@ pub(crate) fn model_provider_catalog_response(
     ModelProviderCatalogResponse {
         providers: entries
             .into_iter()
-            .map(|entry| ModelProviderCatalogEntry {
-                default_base_url: entry.default_base_url,
-                display_name: entry.display_name,
-                models: entry
-                    .models
-                    .into_iter()
-                    .map(model_descriptor_catalog_entry)
-                    .collect(),
-                provider_id: entry.provider_id,
-                runtime_capability: runtime_capability_payload(entry.runtime_capability),
-                service_capabilities: entry
-                    .service_capabilities
-                    .into_iter()
-                    .map(service_capability_payload)
-                    .collect(),
-                source_url: entry.source_url,
-                verified_date: entry.verified_date.to_string(),
+            .map(|entry| {
+                let default_base_url = desktop_default_base_url(&entry);
+                ModelProviderCatalogEntry {
+                    default_base_url,
+                    display_name: entry.display_name,
+                    models: entry
+                        .models
+                        .into_iter()
+                        .map(model_descriptor_catalog_entry)
+                        .collect(),
+                    provider_id: entry.provider_id,
+                    provider_defaults: None,
+                    runtime_capability: runtime_capability_payload(entry.runtime_capability),
+                    service_capabilities: entry
+                        .service_capabilities
+                        .into_iter()
+                        .map(service_capability_payload)
+                        .collect(),
+                    source_url: entry.source_url,
+                    verified_date: entry.verified_date.to_string(),
+                }
             })
             .collect(),
+    }
+}
+
+fn desktop_default_base_url(entry: &jyowo_harness_sdk::ext::ProviderCatalogEntry) -> String {
+    if entry.provider_id != "qwen" {
+        return entry.default_base_url.clone();
+    }
+    let timezone_id =
+        iana_time_zone::get_timezone().unwrap_or_else(|_| "America/New_York".to_owned());
+    let region_id = qwen_region_id_for_timezone(&timezone_id);
+    entry
+        .runtime_capability
+        .base_url_regions
+        .iter()
+        .find(|region| region.id == region_id)
+        .or_else(|| {
+            entry
+                .runtime_capability
+                .base_url_regions
+                .iter()
+                .find(|region| region.id == "us")
+        })
+        .map(|region| region.base_url.clone())
+        .unwrap_or_else(|| entry.default_base_url.clone())
+}
+
+fn qwen_region_id_for_timezone(timezone_id: &str) -> &'static str {
+    match timezone_id {
+        "Asia/Shanghai" => "beijing",
+        "Asia/Hong_Kong" | "Asia/Macau" => "hong-kong",
+        "Asia/Tokyo" => "japan",
+        "Asia/Singapore" | "Asia/Kuala_Lumpur" | "Asia/Jakarta" | "Asia/Bangkok"
+        | "Asia/Manila" | "Asia/Ho_Chi_Minh" => "singapore",
+        value if value.starts_with("Europe/") => "germany",
+        value if value.starts_with("America/") => "us",
+        _ => "us",
     }
 }
 
@@ -1917,7 +1989,7 @@ pub async fn save_provider_settings_with_store(
     store: &dyn ProviderSettingsStore,
 ) -> Result<SaveProviderSettingsResponse, CommandErrorPayload> {
     ensure_provider_settings(&request)?;
-    let base_url = normalized_base_url(request.base_url.as_deref())?;
+    let base_url = normalized_provider_base_url(&request.provider_id, request.base_url.as_deref())?;
     let mut record = store.load_record()?.unwrap_or_default();
     let config_id = provider_config_id(&record, &request);
     let previous_config = record
@@ -1967,6 +2039,14 @@ pub async fn save_provider_settings_with_store(
                 })
                 .and_then(|config| config.official_quota_api_key.clone())
         });
+    let provider_defaults = request.provider_defaults.clone().or_else(|| {
+        previous_config
+            .as_ref()
+            .filter(|config| {
+                config.provider_id == request.provider_id && config.base_url == base_url
+            })
+            .and_then(|config| config.provider_defaults.clone())
+    });
     let config = ProviderConfigRecord {
         api_key: config_api_key,
         protocol: descriptor.protocol,
@@ -1982,6 +2062,7 @@ pub async fn save_provider_settings_with_store(
         model_id: request.model_id.clone(),
         official_quota_api_key,
         provider_id: request.provider_id.clone(),
+        provider_defaults,
         model_descriptor: model_descriptor_record(&descriptor),
     };
     record.configs.retain(|existing| existing.id != config_id);
@@ -2061,8 +2142,15 @@ pub(crate) async fn provider_settings_descriptor(
     previous_config: Option<&ProviderConfigRecord>,
 ) -> Result<ModelDescriptor, CommandErrorPayload> {
     ensure_provider_metadata_shape(&request.provider_id, &request.model_id)?;
+    let requested_protocol = request.protocol.or_else(|| {
+        previous_config
+            .filter(|config| {
+                config.provider_id == request.provider_id && config.model_id == request.model_id
+            })
+            .map(|config| config.protocol)
+    });
     match resolve_model_descriptor(&request.provider_id, &request.model_id) {
-        Ok(descriptor) => Ok(descriptor),
+        Ok(descriptor) => apply_protocol_override(descriptor, requested_protocol),
         Err(error) if request.provider_id == "openrouter" => {
             if let Some(previous_config) = previous_config {
                 if previous_config.provider_id == request.provider_id
@@ -2071,11 +2159,45 @@ pub(crate) async fn provider_settings_descriptor(
                     return provider_config_descriptor(previous_config);
                 }
             }
-            resolve_provider_model_descriptor(&request.provider_id, &request.model_id)
-                .await
-                .map_err(|_| provider_registry_error(error))
+            let descriptor =
+                resolve_provider_model_descriptor(&request.provider_id, &request.model_id)
+                    .await
+                    .map_err(|_| provider_registry_error(error))?;
+            apply_protocol_override(descriptor, requested_protocol)
         }
         Err(error) => Err(provider_registry_error(error)),
+    }
+}
+
+fn apply_protocol_override(
+    mut descriptor: ModelDescriptor,
+    protocol: Option<ModelProtocol>,
+) -> Result<ModelDescriptor, CommandErrorPayload> {
+    let Some(protocol) = protocol else {
+        return Ok(descriptor);
+    };
+    if protocol == descriptor.protocol {
+        return Ok(descriptor);
+    }
+    if descriptor.provider_id != "qwen" {
+        return Err(invalid_payload(
+            "protocol override is only supported for Qwen provider configs".to_owned(),
+        ));
+    }
+    match protocol {
+        ModelProtocol::ChatCompletions => {
+            descriptor.protocol = ModelProtocol::ChatCompletions;
+            descriptor.runtime_semantics = ModelRuntimeSemantics::openai_chat_qwen();
+            Ok(descriptor)
+        }
+        ModelProtocol::Responses => {
+            descriptor.protocol = ModelProtocol::Responses;
+            descriptor.runtime_semantics = ModelRuntimeSemantics::openai_responses_default();
+            Ok(descriptor)
+        }
+        _ => Err(invalid_payload(
+            "Qwen protocol must be chat_completions or responses".to_owned(),
+        )),
     }
 }
 
@@ -2350,6 +2472,7 @@ pub(crate) fn provider_config_payload(
         is_default: default_config_id.is_some_and(|id| id == config.id),
         model_id: config.model_id.clone(),
         provider_id: config.provider_id.clone(),
+        provider_defaults: config.provider_defaults.clone(),
         model_descriptor: model_descriptor_catalog_entry(descriptor),
     })
 }
@@ -2376,11 +2499,71 @@ pub(crate) fn ensure_provider_config_has_api_key(
         .map_or_else(|| Ok(config.api_key.trim()), Err)
 }
 
+pub(crate) fn provider_request_defaults(
+    config: &ProviderConfigRecord,
+) -> Option<ProviderRequestDefaults> {
+    config
+        .provider_defaults
+        .as_ref()
+        .map(|defaults| ProviderRequestDefaults {
+            body: defaults
+                .body
+                .clone()
+                .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
+            headers: defaults.headers.clone(),
+        })
+}
+
+pub(crate) fn provider_defaults_body(config: &ProviderConfigRecord) -> Value {
+    config
+        .provider_defaults
+        .as_ref()
+        .and_then(|defaults| defaults.body.clone())
+        .unwrap_or(Value::Null)
+}
+
+pub(crate) fn validate_provider_defaults(
+    provider_id: &str,
+    defaults: Option<&ProviderDefaultsRecord>,
+) -> Result<(), CommandErrorPayload> {
+    let Some(defaults) = defaults else {
+        return Ok(());
+    };
+    if provider_id != "qwen" {
+        return Err(invalid_payload(
+            "providerDefaults are only supported for Qwen provider configs".to_owned(),
+        ));
+    }
+    if let Some(body) = &defaults.body {
+        let Some(object) = body.as_object() else {
+            return Err(invalid_payload(
+                "providerDefaults.body must be an object".to_owned(),
+            ));
+        };
+        for forbidden in ["model", "messages", "input", "stream"] {
+            if object.contains_key(forbidden) {
+                return Err(invalid_payload(format!(
+                    "providerDefaults.body must not include core field {forbidden}"
+                )));
+            }
+        }
+    }
+    for (name, value) in &defaults.headers {
+        if !name.eq_ignore_ascii_case("x-dashscope-session-cache") || value != "enable" {
+            return Err(invalid_payload(
+                "providerDefaults.headers only supports x-dashscope-session-cache: enable"
+                    .to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn provider_config_descriptor(
     config: &ProviderConfigRecord,
 ) -> Result<ModelDescriptor, CommandErrorPayload> {
     match resolve_model_descriptor(&config.provider_id, &config.model_id) {
-        Ok(descriptor) => Ok(descriptor),
+        Ok(descriptor) => apply_protocol_override(descriptor, Some(config.protocol)),
         Err(_) if config.provider_id == "openrouter" => {
             let descriptor = model_descriptor_from_record(&config.model_descriptor)?;
             if descriptor.provider_id != config.provider_id
@@ -2430,6 +2613,27 @@ pub(crate) fn descriptor_has_runtime_supported_modalities(descriptor: &ModelDesc
             .conversation_capability
             .output_modalities
             .is_empty()
+}
+
+pub(crate) fn normalized_provider_base_url(
+    provider_id: &str,
+    value: Option<&str>,
+) -> Result<Option<String>, CommandErrorPayload> {
+    let normalized = normalized_base_url(value)?;
+    if provider_id == "qwen" {
+        if let Some(base_url) = normalized.as_deref() {
+            if base_url.contains("{WorkspaceId}") {
+                return Err(invalid_payload(
+                    "Qwen baseUrl template requires replacing {WorkspaceId} before saving"
+                        .to_owned(),
+                ));
+            }
+            return Ok(Some(jyowo_harness_sdk::builtin::normalize_qwen_base_url(
+                base_url,
+            )));
+        }
+    }
+    Ok(normalized)
 }
 
 pub(crate) fn normalized_base_url(
@@ -2483,12 +2687,13 @@ pub(crate) fn build_provider_for_config(
             "provider config has no api key".to_owned(),
         ));
     }
-    let base_url = normalized_base_url(config.base_url.as_deref())?;
+    let base_url = normalized_provider_base_url(&config.provider_id, config.base_url.as_deref())?;
     let provider = build_provider(ProviderBuildConfig {
         provider_id: config.provider_id.clone(),
         api_key: api_key.to_owned(),
         base_url,
         model_descriptor: Some(descriptor.clone()),
+        provider_defaults: provider_request_defaults(config),
     })
     .map_err(provider_registry_init_error)?;
     Ok((Arc::from(provider), descriptor.protocol))
@@ -2528,12 +2733,13 @@ pub(crate) fn model_from_provider_settings(
             "provider config has no api key".to_owned(),
         ));
     }
-    let base_url = normalized_base_url(config.base_url.as_deref())?;
+    let base_url = normalized_provider_base_url(&config.provider_id, config.base_url.as_deref())?;
     let provider = build_provider(ProviderBuildConfig {
         provider_id: config.provider_id.clone(),
         api_key: api_key.to_owned(),
         base_url,
         model_descriptor: Some(descriptor.clone()),
+        provider_defaults: provider_request_defaults(config),
     })
     .map_err(provider_registry_init_error)?;
     let protocol = descriptor.protocol;
@@ -2545,7 +2751,10 @@ pub(crate) fn model_from_provider_settings(
     )))
 }
 
-use harness_contracts::{ModelProtocol, ProviderProfileDefinition, ProviderProfileModelDescriptor};
+use harness_contracts::{
+    ModelProtocol, ProviderProfileDefaults, ProviderProfileDefinition,
+    ProviderProfileModelDescriptor,
+};
 
 fn provider_profile_definition_from_config(
     config: &ProviderConfigRecord,
@@ -2558,7 +2767,20 @@ fn provider_profile_definition_from_config(
         model_id: config.model_id.clone(),
         protocol: config.protocol,
         base_url: config.base_url.clone(),
+        provider_defaults: config
+            .provider_defaults
+            .clone()
+            .map(provider_profile_defaults_from_record),
         model_descriptor: provider_profile_descriptor_from_config(config),
+    }
+}
+
+fn provider_profile_defaults_from_record(
+    defaults: ProviderDefaultsRecord,
+) -> ProviderProfileDefaults {
+    ProviderProfileDefaults {
+        body: defaults.body,
+        headers: defaults.headers,
     }
 }
 
@@ -2687,6 +2909,7 @@ mod execution_settings_tests {
             model_id: "gpt-5.4-mini".to_owned(),
             official_quota_api_key: None,
             protocol: ModelProtocol::Responses,
+            provider_defaults: None,
             provider_id: "openai".to_owned(),
         }
     }

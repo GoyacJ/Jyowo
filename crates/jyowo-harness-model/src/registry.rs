@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 
 use chrono::NaiveDate;
@@ -37,6 +38,13 @@ pub struct ProviderBuildConfig {
     pub api_key: String,
     pub base_url: Option<String>,
     pub model_descriptor: Option<ModelDescriptor>,
+    pub provider_defaults: Option<ProviderRequestDefaults>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProviderRequestDefaults {
+    pub body: serde_json::Value,
+    pub headers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,7 +152,7 @@ pub fn provider_catalog_entries() -> Vec<ProviderCatalogEntry> {
     entries.push(entry(
         "qwen",
         "Qwen",
-        "https://dashscope.aliyuncs.com/compatible-mode",
+        crate::qwen::DEFAULT_BASE_URL,
         crate::QwenProvider::from_api_key("").supported_models(),
     ));
     #[cfg(feature = "zhipu")]
@@ -300,7 +308,9 @@ pub fn build_provider(
     }
     #[cfg(feature = "qwen")]
     if provider_id == "qwen" {
-        let provider = crate::QwenProvider::from_api_key(api_key);
+        let defaults = config.provider_defaults.unwrap_or_default();
+        let provider =
+            crate::QwenProvider::from_api_key(api_key).with_default_headers(defaults.headers);
         return Ok(Box::new(match base_url {
             Some(base_url) => provider.with_base_url(base_url),
             None => provider,
@@ -376,6 +386,8 @@ fn runtime_capability(
                 base_url: "https://api.z.ai/api/coding/paas/v4".to_owned(),
             },
         ]
+    } else if provider_id == "qwen" {
+        qwen_base_url_regions()
     } else {
         vec![ProviderBaseUrlRegion {
             id: "default".to_owned(),
@@ -391,6 +403,51 @@ fn runtime_capability(
         supports_streaming_validation: true,
         secret_reveal_supported: true,
     }
+}
+
+fn qwen_base_url_regions() -> Vec<ProviderBaseUrlRegion> {
+    vec![
+        ProviderBaseUrlRegion {
+            id: "us".to_owned(),
+            label: "US Virginia".to_owned(),
+            base_url: "https://dashscope-us.aliyuncs.com/compatible-mode/v1".to_owned(),
+        },
+        ProviderBaseUrlRegion {
+            id: "beijing".to_owned(),
+            label: "China Beijing".to_owned(),
+            base_url: "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+                .to_owned(),
+        },
+        ProviderBaseUrlRegion {
+            id: "singapore".to_owned(),
+            label: "Singapore".to_owned(),
+            base_url: "https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+                .to_owned(),
+        },
+        ProviderBaseUrlRegion {
+            id: "hong-kong".to_owned(),
+            label: "Hong Kong".to_owned(),
+            base_url: "https://{WorkspaceId}.cn-hongkong.maas.aliyuncs.com/compatible-mode/v1"
+                .to_owned(),
+        },
+        ProviderBaseUrlRegion {
+            id: "germany".to_owned(),
+            label: "Germany Frankfurt".to_owned(),
+            base_url: "https://{WorkspaceId}.eu-central-1.maas.aliyuncs.com/compatible-mode/v1"
+                .to_owned(),
+        },
+        ProviderBaseUrlRegion {
+            id: "japan".to_owned(),
+            label: "Japan Tokyo".to_owned(),
+            base_url: "https://{WorkspaceId}.ap-northeast-1.maas.aliyuncs.com/compatible-mode/v1"
+                .to_owned(),
+        },
+        ProviderBaseUrlRegion {
+            id: "legacy".to_owned(),
+            label: "Legacy DashScope".to_owned(),
+            base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_owned(),
+        },
+    ]
 }
 
 fn provider_auth_scheme(provider_id: &str) -> ProviderAuthScheme {
@@ -793,16 +850,57 @@ fn inventory_only_models(provider_id: &str) -> Vec<ModelInventoryEntry> {
                 "audio output is not supported by the current runtime",
             ),
         ],
-        "qwen" => vec![unsupported_model(
-            "qwen",
-            "qwen-image-2.0-pro",
-            "Qwen Image 2.0 Pro",
-            vec![ModelModality::Text, ModelModality::Image],
-            vec![ModelModality::Image],
-            "image generation output is not supported by the current runtime",
-        )],
+        "qwen" => qwen_unsupported_image_models(),
         _ => Vec::new(),
     }
+}
+
+fn qwen_unsupported_image_models() -> Vec<ModelInventoryEntry> {
+    [
+        ("qwen-image-2.0-pro", "Qwen Image 2.0 Pro"),
+        (
+            "qwen-image-2.0-pro-2026-03-03",
+            "Qwen Image 2.0 Pro 2026-03-03",
+        ),
+        (
+            "qwen-image-2.0-pro-2026-04-22",
+            "Qwen Image 2.0 Pro 2026-04-22",
+        ),
+        ("qwen-image-2.0", "Qwen Image 2.0"),
+        ("qwen-image-2.0-2026-03-03", "Qwen Image 2.0 2026-03-03"),
+        ("qwen-image-max", "Qwen Image Max"),
+        ("qwen-image-max-2025-12-30", "Qwen Image Max 2025-12-30"),
+        ("qwen-image-plus", "Qwen Image Plus"),
+        ("qwen-image-plus-2026-01-09", "Qwen Image Plus 2026-01-09"),
+        ("qwen-image", "Qwen Image"),
+        ("qwen-image-edit-max", "Qwen Image Edit Max"),
+        (
+            "qwen-image-edit-max-2026-01-16",
+            "Qwen Image Edit Max 2026-01-16",
+        ),
+        ("qwen-image-edit-plus", "Qwen Image Edit Plus"),
+        (
+            "qwen-image-edit-plus-2025-12-15",
+            "Qwen Image Edit Plus 2025-12-15",
+        ),
+        (
+            "qwen-image-edit-plus-2025-10-30",
+            "Qwen Image Edit Plus 2025-10-30",
+        ),
+        ("qwen-image-edit", "Qwen Image Edit"),
+    ]
+    .into_iter()
+    .map(|(model_id, display_name)| {
+        unsupported_model(
+            "qwen",
+            model_id,
+            display_name,
+            vec![ModelModality::Text, ModelModality::Image],
+            vec![ModelModality::Image],
+            "image output is not supported by the current runtime",
+        )
+    })
+    .collect()
 }
 
 fn unsupported_model(

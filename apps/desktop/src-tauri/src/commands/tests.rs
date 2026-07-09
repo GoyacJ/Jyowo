@@ -1798,6 +1798,7 @@ exit 0
                     model_id: "gpt-5.4-mini".to_owned(),
                     official_quota_api_key: None,
                     provider_id: "openai".to_owned(),
+                    provider_defaults: None,
                     model_descriptor: ProviderModelDescriptorRecord {
                         protocol: ModelProtocol::Responses,
                         conversation_capability: ConversationModelCapabilityRecord {

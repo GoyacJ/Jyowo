@@ -294,6 +294,7 @@ mod tests {
             model_id: "gpt-5".to_owned(),
             protocol: ModelProtocol::ChatCompletions,
             base_url: None,
+            provider_defaults: None,
             model_descriptor: make_model_descriptor(),
         };
 
@@ -596,6 +597,7 @@ mod tests {
                 model_id: "gpt-5".to_owned(),
                 protocol: ModelProtocol::ChatCompletions,
                 base_url: None,
+                provider_defaults: None,
                 model_descriptor: make_model_descriptor(),
             }])
             .expect("save");

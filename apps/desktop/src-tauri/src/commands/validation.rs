@@ -611,7 +611,8 @@ pub(crate) fn ensure_provider_settings(
     if let Some(display_name) = &request.display_name {
         ensure_optional("displayName", Some(display_name))?;
     }
-    let _ = normalized_base_url(request.base_url.as_deref())?;
+    let _ = normalized_provider_base_url(&request.provider_id, request.base_url.as_deref())?;
+    validate_provider_defaults(&request.provider_id, request.provider_defaults.as_ref())?;
 
     Ok(())
 }

@@ -72,6 +72,7 @@ fn sample_provider_config(api_key: &str) -> ProviderConfigRecord {
         model_id: "gpt-5.4-mini".to_owned(),
         official_quota_api_key: None,
         provider_id: "openai".to_owned(),
+        provider_defaults: None,
         model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
     }
 }
