@@ -5,9 +5,9 @@ use futures::StreamExt;
 use harness_contracts::{
     BudgetMetric, DecisionScope, DeferPolicy, Event, ManifestOriginRef, McpOrigin, McpServerId,
     McpServerSource, NetworkAccess, OverflowAction, PermissionSubject, ProviderRestriction,
-    ResultBudget, SemverString, ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel,
-    ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolResultPart, ToolUseHeartbeatEvent,
-    TrustLevel, WorkspaceAccess,
+    ResultBudget, SemverString, ToolActionPlan, ToolDescriptor, ToolDescriptorMetadata, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolIntegrationSource, ToolOrigin, ToolProperties, ToolResult,
+    ToolResultPart, ToolUseHeartbeatEvent, TrustLevel, WorkspaceAccess,
 };
 use harness_tool::{
     action_plan_from_permission_check, AuthorizedToolInput, PermissionCheck, Tool, ToolContext,
@@ -141,6 +141,10 @@ impl McpToolWrapper {
             }),
             search_hint: Some(description),
             service_binding: None,
+            metadata: ToolDescriptorMetadata {
+                integration_source: ToolIntegrationSource::Mcp,
+                ..Default::default()
+            },
         };
 
         Self {

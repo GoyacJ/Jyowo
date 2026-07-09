@@ -2105,6 +2105,7 @@ impl Default for AgentTool {
                 origin: ToolOrigin::Builtin,
                 search_hint: Some("delegate task to subagent".to_owned()),
                 service_binding: None,
+                metadata: Default::default(),
             },
         }
     }
