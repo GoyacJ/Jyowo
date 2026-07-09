@@ -165,6 +165,7 @@ const modelCapability: ConversationModelCapability = {
 
 const gpt41 = {
   protocol: 'responses' as const,
+  supportedParameters: [],
   conversationCapability: modelCapability,
   contextWindow: 128000,
   displayName: 'GPT-4.1',

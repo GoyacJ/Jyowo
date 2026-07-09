@@ -12,6 +12,7 @@ pub struct ModelCatalogEntry {
     pub model_id: String,
     pub display_name: String,
     pub protocol: ModelProtocol,
+    pub supported_parameters: Vec<String>,
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub provider_declared_capability: ConversationModelCapability,
@@ -1042,6 +1043,7 @@ impl From<&ModelCatalogSpec> for ModelCatalogEntry {
             model_id: spec.model_id.to_owned(),
             display_name: spec.display_name.to_owned(),
             protocol: spec.protocol,
+            supported_parameters: supported_parameters(spec),
             context_window: spec.context_window,
             max_output_tokens: spec.max_output_tokens,
             provider_declared_capability: declared_capability(spec),
@@ -1062,6 +1064,7 @@ impl From<&ModelCatalogSpec> for ModelDescriptor {
             model_id: spec.model_id.to_owned(),
             display_name: spec.display_name.to_owned(),
             protocol: spec.protocol,
+            supported_parameters: supported_parameters(spec),
             context_window: spec.context_window,
             max_output_tokens: spec.max_output_tokens,
             provider_declared_capability: declared_capability(spec),
@@ -1071,6 +1074,80 @@ impl From<&ModelCatalogSpec> for ModelDescriptor {
             pricing: pricing(spec),
         }
     }
+}
+
+fn supported_parameters(spec: &ModelCatalogSpec) -> Vec<String> {
+    let values: &[&str] = match spec.provider_id {
+        "anthropic" => &[
+            "thinking",
+            "output_config",
+            "service_tier",
+            "stop_sequences",
+            "top_k",
+            "top_p",
+            "tool_choice",
+            "metadata",
+        ],
+        "bedrock" => &[
+            "inferenceConfig",
+            "additionalModelRequestFields",
+            "additionalModelResponseFieldPaths",
+            "performanceConfig",
+            "requestMetadata",
+        ],
+        "gemini" => &[
+            "thinkingConfig",
+            "stopSequences",
+            "topP",
+            "topK",
+            "seed",
+            "responseMimeType",
+            "responseSchema",
+            "toolConfig",
+            "safetySettings",
+            "cachedContent",
+        ],
+        "qwen" => &[
+            "enable_thinking",
+            "reasoning",
+            "tools",
+            "enable_search",
+            "enable_code_interpreter",
+            "search_options",
+        ],
+        "codex" | "openai" => &[
+            "reasoning",
+            "text",
+            "metadata",
+            "service_tier",
+            "store",
+            "truncation",
+            "parallel_tool_calls",
+            "tool_choice",
+            "response_format",
+        ],
+        _ if spec.protocol == ModelProtocol::ChatCompletions => &[
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "max_completion_tokens",
+            "stop",
+            "response_format",
+            "tool_choice",
+            "reasoning",
+            "reasoning_effort",
+            "service_tier",
+            "stream_options",
+            "frequency_penalty",
+            "presence_penalty",
+            "logprobs",
+            "top_logprobs",
+            "seed",
+            "n",
+        ],
+        _ => &[],
+    };
+    values.iter().map(|value| (*value).to_owned()).collect()
 }
 
 fn pricing(spec: &ModelCatalogSpec) -> Option<ModelPricing> {

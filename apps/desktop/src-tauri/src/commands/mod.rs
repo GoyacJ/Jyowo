@@ -62,7 +62,7 @@ use jyowo_harness_sdk::ext::{
     MemoryRecord, MemorySource, MemorySummary, MemoryVisibility, MessageContent, MessagePart,
     ModelDescriptor, ModelInventoryEntry, ModelLifecycle, ModelModality, ModelProtocol,
     ModelProvider, ModelRuntimeStatus, PendingPermissionRequest, PermissionMode, PermissionSubject,
-    ProviderAuthScheme, ProviderBaseUrlRegion, ProviderBuildConfig, ProviderCredential,
+    ProviderBaseUrlRegion, ProviderBuildConfig, ProviderCredential,
     ProviderCredentialResolveContext, ProviderCredentialResolverCap, ProviderProbeInput,
     ProviderProbeRunner, ProviderRegistryError, ProviderRequestDefaults, ProviderRuntimeCapability,
     ProviderServiceCapability, ProviderServiceCategory, ProviderServiceCostRisk,

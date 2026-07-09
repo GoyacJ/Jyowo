@@ -25,6 +25,7 @@ fn runtime_semantics_snapshot_preserves_descriptor_semantics() {
         model_id: "deepseek-v4-flash".to_owned(),
         display_name: "DeepSeek V4 Flash".to_owned(),
         protocol: ModelProtocol::ChatCompletions,
+        supported_parameters: Vec::new(),
         context_window: 1_000_000,
         max_output_tokens: 384_000,
         provider_declared_capability: ConversationModelCapability::default(),

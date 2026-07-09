@@ -80,6 +80,7 @@ function renderConversationWorkspace(
 
 const openAiModelDescriptor: ModelCatalogEntry = {
   protocol: 'responses',
+  supportedParameters: [],
   conversationCapability: {
     inputModalities: ['text'],
     outputModalities: ['text'],

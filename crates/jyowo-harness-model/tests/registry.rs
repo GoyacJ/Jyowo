@@ -1,8 +1,10 @@
 use chrono::NaiveDate;
+#[cfg(feature = "zhipu")]
+use harness_model::ModelLifecycle;
 use harness_model::{
     build_provider, model_catalog_entries, provider_catalog_entries, provider_inventory_entries,
-    resolve_model_descriptor, ConversationModelCapability, ModelLifecycle, ModelModality,
-    ModelRuntimeSemantics, ProviderBuildConfig, ProviderRegistryError, ReasoningProtocolSemantics,
+    resolve_model_descriptor, ConversationModelCapability, ModelModality, ModelRuntimeSemantics,
+    ProviderBuildConfig, ProviderRegistryError, ReasoningProtocolSemantics,
 };
 
 #[test]
@@ -30,6 +32,21 @@ fn registry_rejects_unknown_provider_fail_closed() {
         build_error,
         ProviderRegistryError::UnsupportedProvider { .. }
     ));
+}
+
+#[cfg(feature = "bedrock")]
+#[test]
+fn registry_builds_bedrock_without_api_key() {
+    let provider = build_provider(ProviderBuildConfig {
+        provider_id: "bedrock".to_owned(),
+        api_key: String::new(),
+        base_url: None,
+        model_descriptor: None,
+        provider_defaults: None,
+    })
+    .expect("bedrock provider should be built from AWS default credential chain");
+
+    assert_eq!(provider.provider_id(), "bedrock");
 }
 
 #[test]

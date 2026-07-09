@@ -181,7 +181,37 @@ fn request_body(req: &ModelRequest) -> Result<Value, ModelError> {
     if let Some(cached_content) = req.extra.get("cached_content").and_then(Value::as_str) {
         body["cachedContent"] = json!(cached_content);
     }
+    merge_gemini_extra(&mut body, &req.extra)?;
     Ok(body)
+}
+
+fn merge_gemini_extra(body: &mut Value, extra: &Value) -> Result<(), ModelError> {
+    if extra.is_null() {
+        return Ok(());
+    }
+    let extra = extra.as_object().ok_or_else(|| {
+        ModelError::InvalidRequest("model request extra must be an object".to_owned())
+    })?;
+    for (key, value) in extra {
+        match key.as_str() {
+            "thinkingConfig" | "stopSequences" | "topP" | "topK" | "seed" | "responseMimeType"
+            | "responseSchema" => {
+                body["generationConfig"][key] = value.clone();
+            }
+            "toolConfig" | "safetySettings" | "cachedContent" => {
+                body[key] = value.clone();
+            }
+            "cached_content" => {
+                if body.get("cachedContent").is_none() {
+                    body["cachedContent"] = value.clone();
+                }
+            }
+            _ => {
+                body[key] = value.clone();
+            }
+        }
+    }
+    Ok(())
 }
 
 fn content(message: &Message) -> Result<Value, ModelError> {

@@ -85,6 +85,13 @@ pub fn provider_catalog_entries() -> Vec<ProviderCatalogEntry> {
         "https://api.anthropic.com",
         crate::AnthropicProvider::from_api_key("").supported_models(),
     ));
+    #[cfg(feature = "bedrock")]
+    entries.push(entry(
+        "bedrock",
+        "Bedrock",
+        "https://bedrock-runtime.us-east-1.amazonaws.com",
+        crate::catalog::provider_model_descriptors("bedrock"),
+    ));
     #[cfg(feature = "codex")]
     entries.push(entry(
         "codex",
@@ -226,6 +233,14 @@ pub fn build_provider(
     #[cfg(feature = "anthropic")]
     if provider_id == "anthropic" {
         let provider = crate::AnthropicProvider::from_api_key(api_key);
+        return Ok(Box::new(match base_url {
+            Some(base_url) => provider.with_base_url(base_url),
+            None => provider,
+        }));
+    }
+    #[cfg(feature = "bedrock")]
+    if provider_id == "bedrock" {
+        let provider = crate::BedrockProvider::new();
         return Ok(Box::new(match base_url {
             Some(base_url) => provider.with_base_url(base_url),
             None => provider,
@@ -1001,6 +1016,7 @@ pub fn runnable_inventory_models(models: &[ModelInventoryEntry]) -> Vec<ModelDes
                 model_id: model.model_id.clone(),
                 display_name: model.display_name.clone(),
                 protocol: model.protocol,
+                supported_parameters: model.supported_parameters.clone(),
                 context_window: model.context_window,
                 max_output_tokens: model.max_output_tokens,
                 provider_declared_capability: model.provider_declared_capability.clone(),

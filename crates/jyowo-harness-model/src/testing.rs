@@ -197,6 +197,7 @@ fn test_descriptor() -> ModelDescriptor {
         model_id: "test-model".to_owned(),
         display_name: "Test model".to_owned(),
         protocol: ModelProtocol::Messages,
+        supported_parameters: Vec::new(),
         context_window: 128_000,
         max_output_tokens: 8192,
         provider_declared_capability: ConversationModelCapability::default(),

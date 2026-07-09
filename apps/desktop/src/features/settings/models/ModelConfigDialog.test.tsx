@@ -201,6 +201,58 @@ describe('ModelConfigDialog', () => {
     expect(within(dialog).getByLabelText('Model')).toHaveValue('claude-sonnet-4')
   })
 
+  it('saves Anthropic provider defaults from structured controls', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: anthropicProfile,
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: anthropicProfile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    expect(within(dialog).queryByLabelText('Model options')).not.toBeInTheDocument()
+
+    fireEvent.click(within(dialog).getByLabelText('Thinking'))
+    fireEvent.change(within(dialog).getByLabelText('Thinking budget'), {
+      target: { value: '4096' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Service tier'), {
+      target: { value: 'auto' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Output effort'), {
+      target: { value: 'medium' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Top P'), {
+      target: { value: '0.9' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Stop sequences'), {
+      target: { value: 'DONE,STOP' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      configId: 'cfg-anthropic',
+      providerId: 'anthropic',
+      providerDefaults: {
+        body: {
+          thinking: { type: 'enabled', budget_tokens: 4096 },
+          output_config: { effort: 'medium' },
+          service_tier: 'auto',
+          stop_sequences: ['DONE', 'STOP'],
+          top_p: 0.9,
+        },
+        headers: {},
+      },
+    })
+    expect(saveProviderSettings.mock.calls[0][0]).not.toHaveProperty('modelOptionsJson')
+  })
+
   it('preserves an existing model id that is missing from the current catalog', async () => {
     const saveProviderSettings = vi.fn().mockResolvedValue({
       config: {
@@ -270,7 +322,9 @@ describe('ModelConfigDialog', () => {
       },
     })
     expect(saveProviderSettings.mock.calls[0][0].providerDefaults.body).not.toHaveProperty('tools')
-    expect(saveProviderSettings.mock.calls[0][0].providerDefaults.body).not.toHaveProperty('search_options')
+    expect(saveProviderSettings.mock.calls[0][0].providerDefaults.body).not.toHaveProperty(
+      'search_options',
+    )
   })
 
   it('saves Qwen Chat Completions web extractor only for agent max capable models', async () => {
@@ -387,6 +441,7 @@ const modelCapability: ConversationModelCapability = {
 
 const gpt41 = {
   protocol: 'responses' as const,
+  supportedParameters: [],
   conversationCapability: modelCapability,
   contextWindow: 128000,
   displayName: 'GPT-4.1',
@@ -434,6 +489,13 @@ const catalog: ModelProviderCatalogResponse = {
           ...gpt41,
           displayName: 'Claude Sonnet 4',
           modelId: 'claude-sonnet-4',
+          supportedParameters: [
+            'thinking',
+            'output_config',
+            'service_tier',
+            'stop_sequences',
+            'top_p',
+          ],
         },
       ],
       providerId: 'anthropic',
@@ -486,6 +548,23 @@ const existingProfile: ProviderConfig = {
   isDefault: true,
   protocol: 'responses',
   modelDescriptor: gpt41,
+}
+
+const anthropicProfile: ProviderConfig = {
+  id: 'cfg-anthropic',
+  providerId: 'anthropic',
+  modelId: 'claude-sonnet-4',
+  displayName: 'Primary Anthropic',
+  baseUrl: 'https://api.anthropic.com/v1',
+  hasApiKey: true,
+  hasOfficialQuotaApiKey: false,
+  isDefault: false,
+  protocol: 'messages',
+  providerDefaults: {
+    body: {},
+    headers: {},
+  },
+  modelDescriptor: catalog.providers[1].models[0],
 }
 
 const qwenProfile: ProviderConfig = {

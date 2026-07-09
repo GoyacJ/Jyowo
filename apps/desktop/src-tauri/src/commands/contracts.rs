@@ -509,6 +509,7 @@ pub struct ProviderServiceCapabilityPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ModelCatalogEntry {
     pub protocol: ModelProtocol,
+    pub supported_parameters: Vec<String>,
     pub conversation_capability: ConversationModelCapabilityRecord,
     pub context_window: u32,
     pub display_name: String,

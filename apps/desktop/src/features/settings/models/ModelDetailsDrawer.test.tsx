@@ -390,6 +390,109 @@ describe('ModelDetailsDrawer', () => {
     expect(onSaved).toHaveBeenCalled()
   })
 
+  it('does not expose raw model option JSON in the details drawer', () => {
+    renderDrawer({ row: sharedUsageRow })
+
+    const dialog = screen.getByRole('dialog', { name: 'Primary OpenAI' })
+    expect(within(dialog).queryByLabelText('Model options')).not.toBeInTheDocument()
+    expect(dialog.querySelector('textarea')).not.toBeInTheDocument()
+  })
+
+  it('preserves provider defaults when saving non-Qwen profiles inline', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: {
+        id: 'cfg-anthropic',
+        baseUrl: 'https://api.anthropic.com',
+        displayName: 'Research Claude',
+        providerId: 'anthropic',
+        modelId: 'claude-sonnet',
+        isDefault: false,
+        hasApiKey: true,
+        hasOfficialQuotaApiKey: false,
+        modelDescriptor,
+        providerDefaults: {
+          body: {
+            thinking: { type: 'enabled', budget_tokens: 4096 },
+          },
+        },
+      },
+      status: 'saved',
+    })
+    renderDrawer({
+      row: {
+        ...failingRow,
+        providerDefaults: {
+          body: {
+            thinking: { type: 'enabled', budget_tokens: 4096 },
+          },
+        },
+      },
+      client: { ...createTestCommandClient(), saveProviderSettings },
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Research Claude' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings).toHaveBeenCalledWith({
+      baseUrl: 'https://api.anthropic.com',
+      configId: 'cfg-anthropic',
+      displayName: 'Research Claude',
+      modelId: 'claude-sonnet',
+      modelOptions: {},
+      providerDefaults: {
+        body: {
+          thinking: { type: 'enabled', budget_tokens: 4096 },
+        },
+      },
+      providerId: 'anthropic',
+      setDefault: false,
+    })
+  })
+
+  it('does not carry provider defaults when changing providers inline', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: {
+        id: 'cfg-anthropic',
+        baseUrl: 'https://api.openai.com/v1',
+        displayName: 'Research Claude',
+        providerId: 'openai',
+        modelId: 'gpt-4.1',
+        isDefault: false,
+        hasApiKey: true,
+        hasOfficialQuotaApiKey: false,
+        modelDescriptor,
+      },
+      status: 'saved',
+    })
+    renderDrawer({
+      row: {
+        ...failingRow,
+        providerDefaults: {
+          body: {
+            thinking: { type: 'enabled', budget_tokens: 4096 },
+          },
+        },
+      },
+      client: { ...createTestCommandClient(), saveProviderSettings },
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Research Claude' })
+    fireEvent.change(within(dialog).getByLabelText('Provider'), {
+      target: { value: 'openai' },
+    })
+    await waitFor(() => expect(within(dialog).getByLabelText('Model')).toHaveValue('gpt-4.1'))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      configId: 'cfg-anthropic',
+      modelId: 'gpt-4.1',
+      providerId: 'openai',
+    })
+    expect(saveProviderSettings.mock.calls[0][0]).not.toHaveProperty('providerDefaults')
+  })
+
   it('does not clear typed secrets when the same row or catalog refreshes', () => {
     const { rerender } = renderDrawer({ row: sharedUsageRow })
 
@@ -444,6 +547,7 @@ function DrawerWrapper({ children }: { children: ReactNode }) {
 
 const modelDescriptor = {
   protocol: 'responses',
+  supportedParameters: [],
   conversationCapability: {
     inputModalities: ['text'],
     outputModalities: ['text'],

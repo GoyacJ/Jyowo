@@ -124,6 +124,56 @@ async fn gemini_streams_text_tool_usage_and_request_shape() {
 }
 
 #[tokio::test]
+async fn gemini_request_merges_provider_defaults_extra() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-2.5-flash:generateContent"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+        })))
+        .mount(&server)
+        .await;
+
+    let mut req = request(false);
+    req.extra = json!({
+        "thinkingConfig": { "thinkingBudget": 1024 },
+        "stopSequences": ["DONE"],
+        "topP": 0.8,
+        "topK": 32,
+        "seed": 7,
+        "responseMimeType": "application/json",
+        "safetySettings": [{ "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH" }],
+        "cachedContent": "cachedContents/provider-default"
+    });
+
+    GeminiProvider::from_api_key("test-key")
+        .with_base_url(server.uri())
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(
+        body["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+        1024
+    );
+    assert_eq!(body["generationConfig"]["stopSequences"], json!(["DONE"]));
+    assert_eq!(body["generationConfig"]["topP"], json!(0.8));
+    assert_eq!(body["generationConfig"]["topK"], json!(32));
+    assert_eq!(body["generationConfig"]["seed"], json!(7));
+    assert_eq!(
+        body["generationConfig"]["responseMimeType"],
+        "application/json"
+    );
+    assert_eq!(body["safetySettings"][0]["threshold"], "BLOCK_ONLY_HIGH");
+    assert_eq!(body["cachedContent"], "cachedContents/provider-default");
+}
+
+#[tokio::test]
 async fn gemini_rejects_cache_breakpoints() {
     let mut req = request(false);
     req.cache_breakpoints.push(CacheBreakpoint {

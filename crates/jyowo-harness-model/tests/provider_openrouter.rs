@@ -109,6 +109,16 @@ fn openrouter_models_api_inventory_marks_non_text_models_unsupported() {
     assert!(text.conversation_capability.structured_output);
     assert!(text.conversation_capability.reasoning);
     assert_eq!(
+        text.supported_parameters,
+        vec![
+            "tools".to_owned(),
+            "response_format".to_owned(),
+            "structured_outputs".to_owned(),
+            "reasoning".to_owned(),
+            "web_search_options".to_owned(),
+        ]
+    );
+    assert_eq!(
         text.conversation_capability.input_modalities,
         vec![ModelModality::Text]
     );

@@ -276,6 +276,7 @@ fn descriptor() -> ModelDescriptor {
         model_id: "test".to_owned(),
         display_name: "Test".to_owned(),
         context_window: 1_000,
+        supported_parameters: Vec::new(),
         max_output_tokens: 100,
         provider_declared_capability: ConversationModelCapability::default(),
         conversation_capability: ConversationModelCapability::default(),

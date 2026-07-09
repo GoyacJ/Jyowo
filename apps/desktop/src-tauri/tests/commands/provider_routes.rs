@@ -724,6 +724,7 @@ mod capability_route_conversation {
                 model_id: "test-model".to_owned(),
                 display_name: "No tool calling".to_owned(),
                 protocol: ModelProtocol::Messages,
+                supported_parameters: Vec::new(),
                 context_window: 128_000,
                 max_output_tokens: 8_192,
                 provider_declared_capability: ConversationModelCapability {
