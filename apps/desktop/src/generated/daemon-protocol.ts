@@ -350,6 +350,7 @@ export interface TaskProjection {
 export interface RunProjection {
   endedAt?: string | null
   incompleteOutput: boolean
+  promotionMode?: PromotionMode | null
   segmentId: TypedUlid
   startedAt: string
   state: RunState

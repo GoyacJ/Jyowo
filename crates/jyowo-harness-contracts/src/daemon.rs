@@ -399,6 +399,8 @@ pub struct PermissionProjection {
 pub struct RunProjection {
     pub segment_id: RunSegmentId,
     pub state: RunState,
+    #[serde(default)]
+    pub promotion_mode: Option<PromotionMode>,
     pub terminal_reason: Option<RunTerminalReason>,
     #[serde(
         serialize_with = "strict_rfc3339::serialize",

@@ -644,6 +644,17 @@
         "incompleteOutput": {
           "type": "boolean"
         },
+        "promotionMode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PromotionMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "segmentId": {
           "$ref": "#/$defs/TypedUlid"
         },

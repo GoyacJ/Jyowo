@@ -2,8 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    ActorId, QueueItemProjection, QueueItemState, RunProjection, RunState, RunTerminalReason,
-    TaskEventEnvelope, TaskId, TaskProjection, TaskState, TimelineEventKind,
+    ActorId, PromotionMode, QueueItemProjection, QueueItemState, RunProjection, RunState,
+    RunTerminalReason, TaskEventEnvelope, TaskId, TaskProjection, TaskState, TimelineEventKind,
     TimelineItemProjection,
 };
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -18,6 +18,7 @@ pub const MAX_ACTIVE_QUEUE_ITEMS: usize = 64;
 struct ReducedTask {
     projection: TaskProjection,
     terminal_queue_item: Option<QueueItemProjection>,
+    recovered_queue_items: Vec<QueueItemProjection>,
 }
 
 pub trait TaskProjector: Send + Sync {
@@ -89,6 +90,7 @@ fn reduce_task(
     };
 
     let mut terminal_queue_item = None;
+    let mut recovered_queue_items = Vec::new();
     match event {
         TaskEvent::TaskCreated { title } => {
             if projection.stream_version != 0 || !projection.title.is_empty() {
@@ -123,10 +125,21 @@ fn reduce_task(
                 if *failed_at < run.started_at {
                     return invalid_transition("task.actor_failed precedes run.started");
                 }
+                let was_yielding = run.state == RunState::Yielding;
                 run.state = RunState::Failed;
                 run.terminal_reason = Some(RunTerminalReason::Failed);
                 run.ended_at = Some(*failed_at);
                 run.incomplete_output = true;
+                if was_yielding {
+                    for item in projection
+                        .queue
+                        .iter_mut()
+                        .filter(|item| item.state == QueueItemState::Promoting)
+                    {
+                        item.state = QueueItemState::Queued;
+                        recovered_queue_items.push(item.clone());
+                    }
+                }
             } else if projection.current_run.as_ref().is_some_and(|run| {
                 matches!(
                     run.state,
@@ -156,6 +169,7 @@ fn reduce_task(
             projection.current_run = Some(RunProjection {
                 segment_id: *segment_id,
                 state: RunState::Running,
+                promotion_mode: None,
                 terminal_reason: None,
                 started_at: *started_at,
                 ended_at: None,
@@ -203,6 +217,62 @@ fn reduce_task(
                 RunState::Interrupted => TaskState::Interrupted,
                 _ => return integrity("terminal event produced a non-terminal run"),
             };
+        }
+        TaskEvent::RunYieldRequested {
+            segment_id, force, ..
+        } => {
+            let run = projection
+                .current_run
+                .as_mut()
+                .ok_or_else(|| projector_error("run.yield_requested requires an active run"))?;
+            if run.segment_id != *segment_id || run.state != RunState::Running {
+                return invalid_transition(
+                    "run.yield_requested must match the current running segment",
+                );
+            }
+            run.state = RunState::Yielding;
+            run.promotion_mode = Some(if *force {
+                PromotionMode::ForceStop
+            } else {
+                PromotionMode::SafePoint
+            });
+            projection.state = TaskState::Running;
+        }
+        TaskEvent::RunSafePointReached {
+            segment_id, forced, ..
+        } => {
+            let run = projection
+                .current_run
+                .as_ref()
+                .ok_or_else(|| projector_error("run.safe_point_reached requires an active run"))?;
+            if run.segment_id != *segment_id || run.state != RunState::Yielding {
+                return invalid_transition(
+                    "run.safe_point_reached must match the current yielding segment",
+                );
+            }
+            let expected_mode = if *forced {
+                PromotionMode::ForceStop
+            } else {
+                PromotionMode::SafePoint
+            };
+            if run.promotion_mode.as_ref() != Some(&expected_mode) {
+                return invalid_transition(
+                    "run.safe_point_reached does not match the requested promotion mode",
+                );
+            }
+        }
+        TaskEvent::RunForceStopTimedOut { segment_id, .. } => {
+            let run = projection.current_run.as_ref().ok_or_else(|| {
+                projector_error("run.force_stop_timed_out requires an active run")
+            })?;
+            if run.segment_id != *segment_id
+                || run.state != RunState::Yielding
+                || run.promotion_mode.as_ref() != Some(&PromotionMode::ForceStop)
+            {
+                return invalid_transition(
+                    "run.force_stop_timed_out must match a force-stopping segment",
+                );
+            }
         }
         TaskEvent::MessageQueued {
             queue_item_id,
@@ -364,6 +434,7 @@ fn reduce_task(
     Ok(ReducedTask {
         projection,
         terminal_queue_item,
+        recovered_queue_items,
     })
 }
 
@@ -454,7 +525,11 @@ fn project_entity_tables(
     reduced: &ReducedTask,
 ) -> Result<(), TaskStoreError> {
     match event {
-        TaskEvent::RunStarted { segment_id, .. } | TaskEvent::RunCompleted { segment_id, .. } => {
+        TaskEvent::RunStarted { segment_id, .. }
+        | TaskEvent::RunCompleted { segment_id, .. }
+        | TaskEvent::RunYieldRequested { segment_id, .. }
+        | TaskEvent::RunSafePointReached { segment_id, .. }
+        | TaskEvent::RunForceStopTimedOut { segment_id, .. } => {
             let run = reduced
                 .projection
                 .current_run
@@ -489,6 +564,16 @@ fn project_entity_tables(
                     envelope,
                     &segment_id.to_string(),
                     run,
+                )?;
+            }
+            for item in &reduced.recovered_queue_items {
+                upsert_entity(
+                    transaction,
+                    "queue_projection",
+                    "queue_item_id",
+                    envelope,
+                    &item.queue_item_id.to_string(),
+                    item,
                 )?;
             }
         }
@@ -670,6 +755,41 @@ fn project_timeline(
             run_terminal_summary(terminal_reason).into(),
             Some(*segment_id),
             *incomplete_output,
+        ),
+        TaskEvent::RunYieldRequested {
+            segment_id, force, ..
+        } => (
+            TimelineEventKind::Notice,
+            if *force {
+                "Run force-stop requested"
+            } else {
+                "Run yield requested"
+            }
+            .into(),
+            Some(*segment_id),
+            false,
+        ),
+        TaskEvent::RunSafePointReached {
+            segment_id,
+            forced,
+            incomplete_output,
+            ..
+        } => (
+            TimelineEventKind::Notice,
+            if *forced {
+                "Run force-stopped"
+            } else {
+                "Run safe point reached"
+            }
+            .into(),
+            Some(*segment_id),
+            *incomplete_output,
+        ),
+        TaskEvent::RunForceStopTimedOut { segment_id, .. } => (
+            TimelineEventKind::Notice,
+            "Run force-stop timed out".into(),
+            Some(*segment_id),
+            true,
         ),
         TaskEvent::MessageQueued { .. }
         | TaskEvent::MessageEdited { .. }

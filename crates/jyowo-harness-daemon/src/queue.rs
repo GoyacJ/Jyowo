@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    BlobId, QueueItemId, QueueItemProjection, QueueItemState, RunSegmentId, RunState,
-    TaskProjection,
+    BlobId, PromotionMode, QueueItemId, QueueItemProjection, QueueItemState, RunSegmentId,
+    RunState, TaskProjection,
 };
 use harness_journal::{CommandRejection, NewTaskEvent};
 use serde_json::{json, Value};
@@ -26,6 +26,7 @@ pub enum QueueCommand {
     },
     Promote {
         expected_revision: u64,
+        mode: PromotionMode,
     },
     Consume {
         expected_revision: u64,
@@ -67,10 +68,14 @@ impl QueueCommand {
                 "queueItemId": queue_item_id,
                 "expectedRevision": expected_revision,
             }),
-            Self::Promote { expected_revision } => json!({
+            Self::Promote {
+                expected_revision,
+                mode,
+            } => json!({
                 "type": "queue_promote",
                 "queueItemId": queue_item_id,
                 "expectedRevision": expected_revision,
+                "mode": mode,
             }),
             Self::Consume {
                 expected_revision,
@@ -143,9 +148,13 @@ pub fn decide_queue(
                 item.revision,
             )])
         }
-        (Some(item), QueueCommand::Promote { expected_revision })
-            if item.state == QueueItemState::Queued =>
-        {
+        (
+            Some(item),
+            QueueCommand::Promote {
+                expected_revision,
+                mode: _,
+            },
+        ) if item.state == QueueItemState::Queued => {
             require_revision(item, expected_revision)?;
             Ok(vec![NewTaskEvent::message_promoted(
                 item.queue_item_id,

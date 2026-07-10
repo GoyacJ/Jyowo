@@ -1,5 +1,7 @@
 use std::collections::HashSet;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -49,7 +51,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     end_reason_for_interrupt, result_inject, turn_assembly::TurnAssembly, Engine, EngineError,
-    EventStream, RunContext, SessionHandle,
+    EventStream, RunContext, SafePointDecision, SessionHandle, TurnOutcome,
 };
 
 const MISSING_PROVIDER_CONTINUATION_ERROR: &str =
@@ -343,6 +345,12 @@ pub(crate) async fn run_turn(
         )
         .await?;
 
+        if append_run_control_end_if_requested(engine, &session, &mut emitted, &ctx, usage.clone())
+            .await?
+        {
+            return Ok(Box::pin(stream::iter(emitted)));
+        }
+
         let mut model_call_started = Instant::now();
         let mut stream = match infer_or_interrupt(
             engine,
@@ -516,6 +524,19 @@ pub(crate) async fn run_turn(
                     .await?;
                     return Ok(Box::pin(stream::iter(emitted)));
                 }
+                () = force_stop_requested(ctx.run_control.as_ref()) => {
+                    append_run_control_end(
+                        engine,
+                        &session,
+                        &mut emitted,
+                        &ctx,
+                        usage.clone(),
+                        SafePointDecision::ForceStop,
+                        Vec::new(),
+                    )
+                    .await?;
+                    return Ok(Box::pin(stream::iter(emitted)));
+                }
             };
             let Some(event) = event else {
                 break;
@@ -545,6 +566,17 @@ pub(crate) async fn run_turn(
                 );
                 finalize_run_error(engine, &session, &mut emitted, ctx.run_id, &message).await?;
                 return Err(engine_error(message));
+            }
+            if append_run_control_end_if_requested(
+                engine,
+                &session,
+                &mut emitted,
+                &ctx,
+                usage.clone(),
+            )
+            .await?
+            {
+                return Ok(Box::pin(stream::iter(emitted)));
             }
             if append_interrupt_if_cancelled(engine, &session, &mut emitted, &ctx, usage.clone())
                 .await?
@@ -810,67 +842,116 @@ pub(crate) async fn run_turn(
             &mut emitted,
         )
         .await?;
-        let mut dispatch = Box::pin(
-            orchestrator.dispatch(
-                authorized_tool_calls,
-                OrchestratorContext {
-                    pool: engine.tools.clone(),
-                    tool_context: harness_tool::ToolContext {
-                        tool_use_id: ToolUseId::new(),
-                        run_id: ctx.run_id,
+        let orchestrator_context = OrchestratorContext {
+            pool: engine.tools.clone(),
+            tool_context: harness_tool::ToolContext {
+                tool_use_id: ToolUseId::new(),
+                run_id: ctx.run_id,
+                session_id: session.session_id,
+                tenant_id: session.tenant_id,
+                model: ctx.model.clone(),
+                model_config_id: ctx.model_config_id.clone(),
+                memory_thread_settings: run_context_memory_thread_settings(&ctx),
+                correlation_id,
+                agent_id: harness_contracts::AgentId::from_u128(1),
+                subagent_depth: ctx.subagent_depth,
+                workspace_root: engine.workspace_root.clone(),
+                project_workspace_root: engine.project_workspace_root.clone(),
+                sandbox: engine.sandbox.clone(),
+                cap_registry: engine.cap_registry.clone(),
+                redactor: engine
+                    .observer
+                    .as_ref()
+                    .map(|observer| Arc::clone(&observer.redactor))
+                    .unwrap_or_else(|| Arc::new(DefaultRedactor::default())),
+                interrupt: tool_interrupt.clone(),
+                parent_run: ctx
+                    .parent_run_id
+                    .map(|run_id| harness_tool::ParentRunHandle {
+                        run_id,
                         session_id: session.session_id,
-                        tenant_id: session.tenant_id,
-                        model: ctx.model.clone(),
-                        model_config_id: ctx.model_config_id.clone(),
-                        memory_thread_settings: run_context_memory_thread_settings(&ctx),
-                        correlation_id,
-                        agent_id: harness_contracts::AgentId::from_u128(1),
-                        subagent_depth: ctx.subagent_depth,
-                        workspace_root: engine.workspace_root.clone(),
-                        project_workspace_root: engine.project_workspace_root.clone(),
-                        sandbox: engine.sandbox.clone(),
-                        cap_registry: engine.cap_registry.clone(),
-                        redactor: engine
-                            .observer
-                            .as_ref()
-                            .map(|observer| Arc::clone(&observer.redactor))
-                            .unwrap_or_else(|| Arc::new(DefaultRedactor::default())),
-                        interrupt: tool_interrupt.clone(),
-                        parent_run: ctx
-                            .parent_run_id
-                            .map(|run_id| harness_tool::ParentRunHandle {
-                                run_id,
-                                session_id: session.session_id,
-                            }),
-                        actor_source: ctx.permission_actor_source.clone(),
-                    },
-                    blob_store: engine.blob_store.clone(),
-                    event_emitter: tool_event_emitter,
-                },
-            ),
-        );
-        let tool_results = loop {
-            tokio::select! {
-                results = &mut dispatch => break results,
-                cause = ctx.cancellation.cancelled() => {
-                while let Ok(event) = tool_event_receiver.try_recv() {                    append(
-                        engine,
-                        session.tenant_id,
-                        session.session_id,
-                        &mut emitted,
-                        vec![event],
-                    )
-                    .await?;
-                }                tool_interrupt.interrupt();
-                let interrupt_grace = tokio::time::sleep(Duration::from_secs(5));
-                tokio::pin!(interrupt_grace);
-                loop {
+                    }),
+                actor_source: ctx.permission_actor_source.clone(),
+            },
+            blob_store: engine.blob_store.clone(),
+            event_emitter: tool_event_emitter,
+        };
+        let mut control_after_tools = SafePointDecision::Continue;
+        let mut non_revertible_tool_use_ids = Vec::new();
+        let mut indeterminate_tool_use_ids = Vec::new();
+        let tool_results = if let Some(control) = ctx.run_control.as_ref() {
+            let mut completed = Vec::new();
+            for call in authorized_tool_calls {
+                control_after_tools = control.decision();
+                if control_after_tools != SafePointDecision::Continue {
+                    break;
+                }
+
+                let tool_use_id = call.tool_use_id;
+                let mut dispatch =
+                    Box::pin(orchestrator.dispatch(vec![call], orchestrator_context.clone()));
+                let mut force_stopped = false;
+                let call_results = loop {
                     tokio::select! {
-                        results = &mut dispatch => {
-                            drop(results);
-                            break;
+                        results = &mut dispatch => break results,
+                        cause = ctx.cancellation.cancelled() => {
+                            drain_tool_events(
+                                engine,
+                                &session,
+                                &mut emitted,
+                                &mut tool_event_receiver,
+                            )
+                            .await?;
+                            tool_interrupt.interrupt();
+                            drain_interrupted_tool_dispatch(
+                                engine,
+                                &session,
+                                &mut emitted,
+                                &mut tool_event_receiver,
+                                &mut dispatch,
+                            )
+                            .await?;
+                            append_run_end(
+                                engine,
+                                &session,
+                                &mut emitted,
+                                ctx.run_id,
+                                end_reason_for_interrupt(cause),
+                                usage,
+                            )
+                            .await?;
+                            return Ok(Box::pin(stream::iter(emitted)));
                         }
-                        Some(event) = tool_event_receiver.recv() => {                            append(
+                        () = control.force_stop_requested() => {
+                            tool_interrupt.interrupt();
+                            force_stopped = true;
+                            let interrupt_grace = tokio::time::sleep(Duration::from_secs(5));
+                            tokio::pin!(interrupt_grace);
+                            let finished = loop {
+                                tokio::select! {
+                                    results = &mut dispatch => {
+                                        break Some(results);
+                                    }
+                                    Some(event) = tool_event_receiver.recv() => {
+                                        append(
+                                            engine,
+                                            session.tenant_id,
+                                            session.session_id,
+                                            &mut emitted,
+                                            vec![event],
+                                        )
+                                        .await?;
+                                    }
+                                    () = &mut interrupt_grace => break None,
+                                }
+                            };
+                            if finished.is_none() {
+                                indeterminate_tool_use_ids.push(tool_use_id);
+                            }
+                            break finished.unwrap_or_default();
+                        }
+                        Some(event) = tool_event_receiver.recv() => {
+                            append(
                                 engine,
                                 session.tenant_id,
                                 session.session_id,
@@ -879,38 +960,69 @@ pub(crate) async fn run_turn(
                             )
                             .await?;
                         }
-                        _ = &mut interrupt_grace => break,
+                    }
+                };
+                completed.extend(call_results);
+                if force_stopped {
+                    non_revertible_tool_use_ids.push(tool_use_id);
+                }
+                drain_tool_events(engine, &session, &mut emitted, &mut tool_event_receiver).await?;
+                control_after_tools = if force_stopped {
+                    SafePointDecision::ForceStop
+                } else {
+                    control.decision()
+                };
+                if control_after_tools != SafePointDecision::Continue {
+                    break;
+                }
+            }
+            completed
+        } else {
+            let mut dispatch =
+                Box::pin(orchestrator.dispatch(authorized_tool_calls, orchestrator_context));
+            loop {
+                tokio::select! {
+                    results = &mut dispatch => break results,
+                    cause = ctx.cancellation.cancelled() => {
+                        drain_tool_events(
+                            engine,
+                            &session,
+                            &mut emitted,
+                            &mut tool_event_receiver,
+                        )
+                        .await?;
+                        tool_interrupt.interrupt();
+                        drain_interrupted_tool_dispatch(
+                            engine,
+                            &session,
+                            &mut emitted,
+                            &mut tool_event_receiver,
+                            &mut dispatch,
+                        )
+                        .await?;
+                        append_run_end(
+                            engine,
+                            &session,
+                            &mut emitted,
+                            ctx.run_id,
+                            end_reason_for_interrupt(cause),
+                            usage,
+                        )
+                        .await?;
+                        return Ok(Box::pin(stream::iter(emitted)));
+                    }
+                    Some(event) = tool_event_receiver.recv() => {
+                        append(
+                            engine,
+                            session.tenant_id,
+                            session.session_id,
+                            &mut emitted,
+                            vec![event],
+                        )
+                        .await?;
                     }
                 }
-                while let Ok(event) = tool_event_receiver.try_recv() {                    append(
-                        engine,
-                        session.tenant_id,
-                        session.session_id,
-                        &mut emitted,
-                        vec![event],
-                    )
-                    .await?;
-                }                append_run_end(
-                    engine,
-                    &session,
-                    &mut emitted,
-                    ctx.run_id,
-                    end_reason_for_interrupt(cause),
-                    usage,
-                )
-                .await?;
-                return Ok(Box::pin(stream::iter(emitted)));
-                }
-                Some(event) = tool_event_receiver.recv() => {                    append(
-                        engine,
-                        session.tenant_id,
-                        session.session_id,
-                        &mut emitted,
-                        vec![event],
-                    )
-                    .await?;
-                }
-            };
+            }
         };
         while let Ok(event) = tool_event_receiver.try_recv() {
             append(
@@ -940,6 +1052,31 @@ pub(crate) async fn run_turn(
             post_tool_events,
         )
         .await?;
+        if !indeterminate_tool_use_ids.is_empty() {
+            append_force_stop_timeout(
+                engine,
+                &session,
+                &mut emitted,
+                &ctx,
+                usage,
+                indeterminate_tool_use_ids,
+            )
+            .await?;
+            return Ok(Box::pin(stream::iter(emitted)));
+        }
+        if control_after_tools != SafePointDecision::Continue {
+            append_run_control_end(
+                engine,
+                &session,
+                &mut emitted,
+                &ctx,
+                usage,
+                control_after_tools,
+                non_revertible_tool_use_ids,
+            )
+            .await?;
+            return Ok(Box::pin(stream::iter(emitted)));
+        }
         dispatched_tool_calls = dispatched_tool_calls
             .saturating_add(assembly.tool_calls().len().try_into().unwrap_or(u64::MAX));
         usage.tool_calls = dispatched_tool_calls;
@@ -1836,6 +1973,141 @@ async fn append_run_end(
     .await
 }
 
+async fn append_run_control_end_if_requested(
+    engine: &Engine,
+    session: &SessionHandle,
+    emitted: &mut Vec<Event>,
+    ctx: &RunContext,
+    usage: UsageSnapshot,
+) -> Result<bool, EngineError> {
+    let Some(control) = ctx.run_control.as_ref() else {
+        return Ok(false);
+    };
+    let decision = control.decision();
+    if decision == SafePointDecision::Continue {
+        return Ok(false);
+    }
+    append_run_control_end(engine, session, emitted, ctx, usage, decision, Vec::new()).await?;
+    Ok(true)
+}
+
+async fn append_run_control_end(
+    engine: &Engine,
+    session: &SessionHandle,
+    emitted: &mut Vec<Event>,
+    ctx: &RunContext,
+    usage: UsageSnapshot,
+    decision: SafePointDecision,
+    non_revertible_tool_use_ids: Vec<ToolUseId>,
+) -> Result<(), EngineError> {
+    let outcome = match decision {
+        SafePointDecision::Continue => return Ok(()),
+        SafePointDecision::Yield => TurnOutcome::YieldedAtSafePoint,
+        SafePointDecision::ForceStop => TurnOutcome::ForceStopped {
+            non_revertible_tool_use_ids,
+        },
+    };
+    append_run_end(
+        engine,
+        session,
+        emitted,
+        ctx.run_id,
+        EndReason::Interrupted,
+        usage,
+    )
+    .await?;
+    if let Some(control) = ctx.run_control.as_ref() {
+        control.finish(outcome);
+    }
+    Ok(())
+}
+
+async fn append_force_stop_timeout(
+    engine: &Engine,
+    session: &SessionHandle,
+    emitted: &mut Vec<Event>,
+    ctx: &RunContext,
+    usage: UsageSnapshot,
+    indeterminate_tool_use_ids: Vec<ToolUseId>,
+) -> Result<(), EngineError> {
+    append_run_end(
+        engine,
+        session,
+        emitted,
+        ctx.run_id,
+        EndReason::Interrupted,
+        usage,
+    )
+    .await?;
+    if let Some(control) = ctx.run_control.as_ref() {
+        control.finish(TurnOutcome::ForceStopTimedOut {
+            indeterminate_tool_use_ids,
+        });
+    }
+    Ok(())
+}
+
+async fn force_stop_requested(control: Option<&crate::RunControlHandle>) {
+    if let Some(control) = control {
+        control.force_stop_requested().await;
+    } else {
+        std::future::pending::<()>().await;
+    }
+}
+
+async fn drain_tool_events(
+    engine: &Engine,
+    session: &SessionHandle,
+    emitted: &mut Vec<Event>,
+    receiver: &mut mpsc::UnboundedReceiver<Event>,
+) -> Result<(), EngineError> {
+    while let Ok(event) = receiver.try_recv() {
+        append(
+            engine,
+            session.tenant_id,
+            session.session_id,
+            emitted,
+            vec![event],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn drain_interrupted_tool_dispatch<F>(
+    engine: &Engine,
+    session: &SessionHandle,
+    emitted: &mut Vec<Event>,
+    receiver: &mut mpsc::UnboundedReceiver<Event>,
+    dispatch: &mut Pin<Box<F>>,
+) -> Result<(), EngineError>
+where
+    F: Future<Output = Vec<RuntimeToolResultEnvelope>>,
+{
+    let interrupt_grace = tokio::time::sleep(Duration::from_secs(5));
+    tokio::pin!(interrupt_grace);
+    loop {
+        tokio::select! {
+            results = &mut *dispatch => {
+                drop(results);
+                break;
+            }
+            Some(event) = receiver.recv() => {
+                append(
+                    engine,
+                    session.tenant_id,
+                    session.session_id,
+                    emitted,
+                    vec![event],
+                )
+                .await?;
+            }
+            () = &mut interrupt_grace => break,
+        }
+    }
+    drain_tool_events(engine, session, emitted, receiver).await
+}
+
 async fn append_interrupt_if_cancelled(
     engine: &Engine,
     session: &SessionHandle,
@@ -1877,6 +2149,19 @@ async fn infer_or_interrupt(
                 ctx.run_id,
                 end_reason_for_interrupt(cause),
                 usage,
+            )
+            .await?;
+            Ok(None)
+        }
+        () = force_stop_requested(ctx.run_control.as_ref()) => {
+            append_run_control_end(
+                engine,
+                session,
+                emitted,
+                ctx,
+                usage,
+                SafePointDecision::ForceStop,
+                Vec::new(),
             )
             .await?;
             Ok(None)

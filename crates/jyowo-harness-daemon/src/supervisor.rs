@@ -363,6 +363,7 @@ fn require_committed_failure(outcome: CommandOutcome) -> Result<(), TaskStoreErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use harness_contracts::{QueueItemId, QueueItemState};
     use std::time::Duration;
 
     #[tokio::test]
@@ -412,5 +413,55 @@ mod tests {
         };
 
         assert!(require_committed_failure(outcome).is_err());
+    }
+
+    #[test]
+    fn actor_failure_recovers_the_message_promoted_for_its_yielding_run() {
+        let root = tempfile::tempdir().unwrap();
+        let store = TaskStore::open(root.path().join("tasks.sqlite")).unwrap();
+        let task_id = TaskId::new();
+        let segment_id = harness_contracts::RunSegmentId::new();
+        let queue_item_id = QueueItemId::new();
+        let prepared_at = Utc::now();
+        let prepare = AcceptedCommand {
+            command_id: CommandId::new(),
+            task_id,
+            idempotency_key: format!("prepare-yielding-{}", CommandId::new()),
+            expected_stream_version: 0,
+            authority: TaskStore::supervisor_authority(),
+            payload: json!({ "type": "prepare_yielding" }),
+        };
+        let outcome = store
+            .transact_command(prepare, |_| {
+                Ok(vec![
+                    NewTaskEvent::task_created("yielding actor"),
+                    NewTaskEvent::run_started(segment_id, prepared_at),
+                    NewTaskEvent::message_queued(
+                        queue_item_id,
+                        "promoted message",
+                        Vec::new(),
+                        Vec::new(),
+                        prepared_at,
+                    ),
+                    NewTaskEvent::message_promoted(queue_item_id, 1),
+                    NewTaskEvent::run_yield_requested(segment_id, false, prepared_at),
+                ])
+            })
+            .unwrap();
+        assert!(matches!(outcome, CommandOutcome::Accepted { .. }));
+
+        assert!(persist_actor_failure(&store, task_id, Some(segment_id)).unwrap());
+
+        let projection = store.task_projection(task_id).unwrap().unwrap();
+        assert_eq!(projection.current_run.unwrap().state, RunState::Failed);
+        assert_eq!(projection.queue[0].state, QueueItemState::Queued);
+        assert_eq!(
+            store
+                .queue_item_projection(task_id, queue_item_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            QueueItemState::Queued
+        );
     }
 }

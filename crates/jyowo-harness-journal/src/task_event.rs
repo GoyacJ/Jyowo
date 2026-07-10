@@ -5,7 +5,7 @@ use harness_contracts::{
     ActorId, BlobId, BlobRef, CausationId, ConversationAttachmentReference, CorrelationId, Event,
     EventSource, EventSourceKind, MessageContent, MessagePart, PermissionProjection, QueueItemId,
     ReferenceKind, RequestId, RunId, RunSegmentId, RunTerminalReason, SessionId, TenantId,
-    ToolResult, ToolResultPart, WorkspaceLeaseProjection,
+    ToolResult, ToolResultPart, ToolUseId, WorkspaceLeaseProjection,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,6 +18,7 @@ const MAX_MESSAGE_CONTENT_BYTES: usize = 64 * 1024;
 const MAX_MESSAGE_ATTACHMENTS: usize = 64;
 const MAX_CONTEXT_REFERENCES: usize = 64;
 const MAX_CONTEXT_REFERENCE_BYTES: usize = 4096;
+const MAX_SIDE_EFFECTS: usize = 256;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewTaskEvent {
@@ -48,6 +49,23 @@ pub(crate) enum TaskEvent {
         ended_at: DateTime<Utc>,
         terminal_reason: RunTerminalReason,
         incomplete_output: bool,
+    },
+    RunYieldRequested {
+        segment_id: RunSegmentId,
+        force: bool,
+        requested_at: DateTime<Utc>,
+    },
+    RunSafePointReached {
+        segment_id: RunSegmentId,
+        forced: bool,
+        incomplete_output: bool,
+        non_revertible_tool_use_ids: Vec<ToolUseId>,
+        reached_at: DateTime<Utc>,
+    },
+    RunForceStopTimedOut {
+        segment_id: RunSegmentId,
+        indeterminate_tool_use_ids: Vec<ToolUseId>,
+        timed_out_at: DateTime<Utc>,
     },
     MessageQueued {
         queue_item_id: QueueItemId,
@@ -151,6 +169,32 @@ struct RunCompletedPayload {
     ended_at: DateTime<Utc>,
     terminal_reason: RunTerminalReason,
     incomplete_output: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RunYieldRequestedPayload {
+    segment_id: RunSegmentId,
+    force: bool,
+    requested_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RunSafePointReachedPayload {
+    segment_id: RunSegmentId,
+    forced: bool,
+    incomplete_output: bool,
+    non_revertible_tool_use_ids: Vec<ToolUseId>,
+    reached_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RunForceStopTimedOutPayload {
+    segment_id: RunSegmentId,
+    indeterminate_tool_use_ids: Vec<ToolUseId>,
+    timed_out_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,6 +308,55 @@ impl NewTaskEvent {
                 ended_at,
                 terminal_reason,
                 incomplete_output,
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn run_yield_requested(
+        segment_id: RunSegmentId,
+        force: bool,
+        requested_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            event: TaskEvent::RunYieldRequested {
+                segment_id,
+                force,
+                requested_at,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn run_safe_point_reached(
+        segment_id: RunSegmentId,
+        forced: bool,
+        incomplete_output: bool,
+        non_revertible_tool_use_ids: Vec<ToolUseId>,
+        reached_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            event: TaskEvent::RunSafePointReached {
+                segment_id,
+                forced,
+                incomplete_output,
+                non_revertible_tool_use_ids,
+                reached_at,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn run_force_stop_timed_out(
+        segment_id: RunSegmentId,
+        indeterminate_tool_use_ids: Vec<ToolUseId>,
+        timed_out_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            event: TaskEvent::RunForceStopTimedOut {
+                segment_id,
+                indeterminate_tool_use_ids,
+                timed_out_at,
             },
         }
     }
@@ -654,6 +747,32 @@ impl TaskEvent {
                     incomplete_output: value.incomplete_output,
                 })
             }
+            "run.yield_requested" => {
+                let value: RunYieldRequestedPayload = serde_json::from_value(payload)?;
+                Ok(Self::RunYieldRequested {
+                    segment_id: value.segment_id,
+                    force: value.force,
+                    requested_at: value.requested_at,
+                })
+            }
+            "run.safe_point_reached" => {
+                let value: RunSafePointReachedPayload = serde_json::from_value(payload)?;
+                Ok(Self::RunSafePointReached {
+                    segment_id: value.segment_id,
+                    forced: value.forced,
+                    incomplete_output: value.incomplete_output,
+                    non_revertible_tool_use_ids: value.non_revertible_tool_use_ids,
+                    reached_at: value.reached_at,
+                })
+            }
+            "run.force_stop_timed_out" => {
+                let value: RunForceStopTimedOutPayload = serde_json::from_value(payload)?;
+                Ok(Self::RunForceStopTimedOut {
+                    segment_id: value.segment_id,
+                    indeterminate_tool_use_ids: value.indeterminate_tool_use_ids,
+                    timed_out_at: value.timed_out_at,
+                })
+            }
             "message.queued" => {
                 let value: MessageQueuedPayload = serde_json::from_value(payload)?;
                 Ok(Self::MessageQueued {
@@ -753,6 +872,9 @@ impl TaskEvent {
             Self::TaskActorFailed { .. } => "task.actor_failed",
             Self::RunStarted { .. } => "run.started",
             Self::RunCompleted { .. } => "run.completed",
+            Self::RunYieldRequested { .. } => "run.yield_requested",
+            Self::RunSafePointReached { .. } => "run.safe_point_reached",
+            Self::RunForceStopTimedOut { .. } => "run.force_stop_timed_out",
             Self::MessageQueued { .. } => "message.queued",
             Self::MessageEdited { .. } => "message.edited",
             Self::MessagePromoted { .. } => "message.promoted",
@@ -801,6 +923,37 @@ impl TaskEvent {
                 ended_at: *ended_at,
                 terminal_reason: terminal_reason.clone(),
                 incomplete_output: *incomplete_output,
+            })?,
+            Self::RunYieldRequested {
+                segment_id,
+                force,
+                requested_at,
+            } => serde_json::to_value(RunYieldRequestedPayload {
+                segment_id: *segment_id,
+                force: *force,
+                requested_at: *requested_at,
+            })?,
+            Self::RunSafePointReached {
+                segment_id,
+                forced,
+                incomplete_output,
+                non_revertible_tool_use_ids,
+                reached_at,
+            } => serde_json::to_value(RunSafePointReachedPayload {
+                segment_id: *segment_id,
+                forced: *forced,
+                incomplete_output: *incomplete_output,
+                non_revertible_tool_use_ids: non_revertible_tool_use_ids.clone(),
+                reached_at: *reached_at,
+            })?,
+            Self::RunForceStopTimedOut {
+                segment_id,
+                indeterminate_tool_use_ids,
+                timed_out_at,
+            } => serde_json::to_value(RunForceStopTimedOutPayload {
+                segment_id: *segment_id,
+                indeterminate_tool_use_ids: indeterminate_tool_use_ids.clone(),
+                timed_out_at: *timed_out_at,
             })?,
             Self::MessageQueued {
                 queue_item_id,
@@ -899,9 +1052,16 @@ impl TaskEvent {
                 source.kind,
                 EventSourceKind::Supervisor | EventSourceKind::Recovery
             ),
-            Self::RunStarted { .. } | Self::RunCompleted { .. } => matches!(
+            Self::RunStarted { .. }
+            | Self::RunCompleted { .. }
+            | Self::RunYieldRequested { .. }
+            | Self::RunSafePointReached { .. } => matches!(
                 source.kind,
                 EventSourceKind::Engine | EventSourceKind::Supervisor | EventSourceKind::Recovery
+            ),
+            Self::RunForceStopTimedOut { .. } => matches!(
+                source.kind,
+                EventSourceKind::Supervisor | EventSourceKind::Recovery
             ),
             Self::TaskActorFailed { .. } => source.kind == EventSourceKind::Supervisor,
             Self::PermissionRequested { .. } => matches!(
@@ -982,6 +1142,28 @@ impl TaskEvent {
                     return Err(TaskStoreError::InvalidInput(format!(
                         "engine event payload type {actual} does not match {event_type}"
                     )));
+                }
+            }
+            Self::RunSafePointReached {
+                non_revertible_tool_use_ids,
+                ..
+            } => {
+                if non_revertible_tool_use_ids.len() > MAX_SIDE_EFFECTS {
+                    return Err(TaskStoreError::InvalidInput(
+                        "run side effects exceed their count limit".into(),
+                    ));
+                }
+            }
+            Self::RunForceStopTimedOut {
+                indeterminate_tool_use_ids,
+                ..
+            } => {
+                if indeterminate_tool_use_ids.is_empty()
+                    || indeterminate_tool_use_ids.len() > MAX_SIDE_EFFECTS
+                {
+                    return Err(TaskStoreError::InvalidInput(
+                        "indeterminate tools must contain 1 to 256 identifiers".into(),
+                    ));
                 }
             }
             _ => {}

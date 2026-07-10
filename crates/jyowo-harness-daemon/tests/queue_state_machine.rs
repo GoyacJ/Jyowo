@@ -33,6 +33,7 @@ fn queue_transition_table_accepts_only_defined_edges() {
         Some(&queued),
         QueueCommand::Promote {
             expected_revision: 1,
+            mode: harness_contracts::PromotionMode::SafePoint,
         },
     )
     .is_ok());
@@ -216,6 +217,7 @@ fn edit_promote_recover_and_delete_are_durable() {
             Some(&edited),
             QueueCommand::Promote {
                 expected_revision: 2,
+                mode: harness_contracts::PromotionMode::SafePoint,
             },
         )
         .unwrap(),
@@ -329,6 +331,7 @@ proptest! {
                 GeneratedQueueCommand::Promote(fresh) => (
                     QueueCommand::Promote {
                         expected_revision: if fresh { current_revision } else { current_revision.saturating_add(1) },
+                        mode: harness_contracts::PromotionMode::SafePoint,
                     },
                     current.as_ref().is_some_and(|item| item.state == QueueItemState::Queued) && fresh,
                 ),

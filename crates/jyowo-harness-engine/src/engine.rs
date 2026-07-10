@@ -2497,7 +2497,7 @@ impl EngineRunner for Engine {
         input: harness_contracts::TurnInput,
         ctx: RunContext,
     ) -> Result<EventStream, harness_contracts::EngineError> {
-        crate::turn::run_turn(self, session, input, ctx).await
+        Box::pin(crate::turn::run_turn(self, session, input, ctx)).await
     }
 
     fn engine_id(&self) -> EngineId {

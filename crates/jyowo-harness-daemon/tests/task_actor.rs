@@ -826,6 +826,7 @@ async fn client_queue_commands_cannot_consume_or_recover_promoting_messages() {
                     queue_item_id,
                     queue_command: QueueCommand::Promote {
                         expected_revision: 1,
+                        mode: harness_contracts::PromotionMode::SafePoint,
                     },
                 },
             )

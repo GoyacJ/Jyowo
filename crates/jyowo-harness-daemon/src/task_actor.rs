@@ -1,7 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
-use harness_contracts::{CommandId, QueueItemId, RunSegmentId, RunState, TaskId};
+use harness_contracts::{
+    CommandId, PromotionMode, QueueItemId, QueueItemState, RunSegmentId, RunState, TaskId,
+};
+use harness_engine::{RunControl, RunControlHandle};
 use harness_journal::{
     AcceptedCommand, CommandOutcome, CommandRejection, NewTaskEvent, TaskStore, TaskStoreError,
     MAX_ACTIVE_QUEUE_ITEMS,
@@ -64,7 +67,8 @@ impl ValidatedTaskCommand {
 
 struct ActiveSegment {
     segment_id: RunSegmentId,
-    _permit: OwnedSemaphorePermit,
+    control: RunControlHandle,
+    permit: OwnedSemaphorePermit,
 }
 
 pub(crate) async fn run_task_actor(
@@ -79,6 +83,7 @@ pub(crate) async fn run_task_actor(
     if store.task_projection(task_id)?.is_none() {
         return Err(TaskActorError::TaskNotFound);
     }
+    recover_stranded_steering(task_id, &store)?;
     let mut active = None::<ActiveSegment>;
 
     while let Some(message) = messages.recv().await {
@@ -98,7 +103,15 @@ pub(crate) async fn run_task_actor(
                 .await?;
             }
             TaskActorMessage::RunEvent(event) => {
-                if handle_run_event(task_id, &store, &active_segment_state, &mut active, event)? {
+                if handle_run_event(
+                    task_id,
+                    &store,
+                    &factory,
+                    &active_segment_state,
+                    &mailbox,
+                    &mut active,
+                    event,
+                )? {
                     schedule_consume_next(Arc::clone(&foreground_runs), mailbox.clone());
                 }
             }
@@ -116,6 +129,49 @@ pub(crate) async fn run_task_actor(
             TaskActorMessage::Shutdown => break,
         }
     }
+    Ok(())
+}
+
+fn recover_stranded_steering(task_id: TaskId, store: &TaskStore) -> Result<(), TaskActorError> {
+    let projection = store
+        .task_projection(task_id)?
+        .ok_or(TaskActorError::TaskNotFound)?;
+    let Some(run) = projection
+        .current_run
+        .as_ref()
+        .filter(|run| run.state == RunState::Yielding)
+    else {
+        return Ok(());
+    };
+    let ended_at = Utc::now();
+    let mut events = vec![NewTaskEvent::run_completed(
+        run.segment_id,
+        ended_at,
+        harness_contracts::RunTerminalReason::InterruptedByRestart,
+        true,
+    )];
+    if let Some(promoted) = projection
+        .queue
+        .iter()
+        .find(|item| item.state == QueueItemState::Promoting)
+    {
+        events.push(NewTaskEvent::message_recovered(
+            promoted.queue_item_id,
+            promoted.revision,
+        ));
+    }
+    let command = AcceptedCommand {
+        command_id: CommandId::new(),
+        task_id,
+        idempotency_key: format!("recover-steering-{}", CommandId::new()),
+        expected_stream_version: projection.stream_version,
+        authority: TaskStore::recovery_authority(),
+        payload: json!({
+            "type": "recover_stranded_steering",
+            "segmentId": run.segment_id,
+        }),
+    };
+    let _ = store.transact_command(command, |_| Ok(events))?;
     Ok(())
 }
 
@@ -188,9 +244,11 @@ async fn handle_command(
                 task_id,
                 segment_id,
             });
+            let control = running.control();
             *active = Some(ActiveSegment {
                 segment_id,
-                _permit: permit,
+                control,
+                permit,
             });
             forward_run_events(segment_id, mailbox.clone(), running.into_events());
         }
@@ -242,6 +300,14 @@ async fn handle_command(
             let command_id = command.command_id;
             let command_task_id = command.task_id;
             let is_submit = matches!(&queue_command, QueueCommand::Submit { .. });
+            let promotion_mode = match &queue_command {
+                QueueCommand::Promote { mode, .. } => Some(mode.clone()),
+                _ => None,
+            };
+            if promotion_mode.is_some() {
+                command.authority = TaskStore::supervisor_command_authority(&command.authority);
+            }
+            let mut steering_target = None;
             let durable_queue_item = store.queue_item_projection(task_id, queue_item_id)?;
             let outcome = match store.transact_command(command, |projection| {
                 if is_submit
@@ -263,17 +329,60 @@ async fn handle_command(
                         ),
                     });
                 }
+                if promotion_mode.is_some()
+                    && (!projection
+                        .current_run
+                        .as_ref()
+                        .is_some_and(|run| run.state == RunState::Running)
+                        || projection
+                            .queue
+                            .iter()
+                            .any(|item| item.state == QueueItemState::Promoting))
+                {
+                    return Err(CommandRejection::InvalidCommand {
+                        message: "promotion requires one running segment and no pending promotion"
+                            .into(),
+                    });
+                }
                 let current = projection
                     .queue
                     .iter()
                     .find(|item| item.queue_item_id == queue_item_id)
                     .or(durable_queue_item.as_ref());
-                decide_queue(current, queue_command)
+                let mut events = decide_queue(current, queue_command)?;
+                if let Some(mode) = promotion_mode.as_ref() {
+                    let segment_id = projection
+                        .current_run
+                        .as_ref()
+                        .expect("promotion precondition checked above")
+                        .segment_id;
+                    steering_target = Some(segment_id);
+                    events.push(NewTaskEvent::run_yield_requested(
+                        segment_id,
+                        matches!(mode, PromotionMode::ForceStop),
+                        Utc::now(),
+                    ));
+                }
+                Ok(events)
             }) {
                 Ok(outcome) => outcome,
                 Err(error) => command_store_error(error, command_id, command_task_id)?,
             };
+            let accepted = matches!(outcome, CommandOutcome::Accepted { .. });
             let _ = reply.send(outcome);
+            if accepted {
+                if let (Some(mode), Some(target), Some(active)) =
+                    (promotion_mode, steering_target, active.as_ref())
+                {
+                    if active.segment_id != target {
+                        return Ok(());
+                    }
+                    active.control.request(match mode {
+                        PromotionMode::SafePoint => RunControl::YieldAfterAtomicOperation,
+                        PromotionMode::ForceStop => RunControl::ForceStop,
+                    });
+                }
+            }
         }
     }
     Ok(())
@@ -303,7 +412,9 @@ fn command_store_error(
 fn handle_run_event(
     task_id: TaskId,
     store: &TaskStore,
+    factory: &Arc<dyn RunCoordinatorFactory>,
     active_segment_state: &Mutex<Option<RunSegmentId>>,
+    mailbox: &mpsc::Sender<TaskActorMessage>,
     active: &mut Option<ActiveSegment>,
     event: RunCoordinatorEvent,
 ) -> Result<bool, TaskActorError> {
@@ -320,6 +431,68 @@ fn handle_run_event(
             let projection = store
                 .task_projection(task_id)?
                 .ok_or(TaskActorError::TaskNotFound)?;
+            if projection
+                .current_run
+                .as_ref()
+                .is_some_and(|run| run.state == RunState::Yielding)
+            {
+                if let Some(promoted) = projection
+                    .queue
+                    .iter()
+                    .find(|item| item.state == QueueItemState::Promoting)
+                {
+                    let next_segment_id = RunSegmentId::new();
+                    let command = AcceptedCommand {
+                        command_id: CommandId::new(),
+                        task_id,
+                        idempotency_key: format!("steer-terminal-transition-{}", CommandId::new()),
+                        expected_stream_version: projection.stream_version,
+                        authority: TaskStore::supervisor_authority(),
+                        payload: json!({
+                            "type": "steer_terminal_transition",
+                            "oldSegmentId": segment_id,
+                            "newSegmentId": next_segment_id,
+                            "queueItemId": promoted.queue_item_id,
+                            "terminalReason": terminal_reason,
+                        }),
+                    };
+                    let outcome = store.transact_command(command, |_| {
+                        Ok(vec![
+                            NewTaskEvent::run_completed(
+                                segment_id,
+                                ended_at,
+                                terminal_reason,
+                                incomplete_output,
+                            ),
+                            NewTaskEvent::run_started(next_segment_id, ended_at),
+                            NewTaskEvent::message_consumed(
+                                promoted.queue_item_id,
+                                promoted.revision,
+                                next_segment_id,
+                            ),
+                        ])
+                    })?;
+                    if matches!(outcome, CommandOutcome::Accepted { .. }) {
+                        let previous = active.take().expect("active segment checked above");
+                        *active_segment_state
+                            .lock()
+                            .map_err(|_| TaskActorError::RuntimeStatePoisoned)? =
+                            Some(next_segment_id);
+                        let running = factory.spawn(StartSegmentRequest {
+                            task_id,
+                            segment_id: next_segment_id,
+                        });
+                        let control = running.control();
+                        *active = Some(ActiveSegment {
+                            segment_id: next_segment_id,
+                            control,
+                            permit: previous.permit,
+                        });
+                        forward_run_events(next_segment_id, mailbox.clone(), running.into_events());
+                    }
+                    return Ok(false);
+                }
+            }
             let outcome = commit_run_terminal(
                 store,
                 task_id,
@@ -335,6 +508,168 @@ fn handle_run_event(
                     .lock()
                     .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = None;
                 return Ok(true);
+            }
+        }
+        RunCoordinatorEvent::SafePointReached {
+            segment_id,
+            forced,
+            incomplete_output,
+            non_revertible_tool_use_ids,
+            reached_at,
+        } => {
+            if active.as_ref().map(|run| run.segment_id) != Some(segment_id) {
+                return Ok(false);
+            }
+            let projection = store
+                .task_projection(task_id)?
+                .ok_or(TaskActorError::TaskNotFound)?;
+            let expected_mode = if forced {
+                PromotionMode::ForceStop
+            } else {
+                PromotionMode::SafePoint
+            };
+            if projection
+                .current_run
+                .as_ref()
+                .and_then(|run| run.promotion_mode.as_ref())
+                != Some(&expected_mode)
+            {
+                return Ok(false);
+            }
+            let Some(promoted) = projection
+                .queue
+                .iter()
+                .find(|item| item.state == QueueItemState::Promoting)
+            else {
+                return Ok(false);
+            };
+            let next_segment_id = RunSegmentId::new();
+            let command = AcceptedCommand {
+                command_id: CommandId::new(),
+                task_id,
+                idempotency_key: format!("steer-transition-{}", CommandId::new()),
+                expected_stream_version: projection.stream_version,
+                authority: TaskStore::supervisor_authority(),
+                payload: json!({
+                    "type": "steer_transition",
+                    "oldSegmentId": segment_id,
+                    "newSegmentId": next_segment_id,
+                    "queueItemId": promoted.queue_item_id,
+                    "forced": forced,
+                    "incompleteOutput": incomplete_output,
+                    "nonRevertibleToolUseIds": non_revertible_tool_use_ids,
+                }),
+            };
+            let promoted_item_id = promoted.queue_item_id;
+            let promoted_revision = promoted.revision;
+            let terminal_reason = if forced {
+                harness_contracts::RunTerminalReason::ForcedInterruption
+            } else {
+                harness_contracts::RunTerminalReason::Superseded
+            };
+            let outcome = store.transact_command(command, |_| {
+                Ok(vec![
+                    NewTaskEvent::run_safe_point_reached(
+                        segment_id,
+                        forced,
+                        incomplete_output,
+                        non_revertible_tool_use_ids,
+                        reached_at,
+                    ),
+                    NewTaskEvent::run_completed(
+                        segment_id,
+                        reached_at,
+                        terminal_reason,
+                        incomplete_output,
+                    ),
+                    NewTaskEvent::run_started(next_segment_id, reached_at),
+                    NewTaskEvent::message_consumed(
+                        promoted_item_id,
+                        promoted_revision,
+                        next_segment_id,
+                    ),
+                ])
+            })?;
+            if !matches!(outcome, CommandOutcome::Accepted { .. }) {
+                return Ok(false);
+            }
+
+            let previous = active.take().expect("active segment checked above");
+            *active_segment_state
+                .lock()
+                .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = Some(next_segment_id);
+            let running = factory.spawn(StartSegmentRequest {
+                task_id,
+                segment_id: next_segment_id,
+            });
+            let control = running.control();
+            *active = Some(ActiveSegment {
+                segment_id: next_segment_id,
+                control,
+                permit: previous.permit,
+            });
+            forward_run_events(next_segment_id, mailbox.clone(), running.into_events());
+        }
+        RunCoordinatorEvent::ForceStopTimedOut {
+            segment_id,
+            indeterminate_tool_use_ids,
+            timed_out_at,
+        } => {
+            if active.as_ref().map(|run| run.segment_id) != Some(segment_id) {
+                return Ok(false);
+            }
+            let projection = store
+                .task_projection(task_id)?
+                .ok_or(TaskActorError::TaskNotFound)?;
+            if projection
+                .current_run
+                .as_ref()
+                .and_then(|run| run.promotion_mode.as_ref())
+                != Some(&PromotionMode::ForceStop)
+            {
+                return Ok(false);
+            }
+            let Some(promoted) = projection
+                .queue
+                .iter()
+                .find(|item| item.state == QueueItemState::Promoting)
+            else {
+                return Ok(false);
+            };
+            let command = AcceptedCommand {
+                command_id: CommandId::new(),
+                task_id,
+                idempotency_key: format!("force-stop-timeout-{}", CommandId::new()),
+                expected_stream_version: projection.stream_version,
+                authority: TaskStore::recovery_authority(),
+                payload: json!({
+                    "type": "force_stop_timed_out",
+                    "segmentId": segment_id,
+                    "queueItemId": promoted.queue_item_id,
+                    "indeterminateToolUseIds": indeterminate_tool_use_ids,
+                }),
+            };
+            let outcome = store.transact_command(command, |_| {
+                Ok(vec![
+                    NewTaskEvent::run_force_stop_timed_out(
+                        segment_id,
+                        indeterminate_tool_use_ids,
+                        timed_out_at,
+                    ),
+                    NewTaskEvent::run_completed(
+                        segment_id,
+                        timed_out_at,
+                        harness_contracts::RunTerminalReason::Failed,
+                        true,
+                    ),
+                    NewTaskEvent::message_recovered(promoted.queue_item_id, promoted.revision),
+                ])
+            })?;
+            if matches!(outcome, CommandOutcome::Accepted { .. }) {
+                *active = None;
+                *active_segment_state
+                    .lock()
+                    .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = None;
             }
         }
     }
@@ -405,9 +740,11 @@ fn handle_start_next_queued(
         task_id,
         segment_id,
     });
+    let control = running.control();
     *active = Some(ActiveSegment {
         segment_id,
-        _permit: permit,
+        control,
+        permit,
     });
     forward_run_events(segment_id, mailbox.clone(), running.into_events());
     Ok(())
