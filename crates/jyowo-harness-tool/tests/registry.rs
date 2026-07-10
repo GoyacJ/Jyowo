@@ -215,3 +215,73 @@ mod minimax_service_binding {
         assert_eq!(binding.route_kind, CapabilityRouteKind::MusicGeneration);
     }
 }
+
+#[cfg(feature = "gemini-tools")]
+mod gemini_service_binding {
+    use harness_contracts::{CapabilityRouteKind, ModelModality};
+    use harness_tool::{
+        provider_service_adapter_availability_from_snapshot, BuiltinToolset,
+        GeminiImageGenerationTool, GeminiTextToSpeechTool, GeminiVideoGenerationQueryTool,
+        GeminiVideoGenerationTool, Tool, ToolRegistryBuilder,
+    };
+
+    #[test]
+    fn gemini_service_tools_have_route_bindings() {
+        let image = GeminiImageGenerationTool::default()
+            .descriptor()
+            .service_binding
+            .clone()
+            .expect("image tool should declare service binding");
+        assert_eq!(image.provider_id, "gemini");
+        assert_eq!(image.operation_id, "gemini.image_generation");
+        assert_eq!(image.route_kind, CapabilityRouteKind::ImageGeneration);
+        assert_eq!(image.output_artifact, ModelModality::Image);
+
+        let video = GeminiVideoGenerationTool::default()
+            .descriptor()
+            .service_binding
+            .clone()
+            .expect("video tool should declare service binding");
+        assert_eq!(video.operation_id, "gemini.video_generation");
+        assert_eq!(video.route_kind, CapabilityRouteKind::VideoGeneration);
+
+        let query = GeminiVideoGenerationQueryTool::default()
+            .descriptor()
+            .service_binding
+            .clone()
+            .expect("video query tool should declare service binding");
+        assert_eq!(query.operation_id, "gemini.video_generation.query");
+
+        let tts = GeminiTextToSpeechTool::default()
+            .descriptor()
+            .service_binding
+            .clone()
+            .expect("tts tool should declare service binding");
+        assert_eq!(tts.operation_id, "gemini.text_to_speech");
+        assert_eq!(tts.route_kind, CapabilityRouteKind::TextToSpeech);
+        assert_eq!(tts.output_artifact, ModelModality::Audio);
+    }
+
+    #[test]
+    fn adapter_availability_reports_gemini_runtime_support_from_descriptors() {
+        let registry = ToolRegistryBuilder::new()
+            .with_builtin_toolset(BuiltinToolset::Default)
+            .build()
+            .expect("default tool registry should build");
+        let availability =
+            provider_service_adapter_availability_from_snapshot(&registry.snapshot());
+
+        assert!(availability
+            .bindings
+            .iter()
+            .any(|binding| binding.operation_id == "gemini.image_generation"));
+        assert!(availability
+            .bindings
+            .iter()
+            .any(|binding| binding.operation_id == "gemini.video_generation"));
+        assert!(!availability
+            .bindings
+            .iter()
+            .any(|binding| binding.operation_id == "gemini.live"));
+    }
+}

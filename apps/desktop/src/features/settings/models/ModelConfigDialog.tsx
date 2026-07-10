@@ -21,6 +21,7 @@ import {
 } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
 import { Select } from '@/shared/ui/select'
+import { Textarea } from '@/shared/ui/textarea'
 
 type ModelConfigDialogProps = {
   catalog: ModelProviderCatalogResponse
@@ -43,12 +44,18 @@ type ModelConfigFormValues = {
   protocol: ModelProtocol
   providerId: string
   reasoningEffort: string
+  cachedContent: string
   responseMimeType: string
+  responseJsonSchema: string
   seed: string
   serviceTier: string
   sessionCache: boolean
   stopSequences: string
+  storeResponse: boolean
   thinkingBudget: string
+  thinkingLevel: string
+  toolConfig: string
+  safetySettings: string
   topK: string
   topP: string
   webExtractor: boolean
@@ -70,6 +77,7 @@ export function ModelConfigDialog({
   const defaultModel = defaultProvider?.models[0]
   const {
     formState: { errors, isSubmitting },
+    clearErrors,
     handleSubmit,
     register,
     reset,
@@ -148,6 +156,14 @@ export function ModelConfigDialog({
     const baseUrl = values.baseUrl.trim()
     const apiKey = readSecretFormValue(form, 'apiKey')
     const officialQuotaApiKey = readSecretFormValue(form, 'officialQuotaApiKey')
+    const invalidJsonField = invalidGeminiJsonField(values)
+    if (invalidJsonField) {
+      setError('root', {
+        message: t('provider.errors.invalidJsonField', { field: invalidJsonField }),
+      })
+      return
+    }
+    clearErrors('root')
 
     if (profile) {
       request.configId = profile.id
@@ -327,6 +343,18 @@ export function ModelConfigDialog({
                   />
                 </label>
               ) : null}
+              {supportedParameters.has('thinkingConfig') ? (
+                <label className="grid gap-1" htmlFor="provider-thinking-level">
+                  <span className="font-medium">{t('provider.thinkingLevel')}</span>
+                  <Select id="provider-thinking-level" {...register('thinkingLevel')}>
+                    <option value="">{t('provider.default')}</option>
+                    <option value="MINIMAL">Minimal</option>
+                    <option value="LOW">Low</option>
+                    <option value="MEDIUM">Medium</option>
+                    <option value="HIGH">High</option>
+                  </Select>
+                </label>
+              ) : null}
               {supportedParameters.has('output_config') ? (
                 <label className="grid gap-1" htmlFor="provider-output-effort">
                   <span className="font-medium">{t('provider.outputEffort')}</span>
@@ -338,13 +366,24 @@ export function ModelConfigDialog({
                   </Select>
                 </label>
               ) : null}
-              {supportedParameters.has('service_tier') ? (
+              {supportsAny(supportedParameters, ['service_tier', 'serviceTier']) ? (
                 <label className="grid gap-1" htmlFor="provider-service-tier">
                   <span className="font-medium">{t('provider.serviceTier')}</span>
                   <Select id="provider-service-tier" {...register('serviceTier')}>
                     <option value="">{t('provider.default')}</option>
-                    <option value="auto">Auto</option>
-                    <option value="standard_only">Standard only</option>
+                    {selectedProvider?.providerId === 'gemini' ? (
+                      <>
+                        <option value="unspecified">Unspecified</option>
+                        <option value="standard">Standard</option>
+                        <option value="flex">Flex</option>
+                        <option value="priority">Priority</option>
+                      </>
+                    ) : (
+                      <>
+                        <option value="auto">Auto</option>
+                        <option value="standard_only">Standard only</option>
+                      </>
+                    )}
                   </Select>
                 </label>
               ) : null}
@@ -376,6 +415,36 @@ export function ModelConfigDialog({
                 <label className="grid gap-1" htmlFor="provider-response-mime-type">
                   <span className="font-medium">{t('provider.responseMimeType')}</span>
                   <Input id="provider-response-mime-type" {...register('responseMimeType')} />
+                </label>
+              ) : null}
+              {supportedParameters.has('responseJsonSchema') ? (
+                <label className="grid gap-1" htmlFor="provider-response-json-schema">
+                  <span className="font-medium">{t('provider.responseJsonSchema')}</span>
+                  <Textarea id="provider-response-json-schema" rows={3} {...register('responseJsonSchema')} />
+                </label>
+              ) : null}
+              {supportedParameters.has('toolConfig') ? (
+                <label className="grid gap-1" htmlFor="provider-tool-config">
+                  <span className="font-medium">{t('provider.toolConfig')}</span>
+                  <Textarea id="provider-tool-config" rows={3} {...register('toolConfig')} />
+                </label>
+              ) : null}
+              {supportedParameters.has('safetySettings') ? (
+                <label className="grid gap-1" htmlFor="provider-safety-settings">
+                  <span className="font-medium">{t('provider.safetySettings')}</span>
+                  <Textarea id="provider-safety-settings" rows={3} {...register('safetySettings')} />
+                </label>
+              ) : null}
+              {supportedParameters.has('cachedContent') ? (
+                <label className="grid gap-1" htmlFor="provider-cached-content">
+                  <span className="font-medium">{t('provider.cachedContent')}</span>
+                  <Input id="provider-cached-content" {...register('cachedContent')} />
+                </label>
+              ) : null}
+              {supportedParameters.has('store') ? (
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" {...register('storeResponse')} />
+                  <span>{t('provider.storeResponse')}</span>
                 </label>
               ) : null}
               {supportedParameters.has('performanceConfig') ? (
@@ -471,12 +540,18 @@ function formValuesFromProfile(
     protocol: profile?.protocol ?? defaultProtocolForProvider(defaultProvider),
     providerId: profile?.providerId ?? defaultProvider?.providerId ?? '',
     reasoningEffort: defaults.reasoningEffort,
+    cachedContent: providerDefaults.cachedContent,
     responseMimeType: providerDefaults.responseMimeType,
+    responseJsonSchema: providerDefaults.responseJsonSchema,
     seed: providerDefaults.seed,
     serviceTier: providerDefaults.serviceTier,
+    safetySettings: providerDefaults.safetySettings,
     sessionCache: defaults.sessionCache,
     stopSequences: providerDefaults.stopSequences,
+    storeResponse: providerDefaults.storeResponse,
     thinkingBudget: providerDefaults.thinkingBudget,
+    thinkingLevel: providerDefaults.thinkingLevel,
+    toolConfig: providerDefaults.toolConfig,
     topK: providerDefaults.topK,
     topP: providerDefaults.topP,
     webExtractor: defaults.webExtractor,
@@ -543,11 +618,27 @@ function providerOptionDefaultsFromProfile(profile: ProviderConfig | null | unde
     outputEffort: typeof outputConfig?.effort === 'string' ? outputConfig.effort : '',
     performanceLatency:
       typeof performanceConfig?.latency === 'string' ? performanceConfig.latency : '',
+    cachedContent:
+      typeof body.cachedContent === 'string'
+        ? body.cachedContent
+        : typeof body.cached_content === 'string'
+          ? body.cached_content
+          : '',
     responseMimeType: typeof body.responseMimeType === 'string' ? body.responseMimeType : '',
+    responseJsonSchema: jsonText(body.responseJsonSchema),
     seed: firstStringable(body.seed),
-    serviceTier: typeof body.service_tier === 'string' ? body.service_tier : '',
+    serviceTier:
+      typeof body.service_tier === 'string'
+        ? body.service_tier
+        : typeof body.serviceTier === 'string'
+          ? body.serviceTier
+          : '',
+    safetySettings: Array.isArray(body.safetySettings) ? JSON.stringify(body.safetySettings) : '',
     stopSequences: stopSequences.join(','),
+    storeResponse: body.store === true,
     thinkingBudget: firstStringable(thinking?.budget_tokens, thinkingConfig?.thinkingBudget),
+    thinkingLevel: typeof thinkingConfig?.thinkingLevel === 'string' ? thinkingConfig.thinkingLevel : '',
+    toolConfig: jsonText(body.toolConfig),
     topK,
     topP,
   }
@@ -593,9 +684,12 @@ function providerDefaultsFromValues(
     }
 
     if (values.providerId === 'gemini') {
-      if (values.enableThinking || thinkingBudget !== null) {
-        body.thinkingConfig =
-          thinkingBudget !== null ? { thinkingBudget } : { includeThoughts: true }
+      if (values.enableThinking || thinkingBudget !== null || values.thinkingLevel) {
+        body.thinkingConfig = {
+          ...(values.enableThinking ? { includeThoughts: true } : {}),
+          ...(thinkingBudget !== null ? { thinkingBudget } : {}),
+          ...(values.thinkingLevel ? { thinkingLevel: values.thinkingLevel } : {}),
+        }
       }
       if (stopSequences.length > 0) {
         body.stopSequences = stopSequences
@@ -611,6 +705,27 @@ function providerDefaultsFromValues(
       }
       if (values.responseMimeType.trim()) {
         body.responseMimeType = values.responseMimeType.trim()
+      }
+      const responseJsonSchema = parseJsonField(values.responseJsonSchema)
+      if (responseJsonSchema !== null) {
+        body.responseJsonSchema = responseJsonSchema
+      }
+      const toolConfig = parseJsonField(values.toolConfig)
+      if (toolConfig !== null) {
+        body.toolConfig = toolConfig
+      }
+      const safetySettings = parseJsonField(values.safetySettings)
+      if (Array.isArray(safetySettings)) {
+        body.safetySettings = safetySettings
+      }
+      if (values.cachedContent.trim()) {
+        body.cachedContent = values.cachedContent.trim()
+      }
+      if (values.serviceTier) {
+        body.serviceTier = values.serviceTier
+      }
+      if (values.storeResponse) {
+        body.store = true
       }
       return { body, headers }
     }
@@ -700,11 +815,17 @@ function resetProviderOptionFields(setValue: UseFormSetValue<ModelConfigFormValu
   setValue('outputEffort', '')
   setValue('performanceLatency', '')
   setValue('reasoningEffort', '')
+  setValue('cachedContent', '')
   setValue('responseMimeType', '')
+  setValue('responseJsonSchema', '')
   setValue('seed', '')
   setValue('serviceTier', '')
+  setValue('safetySettings', '')
   setValue('stopSequences', '')
+  setValue('storeResponse', false)
   setValue('thinkingBudget', '')
+  setValue('thinkingLevel', '')
+  setValue('toolConfig', '')
   setValue('topK', '')
   setValue('topP', '')
   setValue('webSearch', false)
@@ -715,6 +836,60 @@ function resetProviderOptionFields(setValue: UseFormSetValue<ModelConfigFormValu
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function jsonText(value: unknown): string {
+  if (value === undefined || value === null) {
+    return ''
+  }
+  return JSON.stringify(value)
+}
+
+function parseJsonField(value: string): unknown | null {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return null
+  }
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+}
+
+function invalidGeminiJsonField(values: ModelConfigFormValues): string | null {
+  if (values.providerId !== 'gemini') {
+    return null
+  }
+  for (const [field, label] of [
+    ['responseJsonSchema', 'responseJsonSchema'],
+    ['toolConfig', 'toolConfig'],
+  ] as const) {
+    if (!isValidJsonText(values[field])) {
+      return label
+    }
+  }
+  if (!isValidJsonText(values.safetySettings)) {
+    return 'safetySettings'
+  }
+  const safetySettings = parseJsonField(values.safetySettings)
+  if (safetySettings !== null && !Array.isArray(safetySettings)) {
+    return 'safetySettings'
+  }
+  return null
+}
+
+function isValidJsonText(value: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return true
+  }
+  try {
+    JSON.parse(trimmed)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function firstStringable(...values: unknown[]): string {

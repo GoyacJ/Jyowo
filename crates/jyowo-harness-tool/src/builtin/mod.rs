@@ -10,6 +10,8 @@ mod diagnostics;
 mod edit;
 #[cfg(feature = "programmatic-tool-calling")]
 mod execute_code;
+#[cfg(feature = "gemini-tools")]
+mod gemini;
 #[cfg(feature = "builtin-toolset")]
 mod git;
 #[cfg(feature = "builtin-toolset")]
@@ -62,6 +64,15 @@ pub use diagnostics::{parse_cargo_diagnostics, parse_typescript_diagnostics, Dia
 pub use edit::FileEditTool;
 #[cfg(feature = "programmatic-tool-calling")]
 pub use execute_code::ExecuteCodeTool;
+#[cfg(feature = "gemini-tools")]
+pub use gemini::{
+    GeminiBatchCancelTool, GeminiBatchCreateTool, GeminiBatchGetTool, GeminiBatchListTool,
+    GeminiCachedContentCreateTool, GeminiCachedContentDeleteTool, GeminiCachedContentGetTool,
+    GeminiCachedContentListTool, GeminiEmbeddingBatchTool, GeminiEmbeddingTool,
+    GeminiFileDeleteTool, GeminiFileGetTool, GeminiFileListTool, GeminiFileUploadTool,
+    GeminiImageGenerationTool, GeminiModelGetTool, GeminiModelsListTool, GeminiTextToSpeechTool,
+    GeminiTokensCountTool, GeminiVideoGenerationQueryTool, GeminiVideoGenerationTool,
+};
 #[cfg(feature = "builtin-toolset")]
 pub use git::{
     GitBranchTool, GitCommitTool, GitDiffTool, GitLogTool, GitPullTool, GitPushTool, GitShowTool,

@@ -1,9 +1,13 @@
 //! Shared provider media download policy and validation helpers.
 //!
 //! Pure validation compiles unconditionally. HTTP download uses `reqwest` behind
-//! `minimax-tools` or `seedance-tools`.
+//! `minimax-tools`, `gemini-tools`, or `seedance-tools`.
 
-#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+#[cfg(any(
+    feature = "minimax-tools",
+    feature = "gemini-tools",
+    feature = "seedance-tools"
+))]
 use harness_contracts::BudgetMetric;
 use harness_contracts::{ModelModality, ToolError};
 use url::Url;
@@ -26,7 +30,11 @@ pub const SAFE_AUDIO_MIME_TYPES: &[&str] = &[
 ];
 pub const SEEDANCE_VIDEO_MIME_TYPES: &[&str] = &["video/mp4"];
 
-#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+#[cfg(any(
+    feature = "minimax-tools",
+    feature = "gemini-tools",
+    feature = "seedance-tools"
+))]
 #[derive(Debug, Clone, Copy)]
 pub struct ProviderMediaDownloadRequest<'a> {
     pub provider_id: &'a str,
@@ -85,9 +93,30 @@ pub fn is_allowed_minimax_media_host(url: &Url) -> bool {
 pub fn is_allowed_provider_media_host(provider_id: &str, url: &Url) -> bool {
     match provider_id {
         "minimax" => is_allowed_minimax_media_host(url),
+        "gemini" => is_allowed_gemini_media_host(url),
         "doubao" => is_allowed_doubao_media_host(url),
         _ => false,
     }
+}
+
+pub fn is_allowed_gemini_media_host(url: &Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    #[cfg(debug_assertions)]
+    if matches!(host, "127.0.0.1" | "localhost" | "[::1]") {
+        return true;
+    }
+    matches!(
+        host,
+        "generativelanguage.googleapis.com"
+            | "ai.google.dev"
+            | "aistudio.google.com"
+            | "storage.googleapis.com"
+            | "googleusercontent.com"
+    ) || host.ends_with(".googleapis.com")
+        || host.ends_with(".googleusercontent.com")
+        || host.ends_with(".gstatic.com")
 }
 
 pub fn is_allowed_doubao_media_host(url: &Url) -> bool {
@@ -164,6 +193,11 @@ pub fn provider_media_mime_policy(
         ("minimax", "minimax.image_generation", ModelModality::Image) => {
             Some(SAFE_IMAGE_MIME_TYPES)
         }
+        ("gemini", "gemini.image_generation", ModelModality::Image) => Some(SAFE_IMAGE_MIME_TYPES),
+        ("gemini", "gemini.video_generation.query", ModelModality::Video) => {
+            Some(SAFE_VIDEO_MIME_TYPES)
+        }
+        ("gemini", "gemini.text_to_speech", ModelModality::Audio) => Some(SAFE_AUDIO_MIME_TYPES),
         (
             "minimax",
             "minimax.video_generation.query" | "minimax.video_template.query",
@@ -289,7 +323,11 @@ fn normalized_mime(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
-#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+#[cfg(any(
+    feature = "minimax-tools",
+    feature = "gemini-tools",
+    feature = "seedance-tools"
+))]
 fn mime_policy_matches(expected: &[&str], policy: &[&str]) -> bool {
     expected.len() == policy.len()
         && expected
@@ -308,10 +346,24 @@ pub trait ProviderMediaDownloader: Send + Sync {
     ) -> Result<ProviderMediaBytes, ToolError>;
 }
 
-#[cfg(all(test, any(feature = "minimax-tools", feature = "seedance-tools")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "minimax-tools",
+        feature = "gemini-tools",
+        feature = "seedance-tools"
+    )
+))]
 pub struct ReqwestProviderMediaDownloader;
 
-#[cfg(all(test, any(feature = "minimax-tools", feature = "seedance-tools")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "minimax-tools",
+        feature = "gemini-tools",
+        feature = "seedance-tools"
+    )
+))]
 #[async_trait::async_trait]
 impl ProviderMediaDownloader for ReqwestProviderMediaDownloader {
     async fn download(
@@ -398,13 +450,21 @@ impl ProviderMediaDownloader for ReqwestProviderMediaDownloader {
 /// Uses `ToolNetworkBrokerCap` and `AuthorizedNetworkPermit` instead of raw
 /// reqwest. The broker validates every download URL against the approved host
 /// rules before issuing the request.
-#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+#[cfg(any(
+    feature = "minimax-tools",
+    feature = "gemini-tools",
+    feature = "seedance-tools"
+))]
 pub struct BrokerProviderMediaDownloader<'a> {
     broker: std::sync::Arc<dyn crate::ToolNetworkBrokerCap>,
     permit: &'a crate::AuthorizedNetworkPermit,
 }
 
-#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+#[cfg(any(
+    feature = "minimax-tools",
+    feature = "gemini-tools",
+    feature = "seedance-tools"
+))]
 impl<'a> BrokerProviderMediaDownloader<'a> {
     pub fn new(
         broker: std::sync::Arc<dyn crate::ToolNetworkBrokerCap>,
@@ -414,7 +474,11 @@ impl<'a> BrokerProviderMediaDownloader<'a> {
     }
 }
 
-#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+#[cfg(any(
+    feature = "minimax-tools",
+    feature = "gemini-tools",
+    feature = "seedance-tools"
+))]
 #[async_trait::async_trait]
 impl ProviderMediaDownloader for BrokerProviderMediaDownloader<'_> {
     async fn download(
@@ -475,7 +539,11 @@ impl ProviderMediaDownloader for BrokerProviderMediaDownloader<'_> {
     }
 }
 
-#[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+#[cfg(any(
+    feature = "minimax-tools",
+    feature = "gemini-tools",
+    feature = "seedance-tools"
+))]
 pub async fn download_provider_https_media(
     request: ProviderMediaDownloadRequest<'_>,
     downloader: &dyn ProviderMediaDownloader,
@@ -528,13 +596,21 @@ pub async fn download_provider_https_media(
 mod tests {
     use super::*;
 
-    #[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+    #[cfg(any(
+        feature = "minimax-tools",
+        feature = "gemini-tools",
+        feature = "seedance-tools"
+    ))]
     struct StaticProviderMediaDownloader {
         bytes: Vec<u8>,
         mime_type: &'static str,
     }
 
-    #[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+    #[cfg(any(
+        feature = "minimax-tools",
+        feature = "gemini-tools",
+        feature = "seedance-tools"
+    ))]
     #[async_trait::async_trait]
     impl ProviderMediaDownloader for StaticProviderMediaDownloader {
         async fn download(
@@ -563,6 +639,20 @@ mod tests {
     }
 
     #[test]
+    fn gemini_media_host_allowlist_accepts_google_media_hosts() {
+        let url = Url::parse("https://generativelanguage.googleapis.com/v1beta/files/abc").unwrap();
+        assert!(is_allowed_gemini_media_host(&url));
+        let url = Url::parse("https://storage.googleapis.com/gemini/video.mp4").unwrap();
+        assert!(is_allowed_gemini_media_host(&url));
+    }
+
+    #[test]
+    fn gemini_media_host_allowlist_rejects_untrusted_host() {
+        let url = Url::parse("https://example.invalid/video.mp4").unwrap();
+        assert!(!is_allowed_gemini_media_host(&url));
+    }
+
+    #[test]
     fn video_mime_detection_matches_mp4_bytes() {
         let bytes = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00";
         assert_eq!(detect_video_mime(bytes), Some("video/mp4"));
@@ -574,7 +664,11 @@ mod tests {
         assert_eq!(detect_audio_mime(bytes), Some("audio/mpeg"));
     }
 
-    #[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+    #[cfg(any(
+        feature = "minimax-tools",
+        feature = "gemini-tools",
+        feature = "seedance-tools"
+    ))]
     #[tokio::test]
     async fn provider_media_download_rejects_mime_outside_expected_set() {
         let downloader = StaticProviderMediaDownloader {
@@ -603,7 +697,11 @@ mod tests {
         ));
     }
 
-    #[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+    #[cfg(any(
+        feature = "minimax-tools",
+        feature = "gemini-tools",
+        feature = "seedance-tools"
+    ))]
     #[tokio::test]
     async fn provider_media_download_rejects_unregistered_policy_tuple() {
         let downloader = StaticProviderMediaDownloader {
@@ -632,7 +730,11 @@ mod tests {
         ));
     }
 
-    #[cfg(any(feature = "minimax-tools", feature = "seedance-tools"))]
+    #[cfg(any(
+        feature = "minimax-tools",
+        feature = "gemini-tools",
+        feature = "seedance-tools"
+    ))]
     #[tokio::test]
     async fn provider_media_download_rejects_operation_artifact_mismatch() {
         let downloader = StaticProviderMediaDownloader {

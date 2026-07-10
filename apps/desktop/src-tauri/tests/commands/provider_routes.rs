@@ -403,6 +403,68 @@ fn provider_capability_route_options_use_injected_adapter_availability() {
 }
 
 #[test]
+fn gemini_provider_capability_route_options_track_runtime_adapter_support() {
+    let provider_settings = provider_settings_record_with_gemini_config("gemini-main", true);
+    let store = provider_capability_route_store("gemini-provider-capability-route-options");
+
+    let unsupported = list_provider_capability_route_options_from_inputs(
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &ProviderServiceAdapterAvailability::default(),
+    )
+    .unwrap();
+    let image_option = unsupported
+        .options
+        .iter()
+        .find(|option| option.operation_id == "gemini.image_generation")
+        .unwrap();
+    assert!(!image_option.runtime_supported);
+    assert_eq!(
+        image_option.unavailable_reason.as_deref(),
+        Some("runtime adapter unavailable")
+    );
+    let music_option = unsupported
+        .options
+        .iter()
+        .find(|option| option.operation_id == "gemini.music_generation")
+        .unwrap();
+    assert!(!music_option.runtime_supported);
+
+    let supported = list_provider_capability_route_options_from_inputs(
+        &store,
+        &provider_settings,
+        &list_model_provider_catalog_payload(),
+        &gemini_service_adapter_availability(),
+    )
+    .unwrap();
+    let image_option = supported
+        .options
+        .iter()
+        .find(|option| option.operation_id == "gemini.image_generation")
+        .unwrap();
+    assert!(image_option.runtime_supported);
+    let video_option = supported
+        .options
+        .iter()
+        .find(|option| option.operation_id == "gemini.video_generation")
+        .unwrap();
+    assert!(video_option.runtime_supported);
+    let tts_option = supported
+        .options
+        .iter()
+        .find(|option| option.operation_id == "gemini.text_to_speech")
+        .unwrap();
+    assert!(tts_option.runtime_supported);
+    let music_option = supported
+        .options
+        .iter()
+        .find(|option| option.operation_id == "gemini.music_generation")
+        .unwrap();
+    assert!(!music_option.runtime_supported);
+}
+
+#[test]
 fn no_workspace_provider_capability_route_options_are_empty() {
     let provider_settings = provider_settings_record_with_minimax_config("minimax-image", true);
 

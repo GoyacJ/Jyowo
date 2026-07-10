@@ -102,7 +102,11 @@ pub(crate) const PROVIDER_METADATA: &[ProviderCatalogMetadata] = &[
         "https://api-docs.deepseek.com/quick_start/pricing",
     ),
     provider("doubao", "https://www.volcengine.com/docs/82379/1494384"),
-    provider("gemini", "https://ai.google.dev/gemini-api/docs/models"),
+    provider_with_date(
+        "gemini",
+        "https://ai.google.dev/gemini-api/docs/models",
+        date(2026, 7, 9),
+    ),
     provider_with_date("km", "https://platform.kimi.com/docs", date(2026, 7, 9)),
     provider("local-llama", "https://ollama.com/library"),
     provider(
@@ -295,6 +299,50 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
     ),
     generate_content_declared_input_model(
         "gemini",
+        "gemini-3.5-flash",
+        "Gemini 3.5 Flash",
+        1_000_000,
+        64_000,
+        TEXT_IMAGE_FILE,
+    ),
+    gemini_preview_model(
+        "gemini-3.1-pro-preview",
+        "Gemini 3.1 Pro Preview",
+        1_000_000,
+        64_000,
+        TEXT_IMAGE_FILE,
+    ),
+    gemini_preview_model(
+        "gemini-3-pro-preview",
+        "Gemini 3 Pro Preview",
+        1_000_000,
+        64_000,
+        TEXT_IMAGE_FILE,
+    ),
+    gemini_preview_model(
+        "gemini-3-flash-preview",
+        "Gemini 3 Flash Preview",
+        1_000_000,
+        64_000,
+        TEXT_IMAGE_FILE,
+    ),
+    generate_content_declared_input_model(
+        "gemini",
+        "gemini-3.1-flash-lite",
+        "Gemini 3.1 Flash Lite",
+        1_000_000,
+        32_000,
+        TEXT_IMAGE_FILE,
+    ),
+    gemini_preview_model(
+        "gemini-3.1-flash-lite-preview",
+        "Gemini 3.1 Flash Lite Preview",
+        1_000_000,
+        32_000,
+        TEXT_IMAGE_FILE,
+    ),
+    generate_content_declared_input_model(
+        "gemini",
         "gemini-2.5-pro",
         "Gemini 2.5 Pro",
         1_000_000,
@@ -308,6 +356,79 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
         1_000_000,
         16_384,
         TEXT_IMAGE,
+    ),
+    generate_content_declared_input_model(
+        "gemini",
+        "gemini-2.5-flash-image",
+        "Gemini 2.5 Flash Image",
+        32_768,
+        32_768,
+        TEXT_IMAGE,
+    ),
+    gemini_preview_model(
+        "gemini-2.5-flash-preview-tts",
+        "Gemini 2.5 Flash Preview TTS",
+        32_768,
+        8192,
+        TEXT,
+    ),
+    gemini_preview_model(
+        "gemini-2.5-pro-preview-tts",
+        "Gemini 2.5 Pro Preview TTS",
+        32_768,
+        8192,
+        TEXT,
+    ),
+    gemini_preview_model(
+        "gemini-2.5-computer-use-preview-10-2025",
+        "Gemini 2.5 Computer Use Preview 10-2025",
+        1_000_000,
+        8192,
+        TEXT_IMAGE,
+    ),
+    generate_content_declared_input_model(
+        "gemini",
+        "gemini-2.0-flash",
+        "Gemini 2.0 Flash",
+        1_000_000,
+        8192,
+        TEXT_IMAGE,
+    ),
+    generate_content_declared_input_model(
+        "gemini",
+        "gemini-2.0-flash-lite",
+        "Gemini 2.0 Flash Lite",
+        1_000_000,
+        8192,
+        TEXT_IMAGE,
+    ),
+    gemini_preview_model(
+        "gemini-2.5-flash-native-audio-preview-12-2025",
+        "Gemini 2.5 Flash Native Audio Preview 12-2025",
+        128_000,
+        8192,
+        TEXT,
+    ),
+    gemini_preview_model(
+        "gemini-3.1-flash-live-preview",
+        "Gemini 3.1 Flash Live Preview",
+        128_000,
+        8192,
+        TEXT,
+    ),
+    gemini_preview_model(
+        "gemini-3.5-live-translate-preview",
+        "Gemini 3.5 Live Translate Preview",
+        128_000,
+        8192,
+        TEXT,
+    ),
+    gemini_preview_model(
+        "gemini-omni-flash",
+        "Gemini Omni Flash",
+        128_000,
+        8192,
+        TEXT_IMAGE_FILE,
     ),
     generate_content_declared_input_model(
         "gemini",
@@ -1104,9 +1225,12 @@ fn supported_parameters(spec: &ModelCatalogSpec) -> Vec<String> {
             "seed",
             "responseMimeType",
             "responseSchema",
+            "responseJsonSchema",
             "toolConfig",
             "safetySettings",
             "cachedContent",
+            "serviceTier",
+            "store",
         ],
         "qwen" => &[
             "enable_thinking",
@@ -1513,10 +1637,29 @@ const fn generate_content_declared_input_model(
         false,
         declared_input_modalities,
         TEXT,
-        TEXT,
+        declared_input_modalities,
         TEXT,
         RuntimeSemanticsKind::Gemini,
     )
+}
+
+const fn gemini_preview_model(
+    model_id: &'static str,
+    display_name: &'static str,
+    context_window: u32,
+    max_output_tokens: u32,
+    declared_input_modalities: &'static [ModelModality],
+) -> ModelCatalogSpec {
+    let mut spec = generate_content_declared_input_model(
+        "gemini",
+        model_id,
+        display_name,
+        context_window,
+        max_output_tokens,
+        declared_input_modalities,
+    );
+    spec.lifecycle = ModelLifecycleSpec::Preview;
+    spec
 }
 
 const fn minimax_m3_model(

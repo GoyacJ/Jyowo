@@ -425,6 +425,105 @@ describe('ModelConfigDialog', () => {
       },
     })
   })
+
+  it('saves Gemini official provider defaults from structured controls', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: geminiProfile,
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: geminiProfile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    fireEvent.click(within(dialog).getByLabelText('Thinking'))
+    fireEvent.change(within(dialog).getByLabelText('Thinking budget'), {
+      target: { value: '2048' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Thinking level'), {
+      target: { value: 'HIGH' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Response MIME type'), {
+      target: { value: 'application/json' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Response JSON schema'), {
+      target: { value: '{"type":"object","properties":{"ok":{"type":"boolean"}}}' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Tool config'), {
+      target: { value: '{"functionCallingConfig":{"mode":"AUTO"}}' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Safety settings'), {
+      target: {
+        value:
+          '[{"category":"HARM_CATEGORY_DANGEROUS_CONTENT","threshold":"BLOCK_ONLY_HIGH"}]',
+      },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Cached content'), {
+      target: { value: 'cachedContents/demo' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Service tier'), {
+      target: { value: 'standard' },
+    })
+    fireEvent.click(within(dialog).getByLabelText('Store provider response'))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      configId: 'cfg-gemini',
+      providerId: 'gemini',
+      providerDefaults: {
+        body: {
+          thinkingConfig: {
+            includeThoughts: true,
+            thinkingBudget: 2048,
+            thinkingLevel: 'HIGH',
+          },
+          responseMimeType: 'application/json',
+          responseJsonSchema: {
+            type: 'object',
+            properties: { ok: { type: 'boolean' } },
+          },
+          toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
+          safetySettings: [
+            {
+              category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
+              threshold: 'BLOCK_ONLY_HIGH',
+            },
+          ],
+          cachedContent: 'cachedContents/demo',
+          serviceTier: 'standard',
+          store: true,
+        },
+        headers: {},
+      },
+    })
+  })
+
+  it('rejects invalid Gemini JSON config before saving', async () => {
+    const saveProviderSettings = vi.fn()
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: geminiProfile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    fireEvent.change(within(dialog).getByLabelText('Response JSON schema'), {
+      target: { value: '{"type":' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(dialog).toHaveTextContent('responseJsonSchema must be valid JSON.')
+    })
+    expect(saveProviderSettings).not.toHaveBeenCalled()
+  })
 })
 
 const modelCapability: ConversationModelCapability = {
@@ -461,6 +560,28 @@ const qwen3Max = {
   ...gpt41,
   displayName: 'Qwen3 Max',
   modelId: 'qwen3-max',
+}
+
+const gemini25Flash = {
+  ...gpt41,
+  displayName: 'Gemini 2.5 Flash',
+  modelId: 'gemini-2.5-flash',
+  protocol: 'generate_content' as const,
+  supportedParameters: [
+    'thinkingConfig',
+    'stopSequences',
+    'topP',
+    'topK',
+    'seed',
+    'responseMimeType',
+    'responseSchema',
+    'responseJsonSchema',
+    'toolConfig',
+    'safetySettings',
+    'cachedContent',
+    'serviceTier',
+    'store',
+  ],
 }
 
 const catalog: ModelProviderCatalogResponse = {
@@ -534,6 +655,28 @@ const catalog: ModelProviderCatalogResponse = {
       sourceUrl: 'https://help.aliyun.com/zh/model-studio/',
       verifiedDate: '2026-07-09',
     },
+    {
+      defaultBaseUrl: 'https://generativelanguage.googleapis.com',
+      displayName: 'Gemini',
+      models: [gemini25Flash],
+      providerId: 'gemini',
+      runtimeCapability: {
+        authScheme: 'api_key',
+        baseUrlRegions: [
+          {
+            id: 'default',
+            label: 'Default',
+            baseUrl: 'https://generativelanguage.googleapis.com',
+          },
+        ],
+        supportsLiveValidation: true,
+        supportsStreamingValidation: true,
+        secretRevealSupported: true,
+      },
+      serviceCapabilities: [],
+      sourceUrl: 'https://ai.google.dev/gemini-api/docs/models',
+      verifiedDate: '2026-07-09',
+    },
   ],
 }
 
@@ -590,4 +733,21 @@ const qwen3MaxProfile: ProviderConfig = {
   modelId: 'qwen3-max',
   displayName: 'Primary Qwen Max',
   modelDescriptor: qwen3Max,
+}
+
+const geminiProfile: ProviderConfig = {
+  id: 'cfg-gemini',
+  providerId: 'gemini',
+  modelId: 'gemini-2.5-flash',
+  displayName: 'Primary Gemini',
+  baseUrl: 'https://generativelanguage.googleapis.com',
+  hasApiKey: true,
+  hasOfficialQuotaApiKey: false,
+  isDefault: false,
+  protocol: 'generate_content',
+  providerDefaults: {
+    body: {},
+    headers: {},
+  },
+  modelDescriptor: gemini25Flash,
 }

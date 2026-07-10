@@ -51,6 +51,37 @@ pub(crate) fn minimax_image_and_video_adapter_availability() -> ProviderServiceA
     }
 }
 
+pub(crate) fn gemini_service_adapter_availability() -> ProviderServiceAdapterAvailability {
+    ProviderServiceAdapterAvailability {
+        bindings: vec![
+            ToolServiceBinding {
+                provider_id: "gemini".to_owned(),
+                operation_id: "gemini.image_generation".to_owned(),
+                route_kind: CapabilityRouteKind::ImageGeneration,
+                output_artifact: ModelModality::Image,
+            },
+            ToolServiceBinding {
+                provider_id: "gemini".to_owned(),
+                operation_id: "gemini.video_generation".to_owned(),
+                route_kind: CapabilityRouteKind::VideoGeneration,
+                output_artifact: ModelModality::Video,
+            },
+            ToolServiceBinding {
+                provider_id: "gemini".to_owned(),
+                operation_id: "gemini.video_generation.query".to_owned(),
+                route_kind: CapabilityRouteKind::VideoGeneration,
+                output_artifact: ModelModality::Video,
+            },
+            ToolServiceBinding {
+                provider_id: "gemini".to_owned(),
+                operation_id: "gemini.text_to_speech".to_owned(),
+                route_kind: CapabilityRouteKind::TextToSpeech,
+                output_artifact: ModelModality::Audio,
+            },
+        ],
+    }
+}
+
 pub(crate) fn canonical_unique_workspace(name: &str) -> PathBuf {
     let workspace = unique_workspace(name);
     std::fs::create_dir_all(&workspace).unwrap();

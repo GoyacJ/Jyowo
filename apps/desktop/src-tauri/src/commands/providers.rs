@@ -2878,10 +2878,13 @@ fn provider_default_body_fields(provider_id: &str) -> &'static [&'static str] {
             "seed",
             "responseMimeType",
             "responseSchema",
+            "responseJsonSchema",
             "toolConfig",
             "safetySettings",
             "cachedContent",
             "cached_content",
+            "serviceTier",
+            "store",
         ],
         "qwen" => &[
             "enable_thinking",
@@ -3000,6 +3003,11 @@ pub(crate) fn normalized_provider_base_url(
             )));
         }
     }
+    if provider_id == "gemini" {
+        if let Some(base_url) = normalized.as_deref() {
+            validate_gemini_base_url(base_url)?;
+        }
+    }
     Ok(normalized)
 }
 
@@ -3042,6 +3050,31 @@ pub(crate) fn url_targets_loopback(url: &reqwest::Url) -> bool {
         || host
             .parse::<IpAddr>()
             .is_ok_and(|address| address.is_loopback())
+}
+
+fn validate_gemini_base_url(base_url: &str) -> Result<(), CommandErrorPayload> {
+    let parsed = reqwest::Url::parse(base_url)
+        .map_err(|_| invalid_payload("Gemini baseUrl must be a valid URL".to_owned()))?;
+    let Some(host) = parsed.host_str() else {
+        return Err(invalid_payload(
+            "Gemini baseUrl must include a host".to_owned(),
+        ));
+    };
+    if host.eq_ignore_ascii_case("generativelanguage.googleapis.com") {
+        if parsed.scheme() != "https" {
+            return Err(invalid_payload(
+                "Gemini baseUrl must use https://".to_owned(),
+            ));
+        }
+        return Ok(());
+    }
+    #[cfg(debug_assertions)]
+    if url_targets_loopback(&parsed) {
+        return Ok(());
+    }
+    Err(invalid_payload(
+        "Gemini baseUrl must target generativelanguage.googleapis.com".to_owned(),
+    ))
 }
 
 pub(crate) fn build_provider_for_config(

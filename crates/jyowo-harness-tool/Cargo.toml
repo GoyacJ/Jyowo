@@ -26,6 +26,14 @@ minimax-tools = [
   "dep:secrecy",
   "jyowo-harness-model/minimax",
 ]
+gemini-tools = [
+  "builtin-toolset",
+  "dep:base64",
+  "dep:jyowo-harness-model",
+  "dep:reqwest",
+  "dep:secrecy",
+  "jyowo-harness-model/gemini",
+]
 seedance-tools = [
   "builtin-toolset",
   "dep:base64",
