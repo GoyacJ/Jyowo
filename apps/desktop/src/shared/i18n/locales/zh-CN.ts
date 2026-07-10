@@ -660,6 +660,13 @@ export const zhCN = {
         dailyPoint: '{{date}} · {{tokens}}',
         weeklyPoint: '{{start}} 至 {{end}} · {{tokens}}',
         cumulativePoint: '{{date}} · 累计 {{tokens}}',
+        empty: '暂无 Token 活动',
+        legendLess: '少',
+        legendMore: '多',
+        charts: {
+          weeklyLabel: '每周 Token 图表',
+          cumulativeLabel: '累计 Token 图表',
+        },
         views: {
           label: 'Token 活动视图',
           daily: '每日',
@@ -668,7 +675,7 @@ export const zhCN = {
         },
         metrics: {
           totalTokens: '累计 Token 数',
-          peakDayTokens: '峰值 Token 数',
+          peakDayTokens: '单日峰值 Token 数',
           longestTaskDuration: '最长任务时长',
           currentStreak: '当前连续天数',
           longestStreak: '最长连续天数',

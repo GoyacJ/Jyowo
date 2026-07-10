@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
 import { AppI18nProvider } from '@/shared/i18n/i18n'
@@ -67,6 +67,36 @@ describe('ModelUsageInsightsPanel', () => {
     expect(peakCell).toHaveAttribute('data-level', '4')
     expect(peakCell).toHaveAttribute('title', '2026-06-30 · 40 tokens')
     expect(screen.getByText('Jun')).toBeInTheDocument()
+    expect(screen.getByText('Less')).toBeInTheDocument()
+    expect(screen.getByText('More')).toBeInTheDocument()
+  })
+
+  it('keeps the heatmap in one month-label row and one keyboard tab stop', () => {
+    renderPanel(yearInsights())
+
+    const grid = screen.getByTestId('usage-heatmap-grid')
+    expect(grid.style.gridTemplateColumns).toContain('minmax(10px, 1fr)')
+
+    const monthLabels = screen.getAllByTestId('usage-month-label')
+    expect(monthLabels).toHaveLength(13)
+    expect(monthLabels.every((label) => label.style.gridRow === '1')).toBe(true)
+    expect(monthLabels[0]).toHaveTextContent('Jul')
+    expect(monthLabels[6]).toHaveTextContent('Jan')
+    expect(monthLabels.every((label) => !label.textContent?.includes('202'))).toBe(true)
+
+    const control = screen.getByTestId('usage-heatmap-control')
+    const dayCells = screen.getAllByTestId(/^usage-day-/)
+    expect(control).toHaveAttribute('type', 'range')
+    expect(control.tabIndex).toBe(0)
+    expect(dayCells.every((cell) => cell.getAttribute('tabindex') === null)).toBe(true)
+
+    const firstDay = screen.getByTestId('usage-day-2025-07-10')
+    const nextDay = screen.getByTestId('usage-day-2025-07-11')
+    fireEvent.change(control, { target: { value: 0 } })
+    expect(firstDay).toHaveAttribute('data-active', 'true')
+    fireEvent.change(control, { target: { value: 1 } })
+    expect(nextDay).toHaveAttribute('data-active', 'true')
+    expect(control).toHaveAttribute('aria-valuetext', '2025-07-11 · 1 tokens')
   })
 
   it('switches between weekly and cumulative views', () => {
@@ -80,17 +110,57 @@ describe('ModelUsageInsightsPanel', () => {
     fireEvent.click(weeklyTab)
     expect(dailyTab).toHaveAttribute('tabindex', '-1')
     expect(weeklyTab).toHaveAttribute('tabindex', '0')
+    const weeklyChart = screen.getByTestId('weekly-token-chart')
+    expect(weeklyChart).toHaveAttribute('aria-label', 'Weekly Token chart')
     expect(
-      screen.getByRole('img', { name: '2026-06-22 to 2026-06-28 · 35 tokens' }),
+      within(weeklyChart).getByText('2026-06-22 to 2026-06-28 · 35 tokens'),
     ).toBeInTheDocument()
     expect(
-      screen.getByRole('img', { name: '2026-06-29 to 2026-07-05 · 70 tokens' }),
+      within(weeklyChart).getByText('2026-06-29 to 2026-07-05 · 70 tokens'),
     ).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('tab', { name: 'Cumulative' }))
+    const cumulativeChart = screen.getByTestId('cumulative-token-chart')
+    expect(cumulativeChart).toHaveAttribute('aria-label', 'Cumulative Token chart')
     expect(
-      screen.getByRole('button', { name: '2026-06-30 · 105 tokens cumulative' }),
+      within(cumulativeChart).getByText('2026-06-30 · 105 tokens cumulative'),
     ).toBeInTheDocument()
+  })
+
+  it('preserves true zero weeks in the accessible chart data', () => {
+    const insights = structuredClone(readyInsights)
+    if (insights.status !== 'ready') {
+      throw new Error('Expected ready insights')
+    }
+    insights.data.weekly[0].tokens = 0
+
+    renderPanel(insights)
+    fireEvent.click(screen.getByRole('tab', { name: 'Weekly' }))
+
+    expect(screen.getByText('2026-06-22 to 2026-06-28 · 0 tokens')).toHaveAttribute(
+      'data-token-value',
+      '0',
+    )
+  })
+
+  it('renders an explicit empty state in every activity view', () => {
+    const insights = structuredClone(readyInsights)
+    if (insights.status !== 'ready') {
+      throw new Error('Expected ready insights')
+    }
+    insights.data.daily = []
+    insights.data.monthLabels = []
+    insights.data.weekly = []
+    insights.data.cumulative = []
+
+    renderPanel(insights)
+    expect(screen.getByText('No Token activity yet')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Weekly' }))
+    expect(screen.getByText('No Token activity yet')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Cumulative' }))
+    expect(screen.getByText('No Token activity yet')).toBeInTheDocument()
   })
 
   it('localizes token chart labels', () => {
@@ -105,14 +175,10 @@ describe('ModelUsageInsightsPanel', () => {
     )
 
     fireEvent.click(screen.getByRole('tab', { name: '每周' }))
-    expect(
-      screen.getByRole('img', { name: '2026-06-22 至 2026-06-28 · 35 个 Token' }),
-    ).toBeInTheDocument()
+    expect(screen.getByText('2026-06-22 至 2026-06-28 · 35 个 Token')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('tab', { name: '累计' }))
-    expect(
-      screen.getByRole('button', { name: '2026-06-30 · 累计 105 个 Token' }),
-    ).toBeInTheDocument()
+    expect(screen.getByText('2026-06-30 · 累计 105 个 Token')).toBeInTheDocument()
   })
 
   it('renders non-ready states without charts', () => {
@@ -140,5 +206,31 @@ function usage(inputTokens: number, outputTokens: number) {
     inputTokens,
     outputTokens,
     toolCalls: 0,
+  }
+}
+
+function yearInsights(): ModelUsageInsightsView {
+  const start = Date.UTC(2025, 6, 10)
+  const days = Array.from({ length: 366 }, (_, index) => {
+    const date = new Date(start + index * 86_400_000).toISOString().slice(0, 10)
+    return { date, usage: usage(1, 0), tokens: 1, level: 1 as const }
+  })
+  const monthLabels = days.filter(
+    (day, index) => index === 0 || day.date.slice(5, 7) !== days[index - 1].date.slice(5, 7),
+  )
+
+  if (readyInsights.status !== 'ready') {
+    throw new Error('Expected ready insights')
+  }
+
+  return {
+    status: 'ready',
+    data: {
+      ...readyInsights.data,
+      rangeStart: days[0].date,
+      rangeEnd: days.at(-1)?.date ?? days[0].date,
+      daily: days,
+      monthLabels: monthLabels.map((day) => ({ date: day.date, label: day.date.slice(5, 7) })),
+    },
   }
 }

@@ -1,5 +1,17 @@
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import type { TooltipContentProps } from 'recharts'
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Tooltip as RechartsTooltip,
+  ResponsiveContainer,
+  XAxis,
+  YAxis,
+} from 'recharts'
 
 import type { ModelUsageInsightsView } from './model-settings-view-model'
 
@@ -50,21 +62,21 @@ function ReadyUsageInsights({ data }: { data: UsageInsightsData }) {
       <UsageMetricStrip data={data} />
 
       <div className="mt-9">
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <h2 className="font-medium text-sm">{t('models.usageInsights.activityTitle')}</h2>
           <div
             aria-label={t('models.usageInsights.views.label')}
-            className="inline-flex h-7 items-center justify-center gap-4 text-muted-foreground"
+            className="inline-flex h-9 items-center justify-center gap-4 text-muted-foreground"
             role="tablist"
           >
             {views.map((view, index) => (
               <button
                 aria-controls={`model-usage-${view}-panel`}
                 aria-selected={mode === view}
-                className={`inline-flex min-h-6 items-center justify-center whitespace-nowrap rounded-sm px-1 text-sm outline-none transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-ring ${
+                className={`inline-flex min-h-9 items-center justify-center whitespace-nowrap border-b-2 px-1 text-sm outline-none transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-ring ${
                   mode === view
-                    ? 'font-semibold text-foreground'
-                    : 'font-normal hover:text-foreground/90'
+                    ? 'border-foreground font-semibold text-foreground'
+                    : 'border-transparent font-normal hover:text-foreground/90'
                 }`}
                 id={`model-usage-${view}-tab`}
                 key={view}
@@ -129,7 +141,7 @@ function UsageMetricStrip({ data }: { data: UsageInsightsData }) {
   ]
 
   return (
-    <dl className="grid overflow-hidden rounded-2xl border border-border/80 @min-[640px]:grid-cols-5">
+    <dl className="grid grid-cols-2 overflow-hidden rounded-2xl border border-border/80 @min-[640px]:grid-cols-5">
       {metrics.map((metric, index) => (
         <UsageMetric index={index} key={metric.label} label={metric.label} value={metric.value} />
       ))}
@@ -141,7 +153,9 @@ function UsageMetric({ index, label, value }: { index: number; label: string; va
   return (
     <div
       className={`relative flex min-h-[60px] flex-col items-center justify-center px-3 text-center ${
-        index > 0 ? 'border-border/70 border-t @min-[640px]:border-t-0' : ''
+        index >= 2 ? 'border-border/70 border-t @min-[640px]:border-t-0' : ''
+      } ${index % 2 === 1 ? 'border-border/70 border-l @min-[640px]:border-l-0' : ''} ${
+        index === 4 ? 'col-span-2 @min-[640px]:col-span-1' : ''
       }`}
     >
       {index > 0 ? (
@@ -160,49 +174,118 @@ function DailyTokenHeatmap({ data }: { data: UsageInsightsData }) {
   const { i18n, t } = useTranslation('settings')
   const slots = useMemo(() => buildHeatmapSlots(data), [data])
   const weekCount = Math.max(1, Math.ceil(slots.length / 7))
+  const initialActiveIndex = latestActivityIndex(data.daily)
+  const [activeIndex, setActiveIndex] = useState(initialActiveIndex)
+  const safeActiveIndex = Math.min(activeIndex, Math.max(0, data.daily.length - 1))
+  const activeEntry = data.daily[safeActiveIndex]
+  const entryIndexByDate = useMemo(
+    () => new Map(data.daily.map((entry, index) => [entry.date, index])),
+    [data.daily],
+  )
+  const gridColumns = `repeat(${weekCount}, minmax(10px, 1fr))`
+  const minGridWidth = weekCount * 10 + Math.max(0, weekCount - 1) * 3
+
+  if (!data.daily.some((entry) => entry.tokens > 0)) {
+    return <EmptyChartState />
+  }
 
   return (
     <div className="overflow-x-auto pb-1">
-      <div className="min-w-max">
+      <div className="w-full" style={{ minWidth: `${minGridWidth}px` }}>
+        <input
+          aria-label={t('models.usageInsights.views.daily')}
+          aria-valuetext={
+            activeEntry
+              ? t('models.usageInsights.dailyPoint', {
+                  date: activeEntry.date,
+                  tokens: formatTokenCount(t, activeEntry.tokens),
+                })
+              : undefined
+          }
+          className="peer sr-only"
+          data-testid="usage-heatmap-control"
+          max={Math.max(0, data.daily.length - 1)}
+          min={0}
+          onChange={(event) => setActiveIndex(Number(event.currentTarget.value))}
+          type="range"
+          value={safeActiveIndex}
+        />
         <div
-          className="grid grid-flow-col grid-rows-7 gap-[3px]"
-          style={{ gridTemplateColumns: `repeat(${weekCount}, 0.6875rem)` }}
+          aria-hidden="true"
+          className="grid grid-flow-col grid-rows-7 gap-[3px] rounded-sm outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-surface"
+          data-testid="usage-heatmap-grid"
+          style={{ gridTemplateColumns: gridColumns }}
         >
-          {slots.map((slot) =>
-            slot.entry ? (
-              <button
-                aria-label={t('models.usageInsights.dailyPoint', {
-                  date: slot.date,
-                  tokens: formatTokenCount(t, slot.entry.tokens),
-                })}
-                className={`size-[11px] rounded-[3px] ${HEAT_CLASSES[slot.entry.level]}`}
+          {slots.map((slot) => {
+            if (!slot.entry) {
+              return (
+                <span
+                  aria-hidden="true"
+                  className="aspect-square w-full rounded-[3px]"
+                  key={slot.date}
+                />
+              )
+            }
+            const entryIndex = entryIndexByDate.get(slot.date) ?? 0
+            const label = t('models.usageInsights.dailyPoint', {
+              date: slot.date,
+              tokens: formatTokenCount(t, slot.entry.tokens),
+            })
+            const isActive = entryIndex === safeActiveIndex
+            return (
+              <span
+                aria-hidden="true"
+                className={`aspect-square w-full rounded-[3px] transition-[outline-color,transform] duration-100 ${HEAT_CLASSES[slot.entry.level]} ${
+                  isActive ? 'outline-2 outline-offset-1 outline-ring' : 'outline-transparent'
+                }`}
+                data-active={isActive}
                 data-level={slot.entry.level}
                 data-testid={`usage-day-${slot.date}`}
                 key={slot.date}
-                title={t('models.usageInsights.dailyPoint', {
-                  date: slot.date,
-                  tokens: formatTokenCount(t, slot.entry.tokens),
-                })}
-                type="button"
+                onMouseEnter={() => setActiveIndex(entryIndex)}
+                title={label}
               />
-            ) : (
-              <span aria-hidden="true" className="size-[11px]" key={slot.date} />
-            ),
-          )}
+            )
+          })}
         </div>
         <div
           className="mt-2.5 grid gap-[3px] text-muted-foreground text-xs"
-          style={{ gridTemplateColumns: `repeat(${weekCount}, 0.6875rem)` }}
+          style={{ gridTemplateColumns: gridColumns }}
         >
           {data.monthLabels.map((label) => (
             <span
-              className="min-w-8 whitespace-nowrap"
+              className="whitespace-nowrap"
+              data-testid="usage-month-label"
               key={`${label.date}-${label.label}`}
-              style={{ gridColumn: `${monthLabelColumn(slots[0]?.date, label.date)} / span 4` }}
+              style={{
+                gridColumnStart: monthLabelColumn(slots[0]?.date, label.date),
+                gridRow: '1',
+              }}
             >
               {formatMonthLabel(label.date, i18n.language)}
             </span>
           ))}
+        </div>
+        <div className="mt-3 flex min-h-5 items-center justify-between gap-4 text-xs">
+          <output className="truncate text-muted-foreground">
+            {activeEntry
+              ? t('models.usageInsights.dailyPoint', {
+                  date: activeEntry.date,
+                  tokens: formatTokenCount(t, activeEntry.tokens),
+                })
+              : null}
+          </output>
+          <div className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
+            <span>{t('models.usageInsights.legendLess')}</span>
+            {HEAT_CLASSES.map((heatClass) => (
+              <span
+                aria-hidden="true"
+                className={`size-2.5 rounded-[3px] ${heatClass}`}
+                key={heatClass}
+              />
+            ))}
+            <span>{t('models.usageInsights.legendMore')}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -210,106 +293,194 @@ function DailyTokenHeatmap({ data }: { data: UsageInsightsData }) {
 }
 
 function WeeklyTokenChart({ data }: { data: UsageInsightsData }) {
-  const { t } = useTranslation('settings')
-  const maxTokens = Math.max(1, ...data.weekly.map((week) => week.tokens))
+  const { i18n, t } = useTranslation('settings')
+
+  if (!data.weekly.some((week) => week.tokens > 0)) {
+    return <EmptyChartState />
+  }
 
   return (
-    <div className="overflow-x-auto pb-1">
-      <div className="flex h-48 min-w-[680px] items-end gap-2 border-border border-b px-1">
-        {data.weekly.map((week) => {
-          const height = `${Math.max(2, (week.tokens / maxTokens) * 100)}%`
-          const label = t('models.usageInsights.weeklyPoint', {
+    <figure
+      aria-label={t('models.usageInsights.charts.weeklyLabel')}
+      data-testid="weekly-token-chart"
+    >
+      <AccessibleChartData
+        labels={data.weekly.map((week) => ({
+          label: t('models.usageInsights.weeklyPoint', {
             start: week.weekStart,
             end: week.weekEnd,
             tokens: formatTokenCount(t, week.tokens),
-          })
-          return (
-            <div className="flex min-w-3 flex-1 items-end" key={week.weekStart}>
-              <div
-                aria-label={label}
-                className="w-full rounded-t-[3px] bg-info/80 transition-colors hover:bg-info"
-                role="img"
-                style={{ height }}
-                title={label}
-              />
-            </div>
-          )
-        })}
-      </div>
-    </div>
+          }),
+          value: week.tokens,
+        }))}
+      />
+      <ResponsiveContainer
+        className="h-48"
+        height={192}
+        initialDimension={{ width: 720, height: 192 }}
+        minWidth={0}
+        width="100%"
+      >
+        <BarChart accessibilityLayer data={data.weekly} margin={CHART_MARGIN}>
+          <CartesianGrid stroke="var(--border)" strokeOpacity={0.7} vertical={false} />
+          <XAxis
+            axisLine={false}
+            dataKey="weekStart"
+            minTickGap={36}
+            tick={AXIS_TICK}
+            tickFormatter={(date) => formatAxisDate(String(date), i18n.language)}
+            tickLine={false}
+          />
+          <YAxis
+            axisLine={false}
+            tick={AXIS_TICK}
+            tickFormatter={(value) => formatCompactNumber(Number(value), i18n.language)}
+            tickLine={false}
+            width={48}
+          />
+          <RechartsTooltip
+            content={<UsageChartTooltip mode="weekly" />}
+            cursor={{ fill: 'var(--muted)', fillOpacity: 0.6 }}
+          />
+          <Bar
+            dataKey="tokens"
+            fill="var(--info)"
+            isAnimationActive={false}
+            maxBarSize={10}
+            radius={[3, 3, 0, 0]}
+          />
+        </BarChart>
+      </ResponsiveContainer>
+    </figure>
   )
 }
 
 function CumulativeTokenChart({ data }: { data: UsageInsightsData }) {
-  const { t } = useTranslation('settings')
-  const width = 720
-  const height = 180
-  const padding = 18
-  const maxTokens = Math.max(1, ...data.cumulative.map((point) => point.tokens))
-  const points = data.cumulative.map((point, index) => {
-    const x =
-      padding +
-      (data.cumulative.length <= 1
-        ? 0
-        : (index / (data.cumulative.length - 1)) * (width - padding * 2))
-    const y = height - padding - (point.tokens / maxTokens) * (height - padding * 2)
-    return { ...point, x, y }
-  })
-  const path = points.map((point) => `${round(point.x)},${round(point.y)}`).join(' ')
+  const { i18n, t } = useTranslation('settings')
+
+  if (!data.cumulative.some((point) => point.tokens > 0)) {
+    return <EmptyChartState />
+  }
 
   return (
-    <div className="overflow-x-auto pb-1">
-      <div className="relative min-w-[720px]">
-        <svg aria-hidden="true" className="h-48 w-[720px]" viewBox={`0 0 ${width} ${height}`}>
-          <line
-            stroke="hsl(var(--border))"
-            strokeWidth="1"
-            x1={padding}
-            x2={width - padding}
-            y1={height - padding}
-            y2={height - padding}
+    <figure
+      aria-label={t('models.usageInsights.charts.cumulativeLabel')}
+      data-testid="cumulative-token-chart"
+    >
+      <AccessibleChartData
+        labels={data.cumulative.map((point) => ({
+          label: t('models.usageInsights.cumulativePoint', {
+            date: point.date,
+            tokens: formatTokenCount(t, point.tokens),
+          }),
+          value: point.tokens,
+        }))}
+      />
+      <ResponsiveContainer
+        className="h-48"
+        height={192}
+        initialDimension={{ width: 720, height: 192 }}
+        minWidth={0}
+        width="100%"
+      >
+        <AreaChart accessibilityLayer data={data.cumulative} margin={CHART_MARGIN}>
+          <CartesianGrid stroke="var(--border)" strokeOpacity={0.7} vertical={false} />
+          <XAxis
+            axisLine={false}
+            dataKey="date"
+            minTickGap={44}
+            tick={AXIS_TICK}
+            tickFormatter={(date) => formatAxisDate(String(date), i18n.language)}
+            tickLine={false}
           />
-          <polyline
-            fill="none"
-            points={path}
-            stroke="hsl(var(--info))"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="2.5"
+          <YAxis
+            axisLine={false}
+            tick={AXIS_TICK}
+            tickFormatter={(value) => formatCompactNumber(Number(value), i18n.language)}
+            tickLine={false}
+            width={48}
           />
-          {points.map((point) => (
-            <circle
-              cx={point.x}
-              cy={point.y}
-              fill="hsl(var(--surface))"
-              key={point.date}
-              r="3"
-              stroke="hsl(var(--info))"
-              strokeWidth="2"
-            />
-          ))}
-        </svg>
-        <div className="absolute inset-0 h-48 w-[720px]">
-          {points.map((point) => (
-            <button
-              aria-label={t('models.usageInsights.cumulativePoint', {
-                date: point.date,
-                tokens: formatTokenCount(t, point.tokens),
-              })}
-              className="absolute size-4 -translate-x-1/2 -translate-y-1/2 rounded-full outline-none transition-[background-color,box-shadow] duration-150 hover:bg-info/20 focus-visible:bg-info/20 focus-visible:ring-2 focus-visible:ring-ring"
-              key={point.date}
-              style={{ left: `${point.x}px`, top: `${point.y}px` }}
-              title={t('models.usageInsights.cumulativePoint', {
-                date: point.date,
-                tokens: formatTokenCount(t, point.tokens),
-              })}
-              type="button"
-            />
-          ))}
-        </div>
-      </div>
+          <RechartsTooltip content={<UsageChartTooltip mode="cumulative" />} />
+          <Area
+            activeDot={{ fill: 'var(--surface)', r: 4, stroke: 'var(--info)', strokeWidth: 2 }}
+            dataKey="tokens"
+            dot={false}
+            fill="var(--info)"
+            fillOpacity={0.14}
+            isAnimationActive={false}
+            stroke="var(--info)"
+            strokeWidth={2.5}
+            type="monotone"
+          />
+        </AreaChart>
+      </ResponsiveContainer>
+    </figure>
+  )
+}
+
+const CHART_MARGIN = { top: 8, right: 8, bottom: 0, left: 0 }
+const AXIS_TICK = { fill: 'var(--muted-foreground)', fontSize: 11 }
+
+function AccessibleChartData({ labels }: { labels: { label: string; value: number }[] }) {
+  return (
+    <ul className="sr-only">
+      {labels.map((item) => (
+        <li data-token-value={item.value} key={item.label}>
+          {item.label}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function UsageChartTooltip({
+  active,
+  mode,
+  payload,
+}: Partial<TooltipContentProps<number, string>> & { mode: 'weekly' | 'cumulative' }) {
+  const { t } = useTranslation('settings')
+  const datum = payload?.[0]?.payload as
+    | UsageInsightsData['weekly'][number]
+    | UsageInsightsData['cumulative'][number]
+    | undefined
+  if (!active || !datum) {
+    return null
+  }
+  const label =
+    mode === 'weekly' && 'weekStart' in datum
+      ? t('models.usageInsights.weeklyPoint', {
+          start: datum.weekStart,
+          end: datum.weekEnd,
+          tokens: formatTokenCount(t, datum.tokens),
+        })
+      : t('models.usageInsights.cumulativePoint', {
+          date: 'date' in datum ? datum.date : '',
+          tokens: formatTokenCount(t, datum.tokens),
+        })
+
+  return (
+    <div className="rounded-md border border-border bg-surface px-3 py-2 text-foreground text-xs shadow-md">
+      {label}
     </div>
   )
+}
+
+function EmptyChartState() {
+  const { t } = useTranslation('settings')
+  return (
+    <div className="flex h-48 items-center justify-center border-border border-b text-muted-foreground text-sm">
+      {t('models.usageInsights.empty')}
+    </div>
+  )
+}
+
+function latestActivityIndex(daily: UsageInsightsData['daily']): number {
+  for (let index = daily.length - 1; index >= 0; index -= 1) {
+    if (daily[index].tokens > 0) {
+      return index
+    }
+  }
+  return 0
 }
 
 function buildHeatmapSlots(data: UsageInsightsData) {
@@ -353,9 +524,18 @@ function formatLocalDateUtcMs(utcMs: number): string {
 }
 
 function formatMonthLabel(date: string, locale: string): string {
-  return new Intl.DateTimeFormat(locale, { month: 'short', timeZone: 'UTC' }).format(
-    new Date(`${date}T00:00:00Z`),
-  )
+  return new Intl.DateTimeFormat(locale, {
+    month: 'short',
+    timeZone: 'UTC',
+  }).format(new Date(`${date}T00:00:00Z`))
+}
+
+function formatAxisDate(date: string, locale: string): string {
+  return new Intl.DateTimeFormat(locale, {
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'UTC',
+  }).format(new Date(`${date}T00:00:00Z`))
 }
 
 function formatTokenCount(
@@ -396,8 +576,4 @@ function formatDuration(
   ]
     .filter(Boolean)
     .join(' ')
-}
-
-function round(value: number): number {
-  return Math.round(value * 10) / 10
 }

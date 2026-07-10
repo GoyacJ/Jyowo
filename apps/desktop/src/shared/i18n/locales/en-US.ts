@@ -662,6 +662,13 @@ export const enUS = {
         dailyPoint: '{{date}} · {{tokens}}',
         weeklyPoint: '{{start}} to {{end}} · {{tokens}}',
         cumulativePoint: '{{date}} · {{tokens}} cumulative',
+        empty: 'No Token activity yet',
+        legendLess: 'Less',
+        legendMore: 'More',
+        charts: {
+          weeklyLabel: 'Weekly Token chart',
+          cumulativeLabel: 'Cumulative Token chart',
+        },
         views: {
           label: 'Token activity views',
           daily: 'Daily',
@@ -670,7 +677,7 @@ export const enUS = {
         },
         metrics: {
           totalTokens: 'Total tokens',
-          peakDayTokens: 'Peak day',
+          peakDayTokens: 'Peak daily tokens',
           longestTaskDuration: 'Longest task',
           currentStreak: 'Current streak',
           longestStreak: 'Longest streak',
