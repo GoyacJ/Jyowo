@@ -90,6 +90,17 @@ pub enum CapabilityRouteKind {
     TextToSpeech,
     SpeechToText,
     MusicGeneration,
+    EmbeddingGeneration,
+    Moderation,
+    FileManagement,
+    VectorStoreManagement,
+    BatchJob,
+    FineTuningJob,
+    EvalRun,
+    ContainerSession,
+    RealtimeSession,
+    AdminOperation,
+    WebhookVerification,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -165,6 +176,18 @@ pub enum ProviderServiceCategory {
     Music,
     File,
     Model,
+    Embedding,
+    Moderation,
+    VectorStore,
+    Batch,
+    FineTuning,
+    Eval,
+    Grader,
+    Container,
+    Upload,
+    Realtime,
+    Admin,
+    Webhook,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]

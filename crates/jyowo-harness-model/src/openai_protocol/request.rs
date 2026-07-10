@@ -639,6 +639,38 @@ pub(super) fn apply_openai_responses_options(
     options: &OpenAiResponsesOptions,
 ) -> Vec<&'static str> {
     let mut keys = Vec::new();
+    if let Some(background) = options.background {
+        body["background"] = Value::Bool(background);
+        keys.push("background");
+    }
+    if let Some(conversation) = &options.conversation {
+        body["conversation"] = conversation.clone();
+        keys.push("conversation");
+    }
+    if !options.include.is_empty() {
+        body["include"] = json!(options.include);
+        keys.push("include");
+    }
+    if let Some(instructions) = &options.instructions {
+        body["instructions"] = json!(instructions);
+        keys.push("instructions");
+    }
+    if let Some(max_tool_calls) = options.max_tool_calls {
+        body["max_tool_calls"] = json!(max_tool_calls);
+        keys.push("max_tool_calls");
+    }
+    if let Some(prompt) = &options.prompt {
+        body["prompt"] = prompt.clone();
+        keys.push("prompt");
+    }
+    if let Some(prompt_cache_key) = &options.prompt_cache_key {
+        body["prompt_cache_key"] = json!(prompt_cache_key);
+        keys.push("prompt_cache_key");
+    }
+    if let Some(prompt_cache_retention) = &options.prompt_cache_retention {
+        body["prompt_cache_retention"] = json!(prompt_cache_retention);
+        keys.push("prompt_cache_retention");
+    }
     if let Some(reasoning) = &options.reasoning {
         let mut value = Map::new();
         if let Some(effort) = &reasoning.effort {
@@ -647,8 +679,19 @@ pub(super) fn apply_openai_responses_options(
         if let Some(summary) = &reasoning.summary {
             value.insert("summary".to_owned(), json!(summary));
         }
+        if let Some(context) = &reasoning.context {
+            value.insert("context".to_owned(), json!(context));
+        }
         body["reasoning"] = Value::Object(value);
         keys.push("reasoning");
+    }
+    if let Some(safety_identifier) = &options.safety_identifier {
+        body["safety_identifier"] = json!(safety_identifier);
+        keys.push("safety_identifier");
+    }
+    if let Some(service_tier) = &options.service_tier {
+        body["service_tier"] = json!(service_tier);
+        keys.push("service_tier");
     }
     if let Some(text) = &options.text {
         let mut value = Map::new();
@@ -660,6 +703,14 @@ pub(super) fn apply_openai_responses_options(
         }
         body["text"] = Value::Object(value);
         keys.push("text");
+    }
+    if let Some(top_logprobs) = options.top_logprobs {
+        body["top_logprobs"] = json!(top_logprobs);
+        keys.push("top_logprobs");
+    }
+    if let Some(top_p) = &options.top_p {
+        body["top_p"] = top_p.clone();
+        keys.push("top_p");
     }
     if let Some(tool_choice) = &options.tool_choice {
         body["tool_choice"] = tool_choice.clone();
@@ -680,6 +731,10 @@ pub(super) fn apply_openai_responses_options(
     if let Some(metadata) = &options.metadata {
         body["metadata"] = json!(metadata);
         keys.push("metadata");
+    }
+    if let Some(user) = &options.user {
+        body["user"] = json!(user);
+        keys.push("user");
     }
     keys
 }

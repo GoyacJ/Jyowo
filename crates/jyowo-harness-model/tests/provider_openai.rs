@@ -9,9 +9,9 @@ use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
     BudgetMetric, DeferPolicy, Message, MessageId, MessagePart, MessageRole, ModelError,
-    OpenAiResponsesOptions, OpenAiTextFormat, OpenAiTextOptions, OverflowAction,
-    ProviderRestriction, ResultBudget, StopReason, ToolDescriptor, ToolGroup, ToolOrigin,
-    ToolProperties, TrustLevel, UsageSnapshot,
+    OpenAiReasoningOptions, OpenAiResponsesOptions, OpenAiTextFormat, OpenAiTextOptions,
+    OverflowAction, ProviderRestriction, ResultBudget, StopReason, ToolDescriptor, ToolGroup,
+    ToolOrigin, ToolProperties, TrustLevel, UsageSnapshot,
 };
 use harness_model::{openai::OpenAiProvider, *};
 use serde_json::{json, Value};
@@ -119,22 +119,30 @@ impl InferMiddleware for HeaderCaptureMiddleware {
 #[test]
 fn openai_provider_metadata_is_stable() {
     let provider = OpenAiProvider::from_api_key("test-key");
+    let models = provider.supported_models();
 
     assert_eq!(provider.provider_id(), "openai");
     assert_eq!(
         provider.prompt_cache_style(),
         PromptCacheStyle::OpenAi { auto: true }
     );
-    assert!(provider
-        .supported_models()
-        .iter()
-        .any(|model| model.model_id == "gpt-5.4-mini"
+    assert!(models.iter().any(|model| model.model_id == "gpt-5.4-mini"
             && model.conversation_capability.tool_calling
             && model.conversation_capability.reasoning
             && model
                 .conversation_capability
                 .input_modalities
                 .contains(&ModelModality::File)));
+    let pro = models
+        .iter()
+        .find(|model| model.model_id == "gpt-5.5-pro")
+        .expect("gpt-5.5-pro should be catalogued");
+    assert!(!pro.conversation_capability.streaming);
+    let gpt54_pro = models
+        .iter()
+        .find(|model| model.model_id == "gpt-5.4-pro")
+        .expect("gpt-5.4-pro should be catalogued");
+    assert!(!gpt54_pro.conversation_capability.structured_output);
     assert_eq!(provider.default_protocol(), ModelProtocol::Responses);
 }
 
@@ -286,6 +294,80 @@ async fn openai_responses_options_use_official_text_format_shape() {
         })
     );
     assert!(body["text"]["format"].get("json_schema").is_none());
+}
+
+#[tokio::test]
+async fn openai_responses_options_cover_current_official_request_fields() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "resp_1",
+            "output": [{
+                "type": "message",
+                "id": "msg_1",
+                "content": [{ "type": "output_text", "text": "ok" }]
+            }],
+            "usage": {}
+        })))
+        .mount(&server)
+        .await;
+
+    let mut req = request(false);
+    req.options.openai_responses = Some(OpenAiResponsesOptions {
+        background: Some(true),
+        conversation: Some(json!("conv_123")),
+        include: vec![
+            "message.output_text.logprobs".to_owned(),
+            "reasoning.encrypted_content".to_owned(),
+        ],
+        instructions: Some("Prefer terse answers.".to_owned()),
+        max_tool_calls: Some(4),
+        prompt: Some(json!({
+            "id": "pmpt_123",
+            "version": "2"
+        })),
+        prompt_cache_key: Some("tenant:stable-prefix".to_owned()),
+        prompt_cache_retention: Some("24h".to_owned()),
+        reasoning: Some(OpenAiReasoningOptions {
+            effort: Some("medium".to_owned()),
+            summary: Some("auto".to_owned()),
+            context: Some("auto".to_owned()),
+        }),
+        safety_identifier: Some("user_123".to_owned()),
+        service_tier: Some("auto".to_owned()),
+        top_logprobs: Some(2),
+        top_p: Some(json!(0.9)),
+        user: Some("end-user-123".to_owned()),
+        ..OpenAiResponsesOptions::default()
+    });
+
+    provider(&server)
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["background"], true);
+    assert_eq!(body["conversation"], "conv_123");
+    assert_eq!(
+        body["include"],
+        json!(["message.output_text.logprobs", "reasoning.encrypted_content"])
+    );
+    assert_eq!(body["instructions"], "Prefer terse answers.");
+    assert_eq!(body["max_tool_calls"], 4);
+    assert_eq!(body["prompt"]["id"], "pmpt_123");
+    assert_eq!(body["prompt_cache_key"], "tenant:stable-prefix");
+    assert_eq!(body["prompt_cache_retention"], "24h");
+    assert_eq!(body["reasoning"]["context"], "auto");
+    assert_eq!(body["safety_identifier"], "user_123");
+    assert_eq!(body["service_tier"], "auto");
+    assert_eq!(body["top_logprobs"], 2);
+    assert_eq!(body["top_p"], 0.9);
+    assert_eq!(body["user"], "end-user-123");
 }
 
 #[tokio::test]

@@ -24,9 +24,33 @@ impl ModelRequestOptions {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct OpenAiResponsesOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_retention: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<OpenAiReasoningOptions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safety_identifier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<OpenAiTextOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_logprobs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -37,6 +61,8 @@ pub struct OpenAiResponsesOptions {
     pub store: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub strict_tool_schemas: bool,
 }
@@ -48,6 +74,8 @@ pub struct OpenAiReasoningOptions {
     pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -118,6 +118,64 @@ describe('ModelConfigDialog', () => {
     })
   })
 
+  it('saves OpenAI Responses options as typed model options', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: existingProfile,
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: {
+        ...existingProfile,
+        modelOptions: {
+          openaiResponses: {
+            reasoning: { effort: 'medium', summary: 'auto' },
+            serviceTier: 'auto',
+            text: { verbosity: 'low' },
+            store: true,
+          },
+        },
+      },
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    expect(within(dialog).getByLabelText('OpenAI reasoning effort')).toHaveValue('medium')
+    expect(within(dialog).getByLabelText('OpenAI reasoning summary')).toHaveValue('auto')
+    expect(within(dialog).getByLabelText('OpenAI text verbosity')).toHaveValue('low')
+    expect(within(dialog).getByLabelText('OpenAI service tier')).toHaveValue('auto')
+    expect(within(dialog).getByLabelText('OpenAI store response')).toBeChecked()
+
+    fireEvent.change(within(dialog).getByLabelText('OpenAI prompt cache key'), {
+      target: { value: 'tenant:stable-prefix' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('OpenAI prompt cache retention'), {
+      target: { value: '24h' },
+    })
+    fireEvent.click(within(dialog).getByLabelText('OpenAI parallel tool calls'))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      configId: 'cfg-openai',
+      providerId: 'openai',
+      modelOptions: {
+        openaiResponses: {
+          reasoning: { effort: 'medium', summary: 'auto' },
+          serviceTier: 'auto',
+          text: { verbosity: 'low' },
+          promptCacheKey: 'tenant:stable-prefix',
+          promptCacheRetention: '24h',
+          parallelToolCalls: true,
+          store: true,
+        },
+      },
+    })
+    expect(saveProviderSettings.mock.calls[0][0]).not.toHaveProperty('providerDefaults')
+  })
+
   it('saves a new official quota admin key only when typed', async () => {
     const saveProviderSettings = vi.fn().mockResolvedValue({
       config: {

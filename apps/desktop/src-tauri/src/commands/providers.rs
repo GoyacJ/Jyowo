@@ -1210,6 +1210,18 @@ pub(crate) fn provider_service_category_payload(category: ProviderServiceCategor
         ProviderServiceCategory::Music => "music",
         ProviderServiceCategory::File => "file",
         ProviderServiceCategory::Model => "model",
+        ProviderServiceCategory::Embedding => "embedding",
+        ProviderServiceCategory::Moderation => "moderation",
+        ProviderServiceCategory::VectorStore => "vector_store",
+        ProviderServiceCategory::Batch => "batch",
+        ProviderServiceCategory::FineTuning => "fine_tuning",
+        ProviderServiceCategory::Eval => "eval",
+        ProviderServiceCategory::Grader => "grader",
+        ProviderServiceCategory::Container => "container",
+        ProviderServiceCategory::Upload => "upload",
+        ProviderServiceCategory::Realtime => "realtime",
+        ProviderServiceCategory::Admin => "admin",
+        ProviderServiceCategory::Webhook => "webhook",
     }
 }
 
@@ -1790,6 +1802,17 @@ pub(crate) fn route_kind_for_service_capability(
         "image" => Some(CapabilityRouteKind::ImageGeneration),
         "video" => Some(CapabilityRouteKind::VideoGeneration),
         "music" => Some(CapabilityRouteKind::MusicGeneration),
+        "embedding" => Some(CapabilityRouteKind::EmbeddingGeneration),
+        "moderation" => Some(CapabilityRouteKind::Moderation),
+        "file" | "upload" => Some(CapabilityRouteKind::FileManagement),
+        "vector_store" => Some(CapabilityRouteKind::VectorStoreManagement),
+        "batch" => Some(CapabilityRouteKind::BatchJob),
+        "fine_tuning" => Some(CapabilityRouteKind::FineTuningJob),
+        "eval" | "grader" => Some(CapabilityRouteKind::EvalRun),
+        "container" => Some(CapabilityRouteKind::ContainerSession),
+        "realtime" => Some(CapabilityRouteKind::RealtimeSession),
+        "admin" => Some(CapabilityRouteKind::AdminOperation),
+        "webhook" => Some(CapabilityRouteKind::WebhookVerification),
         "audio" if operation_id_is_speech_to_text(&capability.operation_id) => {
             Some(CapabilityRouteKind::SpeechToText)
         }
@@ -2874,7 +2897,16 @@ pub(crate) fn validate_provider_defaults(
                 "providerDefaults.body must be an object".to_owned(),
             ));
         };
-        for forbidden in ["model", "messages", "input", "contents", "stream"] {
+        for forbidden in [
+            "model",
+            "messages",
+            "input",
+            "contents",
+            "stream",
+            "tools",
+            "max_output_tokens",
+            "previous_response_id",
+        ] {
             if object.contains_key(forbidden) {
                 return Err(invalid_payload(format!(
                     "providerDefaults.body must not include core field {forbidden}"
@@ -3001,15 +3033,26 @@ fn provider_default_body_fields(provider_id: &str) -> &'static [&'static str] {
             "search_options",
         ],
         "codex" | "openai" => &[
+            "background",
+            "conversation",
+            "include",
+            "instructions",
+            "max_tool_calls",
+            "prompt",
+            "prompt_cache_key",
+            "prompt_cache_retention",
             "reasoning",
-            "text",
-            "metadata",
+            "safety_identifier",
             "service_tier",
+            "text",
+            "top_logprobs",
+            "top_p",
+            "metadata",
             "store",
             "truncation",
             "parallel_tool_calls",
             "tool_choice",
-            "response_format",
+            "user",
         ],
         _ => &[
             "temperature",

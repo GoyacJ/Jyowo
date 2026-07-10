@@ -1721,7 +1721,27 @@ const providerRuntimeCapabilitySchema = z
 const providerServiceCapabilitySchema = z
   .object({
     operationId: z.string().min(1),
-    category: z.enum(['conversation', 'image', 'video', 'audio', 'music', 'file', 'model']),
+    category: z.enum([
+      'conversation',
+      'image',
+      'video',
+      'audio',
+      'music',
+      'file',
+      'model',
+      'embedding',
+      'moderation',
+      'vector_store',
+      'batch',
+      'fine_tuning',
+      'eval',
+      'grader',
+      'container',
+      'upload',
+      'realtime',
+      'admin',
+      'webhook',
+    ]),
     inputModalities: z.array(modelModalitySchema),
     outputArtifact: z.enum(['text', 'image', 'audio', 'video', 'file', 'embedding']),
     execution: z.enum(['sync', 'async_job', 'websocket']),
@@ -1749,13 +1769,24 @@ const openAiTextFormatSchema = z
 
 const openAiResponsesOptionsSchema = z
   .object({
+    background: z.boolean().optional(),
+    conversation: z.unknown().optional(),
+    include: z.array(z.string().min(1)).optional(),
+    instructions: z.string().min(1).optional(),
+    maxToolCalls: z.number().int().positive().optional(),
+    prompt: z.unknown().optional(),
+    promptCacheKey: z.string().min(1).optional(),
+    promptCacheRetention: z.string().min(1).optional(),
     reasoning: z
       .object({
         effort: z.string().min(1).optional(),
         summary: z.string().min(1).optional(),
+        context: z.string().min(1).optional(),
       })
       .strict()
       .optional(),
+    safetyIdentifier: z.string().min(1).optional(),
+    serviceTier: z.string().min(1).optional(),
     text: z
       .object({
         verbosity: z.string().min(1).optional(),
@@ -1763,11 +1794,14 @@ const openAiResponsesOptionsSchema = z
       })
       .strict()
       .optional(),
+    topLogprobs: z.number().int().nonnegative().optional(),
+    topP: z.unknown().optional(),
     toolChoice: z.unknown().optional(),
     parallelToolCalls: z.boolean().optional(),
     truncation: z.string().min(1).optional(),
     store: z.boolean().optional(),
     metadata: z.record(z.string(), z.string()).optional(),
+    user: z.string().min(1).optional(),
     strictToolSchemas: z.boolean().optional(),
   })
   .strict()
@@ -2467,6 +2501,17 @@ const capabilityRouteKindSchema = z.enum([
   'text_to_speech',
   'speech_to_text',
   'music_generation',
+  'embedding_generation',
+  'moderation',
+  'file_management',
+  'vector_store_management',
+  'batch_job',
+  'fine_tuning_job',
+  'eval_run',
+  'container_session',
+  'realtime_session',
+  'admin_operation',
+  'webhook_verification',
 ])
 
 const providerCapabilityRouteSchema = z
