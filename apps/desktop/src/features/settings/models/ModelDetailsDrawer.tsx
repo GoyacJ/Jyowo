@@ -196,7 +196,7 @@ export function ModelDetailsDrawer({
       setDefault: row.isDefault,
     }
     const providerUnchanged = providerId === row.providerId
-    if (providerId === 'qwen' && providerUnchanged) {
+    if ((providerId === 'qwen' || providerId === 'minimax') && providerUnchanged) {
       request.protocol = row.protocol
     }
     if (providerUnchanged && row.providerDefaults) {

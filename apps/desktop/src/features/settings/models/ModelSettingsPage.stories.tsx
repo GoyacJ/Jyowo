@@ -165,6 +165,7 @@ const modelCapability: ConversationModelCapability = {
 
 const gpt41 = {
   protocol: 'responses' as const,
+  supportedProtocols: ['responses' as const],
   supportedParameters: [],
   conversationCapability: modelCapability,
   contextWindow: 128000,
@@ -178,6 +179,7 @@ const gpt41 = {
 const claude = {
   ...gpt41,
   protocol: 'messages' as const,
+  supportedProtocols: ['messages' as const],
   displayName: 'Claude Sonnet',
   modelId: 'claude-sonnet',
 }

@@ -547,6 +547,7 @@ function DrawerWrapper({ children }: { children: ReactNode }) {
 
 const modelDescriptor = {
   protocol: 'responses',
+  supportedProtocols: ['responses'],
   supportedParameters: [],
   conversationCapability: {
     inputModalities: ['text'],
@@ -592,8 +593,10 @@ const catalog: ModelProviderCatalogResponse = {
       models: [
         {
           ...modelDescriptor,
+          protocol: 'messages',
           displayName: 'Claude Sonnet',
           modelId: 'claude-sonnet',
+          supportedProtocols: ['messages'],
         },
       ],
       runtimeCapability: {

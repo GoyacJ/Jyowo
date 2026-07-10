@@ -1274,6 +1274,34 @@ fn supported_parameters(spec: &ModelCatalogSpec) -> Vec<String> {
             "tool_choice",
             "response_format",
         ],
+        "minimax" if spec.protocol == ModelProtocol::Responses => &[
+            "input",
+            "instructions",
+            "max_output_tokens",
+            "metadata",
+            "prompt_cache_key",
+            "reasoning",
+            "service_tier",
+            "stream",
+            "temperature",
+            "text",
+            "tool_choice",
+            "tools",
+            "top_p",
+        ],
+        "minimax" if spec.protocol == ModelProtocol::ChatCompletions => &[
+            "max_completion_tokens",
+            "max_tokens",
+            "messages",
+            "reasoning_split",
+            "service_tier",
+            "stream",
+            "stream_options",
+            "temperature",
+            "thinking",
+            "tools",
+            "top_p",
+        ],
         _ if spec.protocol == ModelProtocol::ChatCompletions => &[
             "temperature",
             "top_p",
@@ -1304,6 +1332,9 @@ fn pricing(spec: &ModelCatalogSpec) -> Option<ModelPricing> {
     }
     if spec.provider_id == "anthropic" {
         return anthropic_pricing(spec);
+    }
+    if spec.provider_id == "minimax" {
+        return minimax_pricing(spec);
     }
     if spec.provider_id != "deepseek" {
         return None;
@@ -1339,6 +1370,67 @@ fn pricing(spec: &ModelCatalogSpec) -> Option<ModelPricing> {
         source: PricingSource::Hardcoded,
         billing_mode: BillingMode::Cached {
             cache_read_discount: discount,
+        },
+    })
+}
+
+fn minimax_pricing(spec: &ModelCatalogSpec) -> Option<ModelPricing> {
+    let (input_per_million, output_per_million, cache_creation_per_million, cache_read_per_million) =
+        match spec.model_id {
+            "MiniMax-M3" => (
+                Decimal::new(30, 2),
+                Decimal::new(120, 2),
+                None,
+                Some(Decimal::new(6, 2)),
+            ),
+            "MiniMax-M2.7" => (
+                Decimal::new(3, 1),
+                Decimal::new(12, 1),
+                Some(Decimal::new(375, 3)),
+                Some(Decimal::new(6, 2)),
+            ),
+            "MiniMax-M2.7-highspeed" => (
+                Decimal::new(6, 1),
+                Decimal::new(24, 1),
+                Some(Decimal::new(375, 3)),
+                Some(Decimal::new(6, 2)),
+            ),
+            "MiniMax-M2.5" | "MiniMax-M2.1" | "MiniMax-M2" => (
+                Decimal::new(3, 1),
+                Decimal::new(12, 1),
+                Some(Decimal::new(375, 3)),
+                Some(Decimal::new(3, 2)),
+            ),
+            "MiniMax-M2.5-highspeed" | "MiniMax-M2.1-highspeed" => (
+                Decimal::new(6, 1),
+                Decimal::new(24, 1),
+                Some(Decimal::new(375, 3)),
+                Some(Decimal::new(3, 2)),
+            ),
+            _ => return None,
+        };
+
+    Some(ModelPricing {
+        pricing_id: format!("minimax:{}:paygo-2026-07-09", spec.model_id),
+        pricing_version: 20260709,
+        currency: Currency::Usd,
+        input_per_million,
+        output_per_million,
+        cache_creation_per_million,
+        cache_read_per_million,
+        image_per_image: None,
+        last_updated: DateTime::parse_from_rfc3339("2026-07-09T00:00:00Z")
+            .expect("hardcoded MiniMax pricing timestamp should parse")
+            .with_timezone(&Utc),
+        source: PricingSource::Hardcoded,
+        billing_mode: if spec.model_id == "MiniMax-M3" {
+            BillingMode::Tiered {
+                thresholds: vec![(0, input_per_million), (512_001, Decimal::new(60, 2))],
+            }
+        } else {
+            BillingMode::Cached {
+                cache_read_discount: Ratio(0.2),
+            }
         },
     })
 }

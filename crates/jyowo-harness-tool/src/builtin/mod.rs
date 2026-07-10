@@ -83,15 +83,16 @@ pub use memory::{
 pub use minimax::{
     MiniMaxAnthropicCountTokensTool, MiniMaxAnthropicMessagesTool,
     MiniMaxAnthropicModelRetrieveTool, MiniMaxAnthropicModelsListTool, MiniMaxDeleteVoiceTool,
-    MiniMaxFileDeleteTool, MiniMaxFileListTool, MiniMaxFileRetrieveTool, MiniMaxFileUploadTool,
-    MiniMaxFirstLastFrameToVideoTool, MiniMaxImageToImageTool, MiniMaxImageToVideoTool,
-    MiniMaxListVoicesTool, MiniMaxLyricsGenerationTool, MiniMaxModelRetrieveTool,
-    MiniMaxModelsListTool, MiniMaxMusicCoverPreprocessTool, MiniMaxMusicGenerationTool,
-    MiniMaxResponsesInputTokensTool, MiniMaxResponsesTool, MiniMaxSubjectReferenceVideoTool,
+    MiniMaxFileDeleteTool, MiniMaxFileListTool, MiniMaxFileRetrieveContentTool,
+    MiniMaxFileRetrieveTool, MiniMaxFileUploadTool, MiniMaxFirstLastFrameToVideoTool,
+    MiniMaxImageToImageTool, MiniMaxImageToVideoTool, MiniMaxListVoicesTool,
+    MiniMaxLyricsGenerationTool, MiniMaxModelRetrieveTool, MiniMaxModelsListTool,
+    MiniMaxMusicCoverPreprocessTool, MiniMaxMusicGenerationTool, MiniMaxResponsesInputTokensTool,
+    MiniMaxResponsesTool, MiniMaxSubjectReferenceVideoTool, MiniMaxTextChatCompletionTool,
     MiniMaxTextToImageTool, MiniMaxTextToSpeechAsyncQueryTool, MiniMaxTextToSpeechAsyncTool,
-    MiniMaxTextToSpeechTool, MiniMaxTextToVideoTool, MiniMaxVideoGenerationQueryTool,
-    MiniMaxVideoTemplateQueryTool, MiniMaxVideoTemplateTool, MiniMaxVoiceCloneTool,
-    MiniMaxVoiceDesignTool,
+    MiniMaxTextToSpeechTool, MiniMaxTextToSpeechWsTool, MiniMaxTextToVideoTool,
+    MiniMaxVideoDownloadTool, MiniMaxVideoGenerationQueryTool, MiniMaxVideoTemplateQueryTool,
+    MiniMaxVideoTemplateTool, MiniMaxVoiceCloneTool, MiniMaxVoiceDesignTool,
 };
 #[cfg(feature = "builtin-toolset")]
 pub use process_monitor::{ProcessReadTool, ProcessStartTool, ProcessStopTool};

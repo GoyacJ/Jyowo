@@ -77,6 +77,7 @@ export const fixtureModelProviderCatalog: ModelProviderCatalogResponse = {
       models: [
         {
           protocol: 'responses',
+          supportedProtocols: ['responses'],
           supportedParameters: [],
           conversationCapability: {
             ...textCapability,
@@ -111,6 +112,7 @@ export const fixtureModelProviderCatalog: ModelProviderCatalogResponse = {
       models: [
         {
           protocol: 'messages',
+          supportedProtocols: ['messages'],
           supportedParameters: [],
           conversationCapability: textCapability,
           contextWindow: 128000,
@@ -149,6 +151,7 @@ export const fixtureProviderSettingsList: ListProviderSettingsResponse = {
       isDefault: true,
       modelDescriptor: {
         protocol: 'responses',
+        supportedProtocols: ['responses'],
         supportedParameters: [],
         conversationCapability: {
           ...textCapability,
@@ -182,6 +185,7 @@ export const fixtureSaveProviderSettings: SaveProviderSettingsResponse = {
     modelId: 'gpt-4o-mini',
     modelDescriptor: {
       protocol: 'responses',
+      supportedProtocols: ['responses'],
       supportedParameters: [],
       conversationCapability: {
         ...textCapability,

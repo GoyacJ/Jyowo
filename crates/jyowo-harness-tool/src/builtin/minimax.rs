@@ -19,12 +19,13 @@ use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
 use url::Url;
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-use crate::provider_minimax::{MinimaxApiClient, MinimaxProviderClientError};
+use crate::provider_minimax::{redact_secret, MinimaxApiClient, MinimaxProviderClientError};
 use crate::{
     action_plan_from_permission_check, AuthorizedNetworkPermit, AuthorizedToolInput, Tool,
-    ToolContext, ToolEvent, ToolNetworkBrokerCap, ToolStream, ValidationError,
+    ToolContext, ToolEvent, ToolNetworkBrokerCap, ToolStream, ToolWebSocketMessage,
+    ToolWebSocketRequest, ValidationError,
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.minimaxi.com";
@@ -736,6 +737,13 @@ minimax_tool!(
     responses_input_tokens
 );
 minimax_tool!(
+    MiniMaxTextChatCompletionTool,
+    "MiniMaxTextChatCompletion",
+    "MiniMax text chat completion",
+    "Call MiniMax native text chat completion endpoint.",
+    text_chat_completion
+);
+minimax_tool!(
     MiniMaxAnthropicMessagesTool,
     "MiniMaxAnthropicMessages",
     "MiniMax Anthropic messages",
@@ -817,14 +825,6 @@ impl Tool for MiniMaxFileUploadTool {
 }
 
 minimax_string_arg_tool!(
-    MiniMaxFileRetrieveTool,
-    "MiniMaxFileRetrieve",
-    "MiniMax file retrieve",
-    "Retrieve MiniMax file metadata.",
-    file_retrieve,
-    "file_id"
-);
-minimax_string_arg_tool!(
     MiniMaxFileDeleteTool,
     "MiniMaxFileDelete",
     "MiniMax file delete",
@@ -848,6 +848,235 @@ minimax_string_arg_tool!(
     retrieve_anthropic_model,
     "model_id"
 );
+
+#[derive(Clone)]
+pub struct MiniMaxFileRetrieveTool {
+    descriptor: ToolDescriptor,
+}
+
+impl Default for MiniMaxFileRetrieveTool {
+    fn default() -> Self {
+        Self {
+            descriptor: descriptor(
+                "MiniMaxFileRetrieve",
+                "MiniMax file retrieve",
+                "Retrieve MiniMax file metadata.",
+                None,
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for MiniMaxFileRetrieveTool {
+    fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    async fn validate(&self, input: &Value, _ctx: &ToolContext) -> Result<(), ValidationError> {
+        let request = request(input)?;
+        file_request(&request)?;
+        Ok(())
+    }
+
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        minimax_network_action_plan(input, ctx, &self.descriptor).await
+    }
+
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
+        let permit = authorized.network_permit()?;
+        let broker = ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
+        Ok(execute_request(
+            input,
+            ctx,
+            &self.descriptor,
+            permit,
+            broker,
+            |client, request| {
+                Box::pin(async move {
+                    let file = file_request(&request).map_err(validation_error)?;
+                    client
+                        .file_retrieve(file.group_id.as_deref(), &file.file_id)
+                        .await
+                        .map_err(provider_client_error)
+                })
+            },
+        ))
+    }
+}
+
+#[derive(Clone)]
+pub struct MiniMaxFileRetrieveContentTool {
+    descriptor: ToolDescriptor,
+}
+
+impl Default for MiniMaxFileRetrieveContentTool {
+    fn default() -> Self {
+        Self {
+            descriptor: file_descriptor(
+                "MiniMaxFileRetrieveContent",
+                "MiniMax file retrieve content",
+                "Retrieve MiniMax file binary content.",
+                None,
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for MiniMaxFileRetrieveContentTool {
+    fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    async fn validate(&self, input: &Value, _ctx: &ToolContext) -> Result<(), ValidationError> {
+        let request = request(input)?;
+        file_request(&request)?;
+        Ok(())
+    }
+
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        minimax_network_action_plan(input, ctx, &self.descriptor).await
+    }
+
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
+        let permit = authorized.network_permit()?;
+        let broker = ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
+        let descriptor = self.descriptor.clone();
+        Ok(Box::pin(stream::once(async move {
+            let result =
+                execute_file_retrieve_content(input, ctx, &descriptor, permit, broker).await;
+            match result {
+                Ok(result) => ToolEvent::Final(result),
+                Err(error) => ToolEvent::Error(error),
+            }
+        })))
+    }
+}
+
+#[derive(Clone)]
+pub struct MiniMaxVideoDownloadTool {
+    descriptor: ToolDescriptor,
+}
+
+impl Default for MiniMaxVideoDownloadTool {
+    fn default() -> Self {
+        Self {
+            descriptor: long_running_descriptor(media_descriptor(
+                "MiniMaxVideoDownload",
+                "MiniMax video download",
+                "Download a MiniMax generated video file.",
+                Some(service_binding(
+                    "minimax.video.download",
+                    CapabilityRouteKind::VideoGeneration,
+                    ModelModality::Video,
+                )),
+            )),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for MiniMaxVideoDownloadTool {
+    fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    async fn validate(&self, input: &Value, _ctx: &ToolContext) -> Result<(), ValidationError> {
+        let request = request(input)?;
+        file_request(&request)?;
+        Ok(())
+    }
+
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        minimax_network_action_plan(input, ctx, &self.descriptor).await
+    }
+
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
+        let permit = authorized.network_permit()?;
+        let broker = ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
+        let descriptor = self.descriptor.clone();
+        Ok(Box::pin(stream::once(async move {
+            let result = execute_video_download(input, ctx, &descriptor, permit, broker).await;
+            match result {
+                Ok(result) => ToolEvent::Final(result),
+                Err(error) => ToolEvent::Error(error),
+            }
+        })))
+    }
+}
+
+#[derive(Clone)]
+pub struct MiniMaxTextToSpeechWsTool {
+    descriptor: ToolDescriptor,
+}
+
+impl Default for MiniMaxTextToSpeechWsTool {
+    fn default() -> Self {
+        Self {
+            descriptor: long_running_descriptor(media_descriptor(
+                "MiniMaxTextToSpeechWs",
+                "MiniMax text to speech WebSocket",
+                "Generate streaming speech with MiniMax T2A WebSocket.",
+                Some(service_binding(
+                    "minimax.text_to_speech.websocket",
+                    CapabilityRouteKind::TextToSpeech,
+                    ModelModality::Audio,
+                )),
+            )),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for MiniMaxTextToSpeechWsTool {
+    fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    async fn validate(&self, input: &Value, _ctx: &ToolContext) -> Result<(), ValidationError> {
+        let request = request(input)?;
+        tts_ws_request(&request)?;
+        Ok(())
+    }
+
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        minimax_network_action_plan(input, ctx, &self.descriptor).await
+    }
+
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<ToolStream, ToolError> {
+        let input = authorized.raw_input().clone();
+        let permit = authorized.network_permit()?;
+        let broker = ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
+        let descriptor = self.descriptor.clone();
+        Ok(Box::pin(stream::once(async move {
+            let result = execute_tts_ws(input, ctx, &descriptor, permit, broker).await;
+            match result {
+                Ok(result) => ToolEvent::Final(result),
+                Err(error) => ToolEvent::Error(error),
+            }
+        })))
+    }
+}
 
 #[derive(Clone)]
 pub struct MiniMaxFileListTool {
@@ -898,9 +1127,20 @@ impl Tool for MiniMaxFileListTool {
             broker,
             |client, request| {
                 Box::pin(async move {
+                    let group_id = optional_group_id(&request).map_err(validation_error)?;
                     let purpose = optional_string(&request, "purpose").map_err(validation_error)?;
+                    let page = optional_u64(&request, "page").map_err(validation_error)?;
+                    let size = optional_u64(&request, "size").map_err(validation_error)?;
+                    let after_file_id =
+                        optional_string(&request, "after_file_id").map_err(validation_error)?;
                     client
-                        .file_list(purpose.as_deref())
+                        .file_list(
+                            group_id.as_deref(),
+                            purpose.as_deref(),
+                            page,
+                            size,
+                            after_file_id.as_deref(),
+                        )
                         .await
                         .map_err(provider_client_error)
                 })
@@ -1025,6 +1265,133 @@ impl Tool for MiniMaxAnthropicModelsListTool {
             },
         ))
     }
+}
+
+async fn execute_file_retrieve_content(
+    input: Value,
+    ctx: ToolContext,
+    descriptor: &ToolDescriptor,
+    permit: AuthorizedNetworkPermit,
+    broker: Arc<dyn crate::ToolNetworkBrokerCap>,
+) -> Result<ToolResult, ToolError> {
+    let (operation_id, route_kind) = service_credential_context(descriptor);
+    let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
+    let request = request(&input).map_err(validation_error)?;
+    let file = file_request(&request).map_err(validation_error)?;
+    let content_type = optional_string(&request, "contentType")
+        .map_err(validation_error)?
+        .unwrap_or_else(|| "application/octet-stream".to_owned());
+    let mut client = MinimaxApiClient::from_broker(Arc::clone(&broker), permit, credential.api_key);
+    if let Some(base_url) = credential.base_url {
+        client = client.with_base_url(base_url);
+    }
+    let bytes = client
+        .file_retrieve_content(file.group_id.as_deref(), &file.file_id)
+        .await
+        .map_err(provider_client_error)?;
+    let blob_ref = write_media_blob(&ctx, bytes, &content_type).await?;
+    Ok(artifact_tool_result(
+        ModelModality::File,
+        content_type,
+        blob_ref,
+        "MiniMax file content",
+    ))
+}
+
+async fn execute_video_download(
+    input: Value,
+    ctx: ToolContext,
+    descriptor: &ToolDescriptor,
+    permit: AuthorizedNetworkPermit,
+    broker: Arc<dyn crate::ToolNetworkBrokerCap>,
+) -> Result<ToolResult, ToolError> {
+    let (operation_id, route_kind) = service_credential_context(descriptor);
+    let operation_id = operation_id.ok_or_else(|| {
+        ToolError::PermissionDenied(
+            "MiniMax media operation credential context is incomplete".to_owned(),
+        )
+    })?;
+    let credential = minimax_credential(&ctx, Some(operation_id.clone()), route_kind).await?;
+    let request = request(&input).map_err(validation_error)?;
+    let file = file_request(&request).map_err(validation_error)?;
+    let mut client = MinimaxApiClient::from_broker(Arc::clone(&broker), permit, credential.api_key);
+    if let Some(base_url) = credential.base_url {
+        client = client.with_base_url(base_url);
+    }
+    let downloader = BrokerProviderMediaDownloader::new(
+        Arc::clone(&broker),
+        client.broker_permit().map_err(provider_client_error)?,
+    );
+    let media = resolve_minimax_file_media(
+        file.group_id.as_deref(),
+        &file.file_id,
+        &client,
+        &operation_id,
+        ModelModality::Video,
+        &downloader,
+    )
+    .await?;
+    let mime_type =
+        validate_media_bytes(&media.bytes, ModelModality::Video, Some(&media.mime_type))?;
+    let blob_ref = write_media_blob(&ctx, media.bytes, &mime_type).await?;
+    Ok(artifact_tool_result(
+        ModelModality::Video,
+        mime_type,
+        blob_ref,
+        "Generated video",
+    ))
+}
+
+async fn execute_tts_ws(
+    input: Value,
+    ctx: ToolContext,
+    descriptor: &ToolDescriptor,
+    permit: AuthorizedNetworkPermit,
+    broker: Arc<dyn crate::ToolNetworkBrokerCap>,
+) -> Result<ToolResult, ToolError> {
+    let (operation_id, route_kind) = service_credential_context(descriptor);
+    let credential = minimax_credential(&ctx, operation_id, route_kind).await?;
+    let base_url = credential.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL);
+    let request =
+        tts_ws_request(&request(&input).map_err(validation_error)?).map_err(validation_error)?;
+    let messages = minimax_tts_ws_messages(&request)?;
+    let websocket_url = minimax_tts_ws_url(base_url)?;
+    let mut headers = BTreeMap::new();
+    headers.insert(
+        "authorization".to_owned(),
+        format!("Bearer {}", credential.api_key),
+    );
+
+    let response = broker
+        .execute_websocket(
+            &permit,
+            ToolWebSocketRequest {
+                url: websocket_url,
+                headers,
+                text_messages: messages,
+                send_next_after_each_response: true,
+                text_response_terminators: vec![
+                    "\"event\":\"task_finished\"".to_owned(),
+                    "\"event\":\"task_failed\"".to_owned(),
+                ],
+                timeout: Duration::from_secs(900),
+                total_timeout: Duration::from_secs(900),
+                max_response_bytes: MAX_MINIMAX_MEDIA_BYTES,
+                max_response_messages: 1024,
+            },
+        )
+        .await?;
+
+    let audio = minimax_tts_audio_from_ws_response(response.messages, credential.api_key.as_str())?;
+    let declared_mime = request.output_format.as_deref().and_then(audio_format_mime);
+    let mime_type = validate_media_bytes(&audio, ModelModality::Audio, declared_mime)?;
+    let blob_ref = write_media_blob(&ctx, audio, &mime_type).await?;
+    Ok(artifact_tool_result(
+        ModelModality::Audio,
+        mime_type,
+        blob_ref,
+        "Generated speech",
+    ))
 }
 
 fn execute_async_create_request<F>(
@@ -1324,9 +1691,16 @@ async fn query_tool_result_from_response(
         return Ok(artifact_tool_result(modality, mime_type, blob_ref, title));
     }
     if let Some(file_id) = extract_file_id(&response) {
-        let media =
-            resolve_minimax_file_media(&file_id, client, operation_id, modality, downloader)
-                .await?;
+        let group_id = extract_group_id(&response);
+        let media = resolve_minimax_file_media(
+            group_id.as_deref(),
+            &file_id,
+            client,
+            operation_id,
+            modality,
+            downloader,
+        )
+        .await?;
         let mime_type = validate_media_bytes(&media.bytes, modality, Some(&media.mime_type))?;
         let blob_ref = write_media_blob(ctx, media.bytes, &mime_type).await?;
         return Ok(artifact_tool_result(modality, mime_type, blob_ref, title));
@@ -1406,6 +1780,20 @@ fn extract_file_id(value: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|file_id| !file_id.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn extract_group_id(value: &Value) -> Option<String> {
+    value
+        .get("group_id")
+        .or_else(|| value.get("GroupId"))
+        .or_else(|| value.pointer("/data/group_id"))
+        .or_else(|| value.pointer("/data/GroupId"))
+        .or_else(|| value.pointer("/file/group_id"))
+        .or_else(|| value.pointer("/file/GroupId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|group_id| !group_id.is_empty())
         .map(ToOwned::to_owned)
 }
 
@@ -1613,6 +2001,7 @@ async fn resolve_media_candidate(
 }
 
 async fn resolve_minimax_file_media(
+    group_id: Option<&str>,
     file_id: &str,
     client: &MinimaxApiClient,
     operation_id: &str,
@@ -1620,7 +2009,7 @@ async fn resolve_minimax_file_media(
     downloader: &dyn ProviderMediaDownloader,
 ) -> Result<ProviderMediaBytes, ToolError> {
     let file = client
-        .file_retrieve(file_id)
+        .file_retrieve(group_id, file_id)
         .await
         .map_err(provider_client_error)?;
     let download_url = extract_download_url(&file).ok_or_else(|| {
@@ -1814,8 +2203,10 @@ fn minimax_operation_downloads_media(operation_id: Option<&str>) -> bool {
         Some(
             "minimax.image_generation"
                 | "minimax.video_generation.query"
+                | "minimax.video.download"
                 | "minimax.video_template.query"
                 | "minimax.text_to_speech.sync"
+                | "minimax.text_to_speech.websocket"
                 | "minimax.text_to_speech.async.query"
                 | "minimax.music_generation"
         )
@@ -1920,6 +2311,41 @@ fn descriptor(
                     "request": {
                         "type": "object",
                         "description": "MiniMax official API request body for this operation."
+                    }
+                }),
+            ),
+            service_binding,
+        ),
+        provider_output_schema(),
+    )
+}
+
+fn file_descriptor(
+    name: &str,
+    display_name: &str,
+    description: &str,
+    service_binding: Option<ToolServiceBinding>,
+) -> ToolDescriptor {
+    super::with_output_schema(
+        super::descriptor_with_binding(
+            name,
+            display_name,
+            description,
+            ToolGroup::Network,
+            true,
+            false,
+            false,
+            128_000,
+            vec![
+                ToolCapability::ProviderCredentialResolver,
+                ToolCapability::BlobWriter,
+            ],
+            super::object_schema(
+                &["request"],
+                json!({
+                    "request": {
+                        "type": "object",
+                        "description": "MiniMax official file API request."
                     }
                 }),
             ),
@@ -2061,6 +2487,213 @@ fn optional_u32(input: &Value, field: &str) -> Result<Option<u32>, ValidationErr
             .ok_or_else(|| {
                 ValidationError::from(format!("request.{field} must be an unsigned integer"))
             }),
+    }
+}
+
+fn optional_u64(input: &Value, field: &str) -> Result<Option<u64>, ValidationError> {
+    match input.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value.as_u64().map(Some).ok_or_else(|| {
+            ValidationError::from(format!("request.{field} must be an unsigned integer"))
+        }),
+    }
+}
+
+struct FileRequest {
+    group_id: Option<String>,
+    file_id: String,
+}
+
+fn file_request(input: &Value) -> Result<FileRequest, ValidationError> {
+    Ok(FileRequest {
+        group_id: optional_group_id(input)?,
+        file_id: required_string(input, "file_id")?,
+    })
+}
+
+fn optional_group_id(input: &Value) -> Result<Option<String>, ValidationError> {
+    match input.get("groupId").or_else(|| input.get("GroupId")) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| Some(value.to_owned()))
+            .ok_or_else(|| ValidationError::from("request.groupId must be a string")),
+    }
+}
+
+struct TtsWsRequest {
+    task_start: Value,
+    task_continue: Vec<Value>,
+    output_format: Option<String>,
+}
+
+fn tts_ws_request(input: &Value) -> Result<TtsWsRequest, ValidationError> {
+    let task_start = input
+        .get("task_start")
+        .or_else(|| input.get("taskStart"))
+        .filter(|value| value.is_object())
+        .cloned()
+        .ok_or_else(|| ValidationError::from("request.task_start object is required"))?;
+    let task_continue_value = input
+        .get("task_continue")
+        .or_else(|| input.get("taskContinue"))
+        .ok_or_else(|| ValidationError::from("request.task_continue object is required"))?;
+    let task_continue = match task_continue_value {
+        Value::Object(_) => vec![task_continue_value.clone()],
+        Value::Array(items) if items.iter().all(Value::is_object) && !items.is_empty() => {
+            items.clone()
+        }
+        _ => {
+            return Err(ValidationError::from(
+                "request.task_continue object or non-empty object array is required",
+            ));
+        }
+    };
+    let output_format = task_start
+        .pointer("/audio_setting/format")
+        .or_else(|| task_start.pointer("/audio_setting/output_format"))
+        .or_else(|| task_start.pointer("/audio_setting/audio_format"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    Ok(TtsWsRequest {
+        task_start,
+        task_continue,
+        output_format,
+    })
+}
+
+fn minimax_tts_ws_messages(request: &TtsWsRequest) -> Result<Vec<String>, ToolError> {
+    let mut messages = Vec::with_capacity(request.task_continue.len() + 2);
+    messages.push(json_text(with_event(
+        request.task_start.clone(),
+        "task_start",
+    )?)?);
+    for task_continue in &request.task_continue {
+        messages.push(json_text(with_event(
+            task_continue.clone(),
+            "task_continue",
+        )?)?);
+    }
+    messages.push(json_text(json!({"event": "task_finish"}))?);
+    Ok(messages)
+}
+
+fn with_event(mut value: Value, event: &str) -> Result<Value, ToolError> {
+    let Value::Object(object) = &mut value else {
+        return Err(ToolError::Validation(
+            "MiniMax WebSocket message must be an object".to_owned(),
+        ));
+    };
+    object
+        .entry("event".to_owned())
+        .or_insert_with(|| Value::String(event.to_owned()));
+    Ok(value)
+}
+
+fn json_text(value: Value) -> Result<String, ToolError> {
+    serde_json::to_string(&value).map_err(|error| {
+        ToolError::Validation(format!("MiniMax WebSocket message is invalid: {error}"))
+    })
+}
+
+fn minimax_tts_ws_url(base_url: &str) -> Result<String, ToolError> {
+    let mut url = Url::parse(base_url).map_err(|_| {
+        ToolError::PermissionDenied("MiniMax provider base URL is invalid".to_owned())
+    })?;
+    let ws_scheme = match url.scheme() {
+        "https" => "wss",
+        "http" => "ws",
+        _ => {
+            return Err(ToolError::PermissionDenied(
+                "MiniMax provider base URL scheme is unsupported".to_owned(),
+            ));
+        }
+    };
+    url.set_scheme(ws_scheme).map_err(|_| {
+        ToolError::PermissionDenied("MiniMax WebSocket URL scheme is invalid".to_owned())
+    })?;
+    url.set_path("/ws/v1/t2a_v2");
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url.to_string())
+}
+
+fn minimax_tts_audio_from_ws_response(
+    messages: Vec<ToolWebSocketMessage>,
+    api_key: &str,
+) -> Result<Vec<u8>, ToolError> {
+    let mut audio = Vec::new();
+    for message in messages {
+        let ToolWebSocketMessage::Text(text) = message else {
+            continue;
+        };
+        let value: Value = serde_json::from_str(&text).map_err(|error| {
+            ToolError::Message(format!("MiniMax WebSocket response was not JSON: {error}"))
+        })?;
+        if ws_event(&value).is_some_and(|event| event == "task_failed") {
+            return Err(ToolError::Message(format!(
+                "MiniMax TTS WebSocket task failed: {}",
+                redact_secret(&ws_error_message(&value), api_key)
+            )));
+        }
+        if let Some(hex) = ws_audio_hex(&value) {
+            let chunk = decode_hex_bytes(hex)?;
+            let next_len = audio.len().saturating_add(chunk.len());
+            if next_len as u64 > MAX_MINIMAX_MEDIA_BYTES {
+                return Err(ToolError::ResultTooLarge {
+                    original: next_len as u64,
+                    limit: MAX_MINIMAX_MEDIA_BYTES,
+                    metric: BudgetMetric::Bytes,
+                });
+            }
+            audio.extend_from_slice(&chunk);
+        }
+    }
+    if audio.is_empty() {
+        return Err(ToolError::Message(
+            "MiniMax TTS WebSocket response did not include audio".to_owned(),
+        ));
+    }
+    Ok(audio)
+}
+
+fn ws_event(value: &Value) -> Option<&str> {
+    value
+        .get("event")
+        .or_else(|| value.get("type"))
+        .and_then(Value::as_str)
+}
+
+fn ws_audio_hex(value: &Value) -> Option<&str> {
+    value
+        .pointer("/data/audio")
+        .or_else(|| value.get("audio"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn ws_error_message(value: &Value) -> String {
+    value
+        .pointer("/data/message")
+        .or_else(|| value.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or("provider returned task_failed")
+        .to_owned()
+}
+
+fn audio_format_mime(format: &str) -> Option<&'static str> {
+    match format.trim().to_ascii_lowercase().as_str() {
+        "mp3" => Some("audio/mpeg"),
+        "wav" => Some("audio/wav"),
+        "ogg" => Some("audio/ogg"),
+        "m4a" | "mp4" => Some("audio/mp4"),
+        "webm" => Some("audio/webm"),
+        _ => None,
     }
 }
 

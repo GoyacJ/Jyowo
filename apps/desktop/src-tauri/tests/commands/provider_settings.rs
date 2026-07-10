@@ -133,12 +133,12 @@ fn list_model_provider_catalog_payload_exposes_models_and_default_base_urls() {
         .unwrap();
     assert_eq!(service["requiresPolling"], false);
     assert!(service.get("operation_id").is_none());
-    assert!(!minimax["serviceCapabilities"]
+    assert!(minimax["serviceCapabilities"]
         .as_array()
         .unwrap()
         .iter()
         .any(|service| service["operationId"] == "minimax.text_to_speech.websocket"));
-    assert!(!minimax["serviceCapabilities"]
+    assert!(minimax["serviceCapabilities"]
         .as_array()
         .unwrap()
         .iter()

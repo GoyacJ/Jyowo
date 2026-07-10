@@ -15,9 +15,11 @@ use harness_tool::{
     AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset, InterruptToken,
     MiniMaxImageToImageTool, MiniMaxModelsListTool, MiniMaxMusicGenerationTool,
     MiniMaxResponsesTool, MiniMaxTextToImageTool, MiniMaxTextToSpeechAsyncQueryTool,
-    MiniMaxTextToSpeechAsyncTool, MiniMaxTextToSpeechTool, MiniMaxTextToVideoTool,
-    MiniMaxVideoGenerationQueryTool, MiniMaxVideoTemplateQueryTool, Tool, ToolContext, ToolEvent,
-    ToolNetworkBrokerCap, ToolRegistryBuilder,
+    MiniMaxTextToSpeechAsyncTool, MiniMaxTextToSpeechTool, MiniMaxTextToSpeechWsTool,
+    MiniMaxTextToVideoTool, MiniMaxVideoGenerationQueryTool, MiniMaxVideoTemplateQueryTool, Tool,
+    ToolContext, ToolEvent, ToolHttpJsonRequest, ToolHttpResponse, ToolNetworkBrokerCap,
+    ToolNetworkBrokerPreflightCap, ToolRegistryBuilder, ToolWebSocketMessage, ToolWebSocketRequest,
+    ToolWebSocketResponse,
 };
 use serde_json::json;
 use std::{
@@ -55,6 +57,7 @@ async fn minimax_tools_register_with_default_builtin_toolset() {
             "MiniMaxFileDelete",
             "MiniMaxFileList",
             "MiniMaxFileRetrieve",
+            "MiniMaxFileRetrieveContent",
             "MiniMaxFileUpload",
             "MiniMaxFirstLastFrameToVideo",
             "MiniMaxImageToImage",
@@ -68,11 +71,14 @@ async fn minimax_tools_register_with_default_builtin_toolset() {
             "MiniMaxResponses",
             "MiniMaxResponsesInputTokens",
             "MiniMaxSubjectReferenceVideo",
+            "MiniMaxTextChatCompletion",
             "MiniMaxTextToImage",
             "MiniMaxTextToSpeech",
             "MiniMaxTextToSpeechAsync",
             "MiniMaxTextToSpeechAsyncQuery",
+            "MiniMaxTextToSpeechWs",
             "MiniMaxTextToVideo",
+            "MiniMaxVideoDownload",
             "MiniMaxVideoGenerationQuery",
             "MiniMaxVideoTemplate",
             "MiniMaxVideoTemplateQuery",
@@ -80,7 +86,6 @@ async fn minimax_tools_register_with_default_builtin_toolset() {
             "MiniMaxVoiceDesign",
         ]
     );
-    assert!(registry.get("MiniMaxTextToSpeechWs").is_none());
     for name in minimax_names {
         let descriptor = snapshot.get(name).unwrap().descriptor();
         assert!(
@@ -485,6 +490,102 @@ async fn minimax_service_artifact_video_query_returns_typed_video_artifact() {
 }
 
 #[tokio::test]
+async fn minimax_tts_websocket_uses_broker_and_returns_audio_artifact() {
+    let captured = Arc::new(Mutex::new(None));
+    let broker: Arc<dyn ToolNetworkBrokerCap> = Arc::new(FakeWebSocketBroker {
+        captured: Arc::clone(&captured),
+        response: ToolWebSocketResponse {
+            messages: vec![
+                ToolWebSocketMessage::Text(json!({"event": "connected_success"}).to_string()),
+                ToolWebSocketMessage::Text(json!({"event": "task_started"}).to_string()),
+                ToolWebSocketMessage::Text(
+                    json!({"event": "task_result", "data": {"audio": hex_string(MP3_HEADER_BYTES)}})
+                        .to_string(),
+                ),
+                ToolWebSocketMessage::Text(json!({"event": "task_finished"}).to_string()),
+            ],
+        },
+    });
+
+    let tool = MiniMaxTextToSpeechWsTool::default();
+    let result = execute_final(
+        &tool,
+        json!({
+            "request": {
+                "task_start": {
+                    "model": "speech-02-hd",
+                    "voice_setting": {"voice_id": "male-qn-qingse"},
+                    "audio_setting": {"format": "mp3"}
+                },
+                "task_continue": {"text": "hello"}
+            }
+        }),
+        ctx_with_broker(broker, "https://api.minimax.io".to_owned()),
+    )
+    .await;
+
+    assert_typed_artifact(
+        &result,
+        ModelModality::Audio,
+        "audio/mpeg",
+        "Generated speech",
+    );
+    let request = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("websocket request should be captured");
+    assert_eq!(request.url, "wss://api.minimax.io/ws/v1/t2a_v2");
+    assert_eq!(
+        request.headers.get("authorization").map(String::as_str),
+        Some("Bearer provider-test-token")
+    );
+    assert_eq!(request.text_messages.len(), 3);
+    assert!(request.text_messages[0].contains("\"event\":\"task_start\""));
+    assert!(request.text_messages[1].contains("\"event\":\"task_continue\""));
+    assert!(request.text_messages[2].contains("\"event\":\"task_finish\""));
+    assert!(request.send_next_after_each_response);
+    assert!(!format!("{request:?}").contains("provider-test-token"));
+}
+
+#[tokio::test]
+async fn minimax_tts_websocket_task_failed_redacts_api_key() {
+    let broker: Arc<dyn ToolNetworkBrokerCap> = Arc::new(FakeWebSocketBroker {
+        captured: Arc::new(Mutex::new(None)),
+        response: ToolWebSocketResponse {
+            messages: vec![ToolWebSocketMessage::Text(
+                json!({
+                    "event": "task_failed",
+                    "data": {"message": "bad token provider-test-token"}
+                })
+                .to_string(),
+            )],
+        },
+    });
+
+    let tool = MiniMaxTextToSpeechWsTool::default();
+    let error = execute_error(
+        &tool,
+        json!({
+            "request": {
+                "task_start": {
+                    "model": "speech-02-hd",
+                    "voice_setting": {"voice_id": "male-qn-qingse"},
+                    "audio_setting": {"format": "mp3"}
+                },
+                "task_continue": {"text": "hello"}
+            }
+        }),
+        ctx_with_broker(broker, "https://api.minimax.io".to_owned()),
+    )
+    .await;
+
+    let message = error.to_string();
+    assert!(message.contains("[REDACTED]"));
+    assert!(!message.contains("provider-test-token"));
+}
+
+#[tokio::test]
 async fn minimax_video_query_returns_structured_pending_status() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -511,6 +612,52 @@ async fn minimax_video_query_returns_structured_pending_status() {
     };
     assert_eq!(value["status"], "processing");
     assert_eq!(value["task_id"], "video-task-pending");
+}
+
+#[tokio::test]
+async fn minimax_service_artifact_video_query_downloads_official_file_id_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/query/video_generation"))
+        .and(query_param("task_id", "video-task-file"))
+        .and(header("authorization", "Bearer provider-test-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "Success",
+            "file_id": "video-file-1"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/files/retrieve"))
+        .and(query_param("file_id", "video-file-1"))
+        .and(header("authorization", "Bearer provider-test-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "download_url": format!("{}/generated/file-video.mp4", server.uri())
+        })))
+        .mount(&server)
+        .await;
+    mount_media_download(
+        &server,
+        "/generated/file-video.mp4",
+        "video/mp4",
+        MP4_HEADER_BYTES,
+    )
+    .await;
+
+    let tool = MiniMaxVideoGenerationQueryTool::default();
+    let result = execute_final(
+        &tool,
+        json!({"request": {"task_id": "video-task-file"}}),
+        ctx_with_media(server.uri()),
+    )
+    .await;
+
+    assert_typed_artifact(
+        &result,
+        ModelModality::Video,
+        "video/mp4",
+        "Generated video",
+    );
 }
 
 #[tokio::test]
@@ -1102,6 +1249,53 @@ fn test_ticket_authority() -> harness_tool::AuthorizationTicketKey {
     static KEY: OnceLock<harness_tool::AuthorizationTicketKey> = OnceLock::new();
     KEY.get_or_init(harness_tool::AuthorizationTicketKey::generate)
         .clone()
+}
+
+struct FakeWebSocketBroker {
+    captured: Arc<Mutex<Option<ToolWebSocketRequest>>>,
+    response: ToolWebSocketResponse,
+}
+
+#[async_trait::async_trait]
+impl ToolNetworkBrokerPreflightCap for FakeWebSocketBroker {
+    async fn preflight_network_request(
+        &self,
+        _request: &harness_tool::NetworkBrokerPreflightRequest,
+    ) -> Result<(), ToolError> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolNetworkBrokerCap for FakeWebSocketBroker {
+    async fn execute_json(
+        &self,
+        _permit: &harness_tool::AuthorizedNetworkPermit,
+        _request: ToolHttpJsonRequest,
+    ) -> Result<ToolHttpResponse, ToolError> {
+        Err(ToolError::Message(
+            "fake websocket broker does not handle HTTP".to_owned(),
+        ))
+    }
+
+    async fn execute_websocket(
+        &self,
+        _permit: &harness_tool::AuthorizedNetworkPermit,
+        request: ToolWebSocketRequest,
+    ) -> Result<ToolWebSocketResponse, ToolError> {
+        *self.captured.lock().unwrap() = Some(request);
+        Ok(self.response.clone())
+    }
+}
+
+fn hex_string(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
 }
 
 struct WrongProviderResolver;

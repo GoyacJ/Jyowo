@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use harness_contracts::ModelError;
 
+use crate::anthropic::AnthropicClient;
 use crate::openai_protocol::{OpenAiChatDialect, OpenAiProtocolClient};
 use crate::{
     InferContext, ModelCredentialResolver, ModelDescriptor, ModelProtocol, ModelProvider,
@@ -17,6 +18,7 @@ pub const MINIMAX_API_KEY_ENV: &str = "MINIMAX_API_KEY";
 pub struct MinimaxProvider {
     chat_client: OpenAiProtocolClient,
     responses_client: OpenAiProtocolClient,
+    messages_client: AnthropicClient,
 }
 
 impl MinimaxProvider {
@@ -28,9 +30,13 @@ impl MinimaxProvider {
                 .with_chat_dialect(OpenAiChatDialect::MiniMax)
                 .with_chat_completions_path("/v1/chat/completions")
                 .with_max_tokens_field("max_completion_tokens"),
-            responses_client: OpenAiProtocolClient::from_api_key(api_key, DEFAULT_BASE_URL)
+            responses_client: OpenAiProtocolClient::from_api_key(api_key.clone(), DEFAULT_BASE_URL)
                 .with_provider_id(PROVIDER_ID)
                 .with_responses_path("/v1/responses"),
+            messages_client: AnthropicClient::from_api_key(api_key)
+                .with_provider_id(PROVIDER_ID)
+                .with_base_url(DEFAULT_BASE_URL)
+                .with_messages_path("/anthropic/v1/messages"),
         }
     }
 
@@ -43,7 +49,8 @@ impl MinimaxProvider {
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         let base_url = base_url.into();
         self.chat_client = self.chat_client.with_base_url(base_url.clone());
-        self.responses_client = self.responses_client.with_base_url(base_url);
+        self.responses_client = self.responses_client.with_base_url(base_url.clone());
+        self.messages_client = self.messages_client.with_base_url(base_url);
         self
     }
 
@@ -52,7 +59,12 @@ impl MinimaxProvider {
         self.chat_client = self
             .chat_client
             .with_credential_resolver(Arc::clone(&resolver));
-        self.responses_client = self.responses_client.with_credential_resolver(resolver);
+        self.responses_client = self
+            .responses_client
+            .with_credential_resolver(Arc::clone(&resolver));
+        self.messages_client = self
+            .messages_client
+            .with_credential_resolver(Arc::clone(&resolver));
         self
     }
 }
@@ -71,8 +83,9 @@ impl ModelProvider for MinimaxProvider {
         match req.protocol {
             ModelProtocol::Responses => self.responses_client.infer(req, ctx).await,
             ModelProtocol::ChatCompletions => self.chat_client.infer(req, ctx).await,
+            ModelProtocol::Messages => self.messages_client.infer(req, ctx).await,
             protocol => Err(ModelError::InvalidRequest(format!(
-                "MiniMax provider supports Responses and ChatCompletions, got {protocol:?}"
+                "MiniMax provider supports Responses, ChatCompletions, and Messages, got {protocol:?}"
             ))),
         }
     }

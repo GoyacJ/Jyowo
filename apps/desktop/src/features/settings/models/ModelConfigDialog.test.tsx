@@ -425,6 +425,47 @@ describe('ModelConfigDialog', () => {
       },
     })
   })
+
+  it('saves MiniMax selected API mode', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: minimaxProfile,
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: minimaxProfile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    fireEvent.change(within(dialog).getByLabelText('API mode'), {
+      target: { value: 'chat_completions' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      configId: 'cfg-minimax',
+      protocol: 'chat_completions',
+    })
+  })
+
+  it('updates MiniMax provider options when API mode changes', async () => {
+    renderDialog({ profile: minimaxProfile })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    expect(within(dialog).getByLabelText('Service tier')).toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Stop sequences')).not.toBeInTheDocument()
+
+    fireEvent.change(within(dialog).getByLabelText('API mode'), {
+      target: { value: 'messages' },
+    })
+
+    expect(within(dialog).getByLabelText('Stop sequences')).toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Service tier')).not.toBeInTheDocument()
+  })
 })
 
 const modelCapability: ConversationModelCapability = {
@@ -441,6 +482,7 @@ const modelCapability: ConversationModelCapability = {
 
 const gpt41 = {
   protocol: 'responses' as const,
+  supportedProtocols: ['responses' as const],
   supportedParameters: [],
   conversationCapability: modelCapability,
   contextWindow: 128000,
@@ -455,12 +497,30 @@ const qwen37Max = {
   ...gpt41,
   displayName: 'Qwen3.7 Max',
   modelId: 'qwen3.7-max',
+  supportedProtocols: ['responses' as const, 'chat_completions' as const],
 }
 
 const qwen3Max = {
   ...gpt41,
   displayName: 'Qwen3 Max',
   modelId: 'qwen3-max',
+  supportedProtocols: ['responses' as const, 'chat_completions' as const],
+}
+
+const minimaxText01 = {
+  ...gpt41,
+  displayName: 'MiniMax-Text-01',
+  modelId: 'MiniMax-Text-01',
+  providerCapabilityMetadata: {
+    provider: 'minimax',
+    protocolSupportedParameters: {
+      responses: ['service_tier'],
+      chat_completions: ['thinking'],
+      messages: ['stop_sequences'],
+    },
+  },
+  supportedParameters: ['service_tier'],
+  supportedProtocols: ['responses' as const, 'chat_completions' as const, 'messages' as const],
 }
 
 const catalog: ModelProviderCatalogResponse = {
@@ -487,8 +547,10 @@ const catalog: ModelProviderCatalogResponse = {
       models: [
         {
           ...gpt41,
+          protocol: 'messages' as const,
           displayName: 'Claude Sonnet 4',
           modelId: 'claude-sonnet-4',
+          supportedProtocols: ['messages' as const],
           supportedParameters: [
             'thinking',
             'output_config',
@@ -532,6 +594,28 @@ const catalog: ModelProviderCatalogResponse = {
       },
       serviceCapabilities: [],
       sourceUrl: 'https://help.aliyun.com/zh/model-studio/',
+      verifiedDate: '2026-07-09',
+    },
+    {
+      defaultBaseUrl: 'https://api.minimaxi.com/v1',
+      displayName: 'MiniMax',
+      models: [minimaxText01],
+      providerId: 'minimax',
+      runtimeCapability: {
+        authScheme: 'bearer',
+        baseUrlRegions: [
+          {
+            id: 'global',
+            label: 'Global',
+            baseUrl: 'https://api.minimaxi.com/v1',
+          },
+        ],
+        supportsLiveValidation: true,
+        supportsStreamingValidation: true,
+        secretRevealSupported: true,
+      },
+      serviceCapabilities: [],
+      sourceUrl: 'https://platform.minimaxi.com/document',
       verifiedDate: '2026-07-09',
     },
   ],
@@ -590,4 +674,21 @@ const qwen3MaxProfile: ProviderConfig = {
   modelId: 'qwen3-max',
   displayName: 'Primary Qwen Max',
   modelDescriptor: qwen3Max,
+}
+
+const minimaxProfile: ProviderConfig = {
+  id: 'cfg-minimax',
+  providerId: 'minimax',
+  modelId: 'MiniMax-Text-01',
+  displayName: 'Primary MiniMax',
+  baseUrl: 'https://api.minimaxi.com/v1',
+  hasApiKey: true,
+  hasOfficialQuotaApiKey: false,
+  isDefault: false,
+  protocol: 'responses',
+  providerDefaults: {
+    body: {},
+    headers: {},
+  },
+  modelDescriptor: minimaxText01,
 }

@@ -2207,24 +2207,44 @@ fn apply_protocol_override(
     if protocol == descriptor.protocol {
         return Ok(descriptor);
     }
-    if descriptor.provider_id != "qwen" {
-        return Err(invalid_payload(
-            "protocol override is only supported for Qwen provider configs".to_owned(),
-        ));
-    }
-    match protocol {
-        ModelProtocol::ChatCompletions => {
-            descriptor.protocol = ModelProtocol::ChatCompletions;
-            descriptor.runtime_semantics = ModelRuntimeSemantics::openai_chat_qwen();
-            Ok(descriptor)
-        }
-        ModelProtocol::Responses => {
-            descriptor.protocol = ModelProtocol::Responses;
-            descriptor.runtime_semantics = ModelRuntimeSemantics::openai_responses_default();
-            Ok(descriptor)
-        }
+    match descriptor.provider_id.as_str() {
+        "qwen" => match protocol {
+            ModelProtocol::ChatCompletions => {
+                descriptor.protocol = ModelProtocol::ChatCompletions;
+                descriptor.runtime_semantics = ModelRuntimeSemantics::openai_chat_qwen();
+                Ok(descriptor)
+            }
+            ModelProtocol::Responses => {
+                descriptor.protocol = ModelProtocol::Responses;
+                descriptor.runtime_semantics = ModelRuntimeSemantics::openai_responses_default();
+                Ok(descriptor)
+            }
+            _ => Err(invalid_payload(
+                "Qwen protocol must be chat_completions or responses".to_owned(),
+            )),
+        },
+        "minimax" => match protocol {
+            ModelProtocol::Responses => {
+                descriptor.protocol = ModelProtocol::Responses;
+                descriptor.runtime_semantics = ModelRuntimeSemantics::openai_responses_default();
+                Ok(descriptor)
+            }
+            ModelProtocol::ChatCompletions => {
+                descriptor.protocol = ModelProtocol::ChatCompletions;
+                descriptor.runtime_semantics = ModelRuntimeSemantics::openai_chat_minimax();
+                Ok(descriptor)
+            }
+            ModelProtocol::Messages => {
+                descriptor.protocol = ModelProtocol::Messages;
+                descriptor.runtime_semantics = ModelRuntimeSemantics::anthropic_messages_default();
+                Ok(descriptor)
+            }
+            _ => Err(invalid_payload(
+                "MiniMax protocol must be responses, chat_completions, or messages".to_owned(),
+            )),
+        },
         _ => Err(invalid_payload(
-            "Qwen protocol must be chat_completions or responses".to_owned(),
+            "protocol override is only supported for Qwen and MiniMax provider configs".to_owned(),
         )),
     }
 }
@@ -2268,9 +2288,11 @@ pub(crate) fn provider_display_name(provider_id: &str) -> String {
 
 pub(crate) fn model_descriptor_catalog_entry(descriptor: ModelDescriptor) -> ModelCatalogEntry {
     let provider_capability_metadata = provider_capability_metadata_for_model(&descriptor);
+    let supported_protocols = supported_protocols_for_model(&descriptor);
     let conversation_capability = descriptor.conversation_capability;
     ModelCatalogEntry {
         protocol: descriptor.protocol,
+        supported_protocols,
         supported_parameters: descriptor.supported_parameters,
         provider_capability_metadata,
         conversation_capability: conversation_capability_record(&conversation_capability),
@@ -2287,6 +2309,69 @@ pub(crate) fn model_descriptor_catalog_entry(descriptor: ModelDescriptor) -> Mod
 }
 
 fn provider_capability_metadata_for_model(descriptor: &ModelDescriptor) -> Option<Value> {
+    if descriptor.provider_id == "minimax" {
+        return Some(serde_json::json!({
+            "provider": "minimax",
+            "serviceTiers": ["standard", "priority"],
+            "protocolSupportedParameters": {
+                "responses": [
+                    "input",
+                    "instructions",
+                    "max_output_tokens",
+                    "metadata",
+                    "prompt_cache_key",
+                    "reasoning",
+                    "service_tier",
+                    "stream",
+                    "temperature",
+                    "text",
+                    "tool_choice",
+                    "tools",
+                    "top_p"
+                ],
+                "chat_completions": [
+                    "max_completion_tokens",
+                    "max_tokens",
+                    "messages",
+                    "reasoning_split",
+                    "service_tier",
+                    "stream",
+                    "stream_options",
+                    "temperature",
+                    "thinking",
+                    "tools",
+                    "top_p"
+                ],
+                "messages": [
+                    "max_tokens",
+                    "messages",
+                    "metadata",
+                    "service_tier",
+                    "stop_sequences",
+                    "stream",
+                    "system",
+                    "thinking",
+                    "tool_choice",
+                    "tools",
+                    "top_p"
+                ]
+            },
+            "pricing": {
+                "currency": "usd",
+                "sourceUrl": "https://platform.minimax.io/docs/pricing",
+                "tokenPricingInModelPricing": true,
+                "nonTokenBillingUnits": [
+                    {"category": "text_to_speech", "unit": "characters"},
+                    {"category": "voice_clone", "unit": "requests"},
+                    {"category": "image_generation", "unit": "images"},
+                    {"category": "video_generation", "unit": "seconds"},
+                    {"category": "music_generation", "unit": "songs"},
+                    {"category": "mcp", "unit": "requests"},
+                    {"category": "server_tools", "unit": "requests"}
+                ]
+            },
+        }));
+    }
     if descriptor.provider_id != "anthropic" {
         return None;
     }
@@ -2334,6 +2419,18 @@ fn provider_capability_metadata_for_model(descriptor: &ModelDescriptor) -> Optio
             serde_json::json!([])
         },
     }))
+}
+
+fn supported_protocols_for_model(descriptor: &ModelDescriptor) -> Vec<ModelProtocol> {
+    match descriptor.provider_id.as_str() {
+        "qwen" => vec![ModelProtocol::Responses, ModelProtocol::ChatCompletions],
+        "minimax" => vec![
+            ModelProtocol::Responses,
+            ModelProtocol::ChatCompletions,
+            ModelProtocol::Messages,
+        ],
+        _ => vec![descriptor.protocol],
+    }
 }
 
 pub(crate) fn model_lifecycle_payload(lifecycle: ModelLifecycle) -> ModelLifecyclePayload {

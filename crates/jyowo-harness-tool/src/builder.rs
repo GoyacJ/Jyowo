@@ -128,6 +128,8 @@ impl ToolRegistryBuilder {
                         )?;
                         registry
                             .register(Box::<crate::builtin::MiniMaxTextToSpeechTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxTextToSpeechWsTool>::default())?;
                         registry.register(
                             Box::<crate::builtin::MiniMaxTextToSpeechAsyncTool>::default(),
                         )?;
@@ -156,6 +158,9 @@ impl ToolRegistryBuilder {
                         registry.register(Box::<crate::builtin::MiniMaxFileListTool>::default())?;
                         registry
                             .register(Box::<crate::builtin::MiniMaxFileRetrieveTool>::default())?;
+                        registry.register(
+                            Box::<crate::builtin::MiniMaxFileRetrieveContentTool>::default(),
+                        )?;
                         registry
                             .register(Box::<crate::builtin::MiniMaxFileDeleteTool>::default())?;
                         registry
@@ -165,6 +170,9 @@ impl ToolRegistryBuilder {
                         registry.register(Box::<crate::builtin::MiniMaxResponsesTool>::default())?;
                         registry.register(
                             Box::<crate::builtin::MiniMaxResponsesInputTokensTool>::default(),
+                        )?;
+                        registry.register(
+                            Box::<crate::builtin::MiniMaxTextChatCompletionTool>::default(),
                         )?;
                         registry.register(
                             Box::<crate::builtin::MiniMaxAnthropicMessagesTool>::default(),
@@ -178,6 +186,8 @@ impl ToolRegistryBuilder {
                         registry.register(Box::<
                             crate::builtin::MiniMaxAnthropicModelRetrieveTool,
                         >::default())?;
+                        registry
+                            .register(Box::<crate::builtin::MiniMaxVideoDownloadTool>::default())?;
                     }
                     #[cfg(feature = "seedance-tools")]
                     {

@@ -1812,6 +1812,7 @@ const validateProviderSettingsResponseSchema = z
 const modelCatalogEntrySchema = z
   .object({
     protocol: modelProtocolSchema,
+    supportedProtocols: z.array(modelProtocolSchema),
     supportedParameters: z.array(z.string().min(1)),
     providerCapabilityMetadata: z.unknown().optional(),
     conversationCapability: conversationModelCapabilitySchema,

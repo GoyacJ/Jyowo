@@ -20,7 +20,7 @@ use harness_execution::{AuthorizationTicketClaims, ReqwestToolNetworkBroker, Tic
 use harness_tool::{
     canonical_action_plan_hash, AuthorizedNetworkPermit, AuthorizedToolInput, HttpMethod,
     NetworkBrokerPreflightRequest, ToolHttpJsonRequest, ToolNetworkBrokerCap,
-    ToolNetworkBrokerPreflightCap,
+    ToolNetworkBrokerPreflightCap, ToolWebSocketRequest,
 };
 
 /// Starts a tiny HTTP server on localhost that responds 200 OK with "hello".
@@ -206,6 +206,27 @@ async fn broker_rejects_permit_not_minted_by_its_ticket_authority() {
         err.to_string().contains("ticket proof"),
         "error should identify invalid ticket proof: {err}"
     );
+}
+
+#[tokio::test]
+async fn websocket_rejects_broker_owned_headers_before_connecting() {
+    let ledger = TicketLedger::default();
+    let broker = broker_for_ledger(&ledger);
+    let permit = permit_for(&ledger, "127.0.0.1", 80);
+    let mut request = ToolWebSocketRequest {
+        url: "ws://127.0.0.1:80/ws".to_owned(),
+        ..ToolWebSocketRequest::default()
+    };
+    request
+        .headers
+        .insert("Host".to_owned(), "evil.example.com".to_owned());
+
+    let err = broker
+        .execute_websocket(&permit, request)
+        .await
+        .expect_err("broker must reject caller-owned WebSocket Host header");
+
+    assert!(err.to_string().contains("managed by the broker"));
 }
 
 #[tokio::test]

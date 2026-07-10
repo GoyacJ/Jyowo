@@ -30,13 +30,16 @@ const API_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 1024;
 const DEFAULT_CREDENTIAL_RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(60);
 const PROVIDER_ID: &str = "anthropic";
+const DEFAULT_MESSAGES_PATH: &str = "/v1/messages";
 
 #[derive(Clone)]
 pub struct AnthropicClient {
     http: reqwest::Client,
     api_key: SecretString,
     credential_resolver: Option<Arc<dyn ModelCredentialResolver>>,
+    provider_id: String,
     base_url: String,
+    messages_path: String,
     cooldown_until: Arc<Mutex<Option<Instant>>>,
 }
 
@@ -46,7 +49,9 @@ impl AnthropicClient {
             http: reqwest::Client::new(),
             api_key: SecretString::new(api_key.into().into_boxed_str()),
             credential_resolver: None,
+            provider_id: PROVIDER_ID.to_owned(),
             base_url: DEFAULT_BASE_URL.to_owned(),
+            messages_path: DEFAULT_MESSAGES_PATH.to_owned(),
             cooldown_until: Arc::new(Mutex::new(None)),
         }
     }
@@ -63,7 +68,23 @@ impl AnthropicClient {
         self
     }
 
-    async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
+    #[must_use]
+    pub(crate) fn with_provider_id(mut self, provider_id: impl Into<String>) -> Self {
+        self.provider_id = provider_id.into();
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_messages_path(mut self, path: impl Into<String>) -> Self {
+        self.messages_path = path.into();
+        self
+    }
+
+    pub(crate) async fn infer(
+        &self,
+        req: ModelRequest,
+        ctx: InferContext,
+    ) -> Result<ModelStream, ModelError> {
         validate_request(&req)?;
         let body = request_body(&req, &ctx).await?;
         let max_attempts = ctx.retry_policy.max_attempts.max(1);
@@ -156,7 +177,7 @@ impl AnthropicClient {
         resolver
             .pick(ModelCredentialPickContext {
                 tenant_id: ctx.tenant_id,
-                provider_id: PROVIDER_ID.to_owned(),
+                provider_id: self.provider_id.clone(),
                 model_id: req.model_id.clone(),
             })
             .await
@@ -172,8 +193,9 @@ impl AnthropicClient {
         let response = self
             .http
             .post(format!(
-                "{}/v1/messages",
-                self.base_url.trim_end_matches('/')
+                "{}{}",
+                self.base_url.trim_end_matches('/'),
+                normalized_path(&self.messages_path)
             ))
             .headers(self.headers(credential)?)
             .json(body)
@@ -273,10 +295,19 @@ impl ModelProvider for AnthropicProvider {
 fn validate_request(req: &ModelRequest) -> Result<(), ModelError> {
     if req.protocol != ModelProtocol::Messages {
         return Err(ModelError::InvalidRequest(
-            "AnthropicProvider only supports ModelProtocol::Messages".to_owned(),
+            "Anthropic protocol client only supports ModelProtocol::Messages".to_owned(),
         ));
     }
     Ok(())
+}
+
+fn normalized_path(path: &str) -> String {
+    let path = path.trim();
+    if path.starts_with('/') {
+        path.to_owned()
+    } else {
+        format!("/{path}")
+    }
 }
 
 async fn request_body(req: &ModelRequest, ctx: &InferContext) -> Result<Value, ModelError> {

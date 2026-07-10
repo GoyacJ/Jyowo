@@ -126,9 +126,23 @@ export function ModelConfigDialog({
     selectedModel?.providerCapabilityMetadata,
   )
   const anthropicSamplingLocked = providerCapabilityMetadata?.samplingLocked === true
+  const protocolOptions = selectedModel?.supportedProtocols?.length
+    ? selectedModel.supportedProtocols
+    : selectedModel
+      ? [selectedModel.protocol]
+      : []
+  const serviceTierOptions = providerCapabilityMetadata?.serviceTiers ?? [
+    'auto',
+    'standard_only',
+  ]
   const supportedParameters = useMemo(
-    () => new Set(selectedModel?.supportedParameters ?? []),
-    [selectedModel],
+    () =>
+      new Set(
+        providerCapabilityMetadata?.protocolSupportedParameters?.[protocol] ??
+          selectedModel?.supportedParameters ??
+          [],
+      ),
+    [protocol, providerCapabilityMetadata, selectedModel],
   )
 
   useEffect(() => {
@@ -178,8 +192,10 @@ export function ModelConfigDialog({
     if (baseUrl) {
       request.baseUrl = baseUrl
     }
-    if (values.providerId === 'qwen') {
+    if (providerPersistsProtocol(values.providerId)) {
       request.protocol = values.protocol
+    }
+    if (values.providerId === 'qwen') {
       request.providerDefaults = providerDefaultsFromValues(values)
     } else {
       let providerDefaults: ProviderSettingsRequest['providerDefaults']
@@ -253,9 +269,10 @@ export function ModelConfigDialog({
                   const provider = providers.find(
                     (candidate) => candidate.providerId === event.target.value,
                   )
+                  const model = provider?.models[0]
                   setValue('baseUrl', provider?.defaultBaseUrl ?? '')
-                  setValue('modelId', provider?.models[0]?.modelId ?? '')
-                  setValue('protocol', defaultProtocolForProvider(provider))
+                  setValue('modelId', model?.modelId ?? '')
+                  setValue('protocol', defaultProtocolForModel(model))
                   resetProviderOptionFields(setValue)
                 },
               })}
@@ -274,6 +291,13 @@ export function ModelConfigDialog({
               id="provider-model-id"
               {...register('modelId', {
                 required: t('provider.errors.modelRequired'),
+                onChange: (event) => {
+                  const model = modelOptions.find(
+                    (candidate) => candidate.modelId === event.target.value,
+                  )
+                  setValue('protocol', defaultProtocolForModel(model))
+                  resetProviderOptionFields(setValue)
+                },
               })}
             >
               {modelOptions.map((model) => (
@@ -284,15 +308,21 @@ export function ModelConfigDialog({
             </Select>
           </label>
 
+          {protocolOptions.length > 1 ? (
+            <label className="grid gap-1 text-sm" htmlFor="provider-protocol">
+              <span className="font-medium">{t('provider.apiMode')}</span>
+              <Select id="provider-protocol" {...register('protocol')}>
+                {protocolOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {protocolLabel(option)}
+                  </option>
+                ))}
+              </Select>
+            </label>
+          ) : null}
+
           {isQwen ? (
             <div className="grid gap-3 rounded-sm border border-border p-3 text-sm">
-              <label className="grid gap-1" htmlFor="provider-protocol">
-                <span className="font-medium">{t('provider.apiMode')}</span>
-                <Select id="provider-protocol" {...register('protocol')}>
-                  <option value="responses">Responses</option>
-                  <option value="chat_completions">Chat Completions</option>
-                </Select>
-              </label>
               <label className="flex items-center gap-2">
                 <input type="checkbox" {...register('enableThinking')} />
                 <span>{t('provider.enableThinking')}</span>
@@ -398,8 +428,11 @@ export function ModelConfigDialog({
                   <span className="font-medium">{t('provider.serviceTier')}</span>
                   <Select id="provider-service-tier" {...register('serviceTier')}>
                     <option value="">{t('provider.default')}</option>
-                    <option value="auto">Auto</option>
-                    <option value="standard_only">Standard only</option>
+                    {serviceTierOptions.map((tier) => (
+                      <option key={tier} value={tier}>
+                        {serviceTierLabel(tier)}
+                      </option>
+                    ))}
                   </Select>
                 </label>
               ) : null}
@@ -632,9 +665,37 @@ function formValuesFromProfile(
 function defaultProtocolForProvider(
   provider: ModelProviderCatalogResponse['providers'][number] | undefined,
 ): ModelProtocol {
-  return (
-    (provider?.providerId === 'qwen' ? 'responses' : provider?.models[0]?.protocol) ?? 'responses'
-  )
+  return defaultProtocolForModel(provider?.models[0])
+}
+
+function defaultProtocolForModel(
+  model: ModelProviderCatalogResponse['providers'][number]['models'][number] | undefined,
+): ModelProtocol {
+  return model?.supportedProtocols?.[0] ?? model?.protocol ?? 'responses'
+}
+
+function providerPersistsProtocol(providerId: string) {
+  return providerId === 'qwen' || providerId === 'minimax'
+}
+
+function protocolLabel(protocol: ModelProtocol): string {
+  switch (protocol) {
+    case 'chat_completions':
+      return 'Chat Completions'
+    case 'messages':
+      return 'Messages'
+    case 'responses':
+      return 'Responses'
+    default:
+      return protocol
+  }
+}
+
+function serviceTierLabel(tier: string): string {
+  return tier
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
 }
 
 function qwenDefaultsFromProfile(profile: ProviderConfig | null | undefined) {
@@ -929,19 +990,43 @@ function resetProviderOptionFields(setValue: UseFormSetValue<ModelConfigFormValu
 
 type AnthropicCapabilityMetadata = {
   thinkingModes?: string[]
+  protocolSupportedParameters?: Partial<Record<ModelProtocol, string[]>>
   samplingLocked?: boolean
+  serviceTiers?: string[]
 }
 
 function getAnthropicCapabilityMetadata(value: unknown): AnthropicCapabilityMetadata | null {
-  if (!isRecord(value) || value.provider !== 'anthropic') {
+  if (!isRecord(value)) {
     return null
   }
   return {
     thinkingModes: Array.isArray(value.thinkingModes)
       ? value.thinkingModes.filter((mode): mode is string => typeof mode === 'string')
       : undefined,
+    protocolSupportedParameters: parseProtocolSupportedParameters(value.protocolSupportedParameters),
     samplingLocked: value.samplingLocked === true,
+    serviceTiers: Array.isArray(value.serviceTiers)
+      ? value.serviceTiers.filter((tier): tier is string => typeof tier === 'string')
+      : undefined,
   }
+}
+
+function parseProtocolSupportedParameters(
+  value: unknown,
+): Partial<Record<ModelProtocol, string[]>> | undefined {
+  if (!isRecord(value)) {
+    return undefined
+  }
+  const result: Partial<Record<ModelProtocol, string[]>> = {}
+  for (const protocol of ['responses', 'chat_completions', 'messages'] as const) {
+    const parameters = value[protocol]
+    if (Array.isArray(parameters)) {
+      result[protocol] = parameters.filter(
+        (parameter): parameter is string => typeof parameter === 'string',
+      )
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined
 }
 
 function headerValue(profile: ProviderConfig | null | undefined, name: string): string {
