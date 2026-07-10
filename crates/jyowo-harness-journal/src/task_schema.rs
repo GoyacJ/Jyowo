@@ -1,4 +1,4 @@
-//! SQLite schema for the daemon's unified task store.
+//! `SQLite` schema for the daemon's unified task store.
 
 use rusqlite::Connection;
 
@@ -9,7 +9,7 @@ pub(crate) fn initialize_task_schema(connection: &Connection) -> Result<(), Task
     Ok(())
 }
 
-const TASK_SCHEMA: &str = r#"
+const TASK_SCHEMA: &str = r"
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
@@ -31,22 +31,70 @@ CREATE TABLE IF NOT EXISTS event_log (
 CREATE INDEX IF NOT EXISTS idx_event_log_task_stream
     ON event_log(task_id, stream_sequence);
 
+CREATE INDEX IF NOT EXISTS idx_event_log_task_type
+    ON event_log(task_id, event_type);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_run_segment
+    ON event_log(task_id, json_extract(payload_json, '$.segmentId'))
+    WHERE event_type = 'run.started';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_queue_item
+    ON event_log(task_id, json_extract(payload_json, '$.queueItemId'))
+    WHERE event_type = 'message.queued';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_permission_request
+    ON event_log(task_id, json_extract(payload_json, '$.requestId'))
+    WHERE event_type = 'permission.requested';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_subagent_actor
+    ON event_log(task_id, json_extract(payload_json, '$.actorId'))
+    WHERE event_type = 'subagent.spawned';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_workspace_lease
+    ON event_log(task_id, json_extract(payload_json, '$.leaseId'))
+    WHERE event_type = 'workspace.acquired';
+
 CREATE TABLE IF NOT EXISTS command_inbox (
     command_id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
-    idempotency_key TEXT NOT NULL UNIQUE,
+    principal_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
     command_hash TEXT NOT NULL,
     expected_stream_version INTEGER NOT NULL,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('processing', 'accepted', 'rejected')),
     accepted_at TEXT NOT NULL,
     completed_at TEXT,
-    outcome_json TEXT
+    outcome_json TEXT,
+    result_stream_version INTEGER,
+    committed_offset INTEGER,
+    event_count INTEGER,
+    UNIQUE(task_id, principal_id, idempotency_key),
+    CHECK(
+        (status = 'processing'
+            AND completed_at IS NULL
+            AND outcome_json IS NULL
+            AND result_stream_version IS NULL
+            AND committed_offset IS NULL
+            AND event_count IS NULL)
+        OR
+        (status IN ('accepted', 'rejected')
+            AND completed_at IS NOT NULL
+            AND outcome_json IS NOT NULL
+            AND result_stream_version IS NOT NULL
+            AND committed_offset IS NOT NULL
+            AND event_count IS NOT NULL
+            AND (
+                (status = 'accepted' AND event_count > 0)
+                OR (status = 'rejected' AND event_count = 0)
+            ))
+    )
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS task_projection (
     task_id TEXT PRIMARY KEY,
     last_global_offset INTEGER NOT NULL,
-    projection_json TEXT NOT NULL
+    projection_json TEXT NOT NULL,
+    projection_digest TEXT NOT NULL
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS run_projection (
@@ -125,4 +173,4 @@ CREATE TABLE IF NOT EXISTS workspace_leases (
     expires_at TEXT,
     lease_json TEXT NOT NULL
 ) STRICT;
-"#;
+";
