@@ -515,6 +515,16 @@ fn runtime_tool_route_kind(kind: CapabilityRouteKind) -> String {
         CapabilityRouteKind::TextToSpeech => "textToSpeech".to_owned(),
         CapabilityRouteKind::SpeechToText => "speechToText".to_owned(),
         CapabilityRouteKind::MusicGeneration => "musicGeneration".to_owned(),
+        CapabilityRouteKind::Moderation => "moderation".to_owned(),
+        CapabilityRouteKind::FileManagement => "fileManagement".to_owned(),
+        CapabilityRouteKind::VectorStoreManagement => "vectorStoreManagement".to_owned(),
+        CapabilityRouteKind::BatchJob => "batchJob".to_owned(),
+        CapabilityRouteKind::FineTuningJob => "fineTuningJob".to_owned(),
+        CapabilityRouteKind::EvalRun => "evalRun".to_owned(),
+        CapabilityRouteKind::ContainerSession => "containerSession".to_owned(),
+        CapabilityRouteKind::RealtimeSession => "realtimeSession".to_owned(),
+        CapabilityRouteKind::AdminOperation => "adminOperation".to_owned(),
+        CapabilityRouteKind::WebhookVerification => "webhookVerification".to_owned(),
     }
 }
 

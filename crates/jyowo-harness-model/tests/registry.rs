@@ -1,12 +1,14 @@
 use chrono::NaiveDate;
 #[cfg(feature = "zhipu")]
 use harness_model::ModelLifecycle;
+#[cfg(feature = "minimax")]
+use harness_model::ModelProtocol;
 #[cfg(any(feature = "zhipu", feature = "minimax"))]
 use harness_model::ProviderServiceExecution;
 use harness_model::{
     build_provider, model_catalog_entries, provider_catalog_entries, provider_inventory_entries,
-    resolve_model_descriptor, ConversationModelCapability, ModelModality, ModelProtocol,
-    ModelRuntimeSemantics, ProviderBuildConfig, ProviderRegistryError, ProviderServiceCategory,
+    resolve_model_descriptor, ConversationModelCapability, ModelModality, ModelRuntimeSemantics,
+    ProviderBuildConfig, ProviderRegistryError, ProviderServiceCategory,
     ReasoningProtocolSemantics,
 };
 
@@ -219,6 +221,58 @@ fn provider_catalog_auth_schemes_match_runtime_adapters() {
         catalog_auth_scheme(&entries, "local-llama"),
         harness_model::ProviderAuthScheme::None
     );
+}
+
+#[cfg(feature = "openai")]
+#[test]
+fn openai_catalog_declares_full_platform_service_surface() {
+    let entries = provider_catalog_entries();
+    let openai = entries
+        .iter()
+        .find(|entry| entry.provider_id == "openai")
+        .expect("openai provider should be catalogued");
+    let operation_ids = openai
+        .service_capabilities
+        .iter()
+        .map(|capability| capability.operation_id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+
+    for required in [
+        "openai.responses.create",
+        "openai.images.generate",
+        "openai.videos.create",
+        "openai.audio.speech.create",
+        "openai.audio.transcriptions.create",
+        "openai.embeddings.create",
+        "openai.moderations.create",
+        "openai.files.create",
+        "openai.uploads.create",
+        "openai.vector_stores.search",
+        "openai.batches.create",
+        "openai.fine_tuning.jobs.create",
+        "openai.evals.runs.create",
+        "openai.containers.create",
+        "openai.realtime.client_secrets.create",
+        "openai.admin.organization.audit_logs.list",
+        "openai.webhooks.unwrap",
+    ] {
+        assert!(operation_ids.contains(required), "{required} is missing");
+    }
+
+    assert!(openai
+        .service_capabilities
+        .iter()
+        .any(
+            |capability| capability.category == ProviderServiceCategory::Embedding
+                && capability.output_artifact == ModelModality::Embedding
+        ));
+    assert!(openai
+        .service_capabilities
+        .iter()
+        .any(
+            |capability| capability.category == ProviderServiceCategory::Realtime
+                && capability.requires_polling == false
+        ));
 }
 
 #[test]

@@ -31,6 +31,9 @@ type ModelConfigDialogProps = {
 }
 
 type ModelProtocol = NonNullable<ProviderSettingsRequest['protocol']>
+type OpenAiResponsesOptions = NonNullable<
+  NonNullable<ProviderSettingsRequest['modelOptions']>['openaiResponses']
+>
 
 type ModelConfigFormValues = {
   advancedBodyJson: string
@@ -73,6 +76,31 @@ type ModelConfigFormValues = {
   contextManagementJson: string
   anthropicAdvancedJson: string
   userId: string
+  openaiAdvancedJson: string
+  openaiBackground: boolean
+  openaiConversationJson: string
+  openaiInclude: string
+  openaiInstructions: string
+  openaiMaxToolCalls: string
+  openaiMetadataJson: string
+  openaiParallelToolCalls: boolean
+  openaiPromptCacheKey: string
+  openaiPromptCacheRetention: string
+  openaiPromptJson: string
+  openaiReasoningContext: string
+  openaiReasoningEffort: string
+  openaiReasoningSummary: string
+  openaiSafetyIdentifier: string
+  openaiServiceTier: string
+  openaiStore: boolean
+  openaiStrictToolSchemas: boolean
+  openaiTextFormatJson: string
+  openaiTextVerbosity: string
+  openaiToolChoiceJson: string
+  openaiTopLogprobs: string
+  openaiTopP: string
+  openaiTruncation: string
+  openaiUser: string
   webExtractor: boolean
   webSearch: boolean
 }
@@ -108,6 +136,7 @@ export function ModelConfigDialog({
     [defaultProvider, providerId, providers],
   )
   const isQwen = selectedProvider?.providerId === 'qwen'
+  const isOpenAI = selectedProvider?.providerId === 'openai'
   const isAnthropic = selectedProvider?.providerId === 'anthropic'
   const isDeepSeek = selectedProvider?.providerId === 'deepseek'
   const isZhipu = selectedProvider?.providerId === 'zhipu'
@@ -146,7 +175,7 @@ export function ModelConfigDialog({
       : []
   const serviceTierOptions = isDoubao
     ? ['fast', 'auto', 'default']
-    : providerCapabilityMetadata?.serviceTiers ?? ['auto', 'standard_only']
+    : (providerCapabilityMetadata?.serviceTiers ?? ['auto', 'standard_only'])
   const supportedParameters = useMemo(
     () =>
       new Set(
@@ -198,6 +227,19 @@ export function ModelConfigDialog({
       request.setDefault = profile.isDefault
     }
     request.modelOptions = {}
+    if (values.providerId === 'openai') {
+      try {
+        const openaiResponses = openAiResponsesOptionsFromValues(values)
+        if (hasOpenAiResponsesOptions(openaiResponses)) {
+          request.modelOptions = { openaiResponses }
+        }
+      } catch (error) {
+        setError('root', {
+          message: error instanceof Error ? error.message : 'Invalid OpenAI options',
+        })
+        return
+      }
+    }
     if (displayName) {
       request.displayName = displayName
     }
@@ -206,7 +248,9 @@ export function ModelConfigDialog({
     }
     try {
       const providerDefaults = providerDefaultsFromValues(values, supportedParameters)
-      if (providerPersistsProtocol(values.providerId)) {
+      if (values.providerId === 'openai') {
+        // OpenAI Responses request fields are typed model options, not provider defaults.
+      } else if (providerPersistsProtocol(values.providerId)) {
         request.protocol = values.protocol
         request.providerDefaults = providerDefaults
       } else if (hasProviderDefaults(providerDefaults)) {
@@ -241,7 +285,7 @@ export function ModelConfigDialog({
 
   return (
     <Dialog onOpenChange={changeOpen} open={open}>
-      <DialogContent className="w-[min(calc(100vw-2rem),36rem)]">
+      <DialogContent className="max-h-[calc(100vh-2rem)] w-[min(calc(100vw-2rem),36rem)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
             {profile ? t('models.configDialog.editTitle') : t('provider.createTitle')}
@@ -422,7 +466,184 @@ export function ModelConfigDialog({
             </div>
           ) : null}
 
-          {!isQwen && !isDeepSeek && supportedParameters.size > 0 ? (
+          {isOpenAI ? (
+            <div className="grid gap-3 rounded-sm border border-border p-3 text-sm">
+              <span className="font-medium">OpenAI Responses options</span>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-1" htmlFor="provider-openai-reasoning-effort">
+                  <span className="font-medium">OpenAI reasoning effort</span>
+                  <Select
+                    id="provider-openai-reasoning-effort"
+                    {...register('openaiReasoningEffort')}
+                  >
+                    <option value="">{t('provider.default')}</option>
+                    <option value="minimal">minimal</option>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                  </Select>
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-reasoning-summary">
+                  <span className="font-medium">OpenAI reasoning summary</span>
+                  <Select
+                    id="provider-openai-reasoning-summary"
+                    {...register('openaiReasoningSummary')}
+                  >
+                    <option value="">{t('provider.default')}</option>
+                    <option value="auto">auto</option>
+                    <option value="concise">concise</option>
+                    <option value="detailed">detailed</option>
+                  </Select>
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-reasoning-context">
+                  <span className="font-medium">OpenAI reasoning context</span>
+                  <Input
+                    id="provider-openai-reasoning-context"
+                    {...register('openaiReasoningContext')}
+                  />
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-text-verbosity">
+                  <span className="font-medium">OpenAI text verbosity</span>
+                  <Select id="provider-openai-text-verbosity" {...register('openaiTextVerbosity')}>
+                    <option value="">{t('provider.default')}</option>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                  </Select>
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-service-tier">
+                  <span className="font-medium">OpenAI service tier</span>
+                  <Select id="provider-openai-service-tier" {...register('openaiServiceTier')}>
+                    <option value="">{t('provider.default')}</option>
+                    <option value="auto">auto</option>
+                    <option value="default">default</option>
+                    <option value="flex">flex</option>
+                    <option value="priority">priority</option>
+                  </Select>
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-truncation">
+                  <span className="font-medium">OpenAI truncation</span>
+                  <Select id="provider-openai-truncation" {...register('openaiTruncation')}>
+                    <option value="">{t('provider.default')}</option>
+                    <option value="auto">auto</option>
+                    <option value="disabled">disabled</option>
+                  </Select>
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-prompt-cache-key">
+                  <span className="font-medium">OpenAI prompt cache key</span>
+                  <Input
+                    id="provider-openai-prompt-cache-key"
+                    {...register('openaiPromptCacheKey')}
+                  />
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-prompt-cache-retention">
+                  <span className="font-medium">OpenAI prompt cache retention</span>
+                  <Input
+                    id="provider-openai-prompt-cache-retention"
+                    {...register('openaiPromptCacheRetention')}
+                  />
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-instructions">
+                  <span className="font-medium">OpenAI instructions</span>
+                  <Input id="provider-openai-instructions" {...register('openaiInstructions')} />
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-include">
+                  <span className="font-medium">OpenAI include</span>
+                  <Input id="provider-openai-include" {...register('openaiInclude')} />
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-max-tool-calls">
+                  <span className="font-medium">OpenAI max tool calls</span>
+                  <Input
+                    id="provider-openai-max-tool-calls"
+                    inputMode="numeric"
+                    {...register('openaiMaxToolCalls')}
+                  />
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-top-logprobs">
+                  <span className="font-medium">OpenAI top logprobs</span>
+                  <Input
+                    id="provider-openai-top-logprobs"
+                    inputMode="numeric"
+                    {...register('openaiTopLogprobs')}
+                  />
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-top-p">
+                  <span className="font-medium">OpenAI top P</span>
+                  <Input
+                    id="provider-openai-top-p"
+                    inputMode="decimal"
+                    {...register('openaiTopP')}
+                  />
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-user">
+                  <span className="font-medium">OpenAI user</span>
+                  <Input id="provider-openai-user" {...register('openaiUser')} />
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-safety-identifier">
+                  <span className="font-medium">OpenAI safety identifier</span>
+                  <Input
+                    id="provider-openai-safety-identifier"
+                    {...register('openaiSafetyIdentifier')}
+                  />
+                </label>
+              </div>
+              <div className="grid gap-2">
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" {...register('openaiBackground')} />
+                  <span>OpenAI background mode</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" {...register('openaiStore')} />
+                  <span>OpenAI store response</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" {...register('openaiParallelToolCalls')} />
+                  <span>OpenAI parallel tool calls</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" {...register('openaiStrictToolSchemas')} />
+                  <span>OpenAI strict tool schemas</span>
+                </label>
+              </div>
+              <div className="grid gap-3">
+                <label className="grid gap-1" htmlFor="provider-openai-metadata-json">
+                  <span className="font-medium">OpenAI metadata JSON</span>
+                  <Input id="provider-openai-metadata-json" {...register('openaiMetadataJson')} />
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-conversation-json">
+                  <span className="font-medium">OpenAI conversation JSON</span>
+                  <Input
+                    id="provider-openai-conversation-json"
+                    {...register('openaiConversationJson')}
+                  />
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-prompt-json">
+                  <span className="font-medium">OpenAI prompt JSON</span>
+                  <Input id="provider-openai-prompt-json" {...register('openaiPromptJson')} />
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-tool-choice-json">
+                  <span className="font-medium">OpenAI tool choice JSON</span>
+                  <Input
+                    id="provider-openai-tool-choice-json"
+                    {...register('openaiToolChoiceJson')}
+                  />
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-text-format-json">
+                  <span className="font-medium">OpenAI text format JSON</span>
+                  <Input
+                    id="provider-openai-text-format-json"
+                    {...register('openaiTextFormatJson')}
+                  />
+                </label>
+                <label className="grid gap-1" htmlFor="provider-openai-advanced-json">
+                  <span className="font-medium">OpenAI advanced JSON</span>
+                  <Input id="provider-openai-advanced-json" {...register('openaiAdvancedJson')} />
+                </label>
+              </div>
+            </div>
+          ) : null}
+
+          {!isQwen && !isDeepSeek && !isOpenAI && supportedParameters.size > 0 ? (
             <div className="grid gap-3 rounded-sm border border-border p-3 text-sm">
               <span className="font-medium">{t('provider.providerOptions')}</span>
               {isDoubao && supportedParameters.has('thinking') ? (
@@ -792,6 +1013,7 @@ function formValuesFromProfile(
   const defaults = qwenDefaultsFromProfile(profile)
   const providerDefaults = providerOptionDefaultsFromProfile(profile)
   const advancedDefaults = advancedProviderDefaultsFromProfile(profile)
+  const openaiDefaults = openAiResponsesDefaultsFromProfile(profile)
   return {
     advancedBodyJson: advancedDefaults.body,
     baseUrl: profile?.baseUrl ?? defaultProvider?.defaultBaseUrl ?? '',
@@ -810,6 +1032,31 @@ function formValuesFromProfile(
     metadataJson: providerDefaults.metadataJson,
     maxTokens: providerDefaults.maxTokens,
     modelId: profile?.modelId ?? defaultModel?.modelId ?? '',
+    openaiAdvancedJson: openaiDefaults.advancedJson,
+    openaiBackground: openaiDefaults.background,
+    openaiConversationJson: openaiDefaults.conversationJson,
+    openaiInclude: openaiDefaults.include,
+    openaiInstructions: openaiDefaults.instructions,
+    openaiMaxToolCalls: openaiDefaults.maxToolCalls,
+    openaiMetadataJson: openaiDefaults.metadataJson,
+    openaiParallelToolCalls: openaiDefaults.parallelToolCalls,
+    openaiPromptCacheKey: openaiDefaults.promptCacheKey,
+    openaiPromptCacheRetention: openaiDefaults.promptCacheRetention,
+    openaiPromptJson: openaiDefaults.promptJson,
+    openaiReasoningContext: openaiDefaults.reasoningContext,
+    openaiReasoningEffort: openaiDefaults.reasoningEffort,
+    openaiReasoningSummary: openaiDefaults.reasoningSummary,
+    openaiSafetyIdentifier: openaiDefaults.safetyIdentifier,
+    openaiServiceTier: openaiDefaults.serviceTier,
+    openaiStore: openaiDefaults.store,
+    openaiStrictToolSchemas: openaiDefaults.strictToolSchemas,
+    openaiTextFormatJson: openaiDefaults.textFormatJson,
+    openaiTextVerbosity: openaiDefaults.textVerbosity,
+    openaiToolChoiceJson: openaiDefaults.toolChoiceJson,
+    openaiTopLogprobs: openaiDefaults.topLogprobs,
+    openaiTopP: openaiDefaults.topP,
+    openaiTruncation: openaiDefaults.truncation,
+    openaiUser: openaiDefaults.user,
     outputEffort: providerDefaults.outputEffort,
     performanceLatency: providerDefaults.performanceLatency,
     protocol: profile?.protocol ?? defaultProtocolForProvider(defaultProvider),
@@ -968,6 +1215,141 @@ function providerOptionDefaultsFromProfile(profile: ProviderConfig | null | unde
     toolStream: typeof body.tool_stream === 'boolean' ? String(body.tool_stream) : '',
     userId: typeof body.user_id === 'string' ? body.user_id : '',
   }
+}
+
+function openAiResponsesDefaultsFromProfile(profile: ProviderConfig | null | undefined) {
+  const options = profile?.modelOptions?.openaiResponses
+  const reasoning = isRecord(options?.reasoning) ? options.reasoning : null
+  const text = isRecord(options?.text) ? options.text : null
+
+  return {
+    advancedJson: '',
+    background: options?.background === true,
+    conversationJson: jsonField(options?.conversation),
+    include: Array.isArray(options?.include) ? options.include.join(',') : '',
+    instructions: typeof options?.instructions === 'string' ? options.instructions : '',
+    maxToolCalls: firstStringable(options?.maxToolCalls),
+    metadataJson: jsonField(options?.metadata),
+    parallelToolCalls: options?.parallelToolCalls === true,
+    promptCacheKey: typeof options?.promptCacheKey === 'string' ? options.promptCacheKey : '',
+    promptCacheRetention:
+      typeof options?.promptCacheRetention === 'string' ? options.promptCacheRetention : '',
+    promptJson: jsonField(options?.prompt),
+    reasoningContext: typeof reasoning?.context === 'string' ? reasoning.context : '',
+    reasoningEffort: typeof reasoning?.effort === 'string' ? reasoning.effort : '',
+    reasoningSummary: typeof reasoning?.summary === 'string' ? reasoning.summary : '',
+    safetyIdentifier: typeof options?.safetyIdentifier === 'string' ? options.safetyIdentifier : '',
+    serviceTier: typeof options?.serviceTier === 'string' ? options.serviceTier : '',
+    store: options?.store === true,
+    strictToolSchemas: options?.strictToolSchemas === true,
+    textFormatJson: jsonField(text?.format),
+    textVerbosity: typeof text?.verbosity === 'string' ? text.verbosity : '',
+    toolChoiceJson: jsonField(options?.toolChoice),
+    topLogprobs: firstStringable(options?.topLogprobs),
+    topP: firstStringable(options?.topP),
+    truncation: typeof options?.truncation === 'string' ? options.truncation : '',
+    user: typeof options?.user === 'string' ? options.user : '',
+  }
+}
+
+function openAiResponsesOptionsFromValues(values: ModelConfigFormValues): OpenAiResponsesOptions {
+  const options: OpenAiResponsesOptions = {}
+  const reasoning: NonNullable<OpenAiResponsesOptions['reasoning']> = {}
+  const text: NonNullable<OpenAiResponsesOptions['text']> = {}
+  const include = parseList(values.openaiInclude)
+  const maxToolCalls = parseNumber(values.openaiMaxToolCalls)
+  const topLogprobs = parseNumber(values.openaiTopLogprobs)
+  const topP = parseNumber(values.openaiTopP)
+
+  if (values.openaiBackground) {
+    options.background = true
+  }
+  if (values.openaiConversationJson.trim()) {
+    options.conversation = parseJsonValue(values.openaiConversationJson, 'OpenAI conversation JSON')
+  }
+  if (include.length > 0) {
+    options.include = include
+  }
+  if (values.openaiInstructions.trim()) {
+    options.instructions = values.openaiInstructions.trim()
+  }
+  if (maxToolCalls !== null) {
+    options.maxToolCalls = maxToolCalls
+  }
+  if (values.openaiPromptJson.trim()) {
+    options.prompt = parseJsonValue(values.openaiPromptJson, 'OpenAI prompt JSON')
+  }
+  if (values.openaiPromptCacheKey.trim()) {
+    options.promptCacheKey = values.openaiPromptCacheKey.trim()
+  }
+  if (values.openaiPromptCacheRetention.trim()) {
+    options.promptCacheRetention = values.openaiPromptCacheRetention.trim()
+  }
+  if (values.openaiReasoningEffort) {
+    reasoning.effort = values.openaiReasoningEffort
+  }
+  if (values.openaiReasoningSummary) {
+    reasoning.summary = values.openaiReasoningSummary
+  }
+  if (values.openaiReasoningContext.trim()) {
+    reasoning.context = values.openaiReasoningContext.trim()
+  }
+  if (Object.keys(reasoning).length > 0) {
+    options.reasoning = reasoning
+  }
+  if (values.openaiSafetyIdentifier.trim()) {
+    options.safetyIdentifier = values.openaiSafetyIdentifier.trim()
+  }
+  if (values.openaiServiceTier) {
+    options.serviceTier = values.openaiServiceTier
+  }
+  if (values.openaiTextVerbosity) {
+    text.verbosity = values.openaiTextVerbosity
+  }
+  if (values.openaiTextFormatJson.trim()) {
+    text.format = parseJsonObject(
+      values.openaiTextFormatJson,
+      'OpenAI text format JSON',
+    ) as NonNullable<OpenAiResponsesOptions['text']>['format']
+  }
+  if (Object.keys(text).length > 0) {
+    options.text = text
+  }
+  if (topLogprobs !== null) {
+    options.topLogprobs = topLogprobs
+  }
+  if (topP !== null) {
+    options.topP = topP
+  }
+  if (values.openaiToolChoiceJson.trim()) {
+    options.toolChoice = parseJsonValue(values.openaiToolChoiceJson, 'OpenAI tool choice JSON')
+  }
+  if (values.openaiParallelToolCalls) {
+    options.parallelToolCalls = true
+  }
+  if (values.openaiTruncation) {
+    options.truncation = values.openaiTruncation
+  }
+  if (values.openaiStore) {
+    options.store = true
+  }
+  if (values.openaiMetadataJson.trim()) {
+    options.metadata = parseStringRecord(values.openaiMetadataJson, 'OpenAI metadata JSON')
+  }
+  if (values.openaiUser.trim()) {
+    options.user = values.openaiUser.trim()
+  }
+  if (values.openaiStrictToolSchemas) {
+    options.strictToolSchemas = true
+  }
+  if (values.openaiAdvancedJson.trim()) {
+    mergeAdvancedOpenAiResponsesOptions(options, values.openaiAdvancedJson)
+  }
+  return options
+}
+
+function hasOpenAiResponsesOptions(options: OpenAiResponsesOptions): boolean {
+  return Object.keys(options).length > 0
 }
 
 function providerDefaultsFromValues(
@@ -1261,6 +1643,31 @@ function resetProviderOptionFields(setValue: UseFormSetValue<ModelConfigFormValu
   setValue('contextManagementJson', '')
   setValue('anthropicAdvancedJson', '')
   setValue('userId', '')
+  setValue('openaiAdvancedJson', '')
+  setValue('openaiBackground', false)
+  setValue('openaiConversationJson', '')
+  setValue('openaiInclude', '')
+  setValue('openaiInstructions', '')
+  setValue('openaiMaxToolCalls', '')
+  setValue('openaiMetadataJson', '')
+  setValue('openaiParallelToolCalls', false)
+  setValue('openaiPromptCacheKey', '')
+  setValue('openaiPromptCacheRetention', '')
+  setValue('openaiPromptJson', '')
+  setValue('openaiReasoningContext', '')
+  setValue('openaiReasoningEffort', '')
+  setValue('openaiReasoningSummary', '')
+  setValue('openaiSafetyIdentifier', '')
+  setValue('openaiServiceTier', '')
+  setValue('openaiStore', false)
+  setValue('openaiStrictToolSchemas', false)
+  setValue('openaiTextFormatJson', '')
+  setValue('openaiTextVerbosity', '')
+  setValue('openaiToolChoiceJson', '')
+  setValue('openaiTopLogprobs', '')
+  setValue('openaiTopP', '')
+  setValue('openaiTruncation', '')
+  setValue('openaiUser', '')
   setValue('webSearch', false)
   setValue('codeInterpreter', false)
   setValue('webExtractor', false)
@@ -1283,7 +1690,9 @@ function getAnthropicCapabilityMetadata(value: unknown): AnthropicCapabilityMeta
       ? Object.fromEntries(
           Object.entries(value.protocolSupportedParameters).filter(
             ([protocol, parameters]) =>
-              (protocol === 'responses' || protocol === 'chat_completions' || protocol === 'messages') &&
+              (protocol === 'responses' ||
+                protocol === 'chat_completions' ||
+                protocol === 'messages') &&
               Array.isArray(parameters) &&
               parameters.every((parameter) => typeof parameter === 'string'),
           ),
@@ -1323,6 +1732,18 @@ function parseJsonObject(value: string, label: string): Record<string, unknown> 
     throw new Error(`${label} must be a JSON object`)
   }
   return parsed
+}
+
+function parseStringRecord(value: string, label: string): Record<string, string> {
+  const parsed = parseJsonObject(value, label)
+  const record: Record<string, string> = {}
+  for (const [key, fieldValue] of Object.entries(parsed)) {
+    if (typeof fieldValue !== 'string') {
+      throw new Error(`${label} values must be strings`)
+    }
+    record[key] = fieldValue
+  }
+  return record
 }
 
 function mergeAdvancedAnthropicBody(body: Record<string, unknown>, value: string) {
@@ -1439,6 +1860,30 @@ function parseJsonRecord(value: string): Record<string, unknown> {
 
 function stringifyJsonRecord(value: Record<string, unknown>): string {
   return Object.keys(value).length > 0 ? JSON.stringify(value, null, 2) : ''
+}
+
+function mergeAdvancedOpenAiResponsesOptions(options: OpenAiResponsesOptions, value: string) {
+  const advanced = parseJsonObject(value, 'OpenAI advanced JSON') as OpenAiResponsesOptions
+  for (const forbidden of [
+    'model',
+    'input',
+    'stream',
+    'tools',
+    'max_output_tokens',
+    'previous_response_id',
+  ]) {
+    if (Object.hasOwn(advanced, forbidden)) {
+      throw new Error(`OpenAI advanced JSON must not include ${forbidden}`)
+    }
+  }
+  for (const [key, fieldValue] of Object.entries(advanced) as Array<
+    [keyof OpenAiResponsesOptions, OpenAiResponsesOptions[keyof OpenAiResponsesOptions]]
+  >) {
+    if (Object.hasOwn(options, key)) {
+      throw new Error(`OpenAI advanced JSON duplicates ${String(key)}`)
+    }
+    options[key] = fieldValue as never
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

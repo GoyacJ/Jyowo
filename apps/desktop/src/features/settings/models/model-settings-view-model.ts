@@ -192,6 +192,17 @@ const capabilityRouteKindOrder = [
   'speech_to_text',
   'text_to_speech',
   'music_generation',
+  'embedding_generation',
+  'moderation',
+  'file_management',
+  'vector_store_management',
+  'batch_job',
+  'fine_tuning_job',
+  'eval_run',
+  'container_session',
+  'realtime_session',
+  'admin_operation',
+  'webhook_verification',
 ] as const satisfies readonly CapabilityRouteKind[]
 
 const ZERO_USAGE: UsageSnapshot = {

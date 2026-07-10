@@ -2,8 +2,9 @@ use harness_contracts::{
     validate_provider_capability_route, CapabilityRouteKind,
     ListProviderCapabilityRouteOptionsResponse, ModelModality, ProviderCapabilityRoute,
     ProviderCapabilityRouteOption, ProviderCapabilityRouteSettings,
-    ProviderCredentialResolveContext, ProviderServiceAdapterAvailability, ProviderServiceCostRisk,
-    ProviderServiceExecution, RunId, SessionId, TenantId, ToolServiceBinding,
+    ProviderCredentialResolveContext, ProviderServiceAdapterAvailability, ProviderServiceCategory,
+    ProviderServiceCostRisk, ProviderServiceExecution, RunId, SessionId, TenantId,
+    ToolServiceBinding,
 };
 use serde_json::json;
 
@@ -24,6 +25,42 @@ fn capability_route_kind_serializes_as_snake_case() {
     assert_eq!(
         serde_json::to_value(CapabilityRouteKind::FileOperation).unwrap(),
         json!("file_operation")
+    );
+    assert_eq!(
+        serde_json::to_value(CapabilityRouteKind::RealtimeSession).unwrap(),
+        json!("realtime_session")
+    );
+    assert_eq!(
+        serde_json::to_value(CapabilityRouteKind::AdminOperation).unwrap(),
+        json!("admin_operation")
+    );
+}
+
+#[test]
+fn openai_platform_service_categories_serialize_as_snake_case() {
+    assert_eq!(
+        serde_json::to_value(ProviderServiceCategory::ThreeD).unwrap(),
+        json!("three_d")
+    );
+    assert_eq!(
+        serde_json::to_value(ProviderServiceCategory::Embedding).unwrap(),
+        json!("embedding")
+    );
+    assert_eq!(
+        serde_json::to_value(ProviderServiceCategory::VectorStore).unwrap(),
+        json!("vector_store")
+    );
+    assert_eq!(
+        serde_json::to_value(ProviderServiceCategory::FineTuning).unwrap(),
+        json!("fine_tuning")
+    );
+    assert_eq!(
+        serde_json::to_value(ProviderServiceCategory::Realtime).unwrap(),
+        json!("realtime")
+    );
+    assert_eq!(
+        serde_json::to_value(ProviderServiceCategory::Admin).unwrap(),
+        json!("admin")
     );
 }
 
