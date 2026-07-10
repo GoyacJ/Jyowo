@@ -370,6 +370,20 @@ impl ModelRuntimeSemantics {
     }
 
     #[must_use]
+    pub fn qwen_dashscope_default() -> Self {
+        Self {
+            protocol: ModelProtocol::Dashscope,
+            tool_protocol: ToolProtocolSemantics::None,
+            reasoning_protocol: ReasoningProtocolSemantics::PublicThinking,
+            streaming_protocol: StreamingProtocolSemantics::Sse,
+            cache_protocol: CacheProtocolSemantics::None,
+            media_protocol: MediaProtocolSemantics::ProviderNative,
+            output_protocol: OutputProtocolSemantics::TextAndToolUse,
+            provider_continuation_dialect: None,
+        }
+    }
+
+    #[must_use]
     pub fn gemini_default() -> Self {
         Self {
             protocol: ModelProtocol::GenerateContent,

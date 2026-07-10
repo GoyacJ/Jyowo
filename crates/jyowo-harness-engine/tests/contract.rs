@@ -175,6 +175,7 @@ impl ModelProvider for DummyModel {
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             protocol: harness_model::ModelProtocol::Messages,
+            supported_parameters: Vec::new(),
             lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "dummy".to_owned(),
             model_id: "dummy-model".to_owned(),

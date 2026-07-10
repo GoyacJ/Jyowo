@@ -865,6 +865,7 @@ export const enUS = {
       builtinTools: 'Built-in tools',
       enableThinking: 'Thinking',
       thinkingBudget: 'Thinking budget',
+      preserveThinking: 'Preserve thinking',
       reasoningEffort: 'Reasoning effort',
       outputEffort: 'Output effort',
       serviceTier: 'Service tier',

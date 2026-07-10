@@ -2223,8 +2223,18 @@ fn apply_protocol_override(
             descriptor.runtime_semantics = ModelRuntimeSemantics::openai_responses_default();
             Ok(descriptor)
         }
+        ModelProtocol::Messages => {
+            descriptor.protocol = ModelProtocol::Messages;
+            descriptor.runtime_semantics = ModelRuntimeSemantics::anthropic_messages_default();
+            Ok(descriptor)
+        }
+        ModelProtocol::Dashscope => {
+            descriptor.protocol = ModelProtocol::Dashscope;
+            descriptor.runtime_semantics = ModelRuntimeSemantics::qwen_dashscope_default();
+            Ok(descriptor)
+        }
         _ => Err(invalid_payload(
-            "Qwen protocol must be chat_completions or responses".to_owned(),
+            "Qwen protocol must be chat_completions, responses, messages or dashscope".to_owned(),
         )),
     }
 }
@@ -2885,7 +2895,10 @@ fn provider_default_body_fields(provider_id: &str) -> &'static [&'static str] {
         ],
         "qwen" => &[
             "enable_thinking",
+            "thinking_budget",
+            "preserve_thinking",
             "reasoning",
+            "thinking",
             "tools",
             "enable_search",
             "enable_code_interpreter",

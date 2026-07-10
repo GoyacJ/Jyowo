@@ -1647,6 +1647,7 @@ impl ModelProvider for EmptyModel {
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             protocol: harness_model::ModelProtocol::Messages,
+            supported_parameters: Vec::new(),
             lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "empty".to_owned(),
             model_id: "empty-model".to_owned(),
@@ -1820,6 +1821,7 @@ impl ModelProvider for DelegatingModel {
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             protocol: harness_model::ModelProtocol::Messages,
+            supported_parameters: Vec::new(),
             lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "delegating".to_owned(),
             model_id: "test-model".to_owned(),

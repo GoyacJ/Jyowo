@@ -862,6 +862,7 @@ export const zhCN = {
       builtinTools: '内置工具',
       enableThinking: '思考',
       thinkingBudget: '思考预算',
+      preserveThinking: '保留思考内容',
       reasoningEffort: '推理强度',
       outputEffort: '输出强度',
       serviceTier: '服务层级',

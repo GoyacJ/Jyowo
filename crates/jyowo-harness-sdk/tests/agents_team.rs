@@ -965,6 +965,7 @@ impl ModelProvider for ScriptedModel {
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             protocol: harness_model::ModelProtocol::Messages,
+            supported_parameters: Vec::new(),
             lifecycle: harness_model::ModelLifecycle::Stable,
             provider_id: "sdk-test".to_owned(),
             model_id: "base-model".to_owned(),

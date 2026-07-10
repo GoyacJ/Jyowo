@@ -361,6 +361,7 @@ impl ModelProvider for DeepSeekSemanticsProvider {
             model_id: "deepseek-v4-flash".to_owned(),
             display_name: "DeepSeek V4 Flash".to_owned(),
             protocol: ModelProtocol::ChatCompletions,
+            supported_parameters: Vec::new(),
             context_window: 128_000,
             max_output_tokens: 8_192,
             provider_declared_capability: ConversationModelCapability::default(),

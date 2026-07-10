@@ -179,6 +179,7 @@ const modelProtocolSchema = z.enum([
   'chat_completions',
   'responses',
   'messages',
+  'dashscope',
   'generate_content',
 ])
 const runModelSnapshotSchema = z

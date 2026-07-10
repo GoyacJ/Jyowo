@@ -213,6 +213,7 @@ fn model_protocol_prompt_name(protocol: ModelProtocol) -> &'static str {
         ModelProtocol::ChatCompletions => "chat_completions",
         ModelProtocol::Responses => "responses",
         ModelProtocol::Messages => "messages",
+        ModelProtocol::Dashscope => "dashscope",
         ModelProtocol::GenerateContent => "generate_content",
     }
 }

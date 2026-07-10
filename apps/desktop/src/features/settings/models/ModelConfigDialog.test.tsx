@@ -365,7 +365,7 @@ describe('ModelConfigDialog', () => {
 
   it('does not save Qwen Chat Completions web extractor fields for non-agent-max models', async () => {
     const saveProviderSettings = vi.fn().mockResolvedValue({
-      config: qwenProfile,
+      config: qwenFlashProfile,
       status: 'saved',
     })
     renderDialog({
@@ -373,7 +373,7 @@ describe('ModelConfigDialog', () => {
         ...createTestCommandClient(),
         saveProviderSettings,
       },
-      profile: qwenProfile,
+      profile: qwenFlashProfile,
     })
 
     const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
@@ -410,6 +410,7 @@ describe('ModelConfigDialog', () => {
     const reasoningEffort = within(dialog).getByLabelText('Reasoning effort')
     expect(within(reasoningEffort).getByRole('option', { name: 'None' })).toBeInTheDocument()
     expect(within(reasoningEffort).getByRole('option', { name: 'Minimal' })).toBeInTheDocument()
+    expect(within(reasoningEffort).queryByRole('option', { name: 'Low' })).not.toBeInTheDocument()
 
     fireEvent.change(reasoningEffort, { target: { value: 'minimal' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
@@ -424,6 +425,101 @@ describe('ModelConfigDialog', () => {
         },
       },
     })
+  })
+
+  it('exposes all official Qwen API modes', () => {
+    renderDialog({ profile: qwenProfile })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    const apiMode = within(dialog).getByLabelText('API mode')
+
+    expect(within(apiMode).getByRole('option', { name: 'Responses' })).toBeInTheDocument()
+    expect(within(apiMode).getByRole('option', { name: 'Chat Completions' })).toBeInTheDocument()
+    expect(within(apiMode).getByRole('option', { name: 'Messages' })).toBeInTheDocument()
+    expect(within(apiMode).getByRole('option', { name: 'DashScope' })).toBeInTheDocument()
+  })
+
+  it('saves Qwen Messages thinking as Anthropic-compatible body fields', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: qwenProfile,
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: qwenProfile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    fireEvent.change(within(dialog).getByLabelText('API mode'), {
+      target: { value: 'messages' },
+    })
+    fireEvent.click(within(dialog).getByLabelText('Thinking'))
+    fireEvent.change(within(dialog).getByLabelText('Thinking budget'), {
+      target: { value: '2048' },
+    })
+    fireEvent.click(within(dialog).getByLabelText('web_search'))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      configId: 'cfg-qwen',
+      protocol: 'messages',
+      providerDefaults: {
+        body: {
+          thinking: { type: 'enabled', budget_tokens: 2048 },
+        },
+      },
+    })
+    expect(saveProviderSettings.mock.calls[0][0].providerDefaults.body).not.toHaveProperty(
+      'enable_thinking',
+    )
+    expect(saveProviderSettings.mock.calls[0][0].providerDefaults.body).not.toHaveProperty('tools')
+  })
+
+  it('saves Qwen DashScope thinking and tool fields as flat defaults', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: qwenProfile,
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: qwenProfile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    fireEvent.change(within(dialog).getByLabelText('API mode'), {
+      target: { value: 'dashscope' },
+    })
+    fireEvent.click(within(dialog).getByLabelText('Thinking'))
+    fireEvent.change(within(dialog).getByLabelText('Thinking budget'), {
+      target: { value: '2048' },
+    })
+    fireEvent.click(within(dialog).getByLabelText('Preserve thinking'))
+    fireEvent.click(within(dialog).getByLabelText('web_search'))
+    fireEvent.click(within(dialog).getByLabelText('code_interpreter'))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      configId: 'cfg-qwen',
+      protocol: 'dashscope',
+      providerDefaults: {
+        body: {
+          enable_thinking: true,
+          thinking_budget: 2048,
+          preserve_thinking: true,
+          enable_search: true,
+          enable_code_interpreter: true,
+        },
+      },
+    })
+    expect(saveProviderSettings.mock.calls[0][0].providerDefaults.body).not.toHaveProperty('tools')
   })
 })
 
@@ -461,6 +557,12 @@ const qwen3Max = {
   ...gpt41,
   displayName: 'Qwen3 Max',
   modelId: 'qwen3-max',
+}
+
+const qwenFlash = {
+  ...gpt41,
+  displayName: 'Qwen Flash',
+  modelId: 'qwen-flash',
 }
 
 const catalog: ModelProviderCatalogResponse = {
@@ -515,7 +617,7 @@ const catalog: ModelProviderCatalogResponse = {
     {
       defaultBaseUrl: 'https://dashscope-us.aliyuncs.com/compatible-mode/v1',
       displayName: 'Qwen',
-      models: [qwen37Max, qwen3Max],
+      models: [qwen37Max, qwen3Max, qwenFlash],
       providerId: 'qwen',
       runtimeCapability: {
         authScheme: 'bearer',
@@ -590,4 +692,12 @@ const qwen3MaxProfile: ProviderConfig = {
   modelId: 'qwen3-max',
   displayName: 'Primary Qwen Max',
   modelDescriptor: qwen3Max,
+}
+
+const qwenFlashProfile: ProviderConfig = {
+  ...qwenProfile,
+  id: 'cfg-qwen-flash',
+  modelId: 'qwen-flash',
+  displayName: 'Primary Qwen Flash',
+  modelDescriptor: qwenFlash,
 }

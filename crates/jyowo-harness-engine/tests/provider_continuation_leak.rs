@@ -353,6 +353,7 @@ impl ModelProvider for RecordingModel {
     fn supported_models(&self) -> Vec<ModelDescriptor> {
         vec![ModelDescriptor {
             protocol: ModelProtocol::ChatCompletions,
+            supported_parameters: Vec::new(),
             lifecycle: ModelLifecycle::Stable,
             provider_id: "deepseek".to_owned(),
             model_id: "deepseek-v4-flash".to_owned(),

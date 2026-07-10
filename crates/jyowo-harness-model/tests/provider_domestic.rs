@@ -46,6 +46,13 @@ fn request(model_id: &str) -> ModelRequest {
     }
 }
 
+fn request_with_protocol(model_id: &str, protocol: ModelProtocol) -> ModelRequest {
+    ModelRequest {
+        protocol,
+        ..request(model_id)
+    }
+}
+
 async fn assert_streaming_provider<P>(
     provider: P,
     model_id: &str,
@@ -634,6 +641,158 @@ provider_test!(
     "qwen3.7-max",
     "/chat/completions"
 );
+
+#[cfg(feature = "qwen")]
+#[tokio::test]
+async fn provider_qwen_streams_anthropic_compatible_messages() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/apps/anthropic/v1/messages"))
+        .and(header("authorization", "Bearer provider-key"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    concat!(
+                        "event: message_start\n",
+                        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"qwen3.7-max\",\"stop_reason\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n",
+                        "event: content_block_start\n",
+                        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+                        "event: content_block_delta\n",
+                        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+                        "event: message_delta\n",
+                        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+                        "event: message_stop\n",
+                        "data: {\"type\":\"message_stop\"}\n\n",
+                    ),
+                    "text/event-stream",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let provider = QwenProvider::from_api_key("provider-key").with_base_url(server.uri());
+    let events = provider
+        .infer(
+            request_with_protocol("qwen3.7-max", ModelProtocol::Messages),
+            InferContext::for_test(),
+        )
+        .await
+        .expect("Qwen messages request should start")
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(events.contains(&ModelStreamEvent::ContentBlockDelta {
+        index: 0,
+        delta: ContentDelta::Text("hi".to_owned()),
+    }));
+    assert!(events.contains(&ModelStreamEvent::MessageStop));
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["model"], "qwen3.7-max");
+    assert_eq!(body["messages"][0]["role"], "user");
+    assert_eq!(body["messages"][0]["content"][0]["text"], "hello");
+}
+
+#[cfg(feature = "qwen")]
+#[tokio::test]
+async fn provider_qwen_streams_dashscope_generation() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/services/aigc/text-generation/generation"))
+        .and(header("authorization", "Bearer provider-key"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    concat!(
+                        "data: {\"output\":{\"choices\":[{\"message\":{\"content\":\"hi\",\"reasoning_content\":\"think\"},\"finish_reason\":\"stop\"}]},\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}\n\n",
+                        "data: [DONE]\n\n",
+                    ),
+                    "text/event-stream",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let mut req = request_with_protocol("qwen3.7-max", ModelProtocol::Dashscope);
+    req.extra = json!({
+        "enable_thinking": true,
+        "thinking_budget": 2048,
+        "preserve_thinking": true,
+        "enable_search": true,
+        "search_options": { "search_strategy": "agent_max" }
+    });
+    let provider = QwenProvider::from_api_key("provider-key").with_base_url(server.uri());
+    let events = provider
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("Qwen DashScope request should start")
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(events.contains(&ModelStreamEvent::ContentBlockDelta {
+        index: 0,
+        delta: ContentDelta::Text("hi".to_owned()),
+    }));
+    assert!(events.contains(&ModelStreamEvent::ContentBlockDelta {
+        index: 1,
+        delta: ContentDelta::Thinking(ThinkingDelta {
+            text: Some("think".to_owned()),
+            provider_native: None,
+            signature: None,
+        }),
+    }));
+    assert!(events.contains(&ModelStreamEvent::MessageStop));
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["model"], "qwen3.7-max");
+    assert_eq!(body["input"]["messages"][0]["role"], "user");
+    assert_eq!(body["input"]["messages"][0]["content"], "hello");
+    assert_eq!(body["parameters"]["result_format"], "message");
+    assert_eq!(body["parameters"]["stream"], true);
+    assert_eq!(body["parameters"]["incremental_output"], true);
+    assert_eq!(body["parameters"]["enable_thinking"], true);
+    assert_eq!(body["parameters"]["thinking_budget"], 2048);
+    assert_eq!(body["parameters"]["preserve_thinking"], true);
+    assert_eq!(body["parameters"]["enable_search"], true);
+    assert_eq!(
+        body["parameters"]["search_options"],
+        json!({ "search_strategy": "agent_max" })
+    );
+}
+
+#[cfg(feature = "qwen")]
+#[test]
+fn provider_qwen_catalog_includes_official_2026_text_models() {
+    let provider = QwenProvider::from_api_key("provider-key");
+    let models = provider
+        .supported_models()
+        .into_iter()
+        .map(|model| model.model_id)
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for model_id in [
+        "qwen3.7-plus-2026-05-26",
+        "qwen3.6-max-preview",
+        "qwen3-max-preview",
+        "qwen3-235b-a22b-thinking-2507",
+        "qwen3-next-80b-a3b-instruct",
+        "qwen3-coder-480b-a35b-instruct",
+        "qwen2.5-vl-72b-instruct",
+        "qwen2.5-14b-instruct-1m",
+        "qwen-mt-plus",
+        "qwen-long-latest",
+        "qwen-max",
+        "qwen-omni-turbo",
+    ] {
+        assert!(models.contains(model_id), "{model_id} should be listed");
+    }
+    assert!(!models.contains("qwen3.7-plus-2026-01-23"));
+    assert!(!models.contains("qwen3.6-35b-a3b"));
+}
 
 #[cfg(feature = "qwen")]
 #[test]

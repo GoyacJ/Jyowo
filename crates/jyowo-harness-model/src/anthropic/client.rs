@@ -7,7 +7,7 @@ use harness_contracts::{
     Message, MessagePart, MessageRole, ModelError, StopReason, ToolDescriptor, ToolResult,
     ToolResultPart, UsageSnapshot,
 };
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -29,12 +29,22 @@ const DEFAULT_MAX_TOKENS: u32 = 1024;
 const DEFAULT_CREDENTIAL_RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(60);
 const PROVIDER_ID: &str = "anthropic";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnthropicAuthHeader {
+    XApiKey,
+    Bearer,
+}
+
 #[derive(Clone)]
 pub struct AnthropicClient {
     http: reqwest::Client,
     api_key: SecretString,
     credential_resolver: Option<Arc<dyn ModelCredentialResolver>>,
+    provider_id: String,
     base_url: String,
+    messages_path: String,
+    auth_header: AnthropicAuthHeader,
+    extra_headers: std::collections::BTreeMap<String, String>,
     cooldown_until: Arc<Mutex<Option<Instant>>>,
 }
 
@@ -44,7 +54,11 @@ impl AnthropicClient {
             http: reqwest::Client::new(),
             api_key: SecretString::new(api_key.into().into_boxed_str()),
             credential_resolver: None,
+            provider_id: PROVIDER_ID.to_owned(),
             base_url: DEFAULT_BASE_URL.to_owned(),
+            messages_path: "/v1/messages".to_owned(),
+            auth_header: AnthropicAuthHeader::XApiKey,
+            extra_headers: std::collections::BTreeMap::new(),
             cooldown_until: Arc::new(Mutex::new(None)),
         }
     }
@@ -56,12 +70,43 @@ impl AnthropicClient {
     }
 
     #[must_use]
+    pub(crate) fn with_provider_id(mut self, provider_id: impl Into<String>) -> Self {
+        self.provider_id = provider_id.into();
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_messages_path(mut self, path: impl Into<String>) -> Self {
+        self.messages_path = path.into();
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_auth_header(mut self, auth_header: AnthropicAuthHeader) -> Self {
+        self.auth_header = auth_header;
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_extra_headers(
+        mut self,
+        headers: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        self.extra_headers = headers;
+        self
+    }
+
+    #[must_use]
     pub fn with_credential_resolver(mut self, resolver: Arc<dyn ModelCredentialResolver>) -> Self {
         self.credential_resolver = Some(resolver);
         self
     }
 
-    async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
+    pub(crate) async fn infer(
+        &self,
+        req: ModelRequest,
+        ctx: InferContext,
+    ) -> Result<ModelStream, ModelError> {
         validate_request(&req)?;
         let body = request_body(&req)?;
         let max_attempts = ctx.retry_policy.max_attempts.max(1);
@@ -154,7 +199,7 @@ impl AnthropicClient {
         resolver
             .pick(ModelCredentialPickContext {
                 tenant_id: ctx.tenant_id,
-                provider_id: PROVIDER_ID.to_owned(),
+                provider_id: self.provider_id.clone(),
                 model_id: req.model_id.clone(),
             })
             .await
@@ -170,8 +215,9 @@ impl AnthropicClient {
         let response = self
             .http
             .post(format!(
-                "{}/v1/messages",
-                self.base_url.trim_end_matches('/')
+                "{}{}",
+                self.base_url.trim_end_matches('/'),
+                self.messages_path
             ))
             .headers(self.headers(credential)?)
             .json(body)
@@ -191,15 +237,44 @@ impl AnthropicClient {
         let api_key = credential
             .map(|credential| &credential.secret)
             .unwrap_or(&self.api_key);
-        let api_key =
-            HeaderValue::from_str(api_key.expose_secret()).map_err(|error| AnthropicError {
-                error: ModelError::AuthExpired(error.to_string()),
-                class: ErrorClass::AuthExpired,
-                retry_after: None,
-            })?;
-        headers.insert("x-api-key", api_key);
+        match self.auth_header {
+            AnthropicAuthHeader::XApiKey => {
+                let api_key = HeaderValue::from_str(api_key.expose_secret()).map_err(|error| {
+                    AnthropicError {
+                        error: ModelError::AuthExpired(error.to_string()),
+                        class: ErrorClass::AuthExpired,
+                        retry_after: None,
+                    }
+                })?;
+                headers.insert("x-api-key", api_key);
+            }
+            AnthropicAuthHeader::Bearer => {
+                let value = format!("Bearer {}", api_key.expose_secret());
+                let auth = HeaderValue::from_str(&value).map_err(|error| AnthropicError {
+                    error: ModelError::AuthExpired(error.to_string()),
+                    class: ErrorClass::AuthExpired,
+                    retry_after: None,
+                })?;
+                headers.insert(AUTHORIZATION, auth);
+            }
+        }
         headers.insert("anthropic-version", HeaderValue::from_static(API_VERSION));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        for (name, value) in &self.extra_headers {
+            let name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| AnthropicError {
+                error: ModelError::InvalidRequest(format!("invalid provider header name: {error}")),
+                class: ErrorClass::Fatal,
+                retry_after: None,
+            })?;
+            let value = HeaderValue::from_str(value).map_err(|error| AnthropicError {
+                error: ModelError::InvalidRequest(format!(
+                    "invalid provider header value: {error}"
+                )),
+                class: ErrorClass::Fatal,
+                retry_after: None,
+            })?;
+            headers.insert(name, value);
+        }
         Ok(headers)
     }
 
