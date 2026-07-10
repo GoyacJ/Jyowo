@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
-use harness_contracts::{now, BlobId, ClientId, CommandId, QueueItemId, TaskId};
+use harness_contracts::{
+    now, BlobId, CheckpointId, ClientId, CommandId, QueueItemId, RunSegmentId, RunTerminalReason,
+    TaskId,
+};
 use harness_journal::{
     AcceptedCommand, BlobRead, CommandOutcome, CommandRejection, NewTaskEvent, TaskBlobStore,
-    TaskStore, TaskStoreError,
+    TaskCheckpoint, TaskStore, TaskStoreError,
 };
 use serde_json::json;
 
@@ -58,6 +61,81 @@ fn task_blobs_are_content_addressed_deduplicated_and_owned() {
     drop((reopened_blobs, reopened));
     cleanup(&database_path, &blob_root);
     let _ = std::fs::remove_dir_all(other_root);
+}
+
+#[test]
+fn corrupted_checkpoint_blob_ownership_cannot_roll_forward() {
+    let database_path = temp_path("checkpoint-ownership", "db");
+    let blob_root = temp_path("checkpoint-ownership", "blobs");
+    let store = Arc::new(TaskStore::open(&database_path).unwrap());
+    let task_a = TaskId::new();
+    let task_b = TaskId::new();
+    create_task(&store, task_a);
+    create_task(&store, task_b);
+    let blobs_a = TaskBlobStore::open(Arc::clone(&store), task_a, &blob_root).unwrap();
+    let blobs_b = TaskBlobStore::open(Arc::clone(&store), task_b, &blob_root).unwrap();
+    let blob_a = blobs_a.put("text/plain", b"task a context").unwrap();
+    let blob_b = blobs_b.put("text/plain", b"task b context").unwrap();
+    attach_blob(&store, task_a, 1, blob_a.id);
+    attach_blob(&store, task_b, 1, blob_b.id);
+    let segment_id = RunSegmentId::new();
+    store
+        .transact_command(supervisor_command(task_a, 2), |_| {
+            Ok(vec![NewTaskEvent::run_started(segment_id, now())])
+        })
+        .unwrap();
+    let checkpoint = TaskCheckpoint {
+        checkpoint_id: CheckpointId::new(),
+        task_id: task_a,
+        run_segment_id: segment_id,
+        committed_global_offset: store
+            .task_projection(task_a)
+            .unwrap()
+            .unwrap()
+            .last_global_offset,
+        context_cursor: 0,
+        queue_revision: 1,
+        workspace_baseline: None,
+        incomplete_tool_use_ids: Vec::new(),
+        child_actor_refs: Vec::new(),
+        context_blob_id: Some(blob_a.id),
+        created_at: now(),
+    };
+    store.save_checkpoint(&checkpoint).unwrap();
+    let checkpoint_count = table_count(&database_path, "checkpoints");
+
+    rusqlite::Connection::open(&database_path)
+        .unwrap()
+        .execute(
+            "UPDATE checkpoints
+             SET checkpoint_json = json_set(checkpoint_json, '$.contextBlobId', ?1)
+             WHERE checkpoint_id = ?2",
+            rusqlite::params![blob_b.id.to_string(), checkpoint.checkpoint_id.to_string()],
+        )
+        .unwrap();
+
+    assert!(matches!(
+        store.transact_command(supervisor_command(task_a, 3), |_| {
+            Ok(vec![NewTaskEvent::run_completed(
+                segment_id,
+                now(),
+                RunTerminalReason::Completed,
+                false,
+            )])
+        }),
+        Err(TaskStoreError::BlobOwnershipDenied { blob_id, task_id })
+            if blob_id == blob_b.id && task_id == task_a
+    ));
+    assert_eq!(store.stream_version(task_a).unwrap(), 3);
+    assert_eq!(table_count(&database_path, "checkpoints"), checkpoint_count);
+    assert!(matches!(
+        store.latest_checkpoint(task_a),
+        Err(TaskStoreError::BlobOwnershipDenied { blob_id, task_id })
+            if blob_id == blob_b.id && task_id == task_a
+    ));
+
+    drop((blobs_a, blobs_b, store));
+    cleanup(&database_path, &blob_root);
 }
 
 #[test]
@@ -416,6 +494,17 @@ fn command(task_id: TaskId, expected_stream_version: u64) -> AcceptedCommand {
         idempotency_key: format!("blob-{}", CommandId::new()),
         expected_stream_version,
         authority: TaskStore::user_authority(ClientId::new()),
+        payload: json!({ "expected": expected_stream_version }),
+    }
+}
+
+fn supervisor_command(task_id: TaskId, expected_stream_version: u64) -> AcceptedCommand {
+    AcceptedCommand {
+        command_id: CommandId::new(),
+        task_id,
+        idempotency_key: format!("blob-supervisor-{}", CommandId::new()),
+        expected_stream_version,
+        authority: TaskStore::supervisor_authority(),
         payload: json!({ "expected": expected_stream_version }),
     }
 }

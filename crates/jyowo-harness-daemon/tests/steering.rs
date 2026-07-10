@@ -4,15 +4,18 @@ use std::time::Duration;
 
 use chrono::Utc;
 use harness_contracts::{
-    ClientId, CommandId, PromotionMode, QueueItemId, QueueItemState, RunSegmentId, RunState,
-    RunTerminalReason, TaskId, TaskState, ToolUseId,
+    ClientId, CommandId, Event, NoopRedactor, PromotionMode, QueueItemId, QueueItemState, RunId,
+    RunSegmentId, RunState, RunTerminalReason, SessionId, TaskId, TaskState, TenantId, ToolUseId,
+    ToolUseStartedEvent,
 };
 use harness_daemon::{
     QueueCommand, RunCoordinatorEvent, RunCoordinatorFactory, RunningSegment, StartSegmentRequest,
     Supervisor, SupervisorQuotas, ValidatedTaskCommand,
 };
 use harness_engine::{RunControlHandle, SafePointDecision, TurnOutcome};
-use harness_journal::{AcceptedCommand, CommandOutcome, NewTaskEvent, TaskStore};
+use harness_journal::{
+    AcceptedCommand, CommandOutcome, EventStore, NewTaskEvent, TaskEventStoreAdapter, TaskStore,
+};
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -106,7 +109,7 @@ impl SteeringFactory {
 }
 
 impl RunCoordinatorFactory for SteeringFactory {
-    fn spawn(&self, request: StartSegmentRequest) -> RunningSegment {
+    fn spawn_idempotent(&self, request: StartSegmentRequest) -> RunningSegment {
         let control = RunControlHandle::new();
         let (events, receiver) = mpsc::unbounded_channel();
         let mut state = self.state.lock().unwrap();
@@ -205,6 +208,89 @@ async fn safe_promotion_yields_then_atomically_starts_the_promoted_message() {
         .unwrap();
     assert_eq!(consumed.state, QueueItemState::Consumed);
     assert_ne!(consumed.consumed_by, Some(first_segment));
+}
+
+#[tokio::test]
+async fn promotion_checkpoint_preserves_a_tool_that_is_still_running() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let task_id = create_task(&store);
+    let factory = Arc::new(SteeringFactory::default());
+    let supervisor =
+        Supervisor::start(store.clone(), factory, SupervisorQuotas::new(1, 1)).unwrap();
+    let segment_id = RunSegmentId::new();
+    assert!(accepted(
+        supervisor
+            .dispatch(task_id, start_command(&store, task_id, segment_id))
+            .await
+            .unwrap()
+    ));
+    let session_id = SessionId::new();
+    let tool_use_id = ToolUseId::new();
+    TaskEventStoreAdapter::new(
+        Arc::clone(&store),
+        task_id,
+        TenantId::SINGLE,
+        session_id,
+        Arc::new(NoopRedactor),
+    )
+    .append(
+        TenantId::SINGLE,
+        session_id,
+        &[Event::ToolUseStarted(ToolUseStartedEvent {
+            run_id: RunId::new(),
+            tool_use_id,
+            at: Utc::now(),
+        })],
+    )
+    .await
+    .unwrap();
+    let queue_item_id = QueueItemId::new();
+    assert!(accepted(
+        supervisor
+            .dispatch(
+                task_id,
+                queue_command(
+                    &store,
+                    task_id,
+                    queue_item_id,
+                    QueueCommand::Submit {
+                        queue_item_id,
+                        content: "switch after tool".into(),
+                        attachments: Vec::new(),
+                        context_references: Vec::new(),
+                        created_at: Utc::now(),
+                    },
+                ),
+            )
+            .await
+            .unwrap()
+    ));
+
+    let result = supervisor
+        .dispatch(
+            task_id,
+            queue_command(
+                &store,
+                task_id,
+                queue_item_id,
+                QueueCommand::Promote {
+                    expected_revision: 1,
+                    mode: PromotionMode::SafePoint,
+                },
+            ),
+        )
+        .await;
+
+    assert!(matches!(result, Ok(CommandOutcome::Accepted { .. })));
+    assert_eq!(
+        store
+            .latest_checkpoint(task_id)
+            .unwrap()
+            .unwrap()
+            .incomplete_tool_use_ids,
+        vec![tool_use_id]
+    );
 }
 
 #[tokio::test]

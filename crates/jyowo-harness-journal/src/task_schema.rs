@@ -99,6 +99,18 @@ CREATE TABLE IF NOT EXISTS command_inbox (
     )
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS segment_start_outbox (
+    task_id TEXT NOT NULL,
+    run_segment_id TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT,
+    PRIMARY KEY(task_id, run_segment_id)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_segment_start_outbox_pending
+    ON segment_start_outbox(task_id, delivered_at, created_at);
+
 CREATE TABLE IF NOT EXISTS task_projection (
     task_id TEXT PRIMARY KEY,
     last_global_offset INTEGER NOT NULL,
@@ -161,6 +173,23 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     checkpoint_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS context_summaries (
+    summary_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    source_start_global_offset INTEGER NOT NULL,
+    source_end_global_offset INTEGER NOT NULL,
+    blob_id TEXT NOT NULL,
+    active INTEGER NOT NULL CHECK(active IN (0, 1)),
+    summary_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK(source_start_global_offset > 0),
+    CHECK(source_end_global_offset >= source_start_global_offset)
+) STRICT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_context_summaries_one_active
+    ON context_summaries(task_id)
+    WHERE active = 1;
 
 CREATE TABLE IF NOT EXISTS blob_metadata (
     blob_id TEXT PRIMARY KEY,

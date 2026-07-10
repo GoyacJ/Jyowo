@@ -1,12 +1,15 @@
 use chrono::{DateTime, Utc};
-use harness_contracts::{RunSegmentId, RunTerminalReason, TaskId, ToolUseId};
+use harness_contracts::{
+    IndeterminateToolDecision, RunSegmentId, RunTerminalReason, TaskId, ToolUseId,
+};
 use harness_engine::{RunControlHandle, TurnOutcome};
 use tokio::sync::mpsc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartSegmentRequest {
     pub task_id: TaskId,
     pub segment_id: RunSegmentId,
+    pub indeterminate_tools: Vec<IndeterminateToolDecision>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +107,12 @@ impl RunningSegment {
 }
 
 pub trait RunCoordinatorFactory: Send + Sync + 'static {
-    fn spawn(&self, request: StartSegmentRequest) -> RunningSegment;
+    /// Durably accepts a segment start exactly once for the `(task_id, segment_id)` key.
+    ///
+    /// The daemon may call this again after a process crash before its outbox acknowledgement
+    /// commits. Implementations must resume or reconnect the same logical segment without
+    /// applying `indeterminate_tools` or starting tool execution more than once.
+    fn spawn_idempotent(&self, request: StartSegmentRequest) -> RunningSegment;
 }
 
 #[cfg(test)]

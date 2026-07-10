@@ -464,6 +464,7 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "artifact_status", ArtifactStatus);
     insert_schema!(schemas, "artifact_source", ArtifactSource);
     insert_schema!(schemas, "tool_use_requested", ToolUseRequestedEvent);
+    insert_schema!(schemas, "tool_use_started", ToolUseStartedEvent);
     insert_schema!(schemas, "tool_use_approved", ToolUseApprovedEvent);
     insert_schema!(schemas, "tool_use_denied", ToolUseDeniedEvent);
     insert_schema!(schemas, "tool_use_completed", ToolUseCompletedEvent);

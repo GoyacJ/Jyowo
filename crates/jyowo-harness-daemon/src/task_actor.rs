@@ -1,21 +1,23 @@
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    CommandId, PromotionMode, QueueItemId, QueueItemState, RunSegmentId, RunState, TaskId,
+    CommandId, IndeterminateToolDecision, PromotionMode, QueueItemId, QueueItemState, RunSegmentId,
+    RunState, TaskId, ToolUseId,
 };
 use harness_engine::{RunControl, RunControlHandle};
 use harness_journal::{
-    AcceptedCommand, CommandOutcome, CommandRejection, NewTaskEvent, TaskStore, TaskStoreError,
-    MAX_ACTIVE_QUEUE_ITEMS,
+    AcceptedCommand, CommandOutcome, CommandRejection, NewTaskEvent, TaskCheckpoint, TaskStore,
+    TaskStoreError, MAX_ACTIVE_QUEUE_ITEMS,
 };
 use serde_json::json;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
-    decide_consume_next, decide_queue, QueueCommand, RunCoordinatorEvent, RunCoordinatorFactory,
-    StartSegmentRequest,
+    decide_consume_next, decide_queue, CheckpointService, CheckpointState, QueueCommand,
+    RunCoordinatorEvent, RunCoordinatorFactory, StartSegmentRequest,
 };
 
 #[derive(Debug)]
@@ -33,6 +35,12 @@ pub enum ValidatedTaskCommand {
         segment_id: RunSegmentId,
         started_at: DateTime<Utc>,
     },
+    ContinueTask {
+        command: AcceptedCommand,
+        segment_id: RunSegmentId,
+        started_at: DateTime<Utc>,
+        indeterminate_tools: Vec<IndeterminateToolDecision>,
+    },
     Queue {
         command: AcceptedCommand,
         queue_item_id: QueueItemId,
@@ -48,12 +56,16 @@ pub(crate) enum TaskActorError {
     Store(#[from] TaskStoreError),
     #[error("task actor runtime state lock was poisoned")]
     RuntimeStatePoisoned,
+    #[error("segment start delivery is no longer pending")]
+    SegmentStartDeliveryNotPending,
 }
 
 impl ValidatedTaskCommand {
     pub(crate) fn rejected(&self, message: impl Into<String>) -> CommandOutcome {
         let command = match self {
-            Self::StartSegment { command, .. } | Self::Queue { command, .. } => command,
+            Self::StartSegment { command, .. }
+            | Self::ContinueTask { command, .. }
+            | Self::Queue { command, .. } => command,
         };
         CommandOutcome::Rejected {
             command_id: command.command_id,
@@ -77,14 +89,52 @@ pub(crate) async fn run_task_actor(
     factory: Arc<dyn RunCoordinatorFactory>,
     foreground_runs: Arc<Semaphore>,
     active_segment_state: Arc<Mutex<Option<RunSegmentId>>>,
+    pending_start_retry_segment: Option<RunSegmentId>,
     mailbox: mpsc::Sender<TaskActorMessage>,
     mut messages: mpsc::Receiver<TaskActorMessage>,
 ) -> Result<(), TaskActorError> {
     if store.task_projection(task_id)?.is_none() {
         return Err(TaskActorError::TaskNotFound);
     }
-    recover_stranded_steering(task_id, &store)?;
     let mut active = None::<ActiveSegment>;
+    let mut retried_pending_start = false;
+    if let Some(run) = store
+        .task_projection(task_id)?
+        .and_then(|projection| projection.current_run)
+        .filter(|run| {
+            matches!(
+                run.state,
+                RunState::Running | RunState::WaitingPermission | RunState::Yielding
+            )
+        })
+    {
+        if let Some(pending) = store.pending_segment_start(task_id, run.segment_id)? {
+            retried_pending_start = true;
+            let permit = Arc::clone(&foreground_runs)
+                .acquire_owned()
+                .await
+                .map_err(|_| TaskActorError::RuntimeStatePoisoned)?;
+            *active_segment_state
+                .lock()
+                .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = Some(run.segment_id);
+            let running = factory.spawn_idempotent(StartSegmentRequest {
+                task_id: pending.task_id,
+                segment_id: pending.segment_id,
+                indeterminate_tools: pending.indeterminate_tools,
+            });
+            store.mark_segment_start_delivered(task_id, run.segment_id)?;
+            let control = running.control();
+            active = Some(ActiveSegment {
+                segment_id: run.segment_id,
+                control,
+                permit,
+            });
+            forward_run_events(run.segment_id, mailbox.clone(), running.into_events());
+        }
+    }
+    if pending_start_retry_segment.is_some() && !retried_pending_start {
+        return Err(TaskActorError::SegmentStartDeliveryNotPending);
+    }
 
     while let Some(message) = messages.recv().await {
         match message {
@@ -132,49 +182,6 @@ pub(crate) async fn run_task_actor(
     Ok(())
 }
 
-fn recover_stranded_steering(task_id: TaskId, store: &TaskStore) -> Result<(), TaskActorError> {
-    let projection = store
-        .task_projection(task_id)?
-        .ok_or(TaskActorError::TaskNotFound)?;
-    let Some(run) = projection
-        .current_run
-        .as_ref()
-        .filter(|run| run.state == RunState::Yielding)
-    else {
-        return Ok(());
-    };
-    let ended_at = Utc::now();
-    let mut events = vec![NewTaskEvent::run_completed(
-        run.segment_id,
-        ended_at,
-        harness_contracts::RunTerminalReason::InterruptedByRestart,
-        true,
-    )];
-    if let Some(promoted) = projection
-        .queue
-        .iter()
-        .find(|item| item.state == QueueItemState::Promoting)
-    {
-        events.push(NewTaskEvent::message_recovered(
-            promoted.queue_item_id,
-            promoted.revision,
-        ));
-    }
-    let command = AcceptedCommand {
-        command_id: CommandId::new(),
-        task_id,
-        idempotency_key: format!("recover-steering-{}", CommandId::new()),
-        expected_stream_version: projection.stream_version,
-        authority: TaskStore::recovery_authority(),
-        payload: json!({
-            "type": "recover_stranded_steering",
-            "segmentId": run.segment_id,
-        }),
-    };
-    let _ = store.transact_command(command, |_| Ok(events))?;
-    Ok(())
-}
-
 async fn handle_command(
     task_id: TaskId,
     store: &TaskStore,
@@ -188,69 +195,50 @@ async fn handle_command(
 ) -> Result<(), TaskActorError> {
     match command {
         ValidatedTaskCommand::StartSegment {
-            mut command,
+            command,
             segment_id,
             started_at,
         } => {
-            if command.task_id != task_id {
-                let outcome = CommandOutcome::Rejected {
-                    command_id: command.command_id,
-                    task_id: command.task_id,
-                    rejection: CommandRejection::InvalidCommand {
-                        message: "command task does not match actor task".into(),
-                    },
-                };
-                let _ = reply.send(outcome);
-                return Ok(());
-            }
-            let command_id = command.command_id;
-            let command_task_id = command.task_id;
-            command.authority = TaskStore::supervisor_command_authority(&command.authority);
-            let mut acquired_permit = None;
-            let outcome = match store.transact_command(command, |projection| {
-                if projection.current_run.as_ref().is_some_and(|run| {
-                    matches!(
-                        run.state,
-                        RunState::Running | RunState::WaitingPermission | RunState::Yielding
-                    )
-                }) {
-                    return Err(CommandRejection::InvalidCommand {
-                        message: "task already has a foreground run".into(),
-                    });
-                }
-                let Ok(permit) = Arc::clone(foreground_runs).try_acquire_owned() else {
-                    return Err(CommandRejection::InvalidCommand {
-                        message: "global foreground-run quota is exhausted".into(),
-                    });
-                };
-                acquired_permit = Some(permit);
-                Ok(vec![NewTaskEvent::run_started(segment_id, started_at)])
-            }) {
-                Ok(outcome) => outcome,
-                Err(error) => command_store_error(error, command_id, command_task_id)?,
-            };
-            let accepted = matches!(outcome, CommandOutcome::Accepted { .. });
-            let _ = reply.send(outcome);
-            if !accepted {
-                return Ok(());
-            }
-            let Some(permit) = acquired_permit else {
-                return Ok(());
-            };
-            *active_segment_state
-                .lock()
-                .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = Some(segment_id);
-            let running = factory.spawn(StartSegmentRequest {
+            handle_start_segment(
                 task_id,
+                store,
+                factory,
+                foreground_runs,
+                active_segment_state,
+                mailbox,
+                active,
+                command,
                 segment_id,
+                started_at,
+                None,
+                reply,
+            )?;
+        }
+        ValidatedTaskCommand::ContinueTask {
+            mut command,
+            segment_id,
+            started_at,
+            indeterminate_tools,
+        } => {
+            command.payload = json!({
+                "type": "continue_task",
+                "segmentId": segment_id,
+                "indeterminateTools": indeterminate_tools,
             });
-            let control = running.control();
-            *active = Some(ActiveSegment {
+            handle_start_segment(
+                task_id,
+                store,
+                factory,
+                foreground_runs,
+                active_segment_state,
+                mailbox,
+                active,
+                command,
                 segment_id,
-                control,
-                permit,
-            });
-            forward_run_events(segment_id, mailbox.clone(), running.into_events());
+                started_at,
+                Some(indeterminate_tools),
+                reply,
+            )?;
         }
         ValidatedTaskCommand::Queue {
             mut command,
@@ -369,7 +357,6 @@ async fn handle_command(
                 Err(error) => command_store_error(error, command_id, command_task_id)?,
             };
             let accepted = matches!(outcome, CommandOutcome::Accepted { .. });
-            let _ = reply.send(outcome);
             if accepted {
                 if let (Some(mode), Some(target), Some(active)) =
                     (promotion_mode, steering_target, active.as_ref())
@@ -383,7 +370,165 @@ async fn handle_command(
                     });
                 }
             }
+            let _ = reply.send(outcome);
         }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_start_segment(
+    task_id: TaskId,
+    store: &TaskStore,
+    factory: &Arc<dyn RunCoordinatorFactory>,
+    foreground_runs: &Arc<Semaphore>,
+    active_segment_state: &Mutex<Option<RunSegmentId>>,
+    mailbox: &mpsc::Sender<TaskActorMessage>,
+    active: &mut Option<ActiveSegment>,
+    mut command: AcceptedCommand,
+    segment_id: RunSegmentId,
+    started_at: DateTime<Utc>,
+    indeterminate_tools: Option<Vec<IndeterminateToolDecision>>,
+    reply: oneshot::Sender<CommandOutcome>,
+) -> Result<(), TaskActorError> {
+    if command.task_id != task_id {
+        let outcome = CommandOutcome::Rejected {
+            command_id: command.command_id,
+            task_id: command.task_id,
+            rejection: CommandRejection::InvalidCommand {
+                message: "command task does not match actor task".into(),
+            },
+        };
+        let _ = reply.send(outcome);
+        return Ok(());
+    }
+    let durable_delivery = indeterminate_tools.is_some();
+    let checkpoint = if durable_delivery {
+        store.latest_checkpoint(task_id)?
+    } else {
+        None
+    };
+    let command_id = command.command_id;
+    let command_task_id = command.task_id;
+    command.authority = TaskStore::supervisor_command_authority(&command.authority);
+    let mut acquired_permit = None;
+    let outcome = match store.transact_command(command, |projection| {
+        if projection.current_run.as_ref().is_some_and(|run| {
+            matches!(
+                run.state,
+                RunState::Running | RunState::WaitingPermission | RunState::Yielding
+            )
+        }) {
+            return Err(CommandRejection::InvalidCommand {
+                message: "task already has a foreground run".into(),
+            });
+        }
+        if indeterminate_tools.is_none()
+            && projection.current_run.as_ref().is_some_and(|run| {
+                run.terminal_reason
+                    == Some(harness_contracts::RunTerminalReason::InterruptedByRestart)
+            })
+        {
+            return Err(CommandRejection::InvalidCommand {
+                message: "an interrupted restart must use continue_task".into(),
+            });
+        }
+        if let Some(decisions) = indeterminate_tools.as_ref() {
+            validate_continue_task(projection, checkpoint.as_ref(), segment_id, decisions)?;
+        }
+        let Ok(permit) = Arc::clone(foreground_runs).try_acquire_owned() else {
+            return Err(CommandRejection::InvalidCommand {
+                message: "global foreground-run quota is exhausted".into(),
+            });
+        };
+        acquired_permit = Some(permit);
+        Ok(vec![indeterminate_tools.as_ref().map_or_else(
+            || NewTaskEvent::run_started(segment_id, started_at),
+            |decisions| {
+                NewTaskEvent::run_started_with_recovery(segment_id, started_at, decisions.clone())
+            },
+        )])
+    }) {
+        Ok(outcome) => outcome,
+        Err(error) => command_store_error(error, command_id, command_task_id)?,
+    };
+    let accepted = matches!(outcome, CommandOutcome::Accepted { .. });
+    let _ = reply.send(outcome);
+    if !accepted {
+        return Ok(());
+    }
+    let Some(permit) = acquired_permit else {
+        return Ok(());
+    };
+    *active_segment_state
+        .lock()
+        .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = Some(segment_id);
+    let running = factory.spawn_idempotent(StartSegmentRequest {
+        task_id,
+        segment_id,
+        indeterminate_tools: indeterminate_tools.unwrap_or_default(),
+    });
+    if durable_delivery {
+        store.mark_segment_start_delivered(task_id, segment_id)?;
+    }
+    let control = running.control();
+    *active = Some(ActiveSegment {
+        segment_id,
+        control,
+        permit,
+    });
+    forward_run_events(segment_id, mailbox.clone(), running.into_events());
+    Ok(())
+}
+
+fn validate_continue_task(
+    projection: &harness_contracts::TaskProjection,
+    checkpoint: Option<&TaskCheckpoint>,
+    new_segment_id: RunSegmentId,
+    decisions: &[IndeterminateToolDecision],
+) -> Result<(), CommandRejection> {
+    let Some(run) = projection.current_run.as_ref() else {
+        return Err(CommandRejection::InvalidCommand {
+            message: "continue_task requires a previous run".into(),
+        });
+    };
+    if run.state != RunState::Interrupted || run.segment_id == new_segment_id {
+        return Err(CommandRejection::InvalidCommand {
+            message: "continue_task requires an interrupted run and a new segment id".into(),
+        });
+    }
+    let Some(checkpoint) = checkpoint.filter(|value| value.run_segment_id == run.segment_id) else {
+        return Err(CommandRejection::InvalidCommand {
+            message: "continue_task requires the interrupted segment checkpoint".into(),
+        });
+    };
+    let expected = checkpoint
+        .incomplete_tool_use_ids
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    if expected.len() != checkpoint.incomplete_tool_use_ids.len() {
+        return Err(CommandRejection::InvalidCommand {
+            message: "interrupted segment checkpoint contains duplicate tools".into(),
+        });
+    }
+    let mut resolved = HashSet::new();
+    for decision in decisions {
+        let tool_use_id = ToolUseId::parse(&decision.tool_use_id).map_err(|_| {
+            CommandRejection::InvalidCommand {
+                message: "continue_task contains an invalid tool id".into(),
+            }
+        })?;
+        if !resolved.insert(tool_use_id) {
+            return Err(CommandRejection::InvalidCommand {
+                message: "continue_task resolves a tool more than once".into(),
+            });
+        }
+    }
+    if resolved != expected {
+        return Err(CommandRejection::InvalidCommand {
+            message: "continue_task must resolve every indeterminate tool exactly once".into(),
+        });
     }
     Ok(())
 }
@@ -473,14 +618,16 @@ fn handle_run_event(
                         ])
                     })?;
                     if matches!(outcome, CommandOutcome::Accepted { .. }) {
+                        persist_checkpoint_boundary(store, task_id, next_segment_id, Vec::new())?;
                         let previous = active.take().expect("active segment checked above");
                         *active_segment_state
                             .lock()
                             .map_err(|_| TaskActorError::RuntimeStatePoisoned)? =
                             Some(next_segment_id);
-                        let running = factory.spawn(StartSegmentRequest {
+                        let running = factory.spawn_idempotent(StartSegmentRequest {
                             task_id,
                             segment_id: next_segment_id,
+                            indeterminate_tools: Vec::new(),
                         });
                         let control = running.control();
                         *active = Some(ActiveSegment {
@@ -503,6 +650,7 @@ fn handle_run_event(
                 ended_at,
             )?;
             if matches!(outcome, CommandOutcome::Accepted { .. }) {
+                persist_checkpoint_boundary(store, task_id, segment_id, Vec::new())?;
                 *active = None;
                 *active_segment_state
                     .lock()
@@ -593,14 +741,16 @@ fn handle_run_event(
             if !matches!(outcome, CommandOutcome::Accepted { .. }) {
                 return Ok(false);
             }
+            persist_checkpoint_boundary(store, task_id, next_segment_id, Vec::new())?;
 
             let previous = active.take().expect("active segment checked above");
             *active_segment_state
                 .lock()
                 .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = Some(next_segment_id);
-            let running = factory.spawn(StartSegmentRequest {
+            let running = factory.spawn_idempotent(StartSegmentRequest {
                 task_id,
                 segment_id: next_segment_id,
+                indeterminate_tools: Vec::new(),
             });
             let control = running.control();
             *active = Some(ActiveSegment {
@@ -636,6 +786,7 @@ fn handle_run_event(
             else {
                 return Ok(false);
             };
+            let checkpoint_tool_use_ids = indeterminate_tool_use_ids.clone();
             let command = AcceptedCommand {
                 command_id: CommandId::new(),
                 task_id,
@@ -666,6 +817,7 @@ fn handle_run_event(
                 ])
             })?;
             if matches!(outcome, CommandOutcome::Accepted { .. }) {
+                persist_checkpoint_boundary(store, task_id, segment_id, checkpoint_tool_use_ids)?;
                 *active = None;
                 *active_segment_state
                     .lock()
@@ -733,12 +885,14 @@ fn handle_start_next_queued(
     if !matches!(outcome, CommandOutcome::Accepted { .. }) {
         return Ok(());
     }
+    persist_checkpoint_boundary(store, task_id, segment_id, Vec::new())?;
     *active_segment_state
         .lock()
         .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = Some(segment_id);
-    let running = factory.spawn(StartSegmentRequest {
+    let running = factory.spawn_idempotent(StartSegmentRequest {
         task_id,
         segment_id,
+        indeterminate_tools: Vec::new(),
     });
     let control = running.control();
     *active = Some(ActiveSegment {
@@ -747,6 +901,32 @@ fn handle_start_next_queued(
         permit,
     });
     forward_run_events(segment_id, mailbox.clone(), running.into_events());
+    Ok(())
+}
+
+fn persist_checkpoint_boundary(
+    store: &TaskStore,
+    task_id: TaskId,
+    segment_id: RunSegmentId,
+    incomplete_tool_use_ids: Vec<ToolUseId>,
+) -> Result<(), TaskActorError> {
+    let prior = store.latest_checkpoint(task_id)?;
+    CheckpointService::persist_current(
+        store,
+        task_id,
+        segment_id,
+        CheckpointState {
+            context_cursor: prior.as_ref().map_or(0, |value| value.context_cursor),
+            workspace_baseline: prior
+                .as_ref()
+                .and_then(|value| value.workspace_baseline.clone()),
+            incomplete_tool_use_ids,
+            child_actor_refs: prior
+                .as_ref()
+                .map_or_else(Vec::new, |value| value.child_actor_refs.clone()),
+            context_blob_id: prior.as_ref().and_then(|value| value.context_blob_id),
+        },
+    )?;
     Ok(())
 }
 

@@ -154,6 +154,7 @@ fn reduce_task(
         TaskEvent::RunStarted {
             segment_id,
             started_at,
+            ..
         } => {
             if projection.pending_permission.is_some() {
                 return invalid_transition("run.started requires no pending permission");
@@ -274,6 +275,7 @@ fn reduce_task(
                 );
             }
         }
+        TaskEvent::ToolIndeterminate { .. } => {}
         TaskEvent::MessageQueued {
             queue_item_id,
             content,
@@ -401,6 +403,11 @@ fn reduce_task(
         TaskEvent::PermissionResolved {
             request_id,
             revision,
+        }
+        | TaskEvent::PermissionInvalidated {
+            request_id,
+            revision,
+            ..
         } => {
             let pending = projection
                 .pending_permission
@@ -622,7 +629,8 @@ fn project_entity_tables(
                 permission,
             )?;
         }
-        TaskEvent::PermissionResolved { request_id, .. } => {
+        TaskEvent::PermissionResolved { request_id, .. }
+        | TaskEvent::PermissionInvalidated { request_id, .. } => {
             transaction.execute(
                 "DELETE FROM permission_projection
                  WHERE task_id = ?1 AND permission_request_id = ?2",
@@ -661,6 +669,7 @@ fn project_entity_tables(
         TaskEvent::TaskCreated { .. }
         | TaskEvent::TaskTitleChanged { .. }
         | TaskEvent::TaskArchived { .. }
+        | TaskEvent::ToolIndeterminate { .. }
         | TaskEvent::Engine { .. } => {}
     }
     Ok(())
@@ -791,6 +800,12 @@ fn project_timeline(
             Some(*segment_id),
             true,
         ),
+        TaskEvent::ToolIndeterminate { run_segment_id, .. } => (
+            TimelineEventKind::ToolActivity,
+            "Tool outcome is indeterminate after restart".into(),
+            Some(*run_segment_id),
+            true,
+        ),
         TaskEvent::MessageQueued { .. }
         | TaskEvent::MessageEdited { .. }
         | TaskEvent::MessagePromoted { .. }
@@ -815,6 +830,12 @@ fn project_timeline(
         TaskEvent::PermissionResolved { .. } => (
             TimelineEventKind::Permission,
             "Permission resolved".into(),
+            None,
+            false,
+        ),
+        TaskEvent::PermissionInvalidated { .. } => (
+            TimelineEventKind::Permission,
+            "Permission expired after restart".into(),
             None,
             false,
         ),

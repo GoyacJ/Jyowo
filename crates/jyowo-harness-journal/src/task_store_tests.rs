@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use crate::{EventAuthority, NewTaskEvent, TaskStore, TaskStoreError};
 use chrono::Utc;
-use harness_contracts::{ClientId, EventSource, EventSourceKind, QueueItemId, TaskId};
+use harness_contracts::{
+    ClientId, EventSource, EventSourceKind, QueueItemId, RunSegmentId, RunTerminalReason, TaskId,
+};
 
 #[test]
 fn task_events_have_global_order_and_per_task_versions_across_reopen() {
@@ -196,6 +198,72 @@ fn task_store_bounds_public_event_pages() {
         .expect("seed one page plus more events");
 
     assert_eq!(store.events_after(0, usize::MAX).unwrap().len(), 16);
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn nonterminal_task_projection_pages_are_bounded_and_exclude_terminal_tasks() {
+    let root = temp_root("nonterminal-projection-pages");
+    std::fs::create_dir_all(&root).expect("create temp root");
+    let path = root.join("tasks.db");
+    let store = TaskStore::open(&path).unwrap();
+    let supervisor = TaskStore::supervisor_authority();
+    let mut active_task_ids = Vec::new();
+    for index in 0..20 {
+        let task_id = TaskId::new();
+        active_task_ids.push(task_id);
+        store
+            .append(
+                task_id,
+                0,
+                &supervisor,
+                vec![
+                    NewTaskEvent::task_created(format!("active {index}")),
+                    NewTaskEvent::run_started(RunSegmentId::new(), Utc::now()),
+                ],
+            )
+            .unwrap();
+    }
+    for index in 0..5 {
+        let task_id = TaskId::new();
+        let segment_id = RunSegmentId::new();
+        store
+            .append(
+                task_id,
+                0,
+                &supervisor,
+                vec![
+                    NewTaskEvent::task_created(format!("terminal {index}")),
+                    NewTaskEvent::run_started(segment_id, Utc::now()),
+                    NewTaskEvent::run_completed(
+                        segment_id,
+                        Utc::now(),
+                        RunTerminalReason::Completed,
+                        false,
+                    ),
+                ],
+            )
+            .unwrap();
+    }
+
+    let first = store
+        .nonterminal_task_projections_after(None, usize::MAX)
+        .unwrap();
+    assert_eq!(first.len(), 16);
+    let second = store
+        .nonterminal_task_projections_after(Some(first.last().unwrap().task_id), usize::MAX)
+        .unwrap();
+    assert_eq!(second.len(), 4);
+    let mut actual = first
+        .into_iter()
+        .chain(second)
+        .map(|projection| projection.task_id)
+        .collect::<Vec<_>>();
+    actual.sort_by_key(ToString::to_string);
+    active_task_ids.sort_by_key(ToString::to_string);
+    assert_eq!(actual, active_task_ids);
 
     drop(store);
     let _ = std::fs::remove_dir_all(root);

@@ -23,8 +23,8 @@ use harness_contracts::{
     ModelRequestOptions, PermissionMode, PricingSnapshotId, RedactRules, Redactor, RequestId,
     RunEndedEvent, RunId, RunModelSnapshot, RunStartedEvent, SessionId, TeamId, TenantId,
     ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolResultPart, ToolUseCompletedEvent,
-    ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, TrustLevel,
-    TurnInput, UsageAccumulatedEvent, UsageSnapshot,
+    ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseStartedEvent,
+    TrustLevel, TurnInput, UsageAccumulatedEvent, UsageSnapshot,
 };
 use harness_execution::{AuthorizationContext, ExecutionError};
 use harness_hook::{
@@ -888,6 +888,18 @@ pub(crate) async fn run_turn(
                 }
 
                 let tool_use_id = call.tool_use_id;
+                append(
+                    engine,
+                    session.tenant_id,
+                    session.session_id,
+                    &mut emitted,
+                    vec![Event::ToolUseStarted(ToolUseStartedEvent {
+                        run_id: ctx.run_id,
+                        tool_use_id,
+                        at: harness_contracts::now(),
+                    })],
+                )
+                .await?;
                 let mut dispatch =
                     Box::pin(orchestrator.dispatch(vec![call], orchestrator_context.clone()));
                 let mut force_stopped = false;
@@ -978,6 +990,24 @@ pub(crate) async fn run_turn(
             }
             completed
         } else {
+            let started_events = authorized_tool_calls
+                .iter()
+                .map(|call| {
+                    Event::ToolUseStarted(ToolUseStartedEvent {
+                        run_id: ctx.run_id,
+                        tool_use_id: call.tool_use_id,
+                        at: harness_contracts::now(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            append(
+                engine,
+                session.tenant_id,
+                session.session_id,
+                &mut emitted,
+                started_events,
+            )
+            .await?;
             let mut dispatch =
                 Box::pin(orchestrator.dispatch(authorized_tool_calls, orchestrator_context));
             loop {

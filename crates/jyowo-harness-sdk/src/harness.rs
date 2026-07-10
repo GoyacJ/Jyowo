@@ -445,6 +445,7 @@ fn event_projects_to_conversation_timeline(event: &Event) -> bool {
             | Event::ArtifactUpdated(_)
             | Event::ToolUseRequested(_)
             | Event::ToolUseApproved(_)
+            | Event::ToolUseStarted(_)
             | Event::ToolUseDenied(_)
             | Event::ToolUseCompleted(_)
             | Event::ToolUseFailed(_)

@@ -1,11 +1,14 @@
 //! Typed events accepted by the unified task store.
 
+use std::collections::HashSet;
+
 use chrono::{DateTime, Utc};
 use harness_contracts::{
     ActorId, BlobId, BlobRef, CausationId, ConversationAttachmentReference, CorrelationId, Event,
-    EventSource, EventSourceKind, MessageContent, MessagePart, PermissionProjection, QueueItemId,
-    ReferenceKind, RequestId, RunId, RunSegmentId, RunTerminalReason, SessionId, TenantId,
-    ToolResult, ToolResultPart, ToolUseId, WorkspaceLeaseProjection,
+    EventSource, EventSourceKind, IndeterminateToolDecision, MessageContent, MessagePart,
+    PermissionProjection, QueueItemId, ReferenceKind, RequestId, RunId, RunSegmentId,
+    RunTerminalReason, SessionId, TenantId, ToolResult, ToolResultPart, ToolUseId,
+    WorkspaceLeaseProjection,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -43,6 +46,8 @@ pub(crate) enum TaskEvent {
     RunStarted {
         segment_id: RunSegmentId,
         started_at: DateTime<Utc>,
+        recovery_start: bool,
+        indeterminate_tools: Vec<IndeterminateToolDecision>,
     },
     RunCompleted {
         segment_id: RunSegmentId,
@@ -66,6 +71,11 @@ pub(crate) enum TaskEvent {
         segment_id: RunSegmentId,
         indeterminate_tool_use_ids: Vec<ToolUseId>,
         timed_out_at: DateTime<Utc>,
+    },
+    ToolIndeterminate {
+        run_segment_id: RunSegmentId,
+        tool_use_id: ToolUseId,
+        detected_at: DateTime<Utc>,
     },
     MessageQueued {
         queue_item_id: QueueItemId,
@@ -104,6 +114,11 @@ pub(crate) enum TaskEvent {
     PermissionResolved {
         request_id: RequestId,
         revision: u64,
+    },
+    PermissionInvalidated {
+        request_id: RequestId,
+        revision: u64,
+        reason: String,
     },
     SubagentSpawned {
         actor_id: ActorId,
@@ -160,6 +175,10 @@ struct TaskActorFailedPayload {
 struct RunStartedPayload {
     segment_id: RunSegmentId,
     started_at: DateTime<Utc>,
+    #[serde(default)]
+    recovery_start: bool,
+    #[serde(default)]
+    indeterminate_tools: Vec<IndeterminateToolDecision>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,6 +214,14 @@ struct RunForceStopTimedOutPayload {
     segment_id: RunSegmentId,
     indeterminate_tool_use_ids: Vec<ToolUseId>,
     timed_out_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ToolIndeterminatePayload {
+    run_segment_id: RunSegmentId,
+    tool_use_id: ToolUseId,
+    detected_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -237,6 +264,14 @@ struct QueueStateChangedPayload {
 struct PermissionResolvedPayload {
     request_id: RequestId,
     revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PermissionInvalidatedPayload {
+    request_id: RequestId,
+    revision: u64,
+    reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,6 +326,24 @@ impl NewTaskEvent {
             event: TaskEvent::RunStarted {
                 segment_id,
                 started_at,
+                recovery_start: false,
+                indeterminate_tools: Vec::new(),
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn run_started_with_recovery(
+        segment_id: RunSegmentId,
+        started_at: DateTime<Utc>,
+        indeterminate_tools: Vec<IndeterminateToolDecision>,
+    ) -> Self {
+        Self {
+            event: TaskEvent::RunStarted {
+                segment_id,
+                started_at,
+                recovery_start: true,
+                indeterminate_tools,
             },
         }
     }
@@ -357,6 +410,21 @@ impl NewTaskEvent {
                 segment_id,
                 indeterminate_tool_use_ids,
                 timed_out_at,
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn tool_indeterminate(
+        run_segment_id: RunSegmentId,
+        tool_use_id: ToolUseId,
+        detected_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            event: TaskEvent::ToolIndeterminate {
+                run_segment_id,
+                tool_use_id,
+                detected_at,
             },
         }
     }
@@ -457,6 +525,21 @@ impl NewTaskEvent {
             event: TaskEvent::PermissionResolved {
                 request_id,
                 revision,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn permission_invalidated(
+        request_id: RequestId,
+        revision: u64,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            event: TaskEvent::PermissionInvalidated {
+                request_id,
+                revision,
+                reason: reason.into(),
             },
         }
     }
@@ -736,6 +819,8 @@ impl TaskEvent {
                 Ok(Self::RunStarted {
                     segment_id: value.segment_id,
                     started_at: value.started_at,
+                    recovery_start: value.recovery_start,
+                    indeterminate_tools: value.indeterminate_tools,
                 })
             }
             "run.completed" => {
@@ -771,6 +856,14 @@ impl TaskEvent {
                     segment_id: value.segment_id,
                     indeterminate_tool_use_ids: value.indeterminate_tool_use_ids,
                     timed_out_at: value.timed_out_at,
+                })
+            }
+            "tool.indeterminate" => {
+                let value: ToolIndeterminatePayload = serde_json::from_value(payload)?;
+                Ok(Self::ToolIndeterminate {
+                    run_segment_id: value.run_segment_id,
+                    tool_use_id: value.tool_use_id,
+                    detected_at: value.detected_at,
                 })
             }
             "message.queued" => {
@@ -829,6 +922,14 @@ impl TaskEvent {
                     revision: value.revision,
                 })
             }
+            "permission.invalidated" => {
+                let value: PermissionInvalidatedPayload = serde_json::from_value(payload)?;
+                Ok(Self::PermissionInvalidated {
+                    request_id: value.request_id,
+                    revision: value.revision,
+                    reason: value.reason,
+                })
+            }
             "subagent.spawned" => {
                 let value: SubagentSpawnedPayload = serde_json::from_value(payload)?;
                 Ok(Self::SubagentSpawned {
@@ -875,6 +976,7 @@ impl TaskEvent {
             Self::RunYieldRequested { .. } => "run.yield_requested",
             Self::RunSafePointReached { .. } => "run.safe_point_reached",
             Self::RunForceStopTimedOut { .. } => "run.force_stop_timed_out",
+            Self::ToolIndeterminate { .. } => "tool.indeterminate",
             Self::MessageQueued { .. } => "message.queued",
             Self::MessageEdited { .. } => "message.edited",
             Self::MessagePromoted { .. } => "message.promoted",
@@ -883,6 +985,7 @@ impl TaskEvent {
             Self::MessageConsumed { .. } => "message.consumed",
             Self::PermissionRequested { .. } => "permission.requested",
             Self::PermissionResolved { .. } => "permission.resolved",
+            Self::PermissionInvalidated { .. } => "permission.invalidated",
             Self::SubagentSpawned { .. } => "subagent.spawned",
             Self::WorkspaceAcquired { .. } => "workspace.acquired",
             Self::Engine { event_type, .. } => event_type,
@@ -909,9 +1012,13 @@ impl TaskEvent {
             Self::RunStarted {
                 segment_id,
                 started_at,
+                recovery_start,
+                indeterminate_tools,
             } => serde_json::to_value(RunStartedPayload {
                 segment_id: *segment_id,
                 started_at: *started_at,
+                recovery_start: *recovery_start,
+                indeterminate_tools: indeterminate_tools.clone(),
             })?,
             Self::RunCompleted {
                 segment_id,
@@ -954,6 +1061,15 @@ impl TaskEvent {
                 segment_id: *segment_id,
                 indeterminate_tool_use_ids: indeterminate_tool_use_ids.clone(),
                 timed_out_at: *timed_out_at,
+            })?,
+            Self::ToolIndeterminate {
+                run_segment_id,
+                tool_use_id,
+                detected_at,
+            } => serde_json::to_value(ToolIndeterminatePayload {
+                run_segment_id: *run_segment_id,
+                tool_use_id: *tool_use_id,
+                detected_at: *detected_at,
             })?,
             Self::MessageQueued {
                 queue_item_id,
@@ -1013,6 +1129,15 @@ impl TaskEvent {
                 request_id: *request_id,
                 revision: *revision,
             })?,
+            Self::PermissionInvalidated {
+                request_id,
+                revision,
+                reason,
+            } => serde_json::to_value(PermissionInvalidatedPayload {
+                request_id: *request_id,
+                revision: *revision,
+                reason: reason.clone(),
+            })?,
             Self::SubagentSpawned {
                 actor_id,
                 started_at,
@@ -1063,6 +1188,7 @@ impl TaskEvent {
                 source.kind,
                 EventSourceKind::Supervisor | EventSourceKind::Recovery
             ),
+            Self::ToolIndeterminate { .. } => source.kind == EventSourceKind::Recovery,
             Self::TaskActorFailed { .. } => source.kind == EventSourceKind::Supervisor,
             Self::PermissionRequested { .. } => matches!(
                 source.kind,
@@ -1075,6 +1201,12 @@ impl TaskEvent {
                 EventSourceKind::User
                     | EventSourceKind::PermissionBroker
                     | EventSourceKind::Supervisor
+            ),
+            Self::PermissionInvalidated { .. } => matches!(
+                source.kind,
+                EventSourceKind::PermissionBroker
+                    | EventSourceKind::Supervisor
+                    | EventSourceKind::Recovery
             ),
             Self::SubagentSpawned { .. } | Self::WorkspaceAcquired { .. } => matches!(
                 source.kind,
@@ -1094,6 +1226,23 @@ impl TaskEvent {
 
     fn validate_shape(&self) -> Result<(), TaskStoreError> {
         match self {
+            Self::RunStarted {
+                indeterminate_tools,
+                ..
+            } => {
+                let unique = indeterminate_tools
+                    .iter()
+                    .map(|decision| ToolUseId::parse(&decision.tool_use_id))
+                    .collect::<Result<HashSet<_>, _>>()?;
+                if indeterminate_tools.len() > MAX_SIDE_EFFECTS
+                    || unique.len() != indeterminate_tools.len()
+                {
+                    return Err(TaskStoreError::InvalidInput(
+                        "run recovery decisions exceed their count limit or contain duplicates"
+                            .into(),
+                    ));
+                }
+            }
             Self::TaskCreated { title } | Self::TaskTitleChanged { title } => {
                 if title.chars().count() > MAX_TITLE_CHARS {
                     return Err(TaskStoreError::InvalidInput(format!(
@@ -1165,6 +1314,11 @@ impl TaskEvent {
                         "indeterminate tools must contain 1 to 256 identifiers".into(),
                     ));
                 }
+            }
+            Self::PermissionInvalidated { reason, .. } if reason.len() > 256 => {
+                return Err(TaskStoreError::InvalidInput(
+                    "permission invalidation reason exceeds 256 bytes".into(),
+                ));
             }
             _ => {}
         }

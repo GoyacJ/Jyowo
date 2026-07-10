@@ -17,7 +17,7 @@ workspace = true
 jyowo-harness-agent-runtime = { path = "../jyowo-harness-agent-runtime" }
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
 jyowo-harness-engine = { path = "../jyowo-harness-engine" }
-jyowo-harness-journal = { path = "../jyowo-harness-journal", features = ["sqlite"] }
+jyowo-harness-journal = { path = "../jyowo-harness-journal", features = ["sqlite", "blob-file"] }
 jyowo-harness-sdk = { path = "../jyowo-harness-sdk" }
 chrono = { workspace = true }
 futures = { workspace = true }
@@ -29,4 +29,5 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+rusqlite = { workspace = true }
 tempfile = { workspace = true }

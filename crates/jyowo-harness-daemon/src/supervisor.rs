@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use chrono::Utc;
 use futures::FutureExt;
 use harness_contracts::{CommandId, RunState, TaskId};
 use harness_journal::{
-    AcceptedCommand, CommandOutcome, CommandRejection, NewTaskEvent, TaskStore, TaskStoreError,
+    AcceptedCommand, CommandOutcome, CommandRejection, NewTaskEvent, PendingSegmentStart,
+    TaskStore, TaskStoreError,
 };
 use serde_json::json;
 use thiserror::Error;
@@ -14,10 +16,12 @@ use tokio::sync::{broadcast, mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 
 use crate::task_actor::{run_task_actor, TaskActorError};
-use crate::{RunCoordinatorFactory, TaskActorMessage, ValidatedTaskCommand};
+use crate::{RecoveryService, RunCoordinatorFactory, TaskActorMessage, ValidatedTaskCommand};
 
 const SUPERVISOR_REQUEST_CAPACITY: usize = 64;
 const TASK_ACTOR_MAILBOX_CAPACITY: usize = 64;
+const PENDING_START_RETRY_BASE_DELAY: Duration = Duration::from_millis(25);
+const PENDING_START_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
 
 fn bounded_command_channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
     mpsc::channel(capacity)
@@ -54,6 +58,8 @@ pub enum SupervisorError {
     InvalidQuota,
     #[error("subagent quota was closed")]
     SubagentQuotaClosed,
+    #[error("startup recovery failed: {0}")]
+    StartupRecovery(#[from] TaskStoreError),
 }
 
 pub struct Supervisor {
@@ -128,6 +134,16 @@ impl Supervisor {
             .await
             .map_err(|_| SupervisorError::SubagentQuotaClosed)
     }
+
+    #[cfg(test)]
+    async fn resident_actor_count(&self) -> usize {
+        let (reply, response) = oneshot::channel();
+        self.requests
+            .send(SupervisorRequest::ResidentActorCount { reply })
+            .await
+            .expect("supervisor is running");
+        response.await.expect("supervisor returns actor count")
+    }
 }
 
 impl Drop for Supervisor {
@@ -141,6 +157,8 @@ enum SupervisorRequest {
         task_id: TaskId,
         reply: oneshot::Sender<ActorRoute>,
     },
+    #[cfg(test)]
+    ResidentActorCount { reply: oneshot::Sender<usize> },
 }
 
 enum ActorRoute {
@@ -169,6 +187,8 @@ async fn run_supervisor(
 ) {
     let mut actors = HashMap::<TaskId, ActorSlot>::new();
     let mut actor_tasks = JoinSet::<ActorExit>::new();
+    let mut pending_start_retries =
+        HashMap::<TaskId, (harness_contracts::RunSegmentId, u32)>::new();
     let mut next_generation = 1_u64;
 
     loop {
@@ -188,6 +208,14 @@ async fn run_supervisor(
                             }
                             Ok(Some(_)) => {}
                         }
+                        if !actors.contains_key(&task_id)
+                            && RecoveryService::new(Arc::clone(&store))
+                                .recover_task(task_id)
+                                .is_err()
+                        {
+                            drop(reply);
+                            continue;
+                        }
                         let slot = actors.entry(task_id).or_insert_with(|| {
                             let generation = next_generation;
                             next_generation = next_generation.saturating_add(1);
@@ -198,9 +226,15 @@ async fn run_supervisor(
                                 Arc::clone(&store),
                                 Arc::clone(&factory),
                                 Arc::clone(&foreground_runs),
+                                None,
+                                Duration::ZERO,
                             )
                         });
                         let _ = reply.send(ActorRoute::Mailbox(slot.mailbox.clone()));
+                    }
+                    #[cfg(test)]
+                    SupervisorRequest::ResidentActorCount { reply } => {
+                        let _ = reply.send(actors.len());
                     }
                 }
             }
@@ -209,30 +243,65 @@ async fn run_supervisor(
                 let exited_current_generation =
                     remove_actor_generation(&mut actors, exit.task_id, exit.generation);
                 if exit.failed {
-                    let failure_committed = persist_actor_failure(
-                        &store,
-                        exit.task_id,
-                        exit.active_segment,
-                    )
-                    .unwrap_or(false);
-                    if failure_committed {
-                        let _ = events.send(SupervisorEvent::ActorFailed { task_id: exit.task_id });
-                    }
-                    if failure_committed && exited_current_generation {
-                        let generation = next_generation;
-                        next_generation = next_generation.saturating_add(1);
-                        actors.insert(
-                            exit.task_id,
-                            spawn_actor(
-                                &mut actor_tasks,
+                    let pending_start_retry_segment = exit.active_segment.filter(|segment_id| {
+                        pending_segment_start_requires_retry(
+                            store.pending_segment_start(exit.task_id, *segment_id),
+                        )
+                    });
+                    if let Some(segment_id) = pending_start_retry_segment {
+                        if exited_current_generation {
+                            let retry = pending_start_retries.entry(exit.task_id).or_insert((segment_id, 0));
+                            if retry.0 != segment_id {
+                                *retry = (segment_id, 0);
+                            }
+                            retry.1 = retry.1.saturating_add(1);
+                            let generation = next_generation;
+                            next_generation = next_generation.saturating_add(1);
+                            actors.insert(
                                 exit.task_id,
-                                generation,
-                                Arc::clone(&store),
-                                Arc::clone(&factory),
-                                Arc::clone(&foreground_runs),
-                            ),
-                        );
+                                spawn_actor(
+                                    &mut actor_tasks,
+                                    exit.task_id,
+                                    generation,
+                                    Arc::clone(&store),
+                                    Arc::clone(&factory),
+                                    Arc::clone(&foreground_runs),
+                                    Some(segment_id),
+                                    pending_segment_start_retry_delay(retry.1),
+                                ),
+                            );
+                        }
+                    } else {
+                        pending_start_retries.remove(&exit.task_id);
+                        let failure_committed = persist_actor_failure(
+                            &store,
+                            exit.task_id,
+                            exit.active_segment,
+                        )
+                        .unwrap_or(false);
+                        if failure_committed {
+                            let _ = events.send(SupervisorEvent::ActorFailed { task_id: exit.task_id });
+                        }
+                        if failure_committed && exited_current_generation {
+                            let generation = next_generation;
+                            next_generation = next_generation.saturating_add(1);
+                            actors.insert(
+                                exit.task_id,
+                                spawn_actor(
+                                    &mut actor_tasks,
+                                    exit.task_id,
+                                    generation,
+                                    Arc::clone(&store),
+                                    Arc::clone(&factory),
+                                    Arc::clone(&foreground_runs),
+                                    None,
+                                    Duration::ZERO,
+                                ),
+                            );
+                        }
                     }
+                } else {
+                    pending_start_retries.remove(&exit.task_id);
                 }
             }
         }
@@ -251,18 +320,22 @@ fn spawn_actor(
     store: Arc<TaskStore>,
     factory: Arc<dyn RunCoordinatorFactory>,
     foreground_runs: Arc<Semaphore>,
+    pending_start_retry_segment: Option<harness_contracts::RunSegmentId>,
+    startup_delay: Duration,
 ) -> ActorSlot {
     let (mailbox, messages) = bounded_command_channel(TASK_ACTOR_MAILBOX_CAPACITY);
     let actor_mailbox = mailbox.clone();
-    let active_segment_state = Arc::new(Mutex::new(None));
+    let active_segment_state = Arc::new(Mutex::new(pending_start_retry_segment));
     let exit_segment_state = Arc::clone(&active_segment_state);
     actor_tasks.spawn(async move {
+        tokio::time::sleep(startup_delay).await;
         let result = AssertUnwindSafe(run_task_actor(
             task_id,
             store,
             factory,
             foreground_runs,
             active_segment_state,
+            pending_start_retry_segment,
             actor_mailbox,
             messages,
         ))
@@ -270,9 +343,12 @@ fn spawn_actor(
         .await;
         let failed = match result {
             Ok(Ok(())) | Ok(Err(TaskActorError::TaskNotFound)) => false,
-            Ok(Err(TaskActorError::Store(_) | TaskActorError::RuntimeStatePoisoned)) | Err(_) => {
-                true
-            }
+            Ok(Err(
+                TaskActorError::Store(_)
+                | TaskActorError::RuntimeStatePoisoned
+                | TaskActorError::SegmentStartDeliveryNotPending,
+            ))
+            | Err(_) => true,
         };
         let active_segment = exit_segment_state.lock().ok().and_then(|segment| *segment);
         ActorExit {
@@ -286,6 +362,17 @@ fn spawn_actor(
         generation,
         mailbox,
     }
+}
+
+fn pending_segment_start_requires_retry(
+    pending: Result<Option<PendingSegmentStart>, TaskStoreError>,
+) -> bool {
+    !matches!(pending, Ok(None))
+}
+
+fn pending_segment_start_retry_delay(attempt: u32) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(6);
+    (PENDING_START_RETRY_BASE_DELAY * (1_u32 << exponent)).min(PENDING_START_RETRY_MAX_DELAY)
 }
 
 fn remove_actor_generation(
@@ -363,8 +450,17 @@ fn require_committed_failure(outcome: CommandOutcome) -> Result<(), TaskStoreErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_contracts::{QueueItemId, QueueItemState};
+    use harness_contracts::{QueueItemId, QueueItemState, RunSegmentId, RunTerminalReason};
     use std::time::Duration;
+
+    struct IdleFactory;
+
+    impl RunCoordinatorFactory for IdleFactory {
+        fn spawn_idempotent(&self, _request: crate::StartSegmentRequest) -> crate::RunningSegment {
+            let (_sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+            crate::RunningSegment::new(receiver)
+        }
+    }
 
     #[tokio::test]
     async fn bounded_command_channel_waits_for_capacity_instead_of_dropping() {
@@ -379,6 +475,95 @@ mod tests {
         assert_eq!(receiver.recv().await, Some(1));
         sender.send(2).await.unwrap();
         assert_eq!(receiver.recv().await, Some(2));
+    }
+
+    #[tokio::test]
+    async fn supervisor_keeps_recovered_tasks_lazy_until_they_are_routed() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+        for index in 0..33 {
+            let task_id = TaskId::new();
+            let segment_id = RunSegmentId::new();
+            let command = AcceptedCommand {
+                command_id: CommandId::new(),
+                task_id,
+                idempotency_key: format!("interrupted-{index}"),
+                expected_stream_version: 0,
+                authority: TaskStore::supervisor_authority(),
+                payload: json!({ "type": "interrupted_fixture" }),
+            };
+            store
+                .transact_command(command, |_| {
+                    Ok(vec![
+                        NewTaskEvent::task_created(format!("interrupted {index}")),
+                        NewTaskEvent::run_started(segment_id, Utc::now()),
+                        NewTaskEvent::run_completed(
+                            segment_id,
+                            Utc::now(),
+                            RunTerminalReason::InterruptedByRestart,
+                            true,
+                        ),
+                    ])
+                })
+                .unwrap();
+        }
+        let active_task_id = TaskId::new();
+        let active_segment_id = RunSegmentId::new();
+        store
+            .transact_command(
+                AcceptedCommand {
+                    command_id: CommandId::new(),
+                    task_id: active_task_id,
+                    idempotency_key: "active-fixture".into(),
+                    expected_stream_version: 0,
+                    authority: TaskStore::supervisor_authority(),
+                    payload: json!({ "type": "active_fixture" }),
+                },
+                |_| {
+                    Ok(vec![
+                        NewTaskEvent::task_created("active"),
+                        NewTaskEvent::run_started(active_segment_id, Utc::now()),
+                    ])
+                },
+            )
+            .unwrap();
+
+        let supervisor = Supervisor::start(
+            Arc::clone(&store),
+            Arc::new(IdleFactory),
+            SupervisorQuotas::new(1, 1),
+        )
+        .unwrap();
+
+        assert_eq!(supervisor.resident_actor_count().await, 0);
+
+        let queue_item_id = QueueItemId::new();
+        let outcome = supervisor
+            .dispatch(
+                active_task_id,
+                ValidatedTaskCommand::Queue {
+                    command: AcceptedCommand {
+                        command_id: CommandId::new(),
+                        task_id: active_task_id,
+                        idempotency_key: "route-active-fixture".into(),
+                        expected_stream_version: store.stream_version(active_task_id).unwrap(),
+                        authority: TaskStore::user_authority(harness_contracts::ClientId::new()),
+                        payload: json!({ "type": "queue" }),
+                    },
+                    queue_item_id,
+                    queue_command: crate::QueueCommand::Submit {
+                        queue_item_id,
+                        content: "route".into(),
+                        attachments: Vec::new(),
+                        context_references: Vec::new(),
+                        created_at: Utc::now(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, CommandOutcome::Rejected { .. }));
+        assert_eq!(supervisor.resident_actor_count().await, 1);
     }
 
     #[test]
@@ -413,6 +598,33 @@ mod tests {
         };
 
         assert!(require_committed_failure(outcome).is_err());
+    }
+
+    #[test]
+    fn outbox_read_errors_remain_retryable() {
+        let result = Err::<Option<harness_journal::PendingSegmentStart>, _>(
+            TaskStoreError::ProjectionIntegrity("temporary read failure".into()),
+        );
+
+        assert!(pending_segment_start_requires_retry(result));
+        assert!(!pending_segment_start_requires_retry(Ok(None)));
+    }
+
+    #[test]
+    fn pending_start_retry_delay_is_exponential_and_capped() {
+        assert_eq!(
+            pending_segment_start_retry_delay(1),
+            Duration::from_millis(25)
+        );
+        assert_eq!(
+            pending_segment_start_retry_delay(2),
+            Duration::from_millis(50)
+        );
+        assert_eq!(pending_segment_start_retry_delay(7), Duration::from_secs(1));
+        assert_eq!(
+            pending_segment_start_retry_delay(64),
+            Duration::from_secs(1)
+        );
     }
 
     #[test]

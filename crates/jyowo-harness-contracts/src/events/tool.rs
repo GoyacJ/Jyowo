@@ -25,6 +25,13 @@ pub struct ToolUseApprovedEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ToolUseStartedEvent {
+    pub run_id: RunId,
+    pub tool_use_id: ToolUseId,
+    pub at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolUseDeniedEvent {
     pub tool_use_id: ToolUseId,
     pub reason: DenyReason,

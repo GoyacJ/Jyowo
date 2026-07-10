@@ -3027,6 +3027,7 @@ dependencies = [
  "jyowo-harness-journal",
  "jyowo-harness-sdk",
  "proptest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

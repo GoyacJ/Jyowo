@@ -12,8 +12,9 @@ use chrono::{DateTime, Utc};
 #[cfg(feature = "blob-file")]
 use fs2::FileExt;
 use harness_contracts::{
-    now, BlobId, ClientId, CommandId, Event, EventId, EventSource, EventSourceKind, IdParseError,
-    QueueItemProjection, SessionId, TaskEventEnvelope, TaskId, TaskProjection, TenantId,
+    now, ActorId, BlobId, CheckpointId, ClientId, CommandId, Event, EventId, EventSource,
+    EventSourceKind, IdParseError, IndeterminateToolDecision, QueueItemProjection, RunSegmentId,
+    SessionId, TaskEventEnvelope, TaskId, TaskProjection, TenantId, ToolUseId,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -22,8 +23,9 @@ use thiserror::Error;
 
 use crate::task_event::{NewTaskEvent, TaskBlobReference, TaskEvent, MAX_EVENT_PAYLOAD_BYTES};
 use crate::task_projection::{
-    empty_task_projection, load_task_projection_row, projection_counts, projection_snapshot,
-    ProjectionCounts, SynchronousTaskProjector, TaskProjector, PROJECTION_TABLES,
+    empty_task_projection, load_task_projection, load_task_projection_row, projection_counts,
+    projection_snapshot, ProjectionCounts, SynchronousTaskProjector, TaskProjector,
+    PROJECTION_TABLES,
 };
 use crate::task_schema::initialize_task_schema;
 
@@ -35,6 +37,7 @@ const MAX_EVENT_TYPE_BYTES: usize = 128;
 const MAX_SOURCE_JSON_BYTES: usize = 4096;
 const MAX_READ_PAGE_SIZE: usize = 16;
 const REBUILD_PAGE_SIZE: usize = 16;
+const CONTEXT_SUMMARY_MEDIA_TYPE: &str = "application/vnd.jyowo.context-summary+json";
 #[cfg(any(test, feature = "blob-file"))]
 const MAX_TASK_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
 #[cfg(any(test, feature = "blob-file"))]
@@ -94,6 +97,56 @@ pub enum CommandRejection {
     WrongExpectedVersion { expected: u64, actual: u64 },
     StaleQueueRevision { latest: Box<QueueItemProjection> },
     InvalidCommand { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceBaseline {
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskCheckpoint {
+    pub checkpoint_id: CheckpointId,
+    pub task_id: TaskId,
+    pub run_segment_id: RunSegmentId,
+    pub committed_global_offset: u64,
+    pub context_cursor: u64,
+    pub queue_revision: u64,
+    pub workspace_baseline: Option<WorkspaceBaseline>,
+    pub incomplete_tool_use_ids: Vec<ToolUseId>,
+    pub child_actor_refs: Vec<ActorId>,
+    pub context_blob_id: Option<BlobId>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingSegmentStart {
+    pub task_id: TaskId,
+    pub segment_id: RunSegmentId,
+    pub indeterminate_tools: Vec<IndeterminateToolDecision>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ContinueTaskCommandPayload {
+    #[serde(rename = "type")]
+    command_type: String,
+    segment_id: RunSegmentId,
+    indeterminate_tools: Vec<IndeterminateToolDecision>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContextSummary {
+    pub summary_id: CheckpointId,
+    pub task_id: TaskId,
+    pub source_start_global_offset: u64,
+    pub source_end_global_offset: u64,
+    pub blob_id: BlobId,
+    pub created_at: DateTime<Utc>,
 }
 
 pub struct TaskStore {
@@ -248,6 +301,7 @@ impl TaskStore {
         for event in &committed {
             self.projector.apply(&transaction, event)?;
         }
+        roll_forward_safe_checkpoint_in_transaction(&transaction, task_id, &committed)?;
         transaction.commit()?;
         Ok(committed)
     }
@@ -380,9 +434,16 @@ impl TaskStore {
             command.authority.source(),
             events,
         )?;
+        enqueue_segment_start_in_transaction(
+            &transaction,
+            command.task_id,
+            &command.payload,
+            &committed,
+        )?;
         for event in &committed {
             self.projector.apply(&transaction, event)?;
         }
+        roll_forward_safe_checkpoint_in_transaction(&transaction, command.task_id, &committed)?;
         let stream_version = committed
             .last()
             .map_or(command.expected_stream_version, |event| {
@@ -420,6 +481,108 @@ impl TaskStore {
             |row| row.get(0),
         )?;
         nonnegative_integer(version)
+    }
+
+    pub fn pending_segment_start(
+        &self,
+        task_id: TaskId,
+        segment_id: RunSegmentId,
+    ) -> Result<Option<PendingSegmentStart>, TaskStoreError> {
+        let connection = self.lock()?;
+        let event_payload = connection
+            .query_row(
+                "SELECT payload_json
+                 FROM event_log
+                 WHERE task_id = ?1
+                   AND event_type = 'run.started'
+                   AND json_extract(payload_json, '$.segmentId') = ?2",
+                params![task_id.to_string(), segment_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                TaskStoreError::ProjectionIntegrity(
+                    "segment start delivery has no canonical run start".into(),
+                )
+            })?;
+        let event_payload: Value = serde_json::from_str(&event_payload).map_err(|error| {
+            TaskStoreError::ProjectionIntegrity(format!(
+                "canonical run start payload is invalid: {error}"
+            ))
+        })?;
+        if event_payload.get("recoveryStart").and_then(Value::as_bool) != Some(true) {
+            return Ok(None);
+        }
+        let canonical_decisions = serde_json::from_value::<Vec<IndeterminateToolDecision>>(
+            event_payload
+                .get("indeterminateTools")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        )
+        .map_err(|error| {
+            TaskStoreError::ProjectionIntegrity(format!(
+                "canonical run recovery decisions are invalid: {error}"
+            ))
+        })?;
+        let (body, delivered_at) = connection
+            .query_row(
+                "SELECT request_json, delivered_at
+                 FROM segment_start_outbox
+                 WHERE task_id = ?1 AND run_segment_id = ?2",
+                params![task_id.to_string(), segment_id.to_string()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                TaskStoreError::ProjectionIntegrity(
+                    "canonical recovery run start has no delivery outbox entry".into(),
+                )
+            })?;
+        if body.len() > MAX_COMMAND_PAYLOAD_BYTES {
+            return Err(TaskStoreError::ProjectionIntegrity(
+                "pending segment start exceeds 1 MiB".into(),
+            ));
+        }
+        let request: PendingSegmentStart = serde_json::from_str(&body).map_err(|error| {
+            TaskStoreError::ProjectionIntegrity(format!(
+                "pending segment start payload is invalid: {error}"
+            ))
+        })?;
+        if request.task_id != task_id || request.segment_id != segment_id {
+            return Err(TaskStoreError::ProjectionIntegrity(
+                "pending segment start columns disagree with its payload".into(),
+            ));
+        }
+        if request.indeterminate_tools != canonical_decisions {
+            return Err(TaskStoreError::ProjectionIntegrity(
+                "pending segment start disagrees with the canonical run start".into(),
+            ));
+        }
+        Ok(delivered_at.is_none().then_some(request))
+    }
+
+    pub fn mark_segment_start_delivered(
+        &self,
+        task_id: TaskId,
+        segment_id: RunSegmentId,
+    ) -> Result<(), TaskStoreError> {
+        let connection = self.lock()?;
+        let changed = connection.execute(
+            "UPDATE segment_start_outbox
+             SET delivered_at = ?3
+             WHERE task_id = ?1 AND run_segment_id = ?2 AND delivered_at IS NULL",
+            params![
+                task_id.to_string(),
+                segment_id.to_string(),
+                now().to_rfc3339()
+            ],
+        )?;
+        if changed != 1 {
+            return Err(TaskStoreError::ProjectionIntegrity(
+                "pending segment start is missing or already delivered".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn events_after(
@@ -460,6 +623,106 @@ impl TaskStore {
         .collect()
     }
 
+    pub fn task_events_after(
+        &self,
+        task_id: TaskId,
+        after_stream_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<TaskEventEnvelope>, TaskStoreError> {
+        let after = i64::try_from(after_stream_sequence).unwrap_or(i64::MAX);
+        let limit = i64::try_from(limit.clamp(1, MAX_READ_PAGE_SIZE))
+            .map_err(|_| TaskStoreError::IntegerOutOfRange)?;
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT global_offset, task_id, stream_sequence, event_id, event_type,
+                    schema_version, recorded_at, source_json, payload_json
+             FROM event_log
+             WHERE task_id = ?1 AND stream_sequence > ?2
+             ORDER BY stream_sequence ASC
+             LIMIT ?3",
+        )?;
+        let rows = statement.query_map(params![task_id.to_string(), after, limit], |row| {
+            Ok(StoredTaskEvent {
+                global_offset: row.get(0)?,
+                task_id: row.get(1)?,
+                stream_sequence: row.get(2)?,
+                event_id: row.get(3)?,
+                event_type: row.get(4)?,
+                schema_version: row.get(5)?,
+                recorded_at: row.get(6)?,
+                source_json: row.get(7)?,
+                payload_json: row.get(8)?,
+            })
+        })?;
+
+        rows.map(|row| {
+            row.map_err(TaskStoreError::from)
+                .and_then(StoredTaskEvent::decode)
+        })
+        .collect()
+    }
+
+    pub fn task_events_after_global_offset(
+        &self,
+        task_id: TaskId,
+        after_global_offset: u64,
+        limit: usize,
+    ) -> Result<Vec<TaskEventEnvelope>, TaskStoreError> {
+        let after = i64::try_from(after_global_offset).unwrap_or(i64::MAX);
+        let limit = i64::try_from(limit.clamp(1, MAX_READ_PAGE_SIZE))
+            .map_err(|_| TaskStoreError::IntegerOutOfRange)?;
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT global_offset, task_id, stream_sequence, event_id, event_type,
+                    schema_version, recorded_at, source_json, payload_json
+             FROM event_log
+             WHERE task_id = ?1 AND global_offset > ?2
+             ORDER BY global_offset ASC
+             LIMIT ?3",
+        )?;
+        let rows = statement.query_map(params![task_id.to_string(), after, limit], |row| {
+            Ok(StoredTaskEvent {
+                global_offset: row.get(0)?,
+                task_id: row.get(1)?,
+                stream_sequence: row.get(2)?,
+                event_id: row.get(3)?,
+                event_type: row.get(4)?,
+                schema_version: row.get(5)?,
+                recorded_at: row.get(6)?,
+                source_json: row.get(7)?,
+                payload_json: row.get(8)?,
+            })
+        })?;
+        rows.map(|row| {
+            row.map_err(TaskStoreError::from)
+                .and_then(StoredTaskEvent::decode)
+        })
+        .collect()
+    }
+
+    pub fn run_started_global_offset(
+        &self,
+        task_id: TaskId,
+        segment_id: RunSegmentId,
+    ) -> Result<Option<u64>, TaskStoreError> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT global_offset
+                 FROM event_log
+                 WHERE task_id = ?1
+                   AND event_type = 'run.started'
+                   AND json_extract(payload_json, '$.segmentId') = ?2
+                 ORDER BY global_offset DESC
+                 LIMIT 1",
+                params![task_id.to_string(), segment_id.to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .map(nonnegative_integer)
+            .transpose()
+    }
+
     pub fn latest_global_offset(&self) -> Result<u64, TaskStoreError> {
         let connection = self.lock()?;
         let offset: i64 = connection.query_row(
@@ -468,6 +731,153 @@ impl TaskStore {
             |row| row.get(0),
         )?;
         nonnegative_integer(offset)
+    }
+
+    pub fn save_checkpoint(&self, checkpoint: &TaskCheckpoint) -> Result<(), TaskStoreError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        insert_checkpoint_in_transaction(&transaction, checkpoint)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn latest_checkpoint(
+        &self,
+        task_id: TaskId,
+    ) -> Result<Option<TaskCheckpoint>, TaskStoreError> {
+        let connection = self.lock()?;
+        load_latest_checkpoint(&connection, task_id)
+    }
+
+    pub fn activate_context_summary(&self, summary: &ContextSummary) -> Result<(), TaskStoreError> {
+        if summary.source_start_global_offset == 0
+            || summary.source_end_global_offset < summary.source_start_global_offset
+        {
+            return Err(TaskStoreError::InvalidInput(
+                "context summary source range is invalid".into(),
+            ));
+        }
+        let body = serde_json::to_string(summary)?;
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let task_offset = transaction
+            .query_row(
+                "SELECT last_global_offset FROM task_projection WHERE task_id = ?1",
+                [summary.task_id.to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                TaskStoreError::InvalidInput("context summary task does not exist".into())
+            })?;
+        if summary.source_end_global_offset > nonnegative_integer(task_offset)? {
+            return Err(TaskStoreError::InvalidInput(
+                "context summary source range exceeds the task's committed events".into(),
+            ));
+        }
+        let boundary_count = transaction.query_row(
+            "SELECT COUNT(*) FROM event_log
+             WHERE task_id = ?1 AND global_offset IN (?2, ?3)",
+            params![
+                summary.task_id.to_string(),
+                sqlite_integer(summary.source_start_global_offset)?,
+                sqlite_integer(summary.source_end_global_offset)?,
+            ],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let expected_boundaries =
+            if summary.source_start_global_offset == summary.source_end_global_offset {
+                1
+            } else {
+                2
+            };
+        if boundary_count != expected_boundaries {
+            return Err(TaskStoreError::InvalidInput(
+                "context summary source boundaries do not belong to the task".into(),
+            ));
+        }
+        promote_blob_id_in_transaction(&transaction, summary.task_id, summary.blob_id)?;
+        validate_blob_reference_in_transaction(
+            &transaction,
+            summary.task_id,
+            &TaskBlobReference {
+                blob_id: summary.blob_id,
+                expected: None,
+            },
+        )?;
+        let media_type = transaction.query_row(
+            "SELECT media_type FROM blob_ownership WHERE task_id = ?1 AND blob_id = ?2",
+            params![summary.task_id.to_string(), summary.blob_id.to_string()],
+            |row| row.get::<_, String>(0),
+        )?;
+        if media_type != CONTEXT_SUMMARY_MEDIA_TYPE {
+            return Err(TaskStoreError::InvalidInput(format!(
+                "context summary blob must use {CONTEXT_SUMMARY_MEDIA_TYPE}"
+            )));
+        }
+        transaction.execute(
+            "UPDATE context_summaries SET active = 0 WHERE task_id = ?1 AND active = 1",
+            [summary.task_id.to_string()],
+        )?;
+        transaction.execute(
+            "INSERT INTO context_summaries (
+                summary_id, task_id, source_start_global_offset, source_end_global_offset,
+                blob_id, active, summary_json, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)",
+            params![
+                summary.summary_id.to_string(),
+                summary.task_id.to_string(),
+                sqlite_integer(summary.source_start_global_offset)?,
+                sqlite_integer(summary.source_end_global_offset)?,
+                summary.blob_id.to_string(),
+                body,
+                summary.created_at.to_rfc3339(),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn active_context_summary(
+        &self,
+        task_id: TaskId,
+    ) -> Result<Option<ContextSummary>, TaskStoreError> {
+        let connection = self.lock()?;
+        let row = connection
+            .query_row(
+                "SELECT summary_id, source_start_global_offset, source_end_global_offset,
+                        blob_id, summary_json
+                 FROM context_summaries
+                 WHERE task_id = ?1 AND active = 1",
+                [task_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        row.map(
+            |(stored_id, stored_start, stored_end, stored_blob_id, body)| {
+                let summary: ContextSummary = serde_json::from_str(&body)?;
+                if summary.task_id != task_id
+                    || summary.summary_id.to_string() != stored_id
+                    || summary.source_start_global_offset != nonnegative_integer(stored_start)?
+                    || summary.source_end_global_offset != nonnegative_integer(stored_end)?
+                    || summary.blob_id.to_string() != stored_blob_id
+                {
+                    return Err(TaskStoreError::ProjectionIntegrity(
+                        "context summary columns disagree with summary payload".into(),
+                    ));
+                }
+                Ok(summary)
+            },
+        )
+        .transpose()
     }
 
     pub fn task_projection(
@@ -480,6 +890,61 @@ impl TaskStore {
         let projection = projection_for_decision(&transaction, task_id, actual)?;
         transaction.commit()?;
         Ok((actual > 0).then_some(projection))
+    }
+
+    pub fn task_projections(&self) -> Result<Vec<TaskProjection>, TaskStoreError> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare("SELECT task_id, projection_json FROM task_projection ORDER BY task_id ASC")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.map(|row| {
+            let (stored_task_id, body) = row?;
+            let projection: TaskProjection = serde_json::from_str(&body)?;
+            if projection.task_id.to_string() != stored_task_id {
+                return Err(TaskStoreError::ProjectionIntegrity(format!(
+                    "task projection {stored_task_id} has another identity"
+                )));
+            }
+            Ok(projection)
+        })
+        .collect()
+    }
+
+    pub fn nonterminal_task_projections_after(
+        &self,
+        after_task_id: Option<TaskId>,
+        limit: usize,
+    ) -> Result<Vec<TaskProjection>, TaskStoreError> {
+        let after_task_id = after_task_id.map(|task_id| task_id.to_string());
+        let limit = i64::try_from(limit.clamp(1, MAX_READ_PAGE_SIZE))
+            .map_err(|_| TaskStoreError::IntegerOutOfRange)?;
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT task_id, projection_json
+             FROM task_projection
+             WHERE (?1 IS NULL OR task_id > ?1)
+               AND json_extract(projection_json, '$.state') IN (
+                   'running', 'waiting_permission', 'yielding', 'interrupted'
+               )
+             ORDER BY task_id ASC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![after_task_id, limit], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.map(|row| {
+            let (stored_task_id, body) = row?;
+            let projection: TaskProjection = serde_json::from_str(&body)?;
+            if projection.task_id.to_string() != stored_task_id {
+                return Err(TaskStoreError::ProjectionIntegrity(format!(
+                    "task projection {stored_task_id} has another identity"
+                )));
+            }
+            Ok(projection)
+        })
+        .collect()
     }
 
     pub fn queue_item_projection(
@@ -506,6 +971,17 @@ impl TaskStore {
             Ok(projection)
         })
         .transpose()
+    }
+
+    pub fn latest_queue_revision(&self, task_id: TaskId) -> Result<u64, TaskStoreError> {
+        let connection = self.lock()?;
+        let revision = connection.query_row(
+            "SELECT COALESCE(MAX(CAST(json_extract(projection_json, '$.revision') AS INTEGER)), 0)
+             FROM queue_projection WHERE task_id = ?1",
+            [task_id.to_string()],
+            |row| row.get::<_, i64>(0),
+        )?;
+        nonnegative_integer(revision)
     }
 
     pub fn projection_counts(&self) -> Result<ProjectionCounts, TaskStoreError> {
@@ -632,6 +1108,7 @@ impl TaskStore {
         for event in &committed {
             self.projector.apply(&transaction, event)?;
         }
+        roll_forward_safe_checkpoint_in_transaction(&transaction, task_id, &committed)?;
         let committed_count =
             u64::try_from(committed.len()).map_err(|_| TaskStoreError::IntegerOutOfRange)?;
         let last_offset = next_engine_offset
@@ -1176,6 +1653,73 @@ fn append_in_transaction(
     Ok(committed)
 }
 
+fn enqueue_segment_start_in_transaction(
+    transaction: &Transaction<'_>,
+    task_id: TaskId,
+    command_payload: &Value,
+    committed: &[TaskEventEnvelope],
+) -> Result<(), TaskStoreError> {
+    if command_payload.get("type").and_then(Value::as_str) != Some("continue_task") {
+        return Ok(());
+    }
+    let payload: ContinueTaskCommandPayload = serde_json::from_value(command_payload.clone())?;
+    if payload.command_type != "continue_task"
+        || payload.indeterminate_tools.len() > MAX_EVENTS_PER_TRANSACTION
+    {
+        return Err(TaskStoreError::InvalidInput(
+            "continue_task recovery decisions are invalid".into(),
+        ));
+    }
+    let mut tool_ids = HashSet::new();
+    for decision in &payload.indeterminate_tools {
+        let tool_use_id = ToolUseId::parse(&decision.tool_use_id)?;
+        if !tool_ids.insert(tool_use_id) {
+            return Err(TaskStoreError::InvalidInput(
+                "continue_task resolves a tool more than once".into(),
+            ));
+        }
+    }
+    let declared_decisions = serde_json::to_value(&payload.indeterminate_tools)?;
+    let starts_matching_segment = committed
+        .iter()
+        .filter(|event| {
+            event.event_type == "run.started"
+                && event.payload.get("segmentId")
+                    == Some(&Value::String(payload.segment_id.to_string()))
+                && event.payload.get("recoveryStart") == Some(&Value::Bool(true))
+                && event.payload.get("indeterminateTools") == Some(&declared_decisions)
+        })
+        .count();
+    if starts_matching_segment != 1 {
+        return Err(TaskStoreError::InvalidInput(
+            "continue_task must commit its declared run segment".into(),
+        ));
+    }
+    let request = PendingSegmentStart {
+        task_id,
+        segment_id: payload.segment_id,
+        indeterminate_tools: payload.indeterminate_tools,
+    };
+    let body = serde_json::to_string(&request)?;
+    if body.len() > MAX_COMMAND_PAYLOAD_BYTES {
+        return Err(TaskStoreError::InvalidInput(
+            "pending segment start exceeds 1 MiB".into(),
+        ));
+    }
+    transaction.execute(
+        "INSERT INTO segment_start_outbox (
+            task_id, run_segment_id, request_json, created_at, delivered_at
+         ) VALUES (?1, ?2, ?3, ?4, NULL)",
+        params![
+            task_id.to_string(),
+            request.segment_id.to_string(),
+            body,
+            now().to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
 fn validate_blob_references_in_transaction(
     transaction: &Transaction<'_>,
     task_id: TaskId,
@@ -1277,64 +1821,73 @@ fn promote_blob_references_in_transaction(
         if !checked.insert(blob_id) {
             continue;
         }
-        let owned: i64 = transaction.query_row(
-            "SELECT EXISTS(
+        promote_blob_id_in_transaction(transaction, task_id, blob_id)?;
+    }
+    Ok(())
+}
+
+fn promote_blob_id_in_transaction(
+    transaction: &Transaction<'_>,
+    task_id: TaskId,
+    blob_id: BlobId,
+) -> Result<(), TaskStoreError> {
+    let owned: i64 = transaction.query_row(
+        "SELECT EXISTS(
                 SELECT 1 FROM blob_ownership WHERE task_id = ?1 AND blob_id = ?2
              )",
-            params![task_id.to_string(), blob_id.to_string()],
-            |row| row.get(0),
-        )?;
-        if owned == 1 {
-            continue;
-        }
-        let staged = staged_blob_for_task(transaction, task_id, blob_id)?;
-        let Some(staged) = staged else {
-            return if blob_metadata_in_transaction(transaction, blob_id)?.is_some() {
-                Err(TaskStoreError::BlobOwnershipDenied { blob_id, task_id })
-            } else {
-                Err(TaskStoreError::BlobNotFound { blob_id })
-            };
-        };
-        if let Some(existing) = blob_metadata_in_transaction(transaction, blob_id)? {
-            validate_staged_blob_identity(
-                blob_id,
-                existing.byte_size,
-                &existing.content_hash,
-                &existing.relative_path,
-                staged.byte_size,
-                &staged.content_hash,
-                &staged.relative_path,
-            )?;
+        params![task_id.to_string(), blob_id.to_string()],
+        |row| row.get(0),
+    )?;
+    if owned == 1 {
+        return Ok(());
+    }
+    let staged = staged_blob_for_task(transaction, task_id, blob_id)?;
+    let Some(staged) = staged else {
+        return if blob_metadata_in_transaction(transaction, blob_id)?.is_some() {
+            Err(TaskStoreError::BlobOwnershipDenied { blob_id, task_id })
         } else {
-            transaction.execute(
-                "INSERT INTO blob_metadata (
+            Err(TaskStoreError::BlobNotFound { blob_id })
+        };
+    };
+    if let Some(existing) = blob_metadata_in_transaction(transaction, blob_id)? {
+        validate_staged_blob_identity(
+            blob_id,
+            existing.byte_size,
+            &existing.content_hash,
+            &existing.relative_path,
+            staged.byte_size,
+            &staged.content_hash,
+            &staged.relative_path,
+        )?;
+    } else {
+        transaction.execute(
+            "INSERT INTO blob_metadata (
                     blob_id, media_type, byte_size, content_hash, relative_path, created_at
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    blob_id.to_string(),
-                    staged.media_type,
-                    sqlite_integer(staged.byte_size)?,
-                    staged.content_hash,
-                    staged.relative_path,
-                    now().to_rfc3339(),
-                ],
-            )?;
-        }
-        transaction.execute(
-            "INSERT INTO blob_ownership (task_id, blob_id, media_type, created_at)
-             VALUES (?1, ?2, ?3, ?4)",
             params![
-                task_id.to_string(),
                 blob_id.to_string(),
                 staged.media_type,
+                sqlite_integer(staged.byte_size)?,
+                staged.content_hash,
+                staged.relative_path,
                 now().to_rfc3339(),
             ],
         )?;
-        transaction.execute(
-            "DELETE FROM blob_staging WHERE task_id = ?1 AND blob_id = ?2",
-            params![task_id.to_string(), blob_id.to_string()],
-        )?;
     }
+    transaction.execute(
+        "INSERT INTO blob_ownership (task_id, blob_id, media_type, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+        params![
+            task_id.to_string(),
+            blob_id.to_string(),
+            staged.media_type,
+            now().to_rfc3339(),
+        ],
+    )?;
+    transaction.execute(
+        "DELETE FROM blob_staging WHERE task_id = ?1 AND blob_id = ?2",
+        params![task_id.to_string(), blob_id.to_string()],
+    )?;
     Ok(())
 }
 
@@ -1977,6 +2530,447 @@ fn sqlite_integer(value: u64) -> Result<i64, TaskStoreError> {
 
 fn nonnegative_integer(value: i64) -> Result<u64, TaskStoreError> {
     u64::try_from(value).map_err(|_| TaskStoreError::IntegerOutOfRange)
+}
+
+fn validate_checkpoint_recovery_state(
+    checkpoint: &TaskCheckpoint,
+    persisted: bool,
+) -> Result<(), TaskStoreError> {
+    let unique_tools = checkpoint
+        .incomplete_tool_use_ids
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let unique_child_actors = checkpoint
+        .child_actor_refs
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    if checkpoint
+        .workspace_baseline
+        .as_ref()
+        .is_some_and(|baseline| baseline.revision.is_empty() || baseline.revision.len() > 4096)
+        || checkpoint.incomplete_tool_use_ids.len() > MAX_EVENTS_PER_TRANSACTION
+        || checkpoint.child_actor_refs.len() > MAX_EVENTS_PER_TRANSACTION
+        || unique_tools.len() != checkpoint.incomplete_tool_use_ids.len()
+        || unique_child_actors.len() != checkpoint.child_actor_refs.len()
+    {
+        return Err(if persisted {
+            TaskStoreError::ProjectionIntegrity(
+                "persisted checkpoint recovery state exceeds its size limits".into(),
+            )
+        } else {
+            TaskStoreError::InvalidInput("checkpoint recovery state exceeds its size limits".into())
+        });
+    }
+    Ok(())
+}
+
+fn encode_checkpoint(checkpoint: &TaskCheckpoint) -> Result<String, TaskStoreError> {
+    validate_checkpoint_recovery_state(checkpoint, false)?;
+    let body = serde_json::to_string(checkpoint)?;
+    if body.len() > MAX_EVENT_PAYLOAD_BYTES {
+        return Err(TaskStoreError::InvalidInput(
+            "checkpoint payload exceeds 1 MiB".into(),
+        ));
+    }
+    Ok(body)
+}
+
+fn validate_checkpoint_references(
+    connection: &Connection,
+    checkpoint: &TaskCheckpoint,
+    require_current_offset: bool,
+    persisted: bool,
+) -> Result<(), TaskStoreError> {
+    let projection_offset = connection
+        .query_row(
+            "SELECT last_global_offset FROM task_projection WHERE task_id = ?1",
+            [checkpoint.task_id.to_string()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            if persisted {
+                TaskStoreError::ProjectionIntegrity(
+                    "persisted checkpoint task does not exist".into(),
+                )
+            } else {
+                TaskStoreError::InvalidInput("checkpoint task does not exist".into())
+            }
+        })?;
+    let projection_offset = nonnegative_integer(projection_offset)?;
+    let invalid_offset = if require_current_offset {
+        projection_offset != checkpoint.committed_global_offset
+    } else {
+        projection_offset < checkpoint.committed_global_offset
+    };
+    if invalid_offset {
+        return Err(if persisted {
+            TaskStoreError::ProjectionIntegrity(
+                "persisted checkpoint offset is ahead of the task projection".into(),
+            )
+        } else {
+            TaskStoreError::InvalidInput(
+                "checkpoint offset is not the task's committed projection offset".into(),
+            )
+        });
+    }
+    let offset_belongs_to_task = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM event_log WHERE task_id = ?1 AND global_offset = ?2
+         )",
+        params![
+            checkpoint.task_id.to_string(),
+            sqlite_integer(checkpoint.committed_global_offset)?
+        ],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !offset_belongs_to_task {
+        return Err(if persisted {
+            TaskStoreError::ProjectionIntegrity(
+                "persisted checkpoint offset does not belong to its task".into(),
+            )
+        } else {
+            TaskStoreError::InvalidInput("checkpoint offset does not belong to its task".into())
+        });
+    }
+    let run_start_offset = connection
+        .query_row(
+            "SELECT global_offset
+             FROM event_log
+             WHERE task_id = ?1
+               AND event_type = 'run.started'
+               AND json_extract(payload_json, '$.segmentId') = ?2",
+            params![
+                checkpoint.task_id.to_string(),
+                checkpoint.run_segment_id.to_string()
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    let Some(run_start_offset) = run_start_offset else {
+        return Err(if persisted {
+            TaskStoreError::ProjectionIntegrity(
+                "persisted checkpoint run segment does not belong to its task".into(),
+            )
+        } else {
+            TaskStoreError::InvalidInput(
+                "checkpoint run segment does not belong to the task".into(),
+            )
+        });
+    };
+    let next_run_start_offset = connection.query_row(
+        "SELECT MIN(global_offset)
+             FROM event_log
+             WHERE task_id = ?1
+               AND event_type = 'run.started'
+               AND global_offset > ?2",
+        params![checkpoint.task_id.to_string(), run_start_offset,],
+        |row| row.get::<_, Option<i64>>(0),
+    )?;
+    let checkpoint_offset = sqlite_integer(checkpoint.committed_global_offset)?;
+    if checkpoint_offset < run_start_offset
+        || next_run_start_offset.is_some_and(|next| checkpoint_offset >= next)
+    {
+        return Err(if persisted {
+            TaskStoreError::ProjectionIntegrity(
+                "persisted checkpoint offset is outside its run segment".into(),
+            )
+        } else {
+            TaskStoreError::InvalidInput("checkpoint offset is outside its run segment".into())
+        });
+    }
+    if let Some(blob_id) = checkpoint.context_blob_id {
+        let owns_blob = connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM blob_ownership WHERE task_id = ?1 AND blob_id = ?2
+             )",
+            params![checkpoint.task_id.to_string(), blob_id.to_string()],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !owns_blob {
+            return Err(TaskStoreError::BlobOwnershipDenied {
+                blob_id,
+                task_id: checkpoint.task_id,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_checkpoint_tools(
+    connection: &Connection,
+    checkpoint: &TaskCheckpoint,
+    persisted: bool,
+) -> Result<(), TaskStoreError> {
+    let canonical = incomplete_tools_for_segment(
+        connection,
+        checkpoint.task_id,
+        checkpoint.run_segment_id,
+        checkpoint.committed_global_offset,
+        None,
+    )
+    .map_err(|error| {
+        if persisted {
+            TaskStoreError::ProjectionIntegrity(format!(
+                "persisted checkpoint tool history is invalid: {error}"
+            ))
+        } else {
+            error
+        }
+    })?;
+    let mut recorded = checkpoint.incomplete_tool_use_ids.clone();
+    recorded.sort_by_key(ToString::to_string);
+    if recorded != canonical {
+        return Err(if persisted {
+            TaskStoreError::ProjectionIntegrity(
+                "persisted checkpoint tools disagree with the canonical event stream".into(),
+            )
+        } else {
+            TaskStoreError::InvalidInput(
+                "checkpoint tools disagree with the canonical event stream".into(),
+            )
+        });
+    }
+    Ok(())
+}
+
+fn load_latest_checkpoint(
+    connection: &Connection,
+    task_id: TaskId,
+) -> Result<Option<TaskCheckpoint>, TaskStoreError> {
+    let row = connection
+        .query_row(
+            "SELECT checkpoint_id, run_segment_id, committed_global_offset, checkpoint_json
+             FROM checkpoints
+             WHERE task_id = ?1
+             ORDER BY committed_global_offset DESC, created_at DESC, checkpoint_id DESC
+             LIMIT 1",
+            [task_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    row.map(
+        |(stored_checkpoint_id, stored_segment_id, stored_offset, body)| {
+            if body.len() > MAX_EVENT_PAYLOAD_BYTES {
+                return Err(TaskStoreError::ProjectionIntegrity(
+                    "persisted checkpoint payload exceeds 1 MiB".into(),
+                ));
+            }
+            let checkpoint: TaskCheckpoint = serde_json::from_str(&body)?;
+            if checkpoint.task_id != task_id
+                || checkpoint.checkpoint_id.to_string() != stored_checkpoint_id
+                || checkpoint.run_segment_id.to_string() != stored_segment_id
+                || checkpoint.committed_global_offset != nonnegative_integer(stored_offset)?
+            {
+                return Err(TaskStoreError::ProjectionIntegrity(
+                    "checkpoint columns disagree with checkpoint payload".into(),
+                ));
+            }
+            validate_checkpoint_recovery_state(&checkpoint, true)?;
+            validate_checkpoint_references(connection, &checkpoint, false, true)?;
+            validate_checkpoint_tools(connection, &checkpoint, true)?;
+            Ok(checkpoint)
+        },
+    )
+    .transpose()
+}
+
+fn insert_checkpoint_in_transaction(
+    transaction: &Transaction<'_>,
+    checkpoint: &TaskCheckpoint,
+) -> Result<(), TaskStoreError> {
+    let body = encode_checkpoint(checkpoint)?;
+    validate_checkpoint_references(transaction, checkpoint, true, false)?;
+    validate_checkpoint_tools(transaction, checkpoint, false)?;
+    transaction.execute(
+        "INSERT INTO checkpoints (
+            checkpoint_id, task_id, run_segment_id, committed_global_offset,
+            checkpoint_json, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            checkpoint.checkpoint_id.to_string(),
+            checkpoint.task_id.to_string(),
+            checkpoint.run_segment_id.to_string(),
+            sqlite_integer(checkpoint.committed_global_offset)?,
+            body,
+            checkpoint.created_at.to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn roll_forward_safe_checkpoint_in_transaction(
+    transaction: &Transaction<'_>,
+    task_id: TaskId,
+    committed: &[TaskEventEnvelope],
+) -> Result<(), TaskStoreError> {
+    if !committed.iter().any(is_safe_checkpoint_boundary) {
+        return Ok(());
+    }
+    let projection = load_task_projection(transaction, task_id)?.ok_or_else(|| {
+        TaskStoreError::ProjectionIntegrity("checkpoint boundary has no task projection".into())
+    })?;
+    let run = projection.current_run.as_ref().ok_or_else(|| {
+        TaskStoreError::ProjectionIntegrity("checkpoint boundary has no run segment".into())
+    })?;
+    let prior = load_latest_checkpoint(transaction, task_id)?;
+    let mut child_actor_refs = Vec::new();
+    let mut statement = transaction.prepare(
+        "SELECT actor_id
+         FROM subagent_projection
+         WHERE task_id = ?1
+         ORDER BY last_global_offset ASC, actor_id ASC",
+    )?;
+    let rows = statement.query_map([task_id.to_string()], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        child_actor_refs.push(ActorId::parse(&row?)?);
+    }
+    drop(statement);
+    let checkpoint = TaskCheckpoint {
+        checkpoint_id: CheckpointId::new(),
+        task_id,
+        run_segment_id: run.segment_id,
+        committed_global_offset: projection.last_global_offset,
+        context_cursor: prior.as_ref().map_or(0, |value| value.context_cursor),
+        queue_revision: projection
+            .queue
+            .iter()
+            .map(|item| item.revision)
+            .max()
+            .unwrap_or(0),
+        workspace_baseline: prior
+            .as_ref()
+            .and_then(|value| value.workspace_baseline.clone()),
+        incomplete_tool_use_ids: incomplete_tools_for_segment(
+            transaction,
+            task_id,
+            run.segment_id,
+            projection.last_global_offset,
+            prior.as_ref(),
+        )?,
+        child_actor_refs,
+        context_blob_id: prior.as_ref().and_then(|value| value.context_blob_id),
+        created_at: now(),
+    };
+    insert_checkpoint_in_transaction(transaction, &checkpoint)?;
+    Ok(())
+}
+
+fn is_safe_checkpoint_boundary(event: &TaskEventEnvelope) -> bool {
+    matches!(
+        event.event_type.as_str(),
+        "run.started"
+            | "message.consumed"
+            | "engine.tool_use_completed"
+            | "engine.tool_use_failed"
+            | "engine.tool_use_denied"
+            | "permission.requested"
+            | "permission.resolved"
+            | "permission.invalidated"
+            | "subagent.spawned"
+            | "run.yield_requested"
+            | "run.safe_point_reached"
+            | "run.force_stop_timed_out"
+            | "run.completed"
+            | "tool.indeterminate"
+    ) || event.event_type.starts_with("subagent.")
+}
+
+fn incomplete_tools_for_segment(
+    connection: &Connection,
+    task_id: TaskId,
+    segment_id: RunSegmentId,
+    committed_global_offset: u64,
+    prior: Option<&TaskCheckpoint>,
+) -> Result<Vec<ToolUseId>, TaskStoreError> {
+    let (after_offset, mut incomplete) = if let Some(prior) = prior.filter(|checkpoint| {
+        checkpoint.run_segment_id == segment_id
+            && checkpoint.committed_global_offset <= committed_global_offset
+    }) {
+        (
+            sqlite_integer(prior.committed_global_offset)?,
+            prior
+                .incomplete_tool_use_ids
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>(),
+        )
+    } else {
+        let run_start_offset = connection.query_row(
+            "SELECT global_offset
+             FROM event_log
+             WHERE task_id = ?1
+               AND event_type = 'run.started'
+               AND json_extract(payload_json, '$.segmentId') = ?2",
+            params![task_id.to_string(), segment_id.to_string()],
+            |row| row.get(0),
+        )?;
+        (run_start_offset, HashSet::new())
+    };
+    let mut statement = connection.prepare(
+        "SELECT event_type, schema_version, payload_json
+         FROM event_log
+         WHERE task_id = ?1
+           AND global_offset > ?2
+           AND global_offset <= ?3
+           AND (event_type GLOB 'engine.tool_use_*' OR event_type = 'tool.indeterminate')
+         ORDER BY global_offset ASC",
+    )?;
+    let rows = statement.query_map(
+        params![
+            task_id.to_string(),
+            after_offset,
+            sqlite_integer(committed_global_offset)?
+        ],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, u16>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        },
+    )?;
+    for row in rows {
+        let (event_type, schema_version, payload_json) = row?;
+        let event = TaskEvent::decode(
+            &event_type,
+            schema_version,
+            serde_json::from_str(&payload_json)?,
+        )?;
+        match event {
+            TaskEvent::Engine { payload, .. } => match payload.event {
+                Event::ToolUseStarted(event) => {
+                    incomplete.insert(event.tool_use_id);
+                }
+                Event::ToolUseCompleted(event) => {
+                    incomplete.remove(&event.tool_use_id);
+                }
+                Event::ToolUseFailed(event) => {
+                    incomplete.remove(&event.tool_use_id);
+                }
+                Event::ToolUseDenied(event) => {
+                    incomplete.remove(&event.tool_use_id);
+                }
+                _ => {}
+            },
+            TaskEvent::ToolIndeterminate { tool_use_id, .. } => {
+                incomplete.insert(tool_use_id);
+            }
+            _ => {}
+        }
+    }
+    let mut incomplete = incomplete.into_iter().collect::<Vec<_>>();
+    incomplete.sort_by_key(ToString::to_string);
+    Ok(incomplete)
 }
 
 #[derive(Debug, Error)]

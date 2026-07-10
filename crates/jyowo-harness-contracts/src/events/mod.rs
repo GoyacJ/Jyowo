@@ -73,6 +73,7 @@ pub enum Event {
     ArtifactUpdated(ArtifactUpdatedEvent),
     ToolUseRequested(ToolUseRequestedEvent),
     ToolUseApproved(ToolUseApprovedEvent),
+    ToolUseStarted(ToolUseStartedEvent),
     ToolUseDenied(ToolUseDeniedEvent),
     ToolUseCompleted(ToolUseCompletedEvent),
     ToolUseFailed(ToolUseFailedEvent),
