@@ -1629,6 +1629,34 @@ async fn save_provider_settings_payload_rejects_http_base_url_with_loopback_pref
 }
 
 #[tokio::test]
+async fn save_provider_settings_payload_rejects_custom_gemini_base_url() {
+    let store = RecordingProviderSettingsStore::default();
+    let error = save_provider_settings_with_store(
+        ProviderSettingsRequest {
+            api_key: Some("provider-test-token".to_owned()),
+            base_url: Some("https://gateway.example.com".to_owned()),
+            config_id: None,
+            display_name: Some("Gemini gateway".to_owned()),
+            model_id: "gemini-2.5-flash".to_owned(),
+            model_options: Some(harness_contracts::ModelRequestOptions::default()),
+            official_quota_api_key: None,
+            provider_id: "gemini".to_owned(),
+            protocol: None,
+            provider_defaults: None,
+            set_default: true,
+        },
+        &store,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error
+        .message
+        .contains("Gemini baseUrl must target generativelanguage.googleapis.com"));
+}
+
+#[tokio::test]
 async fn save_provider_settings_payload_accepts_http_loopback_base_url() {
     let store = RecordingProviderSettingsStore::default();
     let payload = save_provider_settings_with_store(

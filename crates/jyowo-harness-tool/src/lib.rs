@@ -15,6 +15,8 @@ pub mod network_broker;
 pub mod orchestrator;
 pub mod pool;
 pub mod process_registry;
+#[cfg(feature = "gemini-tools")]
+mod provider_gemini;
 pub mod provider_media;
 #[cfg(feature = "minimax-tools")]
 mod provider_minimax;

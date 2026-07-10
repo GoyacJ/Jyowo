@@ -21,6 +21,7 @@ import {
 } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
 import { Select } from '@/shared/ui/select'
+import { Textarea } from '@/shared/ui/textarea'
 
 type ModelConfigDialogProps = {
   catalog: ModelProviderCatalogResponse
@@ -57,16 +58,22 @@ type ModelConfigFormValues = {
   providerId: string
   reasoningEffort: string
   responseFormat: string
+  cachedContent: string
   responseMimeType: string
+  responseJsonSchema: string
   seed: string
   serviceTier: string
   safetyIdentifier: string
   sessionCache: boolean
   stopSequences: string
+  storeResponse: boolean
   thinkingBudget: string
   thinkingMode: string
   temperature: string
   toolStream: string
+  thinkingLevel: string
+  toolConfig: string
+  safetySettings: string
   topK: string
   topP: string
   toolChoice: string
@@ -124,6 +131,7 @@ export function ModelConfigDialog({
   const defaultModel = defaultProvider?.models[0]
   const {
     formState: { errors, isSubmitting },
+    clearErrors,
     handleSubmit,
     register,
     reset,
@@ -225,6 +233,14 @@ export function ModelConfigDialog({
     const baseUrl = values.baseUrl.trim()
     const apiKey = readSecretFormValue(form, 'apiKey')
     const officialQuotaApiKey = readSecretFormValue(form, 'officialQuotaApiKey')
+    const invalidJsonField = invalidGeminiJsonField(values)
+    if (invalidJsonField) {
+      setError('root', {
+        message: t('provider.errors.invalidJsonField', { field: invalidJsonField }),
+      })
+      return
+    }
+    clearErrors('root')
 
     if (profile) {
       request.configId = profile.id
@@ -739,6 +755,18 @@ export function ModelConfigDialog({
                   </Select>
                 </label>
               ) : null}
+              {supportedParameters.has('thinkingConfig') ? (
+                <label className="grid gap-1" htmlFor="provider-thinking-level">
+                  <span className="font-medium">{t('provider.thinkingLevel')}</span>
+                  <Select id="provider-thinking-level" {...register('thinkingLevel')}>
+                    <option value="">{t('provider.default')}</option>
+                    <option value="MINIMAL">Minimal</option>
+                    <option value="LOW">Low</option>
+                    <option value="MEDIUM">Medium</option>
+                    <option value="HIGH">High</option>
+                  </Select>
+                </label>
+              ) : null}
               {supportedParameters.has('output_config') ? (
                 <label className="grid gap-1" htmlFor="provider-output-effort">
                   <span className="font-medium">{t('provider.outputEffort')}</span>
@@ -781,16 +809,25 @@ export function ModelConfigDialog({
                   </Select>
                 </label>
               ) : null}
-              {supportedParameters.has('service_tier') ? (
+              {supportsAny(supportedParameters, ['service_tier', 'serviceTier']) ? (
                 <label className="grid gap-1" htmlFor="provider-service-tier">
                   <span className="font-medium">{t('provider.serviceTier')}</span>
                   <Select id="provider-service-tier" {...register('serviceTier')}>
                     <option value="">{t('provider.default')}</option>
-                    {serviceTierOptions.map((tier) => (
-                      <option key={tier} value={tier}>
-                        {serviceTierLabel(tier)}
-                      </option>
-                    ))}
+                    {selectedProvider?.providerId === 'gemini' ? (
+                      <>
+                        <option value="unspecified">Unspecified</option>
+                        <option value="standard">Standard</option>
+                        <option value="flex">Flex</option>
+                        <option value="priority">Priority</option>
+                      </>
+                    ) : (
+                      serviceTierOptions.map((tier) => (
+                        <option key={tier} value={tier}>
+                          {serviceTierLabel(tier)}
+                        </option>
+                      ))
+                    )}
                   </Select>
                 </label>
               ) : null}
@@ -959,6 +996,36 @@ export function ModelConfigDialog({
                   <Input id="provider-user-id" {...register('userId')} />
                 </label>
               ) : null}
+              {supportedParameters.has('responseJsonSchema') ? (
+                <label className="grid gap-1" htmlFor="provider-response-json-schema">
+                  <span className="font-medium">{t('provider.responseJsonSchema')}</span>
+                  <Textarea id="provider-response-json-schema" rows={3} {...register('responseJsonSchema')} />
+                </label>
+              ) : null}
+              {supportedParameters.has('toolConfig') ? (
+                <label className="grid gap-1" htmlFor="provider-tool-config">
+                  <span className="font-medium">{t('provider.toolConfig')}</span>
+                  <Textarea id="provider-tool-config" rows={3} {...register('toolConfig')} />
+                </label>
+              ) : null}
+              {supportedParameters.has('safetySettings') ? (
+                <label className="grid gap-1" htmlFor="provider-safety-settings">
+                  <span className="font-medium">{t('provider.safetySettings')}</span>
+                  <Textarea id="provider-safety-settings" rows={3} {...register('safetySettings')} />
+                </label>
+              ) : null}
+              {supportedParameters.has('cachedContent') ? (
+                <label className="grid gap-1" htmlFor="provider-cached-content">
+                  <span className="font-medium">{t('provider.cachedContent')}</span>
+                  <Input id="provider-cached-content" {...register('cachedContent')} />
+                </label>
+              ) : null}
+              {supportedParameters.has('store') ? (
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" {...register('storeResponse')} />
+                  <span>{t('provider.storeResponse')}</span>
+                </label>
+              ) : null}
               {supportedParameters.has('performanceConfig') ? (
                 <label className="grid gap-1" htmlFor="provider-performance-latency">
                   <span className="font-medium">{t('provider.performanceLatency')}</span>
@@ -1104,7 +1171,9 @@ function formValuesFromProfile(
     providerId: profile?.providerId ?? defaultProvider?.providerId ?? '',
     reasoningEffort: defaults.reasoningEffort || providerDefaults.reasoningEffort,
     responseFormat: providerDefaults.responseFormat,
+    cachedContent: providerDefaults.cachedContent,
     responseMimeType: providerDefaults.responseMimeType,
+    responseJsonSchema: providerDefaults.responseJsonSchema,
     seed: providerDefaults.seed,
     serviceTier: providerDefaults.serviceTier,
     safetyIdentifier: providerDefaults.safetyIdentifier,
@@ -1116,6 +1185,10 @@ function formValuesFromProfile(
     thinkingType: providerDefaults.thinkingType,
     temperature: providerDefaults.temperature,
     toolStream: providerDefaults.toolStream,
+    safetySettings: providerDefaults.safetySettings,
+    storeResponse: providerDefaults.storeResponse,
+    thinkingLevel: providerDefaults.thinkingLevel,
+    toolConfig: providerDefaults.toolConfig,
     topK: providerDefaults.topK,
     topP: providerDefaults.topP,
     toolChoice: providerDefaults.toolChoice,
@@ -1243,14 +1316,31 @@ function providerOptionDefaultsFromProfile(profile: ProviderConfig | null | unde
     promptCacheKey: typeof body.prompt_cache_key === 'string' ? body.prompt_cache_key : '',
     responseMimeType: typeof body.responseMimeType === 'string' ? body.responseMimeType : '',
     safetyIdentifier: typeof body.safety_identifier === 'string' ? body.safety_identifier : '',
+    cachedContent:
+      typeof body.cachedContent === 'string'
+        ? body.cachedContent
+        : typeof body.cached_content === 'string'
+          ? body.cached_content
+          : '',
+    responseMimeType: typeof body.responseMimeType === 'string' ? body.responseMimeType : '',
+    responseJsonSchema: jsonText(body.responseJsonSchema),
     seed: firstStringable(body.seed),
-    serviceTier: typeof body.service_tier === 'string' ? body.service_tier : '',
+    serviceTier:
+      typeof body.service_tier === 'string'
+        ? body.service_tier
+        : typeof body.serviceTier === 'string'
+          ? body.serviceTier
+          : '',
+    safetySettings: Array.isArray(body.safetySettings) ? JSON.stringify(body.safetySettings) : '',
     stopSequences: stopSequences.join(','),
     thinkingMode:
       thinking?.type === 'enabled' || thinking?.type === 'disabled' ? thinking.type : '',
     thinkingBudget: firstStringable(thinking?.budget_tokens, thinkingConfig?.thinkingBudget),
     thinkingDisplay: typeof thinking?.display === 'string' ? thinking.display : '',
     thinkingType: typeof thinking?.type === 'string' ? thinking.type : '',
+    storeResponse: body.store === true,
+    thinkingLevel: typeof thinkingConfig?.thinkingLevel === 'string' ? thinkingConfig.thinkingLevel : '',
+    toolConfig: jsonText(body.toolConfig),
     topK,
     topP,
     toolChoice: typeof toolChoice?.type === 'string' ? toolChoice.type : '',
@@ -1491,9 +1581,12 @@ function providerDefaultsFromValues(
     }
 
     if (values.providerId === 'gemini') {
-      if (values.enableThinking || thinkingBudget !== null) {
-        body.thinkingConfig =
-          thinkingBudget !== null ? { thinkingBudget } : { includeThoughts: true }
+      if (values.enableThinking || thinkingBudget !== null || values.thinkingLevel) {
+        body.thinkingConfig = {
+          ...(values.enableThinking ? { includeThoughts: true } : {}),
+          ...(thinkingBudget !== null ? { thinkingBudget } : {}),
+          ...(values.thinkingLevel ? { thinkingLevel: values.thinkingLevel } : {}),
+        }
       }
       if (stopSequences.length > 0) {
         body.stopSequences = stopSequences
@@ -1510,7 +1603,28 @@ function providerDefaultsFromValues(
       if (values.responseMimeType.trim()) {
         body.responseMimeType = values.responseMimeType.trim()
       }
-      return mergeAdvancedProviderDefaults(body, headers, values, supportedParameters)
+      const responseJsonSchema = parseJsonField(values.responseJsonSchema)
+      if (responseJsonSchema !== null) {
+        body.responseJsonSchema = responseJsonSchema
+      }
+      const toolConfig = parseJsonField(values.toolConfig)
+      if (toolConfig !== null) {
+        body.toolConfig = toolConfig
+      }
+      const safetySettings = parseJsonField(values.safetySettings)
+      if (Array.isArray(safetySettings)) {
+        body.safetySettings = safetySettings
+      }
+      if (values.cachedContent.trim()) {
+        body.cachedContent = values.cachedContent.trim()
+      }
+      if (values.serviceTier) {
+        body.serviceTier = values.serviceTier
+      }
+      if (values.storeResponse) {
+        body.store = true
+      }
+      return { body, headers }
     }
 
     if (values.providerId === 'bedrock') {
@@ -1731,13 +1845,19 @@ function resetProviderOptionFields(setValue: UseFormSetValue<ModelConfigFormValu
   setValue('responseFormat', '')
   setValue('responseMimeType', '')
   setValue('safetyIdentifier', '')
+  setValue('cachedContent', '')
+  setValue('responseJsonSchema', '')
   setValue('seed', '')
   setValue('serviceTier', '')
+  setValue('safetySettings', '')
   setValue('stopSequences', '')
   setValue('thinkingMode', '')
   setValue('temperature', '')
   setValue('thinkingBudget', '')
   setValue('toolStream', '')
+  setValue('storeResponse', false)
+  setValue('thinkingLevel', '')
+  setValue('toolConfig', '')
   setValue('topK', '')
   setValue('topP', '')
   setValue('toolChoice', '')
@@ -1996,6 +2116,60 @@ function mergeAdvancedOpenAiResponsesOptions(options: OpenAiResponsesOptions, va
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function jsonText(value: unknown): string {
+  if (value === undefined || value === null) {
+    return ''
+  }
+  return JSON.stringify(value)
+}
+
+function parseJsonField(value: string): unknown | null {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return null
+  }
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+}
+
+function invalidGeminiJsonField(values: ModelConfigFormValues): string | null {
+  if (values.providerId !== 'gemini') {
+    return null
+  }
+  for (const [field, label] of [
+    ['responseJsonSchema', 'responseJsonSchema'],
+    ['toolConfig', 'toolConfig'],
+  ] as const) {
+    if (!isValidJsonText(values[field])) {
+      return label
+    }
+  }
+  if (!isValidJsonText(values.safetySettings)) {
+    return 'safetySettings'
+  }
+  const safetySettings = parseJsonField(values.safetySettings)
+  if (safetySettings !== null && !Array.isArray(safetySettings)) {
+    return 'safetySettings'
+  }
+  return null
+}
+
+function isValidJsonText(value: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return true
+  }
+  try {
+    JSON.parse(trimmed)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function firstStringable(...values: unknown[]): string {

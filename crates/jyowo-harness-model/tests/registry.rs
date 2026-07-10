@@ -461,6 +461,79 @@ fn kimi_provider_catalog_exposes_runtime_and_service_capabilities() {
     assert_eq!(batch_create.cost_risk, ProviderServiceCostRisk::High);
 }
 
+#[cfg(feature = "gemini")]
+#[test]
+fn gemini_provider_catalog_tracks_official_model_families_and_services() {
+    let gemini = harness_model::provider_catalog_entries()
+        .into_iter()
+        .find(|entry| entry.provider_id == "gemini")
+        .expect("Gemini catalog should exist");
+
+    assert_eq!(
+        gemini.verified_date,
+        chrono::NaiveDate::from_ymd_opt(2026, 7, 9).unwrap()
+    );
+    for model_id in [
+        "gemini-3.5-flash",
+        "gemini-3.1-pro-preview",
+        "gemini-3-pro-preview",
+        "gemini-3.1-flash-lite",
+        "gemini-2.5-flash-image",
+        "gemini-2.5-flash-preview-tts",
+        "gemini-2.0-flash",
+    ] {
+        assert!(
+            gemini.models.iter().any(|model| model.model_id == model_id),
+            "Gemini catalog should include {model_id}"
+        );
+    }
+    let flash = gemini
+        .models
+        .iter()
+        .find(|model| model.model_id == "gemini-2.5-flash")
+        .expect("flash model should exist");
+    assert!(flash
+        .conversation_capability
+        .input_modalities
+        .contains(&harness_model::ModelModality::Image));
+    assert!(flash
+        .supported_parameters
+        .iter()
+        .any(|parameter| parameter == "responseJsonSchema"));
+
+    for operation_id in [
+        "gemini.models.list",
+        "gemini.models.get",
+        "gemini.tokens.count",
+        "gemini.files.upload",
+        "gemini.files.list",
+        "gemini.cached_contents.create",
+        "gemini.cached_contents.delete",
+        "gemini.embeddings.embed_content",
+        "gemini.batches.create",
+        "gemini.image_generation",
+        "gemini.video_generation",
+        "gemini.video_generation.query",
+        "gemini.text_to_speech",
+        "gemini.live",
+        "gemini.file_search_stores.create",
+        "gemini.agents.create",
+        "gemini.webhooks.create",
+    ] {
+        assert!(
+            gemini
+                .service_capabilities
+                .iter()
+                .any(|capability| capability.operation_id == operation_id),
+            "Gemini service capabilities should include {operation_id}"
+        );
+    }
+    assert!(gemini.service_capabilities.iter().any(|capability| {
+        capability.operation_id == "gemini.live"
+            && capability.execution == harness_model::ProviderServiceExecution::Websocket
+    }));
+}
+
 #[test]
 fn provider_registry_resolves_minimax_without_private_replay_requirement() {
     #[cfg(feature = "minimax")]

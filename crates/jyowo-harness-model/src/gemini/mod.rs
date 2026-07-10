@@ -2,10 +2,11 @@ use std::time::{Duration, Instant};
 
 use async_stream::stream;
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use futures::StreamExt;
 use harness_contracts::{
-    Message, MessagePart, MessageRole, ModelError, StopReason, ToolDescriptor, ToolResult,
-    ToolResultPart, UsageSnapshot,
+    BlobRef, BlobStore, Message, MessagePart, MessageRole, ModelError, StopReason, TenantId,
+    ToolDescriptor, ToolResult, ToolResultPart, UsageSnapshot,
 };
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
@@ -20,6 +21,8 @@ use crate::{
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 const API_VERSION: &str = "v1beta";
 const DEFAULT_MAX_TOKENS: u32 = 1024;
+const MAX_GEMINI_ERROR_BODY_BYTES: u64 = 64 * 1024;
+const MAX_GEMINI_INLINE_BLOB_BYTES: u64 = 20 * 1024 * 1024;
 const PROVIDER_ID: &str = "gemini";
 pub const GEMINI_API_KEY_ENV: &str = "GEMINI_API_KEY";
 
@@ -33,7 +36,10 @@ pub struct GeminiProvider {
 impl GeminiProvider {
     pub fn from_api_key(api_key: impl Into<String>) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("Gemini HTTP client should build"),
             api_key: SecretString::new(api_key.into().into_boxed_str()),
             base_url: DEFAULT_BASE_URL.to_owned(),
         }
@@ -45,18 +51,20 @@ impl GeminiProvider {
         self
     }
 
-    async fn send_once(&self, req: &ModelRequest) -> Result<reqwest::Response, ModelError> {
+    async fn send_once(
+        &self,
+        req: &ModelRequest,
+        ctx: &InferContext,
+    ) -> Result<reqwest::Response, ModelError> {
         let method = if req.stream {
             "streamGenerateContent"
         } else {
             "generateContent"
         };
+        let base_url = normalized_gemini_base_url(&self.base_url)?;
         let mut url = format!(
             "{}/{}/models/{}:{}",
-            self.base_url.trim_end_matches('/'),
-            API_VERSION,
-            req.model_id,
-            method
+            base_url, API_VERSION, req.model_id, method
         );
         if req.stream {
             url.push_str("?alt=sse");
@@ -65,14 +73,14 @@ impl GeminiProvider {
             .http
             .post(url)
             .headers(self.headers()?)
-            .json(&request_body(req)?);
+            .json(&request_body(req, ctx).await?);
         let response = request
             .send()
             .await
             .map_err(|error| ModelError::ProviderUnavailable(error.to_string()))?;
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = read_error_body(response, self.api_key.expose_secret()).await;
             return Err(match status.as_u16() {
                 401 | 403 => ModelError::AuthExpired(body),
                 429 => ModelError::RateLimited(body),
@@ -105,7 +113,7 @@ impl ModelProvider for GeminiProvider {
 
     async fn infer(&self, req: ModelRequest, ctx: InferContext) -> Result<ModelStream, ModelError> {
         validate_request(&req, &ctx)?;
-        let response = self.send_once(&req).await?;
+        let response = self.send_once(&req, &ctx).await?;
         let headers = response.headers().clone();
         apply_response_headers_middlewares(&headers, &ctx).await?;
         if req.stream {
@@ -155,10 +163,10 @@ fn validate_request(req: &ModelRequest, ctx: &InferContext) -> Result<(), ModelE
     Ok(())
 }
 
-fn request_body(req: &ModelRequest) -> Result<Value, ModelError> {
+async fn request_body(req: &ModelRequest, ctx: &InferContext) -> Result<Value, ModelError> {
     let mut contents = Vec::new();
     for message in &req.messages {
-        contents.push(content(message)?);
+        contents.push(content(message, ctx).await?);
     }
 
     let mut body = json!({
@@ -195,10 +203,10 @@ fn merge_gemini_extra(body: &mut Value, extra: &Value) -> Result<(), ModelError>
     for (key, value) in extra {
         match key.as_str() {
             "thinkingConfig" | "stopSequences" | "topP" | "topK" | "seed" | "responseMimeType"
-            | "responseSchema" => {
+            | "responseSchema" | "responseJsonSchema" => {
                 body["generationConfig"][key] = value.clone();
             }
-            "toolConfig" | "safetySettings" | "cachedContent" => {
+            "toolConfig" | "safetySettings" | "cachedContent" | "serviceTier" | "store" => {
                 body[key] = value.clone();
             }
             "cached_content" => {
@@ -214,7 +222,7 @@ fn merge_gemini_extra(body: &mut Value, extra: &Value) -> Result<(), ModelError>
     Ok(())
 }
 
-fn content(message: &Message) -> Result<Value, ModelError> {
+async fn content(message: &Message, ctx: &InferContext) -> Result<Value, ModelError> {
     let role = match message.role {
         MessageRole::Assistant => "model",
         MessageRole::Tool => "function",
@@ -225,13 +233,17 @@ fn content(message: &Message) -> Result<Value, ModelError> {
             ));
         }
     };
+    let mut parts = Vec::new();
+    for part in &message.parts {
+        parts.push(message_part(part, ctx).await?);
+    }
     Ok(json!({
         "role": role,
-        "parts": message.parts.iter().map(part).collect::<Result<Vec<_>, _>>()?,
+        "parts": parts,
     }))
 }
 
-fn part(part: &MessagePart) -> Result<Value, ModelError> {
+async fn message_part(part: &MessagePart, ctx: &InferContext) -> Result<Value, ModelError> {
     match part {
         MessagePart::Text(text) => Ok(json!({ "text": text })),
         MessagePart::ToolUse { name, input, .. } => Ok(json!({
@@ -249,15 +261,213 @@ fn part(part: &MessagePart) -> Result<Value, ModelError> {
                 "response": tool_result(content)?,
             },
         })),
-        MessagePart::Image { .. }
-        | MessagePart::Video { .. }
-        | MessagePart::File { .. }
-        | MessagePart::Thinking(_) => Err(ModelError::InvalidRequest(
-            "GeminiProvider only supports text and tool parts".to_owned(),
+        MessagePart::Image {
+            mime_type,
+            blob_ref,
+        }
+        | MessagePart::Video {
+            mime_type,
+            blob_ref,
+        }
+        | MessagePart::File {
+            mime_type,
+            blob_ref,
+        } => Ok(json!({
+            "inlineData": {
+                "mimeType": mime_type,
+                "data": BASE64_STANDARD.encode(read_blob_bytes(ctx, blob_ref, mime_type).await?),
+            },
+        })),
+        MessagePart::ProviderFileReference {
+            provider_id,
+            file_id,
+            mime_type,
+        } => {
+            if provider_id != PROVIDER_ID {
+                return Err(ModelError::InvalidRequest(
+                    "Gemini provider file references must use provider_id gemini".to_owned(),
+                ));
+            }
+            Ok(json!({
+                "fileData": {
+                    "mimeType": mime_type,
+                    "fileUri": file_id,
+                },
+            }))
+        }
+        MessagePart::Thinking(_) => Err(ModelError::InvalidRequest(
+            "GeminiProvider does not replay thinking message parts".to_owned(),
         )),
         _ => Err(ModelError::InvalidRequest(
             "unsupported Gemini message part".to_owned(),
         )),
+    }
+}
+
+async fn read_blob_bytes(
+    ctx: &InferContext,
+    blob_ref: &BlobRef,
+    mime_type: &str,
+) -> Result<Vec<u8>, ModelError> {
+    validate_inline_blob(blob_ref, mime_type)?;
+    let store = ctx.blob_store.as_ref().ok_or_else(|| {
+        ModelError::InvalidRequest("blob store is required for multimodal model input".to_owned())
+    })?;
+    read_blob_bytes_from_store(store.as_ref(), ctx.tenant_id, blob_ref).await
+}
+
+async fn read_blob_bytes_from_store(
+    store: &dyn BlobStore,
+    tenant_id: TenantId,
+    blob_ref: &BlobRef,
+) -> Result<Vec<u8>, ModelError> {
+    let mut stream = store.get(tenant_id, blob_ref).await.map_err(|_| {
+        ModelError::InvalidRequest("failed to read multimodal input blob".to_owned())
+    })?;
+    let initial_capacity =
+        usize::try_from(blob_ref.size.min(MAX_GEMINI_INLINE_BLOB_BYTES)).unwrap_or(usize::MAX);
+    let mut bytes = Vec::with_capacity(initial_capacity);
+    while let Some(chunk) = stream.next().await {
+        let next_len = u64::try_from(bytes.len())
+            .unwrap_or(u64::MAX)
+            .saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+        if next_len > MAX_GEMINI_INLINE_BLOB_BYTES {
+            return Err(ModelError::InvalidRequest(
+                "Gemini inline multimodal input exceeds 20 MiB; upload it with Gemini Files API and reference fileData".to_owned(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn validate_inline_blob(blob_ref: &BlobRef, mime_type: &str) -> Result<(), ModelError> {
+    if blob_ref.size > MAX_GEMINI_INLINE_BLOB_BYTES {
+        return Err(ModelError::InvalidRequest(
+            "Gemini inline multimodal input exceeds 20 MiB; upload it with Gemini Files API and reference fileData".to_owned(),
+        ));
+    }
+    let mime_type = mime_type
+        .split(';')
+        .next()
+        .unwrap_or(mime_type)
+        .trim()
+        .to_ascii_lowercase();
+    let allowed = matches!(
+        mime_type.as_str(),
+        "image/png"
+            | "image/jpeg"
+            | "image/webp"
+            | "image/heic"
+            | "image/heif"
+            | "video/mp4"
+            | "video/mpeg"
+            | "video/mov"
+            | "video/avi"
+            | "video/x-flv"
+            | "video/mpg"
+            | "video/webm"
+            | "video/wmv"
+            | "video/3gpp"
+            | "audio/wav"
+            | "audio/mp3"
+            | "audio/aiff"
+            | "audio/aac"
+            | "audio/ogg"
+            | "audio/flac"
+            | "application/pdf"
+            | "text/plain"
+            | "text/csv"
+            | "text/html"
+            | "application/json"
+    );
+    if !allowed {
+        return Err(ModelError::InvalidRequest(
+            "Gemini inline multimodal input MIME type is not supported".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn normalized_gemini_base_url(value: &str) -> Result<String, ModelError> {
+    let value = value.trim().trim_end_matches('/');
+    let url = reqwest::Url::parse(value)
+        .map_err(|_| ModelError::InvalidRequest("Gemini base URL is invalid".to_owned()))?;
+    if url.username() != ""
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ModelError::InvalidRequest(
+            "Gemini base URL is invalid".to_owned(),
+        ));
+    }
+    if !matches!(url.scheme(), "https" | "http") {
+        return Err(ModelError::InvalidRequest(
+            "Gemini base URL must use http(s)".to_owned(),
+        ));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| ModelError::InvalidRequest("Gemini base URL is invalid".to_owned()))?;
+    let is_allowed_host = host.eq_ignore_ascii_case("generativelanguage.googleapis.com");
+    #[cfg(debug_assertions)]
+    let is_allowed_host = is_allowed_host
+        || host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if !is_allowed_host {
+        return Err(ModelError::InvalidRequest(
+            "Gemini base URL host is not allowed".to_owned(),
+        ));
+    }
+    if url.scheme() == "http" {
+        #[cfg(debug_assertions)]
+        {
+            let loopback = host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback());
+            if loopback {
+                return Ok(value.to_owned());
+            }
+        }
+        return Err(ModelError::InvalidRequest(
+            "Gemini base URL must use https".to_owned(),
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+async fn read_error_body(mut response: reqwest::Response, secret: &str) -> String {
+    let mut bytes = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        let next_len = u64::try_from(bytes.len())
+            .unwrap_or(u64::MAX)
+            .saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+        if next_len > MAX_GEMINI_ERROR_BODY_BYTES {
+            bytes.extend_from_slice(
+                &chunk[..usize::try_from(
+                    MAX_GEMINI_ERROR_BODY_BYTES.saturating_sub(bytes.len() as u64),
+                )
+                .unwrap_or(0)
+                .min(chunk.len())],
+            );
+            break;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let body = String::from_utf8_lossy(&bytes).into_owned();
+    let body = if secret.is_empty() {
+        body
+    } else {
+        body.replace(secret, "[REDACTED]")
+    };
+    if body.trim().is_empty() {
+        "Gemini API request failed".to_owned()
+    } else {
+        body
     }
 }
 

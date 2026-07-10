@@ -189,6 +189,47 @@ impl ToolRegistryBuilder {
                         registry
                             .register(Box::<crate::builtin::MiniMaxVideoDownloadTool>::default())?;
                     }
+                    #[cfg(feature = "gemini-tools")]
+                    {
+                        registry.register(Box::<crate::builtin::GeminiModelsListTool>::default())?;
+                        registry.register(Box::<crate::builtin::GeminiModelGetTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::GeminiTokensCountTool>::default())?;
+                        registry.register(Box::<crate::builtin::GeminiFileUploadTool>::default())?;
+                        registry.register(Box::<crate::builtin::GeminiFileListTool>::default())?;
+                        registry.register(Box::<crate::builtin::GeminiFileGetTool>::default())?;
+                        registry.register(Box::<crate::builtin::GeminiFileDeleteTool>::default())?;
+                        registry.register(
+                            Box::<crate::builtin::GeminiCachedContentCreateTool>::default(),
+                        )?;
+                        registry.register(
+                            Box::<crate::builtin::GeminiCachedContentGetTool>::default(),
+                        )?;
+                        registry.register(
+                            Box::<crate::builtin::GeminiCachedContentListTool>::default(),
+                        )?;
+                        registry.register(
+                            Box::<crate::builtin::GeminiCachedContentDeleteTool>::default(),
+                        )?;
+                        registry.register(Box::<crate::builtin::GeminiEmbeddingTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::GeminiEmbeddingBatchTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::GeminiBatchCreateTool>::default())?;
+                        registry.register(Box::<crate::builtin::GeminiBatchGetTool>::default())?;
+                        registry.register(Box::<crate::builtin::GeminiBatchListTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::GeminiBatchCancelTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::GeminiImageGenerationTool>::default())?;
+                        registry
+                            .register(Box::<crate::builtin::GeminiVideoGenerationTool>::default())?;
+                        registry.register(
+                            Box::<crate::builtin::GeminiVideoGenerationQueryTool>::default(),
+                        )?;
+                        registry
+                            .register(Box::<crate::builtin::GeminiTextToSpeechTool>::default())?;
+                    }
                     #[cfg(feature = "seedance-tools")]
                     {
                         registry.register(Box::<crate::builtin::SeedanceTextToVideo>::default())?;

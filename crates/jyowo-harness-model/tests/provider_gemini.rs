@@ -1,8 +1,14 @@
 #![cfg(feature = "gemini")]
 
+use std::sync::Arc;
+
+use bytes::Bytes;
 use chrono::Utc;
 use futures::StreamExt;
-use harness_contracts::{Message, MessageId, MessagePart, MessageRole, ModelError, StopReason};
+use harness_contracts::{
+    BlobError, BlobMeta, BlobRef, BlobStore, Message, MessageId, MessagePart, MessageRole,
+    ModelError, StopReason, TenantId,
+};
 use harness_model::{gemini::GeminiProvider, *};
 use serde_json::{json, Value};
 use wiremock::{
@@ -32,6 +38,58 @@ fn request(stream: bool) -> ModelRequest {
     }
 }
 
+struct StaticBlobStore {
+    bytes: Bytes,
+}
+
+#[async_trait::async_trait]
+impl BlobStore for StaticBlobStore {
+    fn store_id(&self) -> &str {
+        "static"
+    }
+
+    async fn put(
+        &self,
+        _tenant: TenantId,
+        _bytes: Bytes,
+        _meta: BlobMeta,
+    ) -> Result<BlobRef, BlobError> {
+        Err(BlobError::Backend("not implemented".to_owned()))
+    }
+
+    async fn get(
+        &self,
+        _tenant: TenantId,
+        _blob: &BlobRef,
+    ) -> Result<futures::stream::BoxStream<'static, Bytes>, BlobError> {
+        Ok(Box::pin(futures::stream::once({
+            let bytes = self.bytes.clone();
+            async move { bytes }
+        })))
+    }
+
+    async fn head(
+        &self,
+        _tenant: TenantId,
+        _blob: &BlobRef,
+    ) -> Result<Option<BlobMeta>, BlobError> {
+        Ok(None)
+    }
+
+    async fn delete(&self, _tenant: TenantId, _blob: &BlobRef) -> Result<(), BlobError> {
+        Ok(())
+    }
+}
+
+fn blob_ref(size: u64, content_type: &str) -> BlobRef {
+    BlobRef {
+        id: harness_contracts::BlobId::new(),
+        size,
+        content_hash: [7; 32],
+        content_type: Some(content_type.to_owned()),
+    }
+}
+
 #[test]
 fn gemini_provider_metadata_is_stable() {
     let provider = GeminiProvider::from_api_key("test-key");
@@ -50,10 +108,10 @@ fn gemini_provider_metadata_is_stable() {
         .find(|model| model.model_id == "gemini-2.5-flash")
         .expect("Gemini 2.5 Flash should be listed");
     assert!(flash.conversation_capability.tool_calling);
-    assert_eq!(
-        flash.conversation_capability.input_modalities,
-        vec![ModelModality::Text]
-    );
+    assert!(flash
+        .conversation_capability
+        .input_modalities
+        .contains(&ModelModality::Image));
 }
 
 #[tokio::test]
@@ -171,6 +229,114 @@ async fn gemini_request_merges_provider_defaults_extra() {
     );
     assert_eq!(body["safetySettings"][0]["threshold"], "BLOCK_ONLY_HIGH");
     assert_eq!(body["cachedContent"], "cachedContents/provider-default");
+}
+
+#[tokio::test]
+async fn gemini_request_encodes_multimodal_parts_and_official_parameters() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-2.5-flash:generateContent"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+        })))
+        .mount(&server)
+        .await;
+
+    let image = blob_ref(4, "image/png");
+    let file = blob_ref(4, "application/pdf");
+    let mut req = request(false);
+    req.messages[0].parts = vec![
+        MessagePart::Text("describe".to_owned()),
+        MessagePart::Image {
+            mime_type: "image/png".to_owned(),
+            blob_ref: image,
+        },
+        MessagePart::File {
+            mime_type: "application/pdf".to_owned(),
+            blob_ref: file,
+        },
+        MessagePart::ProviderFileReference {
+            provider_id: "gemini".to_owned(),
+            file_id: "files/report".to_owned(),
+            mime_type: "application/pdf".to_owned(),
+        },
+    ];
+    req.extra = json!({
+        "thinkingConfig": { "includeThoughts": true, "thinkingLevel": "HIGH" },
+        "responseJsonSchema": { "type": "object", "properties": { "ok": { "type": "boolean" } } },
+        "serviceTier": "standard",
+        "store": false,
+        "toolConfig": { "functionCallingConfig": { "mode": "AUTO" } }
+    });
+
+    let mut ctx = InferContext::for_test();
+    ctx.blob_store = Some(Arc::new(StaticBlobStore {
+        bytes: Bytes::from_static(b"data"),
+    }));
+
+    GeminiProvider::from_api_key("test-key")
+        .with_base_url(server.uri())
+        .infer(req, ctx)
+        .await
+        .expect("request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["contents"][0]["parts"][0]["text"], "describe");
+    assert_eq!(
+        body["contents"][0]["parts"][1]["inlineData"]["mimeType"],
+        "image/png"
+    );
+    assert_eq!(
+        body["contents"][0]["parts"][1]["inlineData"]["data"],
+        "ZGF0YQ=="
+    );
+    assert_eq!(
+        body["contents"][0]["parts"][2]["inlineData"]["mimeType"],
+        "application/pdf"
+    );
+    assert_eq!(
+        body["contents"][0]["parts"][3]["fileData"]["fileUri"],
+        "files/report"
+    );
+    assert_eq!(
+        body["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+        "HIGH"
+    );
+    assert_eq!(
+        body["generationConfig"]["responseJsonSchema"]["type"],
+        "object"
+    );
+    assert_eq!(body["serviceTier"], "standard");
+    assert_eq!(body["store"], false);
+    assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "AUTO");
+}
+
+#[tokio::test]
+async fn gemini_rejects_oversized_inline_multimodal_blob() {
+    let image = blob_ref(20 * 1024 * 1024 + 1, "image/png");
+    let mut req = request(false);
+    req.messages[0].parts = vec![MessagePart::Image {
+        mime_type: "image/png".to_owned(),
+        blob_ref: image,
+    }];
+    let mut ctx = InferContext::for_test();
+    ctx.blob_store = Some(Arc::new(StaticBlobStore {
+        bytes: Bytes::from_static(b"data"),
+    }));
+
+    let error = match GeminiProvider::from_api_key("test-key")
+        .infer(req, ctx)
+        .await
+    {
+        Ok(_) => panic!("oversized inline blob should be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(error, ModelError::InvalidRequest(message) if message.contains("20 MiB")));
 }
 
 #[tokio::test]

@@ -146,6 +146,56 @@ pub(crate) fn provider_settings_record_with_doubao_config(
     }
 }
 
+pub(crate) fn provider_settings_record_with_gemini_config(
+    config_id: &str,
+    has_api_key: bool,
+) -> ProviderSettingsRecord {
+    ProviderSettingsRecord {
+        default_config_id: Some(config_id.to_owned()),
+        configs: vec![ProviderConfigRecord {
+            api_key: if has_api_key {
+                "provider-test-token".to_owned()
+            } else {
+                String::new()
+            },
+            protocol: ModelProtocol::GenerateContent,
+            base_url: None,
+            display_name: "Gemini service".to_owned(),
+            id: config_id.to_owned(),
+            model_id: "gemini-3.5-flash".to_owned(),
+            model_options: harness_contracts::ModelRequestOptions::default(),
+            official_quota_api_key: None,
+            provider_id: "gemini".to_owned(),
+            provider_defaults: None,
+            model_descriptor: ProviderModelDescriptorRecord {
+                protocol: ModelProtocol::GenerateContent,
+                conversation_capability: ConversationModelCapabilityRecord {
+                    input_modalities: vec![
+                        ProviderModelModalityRecord::Text,
+                        ProviderModelModalityRecord::Image,
+                        ProviderModelModalityRecord::File,
+                    ],
+                    output_modalities: vec![ProviderModelModalityRecord::Text],
+                    context_window: 1_048_576,
+                    max_output_tokens: 65_536,
+                    streaming: true,
+                    tool_calling: true,
+                    reasoning: true,
+                    prompt_cache: true,
+                    structured_output: true,
+                },
+                context_window: 1_048_576,
+                display_name: "Gemini 3.5 Flash".to_owned(),
+                lifecycle: ProviderModelLifecycleRecord::Stable,
+                max_output_tokens: 65_536,
+                model_id: "gemini-3.5-flash".to_owned(),
+                provider_id: "gemini".to_owned(),
+                runtime_semantics: None,
+            },
+        }],
+    }
+}
+
 pub(crate) fn test_provider_settings_record() -> ProviderSettingsRecord {
     ProviderSettingsRecord {
         default_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),
