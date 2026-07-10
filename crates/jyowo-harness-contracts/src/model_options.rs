@@ -11,13 +11,30 @@ use serde_json::Value;
 pub struct ModelRequestOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_responses: Option<OpenAiResponsesOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kimi_chat: Option<KimiChatOptions>,
 }
 
 impl ModelRequestOptions {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.openai_responses.is_none()
+        self.openai_responses.is_none() && self.kimi_chat.is_none()
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct KimiChatOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_assistant: Option<KimiPartialAssistant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct KimiPartialAssistant {
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -353,6 +353,7 @@ async fn save_provider_settings_migrates_old_openai_responses_record_runtime_sem
 #[tokio::test]
 async fn save_provider_settings_preserves_existing_model_options_when_request_omits_them() {
     let stored_model_options = harness_contracts::ModelRequestOptions {
+        kimi_chat: None,
         openai_responses: Some(harness_contracts::OpenAiResponsesOptions {
             reasoning: Some(harness_contracts::OpenAiReasoningOptions {
                 effort: Some("minimal".to_owned()),
@@ -405,6 +406,7 @@ async fn save_provider_settings_preserves_existing_model_options_when_request_om
 #[tokio::test]
 async fn save_provider_settings_clears_existing_model_options_when_request_sends_empty_options() {
     let stored_model_options = harness_contracts::ModelRequestOptions {
+        kimi_chat: None,
         openai_responses: Some(harness_contracts::OpenAiResponsesOptions {
             reasoning: Some(harness_contracts::OpenAiReasoningOptions {
                 effort: Some("minimal".to_owned()),

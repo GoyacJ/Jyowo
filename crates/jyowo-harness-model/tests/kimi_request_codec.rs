@@ -8,9 +8,9 @@ use chrono::Utc;
 use futures::{stream, StreamExt};
 use harness_contracts::{
     BlobError, BlobId, BlobMeta, BlobRef, BlobRetention, BlobStore, BudgetMetric, DeferPolicy,
-    Message, MessageId, MessagePart, MessageRole, ModelError, ModelModality, OverflowAction,
-    ProviderRestriction, ResultBudget, ToolDescriptor, ToolGroup, ToolOrigin, ToolProperties,
-    ToolResult, ToolResultPart, ToolUseId, TrustLevel,
+    KimiChatOptions, KimiPartialAssistant, Message, MessageId, MessagePart, MessageRole,
+    ModelError, ModelModality, OverflowAction, ProviderRestriction, ResultBudget, ToolDescriptor,
+    ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolResultPart, ToolUseId, TrustLevel,
 };
 use harness_model::{KmProvider, *};
 use serde_json::{json, Value};
@@ -449,6 +449,127 @@ async fn kimi_rejects_unsupported_tool_result_blob_type() {
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn kimi_non_stream_reads_top_level_cached_tokens() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "kimi_cached",
+            "choices": [{
+                "message": { "role": "assistant", "content": "ok" },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 3,
+                "total_tokens": 13,
+                "cached_tokens": 7
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let events = provider(&server)
+        .infer(base_request("kimi-k2.6"), InferContext::for_test())
+        .await
+        .expect("Kimi request should succeed")
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ModelStreamEvent::MessageStart { usage, .. }
+            if usage.input_tokens == 10
+                && usage.output_tokens == 3
+                && usage.cache_read_tokens == 7
+    )));
+}
+
+#[tokio::test]
+async fn kimi_provider_file_reference_encodes_ms_url_for_image_and_video() {
+    let server = ok_server().await;
+    let mut req = base_request("kimi-k2.6");
+    req.messages = vec![message(
+        MessageRole::User,
+        vec![
+            MessagePart::ProviderFileReference {
+                provider_id: "km".to_owned(),
+                file_id: "file-image".to_owned(),
+                mime_type: "image/png".to_owned(),
+            },
+            MessagePart::ProviderFileReference {
+                provider_id: "km".to_owned(),
+                file_id: "file-video".to_owned(),
+                mime_type: "video/mp4".to_owned(),
+            },
+            MessagePart::Text("describe".to_owned()),
+        ],
+    )];
+
+    provider(&server)
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("Kimi provider file references should encode")
+        .collect::<Vec<_>>()
+        .await;
+
+    let body = single_request_body(&server).await;
+    let content = body["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(content[0]["type"], "image_url");
+    assert_eq!(content[0]["image_url"]["url"], "ms://file-image");
+    assert_eq!(content[1]["type"], "video_url");
+    assert_eq!(content[1]["video_url"]["url"], "ms://file-video");
+}
+
+#[tokio::test]
+async fn kimi_partial_mode_appends_final_partial_assistant_message() {
+    let server = ok_server().await;
+    let mut req = base_request("kimi-k2.6");
+    req.options.kimi_chat = Some(KimiChatOptions {
+        partial_assistant: Some(KimiPartialAssistant {
+            content: "The answer is".to_owned(),
+            name: Some("draft".to_owned()),
+        }),
+    });
+
+    provider(&server)
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("Kimi partial mode should encode")
+        .collect::<Vec<_>>()
+        .await;
+
+    let body = single_request_body(&server).await;
+    assert_eq!(body["messages"][1]["role"], "assistant");
+    assert_eq!(body["messages"][1]["content"], "The answer is");
+    assert_eq!(body["messages"][1]["name"], "draft");
+    assert_eq!(body["messages"][1]["partial"], true);
+}
+
+#[tokio::test]
+async fn kimi_partial_mode_rejects_json_response_format_before_request() {
+    let server = ok_server().await;
+    let mut req = base_request("kimi-k2.6");
+    req.extra = json!({ "response_format": { "type": "json_object" } });
+    req.options.kimi_chat = Some(KimiChatOptions {
+        partial_assistant: Some(KimiPartialAssistant {
+            content: "The answer is".to_owned(),
+            name: None,
+        }),
+    });
+
+    let error = match provider(&server).infer(req, InferContext::for_test()).await {
+        Ok(_) => panic!("partial mode should reject JSON mode"),
+        Err(error) => error,
+    };
+
+    assert!(
+        matches!(error, ModelError::InvalidRequest(message) if message.contains("Partial Mode"))
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
 async fn ok_server() -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -490,6 +611,7 @@ fn base_request(model_id: &str) -> ModelRequest {
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::ChatCompletions,
         extra: Value::Null,
+        options: ModelRequestOptions::default(),
         provider_context: ProviderRequestContext::default(),
     }
 }

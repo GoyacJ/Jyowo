@@ -1774,6 +1774,18 @@ const openAiResponsesOptionsSchema = z
 
 const modelRequestOptionsSchema = z
   .object({
+    kimiChat: z
+      .object({
+        partialAssistant: z
+          .object({
+            content: z.string(),
+            name: z.string().min(1).optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
     openaiResponses: openAiResponsesOptionsSchema.optional(),
   })
   .strict()
@@ -1812,7 +1824,7 @@ const validateProviderSettingsResponseSchema = z
 const modelCatalogEntrySchema = z
   .object({
     protocol: modelProtocolSchema,
-    supportedParameters: z.array(z.string().min(1)),
+    supportedParameters: z.array(z.string().min(1)).optional(),
     conversationCapability: conversationModelCapabilitySchema,
     contextWindow: z.number().int().nonnegative(),
     displayName: z.string().min(1),

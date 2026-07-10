@@ -37,15 +37,19 @@ type ModelConfigFormValues = {
   codeInterpreter: boolean
   displayName: string
   enableThinking: boolean
+  kimiPartialContent: string
+  kimiPartialName: string
   modelId: string
   outputEffort: string
   performanceLatency: string
+  promptCacheKey: string
   protocol: ModelProtocol
   providerId: string
   reasoningEffort: string
   responseMimeType: string
   seed: string
   serviceTier: string
+  safetyIdentifier: string
   sessionCache: boolean
   stopSequences: string
   thinkingBudget: string
@@ -153,7 +157,7 @@ export function ModelConfigDialog({
       request.configId = profile.id
       request.setDefault = profile.isDefault
     }
-    request.modelOptions = {}
+    request.modelOptions = modelOptionsFromValues(values)
     if (displayName) {
       request.displayName = displayName
     }
@@ -348,6 +352,36 @@ export function ModelConfigDialog({
                   </Select>
                 </label>
               ) : null}
+              {selectedProvider?.providerId === 'km' && supportedParameters.has('tools') ? (
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" {...register('webSearch')} />
+                  <span>$web_search</span>
+                </label>
+              ) : null}
+              {supportedParameters.has('prompt_cache_key') ? (
+                <label className="grid gap-1" htmlFor="provider-prompt-cache-key">
+                  <span className="font-medium">{t('provider.promptCacheKey')}</span>
+                  <Input id="provider-prompt-cache-key" {...register('promptCacheKey')} />
+                </label>
+              ) : null}
+              {supportedParameters.has('safety_identifier') ? (
+                <label className="grid gap-1" htmlFor="provider-safety-identifier">
+                  <span className="font-medium">{t('provider.safetyIdentifier')}</span>
+                  <Input id="provider-safety-identifier" {...register('safetyIdentifier')} />
+                </label>
+              ) : null}
+              {supportedParameters.has('partial') ? (
+                <>
+                  <label className="grid gap-1" htmlFor="provider-kimi-partial-content">
+                    <span className="font-medium">{t('provider.kimiPartialContent')}</span>
+                    <Input id="provider-kimi-partial-content" {...register('kimiPartialContent')} />
+                  </label>
+                  <label className="grid gap-1" htmlFor="provider-kimi-partial-name">
+                    <span className="font-medium">{t('provider.kimiPartialName')}</span>
+                    <Input id="provider-kimi-partial-name" {...register('kimiPartialName')} />
+                  </label>
+                </>
+              ) : null}
               {supportsAny(supportedParameters, ['top_p', 'topP']) ? (
                 <label className="grid gap-1" htmlFor="provider-top-p">
                   <span className="font-medium">{t('provider.topP')}</span>
@@ -460,27 +494,32 @@ function formValuesFromProfile(
 ): ModelConfigFormValues {
   const defaults = qwenDefaultsFromProfile(profile)
   const providerDefaults = providerOptionDefaultsFromProfile(profile)
+  const kimiDefaults = kimiDefaultsFromProfile(profile)
   return {
     baseUrl: profile?.baseUrl ?? defaultProvider?.defaultBaseUrl ?? '',
     codeInterpreter: defaults.codeInterpreter,
     displayName: profile?.displayName ?? '',
     enableThinking: defaults.enableThinking || providerDefaults.enableThinking,
+    kimiPartialContent: kimiDefaults.kimiPartialContent,
+    kimiPartialName: kimiDefaults.kimiPartialName,
     modelId: profile?.modelId ?? defaultModel?.modelId ?? '',
     outputEffort: providerDefaults.outputEffort,
     performanceLatency: providerDefaults.performanceLatency,
+    promptCacheKey: providerDefaults.promptCacheKey,
     protocol: profile?.protocol ?? defaultProtocolForProvider(defaultProvider),
     providerId: profile?.providerId ?? defaultProvider?.providerId ?? '',
     reasoningEffort: defaults.reasoningEffort,
     responseMimeType: providerDefaults.responseMimeType,
     seed: providerDefaults.seed,
     serviceTier: providerDefaults.serviceTier,
+    safetyIdentifier: providerDefaults.safetyIdentifier,
     sessionCache: defaults.sessionCache,
     stopSequences: providerDefaults.stopSequences,
     thinkingBudget: providerDefaults.thinkingBudget,
     topK: providerDefaults.topK,
     topP: providerDefaults.topP,
     webExtractor: defaults.webExtractor,
-    webSearch: defaults.webSearch,
+    webSearch: defaults.webSearch || providerDefaults.webSearch,
   }
 }
 
@@ -521,6 +560,7 @@ function qwenDefaultsFromProfile(profile: ProviderConfig | null | undefined) {
 
 function providerOptionDefaultsFromProfile(profile: ProviderConfig | null | undefined) {
   const body = profile?.providerDefaults?.body ?? {}
+  const tools = Array.isArray(body.tools) ? body.tools : []
   const thinking = isRecord(body.thinking) ? body.thinking : null
   const thinkingConfig = isRecord(body.thinkingConfig) ? body.thinkingConfig : null
   const outputConfig = isRecord(body.output_config) ? body.output_config : null
@@ -543,13 +583,25 @@ function providerOptionDefaultsFromProfile(profile: ProviderConfig | null | unde
     outputEffort: typeof outputConfig?.effort === 'string' ? outputConfig.effort : '',
     performanceLatency:
       typeof performanceConfig?.latency === 'string' ? performanceConfig.latency : '',
+    promptCacheKey: typeof body.prompt_cache_key === 'string' ? body.prompt_cache_key : '',
     responseMimeType: typeof body.responseMimeType === 'string' ? body.responseMimeType : '',
+    safetyIdentifier: typeof body.safety_identifier === 'string' ? body.safety_identifier : '',
     seed: firstStringable(body.seed),
     serviceTier: typeof body.service_tier === 'string' ? body.service_tier : '',
     stopSequences: stopSequences.join(','),
     thinkingBudget: firstStringable(thinking?.budget_tokens, thinkingConfig?.thinkingBudget),
     topK,
     topP,
+    webSearch: tools.some(isKimiWebSearchTool),
+  }
+}
+
+function kimiDefaultsFromProfile(profile: ProviderConfig | null | undefined) {
+  const kimiChat = profile?.modelOptions?.kimiChat
+  const partial = kimiChat?.partialAssistant
+  return {
+    kimiPartialContent: partial?.content ?? '',
+    kimiPartialName: partial?.name ?? '',
   }
 }
 
@@ -632,6 +684,33 @@ function providerDefaultsFromValues(
       return { body, headers }
     }
 
+    if (values.providerId === 'km') {
+      if (topP !== null) {
+        body.top_p = topP
+      }
+      if (stopSequences.length > 0) {
+        body.stop = stopSequences
+      }
+      if (values.enableThinking) {
+        body.thinking = { type: 'enabled' }
+      }
+      if (values.webSearch) {
+        body.tools = [
+          {
+            type: 'builtin_function',
+            function: { name: '$web_search' },
+          },
+        ]
+      }
+      if (values.promptCacheKey.trim()) {
+        body.prompt_cache_key = values.promptCacheKey.trim()
+      }
+      if (values.safetyIdentifier.trim()) {
+        body.safety_identifier = values.safetyIdentifier.trim()
+      }
+      return { body, headers }
+    }
+
     if (topP !== null) {
       body.top_p = topP
     }
@@ -689,6 +768,28 @@ function providerDefaultsFromValues(
   return { body, headers }
 }
 
+function modelOptionsFromValues(
+  values: ModelConfigFormValues,
+): ProviderSettingsRequest['modelOptions'] {
+  if (values.providerId !== 'km') {
+    return {}
+  }
+
+  const kimiChat: NonNullable<ProviderSettingsRequest['modelOptions']>['kimiChat'] = {}
+  const partialContent = values.kimiPartialContent.trim()
+  if (partialContent) {
+    const partialAssistant: NonNullable<typeof kimiChat>['partialAssistant'] = {
+      content: partialContent,
+    }
+    if (values.kimiPartialName.trim()) {
+      partialAssistant.name = values.kimiPartialName.trim()
+    }
+    kimiChat.partialAssistant = partialAssistant
+  }
+
+  return Object.keys(kimiChat).length > 0 ? { kimiChat } : {}
+}
+
 function hasProviderDefaults(defaults: ProviderSettingsRequest['providerDefaults']): boolean {
   return (
     Object.keys(defaults?.body ?? {}).length > 0 || Object.keys(defaults?.headers ?? {}).length > 0
@@ -697,10 +798,14 @@ function hasProviderDefaults(defaults: ProviderSettingsRequest['providerDefaults
 
 function resetProviderOptionFields(setValue: UseFormSetValue<ModelConfigFormValues>) {
   setValue('enableThinking', false)
+  setValue('kimiPartialContent', '')
+  setValue('kimiPartialName', '')
   setValue('outputEffort', '')
   setValue('performanceLatency', '')
+  setValue('promptCacheKey', '')
   setValue('reasoningEffort', '')
   setValue('responseMimeType', '')
+  setValue('safetyIdentifier', '')
   setValue('seed', '')
   setValue('serviceTier', '')
   setValue('stopSequences', '')
@@ -759,6 +864,13 @@ function supportsAny(supportedParameters: Set<string>, parameters: string[]): bo
 
 function supportsQwenChatWebExtractor(modelId: string): boolean {
   return modelId === 'qwen3-max' || modelId === 'qwen3-max-2026-01-23'
+}
+
+function isKimiWebSearchTool(value: unknown): boolean {
+  if (!isRecord(value) || value.type !== 'builtin_function' || !isRecord(value.function)) {
+    return false
+  }
+  return value.function.name === '$web_search'
 }
 
 function readSecretFormValue(form: HTMLFormElement, name: string): string {

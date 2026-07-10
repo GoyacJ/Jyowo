@@ -324,6 +324,106 @@ impl OpenAiProtocolClient {
         self.response_json(response, credential.as_ref(), ctx).await
     }
 
+    pub(crate) async fn get_json_with_query(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        model_id: Option<&str>,
+        ctx: &InferContext,
+    ) -> Result<Value, ModelError> {
+        let path = path_with_query(path, query);
+        self.get_json(&path, model_id, ctx).await
+    }
+
+    pub(crate) async fn delete_json(
+        &self,
+        path: &str,
+        model_id: Option<&str>,
+        ctx: &InferContext,
+    ) -> Result<Value, ModelError> {
+        check_context(ctx)?;
+        let credential = self
+            .pick_credential_for_model(model_id.unwrap_or_default().to_owned(), ctx)
+            .await?;
+        check_context(ctx)?;
+        let mut headers = self
+            .headers(credential.as_ref().map(|picked| &picked.value))
+            .map_err(|error| error.error)?;
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        let response = self
+            .http
+            .delete(self.url(path))
+            .headers(headers)
+            .send()
+            .await
+            .map_err(map_transport_error)
+            .map_err(|error| error.error)?;
+        self.response_json(response, credential.as_ref(), ctx).await
+    }
+
+    pub(crate) async fn get_text(
+        &self,
+        path: &str,
+        model_id: Option<&str>,
+        ctx: &InferContext,
+    ) -> Result<String, ModelError> {
+        check_context(ctx)?;
+        let credential = self
+            .pick_credential_for_model(model_id.unwrap_or_default().to_owned(), ctx)
+            .await?;
+        check_context(ctx)?;
+        let response = self
+            .http
+            .get(self.url(path))
+            .headers(
+                self.headers(credential.as_ref().map(|picked| &picked.value))
+                    .map_err(|error| error.error)?,
+            )
+            .send()
+            .await
+            .map_err(map_transport_error)
+            .map_err(|error| error.error)?;
+        self.response_text(response, credential.as_ref(), ctx).await
+    }
+
+    pub(crate) async fn post_multipart_bytes(
+        &self,
+        path: &str,
+        fields: &[(&str, String)],
+        file_field: &str,
+        file_name: &str,
+        bytes: Vec<u8>,
+        model_id: Option<&str>,
+        ctx: &InferContext,
+    ) -> Result<Value, ModelError> {
+        check_context(ctx)?;
+        let credential = self
+            .pick_credential_for_model(model_id.unwrap_or_default().to_owned(), ctx)
+            .await?;
+        check_context(ctx)?;
+        let boundary = "jyowo-openai-protocol-boundary";
+        let body = multipart_body(boundary, fields, file_field, file_name, bytes);
+        let mut headers = self
+            .headers(credential.as_ref().map(|picked| &picked.value))
+            .map_err(|error| error.error)?;
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_str(&format!("multipart/form-data; boundary={boundary}"))
+                .map_err(|error| ModelError::InvalidRequest(error.to_string()))?,
+        );
+        let response = self
+            .http
+            .post(self.url(path))
+            .headers(headers)
+            .body(body)
+            .send()
+            .await
+            .map_err(map_transport_error)
+            .map_err(|error| error.error)?;
+        self.response_json(response, credential.as_ref(), ctx).await
+    }
+
     async fn response_json(
         &self,
         response: reqwest::Response,
@@ -354,6 +454,41 @@ impl OpenAiProtocolClient {
         apply_response_headers_middlewares(&headers, ctx).await?;
         response
             .json()
+            .await
+            .map_err(map_transport_error)
+            .map_err(|error| error.error)
+    }
+
+    async fn response_text(
+        &self,
+        response: reqwest::Response,
+        credential: Option<&PickedCredential>,
+        ctx: &InferContext,
+    ) -> Result<String, ModelError> {
+        if !response.status().is_success() {
+            let credential_secret = credential
+                .map(|credential| credential.value.secret.expose_secret())
+                .or_else(|| self.api_key.as_ref().map(|api_key| api_key.expose_secret()));
+            let error = map_response_error(response, credential_secret).await;
+            if let (Some(resolver), Some(picked)) = (self.credential_resolver.as_ref(), credential)
+            {
+                match error.class {
+                    ErrorClass::AuthExpired => resolver.mark_banned(&picked.key),
+                    ErrorClass::RateLimited { retry_after } => resolver.mark_rate_limited(
+                        &picked.key,
+                        retry_after.unwrap_or(DEFAULT_CREDENTIAL_RATE_LIMIT_COOLDOWN),
+                    ),
+                    _ => {}
+                }
+            } else if let Some(retry_after) = error.retry_after {
+                self.set_cooldown(retry_after).await;
+            }
+            return Err(error.error);
+        }
+        let headers = response.headers().clone();
+        apply_response_headers_middlewares(&headers, ctx).await?;
+        response
+            .text()
             .await
             .map_err(map_transport_error)
             .map_err(|error| error.error)
@@ -520,6 +655,76 @@ fn normalize_path(path: &str) -> String {
     } else {
         format!("/{path}")
     }
+}
+
+fn path_with_query(path: &str, query: &[(&str, String)]) -> String {
+    if query.is_empty() {
+        return path.to_owned();
+    }
+    let query = query
+        .iter()
+        .map(|(name, value)| format!("{}={}", percent_encode(name), percent_encode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let separator = if path.contains('?') { '&' } else { '?' };
+    format!("{path}{separator}{query}")
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+fn multipart_body(
+    boundary: &str,
+    fields: &[(&str, String)],
+    file_field: &str,
+    file_name: &str,
+    bytes: Vec<u8>,
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (name, value) in fields {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!(
+                "Content-Disposition: form-data; name=\"{}\"\r\n\r\n",
+                multipart_header_value(name)
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(value.as_bytes());
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!(
+            "Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n",
+            multipart_header_value(file_field),
+            multipart_header_value(file_name)
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+    body.extend_from_slice(&bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    body
+}
+
+fn multipart_header_value(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '\r' | '\n' | '"' => '_',
+            _ => ch,
+        })
+        .collect()
 }
 
 fn check_context(ctx: &InferContext) -> Result<(), ModelError> {

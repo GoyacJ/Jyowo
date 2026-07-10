@@ -52,6 +52,24 @@ pub(crate) async fn chat_messages_for_request(
         messages.push(encoded);
         remember_assistant_tool_names(message, &mut tool_call_names);
     }
+    if dialect == OpenAiChatDialect::Kimi {
+        if let Some(partial) = req
+            .options
+            .kimi_chat
+            .as_ref()
+            .and_then(|options| options.partial_assistant.as_ref())
+        {
+            let mut message = json!({
+                "role": "assistant",
+                "content": partial.content,
+                "partial": true,
+            });
+            if let Some(name) = &partial.name {
+                message["name"] = Value::String(name.clone());
+            }
+            messages.push(message);
+        }
+    }
 
     Ok(EncodedChatMessages {
         messages,
@@ -201,6 +219,7 @@ pub(crate) fn usage_for_dialect(
 ) -> UsageSnapshot {
     match dialect {
         OpenAiChatDialect::DeepSeek => deepseek_usage(value),
+        OpenAiChatDialect::Kimi => kimi_usage(value),
         _ => openai_compatible_usage(value),
     }
 }
@@ -219,6 +238,16 @@ fn deepseek_usage(value: Option<&OpenAiUsage>) -> UsageSnapshot {
         }
     }
     openai_compatible_usage(value)
+}
+
+fn kimi_usage(value: Option<&OpenAiUsage>) -> UsageSnapshot {
+    let mut usage = openai_compatible_usage(value);
+    if usage.cache_read_tokens == 0 {
+        usage.cache_read_tokens = value
+            .and_then(|usage| usage.cached_tokens)
+            .unwrap_or_default();
+    }
+    usage
 }
 
 fn openai_compatible_usage(value: Option<&OpenAiUsage>) -> UsageSnapshot {
@@ -288,6 +317,7 @@ fn apply_kimi_request_options(
     replayed_provider_reasoning: bool,
 ) -> Result<(), ModelError> {
     let mut extra = extra_object(&req.extra)?.cloned().unwrap_or_default();
+    validate_kimi_partial_mode(req, &extra)?;
     let extra_tools = extra.remove("tools");
     let extra_thinking = extra.remove("thinking");
 
@@ -359,6 +389,31 @@ fn apply_kimi_request_options(
         body["thinking"] = thinking;
     }
 
+    Ok(())
+}
+
+fn validate_kimi_partial_mode(
+    req: &ModelRequest,
+    extra: &Map<String, Value>,
+) -> Result<(), ModelError> {
+    let has_partial = req
+        .options
+        .kimi_chat
+        .as_ref()
+        .and_then(|options| options.partial_assistant.as_ref())
+        .is_some();
+    if !has_partial {
+        return Ok(());
+    }
+    let response_format_type = extra
+        .get("response_format")
+        .and_then(|format| format.get("type"))
+        .and_then(Value::as_str);
+    if matches!(response_format_type, Some("json_object" | "json_schema")) {
+        return Err(ModelError::InvalidRequest(
+            "Kimi Partial Mode cannot be used with JSON response_format".to_owned(),
+        ));
+    }
     Ok(())
 }
 
@@ -696,6 +751,7 @@ pub(crate) struct OpenAiUsage {
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
     prompt_tokens_details: Option<PromptTokensDetails>,
+    cached_tokens: Option<u64>,
     prompt_cache_miss_tokens: Option<u64>,
     prompt_cache_hit_tokens: Option<u64>,
 }

@@ -437,6 +437,18 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
         RuntimeSemanticsKind::OpenAiChatKimiPlain,
         ModelLifecycleSpec::Preview,
     ),
+    kimi_chat_model(
+        "moonshot-v1-auto",
+        "Moonshot V1 Auto",
+        131_072,
+        4_096,
+        TEXT_IMAGE,
+        false,
+        false,
+        true,
+        RuntimeSemanticsKind::OpenAiChatKimiPlain,
+        ModelLifecycleSpec::Stable,
+    ),
     chat_model(
         "local-llama",
         "llama3.1",
@@ -1116,6 +1128,23 @@ fn supported_parameters(spec: &ModelCatalogSpec) -> Vec<String> {
             "enable_code_interpreter",
             "search_options",
         ],
+        "km" => &[
+            "max_completion_tokens",
+            "temperature",
+            "top_p",
+            "n",
+            "stop",
+            "stream_options",
+            "tools",
+            "tool_choice",
+            "response_format",
+            "thinking",
+            "prompt_cache_key",
+            "safety_identifier",
+            "partial",
+            "presence_penalty",
+            "frequency_penalty",
+        ],
         "codex" | "openai" => &[
             "reasoning",
             "text",
@@ -1155,6 +1184,9 @@ fn pricing(spec: &ModelCatalogSpec) -> Option<ModelPricing> {
     if spec.provider_id == "openai" {
         return openai_pricing(spec);
     }
+    if spec.provider_id == "km" {
+        return kimi_pricing(spec);
+    }
     if spec.provider_id != "deepseek" {
         return None;
     }
@@ -1189,6 +1221,67 @@ fn pricing(spec: &ModelCatalogSpec) -> Option<ModelPricing> {
         source: PricingSource::Hardcoded,
         billing_mode: BillingMode::Cached {
             cache_read_discount: discount,
+        },
+    })
+}
+
+fn kimi_pricing(spec: &ModelCatalogSpec) -> Option<ModelPricing> {
+    let (input_per_million, cache_read_per_million, output_per_million, cache_read_discount) =
+        match spec.model_id {
+            "kimi-k2.7-code" => (
+                Decimal::new(650, 2),
+                Some(Decimal::new(130, 2)),
+                Decimal::new(2700, 2),
+                Some(Ratio(0.2)),
+            ),
+            "kimi-k2.7-code-highspeed" => (
+                Decimal::new(1300, 2),
+                Some(Decimal::new(260, 2)),
+                Decimal::new(5400, 2),
+                Some(Ratio(0.2)),
+            ),
+            "kimi-k2.6" => (
+                Decimal::new(650, 2),
+                Some(Decimal::new(110, 2)),
+                Decimal::new(2700, 2),
+                Some(Ratio(0.169_230_769_230_769_24)),
+            ),
+            "kimi-k2.5" => (
+                Decimal::new(400, 2),
+                Some(Decimal::new(70, 2)),
+                Decimal::new(2100, 2),
+                Some(Ratio(0.175)),
+            ),
+            "moonshot-v1-8k" | "moonshot-v1-8k-vision-preview" => {
+                (Decimal::new(200, 2), None, Decimal::new(1000, 2), None)
+            }
+            "moonshot-v1-32k" | "moonshot-v1-32k-vision-preview" => {
+                (Decimal::new(500, 2), None, Decimal::new(2000, 2), None)
+            }
+            "moonshot-v1-128k" | "moonshot-v1-128k-vision-preview" => {
+                (Decimal::new(1000, 2), None, Decimal::new(3000, 2), None)
+            }
+            _ => return None,
+        };
+
+    Some(ModelPricing {
+        pricing_id: format!("kimi:{}:official-2026-07-09", spec.model_id),
+        pricing_version: 20260709,
+        currency: Currency::Cny,
+        input_per_million,
+        output_per_million,
+        cache_creation_per_million: None,
+        cache_read_per_million,
+        image_per_image: None,
+        last_updated: DateTime::parse_from_rfc3339("2026-07-09T00:00:00Z")
+            .expect("hardcoded Kimi pricing timestamp should parse")
+            .with_timezone(&Utc),
+        source: PricingSource::Hardcoded,
+        billing_mode: match cache_read_discount {
+            Some(cache_read_discount) => BillingMode::Cached {
+                cache_read_discount,
+            },
+            None => BillingMode::Standard,
         },
     })
 }
