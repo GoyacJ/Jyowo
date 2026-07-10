@@ -46,6 +46,7 @@ const conversationCapability = {
 
 const modelDescriptor = {
   protocol: 'chat_completions' as const,
+  supportedProtocols: ['chat_completions' as const],
   supportedParameters: [],
   conversationCapability,
   contextWindow: 128000,

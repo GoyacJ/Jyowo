@@ -21,6 +21,8 @@ pub const SAFE_AUDIO_MIME_TYPES: &[&str] = &[
     "audio/mpeg",
     "audio/mp4",
     "audio/ogg",
+    "audio/flac",
+    "audio/pcm",
     "audio/wav",
     "audio/webm",
 ];
@@ -131,6 +133,8 @@ pub fn safe_audio_mime(value: &str) -> Option<&'static str> {
         "audio/mpeg" => Some("audio/mpeg"),
         "audio/mp4" => Some("audio/mp4"),
         "audio/ogg" => Some("audio/ogg"),
+        "audio/flac" => Some("audio/flac"),
+        "audio/pcm" => Some("audio/pcm"),
         "audio/wav" => Some("audio/wav"),
         "audio/webm" => Some("audio/webm"),
         _ => None,
@@ -228,6 +232,9 @@ pub fn detect_video_mime(bytes: &[u8]) -> Option<&'static str> {
 }
 
 pub fn detect_audio_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"fLaC") {
+        return Some("audio/flac");
+    }
     if bytes.starts_with(b"ID3")
         || bytes.starts_with(&[0xFF, 0xFB])
         || bytes.starts_with(&[0xFF, 0xF3])
@@ -264,20 +271,32 @@ pub fn validate_media_bytes(
     modality: ModelModality,
     declared_mime: Option<&str>,
 ) -> Result<String, ToolError> {
-    let detected_mime = detect_mime_for_modality(bytes, modality).ok_or_else(|| {
-        ToolError::Message("provider media payload is not a supported media type".to_owned())
-    })?;
-    if let Some(declared_mime) = declared_mime {
-        let declared_mime = safe_mime_for_modality(declared_mime, modality).ok_or_else(|| {
-            ToolError::Message("provider media payload is not a supported media type".to_owned())
-        })?;
-        if declared_mime != detected_mime {
-            return Err(ToolError::Message(
-                "provider media payload MIME type does not match bytes".to_owned(),
-            ));
+    let declared_mime = declared_mime
+        .map(|declared_mime| {
+            safe_mime_for_modality(declared_mime, modality).ok_or_else(|| {
+                ToolError::Message(
+                    "provider media payload is not a supported media type".to_owned(),
+                )
+            })
+        })
+        .transpose()?;
+    let detected_mime = detect_mime_for_modality(bytes, modality);
+    if let Some(detected_mime) = detected_mime {
+        if let Some(declared_mime) = declared_mime {
+            if declared_mime != detected_mime {
+                return Err(ToolError::Message(
+                    "provider media payload MIME type does not match bytes".to_owned(),
+                ));
+            }
         }
+        return Ok(detected_mime.to_owned());
     }
-    Ok(detected_mime.to_owned())
+    if modality == ModelModality::Audio && declared_mime == Some("audio/pcm") && !bytes.is_empty() {
+        return Ok("audio/pcm".to_owned());
+    }
+    Err(ToolError::Message(
+        "provider media payload is not a supported media type".to_owned(),
+    ))
 }
 
 fn normalized_mime(value: &str) -> String {

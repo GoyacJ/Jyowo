@@ -110,6 +110,13 @@ impl MinimaxApiClient {
         self.post_json("/v1/responses/input_tokens", request).await
     }
 
+    pub(crate) async fn text_chat_completion(
+        &self,
+        request: Value,
+    ) -> Result<Value, MinimaxProviderClientError> {
+        self.post_json("/v1/text/chatcompletion_v2", request).await
+    }
+
     pub(crate) async fn anthropic_messages(
         &self,
         request: Value,
@@ -238,20 +245,53 @@ impl MinimaxApiClient {
 
     pub(crate) async fn file_retrieve(
         &self,
+        group_id: Option<&str>,
         file_id: &str,
     ) -> Result<Value, MinimaxProviderClientError> {
-        self.get_json("/v1/files/retrieve", &[("file_id", file_id.to_owned())])
-            .await
+        let mut query = vec![("file_id", file_id.to_owned())];
+        if let Some(group_id) = group_id {
+            query.push(("GroupId", group_id.to_owned()));
+        }
+        self.get_json("/v1/files/retrieve", &query).await
     }
 
     pub(crate) async fn file_list(
         &self,
+        group_id: Option<&str>,
         purpose: Option<&str>,
+        page: Option<u64>,
+        size: Option<u64>,
+        after_file_id: Option<&str>,
     ) -> Result<Value, MinimaxProviderClientError> {
-        let query = purpose
-            .map(|purpose| vec![("purpose", purpose.to_owned())])
-            .unwrap_or_default();
+        let mut query = Vec::new();
+        if let Some(group_id) = group_id {
+            query.push(("GroupId", group_id.to_owned()));
+        }
+        if let Some(purpose) = purpose {
+            query.push(("purpose", purpose.to_owned()));
+        }
+        if let Some(page) = page {
+            query.push(("page", page.to_string()));
+        }
+        if let Some(size) = size {
+            query.push(("size", size.to_string()));
+        }
+        if let Some(after_file_id) = after_file_id {
+            query.push(("after_file_id", after_file_id.to_owned()));
+        }
         self.get_json("/v1/files/list", &query).await
+    }
+
+    pub(crate) async fn file_retrieve_content(
+        &self,
+        group_id: Option<&str>,
+        file_id: &str,
+    ) -> Result<Vec<u8>, MinimaxProviderClientError> {
+        let mut query = vec![("file_id", file_id.to_owned())];
+        if let Some(group_id) = group_id {
+            query.push(("GroupId", group_id.to_owned()));
+        }
+        self.get_bytes("/v1/files/retrieve_content", &query).await
     }
 
     pub(crate) async fn file_upload_with_group_id(
@@ -498,6 +538,43 @@ impl MinimaxApiClient {
         }
     }
 
+    async fn get_bytes(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<Vec<u8>, MinimaxProviderClientError> {
+        let url = self.query_url(path, query)?;
+        let headers = self.broker_headers()?;
+
+        match &self.transport {
+            MinimaxTransport::Broker(transport, permit) => {
+                let req = ToolHttpJsonRequest {
+                    method: HttpMethod::Get,
+                    url,
+                    headers,
+                    body: None,
+                    timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+                    max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+                };
+                let resp = transport
+                    .execute_json(permit, req)
+                    .await
+                    .map_err(|e| MinimaxProviderClientError::ProviderUnavailable(e.to_string()))?;
+                self.broker_response_bytes(resp.status, &resp.body).await
+            }
+            #[cfg(test)]
+            MinimaxTransport::Direct(http) => {
+                let response = http
+                    .get(url)
+                    .headers(self.reqwest_headers()?)
+                    .send()
+                    .await
+                    .map_err(transport_error)?;
+                self.direct_response_bytes(response).await
+            }
+        }
+    }
+
     async fn broker_response_json(
         &self,
         status: u16,
@@ -513,6 +590,21 @@ impl MinimaxApiClient {
         let value = serde_json::from_str(&body_str)
             .map_err(|error| MinimaxProviderClientError::UnexpectedResponse(error.to_string()))?;
         check_minimax_business_error(value, self.api_key.expose_secret())
+    }
+
+    async fn broker_response_bytes(
+        &self,
+        status: u16,
+        body: &[u8],
+    ) -> Result<Vec<u8>, MinimaxProviderClientError> {
+        if !(200..300).contains(&status) {
+            let body_str = String::from_utf8_lossy(body).into_owned();
+            return Err(MinimaxProviderClientError::ProviderUnavailable(format!(
+                "MiniMax API request failed with status {status}: {}",
+                redact_secret(&body_str, self.api_key.expose_secret())
+            )));
+        }
+        Ok(body.to_vec())
     }
 
     #[cfg(test)]
@@ -531,6 +623,23 @@ impl MinimaxApiClient {
         let value = serde_json::from_str(&body)
             .map_err(|error| MinimaxProviderClientError::UnexpectedResponse(error.to_string()))?;
         check_minimax_business_error(value, self.api_key.expose_secret())
+    }
+
+    #[cfg(test)]
+    async fn direct_response_bytes(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<Vec<u8>, MinimaxProviderClientError> {
+        let status = response.status();
+        let body = response.bytes().await.map_err(transport_error)?;
+        if !status.is_success() {
+            let body_str = String::from_utf8_lossy(&body).into_owned();
+            return Err(MinimaxProviderClientError::ProviderUnavailable(format!(
+                "MiniMax API request failed with status {status}: {}",
+                redact_secret(&body_str, self.api_key.expose_secret())
+            )));
+        }
+        Ok(body.to_vec())
     }
 
     fn broker_headers(&self) -> Result<BTreeMap<String, String>, MinimaxProviderClientError> {
@@ -610,7 +719,7 @@ fn transport_error(error: reqwest::Error) -> MinimaxProviderClientError {
     MinimaxProviderClientError::ProviderUnavailable(error.to_string())
 }
 
-fn redact_secret(text: &str, secret: &str) -> String {
+pub(crate) fn redact_secret(text: &str, secret: &str) -> String {
     if secret.is_empty() {
         text.to_owned()
     } else {
@@ -802,6 +911,21 @@ mod tests {
         .await;
         client
             .responses_input_tokens(json!({"model": "MiniMax-M3", "input": "hi"}))
+            .await
+            .unwrap();
+
+        assert_post(
+            &server,
+            "/v1/text/chatcompletion_v2",
+            json!({"model": "MiniMax-M3", "messages": [{"role": "user", "content": "hi"}]}),
+            json!({"reply": "hi"}),
+        )
+        .await;
+        client
+            .text_chat_completion(json!({
+                "model": "MiniMax-M3",
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
             .await
             .unwrap();
 
@@ -1089,14 +1213,22 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path("/v1/files/retrieve"))
-            .and(query_param("file_id", "file-1"))
+            .and(query_param("file_id", "1"))
             .and(header("authorization", "Bearer provider-key"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(json!({"file": {"id": "file-1"}})),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"file": {"file_id": 1}})))
             .mount(&server)
             .await;
-        client.file_retrieve("file-1").await.unwrap();
+        client.file_retrieve(None, "1").await.unwrap();
+
+        Mock::given(method("GET"))
+            .and(path("/v1/files/retrieve_content"))
+            .and(query_param("file_id", "1"))
+            .and(header("authorization", "Bearer provider-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"file-bytes".to_vec()))
+            .mount(&server)
+            .await;
+        let content = client.file_retrieve_content(None, "1").await.unwrap();
+        assert_eq!(content, b"file-bytes");
 
         Mock::given(method("GET"))
             .and(path("/v1/files/list"))
@@ -1105,7 +1237,10 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": []})))
             .mount(&server)
             .await;
-        client.file_list(Some("voice_clone")).await.unwrap();
+        client
+            .file_list(None, Some("voice_clone"), None, None, None)
+            .await
+            .unwrap();
 
         assert_post(
             &server,

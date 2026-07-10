@@ -38,6 +38,7 @@ const modelCapability: ConversationModelCapability = {
 
 const gpt41 = {
   protocol: 'responses' as const,
+  supportedProtocols: ['responses' as const],
   supportedParameters: [],
   conversationCapability: modelCapability,
   contextWindow: 128000,
@@ -51,8 +52,16 @@ const gpt41 = {
 const claude = {
   ...gpt41,
   protocol: 'messages' as const,
+  supportedProtocols: ['messages' as const],
   displayName: 'Claude Sonnet',
   modelId: 'claude-sonnet',
+}
+
+const minimaxM3 = {
+  ...gpt41,
+  displayName: 'MiniMax M3',
+  modelId: 'MiniMax-M3',
+  supportedProtocols: ['responses' as const, 'chat_completions' as const, 'messages' as const],
 }
 
 const catalog: ModelProviderCatalogResponse = {
@@ -644,6 +653,75 @@ describe('ModelSettingsPage', () => {
     )
     expect(saveProviderSettings.mock.calls[0]?.[0]).not.toHaveProperty('apiKey')
     expect(saveProviderSettings.mock.calls[0]?.[0]).not.toHaveProperty('officialQuotaApiKey')
+  })
+
+  it('keeps the selected MiniMax protocol when setting a row as default', async () => {
+    const minimaxCatalog: ModelProviderCatalogResponse = {
+      providers: [
+        ...catalog.providers,
+        {
+          defaultBaseUrl: 'https://api.minimax.io',
+          displayName: 'MiniMax',
+          models: [minimaxM3],
+          providerId: 'minimax',
+          runtimeCapability: {
+            authScheme: 'bearer',
+            baseUrlRegions: [
+              { id: 'default', label: 'Default', baseUrl: 'https://api.minimax.io' },
+            ],
+            supportsLiveValidation: true,
+            supportsStreamingValidation: true,
+            secretRevealSupported: true,
+          },
+          serviceCapabilities: [],
+          sourceUrl: 'https://platform.minimax.io/docs',
+          verifiedDate: '2026-07-09',
+        },
+      ],
+    }
+    const minimaxSettings: ListProviderSettingsResponse = {
+      ...settings,
+      configs: [
+        ...settings.configs,
+        {
+          id: 'cfg-minimax',
+          providerId: 'minimax',
+          modelId: 'MiniMax-M3',
+          displayName: 'MiniMax Messages',
+          hasApiKey: true,
+          hasOfficialQuotaApiKey: false,
+          isDefault: false,
+          protocol: 'messages',
+          modelDescriptor: minimaxM3,
+        },
+      ],
+    }
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: minimaxSettings.configs[3],
+      status: 'saved',
+    })
+    const client = {
+      ...readyClient({
+        modelProviderCatalog: minimaxCatalog,
+        providerSettingsList: minimaxSettings,
+      }),
+      saveProviderSettings,
+    } satisfies CommandClient
+    renderModelSettingsPage(client)
+
+    const row = within(await screen.findByRole('row', { name: /MiniMax Messages/ }))
+    fireEvent.click(row.getByRole('button', { name: 'Set MiniMax Messages as default' }))
+
+    await waitFor(() =>
+      expect(saveProviderSettings).toHaveBeenCalledWith({
+        configId: 'cfg-minimax',
+        displayName: 'MiniMax Messages',
+        modelId: 'MiniMax-M3',
+        providerId: 'minimax',
+        protocol: 'messages',
+        setDefault: true,
+      }),
+    )
   })
 
   it('blocks concurrent default writes while a default save is pending', async () => {

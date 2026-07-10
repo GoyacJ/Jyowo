@@ -673,6 +673,10 @@ fn anthropic_models_api_catalog_entry(
         protocol: existing
             .map(|model| model.protocol)
             .unwrap_or(ModelProtocol::Messages),
+        supported_protocols: existing
+            .map(|model| model.supported_protocols.clone())
+            .filter(|values| !values.is_empty())
+            .unwrap_or_else(|| vec![ModelProtocol::Messages]),
         supported_parameters: existing
             .map(|model| model.supported_parameters.clone())
             .filter(|values| !values.is_empty())

@@ -15,7 +15,7 @@ use harness_provider_state::{
 };
 use serde_json::{json, Map, Value};
 use wiremock::{
-    matchers::{method, path},
+    matchers::{header, method, path},
     Mock, MockServer, ResponseTemplate,
 };
 
@@ -174,6 +174,42 @@ async fn minimax_m3_runtime_modalities_match_openai_content_part_encoding() {
     );
 }
 
+#[tokio::test]
+async fn minimax_messages_protocol_uses_anthropic_compatible_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/anthropic/v1/messages"))
+        .and(header("x-api-key", "provider-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "done"}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 2
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let mut req = assistant_tool_replay_request(MessageId::new(), false);
+    req.protocol = ModelProtocol::Messages;
+
+    provider(&server)
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("MiniMax should support Anthropic Messages protocol")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["model"], "MiniMax-M2.7");
+    assert_eq!(body["messages"][0]["role"], "assistant");
+}
+
 fn provider(server: &MockServer) -> MinimaxProvider {
     MinimaxProvider::from_api_key("provider-key").with_base_url(server.uri())
 }
@@ -204,6 +240,7 @@ fn multimodal_m3_request() -> ModelRequest {
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::ChatCompletions,
         extra: Value::Null,
+        options: harness_contracts::ModelRequestOptions::default(),
         provider_context: ProviderRequestContext::default(),
     }
 }

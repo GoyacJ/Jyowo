@@ -740,6 +740,15 @@ fn minimax_service_capabilities() -> Vec<ProviderServiceCapability> {
             ProviderServiceCostRisk::Low,
         ),
         service(
+            "minimax.video.download",
+            ProviderServiceCategory::Video,
+            vec![ModelModality::Text],
+            ModelModality::Video,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        service(
             "minimax.text_to_speech.sync",
             ProviderServiceCategory::Audio,
             vec![ModelModality::Text],
@@ -765,6 +774,15 @@ fn minimax_service_capabilities() -> Vec<ProviderServiceCapability> {
             ProviderServiceExecution::Sync,
             false,
             ProviderServiceCostRisk::Low,
+        ),
+        service(
+            "minimax.text_to_speech.websocket",
+            ProviderServiceCategory::Audio,
+            vec![ModelModality::Text],
+            ModelModality::Audio,
+            ProviderServiceExecution::Websocket,
+            false,
+            ProviderServiceCostRisk::Medium,
         ),
         service(
             "minimax.voice_clone",
@@ -857,6 +875,15 @@ fn minimax_service_capabilities() -> Vec<ProviderServiceCapability> {
             ProviderServiceCostRisk::Low,
         ),
         service(
+            "minimax.files.retrieve_content",
+            ProviderServiceCategory::File,
+            vec![ModelModality::Text],
+            ModelModality::File,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        service(
             "minimax.files.delete",
             ProviderServiceCategory::File,
             vec![ModelModality::Text],
@@ -882,6 +909,15 @@ fn minimax_service_capabilities() -> Vec<ProviderServiceCapability> {
             ProviderServiceExecution::Sync,
             false,
             ProviderServiceCostRisk::Low,
+        ),
+        service(
+            "minimax.text.chatcompletion_v2",
+            ProviderServiceCategory::Conversation,
+            vec![ModelModality::Text, ModelModality::Image],
+            ModelModality::Text,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Medium,
         ),
         service(
             "minimax.responses",

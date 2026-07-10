@@ -80,6 +80,7 @@ function renderConversationWorkspace(
 
 const openAiModelDescriptor: ModelCatalogEntry = {
   protocol: 'responses',
+  supportedProtocols: ['responses'],
   supportedParameters: [],
   conversationCapability: {
     inputModalities: ['text'],
@@ -114,6 +115,7 @@ const switchableProviderSettings: ListProviderSettingsResponse = {
       modelDescriptor: {
         ...openAiModelDescriptor,
         protocol: 'chat_completions',
+        supportedProtocols: ['chat_completions'],
         displayName: 'DeepSeek V4 Flash',
         modelId: 'deepseek-v4-flash',
       },
@@ -130,6 +132,7 @@ const switchableProviderSettings: ListProviderSettingsResponse = {
       modelDescriptor: {
         ...openAiModelDescriptor,
         protocol: 'chat_completions',
+        supportedProtocols: ['responses', 'chat_completions', 'messages'],
         displayName: 'MiniMax M3',
         modelId: 'MiniMax-M3',
       },

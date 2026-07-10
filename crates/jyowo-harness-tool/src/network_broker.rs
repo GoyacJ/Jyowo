@@ -222,6 +222,85 @@ pub struct ToolHttpResponse {
     pub body: Bytes,
 }
 
+/// A WebSocket request issued through the authorized broker.
+#[derive(Clone)]
+pub struct ToolWebSocketRequest {
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+    pub text_messages: Vec<String>,
+    pub send_next_after_each_response: bool,
+    pub text_response_terminators: Vec<String>,
+    pub timeout: Duration,
+    pub total_timeout: Duration,
+    pub max_response_bytes: u64,
+    pub max_response_messages: usize,
+}
+
+impl fmt::Debug for ToolWebSocketRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToolWebSocketRequest")
+            .field("url", &self.url)
+            .field("headers", &redacted_header_map(&self.headers))
+            .field("text_messages", &self.text_messages)
+            .field(
+                "send_next_after_each_response",
+                &self.send_next_after_each_response,
+            )
+            .field("text_response_terminators", &self.text_response_terminators)
+            .field("timeout", &self.timeout)
+            .field("total_timeout", &self.total_timeout)
+            .field("max_response_bytes", &self.max_response_bytes)
+            .field("max_response_messages", &self.max_response_messages)
+            .finish()
+    }
+}
+
+fn redacted_header_map(headers: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    headers
+        .iter()
+        .map(|(key, value)| {
+            let lower = key.to_ascii_lowercase();
+            let value = if matches!(
+                lower.as_str(),
+                "authorization" | "proxy-authorization" | "x-api-key" | "cookie" | "set-cookie"
+            ) {
+                "[REDACTED]".to_owned()
+            } else {
+                value.clone()
+            };
+            (key.clone(), value)
+        })
+        .collect()
+}
+
+impl Default for ToolWebSocketRequest {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            headers: BTreeMap::new(),
+            text_messages: Vec::new(),
+            send_next_after_each_response: true,
+            text_response_terminators: Vec::new(),
+            timeout: Duration::from_secs(120),
+            total_timeout: Duration::from_secs(120),
+            max_response_bytes: 10 * 1024 * 1024,
+            max_response_messages: 256,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ToolWebSocketMessage {
+    Text(String),
+    Binary(Bytes),
+}
+
+/// The broker's response after a WebSocket exchange.
+#[derive(Debug, Clone)]
+pub struct ToolWebSocketResponse {
+    pub messages: Vec<ToolWebSocketMessage>,
+}
+
 // ── Broker execution capability ──
 
 /// Full broker capability: preflight + authorized execution.
@@ -247,6 +326,19 @@ pub trait ToolNetworkBrokerCap: ToolNetworkBrokerPreflightCap {
         permit: &AuthorizedNetworkPermit,
         request: ToolHttpJsonRequest,
     ) -> Result<ToolHttpResponse, ToolError>;
+
+    /// Execute an authorized WebSocket exchange. The broker MUST validate the
+    /// URL against the permit before connecting and MUST apply the same host,
+    /// port, userinfo, raw-IP, response-size, and redaction constraints as HTTP.
+    async fn execute_websocket(
+        &self,
+        _permit: &AuthorizedNetworkPermit,
+        _request: ToolWebSocketRequest,
+    ) -> Result<ToolWebSocketResponse, ToolError> {
+        Err(ToolError::Validation(
+            "broker: WebSocket execution is not supported".to_owned(),
+        ))
+    }
 }
 
 // ── Seedance broker transport adapter ──

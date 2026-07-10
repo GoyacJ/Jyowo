@@ -1,12 +1,13 @@
 use chrono::NaiveDate;
 #[cfg(feature = "zhipu")]
 use harness_model::ModelLifecycle;
-#[cfg(feature = "zhipu")]
+#[cfg(any(feature = "zhipu", feature = "minimax"))]
 use harness_model::ProviderServiceExecution;
 use harness_model::{
     build_provider, model_catalog_entries, provider_catalog_entries, provider_inventory_entries,
-    resolve_model_descriptor, ConversationModelCapability, ModelModality, ModelRuntimeSemantics,
-    ProviderBuildConfig, ProviderRegistryError, ProviderServiceCategory, ReasoningProtocolSemantics,
+    resolve_model_descriptor, ConversationModelCapability, ModelModality, ModelProtocol,
+    ModelRuntimeSemantics, ProviderBuildConfig, ProviderRegistryError, ProviderServiceCategory,
+    ReasoningProtocolSemantics,
 };
 
 #[test]
@@ -439,13 +440,94 @@ fn minimax_provider_catalog_exposes_runtime_and_service_capabilities() {
         .service_capabilities
         .iter()
         .any(|capability| capability.operation_id == "minimax.image_generation"));
-    assert!(!minimax
+    assert!(minimax
         .service_capabilities
         .iter()
         .any(|capability| capability.operation_id == "minimax.text_to_speech.websocket"));
-    assert!(!minimax.service_capabilities.iter().any(
-        |capability| capability.execution == harness_model::ProviderServiceExecution::Websocket
-    ));
+    assert!(minimax
+        .service_capabilities
+        .iter()
+        .any(|capability| capability.execution == ProviderServiceExecution::Websocket));
+    assert!(minimax
+        .service_capabilities
+        .iter()
+        .any(|capability| capability.operation_id == "minimax.files.retrieve_content"));
+    assert!(minimax
+        .service_capabilities
+        .iter()
+        .any(|capability| capability.operation_id == "minimax.text.chatcompletion_v2"));
+    assert!(minimax
+        .service_capabilities
+        .iter()
+        .any(|capability| capability.operation_id == "minimax.video.download"));
+}
+
+#[cfg(feature = "minimax")]
+#[test]
+fn minimax_model_catalog_matches_official_protocol_parameters_and_pricing() {
+    let m3 = resolve_model_descriptor("minimax", "MiniMax-M3")
+        .expect("MiniMax M3 descriptor should resolve");
+    assert_eq!(m3.protocol, ModelProtocol::Responses);
+    for parameter in [
+        "input",
+        "instructions",
+        "max_output_tokens",
+        "metadata",
+        "prompt_cache_key",
+        "reasoning",
+        "service_tier",
+        "stream",
+        "temperature",
+        "text",
+        "tool_choice",
+        "tools",
+        "top_p",
+    ] {
+        assert!(m3
+            .supported_parameters
+            .iter()
+            .any(|value| value == parameter));
+    }
+    let pricing = m3
+        .pricing
+        .as_ref()
+        .expect("MiniMax-M3 pricing should be set");
+    assert_eq!(pricing.input_per_million.to_string(), "0.30");
+    assert_eq!(pricing.output_per_million.to_string(), "1.20");
+    assert_eq!(pricing.cache_read_per_million.unwrap().to_string(), "0.06");
+
+    let m27 = resolve_model_descriptor("minimax", "MiniMax-M2.7")
+        .expect("MiniMax M2.7 descriptor should resolve");
+    assert_eq!(m27.protocol, ModelProtocol::ChatCompletions);
+    for parameter in [
+        "max_completion_tokens",
+        "max_tokens",
+        "messages",
+        "reasoning_split",
+        "service_tier",
+        "stream",
+        "stream_options",
+        "temperature",
+        "thinking",
+        "tools",
+        "top_p",
+    ] {
+        assert!(m27
+            .supported_parameters
+            .iter()
+            .any(|value| value == parameter));
+    }
+    let pricing = m27
+        .pricing
+        .as_ref()
+        .expect("MiniMax-M2.7 pricing should be set");
+    assert_eq!(pricing.input_per_million.to_string(), "0.3");
+    assert_eq!(pricing.output_per_million.to_string(), "1.2");
+    assert_eq!(
+        pricing.cache_creation_per_million.unwrap().to_string(),
+        "0.375"
+    );
+    assert_eq!(pricing.cache_read_per_million.unwrap().to_string(), "0.06");
 }
 
 #[cfg(feature = "zhipu")]

@@ -139,9 +139,22 @@ export function ModelConfigDialog({
     selectedModel?.providerCapabilityMetadata,
   )
   const anthropicSamplingLocked = providerCapabilityMetadata?.samplingLocked === true
+  const protocolOptions = selectedModel?.supportedProtocols?.length
+    ? selectedModel.supportedProtocols
+    : selectedModel
+      ? [selectedModel.protocol]
+      : []
+  const serviceTierOptions = isDoubao
+    ? ['fast', 'auto', 'default']
+    : providerCapabilityMetadata?.serviceTiers ?? ['auto', 'standard_only']
   const supportedParameters = useMemo(
-    () => new Set(selectedModel?.supportedParameters ?? []),
-    [selectedModel],
+    () =>
+      new Set(
+        providerCapabilityMetadata?.protocolSupportedParameters?.[protocol] ??
+          selectedModel?.supportedParameters ??
+          [],
+      ),
+    [protocol, providerCapabilityMetadata, selectedModel],
   )
 
   useEffect(() => {
@@ -193,7 +206,7 @@ export function ModelConfigDialog({
     }
     try {
       const providerDefaults = providerDefaultsFromValues(values, supportedParameters)
-      if (values.providerId === 'qwen' || values.providerId === 'deepseek') {
+      if (providerPersistsProtocol(values.providerId)) {
         request.protocol = values.protocol
         request.providerDefaults = providerDefaults
       } else if (hasProviderDefaults(providerDefaults)) {
@@ -282,6 +295,12 @@ export function ModelConfigDialog({
               id="provider-model-id"
               {...register('modelId', {
                 required: t('provider.errors.modelRequired'),
+                onChange: (event) => {
+                  const model = modelOptions.find(
+                    (candidate) => candidate.modelId === event.target.value,
+                  )
+                  setValue('protocol', defaultProtocolForModel(model))
+                },
               })}
             >
               {modelOptions.map((model) => (
@@ -291,6 +310,19 @@ export function ModelConfigDialog({
               ))}
             </Select>
           </label>
+
+          {!isQwen && !isDeepSeek && protocolOptions.length > 1 ? (
+            <label className="grid gap-1 text-sm" htmlFor="provider-protocol">
+              <span className="font-medium">{t('provider.apiMode')}</span>
+              <Select id="provider-protocol" {...register('protocol')}>
+                {protocolOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {protocolLabel(option)}
+                  </option>
+                ))}
+              </Select>
+            </label>
+          ) : null}
 
           {isQwen ? (
             <div className="grid gap-3 rounded-sm border border-border p-3 text-sm">
@@ -526,18 +558,11 @@ export function ModelConfigDialog({
                   <span className="font-medium">{t('provider.serviceTier')}</span>
                   <Select id="provider-service-tier" {...register('serviceTier')}>
                     <option value="">{t('provider.default')}</option>
-                    {isDoubao ? (
-                      <>
-                        <option value="fast">Fast</option>
-                        <option value="auto">Auto</option>
-                        <option value="default">Default</option>
-                      </>
-                    ) : (
-                      <>
-                        <option value="auto">Auto</option>
-                        <option value="standard_only">Standard only</option>
-                      </>
-                    )}
+                    {serviceTierOptions.map((tier) => (
+                      <option key={tier} value={tier}>
+                        {serviceTierLabel(tier)}
+                      </option>
+                    ))}
                   </Select>
                 </label>
               ) : null}
@@ -816,9 +841,37 @@ function formValuesFromProfile(
 function defaultProtocolForProvider(
   provider: ModelProviderCatalogResponse['providers'][number] | undefined,
 ): ModelProtocol {
-  return (
-    (provider?.providerId === 'qwen' ? 'responses' : provider?.models[0]?.protocol) ?? 'responses'
-  )
+  return defaultProtocolForModel(provider?.models[0])
+}
+
+function defaultProtocolForModel(
+  model: ModelProviderCatalogResponse['providers'][number]['models'][number] | undefined,
+): ModelProtocol {
+  return model?.supportedProtocols?.[0] ?? model?.protocol ?? 'responses'
+}
+
+function providerPersistsProtocol(providerId: string) {
+  return providerId === 'qwen' || providerId === 'deepseek' || providerId === 'minimax'
+}
+
+function protocolLabel(protocol: ModelProtocol): string {
+  switch (protocol) {
+    case 'chat_completions':
+      return 'Chat Completions'
+    case 'messages':
+      return 'Messages'
+    case 'responses':
+      return 'Responses'
+    default:
+      return protocol
+  }
+}
+
+function serviceTierLabel(tier: string): string {
+  return tier
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
 }
 
 function qwenDefaultsFromProfile(profile: ProviderConfig | null | undefined) {
@@ -1215,15 +1268,30 @@ function resetProviderOptionFields(setValue: UseFormSetValue<ModelConfigFormValu
 }
 
 type AnthropicCapabilityMetadata = {
+  protocolSupportedParameters?: Partial<Record<ModelProtocol, string[]>>
+  serviceTiers?: string[]
   thinkingModes?: string[]
   samplingLocked?: boolean
 }
 
 function getAnthropicCapabilityMetadata(value: unknown): AnthropicCapabilityMetadata | null {
-  if (!isRecord(value) || value.provider !== 'anthropic') {
+  if (!isRecord(value)) {
     return null
   }
   return {
+    protocolSupportedParameters: isRecord(value.protocolSupportedParameters)
+      ? Object.fromEntries(
+          Object.entries(value.protocolSupportedParameters).filter(
+            ([protocol, parameters]) =>
+              (protocol === 'responses' || protocol === 'chat_completions' || protocol === 'messages') &&
+              Array.isArray(parameters) &&
+              parameters.every((parameter) => typeof parameter === 'string'),
+          ),
+        )
+      : undefined,
+    serviceTiers: Array.isArray(value.serviceTiers)
+      ? value.serviceTiers.filter((tier): tier is string => typeof tier === 'string')
+      : undefined,
     thinkingModes: Array.isArray(value.thinkingModes)
       ? value.thinkingModes.filter((mode): mode is string => typeof mode === 'string')
       : undefined,

@@ -7,14 +7,21 @@
 
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::{SinkExt, StreamExt};
 use harness_contracts::{BudgetMetric, HostRule, NetworkAccess, RedactRules, Redactor, ToolError};
 use harness_tool::{
     AuthorizationTicketKey, AuthorizedNetworkPermit, HttpMethod, NetworkBrokerPreflightRequest,
     ToolHttpJsonRequest, ToolHttpResponse, ToolNetworkBrokerCap, ToolNetworkBrokerPreflightCap,
+    ToolWebSocketMessage, ToolWebSocketRequest, ToolWebSocketResponse,
+};
+use tokio_tungstenite::tungstenite::{
+    client::IntoClientRequest,
+    http::header::{HeaderName, HeaderValue},
+    Message,
 };
 use url::Url;
 
@@ -81,16 +88,30 @@ impl ReqwestToolNetworkBroker {
         permit: &AuthorizedNetworkPermit,
         request: &ToolHttpJsonRequest,
     ) -> Result<ValidatedUrl, ToolError> {
+        Self::validate_url(permit, &request.url, &["http", "https"])
+    }
+
+    fn validate_websocket_request(
+        permit: &AuthorizedNetworkPermit,
+        request: &ToolWebSocketRequest,
+    ) -> Result<ValidatedUrl, ToolError> {
+        Self::validate_url(permit, &request.url, &["ws", "wss"])
+    }
+
+    fn validate_url(
+        permit: &AuthorizedNetworkPermit,
+        url: &str,
+        allowed_schemes: &[&str],
+    ) -> Result<ValidatedUrl, ToolError> {
         let approved_hosts = permit_approved_hosts(permit)?;
-        let parsed = Url::parse(&request.url).map_err(|error| {
+        let parsed = Url::parse(url).map_err(|error| {
             ToolError::Validation(redact(format!("invalid request URL: {error}")))
         })?;
 
-        // Only http(s) schemes.
         let scheme = parsed.scheme().to_owned();
-        if scheme != "http" && scheme != "https" {
+        if !allowed_schemes.contains(&scheme.as_str()) {
             return Err(ToolError::Validation(format!(
-                "broker: scheme `{scheme}` is not allowed; only http and https are supported"
+                "broker: scheme `{scheme}` is not allowed"
             )));
         }
         if !parsed.username().is_empty() || parsed.password().is_some() {
@@ -309,6 +330,197 @@ impl ToolNetworkBrokerCap for ReqwestToolNetworkBroker {
             body,
         })
     }
+
+    async fn execute_websocket(
+        &self,
+        permit: &AuthorizedNetworkPermit,
+        request: ToolWebSocketRequest,
+    ) -> Result<ToolWebSocketResponse, ToolError> {
+        if !permit.verify_ticket_authority(&self.ticket_authority_key) {
+            return Err(ToolError::PermissionDenied(
+                "broker: authorization ticket proof is invalid".to_owned(),
+            ));
+        }
+        let validated = Self::validate_websocket_request(permit, &request)?;
+        if request.max_response_messages == 0 {
+            return Err(ToolError::Validation(
+                "broker: max_response_messages must be greater than zero".to_owned(),
+            ));
+        }
+        if request.total_timeout.is_zero() {
+            return Err(ToolError::Validation(
+                "broker: total_timeout must be greater than zero".to_owned(),
+            ));
+        }
+        let started_at = Instant::now();
+
+        let mut ws_request = validated
+            .url
+            .as_str()
+            .into_client_request()
+            .map_err(|error| {
+                ToolError::Validation(redact(format!("invalid WebSocket request: {error}")))
+            })?;
+        for (key, value) in &request.headers {
+            let name = HeaderName::from_bytes(key.as_bytes()).map_err(|error| {
+                ToolError::Validation(redact(format!("invalid WebSocket header name: {error}")))
+            })?;
+            if websocket_header_is_broker_owned(&name) {
+                return Err(ToolError::Validation(format!(
+                    "broker: WebSocket header `{}` is managed by the broker and cannot be overridden",
+                    name.as_str()
+                )));
+            }
+            let value = HeaderValue::from_str(value).map_err(|error| {
+                ToolError::Validation(redact(format!("invalid WebSocket header value: {error}")))
+            })?;
+            ws_request.headers_mut().insert(name, value);
+        }
+
+        let (mut websocket, _) = tokio::time::timeout(
+            request.timeout.min(request.total_timeout),
+            tokio_tungstenite::connect_async(ws_request),
+        )
+        .await
+        .map_err(|_| ToolError::Internal("broker WebSocket connect timed out".to_owned()))?
+        .map_err(|error| {
+            let msg = self
+                .redactor
+                .redact(&error.to_string(), &RedactRules::default());
+            ToolError::Internal(format!("broker WebSocket connect failed: {msg}"))
+        })?;
+
+        let mut next_to_send = 0_usize;
+        if !request.send_next_after_each_response {
+            while next_to_send < request.text_messages.len() {
+                websocket
+                    .send(Message::Text(
+                        request.text_messages[next_to_send].clone().into(),
+                    ))
+                    .await
+                    .map_err(|error| {
+                        let msg = self
+                            .redactor
+                            .redact(&error.to_string(), &RedactRules::default());
+                        ToolError::Internal(format!("broker WebSocket send failed: {msg}"))
+                    })?;
+                next_to_send += 1;
+            }
+        }
+
+        let response_cap = self.max_response_bytes.min(request.max_response_bytes);
+        let mut observed_bytes = 0_u64;
+        let mut messages = Vec::new();
+        let mut terminated = false;
+        while messages.len() < request.max_response_messages {
+            let remaining = request
+                .total_timeout
+                .checked_sub(started_at.elapsed())
+                .ok_or_else(|| {
+                    ToolError::Internal("broker WebSocket exchange timed out".to_owned())
+                })?;
+            let read_timeout = request.timeout.min(remaining);
+            let Some(message) = tokio::time::timeout(read_timeout, websocket.next())
+                .await
+                .map_err(|_| ToolError::Internal("broker WebSocket read timed out".to_owned()))?
+            else {
+                break;
+            };
+            let message = message.map_err(|error| {
+                let msg = self
+                    .redactor
+                    .redact(&error.to_string(), &RedactRules::default());
+                ToolError::Internal(format!("broker WebSocket read failed: {msg}"))
+            })?;
+
+            let terminates = match message {
+                Message::Text(text) => {
+                    observed_bytes = add_websocket_bytes(observed_bytes, text.len(), response_cap)?;
+                    let text = text.to_string();
+                    let terminates = request
+                        .text_response_terminators
+                        .iter()
+                        .any(|needle| text.contains(needle));
+                    messages.push(ToolWebSocketMessage::Text(text));
+                    terminates
+                }
+                Message::Binary(bytes) => {
+                    observed_bytes =
+                        add_websocket_bytes(observed_bytes, bytes.len(), response_cap)?;
+                    messages.push(ToolWebSocketMessage::Binary(Bytes::from(bytes.to_vec())));
+                    false
+                }
+                Message::Close(_) => break,
+                Message::Ping(payload) => {
+                    websocket
+                        .send(Message::Pong(payload))
+                        .await
+                        .map_err(|error| {
+                            let msg = self
+                                .redactor
+                                .redact(&error.to_string(), &RedactRules::default());
+                            ToolError::Internal(format!("broker WebSocket pong failed: {msg}"))
+                        })?;
+                    false
+                }
+                Message::Pong(_) | Message::Frame(_) => false,
+            };
+
+            if terminates {
+                terminated = true;
+                break;
+            }
+
+            if request.send_next_after_each_response && next_to_send < request.text_messages.len() {
+                websocket
+                    .send(Message::Text(
+                        request.text_messages[next_to_send].clone().into(),
+                    ))
+                    .await
+                    .map_err(|error| {
+                        let msg = self
+                            .redactor
+                            .redact(&error.to_string(), &RedactRules::default());
+                        ToolError::Internal(format!("broker WebSocket send failed: {msg}"))
+                    })?;
+                next_to_send += 1;
+            }
+        }
+
+        if messages.len() >= request.max_response_messages && !terminated {
+            return Err(ToolError::Message(
+                "broker WebSocket response message limit exceeded".to_owned(),
+            ));
+        }
+
+        Ok(ToolWebSocketResponse { messages })
+    }
+}
+
+fn add_websocket_bytes(current: u64, next: usize, max_bytes: u64) -> Result<u64, ToolError> {
+    let next_total = current.saturating_add(next as u64);
+    if next_total > max_bytes {
+        return Err(ToolError::ResultTooLarge {
+            original: next_total,
+            limit: max_bytes,
+            metric: BudgetMetric::Bytes,
+        });
+    }
+    Ok(next_total)
+}
+
+fn websocket_header_is_broker_owned(name: &HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "host"
+            | "connection"
+            | "upgrade"
+            | "sec-websocket-key"
+            | "sec-websocket-version"
+            | "sec-websocket-protocol"
+            | "sec-websocket-extensions"
+            | "sec-websocket-accept"
+    )
 }
 
 async fn read_response_body(

@@ -509,6 +509,7 @@ pub struct ProviderServiceCapabilityPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ModelCatalogEntry {
     pub protocol: ModelProtocol,
+    pub supported_protocols: Vec<ModelProtocol>,
     pub supported_parameters: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_capability_metadata: Option<serde_json::Value>,
