@@ -2007,6 +2007,7 @@ const startRunResponseSchema = z
   .strict()
 
 const isoDateTimeSchema = z.string().datetime({ offset: true })
+const localDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
 const backgroundAgentStateSchema = z.enum([
   'queued',
   'running',
@@ -2229,6 +2230,25 @@ const modelUsageWindowSchema = z
   })
   .strict()
 
+const modelUsageActivityDaySchema = z
+  .object({
+    date: localDateSchema,
+    usage: usageSnapshotSchema,
+  })
+  .strict()
+
+const modelUsageActivitySchema = z
+  .object({
+    rangeStart: localDateSchema,
+    rangeEnd: localDateSchema,
+    days: z.array(modelUsageActivityDaySchema),
+    peakDayTokens: z.number().int().nonnegative(),
+    currentStreakDays: z.number().int().nonnegative(),
+    longestStreakDays: z.number().int().nonnegative(),
+    longestTaskDurationMs: z.number().int().nonnegative(),
+  })
+  .strict()
+
 const getModelUsageSummaryResponseSchema = z
   .object({
     timezoneId: z.string().min(1).optional(),
@@ -2236,6 +2256,7 @@ const getModelUsageSummaryResponseSchema = z
     today: modelUsageWindowSchema,
     monthToDate: modelUsageWindowSchema,
     allTime: modelUsageWindowSchema,
+    activity: modelUsageActivitySchema,
     generatedAt: isoDateTimeSchema,
   })
   .strict()

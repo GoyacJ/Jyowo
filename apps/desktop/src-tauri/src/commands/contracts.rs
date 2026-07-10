@@ -30,10 +30,12 @@ use super::stores::*;
 use super::validation::*;
 use super::*;
 use harness_contracts::{
-    ModelUsageBucket, ModelUsagePeriod, ModelUsageSummary, ModelUsageWindow,
-    ProviderProbeErrorKind, ProviderProbeSnapshot, ProviderProbeStatus, UsageSnapshot,
+    ModelUsageActivity, ModelUsageActivityDay, ModelUsageBucket, ModelUsagePeriod,
+    ModelUsageSummary, ModelUsageWindow, ProviderProbeErrorKind, ProviderProbeSnapshot,
+    ProviderProbeStatus, UsageSnapshot,
 };
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 pub type ConversationEventBatchEmitter =
     Arc<dyn Fn(ConversationEventBatchPayload) -> Result<(), String> + Send + Sync>;
@@ -2750,6 +2752,48 @@ impl From<ModelUsageWindow> for ModelUsageWindowPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ModelUsageActivityDayPayload {
+    pub date: String,
+    pub usage: UsageSnapshotPayload,
+}
+
+impl From<ModelUsageActivityDay> for ModelUsageActivityDayPayload {
+    fn from(value: ModelUsageActivityDay) -> Self {
+        Self {
+            date: value.date.to_string(),
+            usage: value.usage.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsageActivityPayload {
+    pub range_start: String,
+    pub range_end: String,
+    pub days: Vec<ModelUsageActivityDayPayload>,
+    pub peak_day_tokens: u64,
+    pub current_streak_days: u32,
+    pub longest_streak_days: u32,
+    pub longest_task_duration_ms: u64,
+}
+
+impl From<ModelUsageActivity> for ModelUsageActivityPayload {
+    fn from(value: ModelUsageActivity) -> Self {
+        Self {
+            range_start: value.range_start.to_string(),
+            range_end: value.range_end.to_string(),
+            days: value.days.into_iter().map(Into::into).collect(),
+            peak_day_tokens: value.peak_day_tokens,
+            current_streak_days: value.current_streak_days,
+            longest_streak_days: value.longest_streak_days,
+            longest_task_duration_ms: value.longest_task_duration_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetModelUsageSummaryResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timezone_id: Option<String>,
@@ -2757,6 +2801,7 @@ pub struct GetModelUsageSummaryResponse {
     pub today: ModelUsageWindowPayload,
     pub month_to_date: ModelUsageWindowPayload,
     pub all_time: ModelUsageWindowPayload,
+    pub activity: ModelUsageActivityPayload,
     pub generated_at: String,
 }
 
@@ -2768,6 +2813,7 @@ impl From<ModelUsageSummary> for GetModelUsageSummaryResponse {
             today: value.today.into(),
             month_to_date: value.month_to_date.into(),
             all_time: value.all_time.into(),
+            activity: value.activity.into(),
             generated_at: value.generated_at.to_rfc3339(),
         }
     }
@@ -2862,6 +2908,8 @@ pub struct ModelUsageRollupRecord {
     pub schema_version: u32,
     pub dirty: bool,
     pub summary: ModelUsageSummary,
+    #[serde(default)]
+    pub pending_run_starts: BTreeMap<String, chrono::DateTime<chrono::Utc>>,
 }
 
 pub trait ModelUsageRollupStore: Send + Sync {

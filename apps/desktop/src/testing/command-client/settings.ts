@@ -225,6 +225,15 @@ export const fixtureGetModelUsageSummary: GetModelUsageSummaryResponse = {
   today: emptyUsageWindow,
   monthToDate: { ...emptyUsageWindow, period: 'month_to_date' },
   allTime: { ...emptyUsageWindow, period: 'all_time' },
+  activity: {
+    rangeStart: '2025-07-01',
+    rangeEnd: '2026-06-30',
+    days: [],
+    peakDayTokens: 0,
+    currentStreakDays: 0,
+    longestStreakDays: 0,
+    longestTaskDurationMs: 0,
+  },
   generatedAt: '2026-06-30T12:00:00+00:00',
 }
 

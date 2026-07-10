@@ -1,7 +1,9 @@
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use harness_contracts::{
-    Event, ModelRef, ModelUsagePeriod, ModelUsageSummary, SessionId, UsageAccumulatedEvent,
-    UsageSnapshot,
+    ConfigHash, ConversationModelCapability, CorrelationId, EndReason, Event, Message, MessageId,
+    MessagePart, MessageRole, ModelProtocol, ModelRef, ModelUsagePeriod, ModelUsageSummary,
+    PermissionMode, RunEndedEvent, RunId, RunModelSnapshot, RunStartedEvent, SessionId, SnapshotId,
+    TenantId, TurnInput, UsageAccumulatedEvent, UsageSnapshot,
 };
 use harness_observability::{
     summarize_from_events, summarize_model_usage, IanaTimezoneResolver, WorkspaceTimezoneResolver,
@@ -88,6 +90,59 @@ fn usage_delta(
         cache_write_tokens,
         tool_calls,
         cost_micros,
+    }
+}
+
+fn total_tokens(snapshot: &UsageSnapshot) -> u64 {
+    snapshot.input_tokens
+        + snapshot.output_tokens
+        + snapshot.cache_read_tokens
+        + snapshot.cache_write_tokens
+}
+
+fn test_run_model_snapshot() -> RunModelSnapshot {
+    RunModelSnapshot {
+        model_config_id: None,
+        provider_id: "test".to_owned(),
+        model_id: "test-model".to_owned(),
+        display_name: "Test Model".to_owned(),
+        protocol: ModelProtocol::Messages,
+        context_window: 128_000,
+        max_output_tokens: 8_192,
+        conversation_capability: ConversationModelCapability::default(),
+    }
+}
+
+fn run_started(run_id: RunId, started_at: chrono::DateTime<Utc>) -> RunStartedEvent {
+    RunStartedEvent {
+        run_id,
+        session_id: SessionId::new(),
+        tenant_id: TenantId::SINGLE,
+        parent_run_id: None,
+        model: test_run_model_snapshot(),
+        input: TurnInput {
+            message: Message {
+                id: MessageId::new(),
+                role: MessageRole::User,
+                parts: vec![MessagePart::Text("run".to_owned())],
+                created_at: started_at,
+            },
+            metadata: serde_json::Value::Null,
+        },
+        snapshot_id: SnapshotId::new(),
+        effective_config_hash: ConfigHash([0; 32]),
+        started_at,
+        correlation_id: CorrelationId::new(),
+        permission_mode: PermissionMode::Default,
+    }
+}
+
+fn run_ended(run_id: RunId, ended_at: chrono::DateTime<Utc>) -> RunEndedEvent {
+    RunEndedEvent {
+        run_id,
+        reason: EndReason::Completed,
+        usage: None,
+        ended_at,
     }
 }
 
@@ -277,4 +332,156 @@ fn summarize_from_events_reads_usage_accumulated_events_only() {
     let summary = summarize_from_events([Event::UsageAccumulated(usage)].iter(), now, &timezone);
 
     assert_eq!(summary.all_time.total.input_tokens, 7);
+}
+
+#[test]
+fn model_usage_activity_returns_365_local_days_with_zero_fill() {
+    let timezone = IanaTimezoneResolver::try_from_iana("UTC").expect("UTC timezone");
+    let now = Utc.with_ymd_and_hms(2026, 6, 30, 12, 0, 0).unwrap();
+    let model = sample_model_ref("openai", "gpt-4.1");
+    let usage = usage_event(
+        Utc.with_ymd_and_hms(2025, 7, 1, 10, 0, 0).unwrap(),
+        Some(model),
+        usage_delta(7, 0, 0, 0, 0, 0),
+    );
+
+    let summary = summarize_model_usage([usage].iter(), now, &timezone);
+
+    assert_eq!(summary.activity.range_start.to_string(), "2025-07-01");
+    assert_eq!(summary.activity.range_end.to_string(), "2026-06-30");
+    assert_eq!(summary.activity.days.len(), 365);
+    assert_eq!(summary.activity.days[0].date.to_string(), "2025-07-01");
+    assert_eq!(summary.activity.days[0].usage.input_tokens, 7);
+    assert_eq!(summary.activity.days[1].usage, UsageSnapshot::default());
+    assert_eq!(summary.activity.days[364].date.to_string(), "2026-06-30");
+}
+
+#[test]
+fn model_usage_activity_groups_by_workspace_timezone_and_skips_diagnostics() {
+    let timezone = IanaTimezoneResolver::try_from_iana("Asia/Shanghai").expect("tz");
+    let now = Utc.with_ymd_and_hms(2026, 6, 30, 16, 0, 0).unwrap();
+    let model = sample_model_ref("openai", "gpt-4.1");
+    let mut diagnostic = usage_event(
+        Utc.with_ymd_and_hms(2026, 6, 29, 16, 30, 0).unwrap(),
+        Some(model.clone()),
+        usage_delta(99, 0, 0, 0, 0, 0),
+    );
+    diagnostic.diagnostic = true;
+    let local_june_30 = usage_event(
+        Utc.with_ymd_and_hms(2026, 6, 29, 16, 30, 0).unwrap(),
+        Some(model),
+        usage_delta(4, 6, 1, 2, 0, 0),
+    );
+
+    let summary = summarize_model_usage([diagnostic, local_june_30].iter(), now, &timezone);
+    let day = summary
+        .activity
+        .days
+        .iter()
+        .find(|day| day.date.to_string() == "2026-06-30")
+        .expect("local day exists");
+
+    assert_eq!(total_tokens(&day.usage), 13);
+    assert_eq!(summary.activity.peak_day_tokens, 13);
+}
+
+#[test]
+fn model_usage_activity_calculates_current_and_longest_streaks() {
+    let timezone = IanaTimezoneResolver::try_from_iana("UTC").expect("UTC timezone");
+    let now = Utc.with_ymd_and_hms(2026, 6, 30, 12, 0, 0).unwrap();
+    let model = sample_model_ref("openai", "gpt-4.1");
+    let events = [
+        usage_event(
+            Utc.with_ymd_and_hms(2026, 6, 26, 12, 0, 0).unwrap(),
+            Some(model.clone()),
+            usage_delta(1, 0, 0, 0, 0, 0),
+        ),
+        usage_event(
+            Utc.with_ymd_and_hms(2026, 6, 27, 12, 0, 0).unwrap(),
+            Some(model.clone()),
+            usage_delta(1, 0, 0, 0, 0, 0),
+        ),
+        usage_event(
+            Utc.with_ymd_and_hms(2026, 6, 28, 12, 0, 0).unwrap(),
+            Some(model.clone()),
+            usage_delta(1, 0, 0, 0, 0, 0),
+        ),
+        usage_event(
+            Utc.with_ymd_and_hms(2026, 6, 30, 12, 0, 0).unwrap(),
+            Some(model),
+            usage_delta(1, 0, 0, 0, 0, 0),
+        ),
+    ];
+
+    let summary = summarize_model_usage(events.iter(), now, &timezone);
+
+    assert_eq!(summary.activity.current_streak_days, 1);
+    assert_eq!(summary.activity.longest_streak_days, 3);
+}
+
+#[test]
+fn model_usage_activity_current_streak_is_zero_when_today_has_no_tokens() {
+    let timezone = IanaTimezoneResolver::try_from_iana("UTC").expect("UTC timezone");
+    let now = Utc.with_ymd_and_hms(2026, 6, 30, 12, 0, 0).unwrap();
+    let model = sample_model_ref("openai", "gpt-4.1");
+    let usage = usage_event(
+        Utc.with_ymd_and_hms(2026, 6, 29, 12, 0, 0).unwrap(),
+        Some(model),
+        usage_delta(1, 0, 0, 0, 0, 0),
+    );
+
+    let summary = summarize_model_usage([usage].iter(), now, &timezone);
+
+    assert_eq!(summary.activity.current_streak_days, 0);
+    assert_eq!(summary.activity.longest_streak_days, 1);
+}
+
+#[test]
+fn model_usage_activity_calculates_longest_completed_run_duration() {
+    let timezone = IanaTimezoneResolver::try_from_iana("UTC").expect("UTC timezone");
+    let now = Utc.with_ymd_and_hms(2026, 6, 30, 12, 0, 0).unwrap();
+    let fast_run = RunId::new();
+    let slow_run = RunId::new();
+    let missing_start = RunId::new();
+    let missing_end = RunId::new();
+    let negative_run = RunId::new();
+
+    let events = [
+        Event::RunStarted(run_started(
+            fast_run,
+            Utc.with_ymd_and_hms(2026, 6, 30, 10, 0, 0).unwrap(),
+        )),
+        Event::RunEnded(run_ended(
+            fast_run,
+            Utc.with_ymd_and_hms(2026, 6, 30, 10, 0, 2).unwrap(),
+        )),
+        Event::RunStarted(run_started(
+            slow_run,
+            Utc.with_ymd_and_hms(2026, 6, 30, 10, 0, 0).unwrap(),
+        )),
+        Event::RunEnded(run_ended(
+            slow_run,
+            Utc.with_ymd_and_hms(2026, 6, 30, 10, 3, 0).unwrap(),
+        )),
+        Event::RunEnded(run_ended(
+            missing_start,
+            Utc.with_ymd_and_hms(2026, 6, 30, 10, 0, 0).unwrap(),
+        )),
+        Event::RunStarted(run_started(
+            missing_end,
+            Utc.with_ymd_and_hms(2026, 6, 30, 10, 0, 0).unwrap(),
+        )),
+        Event::RunStarted(run_started(
+            negative_run,
+            Utc.with_ymd_and_hms(2026, 6, 30, 10, 1, 0).unwrap(),
+        )),
+        Event::RunEnded(run_ended(
+            negative_run,
+            Utc.with_ymd_and_hms(2026, 6, 30, 10, 0, 0).unwrap(),
+        )),
+    ];
+
+    let summary = summarize_from_events(events.iter(), now, &timezone);
+
+    assert_eq!(summary.activity.longest_task_duration_ms, 180_000);
 }

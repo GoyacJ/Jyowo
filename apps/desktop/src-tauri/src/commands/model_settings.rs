@@ -1,13 +1,14 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use harness_contracts::{
     Event, EventId, ForkReason, JournalError, JournalOffset, ModelRef, ModelUsageBucket,
-    ModelUsagePeriod, ModelUsageSummary, ModelUsageWindow, SessionId, TenantId,
-    UsageAccumulatedEvent, UsageSnapshot,
+    ModelUsagePeriod, ModelUsageSummary, ModelUsageWindow, RunEndedEvent, RunStartedEvent,
+    SessionId, TenantId, UsageAccumulatedEvent, UsageSnapshot,
 };
 use harness_journal::{
     AppendMetadata, EventEnvelope, EventEnvelopePage, PrunePolicy, PruneReport, ReplayCursor,
@@ -15,7 +16,8 @@ use harness_journal::{
 };
 use harness_model::{fetch_official_quota, with_staleness, ProviderAccountUsageRequest};
 use harness_observability::{
-    summarize_model_usage, IanaTimezoneResolver, LocalTimezoneResolver, WorkspaceTimezoneResolver,
+    normalize_usage_activity, summarize_from_events, summarize_model_usage, IanaTimezoneResolver,
+    LocalTimezoneResolver, WorkspaceTimezoneResolver,
 };
 
 use futures::stream::BoxStream;
@@ -55,8 +57,10 @@ pub(crate) fn normalize_probe_timeout_ms(timeout_ms: Option<u64>) -> u64 {
         .clamp(MIN_PROBE_TIMEOUT_MS, MAX_PROBE_TIMEOUT_MS)
 }
 
-const MODEL_USAGE_ROLLUP_SCHEMA_VERSION: u32 = 1;
+const MODEL_USAGE_ROLLUP_SCHEMA_VERSION: u32 = 2;
 const MAX_OPENROUTER_MODELS_API_BYTES: usize = 2 * 1024 * 1024;
+static MODEL_USAGE_ROLLUP_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 #[derive(Debug, Clone)]
 struct UsageBucketState {
@@ -64,6 +68,13 @@ struct UsageBucketState {
     model_id: String,
     usage: UsageSnapshot,
     last_used_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+enum ModelUsageProjectionEvent {
+    UsageAccumulated(UsageAccumulatedEvent),
+    RunStarted(RunStartedEvent),
+    RunEnded(RunEndedEvent),
 }
 
 pub(crate) struct ProjectingEventStore {
@@ -81,26 +92,20 @@ impl ProjectingEventStore {
             model_usage_rollup_store,
         }
     }
+}
 
-    fn project_usage_events(&self, events: &[Event]) {
-        let usage_events = events
-            .iter()
-            .filter_map(|event| match event {
-                Event::UsageAccumulated(event) => Some(event.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        if usage_events.is_empty() {
-            return;
-        }
-        if let Err(error) = project_usage_events_into_store(
-            self.model_usage_rollup_store.as_ref(),
-            &usage_events,
-            Utc::now(),
-        ) {
-            log::warn!("model usage rollup projection failed: {}", error.message);
-        }
-    }
+fn model_usage_projection_events(events: &[Event]) -> Vec<ModelUsageProjectionEvent> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::UsageAccumulated(event) => {
+                Some(ModelUsageProjectionEvent::UsageAccumulated(event.clone()))
+            }
+            Event::RunStarted(event) => Some(ModelUsageProjectionEvent::RunStarted(event.clone())),
+            Event::RunEnded(event) => Some(ModelUsageProjectionEvent::RunEnded(event.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 #[async_trait]
@@ -111,10 +116,23 @@ impl EventStore for ProjectingEventStore {
         session_id: SessionId,
         events: &[Event],
     ) -> Result<JournalOffset, JournalError> {
-        let result = self.inner.append(tenant, session_id, events).await;
-        if result.is_ok() {
-            self.project_usage_events(events);
+        let projection_events = model_usage_projection_events(events);
+        if !projection_events.is_empty() {
+            let _guard = MODEL_USAGE_ROLLUP_LOCK.lock().await;
+            let result = self.inner.append(tenant, session_id, events).await;
+            if result.is_ok() {
+                if let Err(error) = project_model_usage_events_into_store_locked(
+                    self.model_usage_rollup_store.as_ref(),
+                    &projection_events,
+                    Utc::now(),
+                ) {
+                    log::warn!("model usage rollup projection failed: {}", error.message);
+                }
+            }
+            return result;
         }
+
+        let result = self.inner.append(tenant, session_id, events).await;
         result
     }
 
@@ -125,13 +143,29 @@ impl EventStore for ProjectingEventStore {
         metadata: AppendMetadata,
         events: &[Event],
     ) -> Result<JournalOffset, JournalError> {
+        let projection_events = model_usage_projection_events(events);
+        if !projection_events.is_empty() {
+            let _guard = MODEL_USAGE_ROLLUP_LOCK.lock().await;
+            let result = self
+                .inner
+                .append_with_metadata(tenant, session_id, metadata, events)
+                .await;
+            if result.is_ok() {
+                if let Err(error) = project_model_usage_events_into_store_locked(
+                    self.model_usage_rollup_store.as_ref(),
+                    &projection_events,
+                    Utc::now(),
+                ) {
+                    log::warn!("model usage rollup projection failed: {}", error.message);
+                }
+            }
+            return result;
+        }
+
         let result = self
             .inner
             .append_with_metadata(tenant, session_id, metadata, events)
             .await;
-        if result.is_ok() {
-            self.project_usage_events(events);
-        }
         result
     }
 
@@ -143,6 +177,31 @@ impl EventStore for ProjectingEventStore {
         expected_next_offset: JournalOffset,
         events: &[Event],
     ) -> Result<JournalOffset, JournalError> {
+        let projection_events = model_usage_projection_events(events);
+        if !projection_events.is_empty() {
+            let _guard = MODEL_USAGE_ROLLUP_LOCK.lock().await;
+            let result = self
+                .inner
+                .append_with_metadata_expect_next_offset(
+                    tenant,
+                    session_id,
+                    metadata,
+                    expected_next_offset,
+                    events,
+                )
+                .await;
+            if result.is_ok() {
+                if let Err(error) = project_model_usage_events_into_store_locked(
+                    self.model_usage_rollup_store.as_ref(),
+                    &projection_events,
+                    Utc::now(),
+                ) {
+                    log::warn!("model usage rollup projection failed: {}", error.message);
+                }
+            }
+            return result;
+        }
+
         let result = self
             .inner
             .append_with_metadata_expect_next_offset(
@@ -153,9 +212,6 @@ impl EventStore for ProjectingEventStore {
                 events,
             )
             .await;
-        if result.is_ok() {
-            self.project_usage_events(events);
-        }
         result
     }
 
@@ -266,7 +322,7 @@ pub async fn get_model_settings_page_with_runtime_state(
     let probe_snapshots = slice_from_result(list_provider_probe_snapshots_with_runtime_state(
         runtime_state,
     ));
-    let usage_summary = usage_summary_slice_from_rollup(runtime_state, now);
+    let usage_summary = usage_summary_slice_from_rollup(runtime_state, now).await;
     let quota_snapshots = slice_from_result(list_official_quota_snapshots_with_runtime_state(
         runtime_state,
     ));
@@ -436,11 +492,12 @@ pub(crate) fn local_model_provider_catalog(
     ))
 }
 
-fn usage_summary_slice_from_rollup(
+async fn usage_summary_slice_from_rollup(
     runtime_state: &DesktopRuntimeState,
     now: DateTime<Utc>,
 ) -> ModelSettingsPageSlice<GetModelUsageSummaryResponse> {
-    match load_or_create_usage_rollup(runtime_state, now) {
+    let _guard = MODEL_USAGE_ROLLUP_LOCK.lock().await;
+    match load_or_create_usage_rollup(runtime_state, now).await {
         Ok(record) if record.dirty => {
             ModelSettingsPageSlice::rebuilding("model usage summary is rebuilding")
         }
@@ -449,16 +506,21 @@ fn usage_summary_slice_from_rollup(
     }
 }
 
-fn load_or_create_usage_rollup(
+async fn load_or_create_usage_rollup(
     runtime_state: &DesktopRuntimeState,
     now: DateTime<Utc>,
 ) -> Result<ModelUsageRollupRecord, CommandErrorPayload> {
     let timezone = workspace_timezone_resolver();
     let Some(mut record) = runtime_state.model_usage_rollup_store.load_record()? else {
+        if runtime_state.harness().is_some() {
+            return rebuild_usage_rollup_from_event_store(runtime_state, now).await;
+        }
+
         let record = ModelUsageRollupRecord {
             schema_version: MODEL_USAGE_ROLLUP_SCHEMA_VERSION,
-            dirty: false,
+            dirty: true,
             summary: empty_usage_summary(now, &timezone),
+            pending_run_starts: BTreeMap::new(),
         };
         runtime_state
             .model_usage_rollup_store
@@ -467,15 +529,15 @@ fn load_or_create_usage_rollup(
     };
 
     if record.schema_version != MODEL_USAGE_ROLLUP_SCHEMA_VERSION {
-        record = ModelUsageRollupRecord {
-            schema_version: MODEL_USAGE_ROLLUP_SCHEMA_VERSION,
-            dirty: true,
-            summary: empty_usage_summary(now, &timezone),
-        };
-        runtime_state
-            .model_usage_rollup_store
-            .save_record(&record)?;
-        return Ok(record);
+        return rebuild_usage_rollup_from_event_store(runtime_state, now).await;
+    }
+
+    if record.dirty {
+        return rebuild_usage_rollup_from_event_store(runtime_state, now).await;
+    }
+
+    if usage_summary_timezone_changed(&record.summary, now, &timezone) {
+        return rebuild_usage_rollup_from_event_store(runtime_state, now).await;
     }
 
     if normalize_usage_windows(&mut record.summary, now, &timezone) {
@@ -487,6 +549,42 @@ fn load_or_create_usage_rollup(
     Ok(record)
 }
 
+async fn rebuild_usage_rollup_from_event_store(
+    runtime_state: &DesktopRuntimeState,
+    now: DateTime<Utc>,
+) -> Result<ModelUsageRollupRecord, CommandErrorPayload> {
+    let Some(harness) = runtime_state.harness() else {
+        let timezone = workspace_timezone_resolver();
+        let record = ModelUsageRollupRecord {
+            schema_version: MODEL_USAGE_ROLLUP_SCHEMA_VERSION,
+            dirty: true,
+            summary: empty_usage_summary(now, &timezone),
+            pending_run_starts: BTreeMap::new(),
+        };
+        runtime_state
+            .model_usage_rollup_store
+            .save_record(&record)?;
+        return Ok(record);
+    };
+
+    let events = collect_persisted_model_usage_projection_events(
+        harness.event_store().as_ref(),
+        TenantId::SINGLE,
+    )
+    .await?;
+    let timezone = workspace_timezone_resolver();
+    let record = ModelUsageRollupRecord {
+        schema_version: MODEL_USAGE_ROLLUP_SCHEMA_VERSION,
+        dirty: false,
+        summary: summarize_from_events(events.iter(), now, &timezone),
+        pending_run_starts: pending_run_starts_from_events(&events),
+    };
+    runtime_state
+        .model_usage_rollup_store
+        .save_record(&record)?;
+    Ok(record)
+}
+
 #[doc(hidden)]
 pub fn project_usage_events_into_rollup_for_test(
     runtime_state: &DesktopRuntimeState,
@@ -495,34 +593,121 @@ pub fn project_usage_events_into_rollup_for_test(
     project_usage_events_into_rollup(runtime_state, events, Utc::now())
 }
 
+#[doc(hidden)]
+pub fn seed_usage_events_into_clean_rollup_for_test(
+    runtime_state: &DesktopRuntimeState,
+    events: &[UsageAccumulatedEvent],
+) -> Result<(), CommandErrorPayload> {
+    let now = Utc::now();
+    let timezone = workspace_timezone_resolver();
+    let record = ModelUsageRollupRecord {
+        schema_version: MODEL_USAGE_ROLLUP_SCHEMA_VERSION,
+        dirty: false,
+        summary: empty_usage_summary(now, &timezone),
+        pending_run_starts: BTreeMap::new(),
+    };
+    runtime_state
+        .model_usage_rollup_store
+        .save_record(&record)?;
+    project_usage_events_into_rollup(runtime_state, events, now)
+}
+
+pub fn load_model_usage_rollup_record_for_test(
+    runtime_state: &DesktopRuntimeState,
+) -> Result<Option<ModelUsageRollupRecord>, CommandErrorPayload> {
+    runtime_state.model_usage_rollup_store.load_record()
+}
+
+pub fn save_model_usage_rollup_record_for_test(
+    runtime_state: &DesktopRuntimeState,
+    record: &ModelUsageRollupRecord,
+) -> Result<(), CommandErrorPayload> {
+    runtime_state.model_usage_rollup_store.save_record(record)
+}
+
 pub(crate) fn project_usage_events_into_rollup(
     runtime_state: &DesktopRuntimeState,
     events: &[UsageAccumulatedEvent],
     now: DateTime<Utc>,
 ) -> Result<(), CommandErrorPayload> {
-    project_usage_events_into_store(runtime_state.model_usage_rollup_store.as_ref(), events, now)
+    let projection_events = events
+        .iter()
+        .cloned()
+        .map(ModelUsageProjectionEvent::UsageAccumulated)
+        .collect::<Vec<_>>();
+    project_model_usage_events_into_store(
+        runtime_state.model_usage_rollup_store.as_ref(),
+        &projection_events,
+        now,
+    )
 }
 
-fn project_usage_events_into_store(
+fn project_model_usage_events_into_store(
     store: &dyn ModelUsageRollupStore,
-    events: &[UsageAccumulatedEvent],
+    events: &[ModelUsageProjectionEvent],
+    now: DateTime<Utc>,
+) -> Result<(), CommandErrorPayload> {
+    project_model_usage_events_into_store_locked(store, events, now)
+}
+
+fn project_model_usage_events_into_store_locked(
+    store: &dyn ModelUsageRollupStore,
+    events: &[ModelUsageProjectionEvent],
     now: DateTime<Utc>,
 ) -> Result<(), CommandErrorPayload> {
     let timezone = workspace_timezone_resolver();
-    let mut record = store
-        .load_record()?
-        .unwrap_or_else(|| ModelUsageRollupRecord {
+    let Some(mut record) = store.load_record()? else {
+        let record = ModelUsageRollupRecord {
             schema_version: MODEL_USAGE_ROLLUP_SCHEMA_VERSION,
-            dirty: false,
+            dirty: true,
             summary: empty_usage_summary(now, &timezone),
-        });
+            pending_run_starts: BTreeMap::new(),
+        };
+        return store.save_record(&record);
+    };
+    if record.schema_version != MODEL_USAGE_ROLLUP_SCHEMA_VERSION || record.dirty {
+        let record = ModelUsageRollupRecord {
+            schema_version: MODEL_USAGE_ROLLUP_SCHEMA_VERSION,
+            dirty: true,
+            summary: empty_usage_summary(now, &timezone),
+            pending_run_starts: BTreeMap::new(),
+        };
+        return store.save_record(&record);
+    }
+    if usage_summary_timezone_changed(&record.summary, now, &timezone) {
+        record.dirty = true;
+        return store.save_record(&record);
+    }
 
     normalize_usage_windows(&mut record.summary, now, &timezone);
     record.dirty = true;
     store.save_record(&record)?;
 
     for event in events {
-        add_usage_event_to_summary(&mut record.summary, event);
+        match event {
+            ModelUsageProjectionEvent::UsageAccumulated(event) => {
+                add_usage_event_to_summary(&mut record.summary, event, &timezone);
+            }
+            ModelUsageProjectionEvent::RunStarted(event) => {
+                record
+                    .pending_run_starts
+                    .insert(event.run_id.to_string(), event.started_at);
+            }
+            ModelUsageProjectionEvent::RunEnded(event) => {
+                let run_id = event.run_id.to_string();
+                if let Some(started_at) = record.pending_run_starts.remove(&run_id) {
+                    if let Ok(duration) = event.ended_at.signed_duration_since(started_at).to_std()
+                    {
+                        let duration_ms = duration.as_millis().min(u128::from(u64::MAX)) as u64;
+                        record.summary.activity.longest_task_duration_ms = record
+                            .summary
+                            .activity
+                            .longest_task_duration_ms
+                            .max(duration_ms);
+                    }
+                }
+            }
+        }
     }
     record.summary.generated_at = now;
     record.summary.timezone_id = timezone.timezone_id().map(str::to_owned);
@@ -547,6 +732,12 @@ fn empty_usage_summary(
             Some(now),
         ),
         all_time: empty_usage_window(ModelUsagePeriod::AllTime, None, None),
+        activity: summarize_model_usage(
+            std::iter::empty::<&UsageAccumulatedEvent>(),
+            now,
+            timezone,
+        )
+        .activity,
         generated_at: now,
     }
 }
@@ -563,6 +754,15 @@ fn empty_usage_window(
         total: UsageSnapshot::default(),
         by_model: Vec::new(),
     }
+}
+
+fn usage_summary_timezone_changed(
+    summary: &ModelUsageSummary,
+    now: DateTime<Utc>,
+    timezone: &dyn WorkspaceTimezoneResolver,
+) -> bool {
+    summary.timezone_id.as_deref() != timezone.timezone_id()
+        || summary.timezone_offset_minutes != timezone.offset_minutes_at(now)
 }
 
 fn normalize_usage_windows(
@@ -592,10 +792,15 @@ fn normalize_usage_windows(
     summary.generated_at = now;
     summary.timezone_id = timezone.timezone_id().map(str::to_owned);
     summary.timezone_offset_minutes = timezone.offset_minutes_at(now);
+    changed |= normalize_usage_activity(summary, now, timezone);
     changed
 }
 
-fn add_usage_event_to_summary(summary: &mut ModelUsageSummary, event: &UsageAccumulatedEvent) {
+fn add_usage_event_to_summary(
+    summary: &mut ModelUsageSummary,
+    event: &UsageAccumulatedEvent,
+    timezone: &dyn WorkspaceTimezoneResolver,
+) {
     if event.diagnostic || usage_snapshot_is_empty(&event.delta) {
         return;
     }
@@ -615,7 +820,31 @@ fn add_usage_event_to_summary(summary: &mut ModelUsageSummary, event: &UsageAccu
     {
         add_usage_event_to_window(&mut summary.month_to_date, event);
     }
+    add_usage_event_to_activity(summary, event, timezone);
     add_usage_event_to_window(&mut summary.all_time, event);
+}
+
+fn add_usage_event_to_activity(
+    summary: &mut ModelUsageSummary,
+    event: &UsageAccumulatedEvent,
+    timezone: &dyn WorkspaceTimezoneResolver,
+) {
+    if event.at > summary.generated_at {
+        return;
+    }
+
+    let local_date = timezone.local_datetime(event.at).date();
+    let Some(day) = summary
+        .activity
+        .days
+        .iter_mut()
+        .find(|day| day.date == local_date)
+    else {
+        return;
+    };
+
+    merge_usage(&mut day.usage, &event.delta);
+    recompute_usage_activity_stats(summary);
 }
 
 fn add_usage_event_to_window(window: &mut ModelUsageWindow, event: &UsageAccumulatedEvent) {
@@ -675,6 +904,43 @@ fn merge_usage(total: &mut UsageSnapshot, delta: &UsageSnapshot) {
         .saturating_add(delta.cache_write_tokens);
     total.cost_micros = total.cost_micros.saturating_add(delta.cost_micros);
     total.tool_calls = total.tool_calls.saturating_add(delta.tool_calls);
+}
+
+fn recompute_usage_activity_stats(summary: &mut ModelUsageSummary) {
+    summary.activity.peak_day_tokens = summary
+        .activity
+        .days
+        .iter()
+        .map(|day| usage_token_total(&day.usage))
+        .max()
+        .unwrap_or(0);
+    summary.activity.current_streak_days = summary
+        .activity
+        .days
+        .iter()
+        .rev()
+        .take_while(|day| usage_token_total(&day.usage) > 0)
+        .count() as u32;
+
+    let mut longest = 0_u32;
+    let mut current = 0_u32;
+    for day in &summary.activity.days {
+        if usage_token_total(&day.usage) > 0 {
+            current = current.saturating_add(1);
+            longest = longest.max(current);
+        } else {
+            current = 0;
+        }
+    }
+    summary.activity.longest_streak_days = longest;
+}
+
+fn usage_token_total(snapshot: &UsageSnapshot) -> u64 {
+    snapshot
+        .input_tokens
+        .saturating_add(snapshot.output_tokens)
+        .saturating_add(snapshot.cache_read_tokens)
+        .saturating_add(snapshot.cache_write_tokens)
 }
 
 fn usage_snapshot_is_empty(snapshot: &UsageSnapshot) -> bool {
@@ -936,17 +1202,69 @@ pub async fn collect_persisted_usage_events(
     Ok(events)
 }
 
+async fn collect_persisted_model_usage_projection_events(
+    store: &dyn EventStore,
+    tenant: TenantId,
+) -> Result<Vec<Event>, CommandErrorPayload> {
+    const PAGE_SIZE: usize = 1024;
+    let mut events = Vec::new();
+    let mut after = None;
+
+    loop {
+        let batch = store
+            .query_after(tenant, after, PAGE_SIZE)
+            .await
+            .map_err(|error| {
+                runtime_operation_failed(format!("usage summary read failed: {error}"))
+            })?;
+        let batch_len = batch.len();
+        for envelope in batch {
+            after = Some(envelope.event_id);
+            match envelope.payload {
+                Event::UsageAccumulated(_) | Event::RunStarted(_) | Event::RunEnded(_) => {
+                    events.push(envelope.payload)
+                }
+                _ => {}
+            }
+        }
+        if batch_len < PAGE_SIZE {
+            break;
+        }
+    }
+
+    Ok(events)
+}
+
+fn pending_run_starts_from_events(events: &[Event]) -> BTreeMap<String, DateTime<Utc>> {
+    let mut pending = BTreeMap::new();
+    for event in events {
+        match event {
+            Event::RunStarted(event) => {
+                pending.insert(event.run_id.to_string(), event.started_at);
+            }
+            Event::RunEnded(event) => {
+                pending.remove(&event.run_id.to_string());
+            }
+            _ => {}
+        }
+    }
+    pending
+}
+
 pub async fn get_model_usage_summary_with_runtime_state(
     runtime_state: &DesktopRuntimeState,
 ) -> Result<GetModelUsageSummaryResponse, CommandErrorPayload> {
     let harness = runtime_state.harness().ok_or_else(|| {
         runtime_unavailable("Model usage summary requires an active harness runtime.")
     })?;
-    let events =
-        collect_persisted_usage_events(harness.event_store().as_ref(), TenantId::SINGLE).await?;
+    let events = collect_persisted_model_usage_projection_events(
+        harness.event_store().as_ref(),
+        TenantId::SINGLE,
+    )
+    .await?;
     let now = Utc::now();
     let timezone = workspace_timezone_resolver();
-    let summary = summarize_model_usage(events.iter(), now, &timezone);
+    let summary = summarize_from_events(events.iter(), now, &timezone);
     Ok(summary.into())
 }
 

@@ -377,6 +377,7 @@ const validBlobRef = {
 }
 const openAiModelDescriptor = {
   protocol: 'responses',
+  supportedParameters: [],
   conversationCapability: {
     inputModalities: ['text'],
     outputModalities: ['text'],
@@ -3836,6 +3837,7 @@ describe('CommandClient', () => {
               models: [
                 {
                   protocol: 'responses',
+                  supportedParameters: [],
                   conversationCapability: {
                     inputModalities: ['text'],
                     outputModalities: ['text'],
@@ -3892,6 +3894,7 @@ describe('CommandClient', () => {
             modelId: 'gpt-5.4-mini',
             modelDescriptor: {
               protocol: 'responses',
+              supportedParameters: [],
               conversationCapability: {
                 inputModalities: ['text'],
                 outputModalities: ['text'],
@@ -4004,6 +4007,20 @@ describe('CommandClient', () => {
       total: usageTotal,
       byModel: [],
     }
+    const usageActivity = {
+      rangeStart: '2025-07-01',
+      rangeEnd: '2026-06-30',
+      peakDayTokens: 3,
+      currentStreakDays: 1,
+      longestStreakDays: 2,
+      longestTaskDurationMs: 120000,
+      days: [
+        {
+          date: '2026-06-30',
+          usage: usageTotal,
+        },
+      ],
+    }
     const providerSettings = {
       defaultConfigId: 'openai',
       selectionScope: 'global',
@@ -4043,6 +4060,7 @@ describe('CommandClient', () => {
             periodStart: undefined,
             periodEnd: undefined,
           },
+          activity: usageActivity,
           generatedAt: '2026-06-30T12:00:00Z',
         },
       },
@@ -4439,6 +4457,15 @@ describe('CommandClient', () => {
         },
       ],
     }
+    const usageActivity = {
+      rangeStart: '2025-07-01',
+      rangeEnd: '2026-06-30',
+      peakDayTokens: 18,
+      currentStreakDays: 1,
+      longestStreakDays: 3,
+      longestTaskDurationMs: 45000,
+      days: [{ date: '2026-06-30', usage: usageWindow.total }],
+    }
     const invoke = vi.fn().mockResolvedValue({
       timezoneId: 'America/New_York',
       timezoneOffsetMinutes: -240,
@@ -4450,6 +4477,7 @@ describe('CommandClient', () => {
         periodStart: undefined,
         periodEnd: undefined,
       },
+      activity: usageActivity,
       generatedAt: '2026-06-30T15:00:00Z',
     })
     const client = createInvokeCommandClient(invoke)
@@ -4465,6 +4493,7 @@ describe('CommandClient', () => {
         periodStart: undefined,
         periodEnd: undefined,
       },
+      activity: usageActivity,
       generatedAt: '2026-06-30T15:00:00Z',
     })
     expect(invoke).toHaveBeenCalledWith('get_model_usage_summary')
@@ -4483,6 +4512,7 @@ describe('CommandClient', () => {
         today: usageWindow,
         monthToDate: { ...usageWindow, period: 'month_to_date' },
         allTime: { ...usageWindow, period: 'all_time' },
+        activity: usageActivity,
         generatedAt: '2026-06-30T15:00:00Z',
       }),
     )

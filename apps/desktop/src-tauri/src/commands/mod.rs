@@ -304,9 +304,11 @@ pub use memory_settings::{
 pub use model_settings::{
     collect_persisted_usage_events, get_model_settings_page_with_runtime_state,
     get_model_usage_summary_with_runtime_state, list_official_quota_snapshots_with_runtime_state,
-    list_provider_probe_snapshots_with_runtime_state, probe_provider_config_with_provider,
-    probe_provider_config_with_runtime_state, project_usage_events_into_rollup_for_test,
-    refresh_model_provider_catalog_with_runtime_state, refresh_official_quota_with_runtime_state,
+    list_provider_probe_snapshots_with_runtime_state, load_model_usage_rollup_record_for_test,
+    probe_provider_config_with_provider, probe_provider_config_with_runtime_state,
+    project_usage_events_into_rollup_for_test, refresh_model_provider_catalog_with_runtime_state,
+    refresh_official_quota_with_runtime_state, save_model_usage_rollup_record_for_test,
+    seed_usage_events_into_clean_rollup_for_test,
 };
 pub use plugins::{
     get_plugin_detail_with_runtime_state, install_plugin_from_path_with_runtime_state,

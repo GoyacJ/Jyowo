@@ -49,3 +49,4 @@ futures = { workspace = true, optional = true }
 chrono-tz = { workspace = true }
 futures = { workspace = true }
 jyowo-harness-journal = { path = "../jyowo-harness-journal", features = ["jsonl", "sqlite", "in-memory"] }
+serde_json = { workspace = true }

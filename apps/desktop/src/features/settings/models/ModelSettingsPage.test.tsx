@@ -190,6 +190,23 @@ const usageSummary: GetModelUsageSummaryResponse = {
       { key: 'openai/gpt-4.1', providerId: 'openai', modelId: 'gpt-4.1', usage: usage(900, 500) },
     ],
   },
+  activity: {
+    rangeStart: '2026-06-24',
+    rangeEnd: '2026-06-30',
+    peakDayTokens: 200,
+    currentStreakDays: 2,
+    longestStreakDays: 3,
+    longestTaskDurationMs: 61_000,
+    days: [
+      { date: '2026-06-24', usage: usage(25, 0) },
+      { date: '2026-06-25', usage: usage(0, 0) },
+      { date: '2026-06-26', usage: usage(40, 10) },
+      { date: '2026-06-27', usage: usage(70, 30) },
+      { date: '2026-06-28', usage: usage(0, 0) },
+      { date: '2026-06-29', usage: usage(120, 40) },
+      { date: '2026-06-30', usage: usage(120, 80) },
+    ],
+  },
   generatedAt: '2026-06-30T12:00:00Z',
 }
 
@@ -403,18 +420,17 @@ describe('ModelSettingsPage', () => {
     expect(screen.queryByText('Project overrides')).not.toBeInTheDocument()
   })
 
-  it('renders summary band and matrix rows with backend usage, connectivity, and quota state', async () => {
+  it('renders usage insights panel and matrix rows with backend usage, connectivity, and quota state', async () => {
     renderModelSettingsPage()
 
     expect(await screen.findByRole('row', { name: /Primary OpenAI/ })).toBeInTheDocument()
     expect(await screen.findByRole('row', { name: /Primary OpenAI/ })).toBeInTheDocument()
-    expect(await screen.findByText('3 configured')).toBeInTheDocument()
-    expect(await screen.findByText('1 available')).toBeInTheDocument()
-    expect(await screen.findByText('2 failing')).toBeInTheDocument()
+    expect(screen.getByLabelText('Token activity')).toHaveTextContent('2,100 tokens')
+    expect(screen.getByLabelText('Token activity')).toHaveTextContent('1m 1s')
+    expect(screen.getByTestId('usage-day-2026-06-30')).toHaveAttribute('data-level', '4')
     expect(screen.getAllByText('Today').length).toBeGreaterThan(0)
     expect(screen.getByText('200 tokens')).toBeInTheDocument()
-    expect(screen.getByLabelText('Model settings summary')).toHaveTextContent('660 tokens')
-    expect(screen.getByLabelText('Model settings summary')).toHaveTextContent('2,100 tokens')
+    expect(screen.queryByLabelText('Model settings summary')).not.toBeInTheDocument()
 
     const primaryRow = within(screen.getByRole('row', { name: /Primary OpenAI/ }))
     expect(primaryRow.getByText('OpenAI')).toBeInTheDocument()
