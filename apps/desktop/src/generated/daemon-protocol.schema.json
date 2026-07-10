@@ -592,6 +592,11 @@
           "type": "string",
           "format": "date-time"
         },
+        "createdGlobalOffset": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
         "queueItemId": {
           "$ref": "#/$defs/TypedUlid"
         },
@@ -612,7 +617,8 @@
         "content",
         "attachments",
         "contextReferences",
-        "createdAt"
+        "createdAt",
+        "createdGlobalOffset"
       ]
     },
     "QueueItemState": {

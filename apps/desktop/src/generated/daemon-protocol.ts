@@ -323,6 +323,7 @@ export interface QueueItemProjection {
   content: string
   contextReferences: string[]
   createdAt: string
+  createdGlobalOffset: number
   queueItemId: TypedUlid
   revision: number
   state: QueueItemState

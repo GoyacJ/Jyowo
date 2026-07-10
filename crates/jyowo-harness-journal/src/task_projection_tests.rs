@@ -171,7 +171,7 @@ fn typed_events_reduce_complete_task_run_queue_and_permission_state() {
         supervisor_source(),
         vec![
             NewTaskEvent::run_started(next_segment_id, next_started_at),
-            NewTaskEvent::message_consumed(queue_item_id, 3, next_segment_id),
+            NewTaskEvent::message_consumed(queue_item_id, 2, next_segment_id),
         ],
     );
     transact(
@@ -326,16 +326,206 @@ fn terminal_runs_require_permission_resolution_and_queue_consumption_requires_ac
         NewTaskEvent::permission_resolved(request_id, 1),
     );
     assert!(matches!(
-        store.transact_command(command(task_id, 5, user_source()), |_| {
-            Ok(vec![NewTaskEvent::message_consumed(
-                queue_item_id,
-                2,
-                RunSegmentId::new(),
-            )])
+        store.transact_command(command(task_id, 5, supervisor_source()), |_| {
+            let wrong_segment = RunSegmentId::new();
+            Ok(vec![
+                NewTaskEvent::run_started(wrong_segment, now),
+                NewTaskEvent::message_consumed(queue_item_id, 2, wrong_segment),
+            ])
         }),
         Err(TaskStoreError::Projector(_))
     ));
     assert_eq!(store.stream_version(task_id).unwrap(), 5);
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn message_consumed_rejects_user_authority() {
+    let root = temp_root("consumed-authority");
+    let path = root.join("tasks.db");
+    let task_id = TaskId::new();
+    let segment_id = RunSegmentId::new();
+    let queue_item_id = QueueItemId::new();
+    let now = Utc::now();
+    let store = TaskStore::open(&path).unwrap();
+    transact(
+        &store,
+        task_id,
+        0,
+        user_source(),
+        NewTaskEvent::task_created("Consumed authority"),
+    );
+    transact(
+        &store,
+        task_id,
+        1,
+        supervisor_source(),
+        NewTaskEvent::run_started(segment_id, now),
+    );
+    transact(
+        &store,
+        task_id,
+        2,
+        user_source(),
+        NewTaskEvent::message_queued(queue_item_id, "queued", vec![], vec![], now),
+    );
+
+    assert!(matches!(
+        store.transact_command(command(task_id, 3, user_source()), |_| {
+            Ok(vec![NewTaskEvent::message_consumed(
+                queue_item_id,
+                1,
+                segment_id,
+            )])
+        }),
+        Err(TaskStoreError::InvalidInput(_))
+    ));
+    assert_eq!(store.stream_version(task_id).unwrap(), 3);
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn queued_message_consumption_requires_run_started_in_the_same_command() {
+    let root = temp_root("queued-consumption-atomicity");
+    let path = root.join("tasks.db");
+    let task_id = TaskId::new();
+    let segment_id = RunSegmentId::new();
+    let queue_item_id = QueueItemId::new();
+    let now = Utc::now();
+    let store = TaskStore::open(&path).unwrap();
+    transact(
+        &store,
+        task_id,
+        0,
+        user_source(),
+        NewTaskEvent::task_created("Queued consumption atomicity"),
+    );
+    transact(
+        &store,
+        task_id,
+        1,
+        supervisor_source(),
+        NewTaskEvent::run_started(segment_id, now),
+    );
+    transact(
+        &store,
+        task_id,
+        2,
+        user_source(),
+        NewTaskEvent::message_queued(queue_item_id, "queued", vec![], vec![], now),
+    );
+
+    assert!(matches!(
+        store.transact_command(command(task_id, 3, supervisor_source()), |_| {
+            Ok(vec![NewTaskEvent::message_consumed(
+                queue_item_id,
+                1,
+                segment_id,
+            )])
+        }),
+        Err(TaskStoreError::InvalidInput(_))
+    ));
+    assert_eq!(store.stream_version(task_id).unwrap(), 3);
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn promoted_message_consumption_requires_run_started_in_the_same_command() {
+    let root = temp_root("promoted-consumption-atomicity");
+    let path = root.join("tasks.db");
+    let task_id = TaskId::new();
+    let active_segment_id = RunSegmentId::new();
+    let queue_item_id = QueueItemId::new();
+    let now = Utc::now();
+    let store = TaskStore::open(&path).unwrap();
+    transact(
+        &store,
+        task_id,
+        0,
+        user_source(),
+        NewTaskEvent::task_created("Promoted consumption atomicity"),
+    );
+    transact(
+        &store,
+        task_id,
+        1,
+        supervisor_source(),
+        NewTaskEvent::run_started(active_segment_id, now),
+    );
+    transact(
+        &store,
+        task_id,
+        2,
+        user_source(),
+        NewTaskEvent::message_queued(queue_item_id, "promoted", vec![], vec![], now),
+    );
+    transact(
+        &store,
+        task_id,
+        3,
+        user_source(),
+        NewTaskEvent::message_promoted(queue_item_id, 1),
+    );
+
+    assert!(matches!(
+        store.transact_command(command(task_id, 4, supervisor_source()), |_| {
+            Ok(vec![NewTaskEvent::message_consumed(
+                queue_item_id,
+                1,
+                active_segment_id,
+            )])
+        }),
+        Err(TaskStoreError::InvalidInput(_))
+    ));
+    assert_eq!(store.stream_version(task_id).unwrap(), 4);
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn message_recovered_rejects_non_recovery_authority() {
+    let root = temp_root("recovered-authority");
+    let path = root.join("tasks.db");
+    let task_id = TaskId::new();
+    let queue_item_id = QueueItemId::new();
+    let now = Utc::now();
+    let store = TaskStore::open(&path).unwrap();
+    transact(
+        &store,
+        task_id,
+        0,
+        user_source(),
+        NewTaskEvent::task_created("Recovered authority"),
+    );
+    transact(
+        &store,
+        task_id,
+        1,
+        user_source(),
+        NewTaskEvent::message_queued(queue_item_id, "queued", vec![], vec![], now),
+    );
+    transact(
+        &store,
+        task_id,
+        2,
+        user_source(),
+        NewTaskEvent::message_promoted(queue_item_id, 1),
+    );
+
+    assert!(matches!(
+        store.transact_command(command(task_id, 3, supervisor_source()), |_| {
+            Ok(vec![NewTaskEvent::message_recovered(queue_item_id, 1)])
+        }),
+        Err(TaskStoreError::InvalidInput(_))
+    ));
+    assert_eq!(store.stream_version(task_id).unwrap(), 3);
 
     drop(store);
     let _ = std::fs::remove_dir_all(root);
@@ -506,19 +696,15 @@ fn consumed_queue_item_ids_cannot_be_reused() {
         user_source(),
         NewTaskEvent::message_queued(queue_item_id, "first", vec![], vec![], now),
     );
-    transact(
+    transact_events(
         &store,
         task_id,
         2,
         supervisor_source(),
-        NewTaskEvent::run_started(segment_id, now),
-    );
-    transact(
-        &store,
-        task_id,
-        3,
-        user_source(),
-        NewTaskEvent::message_consumed(queue_item_id, 2, segment_id),
+        vec![
+            NewTaskEvent::run_started(segment_id, now),
+            NewTaskEvent::message_consumed(queue_item_id, 1, segment_id),
+        ],
     );
 
     assert!(matches!(

@@ -16,6 +16,13 @@ use tokio::task::{JoinHandle, JoinSet};
 use crate::task_actor::{run_task_actor, TaskActorError};
 use crate::{RunCoordinatorFactory, TaskActorMessage, ValidatedTaskCommand};
 
+const SUPERVISOR_REQUEST_CAPACITY: usize = 64;
+const TASK_ACTOR_MAILBOX_CAPACITY: usize = 64;
+
+fn bounded_command_channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
+    mpsc::channel(capacity)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SupervisorQuotas {
     pub foreground_runs: usize,
@@ -50,7 +57,7 @@ pub enum SupervisorError {
 }
 
 pub struct Supervisor {
-    requests: mpsc::UnboundedSender<SupervisorRequest>,
+    requests: mpsc::Sender<SupervisorRequest>,
     events: broadcast::Sender<SupervisorEvent>,
     subagent_quota: Arc<Semaphore>,
     task: JoinHandle<()>,
@@ -65,7 +72,7 @@ impl Supervisor {
         if quotas.foreground_runs == 0 || quotas.subagents == 0 {
             return Err(SupervisorError::InvalidQuota);
         }
-        let (requests, receiver) = mpsc::unbounded_channel();
+        let (requests, receiver) = bounded_command_channel(SUPERVISOR_REQUEST_CAPACITY);
         let (events, _) = broadcast::channel(64);
         let subagent_quota = Arc::new(Semaphore::new(quotas.subagents));
         let task = tokio::spawn(run_supervisor(
@@ -88,14 +95,25 @@ impl Supervisor {
         task_id: TaskId,
         command: ValidatedTaskCommand,
     ) -> Result<CommandOutcome, SupervisorError> {
-        let (reply, response) = oneshot::channel();
+        let (route_reply, route_response) = oneshot::channel();
         self.requests
-            .send(SupervisorRequest::Dispatch {
+            .send(SupervisorRequest::Route {
                 task_id,
-                command,
-                reply,
+                reply: route_reply,
             })
+            .await
             .map_err(|_| SupervisorError::Stopped)?;
+        let route = route_response
+            .await
+            .map_err(|_| SupervisorError::ActorStopped)?;
+        let ActorRoute::Mailbox(mailbox) = route else {
+            return Ok(command.rejected("task does not exist"));
+        };
+        let (reply, response) = oneshot::channel();
+        mailbox
+            .send(TaskActorMessage::Command(Box::new(command), reply))
+            .await
+            .map_err(|_| SupervisorError::ActorStopped)?;
         response.await.map_err(|_| SupervisorError::ActorStopped)
     }
 
@@ -119,11 +137,15 @@ impl Drop for Supervisor {
 }
 
 enum SupervisorRequest {
-    Dispatch {
+    Route {
         task_id: TaskId,
-        command: ValidatedTaskCommand,
-        reply: oneshot::Sender<CommandOutcome>,
+        reply: oneshot::Sender<ActorRoute>,
     },
+}
+
+enum ActorRoute {
+    Mailbox(mpsc::Sender<TaskActorMessage>),
+    TaskNotFound,
 }
 
 struct ActorExit {
@@ -135,14 +157,14 @@ struct ActorExit {
 
 struct ActorSlot {
     generation: u64,
-    mailbox: mpsc::UnboundedSender<TaskActorMessage>,
+    mailbox: mpsc::Sender<TaskActorMessage>,
 }
 
 async fn run_supervisor(
     store: Arc<TaskStore>,
     factory: Arc<dyn RunCoordinatorFactory>,
     foreground_runs: Arc<Semaphore>,
-    mut requests: mpsc::UnboundedReceiver<SupervisorRequest>,
+    mut requests: mpsc::Receiver<SupervisorRequest>,
     events: broadcast::Sender<SupervisorEvent>,
 ) {
     let mut actors = HashMap::<TaskId, ActorSlot>::new();
@@ -154,10 +176,10 @@ async fn run_supervisor(
             request = requests.recv() => {
                 let Some(request) = request else { break };
                 match request {
-                    SupervisorRequest::Dispatch { task_id, command, reply } => {
+                    SupervisorRequest::Route { task_id, reply } => {
                         match store.task_projection(task_id) {
                             Ok(None) => {
-                                let _ = reply.send(command.rejected("task does not exist"));
+                                let _ = reply.send(ActorRoute::TaskNotFound);
                                 continue;
                             }
                             Err(_) => {
@@ -178,10 +200,7 @@ async fn run_supervisor(
                                 Arc::clone(&foreground_runs),
                             )
                         });
-                        if let Err(error) = slot.mailbox.send(TaskActorMessage::Command(Box::new(command), reply)) {
-                            let TaskActorMessage::Command(_, reply) = error.0 else { unreachable!() };
-                            drop(reply);
-                        }
+                        let _ = reply.send(ActorRoute::Mailbox(slot.mailbox.clone()));
                     }
                 }
             }
@@ -220,7 +239,7 @@ async fn run_supervisor(
     }
 
     for (_, slot) in actors {
-        let _ = slot.mailbox.send(TaskActorMessage::Shutdown);
+        let _ = slot.mailbox.send(TaskActorMessage::Shutdown).await;
     }
     while actor_tasks.join_next().await.is_some() {}
 }
@@ -233,7 +252,7 @@ fn spawn_actor(
     factory: Arc<dyn RunCoordinatorFactory>,
     foreground_runs: Arc<Semaphore>,
 ) -> ActorSlot {
-    let (mailbox, messages) = mpsc::unbounded_channel();
+    let (mailbox, messages) = bounded_command_channel(TASK_ACTOR_MAILBOX_CAPACITY);
     let actor_mailbox = mailbox.clone();
     let active_segment_state = Arc::new(Mutex::new(None));
     let exit_segment_state = Arc::clone(&active_segment_state);
@@ -344,11 +363,27 @@ fn require_committed_failure(outcome: CommandOutcome) -> Result<(), TaskStoreErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn bounded_command_channel_waits_for_capacity_instead_of_dropping() {
+        let (sender, mut receiver) = bounded_command_channel(1);
+        sender.send(1_u8).await.unwrap();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), sender.send(2_u8))
+                .await
+                .is_err()
+        );
+        assert_eq!(receiver.recv().await, Some(1));
+        sender.send(2).await.unwrap();
+        assert_eq!(receiver.recv().await, Some(2));
+    }
 
     #[test]
     fn stale_actor_generation_cannot_remove_a_replacement() {
         let task_id = TaskId::new();
-        let (mailbox, _) = mpsc::unbounded_channel();
+        let (mailbox, _) = bounded_command_channel(TASK_ACTOR_MAILBOX_CAPACITY);
         let mut actors = HashMap::from([(
             task_id,
             ActorSlot {

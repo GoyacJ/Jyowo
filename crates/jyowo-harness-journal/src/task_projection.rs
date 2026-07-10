@@ -13,11 +13,11 @@ use crate::task_event::TaskEvent;
 use crate::TaskStoreError;
 
 const MAX_TIMELINE_SUMMARY_CHARS: usize = 4096;
-const MAX_ACTIVE_QUEUE_ITEMS: usize = 64;
+pub const MAX_ACTIVE_QUEUE_ITEMS: usize = 64;
 
 struct ReducedTask {
     projection: TaskProjection,
-    consumed_queue_item: Option<QueueItemProjection>,
+    terminal_queue_item: Option<QueueItemProjection>,
 }
 
 pub trait TaskProjector: Send + Sync {
@@ -88,7 +88,7 @@ fn reduce_task(
         empty_task_projection(envelope.task_id)
     };
 
-    let mut consumed_queue_item = None;
+    let mut terminal_queue_item = None;
     match event {
         TaskEvent::TaskCreated { title } => {
             if projection.stream_version != 0 || !projection.title.is_empty() {
@@ -231,6 +231,7 @@ fn reduce_task(
                 attachments: attachments.clone(),
                 context_references: context_references.clone(),
                 created_at: *created_at,
+                created_global_offset: envelope.global_offset,
                 consumed_by: None,
             });
         }
@@ -248,6 +249,47 @@ fn reduce_task(
             item.attachments.clone_from(attachments);
             item.context_references.clone_from(context_references);
         }
+        TaskEvent::MessagePromoted {
+            queue_item_id,
+            revision,
+        } => {
+            let item = queue_item_mut(&mut projection, *queue_item_id)?;
+            require_exact_queue_revision(
+                item,
+                *revision,
+                QueueItemState::Queued,
+                "message.promoted",
+            )?;
+            item.state = QueueItemState::Promoting;
+        }
+        TaskEvent::MessageRecovered {
+            queue_item_id,
+            revision,
+        } => {
+            let item = queue_item_mut(&mut projection, *queue_item_id)?;
+            require_exact_queue_revision(
+                item,
+                *revision,
+                QueueItemState::Promoting,
+                "message.recovered",
+            )?;
+            item.state = QueueItemState::Queued;
+        }
+        TaskEvent::MessageDeleted {
+            queue_item_id,
+            revision,
+        } => {
+            let index = queue_item_index(&projection, *queue_item_id)?;
+            let mut item = projection.queue.remove(index);
+            require_exact_queue_revision(
+                &item,
+                *revision,
+                QueueItemState::Queued,
+                "message.deleted",
+            )?;
+            item.state = QueueItemState::Deleted;
+            terminal_queue_item = Some(item);
+        }
         TaskEvent::MessageConsumed {
             queue_item_id,
             revision,
@@ -258,17 +300,20 @@ fn reduce_task(
             }) {
                 return invalid_transition("message.consumed requires its matching active run");
             }
-            let index = projection
-                .queue
-                .iter()
-                .position(|item| item.queue_item_id == *queue_item_id)
-                .ok_or_else(|| projector_error("queue event references an unknown item"))?;
+            let index = queue_item_index(&projection, *queue_item_id)?;
             let mut item = projection.queue.remove(index);
-            require_queue_revision(&item, *revision, QueueItemState::Queued, "message.consumed")?;
-            item.revision = *revision;
+            if !matches!(
+                item.state,
+                QueueItemState::Queued | QueueItemState::Promoting
+            ) || item.revision != *revision
+            {
+                return invalid_transition(
+                    "message.consumed requires a queued or promoting item at its current revision",
+                );
+            }
             item.state = QueueItemState::Consumed;
             item.consumed_by = Some(*run_segment_id);
-            consumed_queue_item = Some(item);
+            terminal_queue_item = Some(item);
         }
         TaskEvent::PermissionRequested { permission } => {
             if projection.pending_permission.is_some() {
@@ -318,8 +363,19 @@ fn reduce_task(
     projection.last_global_offset = envelope.global_offset;
     Ok(ReducedTask {
         projection,
-        consumed_queue_item,
+        terminal_queue_item,
     })
+}
+
+fn queue_item_index(
+    projection: &TaskProjection,
+    queue_item_id: harness_contracts::QueueItemId,
+) -> Result<usize, TaskStoreError> {
+    projection
+        .queue
+        .iter()
+        .position(|item| item.queue_item_id == queue_item_id)
+        .ok_or_else(|| projector_error("queue event references an unknown item"))
 }
 
 fn queue_item_mut(
@@ -346,6 +402,21 @@ fn require_queue_revision(
     if item.state != required_state || revision != expected_revision {
         return invalid_transition(format!(
             "{event_type} requires state {required_state:?} revision {expected_revision}"
+        ));
+    }
+    Ok(())
+}
+
+fn require_exact_queue_revision(
+    item: &QueueItemProjection,
+    revision: u64,
+    required_state: QueueItemState,
+    event_type: &str,
+) -> Result<(), TaskStoreError> {
+    if item.state != required_state || revision != item.revision {
+        return invalid_transition(format!(
+            "{event_type} requires state {required_state:?} revision {}",
+            item.revision
         ));
     }
     Ok(())
@@ -422,7 +493,9 @@ fn project_entity_tables(
             }
         }
         TaskEvent::MessageQueued { queue_item_id, .. }
-        | TaskEvent::MessageEdited { queue_item_id, .. } => {
+        | TaskEvent::MessageEdited { queue_item_id, .. }
+        | TaskEvent::MessagePromoted { queue_item_id, .. }
+        | TaskEvent::MessageRecovered { queue_item_id, .. } => {
             let item = reduced
                 .projection
                 .queue
@@ -438,9 +511,10 @@ fn project_entity_tables(
                 item,
             )?;
         }
-        TaskEvent::MessageConsumed { queue_item_id, .. } => {
+        TaskEvent::MessageDeleted { queue_item_id, .. }
+        | TaskEvent::MessageConsumed { queue_item_id, .. } => {
             let item = reduced
-                .consumed_queue_item
+                .terminal_queue_item
                 .as_ref()
                 .filter(|item| item.queue_item_id == *queue_item_id)
                 .ok_or_else(|| projector_error("consumed queue item is missing after reduction"))?;
@@ -542,7 +616,11 @@ fn project_timeline(
 ) -> Result<(), TaskStoreError> {
     if matches!(
         event,
-        TaskEvent::MessageQueued { .. } | TaskEvent::MessageEdited { .. }
+        TaskEvent::MessageQueued { .. }
+            | TaskEvent::MessageEdited { .. }
+            | TaskEvent::MessagePromoted { .. }
+            | TaskEvent::MessageDeleted { .. }
+            | TaskEvent::MessageRecovered { .. }
     ) {
         return Ok(());
     }
@@ -593,11 +671,15 @@ fn project_timeline(
             Some(*segment_id),
             *incomplete_output,
         ),
-        TaskEvent::MessageQueued { .. } | TaskEvent::MessageEdited { .. } => return Ok(()),
+        TaskEvent::MessageQueued { .. }
+        | TaskEvent::MessageEdited { .. }
+        | TaskEvent::MessagePromoted { .. }
+        | TaskEvent::MessageDeleted { .. }
+        | TaskEvent::MessageRecovered { .. } => return Ok(()),
         TaskEvent::MessageConsumed { run_segment_id, .. } => (
             TimelineEventKind::UserMessage,
             reduced
-                .consumed_queue_item
+                .terminal_queue_item
                 .as_ref()
                 .map(|item| bounded_summary(&item.content))
                 .ok_or_else(|| projector_error("consumed queue timeline item is missing"))?,
@@ -639,7 +721,7 @@ fn project_timeline(
         ),
     };
     let blob_id = reduced
-        .consumed_queue_item
+        .terminal_queue_item
         .as_ref()
         .and_then(|item| item.attachments.first().copied());
     let timeline = TimelineItemProjection {

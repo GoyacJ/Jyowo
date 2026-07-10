@@ -63,6 +63,18 @@ pub(crate) enum TaskEvent {
         attachments: Vec<BlobId>,
         context_references: Vec<String>,
     },
+    MessagePromoted {
+        queue_item_id: QueueItemId,
+        revision: u64,
+    },
+    MessageDeleted {
+        queue_item_id: QueueItemId,
+        revision: u64,
+    },
+    MessageRecovered {
+        queue_item_id: QueueItemId,
+        revision: u64,
+    },
     MessageConsumed {
         queue_item_id: QueueItemId,
         revision: u64,
@@ -167,6 +179,13 @@ struct MessageConsumedPayload {
     queue_item_id: QueueItemId,
     revision: u64,
     run_segment_id: RunSegmentId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct QueueStateChangedPayload {
+    queue_item_id: QueueItemId,
+    revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,6 +302,36 @@ impl NewTaskEvent {
                 content: content.into(),
                 attachments,
                 context_references,
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn message_promoted(queue_item_id: QueueItemId, revision: u64) -> Self {
+        Self {
+            event: TaskEvent::MessagePromoted {
+                queue_item_id,
+                revision,
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn message_deleted(queue_item_id: QueueItemId, revision: u64) -> Self {
+        Self {
+            event: TaskEvent::MessageDeleted {
+                queue_item_id,
+                revision,
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn message_recovered(queue_item_id: QueueItemId, revision: u64) -> Self {
+        Self {
+            event: TaskEvent::MessageRecovered {
+                queue_item_id,
+                revision,
             },
         }
     }
@@ -625,6 +674,24 @@ impl TaskEvent {
                     context_references: value.context_references,
                 })
             }
+            "message.promoted" | "message.deleted" | "message.recovered" => {
+                let value: QueueStateChangedPayload = serde_json::from_value(payload)?;
+                Ok(match event_type {
+                    "message.promoted" => Self::MessagePromoted {
+                        queue_item_id: value.queue_item_id,
+                        revision: value.revision,
+                    },
+                    "message.deleted" => Self::MessageDeleted {
+                        queue_item_id: value.queue_item_id,
+                        revision: value.revision,
+                    },
+                    "message.recovered" => Self::MessageRecovered {
+                        queue_item_id: value.queue_item_id,
+                        revision: value.revision,
+                    },
+                    _ => unreachable!(),
+                })
+            }
             "message.consumed" => {
                 let value: MessageConsumedPayload = serde_json::from_value(payload)?;
                 Ok(Self::MessageConsumed {
@@ -688,6 +755,9 @@ impl TaskEvent {
             Self::RunCompleted { .. } => "run.completed",
             Self::MessageQueued { .. } => "message.queued",
             Self::MessageEdited { .. } => "message.edited",
+            Self::MessagePromoted { .. } => "message.promoted",
+            Self::MessageDeleted { .. } => "message.deleted",
+            Self::MessageRecovered { .. } => "message.recovered",
             Self::MessageConsumed { .. } => "message.consumed",
             Self::PermissionRequested { .. } => "permission.requested",
             Self::PermissionResolved { .. } => "permission.resolved",
@@ -758,6 +828,21 @@ impl TaskEvent {
                 attachments: attachments.clone(),
                 context_references: context_references.clone(),
             })?,
+            Self::MessagePromoted {
+                queue_item_id,
+                revision,
+            }
+            | Self::MessageDeleted {
+                queue_item_id,
+                revision,
+            }
+            | Self::MessageRecovered {
+                queue_item_id,
+                revision,
+            } => serde_json::to_value(QueueStateChangedPayload {
+                queue_item_id: *queue_item_id,
+                revision: *revision,
+            })?,
             Self::MessageConsumed {
                 queue_item_id,
                 revision,
@@ -804,9 +889,15 @@ impl TaskEvent {
             | Self::TaskArchived { .. }
             | Self::MessageQueued { .. }
             | Self::MessageEdited { .. }
-            | Self::MessageConsumed { .. } => matches!(
+            | Self::MessagePromoted { .. }
+            | Self::MessageDeleted { .. } => matches!(
                 source.kind,
                 EventSourceKind::User | EventSourceKind::Supervisor | EventSourceKind::Recovery
+            ),
+            Self::MessageRecovered { .. } => source.kind == EventSourceKind::Recovery,
+            Self::MessageConsumed { .. } => matches!(
+                source.kind,
+                EventSourceKind::Supervisor | EventSourceKind::Recovery
             ),
             Self::RunStarted { .. } | Self::RunCompleted { .. } => matches!(
                 source.kind,

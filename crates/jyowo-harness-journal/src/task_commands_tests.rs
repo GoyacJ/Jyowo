@@ -6,7 +6,10 @@ use crate::{
     AcceptedCommand, CommandOutcome, CommandRejection, EventAuthority, NewTaskEvent,
     SynchronousTaskProjector, TaskProjector, TaskStore, TaskStoreError,
 };
-use harness_contracts::{ClientId, CommandId, TaskId};
+use chrono::Utc;
+use harness_contracts::{
+    BlobId, ClientId, CommandId, QueueItemId, QueueItemProjection, QueueItemState, TaskId,
+};
 use serde_json::json;
 
 #[test]
@@ -188,6 +191,110 @@ fn wrong_expected_version_is_persisted_without_projection_changes() {
         .transact_command(stale, |_| panic!("stored rejection must bypass decision"))
         .unwrap();
     assert_eq!(replayed, outcome);
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn stale_queue_revision_rejection_is_idempotent() {
+    let root = temp_root("stale-queue-revision");
+    let path = root.join("tasks.db");
+    let task_id = TaskId::new();
+    let store = TaskStore::open(&path).unwrap();
+    store
+        .transact_command(command(task_id, 0, json!({ "title": "Queue" })), |_| {
+            Ok(vec![NewTaskEvent::task_created("Queue")])
+        })
+        .unwrap();
+    let stale = command(task_id, 1, json!({ "type": "edit", "expectedRevision": 1 }));
+    let latest = QueueItemProjection {
+        queue_item_id: QueueItemId::new(),
+        state: QueueItemState::Queued,
+        revision: 2,
+        content: "latest".into(),
+        attachments: Vec::new(),
+        context_references: Vec::new(),
+        created_at: Utc::now(),
+        created_global_offset: 2,
+        consumed_by: None,
+    };
+
+    let outcome = store
+        .transact_command(stale.clone(), |_| {
+            Err(CommandRejection::StaleQueueRevision {
+                latest: Box::new(latest.clone()),
+            })
+        })
+        .unwrap();
+    let replayed = store
+        .transact_command(stale, |_| panic!("stored rejection must bypass decision"))
+        .unwrap();
+
+    assert_eq!(replayed, outcome);
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn missing_blob_rejection_remains_terminal_after_the_blob_is_staged() {
+    let root = temp_root("missing-blob-rejection");
+    let path = root.join("tasks.db");
+    let task_id = TaskId::new();
+    let store = TaskStore::open(&path).unwrap();
+    store
+        .transact_command(command(task_id, 0, json!({ "title": "Blob" })), |_| {
+            Ok(vec![NewTaskEvent::task_created("Blob")])
+        })
+        .unwrap();
+
+    let blob_hash = blake3::hash(b"late blob");
+    let mut blob_id_bytes = [0_u8; 16];
+    blob_id_bytes.copy_from_slice(&blob_hash.as_bytes()[..16]);
+    let blob_id = BlobId::from_u128(u128::from_be_bytes(blob_id_bytes));
+    let queue_item_id = QueueItemId::new();
+    let submit = command(
+        task_id,
+        1,
+        json!({ "type": "queue_submit", "blobId": blob_id }),
+    );
+    let first = store
+        .transact_command(submit.clone(), |_| {
+            Ok(vec![NewTaskEvent::message_queued(
+                queue_item_id,
+                "attachment",
+                vec![blob_id],
+                Vec::new(),
+                Utc::now(),
+            )])
+        })
+        .unwrap();
+    assert!(matches!(first, CommandOutcome::Rejected { .. }));
+
+    let blob_id_text = blob_id.to_string();
+    store
+        .stage_blob(
+            task_id,
+            blob_id,
+            "text/plain",
+            9,
+            *blob_hash.as_bytes(),
+            &format!("{}/{}.blob", &blob_id_text[..2], blob_id_text),
+        )
+        .unwrap();
+    let replayed = store
+        .transact_command(submit, |_| panic!("stored rejection must bypass decision"))
+        .unwrap();
+
+    assert_eq!(replayed, first);
+    assert_eq!(store.latest_global_offset().unwrap(), 1);
+    assert!(store
+        .task_projection(task_id)
+        .unwrap()
+        .unwrap()
+        .queue
+        .is_empty());
 
     drop(store);
     let _ = std::fs::remove_dir_all(root);

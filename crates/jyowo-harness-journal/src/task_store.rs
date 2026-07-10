@@ -13,14 +13,14 @@ use chrono::{DateTime, Utc};
 use fs2::FileExt;
 use harness_contracts::{
     now, BlobId, ClientId, CommandId, Event, EventId, EventSource, EventSourceKind, IdParseError,
-    SessionId, TaskEventEnvelope, TaskId, TaskProjection, TenantId,
+    QueueItemProjection, SessionId, TaskEventEnvelope, TaskId, TaskProjection, TenantId,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use thiserror::Error;
 
-use crate::task_event::{NewTaskEvent, TaskBlobReference, MAX_EVENT_PAYLOAD_BYTES};
+use crate::task_event::{NewTaskEvent, TaskBlobReference, TaskEvent, MAX_EVENT_PAYLOAD_BYTES};
 use crate::task_projection::{
     empty_task_projection, load_task_projection_row, projection_counts, projection_snapshot,
     ProjectionCounts, SynchronousTaskProjector, TaskProjector, PROJECTION_TABLES,
@@ -92,6 +92,7 @@ pub enum CommandOutcome {
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandRejection {
     WrongExpectedVersion { expected: u64, actual: u64 },
+    StaleQueueRevision { latest: Box<QueueItemProjection> },
     InvalidCommand { message: String },
 }
 
@@ -173,6 +174,18 @@ impl TaskStore {
                 client_id: None,
             },
             principal_id: "system:supervisor".into(),
+        }
+    }
+
+    #[must_use]
+    pub fn recovery_authority() -> EventAuthority {
+        EventAuthority {
+            source: EventSource {
+                kind: EventSourceKind::Recovery,
+                actor_id: None,
+                client_id: None,
+            },
+            principal_id: "system:recovery".into(),
         }
     }
 
@@ -336,9 +349,30 @@ impl TaskStore {
             transaction.commit()?;
             return Ok(outcome);
         }
+        validate_queue_consumption_events(&events)?;
         validate_events(command.authority.source(), &events)?;
-        promote_blob_references_in_transaction(&transaction, command.task_id, &events)?;
-        validate_blob_references_in_transaction(&transaction, command.task_id, &events)?;
+        if let Err(error) = prepare_command_blob_references(&transaction, command.task_id, &events)
+        {
+            let Some(rejection) = blob_command_rejection(&error) else {
+                return Err(error);
+            };
+            let outcome = CommandOutcome::Rejected {
+                command_id: command.command_id,
+                task_id: command.task_id,
+                rejection,
+            };
+            finish_command(
+                &transaction,
+                command.command_id,
+                "rejected",
+                &outcome,
+                actual,
+                latest_global_offset_in_transaction(&transaction)?,
+                0,
+            )?;
+            transaction.commit()?;
+            return Ok(outcome);
+        }
         let committed = append_in_transaction(
             &transaction,
             command.task_id,
@@ -446,6 +480,32 @@ impl TaskStore {
         let projection = projection_for_decision(&transaction, task_id, actual)?;
         transaction.commit()?;
         Ok((actual > 0).then_some(projection))
+    }
+
+    pub fn queue_item_projection(
+        &self,
+        task_id: TaskId,
+        queue_item_id: harness_contracts::QueueItemId,
+    ) -> Result<Option<QueueItemProjection>, TaskStoreError> {
+        let connection = self.lock()?;
+        let body = connection
+            .query_row(
+                "SELECT projection_json FROM queue_projection
+                 WHERE task_id = ?1 AND queue_item_id = ?2",
+                params![task_id.to_string(), queue_item_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        body.map(|body| {
+            let projection: QueueItemProjection = serde_json::from_str(&body)?;
+            if projection.queue_item_id != queue_item_id {
+                return Err(TaskStoreError::ProjectionIntegrity(format!(
+                    "queue item {queue_item_id} projection has another identity"
+                )));
+            }
+            Ok(projection)
+        })
+        .transpose()
     }
 
     pub fn projection_counts(&self) -> Result<ProjectionCounts, TaskStoreError> {
@@ -1278,6 +1338,39 @@ fn promote_blob_references_in_transaction(
     Ok(())
 }
 
+fn prepare_command_blob_references(
+    transaction: &Transaction<'_>,
+    task_id: TaskId,
+    events: &[NewTaskEvent],
+) -> Result<(), TaskStoreError> {
+    transaction.execute_batch("SAVEPOINT command_blob_references")?;
+    let result = promote_blob_references_in_transaction(transaction, task_id, events)
+        .and_then(|()| validate_blob_references_in_transaction(transaction, task_id, events));
+    match result {
+        Ok(()) => {
+            transaction.execute_batch("RELEASE command_blob_references")?;
+            Ok(())
+        }
+        Err(error) => {
+            transaction.execute_batch(
+                "ROLLBACK TO command_blob_references; RELEASE command_blob_references",
+            )?;
+            Err(error)
+        }
+    }
+}
+
+fn blob_command_rejection(error: &TaskStoreError) -> Option<CommandRejection> {
+    match error {
+        TaskStoreError::BlobNotFound { .. }
+        | TaskStoreError::BlobOwnershipDenied { .. }
+        | TaskStoreError::BlobIntegrity(_) => Some(CommandRejection::InvalidCommand {
+            message: "command references an unavailable or invalid blob".into(),
+        }),
+        _ => None,
+    }
+}
+
 fn blob_metadata_in_transaction(
     transaction: &Transaction<'_>,
     blob_id: BlobId,
@@ -1689,7 +1782,8 @@ fn validate_stored_command_facts(
                 CommandRejection::WrongExpectedVersion { expected, actual }
                     if *expected == expected_stream_version && *actual == result_stream_version => {
                 }
-                CommandRejection::InvalidCommand { .. }
+                CommandRejection::StaleQueueRevision { .. }
+                | CommandRejection::InvalidCommand { .. }
                     if result_stream_version == expected_stream_version => {}
                 _ => {
                     return Err(TaskStoreError::ProjectionIntegrity(
@@ -1716,6 +1810,11 @@ fn command_hash(command: &AcceptedCommand) -> Result<String, TaskStoreError> {
 }
 
 fn validate_command(command: &AcceptedCommand) -> Result<(), TaskStoreError> {
+    if i64::try_from(command.expected_stream_version).is_err() {
+        return Err(TaskStoreError::InvalidInput(
+            "expected stream version exceeds SQLite's supported range".into(),
+        ));
+    }
     if command.idempotency_key.is_empty()
         || command.idempotency_key.len() > MAX_IDEMPOTENCY_KEY_BYTES
     {
@@ -1753,6 +1852,27 @@ fn validate_events(source: &EventSource, events: &[NewTaskEvent]) -> Result<(), 
         if total_bytes > MAX_TOTAL_EVENT_BYTES_PER_TRANSACTION {
             return Err(TaskStoreError::InvalidInput(
                 "task event transaction exceeds 8 MiB".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_queue_consumption_events(events: &[NewTaskEvent]) -> Result<(), TaskStoreError> {
+    let started_segments = events
+        .iter()
+        .filter_map(|event| match &event.event {
+            TaskEvent::RunStarted { segment_id, .. } => Some(*segment_id),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    for event in events {
+        let TaskEvent::MessageConsumed { run_segment_id, .. } = &event.event else {
+            continue;
+        };
+        if !started_segments.contains(run_segment_id) {
+            return Err(TaskStoreError::InvalidInput(
+                "message consumption must start its run in the same command".into(),
             ));
         }
     }

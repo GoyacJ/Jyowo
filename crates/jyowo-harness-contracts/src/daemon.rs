@@ -414,7 +414,7 @@ pub struct RunProjection {
     pub incomplete_output: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QueueItemProjection {
     pub queue_item_id: QueueItemId,
@@ -428,6 +428,7 @@ pub struct QueueItemProjection {
         deserialize_with = "strict_rfc3339::deserialize"
     )]
     pub created_at: DateTime<Utc>,
+    pub created_global_offset: u64,
     pub consumed_by: Option<RunSegmentId>,
 }
 

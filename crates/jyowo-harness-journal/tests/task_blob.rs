@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use harness_contracts::{now, BlobId, ClientId, CommandId, QueueItemId, TaskId};
 use harness_journal::{
-    AcceptedCommand, BlobRead, NewTaskEvent, TaskBlobStore, TaskStore, TaskStoreError,
+    AcceptedCommand, BlobRead, CommandOutcome, CommandRejection, NewTaskEvent, TaskBlobStore,
+    TaskStore, TaskStoreError,
 };
 use serde_json::json;
 
@@ -116,19 +117,23 @@ fn queued_blob_references_require_metadata_and_task_ownership() {
     let reference = blobs.put("text/plain", b"owned").unwrap();
     attach_blob(&store, owner, 1, reference.id);
 
-    let result = store.transact_command(command(other, 1), |_| {
-        Ok(vec![NewTaskEvent::message_queued(
-            QueueItemId::new(),
-            "use attachment",
-            vec![reference.id],
-            Vec::new(),
-            now(),
-        )])
-    });
+    let result = store
+        .transact_command(command(other, 1), |_| {
+            Ok(vec![NewTaskEvent::message_queued(
+                QueueItemId::new(),
+                "use attachment",
+                vec![reference.id],
+                Vec::new(),
+                now(),
+            )])
+        })
+        .unwrap();
     assert!(matches!(
         result,
-        Err(TaskStoreError::BlobOwnershipDenied { blob_id, task_id })
-            if blob_id == reference.id && task_id == other
+        CommandOutcome::Rejected {
+            rejection: CommandRejection::InvalidCommand { .. },
+            ..
+        }
     ));
     assert_eq!(store.stream_version(other).unwrap(), 1);
 

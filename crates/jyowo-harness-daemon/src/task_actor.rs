@@ -1,20 +1,25 @@
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
-use harness_contracts::{CommandId, RunSegmentId, RunState, TaskId};
+use harness_contracts::{CommandId, QueueItemId, RunSegmentId, RunState, TaskId};
 use harness_journal::{
     AcceptedCommand, CommandOutcome, CommandRejection, NewTaskEvent, TaskStore, TaskStoreError,
+    MAX_ACTIVE_QUEUE_ITEMS,
 };
 use serde_json::json;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 
-use crate::{RunCoordinatorEvent, RunCoordinatorFactory, StartSegmentRequest};
+use crate::{
+    decide_consume_next, decide_queue, QueueCommand, RunCoordinatorEvent, RunCoordinatorFactory,
+    StartSegmentRequest,
+};
 
 #[derive(Debug)]
 pub enum TaskActorMessage {
     Command(Box<ValidatedTaskCommand>, oneshot::Sender<CommandOutcome>),
     RunEvent(RunCoordinatorEvent),
+    StartNextQueued(OwnedSemaphorePermit),
     Shutdown,
 }
 
@@ -24,6 +29,11 @@ pub enum ValidatedTaskCommand {
         command: AcceptedCommand,
         segment_id: RunSegmentId,
         started_at: DateTime<Utc>,
+    },
+    Queue {
+        command: AcceptedCommand,
+        queue_item_id: QueueItemId,
+        queue_command: QueueCommand,
     },
 }
 
@@ -39,7 +49,9 @@ pub(crate) enum TaskActorError {
 
 impl ValidatedTaskCommand {
     pub(crate) fn rejected(&self, message: impl Into<String>) -> CommandOutcome {
-        let Self::StartSegment { command, .. } = self;
+        let command = match self {
+            Self::StartSegment { command, .. } | Self::Queue { command, .. } => command,
+        };
         CommandOutcome::Rejected {
             command_id: command.command_id,
             task_id: command.task_id,
@@ -61,8 +73,8 @@ pub(crate) async fn run_task_actor(
     factory: Arc<dyn RunCoordinatorFactory>,
     foreground_runs: Arc<Semaphore>,
     active_segment_state: Arc<Mutex<Option<RunSegmentId>>>,
-    mailbox: mpsc::UnboundedSender<TaskActorMessage>,
-    mut messages: mpsc::UnboundedReceiver<TaskActorMessage>,
+    mailbox: mpsc::Sender<TaskActorMessage>,
+    mut messages: mpsc::Receiver<TaskActorMessage>,
 ) -> Result<(), TaskActorError> {
     if store.task_projection(task_id)?.is_none() {
         return Err(TaskActorError::TaskNotFound);
@@ -86,7 +98,20 @@ pub(crate) async fn run_task_actor(
                 .await?;
             }
             TaskActorMessage::RunEvent(event) => {
-                handle_run_event(task_id, &store, &active_segment_state, &mut active, event)?;
+                if handle_run_event(task_id, &store, &active_segment_state, &mut active, event)? {
+                    schedule_consume_next(Arc::clone(&foreground_runs), mailbox.clone());
+                }
+            }
+            TaskActorMessage::StartNextQueued(permit) => {
+                handle_start_next_queued(
+                    task_id,
+                    &store,
+                    &factory,
+                    &active_segment_state,
+                    &mailbox,
+                    &mut active,
+                    permit,
+                )?;
             }
             TaskActorMessage::Shutdown => break,
         }
@@ -100,7 +125,7 @@ async fn handle_command(
     factory: &Arc<dyn RunCoordinatorFactory>,
     foreground_runs: &Arc<Semaphore>,
     active_segment_state: &Mutex<Option<RunSegmentId>>,
-    mailbox: &mpsc::UnboundedSender<TaskActorMessage>,
+    mailbox: &mpsc::Sender<TaskActorMessage>,
     active: &mut Option<ActiveSegment>,
     command: ValidatedTaskCommand,
     reply: oneshot::Sender<CommandOutcome>,
@@ -169,6 +194,87 @@ async fn handle_command(
             });
             forward_run_events(segment_id, mailbox.clone(), running.into_events());
         }
+        ValidatedTaskCommand::Queue {
+            mut command,
+            queue_item_id,
+            queue_command,
+        } => {
+            if command.task_id != task_id {
+                let _ = reply.send(CommandOutcome::Rejected {
+                    command_id: command.command_id,
+                    task_id: command.task_id,
+                    rejection: CommandRejection::InvalidCommand {
+                        message: "command task does not match actor task".into(),
+                    },
+                });
+                return Ok(());
+            }
+            if matches!(
+                &queue_command,
+                QueueCommand::Submit {
+                    queue_item_id: submitted_item_id,
+                    ..
+                } if *submitted_item_id != queue_item_id
+            ) {
+                let _ = reply.send(CommandOutcome::Rejected {
+                    command_id: command.command_id,
+                    task_id: command.task_id,
+                    rejection: CommandRejection::InvalidCommand {
+                        message: "queue command item identity does not match its address".into(),
+                    },
+                });
+                return Ok(());
+            }
+            if matches!(
+                queue_command,
+                QueueCommand::Consume { .. } | QueueCommand::Recover
+            ) {
+                let _ = reply.send(CommandOutcome::Rejected {
+                    command_id: command.command_id,
+                    task_id: command.task_id,
+                    rejection: CommandRejection::InvalidCommand {
+                        message: "queue consume and recovery are daemon-internal commands".into(),
+                    },
+                });
+                return Ok(());
+            }
+            command.payload = queue_command.canonical_payload(queue_item_id);
+            let command_id = command.command_id;
+            let command_task_id = command.task_id;
+            let is_submit = matches!(&queue_command, QueueCommand::Submit { .. });
+            let durable_queue_item = store.queue_item_projection(task_id, queue_item_id)?;
+            let outcome = match store.transact_command(command, |projection| {
+                if is_submit
+                    && !projection.current_run.as_ref().is_some_and(|run| {
+                        matches!(
+                            run.state,
+                            RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                        )
+                    })
+                {
+                    return Err(CommandRejection::InvalidCommand {
+                        message: "messages enter the queue only while a run is active".into(),
+                    });
+                }
+                if is_submit && projection.queue.len() >= MAX_ACTIVE_QUEUE_ITEMS {
+                    return Err(CommandRejection::InvalidCommand {
+                        message: format!(
+                            "a task may contain at most {MAX_ACTIVE_QUEUE_ITEMS} active queue items"
+                        ),
+                    });
+                }
+                let current = projection
+                    .queue
+                    .iter()
+                    .find(|item| item.queue_item_id == queue_item_id)
+                    .or(durable_queue_item.as_ref());
+                decide_queue(current, queue_command)
+            }) {
+                Ok(outcome) => outcome,
+                Err(error) => command_store_error(error, command_id, command_task_id)?,
+            };
+            let _ = reply.send(outcome);
+        }
     }
     Ok(())
 }
@@ -179,15 +285,17 @@ fn command_store_error(
     task_id: TaskId,
 ) -> Result<CommandOutcome, TaskActorError> {
     match error {
-        TaskStoreError::CommandConflict { .. } | TaskStoreError::InvalidInput(_) => {
-            Ok(CommandOutcome::Rejected {
-                command_id,
-                task_id,
-                rejection: CommandRejection::InvalidCommand {
-                    message: "command conflicts with a durable command or is invalid".into(),
-                },
-            })
-        }
+        TaskStoreError::CommandConflict { .. }
+        | TaskStoreError::InvalidInput(_)
+        | TaskStoreError::BlobNotFound { .. }
+        | TaskStoreError::BlobOwnershipDenied { .. }
+        | TaskStoreError::BlobIntegrity(_) => Ok(CommandOutcome::Rejected {
+            command_id,
+            task_id,
+            rejection: CommandRejection::InvalidCommand {
+                message: "command conflicts with a durable command or is invalid".into(),
+            },
+        }),
         error => Err(TaskActorError::Store(error)),
     }
 }
@@ -198,7 +306,7 @@ fn handle_run_event(
     active_segment_state: &Mutex<Option<RunSegmentId>>,
     active: &mut Option<ActiveSegment>,
     event: RunCoordinatorEvent,
-) -> Result<(), TaskActorError> {
+) -> Result<bool, TaskActorError> {
     match event {
         RunCoordinatorEvent::Completed {
             segment_id,
@@ -207,7 +315,7 @@ fn handle_run_event(
             ended_at,
         } => {
             if active.as_ref().map(|run| run.segment_id) != Some(segment_id) {
-                return Ok(());
+                return Ok(false);
             }
             let projection = store
                 .task_projection(task_id)?
@@ -226,9 +334,82 @@ fn handle_run_event(
                 *active_segment_state
                     .lock()
                     .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = None;
+                return Ok(true);
             }
         }
     }
+    Ok(false)
+}
+
+fn schedule_consume_next(foreground_runs: Arc<Semaphore>, mailbox: mpsc::Sender<TaskActorMessage>) {
+    tokio::spawn(async move {
+        let Ok(mailbox_permit) = mailbox.reserve_owned().await else {
+            return;
+        };
+        let Ok(run_permit) = foreground_runs.acquire_owned().await else {
+            return;
+        };
+        mailbox_permit.send(TaskActorMessage::StartNextQueued(run_permit));
+    });
+}
+
+fn handle_start_next_queued(
+    task_id: TaskId,
+    store: &TaskStore,
+    factory: &Arc<dyn RunCoordinatorFactory>,
+    active_segment_state: &Mutex<Option<RunSegmentId>>,
+    mailbox: &mpsc::Sender<TaskActorMessage>,
+    active: &mut Option<ActiveSegment>,
+    permit: OwnedSemaphorePermit,
+) -> Result<(), TaskActorError> {
+    if active.is_some() {
+        return Ok(());
+    }
+    let projection = store
+        .task_projection(task_id)?
+        .ok_or(TaskActorError::TaskNotFound)?;
+    let Some(next) = projection
+        .queue
+        .iter()
+        .filter(|item| item.state == harness_contracts::QueueItemState::Queued)
+        .min_by_key(|item| (item.created_global_offset, item.queue_item_id.to_string()))
+    else {
+        return Ok(());
+    };
+    let segment_id = RunSegmentId::new();
+    let started_at = Utc::now();
+    let command = AcceptedCommand {
+        command_id: CommandId::new(),
+        task_id,
+        idempotency_key: format!("consume-next-{}", CommandId::new()),
+        expected_stream_version: projection.stream_version,
+        authority: TaskStore::supervisor_authority(),
+        payload: json!({
+            "type": "consume_next",
+            "queueItemId": next.queue_item_id,
+            "expectedRevision": next.revision,
+            "runSegmentId": segment_id,
+            "startedAt": started_at,
+        }),
+    };
+    let outcome = store.transact_command(command, |projection| {
+        decide_consume_next(projection, segment_id, started_at)
+    })?;
+    if !matches!(outcome, CommandOutcome::Accepted { .. }) {
+        return Ok(());
+    }
+    *active_segment_state
+        .lock()
+        .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = Some(segment_id);
+    let running = factory.spawn(StartSegmentRequest {
+        task_id,
+        segment_id,
+    });
+    *active = Some(ActiveSegment {
+        segment_id,
+        _permit: permit,
+    });
+    forward_run_events(segment_id, mailbox.clone(), running.into_events());
     Ok(())
 }
 
@@ -282,19 +463,21 @@ fn commit_run_terminal(
 
 fn forward_run_events(
     segment_id: RunSegmentId,
-    mailbox: mpsc::UnboundedSender<TaskActorMessage>,
+    mailbox: mpsc::Sender<TaskActorMessage>,
     mut events: mpsc::UnboundedReceiver<RunCoordinatorEvent>,
 ) {
     tokio::spawn(async move {
         if let Some(event) = events.recv().await {
-            let _ = mailbox.send(TaskActorMessage::RunEvent(event));
+            let _ = mailbox.send(TaskActorMessage::RunEvent(event)).await;
         } else {
-            let _ = mailbox.send(TaskActorMessage::RunEvent(RunCoordinatorEvent::Completed {
-                segment_id,
-                terminal_reason: harness_contracts::RunTerminalReason::Failed,
-                incomplete_output: true,
-                ended_at: Utc::now(),
-            }));
+            let _ = mailbox
+                .send(TaskActorMessage::RunEvent(RunCoordinatorEvent::Completed {
+                    segment_id,
+                    terminal_reason: harness_contracts::RunTerminalReason::Failed,
+                    incomplete_output: true,
+                    ended_at: Utc::now(),
+                }))
+                .await;
         }
     });
 }
@@ -305,6 +488,32 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[tokio::test]
+    async fn queued_start_waits_for_mailbox_capacity_before_taking_a_run_permit() {
+        let foreground_runs = Arc::new(Semaphore::new(1));
+        let (mailbox, mut messages) = mpsc::channel(1);
+        mailbox.send(TaskActorMessage::Shutdown).await.unwrap();
+
+        schedule_consume_next(Arc::clone(&foreground_runs), mailbox);
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(foreground_runs.available_permits(), 1);
+        assert!(matches!(
+            messages.recv().await,
+            Some(TaskActorMessage::Shutdown)
+        ));
+        let queued_start = tokio::time::timeout(std::time::Duration::from_secs(1), messages.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(queued_start, TaskActorMessage::StartNextQueued(_)));
+        assert_eq!(foreground_runs.available_permits(), 0);
+        drop(queued_start);
+        assert_eq!(foreground_runs.available_permits(), 1);
+    }
 
     #[test]
     fn terminal_commit_retries_after_the_stream_version_advances() {
