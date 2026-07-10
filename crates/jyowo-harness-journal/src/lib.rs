@@ -22,6 +22,10 @@ pub mod snapshot;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 pub mod store;
+#[cfg(feature = "sqlite")]
+mod task_schema;
+#[cfg(feature = "sqlite")]
+pub mod task_store;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod version;
@@ -42,6 +46,8 @@ pub use snapshot::*;
 #[cfg(feature = "sqlite")]
 pub use sqlite::*;
 pub use store::*;
+#[cfg(feature = "sqlite")]
+pub use task_store::*;
 #[cfg(any(test, feature = "testing"))]
 pub use testing::*;
 pub use version::*;
