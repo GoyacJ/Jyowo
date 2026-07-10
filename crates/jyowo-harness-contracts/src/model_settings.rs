@@ -1,6 +1,6 @@
 //! Model settings shared contracts for connectivity, usage, quota, and route health.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -73,12 +73,44 @@ pub struct ModelUsageWindow {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ModelUsageActivityDay {
+    pub date: NaiveDate,
+    pub usage: UsageSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ModelUsageActivity {
+    pub range_start: NaiveDate,
+    pub range_end: NaiveDate,
+    pub days: Vec<ModelUsageActivityDay>,
+    pub peak_day_tokens: u64,
+    pub current_streak_days: u32,
+    pub longest_streak_days: u32,
+    pub longest_task_duration_ms: u64,
+}
+
+fn empty_model_usage_activity() -> ModelUsageActivity {
+    let date = NaiveDate::from_ymd_opt(1970, 1, 1).expect("valid default date");
+    ModelUsageActivity {
+        range_start: date,
+        range_end: date,
+        days: Vec::new(),
+        peak_day_tokens: 0,
+        current_streak_days: 0,
+        longest_streak_days: 0,
+        longest_task_duration_ms: 0,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelUsageSummary {
     pub timezone_id: Option<String>,
     pub timezone_offset_minutes: i32,
     pub today: ModelUsageWindow,
     pub month_to_date: ModelUsageWindow,
     pub all_time: ModelUsageWindow,
+    #[serde(default = "empty_model_usage_activity")]
+    pub activity: ModelUsageActivity,
     pub generated_at: DateTime<Utc>,
 }
 

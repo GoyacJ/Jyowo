@@ -298,6 +298,23 @@ const usageSummary: GetModelUsageSummaryResponse = {
       { key: 'openai/gpt-4.1', providerId: 'openai', modelId: 'gpt-4.1', usage: usage(900, 500) },
     ],
   },
+  activity: {
+    rangeStart: '2026-06-24',
+    rangeEnd: '2026-06-30',
+    peakDayTokens: 200,
+    currentStreakDays: 2,
+    longestStreakDays: 3,
+    longestTaskDurationMs: 61_000,
+    days: [
+      { date: '2026-06-24', usage: usage(25, 0) },
+      { date: '2026-06-25', usage: usage(0, 0) },
+      { date: '2026-06-26', usage: usage(40, 10) },
+      { date: '2026-06-27', usage: usage(70, 30) },
+      { date: '2026-06-28', usage: usage(0, 0) },
+      { date: '2026-06-29', usage: usage(120, 40) },
+      { date: '2026-06-30', usage: usage(120, 80) },
+    ],
+  },
   generatedAt: '2026-06-30T12:00:00Z',
 }
 

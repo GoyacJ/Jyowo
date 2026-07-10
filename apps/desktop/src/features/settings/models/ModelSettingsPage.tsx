@@ -14,7 +14,7 @@ import { CapabilityRoutesPanel } from './CapabilityRoutesPanel'
 import { ModelConfigDialog } from './ModelConfigDialog'
 import { ModelDetailsDrawer } from './ModelDetailsDrawer'
 import { ModelMatrix } from './ModelMatrix'
-import { ModelSummaryBand } from './ModelSummaryBand'
+import { ModelUsageInsightsPanel } from './ModelUsageInsightsPanel'
 import { useModelSettingsViewModel } from './model-settings-queries'
 import {
   type CapabilityRouteRow,
@@ -145,7 +145,7 @@ export function ModelSettingsPage() {
         </TabsList>
 
         <TabsContent className="space-y-4" value="models">
-          <ModelSummaryBand summary={pageState.viewModel.summary} />
+          <ModelUsageInsightsPanel insights={pageState.viewModel.usageInsights} />
 
           <search
             aria-label={t('models.filters.label')}

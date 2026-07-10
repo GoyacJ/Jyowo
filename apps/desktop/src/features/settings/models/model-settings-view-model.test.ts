@@ -122,6 +122,17 @@ const usageBucket = {
   lastUsedAt: '2026-06-30T10:00:00Z',
 }
 
+function usage(inputTokens: number, outputTokens: number) {
+  return {
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    costMicros: 0,
+    inputTokens,
+    outputTokens,
+    toolCalls: 0,
+  }
+}
+
 const usageSummary: GetModelUsageSummaryResponse = {
   timezoneId: 'UTC',
   timezoneOffsetMinutes: 0,
@@ -135,6 +146,23 @@ const usageSummary: GetModelUsageSummaryResponse = {
     period: 'all_time',
     total: { ...usageBucket.usage, inputTokens: 100 },
     byModel: [{ ...usageBucket, usage: { ...usageBucket.usage, inputTokens: 100 } }],
+  },
+  activity: {
+    rangeStart: '2026-06-24',
+    rangeEnd: '2026-06-30',
+    peakDayTokens: 40,
+    currentStreakDays: 2,
+    longestStreakDays: 3,
+    longestTaskDurationMs: 61000,
+    days: [
+      { date: '2026-06-24', usage: usage(5, 0) },
+      { date: '2026-06-25', usage: usage(0, 0) },
+      { date: '2026-06-26', usage: usage(7, 3) },
+      { date: '2026-06-27', usage: usage(10, 10) },
+      { date: '2026-06-28', usage: usage(0, 0) },
+      { date: '2026-06-29', usage: usage(20, 10) },
+      { date: '2026-06-30', usage: usage(30, 10) },
+    ],
   },
   generatedAt: '2026-06-30T12:00:00Z',
 }
@@ -397,6 +425,49 @@ describe('model-settings-view-model', () => {
     expect(row.usage.allTime.inputTokens).toBe(100)
   })
 
+  it('derives token activity insights from the usage summary activity range', () => {
+    const viewModel = buildModelSettingsViewModel(baseInput())
+
+    expect(viewModel.usageInsights.status).toBe('ready')
+    if (viewModel.usageInsights.status !== 'ready') {
+      return
+    }
+
+    expect(viewModel.usageInsights.data.metrics).toEqual({
+      totalTokens: 108,
+      peakDayTokens: 40,
+      longestTaskDurationMs: 61000,
+      currentStreakDays: 2,
+      longestStreakDays: 3,
+    })
+    expect(viewModel.usageInsights.data.daily.map((day) => [day.date, day.tokens])).toEqual([
+      ['2026-06-24', 5],
+      ['2026-06-25', 0],
+      ['2026-06-26', 10],
+      ['2026-06-27', 20],
+      ['2026-06-28', 0],
+      ['2026-06-29', 30],
+      ['2026-06-30', 40],
+    ])
+    expect(viewModel.usageInsights.data.daily.map((day) => day.level)).toEqual([
+      1, 0, 1, 2, 0, 3, 4,
+    ])
+    expect(viewModel.usageInsights.data.weekly).toEqual([
+      { weekStart: '2026-06-22', weekEnd: '2026-06-28', tokens: 35 },
+      { weekStart: '2026-06-29', weekEnd: '2026-07-05', tokens: 70 },
+    ])
+    expect(viewModel.usageInsights.data.cumulative).toEqual([
+      { date: '2026-06-24', tokens: 5 },
+      { date: '2026-06-25', tokens: 5 },
+      { date: '2026-06-26', tokens: 15 },
+      { date: '2026-06-27', tokens: 35 },
+      { date: '2026-06-28', tokens: 35 },
+      { date: '2026-06-29', tokens: 65 },
+      { date: '2026-06-30', tokens: 105 },
+    ])
+    expect(viewModel.usageInsights.data.monthLabels).toEqual([{ date: '2026-06-24', label: 'Jun' }])
+  })
+
   it('shares model-level usage across duplicate provider/model profiles', () => {
     const viewModel = buildModelSettingsViewModel(baseInput())
 
@@ -578,6 +649,7 @@ describe('model-settings-view-model', () => {
     )
 
     expect(viewModel.summary.localUsage).toEqual({ status: 'unavailable' })
+    expect(viewModel.usageInsights).toEqual({ status: 'unavailable' })
     expect(viewModel.summary.officialQuota).toEqual({ status: 'unavailable' })
     expect(viewModel.rows.every((row) => row.usage.status === 'unavailable')).toBe(true)
     expect(viewModel.rows.every((row) => row.connectivity.status === 'unavailable')).toBe(true)

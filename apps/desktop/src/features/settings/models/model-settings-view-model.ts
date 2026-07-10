@@ -128,6 +128,37 @@ export type ModelSettingsSummaryView = {
   }>
 }
 
+export type ModelUsageInsightsView = SectionState<{
+  rangeStart: string
+  rangeEnd: string
+  metrics: {
+    totalTokens: number
+    peakDayTokens: number
+    longestTaskDurationMs: number
+    currentStreakDays: number
+    longestStreakDays: number
+  }
+  daily: {
+    date: string
+    usage: UsageSnapshot
+    tokens: number
+    level: 0 | 1 | 2 | 3 | 4
+  }[]
+  monthLabels: {
+    date: string
+    label: string
+  }[]
+  weekly: {
+    weekStart: string
+    weekEnd: string
+    tokens: number
+  }[]
+  cumulative: {
+    date: string
+    tokens: number
+  }[]
+}>
+
 type ModelRouteBinding = {
   kind: CapabilityRouteKind
   operationIds: string[]
@@ -164,6 +195,7 @@ export type CapabilityRouteRow = {
 
 export type ModelSettingsViewModel = {
   summary: ModelSettingsSummaryView
+  usageInsights: ModelUsageInsightsView
   rows: ModelAssetRow[]
   catalog: ModelProviderCatalogResponse
   configs: ProviderConfig[]
@@ -290,6 +322,7 @@ export function buildModelSettingsViewModel(
       usageSummary: input.usageSummary,
       quotaSnapshots: input.quotaSnapshots,
     }),
+    usageInsights: buildUsageInsights(input.usageSummary),
     rows: rowsWithRouteBindings,
     catalog,
     configs: settings.configs,
@@ -306,6 +339,7 @@ function emptyModelSettingsViewModel(): ModelSettingsViewModel {
       localUsage: { status: 'unavailable' },
       officialQuota: { status: 'unavailable' },
     },
+    usageInsights: { status: 'unavailable' },
     rows: [],
     catalog: { providers: [] },
     configs: [],
@@ -644,6 +678,124 @@ function buildSummaryOfficialQuota(
   }
 }
 
+function buildUsageInsights(
+  usageSummary: QuerySlice<GetModelUsageSummaryResponse>,
+): ModelUsageInsightsView {
+  if (isQuerySliceLoading(usageSummary.status)) {
+    return { status: 'loading' }
+  }
+
+  if (usageSummary.status !== 'ready') {
+    return { status: 'unavailable' }
+  }
+
+  const activity = usageSummary.data.activity ?? emptyUsageSummary().activity
+  const peakTokens = activity.peakDayTokens
+  const daily = activity.days.map((day) => {
+    const tokens = usageTokenTotal(day.usage)
+    return {
+      date: day.date,
+      usage: day.usage,
+      tokens,
+      level: heatLevel(tokens, peakTokens),
+    }
+  })
+
+  let cumulativeTotal = 0
+  const cumulative = daily.map((day) => {
+    cumulativeTotal += day.tokens
+    return { date: day.date, tokens: cumulativeTotal }
+  })
+
+  return {
+    status: 'ready',
+    data: {
+      rangeStart: activity.rangeStart,
+      rangeEnd: activity.rangeEnd,
+      metrics: {
+        totalTokens: usageTokenTotal(usageSummary.data.allTime.total),
+        peakDayTokens: activity.peakDayTokens,
+        longestTaskDurationMs: activity.longestTaskDurationMs,
+        currentStreakDays: activity.currentStreakDays,
+        longestStreakDays: activity.longestStreakDays,
+      },
+      daily,
+      monthLabels: buildMonthLabels(daily.map((day) => day.date)),
+      weekly: buildWeeklyBuckets(daily),
+      cumulative,
+    },
+  }
+}
+
+function usageTokenTotal(usage: UsageSnapshot): number {
+  return usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens
+}
+
+function heatLevel(tokens: number, peakTokens: number): 0 | 1 | 2 | 3 | 4 {
+  if (tokens <= 0 || peakTokens <= 0) {
+    return 0
+  }
+  return Math.max(1, Math.min(4, Math.ceil((tokens / peakTokens) * 4))) as 1 | 2 | 3 | 4
+}
+
+function buildWeeklyBuckets(
+  daily: { date: string; tokens: number }[],
+): { weekStart: string; weekEnd: string; tokens: number }[] {
+  const buckets = new Map<string, { weekStart: string; weekEnd: string; tokens: number }>()
+
+  for (const day of daily) {
+    const weekStart = mondayStart(day.date)
+    const bucket = buckets.get(weekStart) ?? {
+      weekStart,
+      weekEnd: addLocalDays(weekStart, 6),
+      tokens: 0,
+    }
+    bucket.tokens += day.tokens
+    buckets.set(weekStart, bucket)
+  }
+
+  return [...buckets.values()]
+}
+
+function buildMonthLabels(dates: string[]): { date: string; label: string }[] {
+  const labels: { date: string; label: string }[] = []
+  let previousMonth = ''
+  for (const date of dates) {
+    const month = date.slice(0, 7)
+    if (month === previousMonth) {
+      continue
+    }
+    previousMonth = month
+    labels.push({ date, label: monthShortLabel(Number(date.slice(5, 7))) })
+  }
+  return labels
+}
+
+function monthShortLabel(month: number): string {
+  return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][
+    month - 1
+  ]
+}
+
+function mondayStart(date: string): string {
+  const utc = localDateUtcMs(date)
+  const day = new Date(utc).getUTCDay()
+  const daysSinceMonday = (day + 6) % 7
+  return formatLocalDateUtcMs(utc - daysSinceMonday * 86_400_000)
+}
+
+function addLocalDays(date: string, days: number): string {
+  return formatLocalDateUtcMs(localDateUtcMs(date) + days * 86_400_000)
+}
+
+function localDateUtcMs(date: string): number {
+  return Date.UTC(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1, Number(date.slice(8, 10)))
+}
+
+function formatLocalDateUtcMs(utcMs: number): string {
+  return new Date(utcMs).toISOString().slice(0, 10)
+}
+
 function buildCapabilityRoutesSection(
   routes: QuerySlice<ListProviderCapabilityRoutesResponse>,
   routeOptions: QuerySlice<ListProviderCapabilityRouteOptionsResponse>,
@@ -870,6 +1022,15 @@ export function emptyUsageSummary(): GetModelUsageSummaryResponse {
     today: { period: 'today', total: ZERO_USAGE, byModel: [] },
     monthToDate: { period: 'month_to_date', total: ZERO_USAGE, byModel: [] },
     allTime: { period: 'all_time', total: ZERO_USAGE, byModel: [] },
+    activity: {
+      rangeStart: '1970-01-01',
+      rangeEnd: '1970-01-01',
+      peakDayTokens: 0,
+      currentStreakDays: 0,
+      longestStreakDays: 0,
+      longestTaskDurationMs: 0,
+      days: [],
+    },
     generatedAt: '1970-01-01T00:00:00Z',
   }
 }
