@@ -22,10 +22,14 @@ pub mod snapshot;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 pub mod store;
+#[cfg(all(feature = "sqlite", feature = "blob-file"))]
+pub mod task_blob;
 #[cfg(all(test, feature = "sqlite"))]
 mod task_commands_tests;
 #[cfg(feature = "sqlite")]
 mod task_event;
+#[cfg(feature = "sqlite")]
+pub mod task_event_adapter;
 #[cfg(feature = "sqlite")]
 pub mod task_projection;
 #[cfg(all(test, feature = "sqlite"))]
@@ -56,8 +60,12 @@ pub use snapshot::*;
 #[cfg(feature = "sqlite")]
 pub use sqlite::*;
 pub use store::*;
+#[cfg(all(feature = "sqlite", feature = "blob-file"))]
+pub use task_blob::*;
 #[cfg(feature = "sqlite")]
 pub use task_event::NewTaskEvent;
+#[cfg(feature = "sqlite")]
+pub use task_event_adapter::*;
 #[cfg(feature = "sqlite")]
 pub use task_projection::*;
 #[cfg(feature = "sqlite")]

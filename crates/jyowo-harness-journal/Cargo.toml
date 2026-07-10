@@ -19,7 +19,7 @@ sqlite = ["dep:rusqlite"]
 jsonl = ["dep:fs2"]
 in-memory = []
 testing = ["in-memory"]
-blob-file = []
+blob-file = ["dep:fs2"]
 blob-sqlite = ["sqlite"]
 
 [dependencies]

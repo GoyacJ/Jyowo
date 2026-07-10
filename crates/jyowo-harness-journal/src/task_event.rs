@@ -2,8 +2,10 @@
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    ActorId, BlobId, EventSource, EventSourceKind, PermissionProjection, QueueItemId, RequestId,
-    RunSegmentId, RunTerminalReason, WorkspaceLeaseProjection,
+    ActorId, BlobId, BlobRef, CausationId, ConversationAttachmentReference, CorrelationId, Event,
+    EventSource, EventSourceKind, MessageContent, MessagePart, PermissionProjection, QueueItemId,
+    ReferenceKind, RequestId, RunId, RunSegmentId, RunTerminalReason, SessionId, TenantId,
+    ToolResult, ToolResultPart, WorkspaceLeaseProjection,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -76,6 +78,28 @@ pub(crate) enum TaskEvent {
     WorkspaceAcquired {
         lease: WorkspaceLeaseProjection,
     },
+    Engine {
+        event_type: String,
+        payload: EngineEventPayload,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct EngineEventPayload {
+    pub(crate) tenant_id: TenantId,
+    pub(crate) session_id: SessionId,
+    pub(crate) journal_offset: u64,
+    pub(crate) run_id: Option<RunId>,
+    pub(crate) correlation_id: CorrelationId,
+    pub(crate) causation_id: Option<CausationId>,
+    pub(crate) event: Event,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TaskBlobReference {
+    pub(crate) blob_id: BlobId,
+    pub(crate) expected: Option<BlobRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -288,6 +312,32 @@ impl NewTaskEvent {
         }
     }
 
+    pub(crate) fn engine(
+        tenant_id: TenantId,
+        session_id: SessionId,
+        journal_offset: u64,
+        run_id: Option<RunId>,
+        correlation_id: CorrelationId,
+        causation_id: Option<CausationId>,
+        event: Event,
+    ) -> Result<Self, TaskStoreError> {
+        let event_type = engine_event_type(&event)?;
+        Ok(Self {
+            event: TaskEvent::Engine {
+                event_type,
+                payload: EngineEventPayload {
+                    tenant_id,
+                    session_id,
+                    journal_offset,
+                    run_id,
+                    correlation_id,
+                    causation_id,
+                    event,
+                },
+            },
+        })
+    }
+
     pub fn from_parts(
         event_type: &str,
         schema_version: u16,
@@ -303,7 +353,7 @@ impl NewTaskEvent {
         })
     }
 
-    pub(crate) fn encode(&self) -> Result<(&'static str, u16, Value), TaskStoreError> {
+    pub(crate) fn encode(&self) -> Result<(String, u16, Value), TaskStoreError> {
         self.event.validate_shape()?;
         let payload = self.event.payload()?;
         if serde_json::to_vec(&payload)?.len() > MAX_EVENT_PAYLOAD_BYTES {
@@ -311,11 +361,173 @@ impl NewTaskEvent {
                 "task event payload exceeds 1 MiB".into(),
             ));
         }
-        Ok((self.event.event_type(), 1, payload))
+        Ok((self.event.event_type().to_owned(), 1, payload))
     }
 
     pub(crate) fn validate_source(&self, source: &EventSource) -> Result<(), TaskStoreError> {
         self.event.validate_source(source)
+    }
+
+    pub(crate) fn blob_references(&self) -> Result<Vec<TaskBlobReference>, TaskStoreError> {
+        match &self.event {
+            TaskEvent::MessageQueued { attachments, .. }
+            | TaskEvent::MessageEdited { attachments, .. } => Ok(attachments
+                .iter()
+                .copied()
+                .map(|blob_id| TaskBlobReference {
+                    blob_id,
+                    expected: None,
+                })
+                .collect()),
+            TaskEvent::Engine { payload, .. } => Ok(engine_blob_references(&payload.event)?
+                .into_iter()
+                .map(|blob| TaskBlobReference {
+                    blob_id: blob.id,
+                    expected: Some(blob),
+                })
+                .collect()),
+            _ => Ok(Vec::new()),
+        }
+    }
+}
+
+fn engine_blob_references(event: &Event) -> Result<Vec<BlobRef>, TaskStoreError> {
+    let mut references = Vec::new();
+    match event {
+        Event::RunStarted(event) => {
+            collect_message_parts_blob_references(&event.input.message.parts, &mut references);
+            if let Some(attachments) = event.input.metadata.get("attachments") {
+                let attachments = serde_json::from_value::<Vec<ConversationAttachmentReference>>(
+                    attachments.clone(),
+                )
+                .map_err(|_| {
+                    TaskStoreError::InvalidInput(
+                        "engine run input attachments metadata is invalid".into(),
+                    )
+                })?;
+                references.extend(
+                    attachments
+                        .into_iter()
+                        .map(|attachment| attachment.blob_ref),
+                );
+            }
+        }
+        Event::UserMessageAppended(event) => {
+            references.extend(
+                event
+                    .attachments
+                    .iter()
+                    .map(|attachment| attachment.blob_ref.clone()),
+            );
+            collect_message_content_blob_references(&event.content, &mut references);
+        }
+        Event::AssistantMessageCompleted(event) => {
+            collect_message_content_blob_references(&event.content, &mut references);
+        }
+        Event::ArtifactCreated(event) => {
+            references.extend(event.blob_ref.iter().cloned());
+        }
+        Event::ArtifactUpdated(event) => {
+            references.extend(event.blob_ref.iter().cloned());
+        }
+        Event::ToolUseCompleted(event) => {
+            collect_tool_result_blob_references(&event.result, &mut references);
+        }
+        Event::ToolResultOffloaded(event) => references.push(event.blob_ref.clone()),
+        Event::HookReturnedAdditionalContext(event) => {
+            references.extend(event.context_blob.iter().cloned());
+        }
+        Event::CompactionApplied(event) => {
+            references.push(event.summary_ref.clone());
+            if let Some(handoff) = &event.handoff {
+                references.push(handoff.active_task_ref.clone());
+            }
+        }
+        Event::TeamMemberJoined(event) => references.push(event.spec_snapshot_id.clone()),
+        Event::SubagentAnnounced(event) => {
+            references.extend(
+                event
+                    .transcript_ref
+                    .iter()
+                    .map(|transcript| transcript.blob.clone()),
+            );
+        }
+        Event::TeamTurnCompleted(event) => {
+            references.extend(
+                event
+                    .transcript_ref
+                    .iter()
+                    .map(|transcript| transcript.blob.clone()),
+            );
+        }
+        Event::SandboxExecutionCompleted(event) => {
+            references.extend(
+                event
+                    .overflow
+                    .iter()
+                    .flat_map(|overflow| overflow.blob_ref.iter())
+                    .cloned(),
+            );
+        }
+        Event::SandboxOutputSpilled(event) => references.push(event.blob_ref.clone()),
+        Event::ExecuteCodeStepInvoked(event) => {
+            references.extend(
+                event
+                    .overflow
+                    .iter()
+                    .map(|overflow| overflow.blob_ref.clone()),
+            );
+        }
+        Event::SteeringMessageQueued(event) => {
+            references.extend(event.body_blob.iter().cloned());
+        }
+        _ => {}
+    }
+    Ok(references)
+}
+
+fn collect_message_content_blob_references(
+    content: &MessageContent,
+    references: &mut Vec<BlobRef>,
+) {
+    if let MessageContent::Multimodal(parts) = content {
+        collect_message_parts_blob_references(parts, references);
+    }
+}
+
+fn collect_message_parts_blob_references(parts: &[MessagePart], references: &mut Vec<BlobRef>) {
+    for part in parts {
+        match part {
+            MessagePart::Image { blob_ref, .. }
+            | MessagePart::Video { blob_ref, .. }
+            | MessagePart::File { blob_ref, .. } => references.push(blob_ref.clone()),
+            MessagePart::ToolResult { content, .. } => {
+                collect_tool_result_blob_references(content, references);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_tool_result_blob_references(result: &ToolResult, references: &mut Vec<BlobRef>) {
+    match result {
+        ToolResult::Blob { blob_ref, .. } => references.push(blob_ref.clone()),
+        ToolResult::Mixed(parts) => {
+            for part in parts {
+                match part {
+                    ToolResultPart::Blob { blob_ref, .. }
+                    | ToolResultPart::Artifact { blob_ref, .. } => {
+                        references.push(blob_ref.clone());
+                    }
+                    ToolResultPart::Reference {
+                        reference_kind: ReferenceKind::Transcript(transcript),
+                        ..
+                    } => references.push(transcript.blob.clone()),
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -410,6 +622,19 @@ impl TaskEvent {
             "workspace.acquired" => Ok(Self::WorkspaceAcquired {
                 lease: serde_json::from_value(payload)?,
             }),
+            event_type if event_type.starts_with("engine.") => {
+                let value: EngineEventPayload = serde_json::from_value(payload)?;
+                let actual = engine_event_type(&value.event)?;
+                if actual != event_type {
+                    return Err(TaskStoreError::InvalidInput(format!(
+                        "engine event payload type {actual} does not match {event_type}"
+                    )));
+                }
+                Ok(Self::Engine {
+                    event_type: event_type.to_owned(),
+                    payload: value,
+                })
+            }
             _ => {
                 return Err(TaskStoreError::UnsupportedEvent {
                     event_type: event_type.into(),
@@ -422,7 +647,7 @@ impl TaskEvent {
         Ok(event)
     }
 
-    pub(crate) const fn event_type(&self) -> &'static str {
+    pub(crate) fn event_type(&self) -> &str {
         match self {
             Self::TaskCreated { .. } => "task.created",
             Self::TaskTitleChanged { .. } => "task.title_changed",
@@ -436,6 +661,7 @@ impl TaskEvent {
             Self::PermissionResolved { .. } => "permission.resolved",
             Self::SubagentSpawned { .. } => "subagent.spawned",
             Self::WorkspaceAcquired { .. } => "workspace.acquired",
+            Self::Engine { event_type, .. } => event_type,
         }
     }
 
@@ -518,6 +744,7 @@ impl TaskEvent {
                 started_at: *started_at,
             })?,
             Self::WorkspaceAcquired { lease } => serde_json::to_value(lease)?,
+            Self::Engine { payload, .. } => serde_json::to_value(payload)?,
         })
     }
 
@@ -562,6 +789,7 @@ impl TaskEvent {
                 source.kind,
                 EventSourceKind::Supervisor | EventSourceKind::Recovery
             ),
+            Self::Engine { .. } => source.kind == EventSourceKind::Engine,
         };
         if !allowed {
             return Err(TaskStoreError::InvalidInput(format!(
@@ -614,8 +842,94 @@ impl TaskEvent {
                     ));
                 }
             }
+            Self::Engine {
+                event_type,
+                payload,
+            } => {
+                let actual = engine_event_type(&payload.event)?;
+                if &actual != event_type {
+                    return Err(TaskStoreError::InvalidInput(format!(
+                        "engine event payload type {actual} does not match {event_type}"
+                    )));
+                }
+            }
             _ => {}
         }
         Ok(())
+    }
+}
+
+fn engine_event_type(event: &Event) -> Result<String, TaskStoreError> {
+    let value = serde_json::to_value(event)?;
+    let event_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| TaskStoreError::InvalidInput("engine event type is missing".into()))?;
+    Ok(format!("engine.{event_type}"))
+}
+
+#[cfg(test)]
+mod blob_reference_tests {
+    use harness_contracts::{
+        now, BlobId, BlobRef, JournalOffset, ReferenceKind, SessionId, SubagentAnnouncedEvent,
+        SubagentId, SubagentStatus, ToolResult, ToolResultPart, ToolUseCompletedEvent, ToolUseId,
+        TranscriptRef, UsageSnapshot,
+    };
+
+    use super::*;
+
+    #[test]
+    fn engine_blob_visitor_collects_subagent_and_tool_result_transcripts() {
+        let subagent_blob = blob_ref(1);
+        let tool_blob = blob_ref(2);
+        let subagent = Event::SubagentAnnounced(SubagentAnnouncedEvent {
+            subagent_id: SubagentId::new(),
+            parent_session_id: SessionId::new(),
+            status: SubagentStatus::Completed,
+            summary: "done".into(),
+            result: None,
+            usage: UsageSnapshot::default(),
+            transcript_ref: Some(transcript(subagent_blob.clone())),
+            context_report: None,
+            renderer_id: "default".into(),
+            at: now(),
+        });
+        let tool_result = Event::ToolUseCompleted(ToolUseCompletedEvent {
+            tool_use_id: ToolUseId::new(),
+            result: ToolResult::Mixed(vec![ToolResultPart::Reference {
+                reference_kind: ReferenceKind::Transcript(transcript(tool_blob.clone())),
+                title: None,
+                summary: None,
+            }]),
+            usage: None,
+            duration_ms: 1,
+            at: now(),
+        });
+
+        assert_eq!(
+            engine_blob_references(&subagent).unwrap(),
+            vec![subagent_blob]
+        );
+        assert_eq!(
+            engine_blob_references(&tool_result).unwrap(),
+            vec![tool_blob]
+        );
+    }
+
+    fn blob_ref(seed: u8) -> BlobRef {
+        BlobRef {
+            id: BlobId::new(),
+            size: 1,
+            content_hash: [seed; 32],
+            content_type: Some("text/plain".into()),
+        }
+    }
+
+    fn transcript(blob: BlobRef) -> TranscriptRef {
+        TranscriptRef {
+            blob,
+            from_offset: JournalOffset(0),
+            to_offset: JournalOffset(0),
+        }
     }
 }

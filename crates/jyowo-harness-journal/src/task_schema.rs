@@ -54,6 +54,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_workspace_lease
     ON event_log(task_id, json_extract(payload_json, '$.leaseId'))
     WHERE event_type = 'workspace.acquired';
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_engine_session_offset
+    ON event_log(
+        task_id,
+        json_extract(payload_json, '$.tenantId'),
+        json_extract(payload_json, '$.sessionId'),
+        CAST(json_extract(payload_json, '$.journalOffset') AS INTEGER)
+    )
+    WHERE event_type GLOB 'engine.*';
+
 CREATE TABLE IF NOT EXISTS command_inbox (
     command_id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
@@ -160,6 +169,38 @@ CREATE TABLE IF NOT EXISTS blob_metadata (
     content_hash TEXT NOT NULL,
     relative_path TEXT NOT NULL,
     created_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS blob_ownership (
+    task_id TEXT NOT NULL,
+    blob_id TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(task_id, blob_id),
+    FOREIGN KEY(blob_id) REFERENCES blob_metadata(blob_id) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_blob_ownership_blob
+    ON blob_ownership(blob_id, task_id);
+
+CREATE TABLE IF NOT EXISTS blob_staging (
+    task_id TEXT NOT NULL,
+    blob_id TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+    content_hash TEXT NOT NULL,
+    relative_path TEXT NOT NULL,
+    staged_at TEXT NOT NULL,
+    PRIMARY KEY(task_id, blob_id)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_blob_staging_blob
+    ON blob_staging(blob_id, task_id);
+
+CREATE TABLE IF NOT EXISTS blob_store_config (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    store_id TEXT NOT NULL UNIQUE,
+    canonical_root TEXT
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS workspace_leases (

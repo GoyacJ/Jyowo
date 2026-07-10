@@ -1,20 +1,26 @@
 //! Unified `SQLite` event store for daemon tasks.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+#[cfg(feature = "blob-file")]
+use std::fs::File;
 use std::path::Path;
+#[cfg(feature = "blob-file")]
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
+#[cfg(feature = "blob-file")]
+use fs2::FileExt;
 use harness_contracts::{
-    now, ClientId, CommandId, EventId, EventSource, EventSourceKind, IdParseError,
-    TaskEventEnvelope, TaskId, TaskProjection,
+    now, BlobId, ClientId, CommandId, Event, EventId, EventSource, EventSourceKind, IdParseError,
+    SessionId, TaskEventEnvelope, TaskId, TaskProjection, TenantId,
 };
-use rusqlite::{params, Connection, Transaction, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use thiserror::Error;
 
-use crate::task_event::{NewTaskEvent, MAX_EVENT_PAYLOAD_BYTES};
+use crate::task_event::{NewTaskEvent, TaskBlobReference, MAX_EVENT_PAYLOAD_BYTES};
 use crate::task_projection::{
     empty_task_projection, load_task_projection_row, projection_counts, projection_snapshot,
     ProjectionCounts, SynchronousTaskProjector, TaskProjector, PROJECTION_TABLES,
@@ -22,13 +28,23 @@ use crate::task_projection::{
 use crate::task_schema::initialize_task_schema;
 
 const MAX_COMMAND_PAYLOAD_BYTES: usize = 1024 * 1024;
-const MAX_EVENTS_PER_TRANSACTION: usize = 256;
-const MAX_TOTAL_EVENT_BYTES_PER_TRANSACTION: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_EVENTS_PER_TRANSACTION: usize = 256;
+pub(crate) const MAX_TOTAL_EVENT_BYTES_PER_TRANSACTION: usize = 8 * 1024 * 1024;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
 const MAX_EVENT_TYPE_BYTES: usize = 128;
 const MAX_SOURCE_JSON_BYTES: usize = 4096;
 const MAX_READ_PAGE_SIZE: usize = 16;
 const REBUILD_PAGE_SIZE: usize = 16;
+#[cfg(any(test, feature = "blob-file"))]
+const MAX_TASK_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
+#[cfg(any(test, feature = "blob-file"))]
+const MAX_GLOBAL_BLOB_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+#[cfg(feature = "blob-file")]
+const BLOB_OPERATION_LOCK_COUNT: usize = 64;
+#[cfg(feature = "blob-file")]
+const BLOB_ROOT_CLAIM_DIRECTORY: &str = ".jyowo-task-store";
+#[cfg(feature = "blob-file")]
+const BLOB_ROOT_LOCK_FILE: &str = ".jyowo-task-store.lock";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventAuthority {
@@ -82,6 +98,27 @@ pub enum CommandRejection {
 pub struct TaskStore {
     connection: Mutex<Connection>,
     projector: Arc<dyn TaskProjector>,
+    #[cfg(feature = "blob-file")]
+    blob_operation_locks: [Mutex<()>; BLOB_OPERATION_LOCK_COUNT],
+    #[cfg(feature = "blob-file")]
+    database_identity: String,
+    #[cfg(feature = "blob-file")]
+    blob_root_lock: Mutex<Option<std::fs::File>>,
+}
+
+#[cfg(feature = "blob-file")]
+pub(crate) struct StoredBlobMetadata {
+    pub(crate) media_type: String,
+    pub(crate) byte_size: u64,
+    pub(crate) content_hash: [u8; 32],
+    pub(crate) relative_path: String,
+}
+
+struct StagedBlobMetadata {
+    media_type: String,
+    byte_size: u64,
+    content_hash: String,
+    relative_path: String,
 }
 
 impl TaskStore {
@@ -100,9 +137,17 @@ impl TaskStore {
         let path = crate::app_controlled_path(path)?;
         let connection = Connection::open(path)?;
         initialize_task_schema(&connection)?;
+        #[cfg(feature = "blob-file")]
+        let database_identity = load_or_create_blob_store_identity(&connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
             projector,
+            #[cfg(feature = "blob-file")]
+            blob_operation_locks: std::array::from_fn(|_| Mutex::new(())),
+            #[cfg(feature = "blob-file")]
+            database_identity,
+            #[cfg(feature = "blob-file")]
+            blob_root_lock: Mutex::new(None),
         })
     }
 
@@ -144,6 +189,18 @@ impl TaskStore {
         }
     }
 
+    #[must_use]
+    pub(crate) fn engine_authority() -> EventAuthority {
+        EventAuthority {
+            source: EventSource {
+                kind: EventSourceKind::Engine,
+                actor_id: None,
+                client_id: None,
+            },
+            principal_id: "system:engine".into(),
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn append(
         &self,
@@ -155,6 +212,7 @@ impl TaskStore {
         validate_events(authority.source(), &events)?;
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        validate_blob_references_in_transaction(&transaction, task_id, &events)?;
         let committed = append_in_transaction(
             &transaction,
             task_id,
@@ -267,6 +325,8 @@ impl TaskStore {
             return Ok(outcome);
         }
         validate_events(command.authority.source(), &events)?;
+        promote_blob_references_in_transaction(&transaction, command.task_id, &events)?;
+        validate_blob_references_in_transaction(&transaction, command.task_id, &events)?;
         let committed = append_in_transaction(
             &transaction,
             command.task_id,
@@ -423,11 +483,559 @@ impl TaskStore {
         Ok(())
     }
 
+    pub(crate) fn append_engine_events(
+        &self,
+        task_id: TaskId,
+        tenant_id: TenantId,
+        session_id: SessionId,
+        metadata: crate::AppendMetadata,
+        expected_next_offset: Option<u64>,
+        events: &[Event],
+    ) -> Result<u64, TaskStoreError> {
+        let authority = Self::engine_authority();
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let next_engine_offset: i64 = transaction.query_row(
+            "SELECT COALESCE(
+                MAX(CAST(json_extract(payload_json, '$.journalOffset') AS INTEGER)), -1
+             ) + 1
+             FROM event_log
+             WHERE task_id = ?1
+               AND event_type GLOB 'engine.*'
+               AND json_extract(payload_json, '$.tenantId') = ?2
+               AND json_extract(payload_json, '$.sessionId') = ?3",
+            params![
+                task_id.to_string(),
+                tenant_id.to_string(),
+                session_id.to_string()
+            ],
+            |row| row.get(0),
+        )?;
+        let next_engine_offset = nonnegative_integer(next_engine_offset)?;
+        if let Some(expected) = expected_next_offset {
+            if expected != next_engine_offset {
+                return Err(TaskStoreError::EngineOffsetMismatch {
+                    expected,
+                    actual: next_engine_offset,
+                });
+            }
+        }
+        if events.is_empty() {
+            transaction.commit()?;
+            return Ok(next_engine_offset.saturating_sub(1));
+        }
+
+        let events = events
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, event)| {
+                let index = u64::try_from(index).map_err(|_| TaskStoreError::IntegerOutOfRange)?;
+                let journal_offset = next_engine_offset
+                    .checked_add(index)
+                    .ok_or(TaskStoreError::IntegerOutOfRange)?;
+                NewTaskEvent::engine(
+                    tenant_id,
+                    session_id,
+                    journal_offset,
+                    metadata.run_id,
+                    metadata.correlation_id,
+                    metadata.causation_id,
+                    event,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        validate_events(authority.source(), &events)?;
+        promote_blob_references_in_transaction(&transaction, task_id, &events)?;
+        validate_blob_references_in_transaction(&transaction, task_id, &events)?;
+
+        let stream_version = stream_version_in_transaction(&transaction, task_id)?;
+        let committed = append_in_transaction(
+            &transaction,
+            task_id,
+            stream_version,
+            authority.source(),
+            events,
+        )?;
+        for event in &committed {
+            self.projector.apply(&transaction, event)?;
+        }
+        let committed_count =
+            u64::try_from(committed.len()).map_err(|_| TaskStoreError::IntegerOutOfRange)?;
+        let last_offset = next_engine_offset
+            .checked_add(committed_count)
+            .and_then(|count| count.checked_sub(1))
+            .ok_or(TaskStoreError::IntegerOutOfRange)?;
+        transaction.commit()?;
+        Ok(last_offset)
+    }
+
+    #[cfg(any(test, feature = "blob-file"))]
+    pub(crate) fn stage_blob(
+        &self,
+        task_id: TaskId,
+        blob_id: BlobId,
+        media_type: &str,
+        byte_size: u64,
+        content_hash: [u8; 32],
+        relative_path: &str,
+    ) -> Result<(), TaskStoreError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if stream_version_in_transaction(&transaction, task_id)? == 0 {
+            return Err(TaskStoreError::InvalidInput(format!(
+                "task {task_id} must exist before staging blobs"
+            )));
+        }
+        let content_hash = blake3::Hash::from_bytes(content_hash).to_hex().to_string();
+        let existing_metadata = blob_metadata_in_transaction(&transaction, blob_id)?;
+        if let Some(existing) = &existing_metadata {
+            validate_staged_blob_identity(
+                blob_id,
+                existing.byte_size,
+                &existing.content_hash,
+                &existing.relative_path,
+                byte_size,
+                &content_hash,
+                relative_path,
+            )?;
+        }
+        let owned_media_type = transaction
+            .query_row(
+                "SELECT media_type FROM blob_ownership WHERE task_id = ?1 AND blob_id = ?2",
+                params![task_id.to_string(), blob_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if let Some(owned_media_type) = owned_media_type {
+            if owned_media_type != media_type {
+                return Err(TaskStoreError::BlobIntegrity(format!(
+                    "blob {blob_id} is already owned with another media type"
+                )));
+            }
+            transaction.commit()?;
+            return Ok(());
+        }
+        let existing_stage = staged_blob_for_task(&transaction, task_id, blob_id)?;
+        if let Some(existing) = &existing_stage {
+            validate_staged_blob_identity(
+                blob_id,
+                existing.byte_size,
+                &existing.content_hash,
+                &existing.relative_path,
+                byte_size,
+                &content_hash,
+                relative_path,
+            )?;
+            if existing.media_type != media_type {
+                return Err(TaskStoreError::BlobIntegrity(format!(
+                    "blob {blob_id} is already staged with another media type"
+                )));
+            }
+        }
+        transaction.execute(
+            "INSERT INTO blob_staging (
+                task_id, blob_id, media_type, byte_size, content_hash, relative_path, staged_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(task_id, blob_id) DO UPDATE SET staged_at = excluded.staged_at",
+            params![
+                task_id.to_string(),
+                blob_id.to_string(),
+                media_type,
+                sqlite_integer(byte_size)?,
+                content_hash,
+                relative_path,
+                now().to_rfc3339(),
+            ],
+        )?;
+        enforce_blob_quotas(&transaction, task_id)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    #[cfg(feature = "blob-file")]
+    pub(crate) fn discard_staged_blob_with<F>(
+        &self,
+        task_id: TaskId,
+        blob_id: BlobId,
+        cleanup_file: F,
+    ) -> Result<(), TaskStoreError>
+    where
+        F: FnOnce() -> Result<(), TaskStoreError>,
+    {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "DELETE FROM blob_staging WHERE task_id = ?1 AND blob_id = ?2",
+            params![task_id.to_string(), blob_id.to_string()],
+        )?;
+        let referenced: i64 = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM blob_metadata WHERE blob_id = ?1)
+                 OR EXISTS(SELECT 1 FROM blob_staging WHERE blob_id = ?1)",
+            [blob_id.to_string()],
+            |row| row.get(0),
+        )?;
+        if referenced == 0 {
+            cleanup_file()?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    #[cfg(feature = "blob-file")]
+    pub(crate) fn cleanup_blob_if_unreferenced<F>(
+        &self,
+        blob_id: BlobId,
+        byte_size: u64,
+        content_hash: [u8; 32],
+        relative_path: &str,
+        cleanup_file: F,
+    ) -> Result<(), TaskStoreError>
+    where
+        F: FnOnce() -> Result<(), TaskStoreError>,
+    {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let referenced: i64 = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM blob_metadata
+                WHERE blob_id = ?1 AND byte_size = ?2 AND content_hash = ?3 AND relative_path = ?4
+             ) OR EXISTS(
+                SELECT 1 FROM blob_staging
+                WHERE blob_id = ?1 AND byte_size = ?2 AND content_hash = ?3 AND relative_path = ?4
+             )",
+            params![
+                blob_id.to_string(),
+                sqlite_integer(byte_size)?,
+                blake3::Hash::from_bytes(content_hash).to_hex().to_string(),
+                relative_path,
+            ],
+            |row| row.get(0),
+        )?;
+        if referenced == 0 {
+            cleanup_file()?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    #[cfg(feature = "blob-file")]
+    pub(crate) fn bind_blob_root(&self, root: &Path) -> Result<(), TaskStoreError> {
+        let root_text = root.to_str().ok_or_else(|| {
+            TaskStoreError::InvalidInput("task blob root is not valid UTF-8".into())
+        })?;
+        let mut root_lock = self
+            .blob_root_lock
+            .lock()
+            .map_err(|_| TaskStoreError::LockPoisoned)?;
+        let new_lock = if root_lock.is_none() {
+            let lock_path = root.join(BLOB_ROOT_LOCK_FILE);
+            let file = open_blob_root_lock(&lock_path)?;
+            harness_fs::set_owner_only_file_if_unix(&file)?;
+            file.try_lock_exclusive().map_err(|_| {
+                TaskStoreError::BlobIntegrity(
+                    "task blob root is already open by another store instance".into(),
+                )
+            })?;
+            Some(file)
+        } else {
+            None
+        };
+        let mut claim = None;
+        let result = (|| {
+            let mut connection = self.lock()?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let existing = transaction.query_row(
+                "SELECT canonical_root FROM blob_store_config WHERE singleton = 1",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )?;
+            if let Some(existing) = existing.as_deref() {
+                if existing != root_text {
+                    return Err(TaskStoreError::BlobIntegrity(format!(
+                        "task database is already bound to blob root {existing}"
+                    )));
+                }
+            }
+            claim = Some(claim_blob_root(root, &self.database_identity)?);
+            if existing.is_none() {
+                transaction.execute(
+                    "UPDATE blob_store_config SET canonical_root = ?1 WHERE singleton = 1",
+                    [root_text],
+                )?;
+            }
+            if new_lock.is_some() {
+                reconcile_blob_root_in_transaction(&transaction, root)?;
+            }
+            transaction.commit()?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            if let Some(claim) = claim {
+                claim.rollback();
+            }
+            return Err(error);
+        }
+        if let Some(file) = new_lock {
+            *root_lock = Some(file);
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "blob-file")]
+    pub(crate) fn blob_metadata_for_task(
+        &self,
+        task_id: TaskId,
+        blob_id: BlobId,
+    ) -> Result<StoredBlobMetadata, TaskStoreError> {
+        let connection = self.lock()?;
+        let metadata = connection
+            .query_row(
+                "SELECT ownership.media_type, metadata.byte_size,
+                        metadata.content_hash, metadata.relative_path
+                 FROM blob_metadata AS metadata
+                 JOIN blob_ownership AS ownership ON ownership.blob_id = metadata.blob_id
+                 WHERE ownership.task_id = ?1 AND metadata.blob_id = ?2",
+                params![task_id.to_string(), blob_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let metadata = match metadata {
+            Some(metadata) => metadata,
+            None => {
+                let exists: i64 = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM blob_metadata WHERE blob_id = ?1)",
+                    [blob_id.to_string()],
+                    |row| row.get(0),
+                )?;
+                return if exists == 1 {
+                    Err(TaskStoreError::BlobOwnershipDenied { blob_id, task_id })
+                } else {
+                    Err(TaskStoreError::BlobNotFound { blob_id })
+                };
+            }
+        };
+        let hash = blake3::Hash::from_hex(&metadata.2).map_err(|error| {
+            TaskStoreError::BlobIntegrity(format!(
+                "blob {blob_id} has invalid hash metadata: {error}"
+            ))
+        })?;
+        Ok(StoredBlobMetadata {
+            media_type: metadata.0,
+            byte_size: nonnegative_integer(metadata.1)?,
+            content_hash: *hash.as_bytes(),
+            relative_path: metadata.3,
+        })
+    }
+
+    #[cfg(feature = "blob-file")]
+    pub(crate) fn lock_blob_operation(
+        &self,
+        blob_id: BlobId,
+    ) -> Result<std::sync::MutexGuard<'_, ()>, TaskStoreError> {
+        let mut prefix = [0_u8; 8];
+        prefix.copy_from_slice(&blob_id.as_bytes()[..8]);
+        let index = usize::try_from(u64::from_be_bytes(prefix) % BLOB_OPERATION_LOCK_COUNT as u64)
+            .map_err(|_| TaskStoreError::IntegerOutOfRange)?;
+        self.blob_operation_locks[index]
+            .lock()
+            .map_err(|_| TaskStoreError::LockPoisoned)
+    }
+
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, TaskStoreError> {
         self.connection
             .lock()
             .map_err(|_| TaskStoreError::LockPoisoned)
     }
+}
+
+#[cfg(feature = "blob-file")]
+fn load_or_create_blob_store_identity(connection: &Connection) -> Result<String, TaskStoreError> {
+    let candidate = TaskId::new().to_string();
+    connection.execute(
+        "INSERT INTO blob_store_config (singleton, store_id, canonical_root)
+         VALUES (1, ?1, NULL)
+         ON CONFLICT(singleton) DO NOTHING",
+        [candidate],
+    )?;
+    connection
+        .query_row(
+            "SELECT store_id FROM blob_store_config WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(TaskStoreError::from)
+}
+
+#[cfg(feature = "blob-file")]
+fn open_blob_root_lock(path: &Path) -> Result<File, TaskStoreError> {
+    #[cfg(unix)]
+    {
+        let parent = harness_fs::open_parent_dir_no_symlink_for_read(path)?
+            .ok_or_else(|| TaskStoreError::BlobIntegrity("task blob root does not exist".into()))?;
+        let file = parent.open_or_create_read_write_file(parent.file_name())?;
+        if !file.metadata()?.is_file() {
+            return Err(TaskStoreError::BlobIntegrity(
+                "task blob root lock is not a regular file".into(),
+            ));
+        }
+        parent.sync_all()?;
+        return Ok(file);
+    }
+
+    #[cfg(not(unix))]
+    {
+        harness_fs::ensure_no_symlink_components(path)?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(TaskStoreError::BlobIntegrity(
+                "task blob root lock is not a regular file".into(),
+            ));
+        }
+        Ok(file)
+    }
+}
+
+#[cfg(feature = "blob-file")]
+struct BlobRootClaim {
+    directory: PathBuf,
+    owner: PathBuf,
+    owner_created: bool,
+}
+
+#[cfg(feature = "blob-file")]
+impl BlobRootClaim {
+    fn rollback(self) {
+        if !self.owner_created {
+            return;
+        }
+        let _ = std::fs::remove_dir(self.owner);
+        let _ = std::fs::remove_dir(self.directory);
+    }
+}
+
+#[cfg(feature = "blob-file")]
+fn claim_blob_root(root: &Path, database_identity: &str) -> Result<BlobRootClaim, TaskStoreError> {
+    let claim_directory = root.join(BLOB_ROOT_CLAIM_DIRECTORY);
+    let owner = claim_directory.join(database_identity);
+    let claim_directory_created = match std::fs::create_dir(&claim_directory) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(error) => return Err(error.into()),
+    };
+    let mut owner_created = false;
+    let result = (|| {
+        harness_fs::ensure_owner_only_app_dir(&claim_directory)?;
+        owner_created = match std::fs::create_dir(&owner) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+            Err(error) => return Err(TaskStoreError::from(error)),
+        };
+        harness_fs::ensure_owner_only_app_dir(&owner)?;
+        let mut entries = std::fs::read_dir(&claim_directory)?;
+        let Some(entry) = entries.next().transpose()? else {
+            return Err(TaskStoreError::BlobIntegrity(
+                "task blob root has an incomplete database claim".into(),
+            ));
+        };
+        if entry.path() != owner || entries.next().transpose()?.is_some() {
+            return Err(TaskStoreError::BlobIntegrity(
+                "task blob root is already claimed by another database".into(),
+            ));
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        BlobRootClaim {
+            directory: claim_directory.clone(),
+            owner,
+            owner_created,
+        }
+        .rollback();
+        if claim_directory_created {
+            let _ = std::fs::remove_dir(&claim_directory);
+        }
+        return Err(error);
+    }
+    Ok(BlobRootClaim {
+        directory: claim_directory,
+        owner,
+        owner_created,
+    })
+}
+
+#[cfg(feature = "blob-file")]
+fn reconcile_blob_root_in_transaction(
+    transaction: &Transaction<'_>,
+    root: &Path,
+) -> Result<(), TaskStoreError> {
+    let mut statement = transaction.prepare(
+        "SELECT relative_path FROM blob_metadata
+         UNION
+         SELECT relative_path FROM blob_staging",
+    )?;
+    let referenced = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<HashSet<_>, _>>()?;
+    drop(statement);
+
+    for prefix_entry in std::fs::read_dir(root)? {
+        let prefix_entry = prefix_entry?;
+        if prefix_entry.file_name() == BLOB_ROOT_CLAIM_DIRECTORY {
+            continue;
+        }
+        let prefix_path = prefix_entry.path();
+        let prefix_metadata = std::fs::symlink_metadata(&prefix_path)?;
+        if prefix_metadata.file_type().is_symlink() {
+            return Err(TaskStoreError::BlobIntegrity(
+                "task blob root contains a symlink".into(),
+            ));
+        }
+        let prefix = prefix_entry.file_name();
+        if !prefix_metadata.is_dir() || prefix.as_encoded_bytes().len() != 2 {
+            continue;
+        }
+        for body_entry in std::fs::read_dir(&prefix_path)? {
+            let body_entry = body_entry?;
+            let body_path = body_entry.path();
+            let body_metadata = std::fs::symlink_metadata(&body_path)?;
+            if body_metadata.file_type().is_symlink() || !body_metadata.is_file() {
+                return Err(TaskStoreError::BlobIntegrity(
+                    "task blob directory contains a non-regular file".into(),
+                ));
+            }
+            let relative_path = body_path
+                .strip_prefix(root)
+                .map_err(|_| {
+                    TaskStoreError::BlobIntegrity(
+                        "task blob file is outside its configured root".into(),
+                    )
+                })?
+                .to_str()
+                .ok_or_else(|| {
+                    TaskStoreError::BlobIntegrity(
+                        "task blob relative path is not valid UTF-8".into(),
+                    )
+                })?;
+            if !referenced.contains(relative_path) {
+                harness_fs::remove_file_no_follow(&body_path)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn append_in_transaction(
@@ -494,6 +1102,287 @@ fn append_in_transaction(
         });
     }
     Ok(committed)
+}
+
+fn validate_blob_references_in_transaction(
+    transaction: &Transaction<'_>,
+    task_id: TaskId,
+    events: &[NewTaskEvent],
+) -> Result<(), TaskStoreError> {
+    let mut references = Vec::new();
+    for event in events {
+        references.extend(event.blob_references()?);
+    }
+    let references = merge_blob_references(references)?;
+    for reference in references {
+        validate_blob_reference_in_transaction(transaction, task_id, &reference)?;
+    }
+    Ok(())
+}
+
+fn merge_blob_references(
+    references: impl IntoIterator<Item = TaskBlobReference>,
+) -> Result<Vec<TaskBlobReference>, TaskStoreError> {
+    let mut merged = HashMap::<BlobId, TaskBlobReference>::new();
+    for reference in references {
+        match merged.get_mut(&reference.blob_id) {
+            Some(existing) => match (&existing.expected, reference.expected) {
+                (Some(current), Some(incoming)) if current != &incoming => {
+                    return Err(TaskStoreError::BlobIntegrity(format!(
+                        "blob {} has conflicting references in one event batch",
+                        reference.blob_id
+                    )));
+                }
+                (None, Some(incoming)) => existing.expected = Some(incoming),
+                _ => {}
+            },
+            None => {
+                merged.insert(reference.blob_id, reference);
+            }
+        }
+    }
+    Ok(merged.into_values().collect())
+}
+
+fn validate_blob_reference_in_transaction(
+    transaction: &Transaction<'_>,
+    task_id: TaskId,
+    reference: &TaskBlobReference,
+) -> Result<(), TaskStoreError> {
+    let blob_id = reference.blob_id;
+    let owned = transaction
+        .query_row(
+            "SELECT ownership.media_type, metadata.byte_size, metadata.content_hash
+             FROM blob_ownership AS ownership
+             JOIN blob_metadata AS metadata ON metadata.blob_id = ownership.blob_id
+             WHERE ownership.task_id = ?1 AND ownership.blob_id = ?2",
+            params![task_id.to_string(), blob_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((media_type, byte_size, content_hash)) = owned else {
+        return if blob_metadata_in_transaction(transaction, blob_id)?.is_some() {
+            Err(TaskStoreError::BlobOwnershipDenied { blob_id, task_id })
+        } else {
+            Err(TaskStoreError::BlobNotFound { blob_id })
+        };
+    };
+    if let Some(expected) = &reference.expected {
+        let expected_media_type = expected.content_type.as_deref();
+        if expected.id != blob_id
+            || expected.size != nonnegative_integer(byte_size)?
+            || blake3::Hash::from_bytes(expected.content_hash)
+                .to_hex()
+                .as_str()
+                != content_hash
+            || expected_media_type != Some(media_type.as_str())
+        {
+            return Err(TaskStoreError::BlobIntegrity(format!(
+                "blob reference {blob_id} does not match task-owned metadata"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn promote_blob_references_in_transaction(
+    transaction: &Transaction<'_>,
+    task_id: TaskId,
+    events: &[NewTaskEvent],
+) -> Result<(), TaskStoreError> {
+    let mut checked = HashSet::new();
+    let mut references = Vec::new();
+    for event in events {
+        references.extend(event.blob_references()?);
+    }
+    for blob_id in references.into_iter().map(|reference| reference.blob_id) {
+        if !checked.insert(blob_id) {
+            continue;
+        }
+        let owned: i64 = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM blob_ownership WHERE task_id = ?1 AND blob_id = ?2
+             )",
+            params![task_id.to_string(), blob_id.to_string()],
+            |row| row.get(0),
+        )?;
+        if owned == 1 {
+            continue;
+        }
+        let staged = staged_blob_for_task(transaction, task_id, blob_id)?;
+        let Some(staged) = staged else {
+            return if blob_metadata_in_transaction(transaction, blob_id)?.is_some() {
+                Err(TaskStoreError::BlobOwnershipDenied { blob_id, task_id })
+            } else {
+                Err(TaskStoreError::BlobNotFound { blob_id })
+            };
+        };
+        if let Some(existing) = blob_metadata_in_transaction(transaction, blob_id)? {
+            validate_staged_blob_identity(
+                blob_id,
+                existing.byte_size,
+                &existing.content_hash,
+                &existing.relative_path,
+                staged.byte_size,
+                &staged.content_hash,
+                &staged.relative_path,
+            )?;
+        } else {
+            transaction.execute(
+                "INSERT INTO blob_metadata (
+                    blob_id, media_type, byte_size, content_hash, relative_path, created_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    blob_id.to_string(),
+                    staged.media_type,
+                    sqlite_integer(staged.byte_size)?,
+                    staged.content_hash,
+                    staged.relative_path,
+                    now().to_rfc3339(),
+                ],
+            )?;
+        }
+        transaction.execute(
+            "INSERT INTO blob_ownership (task_id, blob_id, media_type, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                task_id.to_string(),
+                blob_id.to_string(),
+                staged.media_type,
+                now().to_rfc3339(),
+            ],
+        )?;
+        transaction.execute(
+            "DELETE FROM blob_staging WHERE task_id = ?1 AND blob_id = ?2",
+            params![task_id.to_string(), blob_id.to_string()],
+        )?;
+    }
+    Ok(())
+}
+
+fn blob_metadata_in_transaction(
+    transaction: &Transaction<'_>,
+    blob_id: BlobId,
+) -> Result<Option<StagedBlobMetadata>, TaskStoreError> {
+    transaction
+        .query_row(
+            "SELECT media_type, byte_size, content_hash, relative_path
+             FROM blob_metadata WHERE blob_id = ?1",
+            [blob_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|(media_type, byte_size, content_hash, relative_path)| {
+            Ok(StagedBlobMetadata {
+                media_type,
+                byte_size: nonnegative_integer(byte_size)?,
+                content_hash,
+                relative_path,
+            })
+        })
+        .transpose()
+}
+
+fn staged_blob_for_task(
+    transaction: &Transaction<'_>,
+    task_id: TaskId,
+    blob_id: BlobId,
+) -> Result<Option<StagedBlobMetadata>, TaskStoreError> {
+    transaction
+        .query_row(
+            "SELECT media_type, byte_size, content_hash, relative_path
+             FROM blob_staging WHERE task_id = ?1 AND blob_id = ?2",
+            params![task_id.to_string(), blob_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|(media_type, byte_size, content_hash, relative_path)| {
+            Ok(StagedBlobMetadata {
+                media_type,
+                byte_size: nonnegative_integer(byte_size)?,
+                content_hash,
+                relative_path,
+            })
+        })
+        .transpose()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_staged_blob_identity(
+    blob_id: BlobId,
+    existing_size: u64,
+    existing_hash: &str,
+    existing_path: &str,
+    staged_size: u64,
+    staged_hash: &str,
+    staged_path: &str,
+) -> Result<(), TaskStoreError> {
+    if existing_size != staged_size || existing_hash != staged_hash || existing_path != staged_path
+    {
+        return Err(TaskStoreError::BlobIntegrity(format!(
+            "blob {blob_id} metadata conflicts with its content-addressed identity"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(any(test, feature = "blob-file"))]
+fn enforce_blob_quotas(
+    transaction: &Transaction<'_>,
+    task_id: TaskId,
+) -> Result<(), TaskStoreError> {
+    let task_bytes: i64 = transaction.query_row(
+        "SELECT COALESCE(SUM(byte_size), 0) FROM (
+            SELECT metadata.blob_id, metadata.byte_size
+            FROM blob_metadata AS metadata
+            JOIN blob_ownership AS ownership ON ownership.blob_id = metadata.blob_id
+            WHERE ownership.task_id = ?1
+            UNION
+            SELECT blob_id, byte_size FROM blob_staging WHERE task_id = ?1
+         )",
+        [task_id.to_string()],
+        |row| row.get(0),
+    )?;
+    if nonnegative_integer(task_bytes)? > MAX_TASK_BLOB_BYTES {
+        return Err(TaskStoreError::InvalidInput(format!(
+            "task blob quota exceeds {MAX_TASK_BLOB_BYTES} bytes"
+        )));
+    }
+    let global_bytes: i64 = transaction.query_row(
+        "SELECT COALESCE(SUM(byte_size), 0) FROM (
+            SELECT blob_id, byte_size FROM blob_metadata
+            UNION
+            SELECT blob_id, byte_size FROM blob_staging
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if nonnegative_integer(global_bytes)? > MAX_GLOBAL_BLOB_BYTES {
+        return Err(TaskStoreError::InvalidInput(format!(
+            "global blob quota exceeds {MAX_GLOBAL_BLOB_BYTES} bytes"
+        )));
+    }
+    Ok(())
 }
 
 fn stream_version_in_transaction(
@@ -962,6 +1851,8 @@ fn nonnegative_integer(value: i64) -> Result<u64, TaskStoreError> {
 pub enum TaskStoreError {
     #[error("wrong expected task stream version: expected {expected}, actual {actual}")]
     WrongExpectedVersion { expected: u64, actual: u64 },
+    #[error("wrong expected engine event offset: expected {expected}, actual {actual}")]
+    EngineOffsetMismatch { expected: u64, actual: u64 },
     #[error("command {command_id} conflicts with an existing inbox entry")]
     CommandConflict { command_id: CommandId },
     #[error("command {command_id} has no durable outcome")]
@@ -979,6 +1870,12 @@ pub enum TaskStoreError {
     },
     #[error("invalid task store input: {0}")]
     InvalidInput(String),
+    #[error("task blob not found: {blob_id}")]
+    BlobNotFound { blob_id: BlobId },
+    #[error("task {task_id} does not own blob {blob_id}")]
+    BlobOwnershipDenied { blob_id: BlobId, task_id: TaskId },
+    #[error("task blob integrity check failed: {0}")]
+    BlobIntegrity(String),
     #[error("task store integer is outside SQLite's signed range")]
     IntegerOutOfRange,
     #[error("task store connection lock was poisoned")]
@@ -995,4 +1892,54 @@ pub enum TaskStoreError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Filesystem(#[from] harness_fs::FsError),
+}
+
+#[cfg(test)]
+mod blob_reference_merge_tests {
+    use harness_contracts::{BlobId, BlobRef};
+
+    use super::*;
+
+    #[test]
+    fn repeated_blob_references_are_merged_and_conflicts_are_rejected() {
+        let blob = BlobRef {
+            id: BlobId::new(),
+            size: 1,
+            content_hash: [1; 32],
+            content_type: Some("text/plain".into()),
+        };
+        let merged = merge_blob_references(vec![
+            TaskBlobReference {
+                blob_id: blob.id,
+                expected: None,
+            },
+            TaskBlobReference {
+                blob_id: blob.id,
+                expected: Some(blob.clone()),
+            },
+            TaskBlobReference {
+                blob_id: blob.id,
+                expected: Some(blob.clone()),
+            },
+        ])
+        .unwrap();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].expected, Some(blob.clone()));
+
+        let mut conflicting = blob.clone();
+        conflicting.size += 1;
+        assert!(matches!(
+            merge_blob_references(vec![
+                TaskBlobReference {
+                    blob_id: blob.id,
+                    expected: Some(blob),
+                },
+                TaskBlobReference {
+                    blob_id: conflicting.id,
+                    expected: Some(conflicting),
+                },
+            ]),
+            Err(TaskStoreError::BlobIntegrity(_))
+        ));
+    }
 }

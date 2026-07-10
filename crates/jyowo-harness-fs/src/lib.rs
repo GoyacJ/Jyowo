@@ -175,6 +175,11 @@ pub fn quarantine_invalid_json_file(path: &Path) -> Result<PathBuf, FsError> {
 /// Remove `path` if it is a regular file (not a symlink).
 /// Does nothing if the file does not exist.
 pub fn remove_invalid_json_file(path: &Path) -> Result<(), FsError> {
+    remove_file_no_follow(path)
+}
+
+/// Remove a regular file without following symlinks. Does nothing if absent.
+pub fn remove_file_no_follow(path: &Path) -> Result<(), FsError> {
     #[cfg(unix)]
     {
         let Some(parent) = open_parent_dir_no_symlink_for_read(path)? else {
@@ -217,6 +222,24 @@ pub fn ensure_app_dir_no_symlink(path: &Path) -> Result<(), FsError> {
     #[cfg(unix)]
     {
         return ensure_app_dir_no_symlink_unix(path);
+    }
+
+    #[cfg(not(unix))]
+    {
+        ensure_app_dir_no_symlink_non_unix(path)
+    }
+}
+
+/// Ensure an application directory exists without symlinks and is accessible
+/// only by its owner on Unix.
+pub fn ensure_owner_only_app_dir(path: &Path) -> Result<(), FsError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = open_or_create_app_dir_no_symlink_unix(path)?;
+        directory.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+        return Ok(());
     }
 
     #[cfg(not(unix))]
@@ -278,6 +301,31 @@ pub fn read_file_no_follow(path: &Path) -> Result<Option<Vec<u8>>, FsError> {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         Ok(Some(bytes))
+    }
+}
+
+/// Read a regular file without following symlinks, rejecting files larger than
+/// `max_bytes` before an unbounded allocation can occur.
+pub fn read_file_no_follow_bounded(
+    path: &Path,
+    max_bytes: usize,
+) -> Result<Option<Vec<u8>>, FsError> {
+    #[cfg(unix)]
+    {
+        return read_file_no_follow_bounded_unix(path, max_bytes);
+    }
+
+    #[cfg(not(unix))]
+    {
+        ensure_no_symlink_components(path)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        let file = match options.open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        read_open_file_bounded(file, max_bytes).map(Some)
     }
 }
 
@@ -636,6 +684,45 @@ fn read_file_no_follow_unix(path: &Path) -> Result<Option<Vec<u8>>, FsError> {
 }
 
 #[cfg(unix)]
+fn read_file_no_follow_bounded_unix(
+    path: &Path,
+    max_bytes: usize,
+) -> Result<Option<Vec<u8>>, FsError> {
+    let Some(parent) = open_parent_dir_no_symlink_for_read(path)? else {
+        return Ok(None);
+    };
+    let Some(file) = parent.try_open_existing_file(parent.file_name())? else {
+        return Ok(None);
+    };
+    read_open_file_bounded(file, max_bytes).map(Some)
+}
+
+fn read_open_file_bounded(mut file: File, max_bytes: usize) -> Result<Vec<u8>, FsError> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(FsError::InvalidPath("path is not a file".to_owned()));
+    }
+    let max_bytes_u64 = u64::try_from(max_bytes)
+        .map_err(|_| FsError::InvalidPath("file read limit is too large".to_owned()))?;
+    if metadata.len() > max_bytes_u64 {
+        return Err(FsError::InvalidPath(format!(
+            "file exceeds {max_bytes} byte read limit"
+        )));
+    }
+    let read_limit = max_bytes_u64.saturating_add(1);
+    let mut bytes = Vec::new();
+    std::io::Read::by_ref(&mut file)
+        .take(read_limit)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(FsError::InvalidPath(format!(
+            "file exceeds {max_bytes} byte read limit"
+        )));
+    }
+    Ok(bytes)
+}
+
+#[cfg(unix)]
 fn write_bytes_file_atomic_unix(
     target_path: &Path,
     bytes: &[u8],
@@ -730,6 +817,11 @@ fn write_bytes_file_atomic_non_unix(
 
 #[cfg(unix)]
 fn ensure_app_dir_no_symlink_unix(path: &Path) -> Result<(), FsError> {
+    open_or_create_app_dir_no_symlink_unix(path).map(|_| ())
+}
+
+#[cfg(unix)]
+fn open_or_create_app_dir_no_symlink_unix(path: &Path) -> Result<File, FsError> {
     let mut components = Vec::new();
     let mut absolute = false;
     for component in path.components() {
@@ -790,7 +882,7 @@ fn ensure_app_dir_no_symlink_unix(path: &Path) -> Result<(), FsError> {
         directory = File::from(fd);
     }
 
-    Ok(())
+    Ok(directory)
 }
 
 #[cfg(not(unix))]
@@ -1166,6 +1258,22 @@ mod tests {
             .expect_err("symlink parent should be rejected");
 
         assert!(matches!(error, FsError::Symlink(_)));
+    }
+
+    #[test]
+    fn read_file_no_follow_bounded_rejects_oversized_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = canonical_temp_root(&temp);
+        let path = temp_root.join("oversized.bin");
+        std::fs::write(&path, b"four").expect("write file");
+
+        let error = read_file_no_follow_bounded(&path, 3).expect_err("file exceeds limit");
+
+        assert!(matches!(error, FsError::InvalidPath(_)));
+        assert_eq!(
+            read_file_no_follow_bounded(&path, 4).unwrap(),
+            Some(b"four".to_vec())
+        );
     }
 
     #[test]

@@ -22,7 +22,10 @@ fn typed_events_reduce_complete_task_run_queue_and_permission_state() {
     let request_id = RequestId::new();
     let actor_id = ActorId::new();
     let lease_id = WorkspaceLeaseId::new();
-    let blob_id = BlobId::new();
+    let blob_hash = blake3::hash(b"projection attachment");
+    let mut blob_id_bytes = [0_u8; 16];
+    blob_id_bytes.copy_from_slice(&blob_hash.as_bytes()[..16]);
+    let blob_id = BlobId::from_u128(u128::from_be_bytes(blob_id_bytes));
     let started_at = Utc.with_ymd_and_hms(2026, 7, 10, 1, 2, 3).unwrap();
     let ended_at = Utc.with_ymd_and_hms(2026, 7, 10, 1, 4, 5).unwrap();
     let next_started_at = Utc.with_ymd_and_hms(2026, 7, 10, 1, 5, 0).unwrap();
@@ -30,7 +33,7 @@ fn typed_events_reduce_complete_task_run_queue_and_permission_state() {
     let next_segment_id = RunSegmentId::new();
     let queued_at = Utc.with_ymd_and_hms(2026, 7, 10, 1, 3, 0).unwrap();
     let store = TaskStore::open(&path).unwrap();
-
+    let blob_id_text = blob_id.to_string();
     transact(
         &store,
         task_id,
@@ -38,6 +41,16 @@ fn typed_events_reduce_complete_task_run_queue_and_permission_state() {
         user_source(),
         NewTaskEvent::task_created("Projected"),
     );
+    store
+        .stage_blob(
+            task_id,
+            blob_id,
+            "text/plain",
+            21,
+            *blob_hash.as_bytes(),
+            &format!("{}/{}.blob", &blob_id_text[..2], blob_id_text),
+        )
+        .unwrap();
     transact(
         &store,
         task_id,
@@ -650,6 +663,7 @@ fn permission_source() -> EventAuthority {
 
 fn seed_non_projection_rows(path: &Path, task_id: TaskId, segment_id: RunSegmentId) {
     let connection = rusqlite::Connection::open(path).unwrap();
+    let blob_id = BlobId::new();
     connection
         .execute(
             "INSERT INTO checkpoints (
@@ -668,7 +682,22 @@ fn seed_non_projection_rows(path: &Path, task_id: TaskId, segment_id: RunSegment
             "INSERT INTO blob_metadata (
                 blob_id, media_type, byte_size, content_hash, relative_path, created_at
              ) VALUES (?1, 'text/plain', 4, 'hash', 'blob/path', '2026-07-10T00:00:00Z')",
-            [BlobId::new().to_string()],
+            [blob_id.to_string()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO blob_ownership (task_id, blob_id, media_type, created_at)
+             VALUES (?1, ?2, 'text/plain', '2026-07-10T00:00:00Z')",
+            params![task_id.to_string(), blob_id.to_string()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO blob_store_config (singleton, store_id, canonical_root)
+             VALUES (1, 'store-id', '/app/blobs')
+             ON CONFLICT(singleton) DO UPDATE SET canonical_root = excluded.canonical_root",
+            [],
         )
         .unwrap();
     connection
@@ -690,6 +719,9 @@ fn non_projection_dump(path: &Path) -> Vec<String> {
         ("command_inbox", "command_id"),
         ("checkpoints", "checkpoint_id"),
         ("blob_metadata", "blob_id"),
+        ("blob_ownership", "task_id, blob_id"),
+        ("blob_staging", "task_id, blob_id"),
+        ("blob_store_config", "singleton"),
         ("workspace_leases", "workspace_lease_id"),
     ]
     .into_iter()

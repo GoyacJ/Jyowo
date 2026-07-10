@@ -272,6 +272,7 @@ fn reduce_task(
             };
         }
         TaskEvent::SubagentSpawned { .. } => {}
+        TaskEvent::Engine { .. } => {}
         TaskEvent::WorkspaceAcquired { lease } => {
             if lease.task_id != envelope.task_id {
                 return integrity("workspace lease belongs to another task");
@@ -444,7 +445,8 @@ fn project_entity_tables(
         }
         TaskEvent::TaskCreated { .. }
         | TaskEvent::TaskTitleChanged { .. }
-        | TaskEvent::TaskArchived { .. } => {}
+        | TaskEvent::TaskArchived { .. }
+        | TaskEvent::Engine { .. } => {}
     }
     Ok(())
 }
@@ -561,6 +563,15 @@ fn project_timeline(
         TaskEvent::WorkspaceAcquired { .. } => (
             TimelineEventKind::Notice,
             "Workspace acquired".into(),
+            None,
+            false,
+        ),
+        TaskEvent::Engine { event_type, .. } => (
+            TimelineEventKind::Notice,
+            event_type
+                .strip_prefix("engine.")
+                .unwrap_or(event_type)
+                .replace('_', " "),
             None,
             false,
         ),

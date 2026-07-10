@@ -226,6 +226,9 @@ fn task_store_initializes_one_strict_wal_schema() {
         "timeline_projection",
         "checkpoints",
         "blob_metadata",
+        "blob_ownership",
+        "blob_staging",
+        "blob_store_config",
         "workspace_leases",
     ];
     for table in tables {
