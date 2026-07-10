@@ -12,6 +12,8 @@
     "build": "pnpm build:agent-supervisor-sidecar && pnpm -C apps/desktop build && pnpm -C apps/desktop tauri build",
     "lint": "pnpm -C apps/desktop lint",
     "format": "pnpm -C apps/desktop format",
+    "generate:daemon-protocol": "node scripts/generate-daemon-protocol.mjs",
+    "check:daemon-protocol": "node scripts/generate-daemon-protocol.mjs --check",
     "audit:tests": "node scripts/audit-tests.mjs",
     "check:release-version": "node --test scripts/check-release-version.test.mjs && node scripts/check-release-version.mjs",
     "check:release-workflow": "node --test scripts/release-workflow-policy.test.mjs",

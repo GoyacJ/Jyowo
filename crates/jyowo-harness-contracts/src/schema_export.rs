@@ -20,6 +20,7 @@ pub fn generate_schema() -> Schema {
 pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     let mut schemas = BTreeMap::new();
 
+    schemas.insert("daemon_protocol".to_owned(), daemon_protocol_schema());
     insert_schema!(schemas, "event", Event);
     insert_schema!(schemas, "event_kind", EventKind);
     insert_schema!(schemas, "session_id", SessionId);
