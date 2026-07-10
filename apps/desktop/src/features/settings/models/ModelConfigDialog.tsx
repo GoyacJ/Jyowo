@@ -54,6 +54,7 @@ type ModelConfigFormValues = {
   outputEffort: string
   performanceLatency: string
   promptCacheKey: string
+  preserveThinking: boolean
   protocol: ModelProtocol
   providerId: string
   reasoningEffort: string
@@ -398,11 +399,25 @@ export function ModelConfigDialog({
                 <Select id="provider-protocol" {...register('protocol')}>
                   <option value="responses">Responses</option>
                   <option value="chat_completions">Chat Completions</option>
+                  <option value="messages">Messages</option>
+                  <option value="dashscope">DashScope</option>
                 </Select>
               </label>
               <label className="flex items-center gap-2">
                 <input type="checkbox" {...register('enableThinking')} />
                 <span>{t('provider.enableThinking')}</span>
+              </label>
+              <label className="grid gap-1" htmlFor="provider-thinking-budget">
+                <span className="font-medium">{t('provider.thinkingBudget')}</span>
+                <Input
+                  id="provider-thinking-budget"
+                  inputMode="numeric"
+                  {...register('thinkingBudget')}
+                />
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" {...register('preserveThinking')} />
+                <span>{t('provider.preserveThinking')}</span>
               </label>
               <label className="grid gap-1" htmlFor="provider-reasoning-effort">
                 <span className="font-medium">{t('provider.reasoningEffort')}</span>
@@ -410,7 +425,6 @@ export function ModelConfigDialog({
                   <option value="">{t('provider.default')}</option>
                   <option value="none">None</option>
                   <option value="minimal">Minimal</option>
-                  <option value="low">Low</option>
                   <option value="medium">Medium</option>
                   <option value="high">High</option>
                 </Select>
@@ -1167,6 +1181,7 @@ function formValuesFromProfile(
     outputEffort: providerDefaults.outputEffort,
     performanceLatency: providerDefaults.performanceLatency,
     promptCacheKey: providerDefaults.promptCacheKey,
+    preserveThinking: defaults.preserveThinking,
     protocol: profile?.protocol ?? defaultProtocolForProvider(defaultProvider),
     providerId: profile?.providerId ?? defaultProvider?.providerId ?? '',
     reasoningEffort: defaults.reasoningEffort || providerDefaults.reasoningEffort,
@@ -1245,6 +1260,7 @@ function qwenDefaultsFromProfile(profile: ProviderConfig | null | undefined) {
       .filter((tool): tool is string => tool !== null),
   )
   const reasoning = isRecord(body.reasoning) ? body.reasoning : null
+  const thinking = isRecord(body.thinking) ? body.thinking : null
   const reasoningEffort = typeof reasoning?.effort === 'string' ? reasoning.effort : ''
   const searchOptions = isRecord(body.search_options) ? body.search_options : null
   const qwenChatWebExtractor = searchOptions?.search_strategy === 'agent_max'
@@ -1255,7 +1271,8 @@ function qwenDefaultsFromProfile(profile: ProviderConfig | null | undefined) {
 
   return {
     codeInterpreter: toolTypes.has('code_interpreter') || body.enable_code_interpreter === true,
-    enableThinking: body.enable_thinking === true,
+    enableThinking: body.enable_thinking === true || thinking !== null,
+    preserveThinking: body.preserve_thinking === true,
     reasoningEffort,
     sessionCache,
     webExtractor: toolTypes.has('web_extractor') || qwenChatWebExtractor,
@@ -1322,7 +1339,6 @@ function providerOptionDefaultsFromProfile(profile: ProviderConfig | null | unde
         : typeof body.cached_content === 'string'
           ? body.cached_content
           : '',
-    responseMimeType: typeof body.responseMimeType === 'string' ? body.responseMimeType : '',
     responseJsonSchema: jsonText(body.responseJsonSchema),
     seed: firstStringable(body.seed),
     serviceTier:
@@ -1335,7 +1351,11 @@ function providerOptionDefaultsFromProfile(profile: ProviderConfig | null | unde
     stopSequences: stopSequences.join(','),
     thinkingMode:
       thinking?.type === 'enabled' || thinking?.type === 'disabled' ? thinking.type : '',
-    thinkingBudget: firstStringable(thinking?.budget_tokens, thinkingConfig?.thinkingBudget),
+    thinkingBudget: firstStringable(
+      body.thinking_budget,
+      thinking?.budget_tokens,
+      thinkingConfig?.thinkingBudget,
+    ),
     thinkingDisplay: typeof thinking?.display === 'string' ? thinking.display : '',
     thinkingType: typeof thinking?.type === 'string' ? thinking.type : '',
     storeResponse: body.store === true,
@@ -1761,7 +1781,22 @@ function providerDefaultsFromValues(
   }
 
   if (values.enableThinking) {
-    body.enable_thinking = true
+    if (values.protocol === 'messages') {
+      const thinkingBudget = parseNumber(values.thinkingBudget)
+      body.thinking =
+        thinkingBudget !== null
+          ? { type: 'enabled', budget_tokens: thinkingBudget }
+          : { type: 'enabled' }
+    } else {
+      body.enable_thinking = true
+    }
+  }
+  const qwenThinkingBudget = parseNumber(values.thinkingBudget)
+  if (values.protocol !== 'messages' && qwenThinkingBudget !== null) {
+    body.thinking_budget = qwenThinkingBudget
+  }
+  if (values.protocol !== 'messages' && values.preserveThinking) {
+    body.preserve_thinking = true
   }
   if (values.reasoningEffort) {
     body.reasoning = { effort: values.reasoningEffort }
@@ -1779,7 +1814,7 @@ function providerDefaultsFromValues(
     if (tools.length > 0) {
       body.tools = tools
     }
-  } else {
+  } else if (values.protocol === 'chat_completions' || values.protocol === 'dashscope') {
     const chatWebExtractor = values.webExtractor && supportsQwenChatWebExtractor(values.modelId)
     if (values.webSearch || chatWebExtractor) {
       body.enable_search = true
@@ -1841,6 +1876,7 @@ function resetProviderOptionFields(setValue: UseFormSetValue<ModelConfigFormValu
   setValue('outputEffort', '')
   setValue('performanceLatency', '')
   setValue('promptCacheKey', '')
+  setValue('preserveThinking', false)
   setValue('reasoningEffort', '')
   setValue('responseFormat', '')
   setValue('responseMimeType', '')
@@ -2213,7 +2249,13 @@ function supportsAny(supportedParameters: Set<string>, parameters: string[]): bo
 }
 
 function supportsQwenChatWebExtractor(modelId: string): boolean {
-  return modelId === 'qwen3-max' || modelId === 'qwen3-max-2026-01-23'
+  return (
+    modelId === 'qwen3-max' ||
+    modelId === 'qwen3-max-2026-01-23' ||
+    modelId === 'qwen3.7-max' ||
+    modelId === 'qwen3.7-max-preview' ||
+    modelId.startsWith('qwen3.7-max-2026-')
+  )
 }
 
 function isKimiWebSearchTool(value: unknown): boolean {

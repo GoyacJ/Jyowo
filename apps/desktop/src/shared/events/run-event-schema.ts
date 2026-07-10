@@ -180,6 +180,7 @@ const modelProtocolSchema = z.enum([
   'completions',
   'responses',
   'messages',
+  'dashscope',
   'generate_content',
 ])
 const runModelSnapshotSchema = z

@@ -423,7 +423,7 @@ describe('ModelConfigDialog', () => {
 
   it('does not save Qwen Chat Completions web extractor fields for non-agent-max models', async () => {
     const saveProviderSettings = vi.fn().mockResolvedValue({
-      config: qwenProfile,
+      config: qwenFlashProfile,
       status: 'saved',
     })
     renderDialog({
@@ -431,7 +431,7 @@ describe('ModelConfigDialog', () => {
         ...createTestCommandClient(),
         saveProviderSettings,
       },
-      profile: qwenProfile,
+      profile: qwenFlashProfile,
     })
 
     const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
@@ -468,6 +468,7 @@ describe('ModelConfigDialog', () => {
     const reasoningEffort = within(dialog).getByLabelText('Reasoning effort')
     expect(within(reasoningEffort).getByRole('option', { name: 'None' })).toBeInTheDocument()
     expect(within(reasoningEffort).getByRole('option', { name: 'Minimal' })).toBeInTheDocument()
+    expect(within(reasoningEffort).queryByRole('option', { name: 'Low' })).not.toBeInTheDocument()
 
     fireEvent.change(reasoningEffort, { target: { value: 'minimal' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
@@ -964,6 +965,12 @@ const qwen3Max = {
   modelId: 'qwen3-max',
 }
 
+const qwenFlash = {
+  ...gpt41,
+  displayName: 'Qwen Flash',
+  modelId: 'qwen-flash',
+}
+
 const minimaxText01 = {
   ...gpt41,
   displayName: 'MiniMax-Text-01',
@@ -1112,7 +1119,7 @@ const catalog: ModelProviderCatalogResponse = {
     {
       defaultBaseUrl: 'https://dashscope-us.aliyuncs.com/compatible-mode/v1',
       displayName: 'Qwen',
-      models: [qwen37Max, qwen3Max],
+      models: [qwen37Max, qwen3Max, qwenFlash],
       providerId: 'qwen',
       runtimeCapability: {
         authScheme: 'bearer',
@@ -1293,6 +1300,14 @@ const qwen3MaxProfile: ProviderConfig = {
   modelId: 'qwen3-max',
   displayName: 'Primary Qwen Max',
   modelDescriptor: qwen3Max,
+}
+
+const qwenFlashProfile: ProviderConfig = {
+  ...qwenProfile,
+  id: 'cfg-qwen-flash',
+  modelId: 'qwen-flash',
+  displayName: 'Primary Qwen Flash',
+  modelDescriptor: qwenFlash,
 }
 
 const deepseekProfile: ProviderConfig = {

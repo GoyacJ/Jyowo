@@ -9,7 +9,7 @@ use harness_contracts::{
     BlobRef, BlobStore, Message, MessagePart, MessageRole, ModelError, StopReason, TenantId,
     ThinkingBlock, ToolDescriptor, ToolResult, ToolResultPart, UsageSnapshot,
 };
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -31,6 +31,12 @@ const DEFAULT_MAX_TOKENS: u32 = 1024;
 const DEFAULT_CREDENTIAL_RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(60);
 const PROVIDER_ID: &str = "anthropic";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnthropicAuthHeader {
+    XApiKey,
+    Bearer,
+}
+
 #[derive(Clone)]
 pub struct AnthropicClient {
     http: reqwest::Client,
@@ -39,6 +45,8 @@ pub struct AnthropicClient {
     provider_id: String,
     base_url: String,
     messages_path: String,
+    auth_header: AnthropicAuthHeader,
+    extra_headers: std::collections::BTreeMap<String, String>,
     prompt_cache_enabled: bool,
     cooldown_until: Arc<Mutex<Option<Instant>>>,
 }
@@ -52,6 +60,8 @@ impl AnthropicClient {
             provider_id: PROVIDER_ID.to_owned(),
             base_url: DEFAULT_BASE_URL.to_owned(),
             messages_path: "/v1/messages".to_owned(),
+            auth_header: AnthropicAuthHeader::XApiKey,
+            extra_headers: std::collections::BTreeMap::new(),
             prompt_cache_enabled: true,
             cooldown_until: Arc::new(Mutex::new(None)),
         }
@@ -78,6 +88,21 @@ impl AnthropicClient {
     #[must_use]
     pub fn with_prompt_cache(mut self, enabled: bool) -> Self {
         self.prompt_cache_enabled = enabled;
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_auth_header(mut self, auth_header: AnthropicAuthHeader) -> Self {
+        self.auth_header = auth_header;
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_extra_headers(
+        mut self,
+        headers: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        self.extra_headers = headers;
         self
     }
 
@@ -222,15 +247,44 @@ impl AnthropicClient {
         let api_key = credential
             .map(|credential| &credential.secret)
             .unwrap_or(&self.api_key);
-        let api_key =
-            HeaderValue::from_str(api_key.expose_secret()).map_err(|error| AnthropicError {
-                error: ModelError::AuthExpired(error.to_string()),
-                class: ErrorClass::AuthExpired,
-                retry_after: None,
-            })?;
-        headers.insert("x-api-key", api_key);
+        match self.auth_header {
+            AnthropicAuthHeader::XApiKey => {
+                let api_key = HeaderValue::from_str(api_key.expose_secret()).map_err(|error| {
+                    AnthropicError {
+                        error: ModelError::AuthExpired(error.to_string()),
+                        class: ErrorClass::AuthExpired,
+                        retry_after: None,
+                    }
+                })?;
+                headers.insert("x-api-key", api_key);
+            }
+            AnthropicAuthHeader::Bearer => {
+                let value = format!("Bearer {}", api_key.expose_secret());
+                let auth = HeaderValue::from_str(&value).map_err(|error| AnthropicError {
+                    error: ModelError::AuthExpired(error.to_string()),
+                    class: ErrorClass::AuthExpired,
+                    retry_after: None,
+                })?;
+                headers.insert(AUTHORIZATION, auth);
+            }
+        }
         headers.insert("anthropic-version", HeaderValue::from_static(API_VERSION));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        for (name, value) in &self.extra_headers {
+            let name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| AnthropicError {
+                error: ModelError::InvalidRequest(format!("invalid provider header name: {error}")),
+                class: ErrorClass::Fatal,
+                retry_after: None,
+            })?;
+            let value = HeaderValue::from_str(value).map_err(|error| AnthropicError {
+                error: ModelError::InvalidRequest(format!(
+                    "invalid provider header value: {error}"
+                )),
+                class: ErrorClass::Fatal,
+                retry_after: None,
+            })?;
+            headers.insert(name, value);
+        }
         Ok(headers)
     }
 

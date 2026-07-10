@@ -12,7 +12,20 @@ pub enum ModelProtocol {
     Completions,
     Responses,
     Messages,
+    Dashscope,
     GenerateContent,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ModelProtocol;
+
+    #[test]
+    fn model_protocol_serializes_dashscope_api_mode() {
+        let value: ModelProtocol = serde_json::from_str("\"dashscope\"").unwrap();
+        assert_eq!(value, ModelProtocol::Dashscope);
+        assert_eq!(serde_json::to_string(&value).unwrap(), "\"dashscope\"");
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]

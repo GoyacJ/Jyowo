@@ -883,6 +883,7 @@ export const enUS = {
       thinkingMode: 'Thinking mode',
       thinkingBudget: 'Thinking budget',
       thinkingLevel: 'Thinking level',
+      preserveThinking: 'Preserve thinking',
       reasoningEffort: 'Reasoning effort',
       doSample: 'Sample output',
       outputEffort: 'Output effort',

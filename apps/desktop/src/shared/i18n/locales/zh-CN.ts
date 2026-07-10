@@ -880,6 +880,7 @@ export const zhCN = {
       thinkingMode: '思考模式',
       thinkingBudget: '思考预算',
       thinkingLevel: '思考级别',
+      preserveThinking: '保留思考内容',
       reasoningEffort: '推理强度',
       doSample: '采样输出',
       outputEffort: '输出强度',

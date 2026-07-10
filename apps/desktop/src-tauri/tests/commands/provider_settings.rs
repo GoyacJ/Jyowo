@@ -449,6 +449,44 @@ async fn save_provider_settings_rejects_deepseek_messages_with_chat_defaults_or_
 }
 
 #[tokio::test]
+async fn save_provider_settings_accepts_qwen_messages_and_dashscope_protocols() {
+    for protocol in [ModelProtocol::Messages, ModelProtocol::Dashscope] {
+        let store = RecordingProviderSettingsStore::default();
+        let payload = save_provider_settings_with_store(
+            ProviderSettingsRequest {
+                api_key: Some("provider-test-token".to_owned()),
+                base_url: Some("https://dashscope-us.aliyuncs.com/compatible-mode/v1".to_owned()),
+                config_id: Some(format!("qwen-{protocol:?}")),
+                display_name: Some("Qwen custom mode".to_owned()),
+                model_id: "qwen3.7-max".to_owned(),
+                model_options: Some(harness_contracts::ModelRequestOptions::default()),
+                official_quota_api_key: None,
+                provider_id: "qwen".to_owned(),
+                protocol: Some(protocol),
+                provider_defaults: Some(ProviderDefaultsRecord {
+                    body: Some(json!({
+                        "enable_thinking": true,
+                        "thinking_budget": 2048,
+                        "preserve_thinking": true
+                    })),
+                    headers: [("x-dashscope-session-cache".to_owned(), "enable".to_owned())]
+                        .into_iter()
+                        .collect(),
+                }),
+                set_default: true,
+            },
+            &store,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(payload.config.provider_id, "qwen");
+        assert_eq!(payload.config.protocol, protocol);
+        assert_eq!(payload.config.model_descriptor.protocol, protocol);
+    }
+}
+
+#[tokio::test]
 async fn save_provider_settings_rejects_provider_defaults_core_fields() {
     let store = RecordingProviderSettingsStore::default();
 
