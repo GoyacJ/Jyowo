@@ -33,6 +33,7 @@ type ModelConfigDialogProps = {
 type ModelProtocol = NonNullable<ProviderSettingsRequest['protocol']>
 
 type ModelConfigFormValues = {
+  advancedBodyJson: string
   baseUrl: string
   clearThinking: string
   codeInterpreter: boolean
@@ -110,6 +111,7 @@ export function ModelConfigDialog({
   const isAnthropic = selectedProvider?.providerId === 'anthropic'
   const isDeepSeek = selectedProvider?.providerId === 'deepseek'
   const isZhipu = selectedProvider?.providerId === 'zhipu'
+  const isDoubao = selectedProvider?.providerId === 'doubao'
   const protocol = watch('protocol')
   const thinkingMode = watch('thinkingMode')
   const qwenChatWebExtractorEnabled =
@@ -189,22 +191,17 @@ export function ModelConfigDialog({
     if (baseUrl) {
       request.baseUrl = baseUrl
     }
-    if (values.providerId === 'qwen' || values.providerId === 'deepseek') {
-      request.protocol = values.protocol
-      request.providerDefaults = providerDefaultsFromValues(values)
-    } else {
-      let providerDefaults: ProviderSettingsRequest['providerDefaults']
-      try {
-        providerDefaults = providerDefaultsFromValues(values)
-      } catch (error) {
-        setError('root', {
-          message: error instanceof Error ? error.message : 'Invalid provider defaults',
-        })
-        return
-      }
-      if (hasProviderDefaults(providerDefaults)) {
+    try {
+      const providerDefaults = providerDefaultsFromValues(values, supportedParameters)
+      if (values.providerId === 'qwen' || values.providerId === 'deepseek') {
+        request.protocol = values.protocol
+        request.providerDefaults = providerDefaults
+      } else if (hasProviderDefaults(providerDefaults)) {
         request.providerDefaults = providerDefaults
       }
+    } catch (error) {
+      setError('root', { message: getCommandErrorMessage(error) })
+      return
     }
     if (apiKey) {
       request.apiKey = apiKey
@@ -396,6 +393,17 @@ export function ModelConfigDialog({
           {!isQwen && !isDeepSeek && supportedParameters.size > 0 ? (
             <div className="grid gap-3 rounded-sm border border-border p-3 text-sm">
               <span className="font-medium">{t('provider.providerOptions')}</span>
+              {isDoubao && supportedParameters.has('thinking') ? (
+                <label className="grid gap-1" htmlFor="provider-thinking-type">
+                  <span className="font-medium">{t('provider.thinkingMode')}</span>
+                  <Select id="provider-thinking-type" {...register('thinkingType')}>
+                    <option value="">{t('provider.default')}</option>
+                    <option value="enabled">Enabled</option>
+                    <option value="auto">Auto</option>
+                    <option value="disabled">Disabled</option>
+                  </Select>
+                </label>
+              ) : null}
               {isZhipu && supportedParameters.has('thinking') ? (
                 <label className="grid gap-1" htmlFor="provider-thinking-mode">
                   <span className="font-medium">{t('provider.enableThinking')}</span>
@@ -406,7 +414,9 @@ export function ModelConfigDialog({
                   </Select>
                 </label>
               ) : null}
-              {!isZhipu && supportsAny(supportedParameters, ['thinking', 'thinkingConfig']) ? (
+              {!isDoubao &&
+              !isZhipu &&
+              supportsAny(supportedParameters, ['thinking', 'thinkingConfig']) ? (
                 <label className="flex items-center gap-2">
                   <input type="checkbox" {...register('enableThinking')} />
                   <span>{t('provider.enableThinking')}</span>
@@ -422,7 +432,9 @@ export function ModelConfigDialog({
                   </Select>
                 </label>
               ) : null}
-              {!isZhipu && supportsAny(supportedParameters, ['thinking', 'thinkingConfig']) ? (
+              {!isDoubao &&
+              !isZhipu &&
+              supportsAny(supportedParameters, ['thinking', 'thinkingConfig']) ? (
                 <label className="grid gap-1" htmlFor="provider-thinking-budget">
                   <span className="font-medium">{t('provider.thinkingBudget')}</span>
                   <Input
@@ -514,15 +526,29 @@ export function ModelConfigDialog({
                   <span className="font-medium">{t('provider.serviceTier')}</span>
                   <Select id="provider-service-tier" {...register('serviceTier')}>
                     <option value="">{t('provider.default')}</option>
-                    <option value="auto">Auto</option>
-                    <option value="standard_only">Standard only</option>
+                    {isDoubao ? (
+                      <>
+                        <option value="fast">Fast</option>
+                        <option value="auto">Auto</option>
+                        <option value="default">Default</option>
+                      </>
+                    ) : (
+                      <>
+                        <option value="auto">Auto</option>
+                        <option value="standard_only">Standard only</option>
+                      </>
+                    )}
                   </Select>
                 </label>
               ) : null}
               {supportedParameters.has('temperature') ? (
                 <label className="grid gap-1" htmlFor="provider-temperature">
                   <span className="font-medium">{t('provider.temperature')}</span>
-                  <Input id="provider-temperature" inputMode="decimal" {...register('temperature')} />
+                  <Input
+                    id="provider-temperature"
+                    inputMode="decimal"
+                    {...register('temperature')}
+                  />
                 </label>
               ) : null}
               {supportsAny(supportedParameters, ['top_p', 'topP']) ? (
@@ -660,6 +686,14 @@ export function ModelConfigDialog({
                   </Select>
                 </label>
               ) : null}
+              <label className="grid gap-1" htmlFor="provider-advanced-body-json">
+                <span className="font-medium">{t('provider.advancedBodyJson')}</span>
+                <textarea
+                  className="min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-sm tracking-normal outline-none transition-[border-color,box-shadow] duration-200 placeholder:text-muted-foreground focus:border-ring/60 focus:ring-2 focus:ring-ring/10"
+                  id="provider-advanced-body-json"
+                  {...register('advancedBodyJson')}
+                />
+              </label>
             </div>
           ) : null}
 
@@ -732,7 +766,9 @@ function formValuesFromProfile(
 ): ModelConfigFormValues {
   const defaults = qwenDefaultsFromProfile(profile)
   const providerDefaults = providerOptionDefaultsFromProfile(profile)
+  const advancedDefaults = advancedProviderDefaultsFromProfile(profile)
   return {
+    advancedBodyJson: advancedDefaults.body,
     baseUrl: profile?.baseUrl ?? defaultProvider?.defaultBaseUrl ?? '',
     anthropicAdvancedJson: providerDefaults.anthropicAdvancedJson,
     anthropicBeta: providerDefaults.anthropicBeta,
@@ -883,6 +919,7 @@ function providerOptionDefaultsFromProfile(profile: ProviderConfig | null | unde
 
 function providerDefaultsFromValues(
   values: ModelConfigFormValues,
+  supportedParameters: Set<string>,
 ): ProviderSettingsRequest['providerDefaults'] {
   const body: Record<string, unknown> = {}
   const headers: Record<string, string> = {}
@@ -960,7 +997,7 @@ function providerDefaultsFromValues(
       if (values.anthropicAdvancedJson.trim()) {
         mergeAdvancedAnthropicBody(body, values.anthropicAdvancedJson)
       }
-      return { body, headers }
+      return mergeAdvancedProviderDefaults(body, headers, values, supportedParameters)
     }
 
     if (values.providerId === 'gemini') {
@@ -983,7 +1020,7 @@ function providerDefaultsFromValues(
       if (values.responseMimeType.trim()) {
         body.responseMimeType = values.responseMimeType.trim()
       }
-      return { body, headers }
+      return mergeAdvancedProviderDefaults(body, headers, values, supportedParameters)
     }
 
     if (values.providerId === 'bedrock') {
@@ -1000,7 +1037,7 @@ function providerDefaultsFromValues(
       if (values.performanceLatency) {
         body.performanceConfig = { latency: values.performanceLatency }
       }
-      return { body, headers }
+      return mergeAdvancedProviderDefaults(body, headers, values, supportedParameters)
     }
 
     if (values.providerId === 'deepseek') {
@@ -1066,7 +1103,7 @@ function providerDefaultsFromValues(
       if (values.userId.trim()) {
         body.user_id = values.userId.trim()
       }
-      return { body, headers }
+      return mergeAdvancedProviderDefaults(body, headers, values, supportedParameters)
     }
 
     if (topP !== null) {
@@ -1081,10 +1118,15 @@ function providerDefaultsFromValues(
     if (values.serviceTier) {
       body.service_tier = values.serviceTier
     }
-    if (values.enableThinking) {
+    if (values.providerId === 'doubao' && values.thinkingType) {
+      body.thinking = { type: values.thinkingType }
+    } else if (values.enableThinking) {
       body.thinking = { type: 'enabled' }
     }
-    return { body, headers }
+    if (values.reasoningEffort) {
+      body.reasoning_effort = values.reasoningEffort
+    }
+    return mergeAdvancedProviderDefaults(body, headers, values, supportedParameters)
   }
 
   if (values.enableThinking) {
@@ -1123,7 +1165,7 @@ function providerDefaultsFromValues(
     headers['x-dashscope-session-cache'] = 'enable'
   }
 
-  return { body, headers }
+  return mergeAdvancedProviderDefaults(body, headers, values, supportedParameters)
 }
 
 function hasProviderDefaults(defaults: ProviderSettingsRequest['providerDefaults']): boolean {
@@ -1133,6 +1175,7 @@ function hasProviderDefaults(defaults: ProviderSettingsRequest['providerDefaults
 }
 
 function resetProviderOptionFields(setValue: UseFormSetValue<ModelConfigFormValues>) {
+  setValue('advancedBodyJson', '')
   setValue('clearThinking', '')
   setValue('doSample', '')
   setValue('enableThinking', false)
@@ -1151,7 +1194,6 @@ function resetProviderOptionFields(setValue: UseFormSetValue<ModelConfigFormValu
   setValue('thinkingMode', '')
   setValue('temperature', '')
   setValue('thinkingBudget', '')
-  setValue('thinkingMode', '')
   setValue('toolStream', '')
   setValue('topK', '')
   setValue('topP', '')
@@ -1235,6 +1277,100 @@ function deepseekBaseUrlForProtocol(protocol: ModelProtocol): string {
     return 'https://api.deepseek.com/anthropic'
   }
   return 'https://api.deepseek.com'
+}
+
+function mergeAdvancedProviderDefaults(
+  body: Record<string, unknown>,
+  headers: Record<string, string>,
+  values: ModelConfigFormValues,
+  supportedParameters: Set<string>,
+): ProviderSettingsRequest['providerDefaults'] {
+  Object.assign(body, parseJsonRecord(values.advancedBodyJson))
+  pruneUnsupportedManagedProviderDefaults(body, values.providerId, supportedParameters)
+  return { body, headers }
+}
+
+const MANAGED_PROVIDER_BODY_KEYS = new Set([
+  'enable_code_interpreter',
+  'enable_search',
+  'enable_thinking',
+  'enableThinking',
+  'inferenceConfig',
+  'output_config',
+  'performanceConfig',
+  'reasoning',
+  'reasoning_effort',
+  'responseMimeType',
+  'search_options',
+  'seed',
+  'service_tier',
+  'stop',
+  'stop_sequences',
+  'stopSequences',
+  'thinking',
+  'thinkingConfig',
+  'tools',
+  'top_k',
+  'top_p',
+  'topK',
+  'topP',
+])
+
+function pruneUnsupportedManagedProviderDefaults(
+  body: Record<string, unknown>,
+  providerId: string,
+  supportedParameters: Set<string>,
+) {
+  if (providerId === 'qwen') {
+    return
+  }
+  for (const key of Object.keys(body)) {
+    if (
+      MANAGED_PROVIDER_BODY_KEYS.has(key) &&
+      !providerDefaultBodyKeySupported(key, supportedParameters)
+    ) {
+      delete body[key]
+    }
+  }
+}
+
+function providerDefaultBodyKeySupported(key: string, supportedParameters: Set<string>): boolean {
+  switch (key) {
+    case 'thinking':
+      return supportsAny(supportedParameters, ['thinking'])
+    case 'thinkingConfig':
+      return supportsAny(supportedParameters, ['thinkingConfig'])
+    default:
+      return supportedParameters.has(key)
+  }
+}
+
+function advancedProviderDefaultsFromProfile(profile: ProviderConfig | null | undefined): {
+  body: string
+} {
+  const body = pickUnmanagedBodyDefaults(profile?.providerDefaults?.body ?? {})
+  return {
+    body: stringifyJsonRecord(body),
+  }
+}
+
+function pickUnmanagedBodyDefaults(body: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(body).filter(([name]) => !MANAGED_PROVIDER_BODY_KEYS.has(name)),
+  )
+}
+
+function parseJsonRecord(value: string): Record<string, unknown> {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return {}
+  }
+  const parsed: unknown = JSON.parse(trimmed)
+  return isRecord(parsed) ? parsed : {}
+}
+
+function stringifyJsonRecord(value: Record<string, unknown>): string {
+  return Object.keys(value).length > 0 ? JSON.stringify(value, null, 2) : ''
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

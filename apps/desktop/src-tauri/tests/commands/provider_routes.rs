@@ -402,6 +402,125 @@ fn provider_capability_route_options_use_injected_adapter_availability() {
     assert!(image_option.runtime_supported);
 }
 
+#[tokio::test]
+async fn doubao_provider_capability_route_options_expose_inventory_services_without_adapters() {
+    let provider_settings = provider_settings_record_with_doubao_config("doubao-service");
+    let store = provider_capability_route_store("provider-capability-route-options-doubao");
+    let catalog = list_model_provider_catalog_payload();
+    let availability = ProviderServiceAdapterAvailability::default();
+
+    let payload = list_provider_capability_route_options_from_inputs(
+        &store,
+        &provider_settings,
+        &catalog,
+        &availability,
+    )
+    .unwrap();
+
+    for (operation_id, kind) in [
+        (
+            "seedream.image_generation",
+            CapabilityRouteKind::ImageGeneration,
+        ),
+        (
+            "seed3d.three_d_generation",
+            CapabilityRouteKind::ThreeDGeneration,
+        ),
+        (
+            "doubao.embedding_generation",
+            CapabilityRouteKind::EmbeddingGeneration,
+        ),
+        ("doubao.files.upload", CapabilityRouteKind::FileOperation),
+    ] {
+        let option = payload
+            .options
+            .iter()
+            .find(|option| option.operation_id == operation_id)
+            .expect("doubao service route option should be exposed");
+        assert_eq!(option.kind, kind);
+        assert!(!option.runtime_supported);
+        assert_eq!(
+            option.unavailable_reason.as_deref(),
+            Some("runtime adapter unavailable")
+        );
+    }
+
+    let error = save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest {
+            route: ProviderCapabilityRoute {
+                kind: CapabilityRouteKind::ImageGeneration,
+                config_id: "doubao-service".to_owned(),
+                provider_id: "doubao".to_owned(),
+                operation_ids: vec!["seedream.image_generation".to_owned()],
+                enabled: true,
+            },
+        },
+        &store,
+        &provider_settings,
+        &catalog,
+        &availability,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("no runtime adapter"));
+}
+
+#[tokio::test]
+async fn doubao_seedance_routes_use_default_runtime_adapters() {
+    let provider_settings = provider_settings_record_with_doubao_config("doubao-service");
+    let store = provider_capability_route_store("provider-capability-route-options-seedance");
+    let catalog = list_model_provider_catalog_payload();
+    let availability = doubao_seedance_adapter_availability();
+
+    let payload = list_provider_capability_route_options_from_inputs(
+        &store,
+        &provider_settings,
+        &catalog,
+        &availability,
+    )
+    .unwrap();
+
+    for operation_id in [
+        "seedance.video_generation",
+        "seedance.video_generation.query",
+    ] {
+        let option = payload
+            .options
+            .iter()
+            .find(|option| option.operation_id == operation_id)
+            .expect("seedance route option should be exposed");
+        assert_eq!(option.kind, CapabilityRouteKind::VideoGeneration);
+        assert!(option.runtime_supported);
+        assert_eq!(option.unavailable_reason, None);
+    }
+
+    let saved = save_provider_capability_route_with_store(
+        SaveProviderCapabilityRouteRequest {
+            route: ProviderCapabilityRoute {
+                kind: CapabilityRouteKind::VideoGeneration,
+                config_id: "doubao-service".to_owned(),
+                provider_id: "doubao".to_owned(),
+                operation_ids: vec![
+                    "seedance.video_generation".to_owned(),
+                    "seedance.video_generation.query".to_owned(),
+                ],
+                enabled: true,
+            },
+        },
+        &store,
+        &provider_settings,
+        &catalog,
+        &availability,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(saved.routes.len(), 1);
+    assert_eq!(saved.routes[0].kind, CapabilityRouteKind::VideoGeneration);
+}
+
 #[test]
 fn no_workspace_provider_capability_route_options_are_empty() {
     let provider_settings = provider_settings_record_with_minimax_config("minimax-image", true);

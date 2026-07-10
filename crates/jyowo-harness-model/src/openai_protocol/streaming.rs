@@ -214,15 +214,27 @@ impl OpenAiStreamState {
         }
 
         for choice in payload.choices {
-            if self.dialect == OpenAiChatDialect::Qwen {
+            if matches!(
+                self.dialect,
+                OpenAiChatDialect::Qwen | OpenAiChatDialect::Doubao
+            ) {
                 if let Some(reasoning_content) = choice.delta.reasoning_content {
                     if !reasoning_content.is_empty() {
+                        let provider_native = choice
+                            .delta
+                            .encrypted_content
+                            .filter(|value| !value.is_empty())
+                            .map(|encrypted_content| {
+                                serde_json::json!({
+                                    "encrypted_content": encrypted_content,
+                                })
+                            });
                         let index = self.ensure_thinking_block(&mut events);
                         events.push(ModelStreamEvent::ContentBlockDelta {
                             index,
                             delta: ContentDelta::Thinking(ThinkingDelta {
                                 text: Some(reasoning_content),
-                                provider_native: None,
+                                provider_native,
                                 signature: None,
                             }),
                         });
@@ -428,6 +440,7 @@ struct StreamChoice {
 struct StreamDelta {
     content: Option<String>,
     reasoning_content: Option<String>,
+    encrypted_content: Option<String>,
     #[serde(default)]
     tool_calls: Vec<StreamToolCallDelta>,
 }

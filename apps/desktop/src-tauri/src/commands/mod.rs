@@ -509,6 +509,9 @@ fn runtime_tool_route_kind(kind: CapabilityRouteKind) -> String {
     match kind {
         CapabilityRouteKind::ImageGeneration => "imageGeneration".to_owned(),
         CapabilityRouteKind::VideoGeneration => "videoGeneration".to_owned(),
+        CapabilityRouteKind::ThreeDGeneration => "threeDGeneration".to_owned(),
+        CapabilityRouteKind::EmbeddingGeneration => "embeddingGeneration".to_owned(),
+        CapabilityRouteKind::FileOperation => "fileOperation".to_owned(),
         CapabilityRouteKind::TextToSpeech => "textToSpeech".to_owned(),
         CapabilityRouteKind::SpeechToText => "speechToText".to_owned(),
         CapabilityRouteKind::MusicGeneration => "musicGeneration".to_owned(),

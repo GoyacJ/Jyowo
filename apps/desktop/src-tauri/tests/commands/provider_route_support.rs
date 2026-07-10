@@ -51,6 +51,25 @@ pub(crate) fn minimax_image_and_video_adapter_availability() -> ProviderServiceA
     }
 }
 
+pub(crate) fn doubao_seedance_adapter_availability() -> ProviderServiceAdapterAvailability {
+    ProviderServiceAdapterAvailability {
+        bindings: vec![
+            ToolServiceBinding {
+                provider_id: "doubao".to_owned(),
+                operation_id: "seedance.video_generation".to_owned(),
+                route_kind: CapabilityRouteKind::VideoGeneration,
+                output_artifact: ModelModality::Video,
+            },
+            ToolServiceBinding {
+                provider_id: "doubao".to_owned(),
+                operation_id: "seedance.video_generation.query".to_owned(),
+                route_kind: CapabilityRouteKind::VideoGeneration,
+                output_artifact: ModelModality::Video,
+            },
+        ],
+    }
+}
+
 pub(crate) fn canonical_unique_workspace(name: &str) -> PathBuf {
     let workspace = unique_workspace(name);
     std::fs::create_dir_all(&workspace).unwrap();

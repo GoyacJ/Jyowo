@@ -186,6 +186,9 @@ const FAILING_PROBE_STATUSES = new Set<ProviderProbeSnapshot['status']>([
 const capabilityRouteKindOrder = [
   'image_generation',
   'video_generation',
+  'three_d_generation',
+  'embedding_generation',
+  'file_operation',
   'speech_to_text',
   'text_to_speech',
   'music_generation',

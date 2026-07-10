@@ -363,6 +363,11 @@ fn provider_config_record_from_profile(
         profile.protocol,
         base_url.as_deref(),
     )?;
+    validate_provider_profile_defaults_for_model(
+        profile.provider_id.as_str(),
+        profile.model_id.as_str(),
+        provider_defaults.as_ref(),
+    )?;
     Ok(ProviderConfigRecord {
         api_key: secret
             .map(|entry| entry.api_key.clone())
@@ -378,6 +383,19 @@ fn provider_config_record_from_profile(
         provider_defaults,
         model_descriptor: provider_model_descriptor_record_from_profile(profile.model_descriptor)?,
     })
+}
+
+fn validate_provider_profile_defaults_for_model(
+    provider_id: &str,
+    model_id: &str,
+    defaults: Option<&ProviderDefaultsRecord>,
+) -> Result<(), CommandErrorPayload> {
+    if provider_id != "doubao" {
+        return Ok(());
+    }
+    let descriptor =
+        resolve_model_descriptor(provider_id, model_id).map_err(provider_registry_error)?;
+    validate_provider_defaults_for_descriptor(defaults, &descriptor)
 }
 
 fn migrate_provider_profile(mut profile: ProviderProfileDefinition) -> ProviderProfileDefinition {
@@ -1217,6 +1235,8 @@ pub(crate) fn provider_service_category_payload(category: ProviderServiceCategor
         ProviderServiceCategory::Conversation => "conversation",
         ProviderServiceCategory::Image => "image",
         ProviderServiceCategory::Video => "video",
+        ProviderServiceCategory::ThreeD => "three_d",
+        ProviderServiceCategory::Embedding => "embedding",
         ProviderServiceCategory::Audio => "audio",
         ProviderServiceCategory::Music => "music",
         ProviderServiceCategory::File => "file",
@@ -1800,6 +1820,9 @@ pub(crate) fn route_kind_for_service_capability(
     match capability.category {
         "image" => Some(CapabilityRouteKind::ImageGeneration),
         "video" => Some(CapabilityRouteKind::VideoGeneration),
+        "three_d" => Some(CapabilityRouteKind::ThreeDGeneration),
+        "embedding" => Some(CapabilityRouteKind::EmbeddingGeneration),
+        "file" => Some(CapabilityRouteKind::FileOperation),
         "music" => Some(CapabilityRouteKind::MusicGeneration),
         "audio" if operation_id_is_speech_to_text(&capability.operation_id) => {
             Some(CapabilityRouteKind::SpeechToText)
@@ -2072,9 +2095,7 @@ pub async fn save_provider_settings_with_store(
     let provider_defaults = request.provider_defaults.clone().or_else(|| {
         previous_config
             .as_ref()
-            .filter(|config| {
-                config.provider_id == request.provider_id && config.base_url == base_url
-            })
+            .filter(|config| previous_config_matches_request_model(config, &request, &base_url))
             .and_then(|config| config.provider_defaults.clone())
     });
     validate_provider_defaults_for_protocol(
@@ -2082,6 +2103,7 @@ pub async fn save_provider_settings_with_store(
         descriptor.protocol,
         provider_defaults.as_ref(),
     )?;
+    validate_provider_defaults_for_descriptor(provider_defaults.as_ref(), &descriptor)?;
     let model_options = match request.model_options.as_ref() {
         Some(model_options) => model_options.clone(),
         None if previous_config.as_ref().is_some_and(|config| {
@@ -2133,6 +2155,16 @@ pub async fn save_provider_settings_with_store(
         )?,
         status: "saved",
     })
+}
+
+fn previous_config_matches_request_model(
+    config: &ProviderConfigRecord,
+    request: &ProviderSettingsRequest,
+    base_url: &Option<String>,
+) -> bool {
+    config.provider_id == request.provider_id
+        && config.base_url == *base_url
+        && config.model_id == request.model_id
 }
 
 pub(crate) async fn save_provider_settings_with_runtime_state_unlocked(
@@ -2935,6 +2967,7 @@ pub(crate) fn validate_provider_defaults(
                 )));
             }
         }
+        ensure_provider_defaults_body_has_no_sensitive_keys(body)?;
     }
     for (name, value) in &defaults.headers {
         match provider_id {
@@ -3028,6 +3061,35 @@ pub(crate) fn validate_provider_defaults_for_protocol(
     Ok(())
 }
 
+fn validate_provider_defaults_for_descriptor(
+    defaults: Option<&ProviderDefaultsRecord>,
+    descriptor: &ModelDescriptor,
+) -> Result<(), CommandErrorPayload> {
+    if descriptor.provider_id != "doubao" {
+        return Ok(());
+    }
+    let Some(body) = defaults.and_then(|defaults| defaults.body.as_ref()) else {
+        return Ok(());
+    };
+    let Some(object) = body.as_object() else {
+        return Ok(());
+    };
+    for key in object.keys() {
+        if !descriptor.supported_parameters.iter().any(|parameter| {
+            parameter == key
+                || (key == "thinking" && parameter == "thinking")
+                || (key == "reasoning_effort" && parameter == "reasoning_effort")
+        }) {
+            return Err(invalid_payload(format!(
+                "providerDefaults.body includes unsupported field {key} for model {}",
+                descriptor.model_id
+            )));
+        }
+        validate_doubao_provider_default_value(key, &object[key])?;
+    }
+    Ok(())
+}
+
 fn provider_default_body_fields_for_protocol(
     provider_id: &str,
     protocol: ModelProtocol,
@@ -3058,6 +3120,120 @@ fn provider_default_body_fields_for_protocol(
         ]),
         _ => None,
     }
+}
+
+fn validate_doubao_provider_default_value(
+    key: &str,
+    value: &Value,
+) -> Result<(), CommandErrorPayload> {
+    match key {
+        "thinking" => {
+            let Some(object) = value.as_object() else {
+                return Err(invalid_payload(
+                    "providerDefaults.body thinking must be an object".to_owned(),
+                ));
+            };
+            match object.get("type").and_then(Value::as_str) {
+                Some("enabled" | "disabled" | "auto") => {}
+                _ => {
+                    return Err(invalid_payload(
+                        "providerDefaults.body thinking.type must be enabled, disabled, or auto"
+                            .to_owned(),
+                    ));
+                }
+            }
+        }
+        "reasoning_effort" => match value.as_str() {
+            Some("none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") => {}
+            _ => {
+                return Err(invalid_payload(
+                    "providerDefaults.body reasoning_effort must be none, minimal, low, medium, high, xhigh, or max"
+                        .to_owned(),
+                ));
+            }
+        },
+        "service_tier" => match value.as_str() {
+            Some("fast" | "auto" | "default") => {}
+            _ => {
+                return Err(invalid_payload(
+                    "providerDefaults.body service_tier must be fast, auto, or default".to_owned(),
+                ));
+            }
+        },
+        "max_completion_tokens" => match value.as_u64() {
+            Some(1..=65_536) => {}
+            _ => {
+                return Err(invalid_payload(
+                    "providerDefaults.body max_completion_tokens must be between 1 and 65536"
+                        .to_owned(),
+                ));
+            }
+        },
+        _ => {}
+    }
+    Ok(())
+}
+
+fn ensure_provider_defaults_body_has_no_sensitive_keys(
+    value: &Value,
+) -> Result<(), CommandErrorPayload> {
+    match value {
+        Value::Object(object) => {
+            for (key, nested) in object {
+                if is_sensitive_provider_default_key(key) {
+                    return Err(invalid_payload(format!(
+                        "providerDefaults.body includes sensitive field {key}"
+                    )));
+                }
+                ensure_provider_defaults_body_has_no_sensitive_keys(nested)?;
+            }
+        }
+        Value::Array(values) => {
+            for nested in values {
+                ensure_provider_defaults_body_has_no_sensitive_keys(nested)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn is_sensitive_provider_default_key(key: &str) -> bool {
+    let normalized = key.trim().to_lowercase();
+    let compact = normalized
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>();
+    if [
+        "apikey",
+        "accesskey",
+        "privatekey",
+        "clientsecret",
+        "secretkey",
+    ]
+    .iter()
+    .any(|pattern| compact.contains(pattern))
+    {
+        return true;
+    }
+    let components = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|component| !component.is_empty())
+        .collect::<Vec<_>>();
+    if components.iter().any(|component| {
+        matches!(
+            *component,
+            "authorization" | "bearer" | "cookie" | "credential" | "password" | "secret" | "token"
+        )
+    }) {
+        return true;
+    }
+    components.windows(2).any(|window| {
+        matches!(
+            window,
+            ["api", "key"] | ["access", "key"] | ["private", "key"] | ["client", "secret"]
+        )
+    })
 }
 
 fn provider_default_body_fields(provider_id: &str) -> &'static [&'static str] {
@@ -3517,9 +3693,12 @@ fn modality_to_string(modality: &ProviderModelModalityRecord) -> String {
 
 #[cfg(test)]
 mod execution_settings_tests {
+    use std::collections::BTreeMap;
+
     use harness_contracts::{
         ModelProtocol, ModelRequestOptions, PermissionMode, ProviderSelectionRecord, ToolProfile,
     };
+    use serde_json::json;
 
     use crate::commands::stores::ProjectConfigStore;
     use crate::storage_layout::{JyowoHome, StorageLayout};
@@ -3572,6 +3751,196 @@ mod execution_settings_tests {
             provider_defaults: None,
             provider_id: "openai".to_owned(),
         }
+    }
+
+    #[test]
+    fn provider_defaults_reject_sensitive_body_keys_recursively() {
+        let valid_defaults = ProviderDefaultsRecord {
+            body: Some(json!({
+                "max_completion_tokens": 1024,
+                "response_format": { "type": "json_object" }
+            })),
+            headers: BTreeMap::new(),
+        };
+        validate_provider_defaults("doubao", Some(&valid_defaults))
+            .expect("ordinary provider defaults should be accepted");
+
+        let sensitive_defaults = ProviderDefaultsRecord {
+            body: Some(json!({
+                "response_format": {
+                    "api_key": "secret-value"
+                }
+            })),
+            headers: BTreeMap::new(),
+        };
+
+        let error = validate_provider_defaults("doubao", Some(&sensitive_defaults))
+            .expect_err("sensitive provider defaults should be rejected");
+
+        assert!(error.message.contains("sensitive field api_key"));
+        assert!(!error.message.contains("secret-value"));
+
+        for key in [
+            "access_key",
+            "private_key",
+            "bearer",
+            "clientSecret",
+            "secretKey",
+        ] {
+            let defaults = ProviderDefaultsRecord {
+                body: Some(json!({ "response_format": { key: "secret-value" } })),
+                headers: BTreeMap::new(),
+            };
+            let error = validate_provider_defaults("doubao", Some(&defaults))
+                .expect_err("sensitive provider defaults should be rejected");
+
+            assert!(error.message.contains(&format!("sensitive field {key}")));
+            assert!(!error.message.contains("secret-value"));
+        }
+    }
+
+    #[test]
+    fn doubao_provider_defaults_reject_invalid_official_values() {
+        let descriptor = resolve_model_descriptor("doubao", "doubao-seed-2-1-pro-260628")
+            .expect("doubao descriptor should resolve");
+
+        for (body, message) in [
+            (
+                json!({ "thinking": { "type": "manual" } }),
+                "thinking.type must be enabled, disabled, or auto",
+            ),
+            (
+                json!({ "reasoning_effort": "ultra" }),
+                "reasoning_effort must be none, minimal, low, medium, high, xhigh, or max",
+            ),
+            (
+                json!({ "service_tier": "standard_only" }),
+                "service_tier must be fast, auto, or default",
+            ),
+            (
+                json!({ "max_completion_tokens": 0 }),
+                "max_completion_tokens must be between 1 and 65536",
+            ),
+        ] {
+            let defaults = ProviderDefaultsRecord {
+                body: Some(body),
+                headers: BTreeMap::new(),
+            };
+            let error = validate_provider_defaults_for_descriptor(Some(&defaults), &descriptor)
+                .expect_err("invalid doubao provider defaults should be rejected");
+
+            assert!(error.message.contains(message));
+        }
+    }
+
+    #[tokio::test]
+    async fn doubao_model_change_does_not_inherit_incompatible_provider_defaults() {
+        let home = temp_execution_settings_home();
+        let layout = StorageLayout::new(JyowoHome::new(home.path().join(".jyowo")));
+        let store = DesktopProviderSettingsStore::global_only_with_layout(layout);
+
+        save_provider_settings_with_store(
+            ProviderSettingsRequest {
+                api_key: Some("ark-test-key".to_owned()),
+                base_url: None,
+                config_id: Some("doubao-main".to_owned()),
+                display_name: Some("Doubao Main".to_owned()),
+                model_id: "doubao-seed-2-1-pro-260628".to_owned(),
+                model_options: None,
+                official_quota_api_key: None,
+                provider_id: "doubao".to_owned(),
+                protocol: None,
+                provider_defaults: Some(ProviderDefaultsRecord {
+                    body: Some(json!({
+                        "reasoning_effort": "xhigh",
+                        "thinking": { "type": "auto" }
+                    })),
+                    headers: BTreeMap::new(),
+                }),
+                set_default: true,
+            },
+            &store,
+        )
+        .await
+        .expect("save reasoning doubao config");
+
+        let response = save_provider_settings_with_store(
+            ProviderSettingsRequest {
+                api_key: None,
+                base_url: None,
+                config_id: Some("doubao-main".to_owned()),
+                display_name: Some("Doubao Main".to_owned()),
+                model_id: "doubao-seed-character-260628".to_owned(),
+                model_options: None,
+                official_quota_api_key: None,
+                provider_id: "doubao".to_owned(),
+                protocol: None,
+                provider_defaults: None,
+                set_default: true,
+            },
+            &store,
+        )
+        .await
+        .expect("save non-reasoning doubao config");
+
+        assert!(response.config.provider_defaults.is_none());
+
+        let rejected = save_provider_settings_with_store(
+            ProviderSettingsRequest {
+                api_key: None,
+                base_url: None,
+                config_id: Some("doubao-main".to_owned()),
+                display_name: Some("Doubao Main".to_owned()),
+                model_id: "doubao-seed-character-260628".to_owned(),
+                model_options: None,
+                official_quota_api_key: None,
+                provider_id: "doubao".to_owned(),
+                protocol: None,
+                provider_defaults: Some(ProviderDefaultsRecord {
+                    body: Some(json!({ "thinking": { "type": "auto" } })),
+                    headers: BTreeMap::new(),
+                }),
+                set_default: true,
+            },
+            &store,
+        )
+        .await
+        .expect_err("unsupported doubao defaults should be rejected");
+
+        assert!(rejected
+            .message
+            .contains("unsupported field thinking for model doubao-seed-character-260628"));
+    }
+
+    #[test]
+    fn doubao_saved_profile_load_rejects_incompatible_provider_defaults() {
+        let home = temp_execution_settings_home();
+        let layout = StorageLayout::new(JyowoHome::new(home.path().join(".jyowo")));
+        let store = DesktopProviderSettingsStore::global_only_with_layout(layout);
+        let mut config = provider_config("doubao-main");
+        config.provider_id = "doubao".to_owned();
+        config.model_id = "doubao-seed-character-260628".to_owned();
+        config.protocol = ModelProtocol::Responses;
+        config.model_descriptor.provider_id = "doubao".to_owned();
+        config.model_descriptor.model_id = "doubao-seed-character-260628".to_owned();
+        config.model_descriptor.protocol = ModelProtocol::Responses;
+        config.provider_defaults = Some(ProviderDefaultsRecord {
+            body: Some(json!({ "thinking": { "type": "auto" } })),
+            headers: BTreeMap::new(),
+        });
+        let profile = provider_profile_definition_from_config(&config, config.id.clone());
+        store
+            .global_config_store()
+            .save_provider_profiles(&[profile])
+            .expect("legacy provider profile should save");
+
+        let error = store
+            .load_record()
+            .expect_err("legacy incompatible doubao defaults should fail to load");
+
+        assert!(error
+            .message
+            .contains("unsupported field thinking for model doubao-seed-character-260628"));
     }
 
     fn execution_record(
