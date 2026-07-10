@@ -4,7 +4,8 @@ use harness_model::ModelLifecycle;
 use harness_model::{
     build_provider, model_catalog_entries, provider_catalog_entries, provider_inventory_entries,
     resolve_model_descriptor, ConversationModelCapability, ModelModality, ModelRuntimeSemantics,
-    ProviderBuildConfig, ProviderRegistryError, ReasoningProtocolSemantics,
+    ProviderBuildConfig, ProviderRegistryError, ProviderServiceCategory,
+    ReasoningProtocolSemantics,
 };
 
 #[test]
@@ -76,6 +77,35 @@ fn provider_inventory_includes_source_metadata() {
             .verified_date,
         chrono::NaiveDate::from_ymd_opt(2026, 7, 9).unwrap()
     );
+}
+
+#[cfg(feature = "doubao")]
+#[test]
+fn doubao_catalog_exports_official_provider_services() {
+    let doubao = provider_catalog_entries()
+        .into_iter()
+        .find(|entry| entry.provider_id == "doubao")
+        .expect("doubao provider catalog should exist");
+
+    let operation_ids: Vec<_> = doubao
+        .service_capabilities
+        .iter()
+        .map(|service| service.operation_id.as_str())
+        .collect();
+
+    assert!(operation_ids.contains(&"seedream.image_generation"));
+    assert!(operation_ids.contains(&"seedance.video_generation"));
+    assert!(operation_ids.contains(&"seed3d.three_d_generation"));
+    assert!(operation_ids.contains(&"doubao.embedding_generation"));
+    assert!(operation_ids.contains(&"doubao.files.upload"));
+    assert!(doubao
+        .service_capabilities
+        .iter()
+        .any(|service| service.category == ProviderServiceCategory::ThreeD));
+    assert!(doubao
+        .service_capabilities
+        .iter()
+        .any(|service| service.category == ProviderServiceCategory::Embedding));
 }
 
 #[test]

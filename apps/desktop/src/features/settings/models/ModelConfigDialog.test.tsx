@@ -425,6 +425,180 @@ describe('ModelConfigDialog', () => {
       },
     })
   })
+
+  it('saves Doubao official reasoning and service tier defaults with advanced JSON', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: doubaoProfile,
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: doubaoProfile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    fireEvent.change(within(dialog).getByLabelText('Thinking mode'), {
+      target: { value: 'auto' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Reasoning effort'), {
+      target: { value: 'xhigh' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Service tier'), {
+      target: { value: 'fast' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Advanced request body JSON'), {
+      target: { value: '{"max_completion_tokens":1024}' },
+    })
+    expect(within(dialog).queryByLabelText('Advanced request headers JSON')).not.toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      configId: 'cfg-doubao',
+      providerDefaults: {
+        body: {
+          max_completion_tokens: 1024,
+          reasoning_effort: 'xhigh',
+          service_tier: 'fast',
+          thinking: { type: 'auto' },
+        },
+        headers: {},
+      },
+      providerId: 'doubao',
+    })
+  })
+
+  it('shows invalid advanced body JSON without saving', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: doubaoProfile,
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: doubaoProfile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    fireEvent.change(within(dialog).getByLabelText('Advanced request body JSON'), {
+      target: { value: '{"response_format":' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(within(dialog).getByRole('alert')).toHaveTextContent(/JSON/i))
+    expect(saveProviderSettings).not.toHaveBeenCalled()
+  })
+
+  it('drops hidden Doubao reasoning defaults when switching to a non-reasoning model', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: {
+        ...doubaoProfile,
+        modelId: 'doubao-seed-character-260628',
+      },
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: doubaoProfile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    fireEvent.change(within(dialog).getByLabelText('Thinking mode'), {
+      target: { value: 'auto' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Reasoning effort'), {
+      target: { value: 'xhigh' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Advanced request body JSON'), {
+      target: { value: '{"max_completion_tokens":1024}' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Model'), {
+      target: { value: 'doubao-seed-character-260628' },
+    })
+    expect(within(dialog).queryByLabelText('Thinking mode')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Reasoning effort')).not.toBeInTheDocument()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      configId: 'cfg-doubao',
+      modelId: 'doubao-seed-character-260628',
+      providerDefaults: {
+        body: {
+          max_completion_tokens: 1024,
+        },
+        headers: {},
+      },
+      providerId: 'doubao',
+    })
+    expect(saveProviderSettings.mock.calls[0][0].providerDefaults?.body).not.toHaveProperty(
+      'thinking',
+    )
+    expect(saveProviderSettings.mock.calls[0][0].providerDefaults?.body).not.toHaveProperty(
+      'reasoning_effort',
+    )
+  })
+
+  it('prefills Doubao managed defaults and preserves reasoning effort', async () => {
+    const profile: ProviderConfig = {
+      ...doubaoProfile,
+      providerDefaults: {
+        body: {
+          reasoning_effort: 'xhigh',
+          response_format: { type: 'json_object' },
+          service_tier: 'fast',
+          thinking: { type: 'auto' },
+        },
+        headers: {
+          'x-ark-beta': 'enabled',
+        },
+      },
+    }
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: profile,
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    expect(within(dialog).getByLabelText('Thinking mode')).toHaveValue('auto')
+    expect(within(dialog).getByLabelText('Reasoning effort')).toHaveValue('xhigh')
+    expect(within(dialog).getByLabelText('Service tier')).toHaveValue('fast')
+    expect(within(dialog).getByLabelText('Advanced request body JSON')).toHaveValue(
+      '{\n  "response_format": {\n    "type": "json_object"\n  }\n}',
+    )
+    expect(within(dialog).queryByLabelText('Advanced request headers JSON')).not.toBeInTheDocument()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      providerDefaults: {
+        body: {
+          reasoning_effort: 'xhigh',
+          response_format: { type: 'json_object' },
+          service_tier: 'fast',
+          thinking: { type: 'auto' },
+        },
+        headers: {},
+      },
+    })
+  })
 })
 
 const modelCapability: ConversationModelCapability = {
@@ -461,6 +635,27 @@ const qwen3Max = {
   ...gpt41,
   displayName: 'Qwen3 Max',
   modelId: 'qwen3-max',
+}
+
+const doubaoSeed21Pro = {
+  ...gpt41,
+  displayName: 'Doubao Seed 2.1 Pro',
+  modelId: 'doubao-seed-2-1-pro-260628',
+  supportedParameters: [
+    'thinking',
+    'reasoning_effort',
+    'service_tier',
+    'response_format',
+    'top_p',
+    'stop',
+  ],
+}
+
+const doubaoSeedCharacter = {
+  ...gpt41,
+  displayName: 'Doubao Seed Character',
+  modelId: 'doubao-seed-character-260628',
+  supportedParameters: ['service_tier', 'max_completion_tokens', 'stop', 'top_p'],
 }
 
 const catalog: ModelProviderCatalogResponse = {
@@ -534,6 +729,28 @@ const catalog: ModelProviderCatalogResponse = {
       sourceUrl: 'https://help.aliyun.com/zh/model-studio/',
       verifiedDate: '2026-07-09',
     },
+    {
+      defaultBaseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+      displayName: 'Doubao',
+      models: [doubaoSeed21Pro, doubaoSeedCharacter],
+      providerId: 'doubao',
+      runtimeCapability: {
+        authScheme: 'bearer',
+        baseUrlRegions: [
+          {
+            id: 'cn-beijing',
+            label: 'China Beijing',
+            baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+          },
+        ],
+        supportsLiveValidation: true,
+        supportsStreamingValidation: true,
+        secretRevealSupported: true,
+      },
+      serviceCapabilities: [],
+      sourceUrl: 'https://www.volcengine.com/docs/82379/1494384',
+      verifiedDate: '2026-07-08',
+    },
   ],
 }
 
@@ -590,4 +807,21 @@ const qwen3MaxProfile: ProviderConfig = {
   modelId: 'qwen3-max',
   displayName: 'Primary Qwen Max',
   modelDescriptor: qwen3Max,
+}
+
+const doubaoProfile: ProviderConfig = {
+  id: 'cfg-doubao',
+  providerId: 'doubao',
+  modelId: 'doubao-seed-2-1-pro-260628',
+  displayName: 'Primary Doubao',
+  baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+  hasApiKey: true,
+  hasOfficialQuotaApiKey: false,
+  isDefault: false,
+  protocol: 'responses',
+  providerDefaults: {
+    body: {},
+    headers: {},
+  },
+  modelDescriptor: doubaoSeed21Pro,
 }

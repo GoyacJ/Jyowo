@@ -13,6 +13,18 @@ fn capability_route_kind_serializes_as_snake_case() {
         serde_json::to_value(CapabilityRouteKind::ImageGeneration).unwrap(),
         json!("image_generation")
     );
+    assert_eq!(
+        serde_json::to_value(CapabilityRouteKind::ThreeDGeneration).unwrap(),
+        json!("three_d_generation")
+    );
+    assert_eq!(
+        serde_json::to_value(CapabilityRouteKind::EmbeddingGeneration).unwrap(),
+        json!("embedding_generation")
+    );
+    assert_eq!(
+        serde_json::to_value(CapabilityRouteKind::FileOperation).unwrap(),
+        json!("file_operation")
+    );
 }
 
 #[test]

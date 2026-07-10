@@ -1721,7 +1721,17 @@ const providerRuntimeCapabilitySchema = z
 const providerServiceCapabilitySchema = z
   .object({
     operationId: z.string().min(1),
-    category: z.enum(['conversation', 'image', 'video', 'audio', 'music', 'file', 'model']),
+    category: z.enum([
+      'conversation',
+      'image',
+      'video',
+      'three_d',
+      'embedding',
+      'audio',
+      'music',
+      'file',
+      'model',
+    ]),
     inputModalities: z.array(modelModalitySchema),
     outputArtifact: z.enum(['text', 'image', 'audio', 'video', 'file', 'embedding']),
     execution: z.enum(['sync', 'async_job', 'websocket']),
@@ -2463,6 +2473,9 @@ const getProviderConfigApiKeyResponseSchema = z
 const capabilityRouteKindSchema = z.enum([
   'image_generation',
   'video_generation',
+  'three_d_generation',
+  'embedding_generation',
+  'file_operation',
   'text_to_speech',
   'speech_to_text',
   'music_generation',

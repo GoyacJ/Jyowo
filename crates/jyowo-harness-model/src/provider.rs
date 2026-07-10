@@ -342,6 +342,16 @@ impl ModelRuntimeSemantics {
     }
 
     #[must_use]
+    pub fn openai_chat_doubao() -> Self {
+        Self {
+            reasoning_protocol: ReasoningProtocolSemantics::PublicThinking,
+            cache_protocol: CacheProtocolSemantics::OpenAiAuto,
+            provider_continuation_dialect: Some("openai_chat.doubao".to_owned()),
+            ..Self::openai_chat_plain()
+        }
+    }
+
+    #[must_use]
     pub fn openai_responses_default() -> Self {
         Self {
             protocol: ModelProtocol::Responses,

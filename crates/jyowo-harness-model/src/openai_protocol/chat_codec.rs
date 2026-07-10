@@ -129,9 +129,18 @@ pub(super) fn chat_response_to_stream(
     }
     let mut index = 0;
 
-    if dialect == OpenAiChatDialect::Qwen {
+    if matches!(dialect, OpenAiChatDialect::Qwen | OpenAiChatDialect::Doubao) {
         if let Some(reasoning_content) = choice.message.reasoning_content {
             if !reasoning_content.is_empty() {
+                let provider_native = choice
+                    .message
+                    .encrypted_content
+                    .filter(|value| !value.is_empty())
+                    .map(|encrypted_content| {
+                        json!({
+                            "encrypted_content": encrypted_content,
+                        })
+                    });
                 events.push(ModelStreamEvent::ContentBlockStart {
                     index,
                     content_type: ContentType::Thinking,
@@ -140,7 +149,7 @@ pub(super) fn chat_response_to_stream(
                     index,
                     delta: ContentDelta::Thinking(ThinkingDelta {
                         text: Some(reasoning_content),
-                        provider_native: None,
+                        provider_native,
                         signature: None,
                     }),
                 });
@@ -674,6 +683,7 @@ struct ChatCompletionChoice {
 struct ChatMessageResponse {
     content: Option<String>,
     reasoning_content: Option<String>,
+    encrypted_content: Option<String>,
     #[serde(default)]
     tool_calls: Vec<ChatToolCall>,
 }

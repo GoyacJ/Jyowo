@@ -87,6 +87,9 @@ pub struct ProviderServiceCapability {
 pub enum CapabilityRouteKind {
     ImageGeneration,
     VideoGeneration,
+    ThreeDGeneration,
+    EmbeddingGeneration,
+    FileOperation,
     TextToSpeech,
     SpeechToText,
     MusicGeneration,
@@ -161,6 +164,8 @@ pub enum ProviderServiceCategory {
     Conversation,
     Image,
     Video,
+    ThreeD,
+    Embedding,
     Audio,
     Music,
     File,

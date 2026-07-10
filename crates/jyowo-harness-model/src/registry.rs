@@ -484,7 +484,7 @@ fn service_capabilities(provider_id: &str) -> Vec<ProviderServiceCapability> {
     match provider_id {
         "km" => kimi_service_capabilities(),
         "minimax" => minimax_service_capabilities(),
-        "doubao" => seedance_service_capabilities(),
+        "doubao" => doubao_service_capabilities(),
         _ => Vec::new(),
     }
 }
@@ -777,8 +777,26 @@ fn minimax_service_capabilities() -> Vec<ProviderServiceCapability> {
     ]
 }
 
-fn seedance_service_capabilities() -> Vec<ProviderServiceCapability> {
+fn doubao_service_capabilities() -> Vec<ProviderServiceCapability> {
     vec![
+        doubao_service(
+            "seedream.image_generation",
+            ProviderServiceCategory::Image,
+            vec![ModelModality::Text, ModelModality::Image],
+            ModelModality::Image,
+            ProviderServiceExecution::AsyncJob,
+            true,
+            ProviderServiceCostRisk::High,
+        ),
+        doubao_service(
+            "seedream.image_generation.query",
+            ProviderServiceCategory::Image,
+            vec![ModelModality::Text],
+            ModelModality::Image,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
         doubao_service(
             "seedance.video_generation",
             ProviderServiceCategory::Video,
@@ -793,6 +811,60 @@ fn seedance_service_capabilities() -> Vec<ProviderServiceCapability> {
             ProviderServiceCategory::Video,
             vec![ModelModality::Text],
             ModelModality::Video,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        doubao_service(
+            "seed3d.three_d_generation",
+            ProviderServiceCategory::ThreeD,
+            vec![ModelModality::Text, ModelModality::Image],
+            ModelModality::File,
+            ProviderServiceExecution::AsyncJob,
+            true,
+            ProviderServiceCostRisk::High,
+        ),
+        doubao_service(
+            "seed3d.three_d_generation.query",
+            ProviderServiceCategory::ThreeD,
+            vec![ModelModality::Text],
+            ModelModality::File,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        doubao_service(
+            "doubao.embedding_generation",
+            ProviderServiceCategory::Embedding,
+            vec![ModelModality::Text, ModelModality::Image],
+            ModelModality::Embedding,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Medium,
+        ),
+        doubao_service(
+            "doubao.files.upload",
+            ProviderServiceCategory::File,
+            vec![ModelModality::File],
+            ModelModality::File,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        doubao_service(
+            "doubao.files.retrieve",
+            ProviderServiceCategory::File,
+            vec![ModelModality::Text],
+            ModelModality::File,
+            ProviderServiceExecution::Sync,
+            false,
+            ProviderServiceCostRisk::Low,
+        ),
+        doubao_service(
+            "doubao.files.delete",
+            ProviderServiceCategory::File,
+            vec![ModelModality::Text],
+            ModelModality::Text,
             ProviderServiceExecution::Sync,
             false,
             ProviderServiceCostRisk::Low,
@@ -929,6 +1001,15 @@ fn inventory_only_models(provider_id: &str) -> Vec<ModelInventoryEntry> {
             ),
         ],
         "qwen" => qwen_unsupported_image_models(),
+        "doubao" => crate::catalog::provider_inventory_only_descriptors("doubao")
+            .into_iter()
+            .map(|descriptor| {
+                let reason = unsupported_reason_for_outputs(
+                    &descriptor.conversation_capability.output_modalities,
+                );
+                unsupported_descriptor(descriptor, reason)
+            })
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -1004,6 +1085,40 @@ fn unsupported_model(
         conversation_capability,
         reason,
     )
+}
+
+fn unsupported_descriptor(descriptor: ModelDescriptor, reason: &str) -> ModelInventoryEntry {
+    ModelInventoryEntry {
+        provider_id: descriptor.provider_id,
+        model_id: descriptor.model_id,
+        display_name: descriptor.display_name,
+        protocol: descriptor.protocol,
+        supported_parameters: Vec::new(),
+        context_window: descriptor.context_window,
+        max_output_tokens: descriptor.max_output_tokens,
+        provider_declared_capability: descriptor.provider_declared_capability,
+        conversation_capability: descriptor.conversation_capability,
+        runtime_semantics: descriptor.runtime_semantics,
+        lifecycle: descriptor.lifecycle,
+        pricing: descriptor.pricing,
+        runtime_status: ModelRuntimeStatus::Unsupported {
+            reason: reason.to_owned(),
+        },
+    }
+}
+
+fn unsupported_reason_for_outputs(output_modalities: &[ModelModality]) -> &'static str {
+    if output_modalities.contains(&ModelModality::Image) {
+        "image output is not supported by the current runtime"
+    } else if output_modalities.contains(&ModelModality::Video) {
+        "video output is not supported by the current runtime"
+    } else if output_modalities.contains(&ModelModality::Embedding) {
+        "embedding output is not supported by the current runtime"
+    } else if output_modalities.contains(&ModelModality::File) {
+        "file output is not supported by the current runtime"
+    } else {
+        "model output is not supported by the current runtime"
+    }
 }
 
 #[must_use]

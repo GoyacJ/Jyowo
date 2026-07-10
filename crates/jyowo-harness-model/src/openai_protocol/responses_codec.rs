@@ -1057,24 +1057,30 @@ mod tests {
 
     #[tokio::test]
     async fn json_response_maps_builtin_tool_output_as_provider_native_thinking() {
-        let stream = json_response_to_stream(json!({
-            "id": "resp_1",
-            "output": [
-                {
-                    "id": "ws_1",
-                    "type": "web_search_call",
-                    "status": "completed",
-                    "action": {
-                        "type": "search",
-                        "query": "qwen responses"
+        let stream = json_response_to_stream(
+            json!({
+                "id": "resp_1",
+                "output": [
+                    {
+                        "id": "ws_1",
+                        "type": "web_search_call",
+                        "status": "completed",
+                        "action": {
+                            "type": "search",
+                            "query": "qwen responses"
+                        }
                     }
+                ],
+                "usage": {
+                    "input_tokens": 1,
+                    "output_tokens": 2
                 }
-            ],
-            "usage": {
-                "input_tokens": 1,
-                "output_tokens": 2
-            }
-        }))
+            }),
+            OpenAiResponsesContinuationCapture {
+                model_id: "qwen-plus".to_owned(),
+                setup_fingerprint: None,
+            },
+        )
         .expect("Responses JSON should parse");
 
         let events = stream.collect::<Vec<_>>().await;

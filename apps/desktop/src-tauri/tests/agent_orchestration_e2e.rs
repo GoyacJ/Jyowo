@@ -1056,6 +1056,7 @@ impl ModelProvider for SessionRoutedProvider {
             max_output_tokens: 8192,
             provider_declared_capability: Default::default(),
             conversation_capability: Default::default(),
+            supported_parameters: Vec::new(),
             runtime_semantics: jyowo_harness_sdk::ext::ModelRuntimeSemantics::messages_default(
                 ModelProtocol::Messages,
             ),

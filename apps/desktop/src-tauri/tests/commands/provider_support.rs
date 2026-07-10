@@ -102,6 +102,50 @@ pub(crate) fn provider_settings_record_with_minimax_config(
     }
 }
 
+pub(crate) fn provider_settings_record_with_doubao_config(
+    config_id: &str,
+) -> ProviderSettingsRecord {
+    ProviderSettingsRecord {
+        default_config_id: Some(config_id.to_owned()),
+        configs: vec![ProviderConfigRecord {
+            api_key: "ark-test-token".to_owned(),
+            protocol: ModelProtocol::Responses,
+            base_url: None,
+            display_name: "Doubao service".to_owned(),
+            id: config_id.to_owned(),
+            model_id: "doubao-seed-2-1-pro-260628".to_owned(),
+            model_options: harness_contracts::ModelRequestOptions::default(),
+            official_quota_api_key: None,
+            provider_id: "doubao".to_owned(),
+            provider_defaults: None,
+            model_descriptor: ProviderModelDescriptorRecord {
+                protocol: ModelProtocol::Responses,
+                conversation_capability: ConversationModelCapabilityRecord {
+                    input_modalities: vec![
+                        ProviderModelModalityRecord::Text,
+                        ProviderModelModalityRecord::Image,
+                    ],
+                    output_modalities: vec![ProviderModelModalityRecord::Text],
+                    context_window: 256_000,
+                    max_output_tokens: 65_536,
+                    streaming: true,
+                    tool_calling: true,
+                    reasoning: true,
+                    prompt_cache: false,
+                    structured_output: true,
+                },
+                context_window: 256_000,
+                display_name: "Doubao Seed 2.1 Pro 260628".to_owned(),
+                lifecycle: ProviderModelLifecycleRecord::Stable,
+                max_output_tokens: 65_536,
+                model_id: "doubao-seed-2-1-pro-260628".to_owned(),
+                provider_id: "doubao".to_owned(),
+                runtime_semantics: None,
+            },
+        }],
+    }
+}
+
 pub(crate) fn test_provider_settings_record() -> ProviderSettingsRecord {
     ProviderSettingsRecord {
         default_config_id: Some(TEST_MODEL_CONFIG_ID.to_owned()),

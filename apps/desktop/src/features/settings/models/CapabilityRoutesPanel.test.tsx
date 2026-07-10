@@ -37,6 +37,10 @@ describe('CapabilityRoutesPanel', () => {
     expect(
       screen.getByRole('row', { name: /Video generation.*Not configured/ }),
     ).toBeInTheDocument()
+    expect(screen.getByRole('row', { name: /3D generation.*Not configured/ })).toBeInTheDocument()
+    expect(
+      screen.getByRole('row', { name: /Embedding generation.*Not configured/ }),
+    ).toBeInTheDocument()
     expect(screen.getByRole('row', { name: /Speech to text.*Not configured/ })).toBeInTheDocument()
     expect(screen.getByRole('row', { name: /Text to speech.*Not configured/ })).toBeInTheDocument()
     expect(
@@ -154,6 +158,9 @@ const routeRows: CapabilityRouteRow[] = [
     unavailableTargets: [],
   },
   routeRow('video_generation'),
+  routeRow('three_d_generation'),
+  routeRow('embedding_generation'),
+  routeRow('file_operation'),
   routeRow('speech_to_text'),
   routeRow('text_to_speech'),
   routeRow('music_generation'),
@@ -173,7 +180,11 @@ function routeRow(kind: CapabilityRouteRow['kind']): CapabilityRouteRow {
         providerDisplayName: 'OpenAI',
         operationIds: [`${kind}.run`],
         execution:
-          kind === 'video_generation' || kind === 'music_generation' ? 'async_job' : 'sync',
+          kind === 'video_generation' ||
+          kind === 'three_d_generation' ||
+          kind === 'music_generation'
+            ? 'async_job'
+            : 'sync',
         costRisk: kind === 'speech_to_text' ? 'low' : 'high',
         health: { status: 'never_checked' },
       },

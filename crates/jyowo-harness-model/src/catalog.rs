@@ -58,6 +58,7 @@ enum RuntimeSemanticsKind {
     BedrockConverse,
     Gemini,
     OpenAiChatDeepSeek,
+    OpenAiChatDoubao,
     OpenAiChatKimi,
     OpenAiChatKimiOptionalReplay,
     OpenAiChatKimiPlain,
@@ -101,7 +102,11 @@ pub(crate) const PROVIDER_METADATA: &[ProviderCatalogMetadata] = &[
         "deepseek",
         "https://api-docs.deepseek.com/quick_start/pricing",
     ),
-    provider("doubao", "https://www.volcengine.com/docs/82379/1494384"),
+    provider_with_date(
+        "doubao",
+        "https://www.volcengine.com/docs/82379/1494384",
+        date(2026, 7, 8),
+    ),
     provider("gemini", "https://ai.google.dev/gemini-api/docs/models"),
     provider_with_date("km", "https://platform.kimi.com/docs", date(2026, 7, 9)),
     provider("local-llama", "https://ollama.com/library"),
@@ -221,77 +226,228 @@ const MODEL_SPECS: &[ModelCatalogSpec] = &[
         true,
         RuntimeSemanticsKind::OpenAiChatDeepSeek,
     ),
-    chat_model(
-        "doubao",
+    doubao_text_model(
+        "doubao-seed-evolving",
+        "Doubao Seed Evolving",
+        true,
+        true,
+        true,
+    ),
+    doubao_text_model(
+        "doubao-seed-2-1-pro-260628",
+        "Doubao Seed 2.1 Pro",
+        true,
+        true,
+        true,
+    ),
+    doubao_text_model(
+        "doubao-seed-2-1-turbo-260628",
+        "Doubao Seed 2.1 Turbo",
+        true,
+        true,
+        true,
+    ),
+    doubao_text_model(
+        "doubao-seed-2-0-lite-260428",
+        "Doubao Seed 2.0 Lite 260428",
+        true,
+        true,
+        true,
+    ),
+    doubao_text_model(
         "doubao-seed-2-0-mini-260428",
-        "Doubao Seed 2.0 Mini",
-        256_000,
-        64_000,
+        "Doubao Seed 2.0 Mini 260428",
         true,
-        false,
-        false,
-        false,
-        RuntimeSemanticsKind::OpenAiChatPlain,
+        true,
+        true,
     ),
-    chat_model(
-        "doubao",
-        "doubao-seed-1-8-260116",
-        "Doubao Seed 1.8",
-        256_000,
-        64_000,
+    doubao_text_model(
+        "doubao-seed-2-0-pro-260215",
+        "Doubao Seed 2.0 Pro",
         true,
-        false,
-        false,
-        false,
-        RuntimeSemanticsKind::OpenAiChatPlain,
+        true,
+        true,
     ),
-    chat_model(
-        "doubao",
-        "doubao-seed-code-251201",
-        "Doubao Seed Code",
-        256_000,
-        64_000,
+    doubao_text_model(
+        "doubao-seed-2-0-lite-260215",
+        "Doubao Seed 2.0 Lite 260215",
         true,
-        false,
-        false,
-        false,
-        RuntimeSemanticsKind::OpenAiChatPlain,
+        true,
+        true,
     ),
-    chat_model(
-        "doubao",
-        "doubao-seed-1.6",
-        "Doubao Seed 1.6",
-        256_000,
-        64_000,
+    doubao_text_model(
+        "doubao-seed-2-0-mini-260215",
+        "Doubao Seed 2.0 Mini 260215",
         true,
-        false,
-        false,
-        false,
-        RuntimeSemanticsKind::OpenAiChatPlain,
+        true,
+        true,
     ),
-    chat_model(
-        "doubao",
-        "doubao-seed-1.6-thinking",
-        "Doubao Seed 1.6 Thinking",
-        256_000,
-        64_000,
+    doubao_text_model(
+        "doubao-seed-2-0-code-preview-260215",
+        "Doubao Seed 2.0 Code Preview",
         true,
         true,
-        false,
-        false,
-        RuntimeSemanticsKind::OpenAiChatPlain,
+        true,
     ),
-    chat_model(
-        "doubao",
-        "doubao-seed-1.6-flash",
-        "Doubao Seed 1.6 Flash",
-        256_000,
-        64_000,
+    doubao_text_model(
+        "doubao-seed-character-260628",
+        "Doubao Seed Character 260628",
+        false,
         true,
         false,
+    ),
+    doubao_retiring_text_model("doubao-seed-1-8-251228", "Doubao Seed 1.8 251228"),
+    doubao_retiring_text_model(
+        "doubao-seed-code-preview-251028",
+        "Doubao Seed Code Preview",
+    ),
+    doubao_text_model(
+        "doubao-seed-character-251128",
+        "Doubao Seed Character 251128",
         false,
+        true,
         false,
-        RuntimeSemanticsKind::OpenAiChatPlain,
+    ),
+    doubao_retiring_vision_model(
+        "doubao-seed-1-6-vision-250815",
+        "Doubao Seed 1.6 Vision 250815",
+    ),
+    doubao_retiring_text_model(
+        "doubao-seed-1-6-flash-250828",
+        "Doubao Seed 1.6 Flash 250828",
+    ),
+    doubao_retiring_text_model("doubao-seed-1-6-250615", "Doubao Seed 1.6 250615"),
+    doubao_retiring_text_model("doubao-seed-1-6-251015", "Doubao Seed 1.6 251015"),
+    doubao_retiring_text_model(
+        "doubao-seed-1-6-flash-250615",
+        "Doubao Seed 1.6 Flash 250615",
+    ),
+    doubao_legacy_chat_model("doubao-1-5-pro-32k-250115", "Doubao 1.5 Pro 32K"),
+    doubao_legacy_chat_model(
+        "doubao-1-5-pro-32k-character-250715",
+        "Doubao 1.5 Pro 32K Character",
+    ),
+    doubao_legacy_vision_chat_model(
+        "doubao-1-5-vision-pro-32k-250115",
+        "Doubao 1.5 Vision Pro 32K",
+    ),
+    doubao_legacy_chat_model("doubao-1-5-lite-32k-250115", "Doubao 1.5 Lite 32K"),
+    doubao_media_model(
+        "doubao-seedream-5-0-pro-260628",
+        "Doubao Seedream 5.0 Pro",
+        TEXT_IMAGE,
+        &[ModelModality::Image],
+        ModelProtocol::Responses,
+        32_000,
+        8192,
+    ),
+    doubao_media_model(
+        "doubao-seedream-5-0-260128",
+        "Doubao Seedream 5.0",
+        TEXT_IMAGE,
+        &[ModelModality::Image],
+        ModelProtocol::Responses,
+        32_000,
+        8192,
+    ),
+    doubao_media_model(
+        "doubao-seedream-5-0-lite-260128",
+        "Doubao Seedream 5.0 Lite",
+        TEXT_IMAGE,
+        &[ModelModality::Image],
+        ModelProtocol::Responses,
+        32_000,
+        8192,
+    ),
+    doubao_media_model(
+        "doubao-seedream-4-5-251128",
+        "Doubao Seedream 4.5",
+        TEXT_IMAGE,
+        &[ModelModality::Image],
+        ModelProtocol::Responses,
+        32_000,
+        8192,
+    ),
+    doubao_media_model(
+        "doubao-seedream-4-0-250828",
+        "Doubao Seedream 4.0",
+        TEXT_IMAGE,
+        &[ModelModality::Image],
+        ModelProtocol::Responses,
+        32_000,
+        8192,
+    ),
+    doubao_media_model(
+        "doubao-seedance-2-0-260128",
+        "Doubao Seedance 2.0",
+        TEXT_IMAGE,
+        &[ModelModality::Video],
+        ModelProtocol::Responses,
+        32_000,
+        8192,
+    ),
+    doubao_media_model(
+        "doubao-seedance-2-0-fast-260128",
+        "Doubao Seedance 2.0 Fast",
+        TEXT_IMAGE,
+        &[ModelModality::Video],
+        ModelProtocol::Responses,
+        32_000,
+        8192,
+    ),
+    doubao_media_model(
+        "doubao-seedance-2-0-mini-260615",
+        "Doubao Seedance 2.0 Mini",
+        TEXT_IMAGE,
+        &[ModelModality::Video],
+        ModelProtocol::Responses,
+        32_000,
+        8192,
+    ),
+    doubao_media_model(
+        "doubao-seed3d-2-0-260328",
+        "Doubao Seed3D 2.0",
+        TEXT_IMAGE,
+        &[ModelModality::File],
+        ModelProtocol::Responses,
+        32_000,
+        8192,
+    ),
+    doubao_media_model(
+        "hyper3d-gen2-260112",
+        "Hyper3D Gen2",
+        TEXT_IMAGE,
+        &[ModelModality::File],
+        ModelProtocol::Responses,
+        32_000,
+        8192,
+    ),
+    doubao_media_model(
+        "hitem3d-2-0-251223",
+        "Hitem3D 2.0",
+        TEXT_IMAGE,
+        &[ModelModality::File],
+        ModelProtocol::Responses,
+        32_000,
+        8192,
+    ),
+    doubao_media_model(
+        "doubao-embedding-vision-251215",
+        "Doubao Embedding Vision 251215",
+        TEXT_IMAGE,
+        &[ModelModality::Embedding],
+        ModelProtocol::Responses,
+        32_000,
+        8192,
+    ),
+    doubao_media_model(
+        "doubao-embedding-vision-250615",
+        "Doubao Embedding Vision 250615",
+        TEXT_IMAGE,
+        &[ModelModality::Embedding],
+        ModelProtocol::Responses,
+        32_000,
+        8192,
     ),
     generate_content_declared_input_model(
         "gemini",
@@ -1022,7 +1178,18 @@ pub fn model_catalog_entries() -> Vec<ModelCatalogEntry> {
 pub(crate) fn provider_model_descriptors(provider_id: &str) -> Vec<ModelDescriptor> {
     MODEL_SPECS
         .iter()
-        .filter(|spec| spec.provider_id == provider_id)
+        .filter(|spec| spec.provider_id == provider_id && is_runtime_supported_provider_model(spec))
+        .map(ModelDescriptor::from)
+        .collect()
+}
+
+#[must_use]
+pub(crate) fn provider_inventory_only_descriptors(provider_id: &str) -> Vec<ModelDescriptor> {
+    MODEL_SPECS
+        .iter()
+        .filter(|spec| {
+            spec.provider_id == provider_id && !is_runtime_supported_provider_model(spec)
+        })
         .map(ModelDescriptor::from)
         .collect()
 }
@@ -1078,6 +1245,13 @@ impl From<&ModelCatalogSpec> for ModelDescriptor {
 }
 
 fn supported_parameters(spec: &ModelCatalogSpec) -> Vec<String> {
+    if spec.provider_id == "doubao" {
+        return doubao_supported_parameters(spec)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+    }
+
     let values: &[&str] = match spec.provider_id {
         "anthropic" => &[
             "thinking",
@@ -1149,6 +1323,37 @@ fn supported_parameters(spec: &ModelCatalogSpec) -> Vec<String> {
         _ => &[],
     };
     values.iter().map(|value| (*value).to_owned()).collect()
+}
+
+fn doubao_supported_parameters(spec: &ModelCatalogSpec) -> Vec<&'static str> {
+    let mut values = vec![
+        "service_tier",
+        "max_completion_tokens",
+        "stop",
+        "stream_options",
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty",
+        "logprobs",
+        "top_logprobs",
+        "seed",
+        "n",
+    ];
+    if spec.reasoning {
+        values.extend(["thinking", "reasoning_effort"]);
+    }
+    if spec.structured_output {
+        values.push("response_format");
+    }
+    if spec.tool_calling {
+        values.extend(["tool_choice", "tools"]);
+    }
+    values
+}
+
+fn is_runtime_supported_provider_model(spec: &ModelCatalogSpec) -> bool {
+    spec.provider_id != "doubao" || spec.runtime_output_modalities == TEXT
 }
 
 fn pricing(spec: &ModelCatalogSpec) -> Option<ModelPricing> {
@@ -1491,6 +1696,122 @@ const fn zhipu_chat_model(
     }
 }
 
+const fn doubao_text_model(
+    model_id: &'static str,
+    display_name: &'static str,
+    reasoning: bool,
+    tool_calling: bool,
+    structured_output: bool,
+) -> ModelCatalogSpec {
+    ModelCatalogSpec {
+        provider_id: "doubao",
+        model_id,
+        display_name,
+        protocol: ModelProtocol::Responses,
+        context_window: 256_000,
+        max_output_tokens: 65_536,
+        tool_calling,
+        reasoning,
+        prompt_cache: true,
+        streaming: true,
+        structured_output,
+        declared_input_modalities: TEXT_IMAGE,
+        declared_output_modalities: TEXT,
+        runtime_input_modalities: TEXT_IMAGE,
+        runtime_output_modalities: TEXT,
+        runtime_semantics: RuntimeSemanticsKind::OpenAiResponses,
+        lifecycle: ModelLifecycleSpec::Stable,
+    }
+}
+
+const fn doubao_retiring_text_model(
+    model_id: &'static str,
+    display_name: &'static str,
+) -> ModelCatalogSpec {
+    let mut spec = doubao_text_model(model_id, display_name, true, true, true);
+    spec.lifecycle = ModelLifecycleSpec::Retiring {
+        retirement_date: date(2026, 12, 31),
+    };
+    spec
+}
+
+const fn doubao_retiring_vision_model(
+    model_id: &'static str,
+    display_name: &'static str,
+) -> ModelCatalogSpec {
+    let mut spec = doubao_retiring_text_model(model_id, display_name);
+    spec.declared_input_modalities = TEXT_IMAGE;
+    spec.runtime_input_modalities = TEXT_IMAGE;
+    spec
+}
+
+const fn doubao_legacy_chat_model(
+    model_id: &'static str,
+    display_name: &'static str,
+) -> ModelCatalogSpec {
+    ModelCatalogSpec {
+        provider_id: "doubao",
+        model_id,
+        display_name,
+        protocol: ModelProtocol::ChatCompletions,
+        context_window: 32_000,
+        max_output_tokens: 16_384,
+        tool_calling: true,
+        reasoning: false,
+        prompt_cache: false,
+        streaming: true,
+        structured_output: true,
+        declared_input_modalities: TEXT,
+        declared_output_modalities: TEXT,
+        runtime_input_modalities: TEXT,
+        runtime_output_modalities: TEXT,
+        runtime_semantics: RuntimeSemanticsKind::OpenAiChatDoubao,
+        lifecycle: ModelLifecycleSpec::Retiring {
+            retirement_date: date(2026, 12, 31),
+        },
+    }
+}
+
+const fn doubao_legacy_vision_chat_model(
+    model_id: &'static str,
+    display_name: &'static str,
+) -> ModelCatalogSpec {
+    let mut spec = doubao_legacy_chat_model(model_id, display_name);
+    spec.declared_input_modalities = TEXT_IMAGE;
+    spec.runtime_input_modalities = TEXT_IMAGE;
+    spec
+}
+
+const fn doubao_media_model(
+    model_id: &'static str,
+    display_name: &'static str,
+    input_modalities: &'static [ModelModality],
+    output_modalities: &'static [ModelModality],
+    protocol: ModelProtocol,
+    context_window: u32,
+    max_output_tokens: u32,
+) -> ModelCatalogSpec {
+    ModelCatalogSpec {
+        provider_id: "doubao",
+        model_id,
+        display_name,
+        protocol,
+        context_window,
+        max_output_tokens,
+        tool_calling: false,
+        reasoning: false,
+        prompt_cache: false,
+        streaming: false,
+        structured_output: false,
+        declared_input_modalities: input_modalities,
+        declared_output_modalities: output_modalities,
+        runtime_input_modalities: input_modalities,
+        runtime_output_modalities: output_modalities,
+        runtime_semantics: RuntimeSemanticsKind::OpenAiResponses,
+        lifecycle: ModelLifecycleSpec::Stable,
+    }
+}
+
 const fn generate_content_declared_input_model(
     provider_id: &'static str,
     model_id: &'static str,
@@ -1627,6 +1948,7 @@ fn runtime_semantics(kind: RuntimeSemanticsKind) -> ModelRuntimeSemantics {
         RuntimeSemanticsKind::BedrockConverse => ModelRuntimeSemantics::bedrock_converse_default(),
         RuntimeSemanticsKind::Gemini => ModelRuntimeSemantics::gemini_default(),
         RuntimeSemanticsKind::OpenAiChatDeepSeek => ModelRuntimeSemantics::openai_chat_deepseek(),
+        RuntimeSemanticsKind::OpenAiChatDoubao => ModelRuntimeSemantics::openai_chat_doubao(),
         RuntimeSemanticsKind::OpenAiChatKimi => ModelRuntimeSemantics::openai_chat_kimi(),
         RuntimeSemanticsKind::OpenAiChatKimiOptionalReplay => {
             ModelRuntimeSemantics::openai_chat_kimi_optional_replay()
