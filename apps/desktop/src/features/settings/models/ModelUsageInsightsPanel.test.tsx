@@ -14,11 +14,11 @@ const readyInsights: ModelUsageInsightsView = {
     rangeStart: '2026-06-24',
     rangeEnd: '2026-06-30',
     metrics: {
-      totalTokens: 2100,
-      peakDayTokens: 40,
-      longestTaskDurationMs: 61_000,
-      currentStreakDays: 2,
-      longestStreakDays: 3,
+      totalTokens: 12_730_000_000,
+      peakDayTokens: 930_000_000,
+      longestTaskDurationMs: 59_280_000,
+      currentStreakDays: 3,
+      longestStreakDays: 18,
     },
     daily: [
       { date: '2026-06-24', usage: usage(5, 0), tokens: 5, level: 1 },
@@ -47,15 +47,21 @@ const readyInsights: ModelUsageInsightsView = {
 }
 
 describe('ModelUsageInsightsPanel', () => {
-  it('renders token metrics and daily heatmap cells', () => {
+  it('renders the compact metric strip and daily heatmap hierarchy', () => {
     renderPanel(readyInsights)
 
     const panel = screen.getByLabelText('Token activity')
-    expect(panel).toHaveTextContent('2,100 tokens')
-    expect(panel).toHaveTextContent('40 tokens')
-    expect(panel).toHaveTextContent('1m 1s')
-    expect(panel).toHaveTextContent('2 days')
+    expect(panel.querySelectorAll('dt')).toHaveLength(5)
+    expect(panel.querySelectorAll('dd')).toHaveLength(5)
+    expect(panel.querySelectorAll('[data-icon]')).toHaveLength(0)
+    expect(panel).toHaveTextContent('12.7B')
+    expect(panel).toHaveTextContent('930M')
+    expect(panel).not.toHaveTextContent('12.7B tokens')
+    expect(panel).toHaveTextContent('16h 28m')
     expect(panel).toHaveTextContent('3 days')
+    expect(panel).toHaveTextContent('18 days')
+    expect(screen.queryByText('2026-06-24 to 2026-06-30')).not.toBeInTheDocument()
+    expect(screen.queryByText('Mon')).not.toBeInTheDocument()
 
     const peakCell = screen.getByTestId('usage-day-2026-06-30')
     expect(peakCell).toHaveAttribute('data-level', '4')
@@ -66,7 +72,14 @@ describe('ModelUsageInsightsPanel', () => {
   it('switches between weekly and cumulative views', () => {
     renderPanel(readyInsights)
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Weekly' }))
+    const dailyTab = screen.getByRole('tab', { name: 'Daily' })
+    const weeklyTab = screen.getByRole('tab', { name: 'Weekly' })
+    expect(dailyTab).toHaveAttribute('tabindex', '0')
+    expect(weeklyTab).toHaveAttribute('tabindex', '-1')
+
+    fireEvent.click(weeklyTab)
+    expect(dailyTab).toHaveAttribute('tabindex', '-1')
+    expect(weeklyTab).toHaveAttribute('tabindex', '0')
     expect(
       screen.getByRole('img', { name: '2026-06-22 to 2026-06-28 · 35 tokens' }),
     ).toBeInTheDocument()
@@ -83,8 +96,9 @@ describe('ModelUsageInsightsPanel', () => {
   it('localizes token chart labels', () => {
     renderPanel(readyInsights, 'zh-CN')
 
-    expect(screen.getByLabelText('Token 活动')).toHaveTextContent('2,100 个 Token')
-    expect(screen.getByLabelText('Token 活动')).toHaveTextContent('1 分 1 秒')
+    expect(screen.getByLabelText('Token 活动')).toHaveTextContent('127.3亿')
+    expect(screen.getByLabelText('Token 活动')).toHaveTextContent('9.3亿')
+    expect(screen.getByLabelText('Token 活动')).toHaveTextContent('16 小时 28 分')
     expect(screen.getByTestId('usage-day-2026-06-30')).toHaveAttribute(
       'title',
       '2026-06-30 · 40 个 Token',

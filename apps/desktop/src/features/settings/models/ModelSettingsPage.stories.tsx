@@ -19,8 +19,6 @@ import { createTestCommandClient } from '@/testing/command-client'
 
 import { ModelSettingsPage } from './ModelSettingsPage'
 
-uiStore.getState().setLocale('en-US')
-
 const meta = {
   title: 'Settings/ModelSettingsPage',
   component: ModelSettingsPage,
@@ -34,20 +32,26 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 const withClient =
-  (createClient: () => CommandClient): Decorator =>
-  (StoryComponent) => (
-    <StoryFrame>
-      <CommandClientProvider client={createClient()}>
-        <QueryClientProvider
-          client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-        >
-          <AppI18nProvider>
-            <StoryComponent />
-          </AppI18nProvider>
-        </QueryClientProvider>
-      </CommandClientProvider>
-    </StoryFrame>
-  )
+  (
+    createClient: () => CommandClient,
+    appearance: { locale?: 'en-US' | 'zh-CN'; dark?: boolean } = {},
+  ): Decorator =>
+  (StoryComponent) => {
+    uiStore.getState().setLocale(appearance.locale ?? 'en-US')
+    return (
+      <StoryFrame dark={appearance.dark}>
+        <CommandClientProvider client={createClient()}>
+          <QueryClientProvider
+            client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+          >
+            <AppI18nProvider>
+              <StoryComponent />
+            </AppI18nProvider>
+          </QueryClientProvider>
+        </CommandClientProvider>
+      </StoryFrame>
+    )
+  }
 
 export const Loading: Story = {
   decorators: [withClient(() => createTestCommandClient({ delayMs: 120_000 }))],
@@ -66,6 +70,10 @@ export const Empty: Story = {
 
 export const Ready: Story = {
   decorators: [withClient(() => readyClient())],
+}
+
+export const ReferenceDesign: Story = {
+  decorators: [withClient(() => readyClient(), { locale: 'zh-CN', dark: true })],
 }
 
 export const PartialData: Story = {
@@ -119,8 +127,12 @@ export const NarrowLayout: Story = {
   },
 }
 
-function StoryFrame({ children }: { children: ReactNode }) {
-  return <main className="min-h-screen bg-background p-4 text-foreground">{children}</main>
+function StoryFrame({ children, dark }: { children: ReactNode; dark?: boolean }) {
+  return (
+    <main className={`${dark ? 'dark ' : ''}min-h-screen bg-background p-4 text-foreground`}>
+      {children}
+    </main>
+  )
 }
 
 function readyClient(overrides: Parameters<typeof createTestCommandClient>[0] = {}) {
@@ -279,43 +291,50 @@ const usageSummary: GetModelUsageSummaryResponse = {
   timezoneOffsetMinutes: 0,
   today: {
     period: 'today',
-    total: usage(120, 80),
+    total: usage(930_000_000, 0),
     byModel: [
-      { key: 'openai/gpt-4.1', providerId: 'openai', modelId: 'gpt-4.1', usage: usage(70, 30) },
+      {
+        key: 'openai/gpt-4.1',
+        providerId: 'openai',
+        modelId: 'gpt-4.1',
+        usage: usage(930_000_000, 0),
+      },
     ],
   },
   monthToDate: {
     period: 'month_to_date',
-    total: usage(420, 240),
+    total: usage(2_140_000_000, 0),
     byModel: [
-      { key: 'openai/gpt-4.1', providerId: 'openai', modelId: 'gpt-4.1', usage: usage(220, 90) },
+      {
+        key: 'openai/gpt-4.1',
+        providerId: 'openai',
+        modelId: 'gpt-4.1',
+        usage: usage(2_140_000_000, 0),
+      },
     ],
   },
   allTime: {
     period: 'all_time',
-    total: usage(1200, 900),
+    total: usage(12_730_000_000, 0),
     byModel: [
-      { key: 'openai/gpt-4.1', providerId: 'openai', modelId: 'gpt-4.1', usage: usage(900, 500) },
+      {
+        key: 'openai/gpt-4.1',
+        providerId: 'openai',
+        modelId: 'gpt-4.1',
+        usage: usage(12_730_000_000, 0),
+      },
     ],
   },
   activity: {
-    rangeStart: '2026-06-24',
-    rangeEnd: '2026-06-30',
-    peakDayTokens: 200,
-    currentStreakDays: 2,
-    longestStreakDays: 3,
-    longestTaskDurationMs: 61_000,
-    days: [
-      { date: '2026-06-24', usage: usage(25, 0) },
-      { date: '2026-06-25', usage: usage(0, 0) },
-      { date: '2026-06-26', usage: usage(40, 10) },
-      { date: '2026-06-27', usage: usage(70, 30) },
-      { date: '2026-06-28', usage: usage(0, 0) },
-      { date: '2026-06-29', usage: usage(120, 40) },
-      { date: '2026-06-30', usage: usage(120, 80) },
-    ],
+    rangeStart: '2025-08-01',
+    rangeEnd: '2026-07-31',
+    peakDayTokens: 930_000_000,
+    currentStreakDays: 3,
+    longestStreakDays: 18,
+    longestTaskDurationMs: 59_280_000,
+    days: referenceUsageDays(),
   },
-  generatedAt: '2026-06-30T12:00:00Z',
+  generatedAt: '2026-07-31T12:00:00Z',
 }
 
 const quotaSnapshots: ListOfficialQuotaSnapshotsResponse = {
@@ -357,4 +376,28 @@ function usage(inputTokens: number, outputTokens: number) {
     outputTokens,
     toolCalls: 0,
   }
+}
+
+function referenceUsageDays() {
+  const start = Date.UTC(2025, 7, 1)
+  return Array.from({ length: 365 }, (_, index) => {
+    const date = new Date(start + index * 86_400_000).toISOString().slice(0, 10)
+    return { date, usage: usage(referenceDayTokens(date, index), 0) }
+  })
+}
+
+function referenceDayTokens(date: string, index: number): number {
+  if (date === '2026-06-18') {
+    return 930_000_000
+  }
+
+  const month = Number(date.slice(5, 7))
+  const density =
+    date < '2026-02-01' ? 0 : ({ 2: 22, 3: 28, 4: 58, 5: 72, 6: 68, 7: 34 }[month] ?? 0)
+  const sample = (index * 37 + month * 17) % 100
+  if (sample >= density) {
+    return 0
+  }
+
+  return ((sample % 4) + 1) * 170_000_000
 }

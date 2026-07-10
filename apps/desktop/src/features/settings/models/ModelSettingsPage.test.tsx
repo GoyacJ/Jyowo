@@ -434,11 +434,11 @@ describe('ModelSettingsPage', () => {
 
     expect(await screen.findByRole('row', { name: /Primary OpenAI/ })).toBeInTheDocument()
     expect(await screen.findByRole('row', { name: /Primary OpenAI/ })).toBeInTheDocument()
-    expect(screen.getByLabelText('Token activity')).toHaveTextContent('2,100 tokens')
+    expect(screen.getByLabelText('Token activity')).toHaveTextContent('2.1K')
     expect(screen.getByLabelText('Token activity')).toHaveTextContent('1m 1s')
     expect(screen.getByTestId('usage-day-2026-06-30')).toHaveAttribute('data-level', '4')
     expect(screen.getAllByText('Today').length).toBeGreaterThan(0)
-    expect(screen.getByText('200 tokens')).toBeInTheDocument()
+    expect(screen.getByLabelText('Token activity')).toHaveTextContent('200')
     expect(screen.queryByLabelText('Model settings summary')).not.toBeInTheDocument()
 
     const primaryRow = within(screen.getByRole('row', { name: /Primary OpenAI/ }))

@@ -1,5 +1,3 @@
-import { Activity, CalendarDays, Flame, Timer, Trophy } from 'lucide-react'
-import type { ReactNode } from 'react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -13,7 +11,13 @@ type UsageInsightsData = Extract<ModelUsageInsightsView, { status: 'ready' }>['d
 type UsageMode = 'daily' | 'weekly' | 'cumulative'
 
 const DAY_MS = 86_400_000
-const HEAT_CLASSES = ['bg-muted/45', 'bg-info/25', 'bg-info/45', 'bg-info/70', 'bg-info'] as const
+const HEAT_CLASSES = [
+  'bg-muted/45 dark:bg-[#232323]',
+  'bg-info/25 dark:bg-[#516b82]',
+  'bg-info/45 dark:bg-[#557897]',
+  'bg-info/70 dark:bg-[#608eaf]',
+  'bg-info dark:bg-[#71b5ff]',
+] as const
 
 export function ModelUsageInsightsPanel({ insights }: ModelUsageInsightsPanelProps) {
   const { t } = useTranslation('settings')
@@ -21,7 +25,7 @@ export function ModelUsageInsightsPanel({ insights }: ModelUsageInsightsPanelPro
   return (
     <section
       aria-label={t('models.usageInsights.label')}
-      className="rounded-md border border-border bg-surface p-4"
+      className="rounded-2xl bg-surface px-4 pt-3.5 pb-2.5 sm:px-6"
     >
       {insights.status === 'ready' ? (
         <ReadyUsageInsights data={insights.data} />
@@ -42,33 +46,25 @@ function ReadyUsageInsights({ data }: { data: UsageInsightsData }) {
   const views = ['daily', 'weekly', 'cumulative'] as const
 
   return (
-    <div className="space-y-4">
+    <div className="@container mx-auto w-full max-w-[732px]">
       <UsageMetricStrip data={data} />
 
-      <div className="rounded-md border border-border bg-background p-3">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="font-medium text-sm">{t('models.usageInsights.activityTitle')}</h2>
-            <p className="text-muted-foreground text-xs">
-              {t('models.usageInsights.range', {
-                start: data.rangeStart,
-                end: data.rangeEnd,
-              })}
-            </p>
-          </div>
+      <div className="mt-9">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-medium text-sm">{t('models.usageInsights.activityTitle')}</h2>
           <div
             aria-label={t('models.usageInsights.views.label')}
-            className="inline-flex h-8 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground"
+            className="inline-flex h-7 items-center justify-center gap-4 text-muted-foreground"
             role="tablist"
           >
             {views.map((view, index) => (
               <button
                 aria-controls={`model-usage-${view}-panel`}
                 aria-selected={mode === view}
-                className={`inline-flex items-center justify-center whitespace-nowrap rounded-md px-2.5 py-0.5 font-medium text-xs outline-none transition-[background-color,color,box-shadow] duration-200 focus-visible:ring-2 focus-visible:ring-ring ${
+                className={`inline-flex min-h-6 items-center justify-center whitespace-nowrap rounded-sm px-1 text-sm outline-none transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-ring ${
                   mode === view
-                    ? 'bg-surface text-foreground shadow-sm'
-                    : 'hover:text-foreground/90'
+                    ? 'font-semibold text-foreground'
+                    : 'font-normal hover:text-foreground/90'
                 }`}
                 id={`model-usage-${view}-tab`}
                 key={view}
@@ -84,6 +80,7 @@ function ReadyUsageInsights({ data }: { data: UsageInsightsData }) {
                 }}
                 onClick={() => setMode(view)}
                 role="tab"
+                tabIndex={mode === view ? 0 : -1}
                 type="button"
               >
                 {t(`models.usageInsights.views.${view}`)}
@@ -107,57 +104,54 @@ function ReadyUsageInsights({ data }: { data: UsageInsightsData }) {
 }
 
 function UsageMetricStrip({ data }: { data: UsageInsightsData }) {
-  const { t } = useTranslation('settings')
+  const { i18n, t } = useTranslation('settings')
   const metrics = [
     {
-      icon: <Activity aria-hidden="true" className="size-4" data-icon />,
       label: t('models.usageInsights.metrics.totalTokens'),
-      value: formatTokenCount(t, data.metrics.totalTokens),
+      value: formatCompactNumber(data.metrics.totalTokens, i18n.language),
     },
     {
-      icon: <Flame aria-hidden="true" className="size-4" data-icon />,
       label: t('models.usageInsights.metrics.peakDayTokens'),
-      value: formatTokenCount(t, data.metrics.peakDayTokens),
+      value: formatCompactNumber(data.metrics.peakDayTokens, i18n.language),
     },
     {
-      icon: <Timer aria-hidden="true" className="size-4" data-icon />,
       label: t('models.usageInsights.metrics.longestTaskDuration'),
       value: formatDuration(t, data.metrics.longestTaskDurationMs),
     },
     {
-      icon: <CalendarDays aria-hidden="true" className="size-4" data-icon />,
       label: t('models.usageInsights.metrics.currentStreak'),
       value: t('models.usageInsights.units.days', { count: data.metrics.currentStreakDays }),
     },
     {
-      icon: <Trophy aria-hidden="true" className="size-4" data-icon />,
       label: t('models.usageInsights.metrics.longestStreak'),
       value: t('models.usageInsights.units.days', { count: data.metrics.longestStreakDays }),
     },
   ]
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-      {metrics.map((metric) => (
-        <UsageMetric
-          key={metric.label}
-          icon={metric.icon}
-          label={metric.label}
-          value={metric.value}
-        />
+    <dl className="grid overflow-hidden rounded-2xl border border-border/80 @min-[640px]:grid-cols-5">
+      {metrics.map((metric, index) => (
+        <UsageMetric index={index} key={metric.label} label={metric.label} value={metric.value} />
       ))}
-    </div>
+    </dl>
   )
 }
 
-function UsageMetric({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
+function UsageMetric({ index, label, value }: { index: number; label: string; value: string }) {
   return (
-    <div className="min-h-20 rounded-md border border-border bg-background p-3">
-      <div className="flex items-center gap-2 text-muted-foreground text-xs">
-        {icon}
-        <span>{label}</span>
-      </div>
-      <div className="mt-2 truncate font-semibold text-base">{value}</div>
+    <div
+      className={`relative flex min-h-[60px] flex-col items-center justify-center px-3 text-center ${
+        index > 0 ? 'border-border/70 border-t @min-[640px]:border-t-0' : ''
+      }`}
+    >
+      {index > 0 ? (
+        <span
+          aria-hidden="true"
+          className="absolute top-1/2 left-0 hidden h-9 -translate-y-1/2 border-border/70 border-l @min-[640px]:block"
+        />
+      ) : null}
+      <dt className="order-2 mt-1 text-muted-foreground text-sm leading-none">{label}</dt>
+      <dd className="order-1 max-w-full truncate font-medium text-base leading-none">{value}</dd>
     </div>
   )
 }
@@ -170,56 +164,45 @@ function DailyTokenHeatmap({ data }: { data: UsageInsightsData }) {
   return (
     <div className="overflow-x-auto pb-1">
       <div className="min-w-max">
-        <div className="flex gap-2">
-          <div className="grid grid-rows-7 gap-1 pt-0.5 text-muted-foreground text-[10px] leading-3">
-            {['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map((day) => (
-              <span key={day} className="h-3">
-                {t(`models.usageInsights.weekdays.${day}`)}
-              </span>
-            ))}
-          </div>
-          <div>
-            <div
-              className="grid grid-flow-col grid-rows-7 gap-1"
-              style={{ gridTemplateColumns: `repeat(${weekCount}, 0.75rem)` }}
+        <div
+          className="grid grid-flow-col grid-rows-7 gap-[3px]"
+          style={{ gridTemplateColumns: `repeat(${weekCount}, 0.6875rem)` }}
+        >
+          {slots.map((slot) =>
+            slot.entry ? (
+              <button
+                aria-label={t('models.usageInsights.dailyPoint', {
+                  date: slot.date,
+                  tokens: formatTokenCount(t, slot.entry.tokens),
+                })}
+                className={`size-[11px] rounded-[3px] ${HEAT_CLASSES[slot.entry.level]}`}
+                data-level={slot.entry.level}
+                data-testid={`usage-day-${slot.date}`}
+                key={slot.date}
+                title={t('models.usageInsights.dailyPoint', {
+                  date: slot.date,
+                  tokens: formatTokenCount(t, slot.entry.tokens),
+                })}
+                type="button"
+              />
+            ) : (
+              <span aria-hidden="true" className="size-[11px]" key={slot.date} />
+            ),
+          )}
+        </div>
+        <div
+          className="mt-2.5 grid gap-[3px] text-muted-foreground text-xs"
+          style={{ gridTemplateColumns: `repeat(${weekCount}, 0.6875rem)` }}
+        >
+          {data.monthLabels.map((label) => (
+            <span
+              className="min-w-8 whitespace-nowrap"
+              key={`${label.date}-${label.label}`}
+              style={{ gridColumn: `${monthLabelColumn(slots[0]?.date, label.date)} / span 4` }}
             >
-              {slots.map((slot) =>
-                slot.entry ? (
-                  <button
-                    aria-label={t('models.usageInsights.dailyPoint', {
-                      date: slot.date,
-                      tokens: formatTokenCount(t, slot.entry.tokens),
-                    })}
-                    className={`size-3 rounded-[3px] border border-border/30 ${HEAT_CLASSES[slot.entry.level]}`}
-                    data-level={slot.entry.level}
-                    data-testid={`usage-day-${slot.date}`}
-                    key={slot.date}
-                    title={t('models.usageInsights.dailyPoint', {
-                      date: slot.date,
-                      tokens: formatTokenCount(t, slot.entry.tokens),
-                    })}
-                    type="button"
-                  />
-                ) : (
-                  <span aria-hidden="true" className="size-3" key={slot.date} />
-                ),
-              )}
-            </div>
-            <div
-              className="mt-2 grid text-muted-foreground text-[10px]"
-              style={{ gridTemplateColumns: `repeat(${weekCount}, 0.75rem)` }}
-            >
-              {data.monthLabels.map((label) => (
-                <span
-                  className="min-w-8"
-                  key={`${label.date}-${label.label}`}
-                  style={{ gridColumn: `${monthLabelColumn(slots[0]?.date, label.date)} / span 4` }}
-                >
-                  {formatMonthLabel(label.date, i18n.language)}
-                </span>
-              ))}
-            </div>
-          </div>
+              {formatMonthLabel(label.date, i18n.language)}
+            </span>
+          ))}
         </div>
       </div>
     </div>
@@ -384,6 +367,13 @@ function formatTokenCount(
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat().format(value)
+}
+
+function formatCompactNumber(value: number, locale: string): string {
+  return new Intl.NumberFormat(locale, {
+    maximumFractionDigits: 1,
+    notation: 'compact',
+  }).format(value)
 }
 
 function formatDuration(
