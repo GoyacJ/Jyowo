@@ -3,14 +3,22 @@ use chrono::NaiveDate;
 use harness_model::ModelLifecycle;
 #[cfg(feature = "minimax")]
 use harness_model::ModelProtocol;
-#[cfg(any(feature = "zhipu", feature = "minimax"))]
+#[cfg(any(
+    feature = "doubao",
+    feature = "minimax",
+    feature = "openai",
+    feature = "zhipu"
+))]
+use harness_model::ProviderServiceCategory;
+#[cfg(any(feature = "zhipu", feature = "minimax", feature = "km"))]
 use harness_model::ProviderServiceExecution;
 use harness_model::{
     build_provider, model_catalog_entries, provider_catalog_entries, provider_inventory_entries,
     resolve_model_descriptor, ConversationModelCapability, ModelModality, ModelRuntimeSemantics,
-    ProviderBuildConfig, ProviderRegistryError, ProviderServiceCategory,
-    ReasoningProtocolSemantics,
+    ProviderBuildConfig, ProviderRegistryError, ReasoningProtocolSemantics,
 };
+#[cfg(feature = "km")]
+use harness_model::{Currency, ProviderServiceCostRisk};
 
 #[test]
 fn registry_rejects_unknown_provider_fail_closed() {
@@ -398,7 +406,23 @@ fn kimi_provider_catalog_matches_official_capabilities() {
     assert!(resolve_model_descriptor("km", "moonshot-v1-32k").is_ok());
     assert!(resolve_model_descriptor("km", "moonshot-v1-128k").is_ok());
     assert!(resolve_model_descriptor("km", "moonshot-v1-8k-vision-preview").is_ok());
-    assert!(resolve_model_descriptor("km", "moonshot-v1-auto").is_err());
+    let auto = resolve_model_descriptor("km", "moonshot-v1-auto")
+        .expect("moonshot-v1-auto is listed in Kimi Chat OpenAPI");
+    assert_eq!(auto.pricing, None);
+    assert!(auto
+        .supported_parameters
+        .contains(&"response_format".to_owned()));
+    assert!(auto
+        .supported_parameters
+        .contains(&"prompt_cache_key".to_owned()));
+
+    let pricing = descriptor
+        .pricing
+        .expect("Kimi K2.6 should have official pricing");
+    assert_eq!(pricing.currency, Currency::Cny);
+    assert_eq!(pricing.input_per_million.to_string(), "6.50");
+    assert_eq!(pricing.cache_read_per_million.unwrap().to_string(), "1.10");
+    assert_eq!(pricing.output_per_million.to_string(), "27.00");
 }
 
 #[cfg(feature = "km")]
@@ -423,6 +447,18 @@ fn kimi_provider_catalog_exposes_runtime_and_service_capabilities() {
         .service_capabilities
         .iter()
         .any(|capability| capability.operation_id == "kimi.balance.retrieve"));
+    assert!(kimi
+        .service_capabilities
+        .iter()
+        .any(|capability| capability.operation_id == "kimi.files.upload"));
+    let batch_create = kimi
+        .service_capabilities
+        .iter()
+        .find(|capability| capability.operation_id == "kimi.batches.create")
+        .expect("Kimi batch create should be advertised");
+    assert_eq!(batch_create.execution, ProviderServiceExecution::AsyncJob);
+    assert!(batch_create.requires_polling);
+    assert_eq!(batch_create.cost_risk, ProviderServiceCostRisk::High);
 }
 
 #[test]

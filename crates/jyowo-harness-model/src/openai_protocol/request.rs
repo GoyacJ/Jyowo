@@ -310,21 +310,46 @@ async fn content_parts(
                 file_id,
                 mime_type,
             } => {
-                if dialect != OpenAiChatDialect::MiniMax
-                    || provider_id != "minimax"
-                    || !mime_type.starts_with("video/")
-                {
+                if dialect == OpenAiChatDialect::Kimi && provider_id == "km" {
+                    if mime_type.starts_with("image/") {
+                        content.push(json!({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": format!("ms://{file_id}")
+                            },
+                        }));
+                        continue;
+                    }
+                    if mime_type.starts_with("video/") {
+                        content.push(json!({
+                            "type": "video_url",
+                            "video_url": {
+                                "url": format!("ms://{file_id}")
+                            },
+                        }));
+                        continue;
+                    }
                     return Err(ModelError::InvalidRequest(
-                        "MiniMax provider file references only support MiniMax video files"
+                        "Kimi provider file references only support Kimi image and video files"
                             .to_owned(),
                     ));
                 }
-                content.push(json!({
-                    "type": "video_url",
-                    "video_url": {
-                        "url": format!("mm_file://{file_id}")
-                    },
-                }));
+                if dialect == OpenAiChatDialect::MiniMax
+                    && provider_id == "minimax"
+                    && mime_type.starts_with("video/")
+                {
+                    content.push(json!({
+                        "type": "video_url",
+                        "video_url": {
+                            "url": format!("mm_file://{file_id}")
+                        },
+                    }));
+                    continue;
+                }
+                return Err(ModelError::InvalidRequest(
+                    "provider file reference is not supported by this OpenAI protocol provider"
+                        .to_owned(),
+                ));
             }
             MessagePart::Thinking(_) => {
                 return Err(ModelError::InvalidRequest(

@@ -288,6 +288,7 @@ fn user_request(stream: bool) -> ModelRequest {
         cache_breakpoints: Vec::new(),
         protocol: ModelProtocol::ChatCompletions,
         extra: Value::Null,
+        options: ModelRequestOptions::default(),
         provider_context: ProviderRequestContext::default(),
     }
 }
