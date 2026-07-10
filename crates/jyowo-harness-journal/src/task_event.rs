@@ -35,6 +35,10 @@ pub(crate) enum TaskEvent {
     TaskArchived {
         archived: bool,
     },
+    TaskActorFailed {
+        segment_id: Option<RunSegmentId>,
+        failed_at: DateTime<Utc>,
+    },
     RunStarted {
         segment_id: RunSegmentId,
         started_at: DateTime<Utc>,
@@ -112,6 +116,13 @@ struct TitlePayload {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ArchivedPayload {
     archived: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TaskActorFailedPayload {
+    segment_id: Option<RunSegmentId>,
+    failed_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,6 +206,19 @@ impl NewTaskEvent {
     pub const fn task_archived(archived: bool) -> Self {
         Self {
             event: TaskEvent::TaskArchived { archived },
+        }
+    }
+
+    #[must_use]
+    pub const fn task_actor_failed(
+        segment_id: Option<RunSegmentId>,
+        failed_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            event: TaskEvent::TaskActorFailed {
+                segment_id,
+                failed_at,
+            },
         }
     }
 
@@ -558,6 +582,13 @@ impl TaskEvent {
                     archived: value.archived,
                 })
             }
+            "task.actor_failed" => {
+                let value: TaskActorFailedPayload = serde_json::from_value(payload)?;
+                Ok(Self::TaskActorFailed {
+                    segment_id: value.segment_id,
+                    failed_at: value.failed_at,
+                })
+            }
             "run.started" => {
                 let value: RunStartedPayload = serde_json::from_value(payload)?;
                 Ok(Self::RunStarted {
@@ -652,6 +683,7 @@ impl TaskEvent {
             Self::TaskCreated { .. } => "task.created",
             Self::TaskTitleChanged { .. } => "task.title_changed",
             Self::TaskArchived { .. } => "task.archived",
+            Self::TaskActorFailed { .. } => "task.actor_failed",
             Self::RunStarted { .. } => "run.started",
             Self::RunCompleted { .. } => "run.completed",
             Self::MessageQueued { .. } => "message.queued",
@@ -674,6 +706,13 @@ impl TaskEvent {
             }
             Self::TaskArchived { archived } => serde_json::to_value(ArchivedPayload {
                 archived: *archived,
+            })?,
+            Self::TaskActorFailed {
+                segment_id,
+                failed_at,
+            } => serde_json::to_value(TaskActorFailedPayload {
+                segment_id: *segment_id,
+                failed_at: *failed_at,
             })?,
             Self::RunStarted {
                 segment_id,
@@ -773,6 +812,7 @@ impl TaskEvent {
                 source.kind,
                 EventSourceKind::Engine | EventSourceKind::Supervisor | EventSourceKind::Recovery
             ),
+            Self::TaskActorFailed { .. } => source.kind == EventSourceKind::Supervisor,
             Self::PermissionRequested { .. } => matches!(
                 source.kind,
                 EventSourceKind::PermissionBroker

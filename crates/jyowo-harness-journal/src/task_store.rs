@@ -165,7 +165,7 @@ impl TaskStore {
 
     #[must_use]
     #[allow(dead_code)]
-    pub(crate) fn supervisor_authority() -> EventAuthority {
+    pub fn supervisor_authority() -> EventAuthority {
         EventAuthority {
             source: EventSource {
                 kind: EventSourceKind::Supervisor,
@@ -173,6 +173,18 @@ impl TaskStore {
                 client_id: None,
             },
             principal_id: "system:supervisor".into(),
+        }
+    }
+
+    #[must_use]
+    pub fn supervisor_command_authority(authority: &EventAuthority) -> EventAuthority {
+        EventAuthority {
+            source: EventSource {
+                kind: EventSourceKind::Supervisor,
+                actor_id: None,
+                client_id: authority.source.client_id,
+            },
+            principal_id: authority.principal_id.clone(),
         }
     }
 

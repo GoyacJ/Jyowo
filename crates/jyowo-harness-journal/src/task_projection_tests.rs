@@ -342,6 +342,104 @@ fn terminal_runs_require_permission_resolution_and_queue_consumption_requires_ac
 }
 
 #[test]
+fn actor_failure_clears_pending_permission_from_every_projection() {
+    let root = temp_root("actor-failure-permission");
+    let path = root.join("tasks.db");
+    let task_id = TaskId::new();
+    let segment_id = RunSegmentId::new();
+    let request_id = RequestId::new();
+    let started_at = Utc::now();
+    let store = TaskStore::open(&path).unwrap();
+    transact(
+        &store,
+        task_id,
+        0,
+        user_source(),
+        NewTaskEvent::task_created("Actor failure"),
+    );
+    transact(
+        &store,
+        task_id,
+        1,
+        supervisor_source(),
+        NewTaskEvent::run_started(segment_id, started_at),
+    );
+    transact(
+        &store,
+        task_id,
+        2,
+        permission_source(),
+        NewTaskEvent::permission_requested(PermissionProjection {
+            request_id,
+            revision: 1,
+            route: PermissionRoute::ForegroundTask,
+        }),
+    );
+    transact(
+        &store,
+        task_id,
+        3,
+        supervisor_source(),
+        NewTaskEvent::task_actor_failed(Some(segment_id), Utc::now()),
+    );
+
+    assert!(store
+        .task_projection(task_id)
+        .unwrap()
+        .unwrap()
+        .pending_permission
+        .is_none());
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let permission_rows: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM permission_projection WHERE task_id = ?1",
+            [task_id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(permission_rows, 0);
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn actor_failure_without_a_segment_cannot_leave_an_active_run() {
+    let root = temp_root("actor-failure-active-run");
+    let path = root.join("tasks.db");
+    let task_id = TaskId::new();
+    let segment_id = RunSegmentId::new();
+    let store = TaskStore::open(&path).unwrap();
+    transact(
+        &store,
+        task_id,
+        0,
+        user_source(),
+        NewTaskEvent::task_created("Actor failure invariant"),
+    );
+    transact(
+        &store,
+        task_id,
+        1,
+        supervisor_source(),
+        NewTaskEvent::run_started(segment_id, Utc::now()),
+    );
+
+    assert!(matches!(
+        store.transact_command(command(task_id, 2, supervisor_source()), |_| {
+            Ok(vec![NewTaskEvent::task_actor_failed(None, Utc::now())])
+        }),
+        Err(TaskStoreError::Projector(_))
+    ));
+    let projection = store.task_projection(task_id).unwrap().unwrap();
+    assert_eq!(projection.state, TaskState::Running);
+    assert_eq!(projection.current_run.unwrap().state, RunState::Running);
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn run_segments_are_unique_and_timeline_preserves_terminal_reason() {
     let root = temp_root("run-identity-and-reason");
     let path = root.join("tasks.db");

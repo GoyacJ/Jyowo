@@ -104,6 +104,40 @@ fn reduce_task(
             projection.title.clone_from(title);
         }
         TaskEvent::TaskArchived { archived } => projection.archived = *archived,
+        TaskEvent::TaskActorFailed {
+            segment_id,
+            failed_at,
+        } => {
+            if let Some(segment_id) = segment_id {
+                let run = projection.current_run.as_mut().ok_or_else(|| {
+                    projector_error("task.actor_failed references a missing active run")
+                })?;
+                if run.segment_id != *segment_id
+                    || !matches!(
+                        run.state,
+                        RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                    )
+                {
+                    return invalid_transition("task.actor_failed does not match the active run");
+                }
+                if *failed_at < run.started_at {
+                    return invalid_transition("task.actor_failed precedes run.started");
+                }
+                run.state = RunState::Failed;
+                run.terminal_reason = Some(RunTerminalReason::Failed);
+                run.ended_at = Some(*failed_at);
+                run.incomplete_output = true;
+            } else if projection.current_run.as_ref().is_some_and(|run| {
+                matches!(
+                    run.state,
+                    RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                )
+            }) {
+                return invalid_transition("task.actor_failed requires the active run segment id");
+            }
+            projection.pending_permission = None;
+            projection.state = TaskState::Failed;
+        }
         TaskEvent::RunStarted {
             segment_id,
             started_at,
@@ -365,6 +399,28 @@ fn project_entity_tables(
                 run,
             )?;
         }
+        TaskEvent::TaskActorFailed { segment_id, .. } => {
+            transaction.execute(
+                "DELETE FROM permission_projection WHERE task_id = ?1",
+                [envelope.task_id.to_string()],
+            )?;
+            if let Some(segment_id) = segment_id {
+                let run = reduced
+                    .projection
+                    .current_run
+                    .as_ref()
+                    .filter(|run| run.segment_id == *segment_id)
+                    .ok_or_else(|| projector_error("failed run projection is missing"))?;
+                upsert_entity(
+                    transaction,
+                    "run_projection",
+                    "run_segment_id",
+                    envelope,
+                    &segment_id.to_string(),
+                    run,
+                )?;
+            }
+        }
         TaskEvent::MessageQueued { queue_item_id, .. }
         | TaskEvent::MessageEdited { queue_item_id, .. } => {
             let item = reduced
@@ -513,6 +569,12 @@ fn project_timeline(
             .into(),
             None,
             false,
+        ),
+        TaskEvent::TaskActorFailed { segment_id, .. } => (
+            TimelineEventKind::Error,
+            "Task actor failed".into(),
+            *segment_id,
+            true,
         ),
         TaskEvent::RunStarted { segment_id, .. } => (
             TimelineEventKind::Notice,

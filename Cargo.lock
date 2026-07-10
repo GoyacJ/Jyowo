@@ -3016,6 +3016,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "jyowo-harness-daemon"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "jyowo-harness-agent-runtime",
+ "jyowo-harness-contracts",
+ "jyowo-harness-engine",
+ "jyowo-harness-journal",
+ "jyowo-harness-sdk",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "jyowo-harness-engine"
 version = "0.1.0"
 dependencies = [

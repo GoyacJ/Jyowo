@@ -5,6 +5,7 @@ members = [
   "crates/jyowo-harness-budget",
   "crates/jyowo-harness-context",
   "crates/jyowo-harness-contracts",
+  "crates/jyowo-harness-daemon",
   "crates/jyowo-harness-engine",
   "crates/jyowo-harness-fs",
   "crates/jyowo-harness-execution",
