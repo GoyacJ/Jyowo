@@ -446,6 +446,24 @@ impl Harness {
         &self,
         request: ConversationTurnRequest,
     ) -> Result<ConversationTurnReceipt, HarnessError> {
+        self.submit_conversation_turn_inner(request, None).await
+    }
+
+    pub async fn submit_conversation_turn_with_run_control(
+        &self,
+        request: ConversationTurnRequest,
+        run_id: RunId,
+        run_control: RunControlHandle,
+    ) -> Result<ConversationTurnReceipt, HarnessError> {
+        self.submit_conversation_turn_inner(request, Some((run_id, run_control)))
+            .await
+    }
+
+    async fn submit_conversation_turn_inner(
+        &self,
+        request: ConversationTurnRequest,
+        controlled_run: Option<(RunId, RunControlHandle)>,
+    ) -> Result<ConversationTurnReceipt, HarnessError> {
         if request.input.prompt.trim().is_empty() {
             return Err(HarnessError::Session(SessionError::Message(
                 "prompt must not be empty".to_owned(),
@@ -468,7 +486,10 @@ impl Harness {
                 "cannot submit turn to ended session".to_owned(),
             )));
         }
-        let run_id = RunId::new();
+        let (run_id, run_control) = match controlled_run {
+            Some((run_id, run_control)) => (run_id, Some(run_control)),
+            None => (RunId::new(), None),
+        };
         let _active_session = ActiveConversationSessionGuard::register(
             Arc::clone(&self.inner.active_conversation_sessions),
             options.tenant_id,
@@ -489,7 +510,12 @@ impl Harness {
             &model_snapshot.conversation_capability.input_modalities,
         );
         let session = self
-            .resume_sdk_session_from_projection(options.clone(), &run_options, projection)
+            .resume_sdk_session_from_projection(
+                options.clone(),
+                &run_options,
+                projection,
+                run_control.map(|run_control| (run_id, run_control)),
+            )
             .await?;
         for patch in hydrated.memory_patches {
             session

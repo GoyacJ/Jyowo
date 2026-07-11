@@ -57,6 +57,7 @@ pub use harness_agent_runtime::{
     BackgroundAgentManager, BackgroundAgentRecord, BackgroundAgentStartRequest,
     BackgroundAgentTransitionError,
 };
+pub use harness_engine::{RunControl, RunControlHandle, TurnOutcome};
 #[cfg(feature = "sqlite-store")]
 pub use harness_journal::SqliteEvidenceRefRegistry;
 pub use harness_journal::{

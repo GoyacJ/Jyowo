@@ -9,6 +9,7 @@ pub(super) struct ActiveConversationRun {
 
 pub(super) struct EngineSessionTurnRunner {
     pub(super) engine: Engine,
+    pub(super) controlled_run: Option<(RunId, RunControlHandle)>,
     pub(super) active_conversation_runs:
         Arc<parking_lot::Mutex<HashMap<RunId, ActiveConversationRun>>>,
     pub(super) active_conversation_sessions:

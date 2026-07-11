@@ -88,6 +88,7 @@ impl Harness {
             .with_event_store(event_store)
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
                 engine: session_engine.engine,
+                controlled_run: None,
                 active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
                 active_conversation_sessions: Arc::clone(&self.inner.active_conversation_sessions),
                 process_registry: self.run_scoped_process_registry(),
@@ -284,6 +285,7 @@ impl Harness {
         options: SessionOptions,
         run_options: &ConversationRunOptions,
         projection: SessionProjection,
+        controlled_run: Option<(RunId, RunControlHandle)>,
     ) -> Result<Session, HarnessError> {
         let limit_permit = self.inner.session_limits.try_acquire()?;
         let prompt_inputs = self.load_effective_prompt_inputs(&options)?;
@@ -351,6 +353,7 @@ impl Harness {
             .with_event_store(event_store)
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
                 engine: session_engine.engine,
+                controlled_run,
                 active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
                 active_conversation_sessions: Arc::clone(&self.inner.active_conversation_sessions),
                 process_registry: self.run_scoped_process_registry(),
@@ -1131,6 +1134,12 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
                 ctx.started_from_scope_set,
             )
             .with_context_seed(ctx.context_seed.clone());
+        let run_ctx = match self.controlled_run.as_ref() {
+            Some((run_id, run_control)) if *run_id == ctx.run_id => {
+                run_ctx.with_run_control(run_control.clone())
+            }
+            _ => run_ctx,
+        };
         #[cfg(feature = "memory-provider-registry")]
         let run_ctx = run_ctx.with_memory_thread_settings(ctx.memory_thread_settings.clone());
         let run_ctx = if let Some(model) = ctx.model.clone() {

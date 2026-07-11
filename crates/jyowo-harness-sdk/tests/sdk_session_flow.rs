@@ -11,6 +11,68 @@ use harness_model::{ContentDelta, ModelStreamEvent, ScriptedProvider, ScriptedRe
 use jyowo_harness_sdk::{prelude::*, testing::*};
 
 #[tokio::test]
+async fn controlled_conversation_turn_uses_caller_run_id_and_control_handle() {
+    let workspace = unique_workspace("sdk-controlled-conversation-turn");
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let model = Arc::new(ScriptedProvider::new(Vec::new()));
+    let harness = Harness::builder()
+        .with_workspace_root(&workspace)
+        .with_model_arc(model.clone())
+        .with_store_arc(store.clone())
+        .with_sandbox(NoopSandbox::new())
+        .build()
+        .await
+        .expect("harness should build");
+    let options = SessionOptions::new(&workspace).with_session_id(session_id);
+    harness
+        .open_or_create_conversation_session(options.clone())
+        .await
+        .expect("session should be created");
+    let control = RunControlHandle::new();
+    control.request(RunControl::ForceStop);
+
+    let receipt = harness
+        .submit_conversation_turn_with_run_control(
+            ConversationTurnRequest::from_prompt(
+                options,
+                ConversationRunOptions::default(),
+                "stop before model inference",
+            ),
+            run_id,
+            control.clone(),
+        )
+        .await
+        .expect("controlled turn should stop at the first safe point");
+
+    assert_eq!(receipt.run_id, run_id);
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), control.outcome())
+            .await
+            .expect("the caller handle should receive the engine outcome"),
+        TurnOutcome::ForceStopped {
+            non_revertible_tool_use_ids: Vec::new(),
+        }
+    );
+    assert!(model.requests().await.is_empty());
+    let events = store
+        .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .expect("journal should be readable")
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, Event::RunStarted(started) if started.run_id == run_id)));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::RunEnded(ended)
+            if ended.run_id == run_id && ended.reason == EndReason::Interrupted
+    )));
+}
+
+#[tokio::test]
 async fn sdk_session_flow_runs_turn_and_writes_journal_events() {
     let workspace = unique_workspace("sdk-session-flow");
     let session_id = SessionId::new();

@@ -59,7 +59,8 @@ use harness_contracts::{
     ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
 };
 use harness_engine::{
-    CancellationToken, Engine, EngineRunner, InterruptCause, RunContext, SessionHandle,
+    CancellationToken, Engine, EngineRunner, InterruptCause, RunContext, RunControlHandle,
+    SessionHandle,
 };
 #[cfg(feature = "steering-queue")]
 use harness_engine::{SteeringDrain, SteeringMerge};

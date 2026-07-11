@@ -617,6 +617,7 @@ impl Harness {
             .with_event_store(event_store)
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
                 engine: session_engine.engine,
+                controlled_run: None,
                 active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
                 active_conversation_sessions: Arc::clone(&self.inner.active_conversation_sessions),
                 process_registry: self.run_scoped_process_registry(),
