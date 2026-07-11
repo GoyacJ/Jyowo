@@ -10,12 +10,21 @@ const storybookUrl = `http://127.0.0.1:${storybookPort}`
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: /(conversation-evidence-storybook|model-settings-storybook)\.spec\.ts/,
+  testMatch:
+    /(conversation-evidence-storybook|model-settings-storybook|task-workspace-visual|task-workspace-accessibility)\.spec\.ts/,
   fullyParallel: false,
   reporter: [['list']],
   use: {
     baseURL: storybookUrl,
+    locale: 'en-US',
+    reducedMotion: 'reduce',
     trace: 'retain-on-failure',
+  },
+  expect: {
+    toHaveScreenshot: {
+      animations: 'disabled',
+      maxDiffPixelRatio: 0,
+    },
   },
   webServer: {
     command: `pnpm exec storybook dev --host 127.0.0.1 --port ${storybookPort} --ci --no-open`,

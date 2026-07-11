@@ -5,9 +5,10 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { taskStoreFor } from '@/features/tasks/use-task'
+import type { DaemonClient } from '@/shared/daemon/client'
 import { uiStore } from '@/shared/state/ui-store'
 import type { CommandClient } from '@/shared/tauri/commands'
-import { CommandClientProvider } from '@/shared/tauri/react'
+import { CommandClientProvider, DaemonClientProvider } from '@/shared/tauri/react'
 import { createTestCommandClient } from '@/testing/command-client'
 
 import { AppShell } from './AppShell'
@@ -39,11 +40,18 @@ function renderAppShell(commandClient: CommandClient = createTestCommandClient()
       queries: { retry: false },
     },
   })
+  const daemonClient = {
+    connect: vi.fn().mockResolvedValue(undefined),
+    listTasks: vi.fn().mockResolvedValue({ tasks: [], type: 'task_list' }),
+    subscribe: vi.fn().mockResolvedValue(async () => undefined),
+  } as unknown as DaemonClient
 
   function Wrapper({ children }: { children: ReactNode }) {
     return (
       <CommandClientProvider client={commandClient}>
-        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        <DaemonClientProvider client={daemonClient}>
+          <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        </DaemonClientProvider>
       </CommandClientProvider>
     )
   }
@@ -97,15 +105,15 @@ describe('AppShell', () => {
       gridTemplateColumns: '300px minmax(0,1fr)',
     })
     expect(screen.getByRole('banner')).toBeInTheDocument()
-    expect(screen.getByRole('navigation', { name: 'Workspace' })).toBeInTheDocument()
+    expect(screen.getByRole('complementary', { name: 'Workspace' })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Tasks' })).toBeInTheDocument()
     expect(screen.getByRole('main')).toContainElement(screen.getByText('Workbench content'))
     expect(screen.getByRole('region', { name: 'Status' })).toBeInTheDocument()
 
-    const workspaceNavigation = screen.getByRole('navigation', { name: 'Workspace' })
+    const workspaceNavigation = screen.getByRole('complementary', { name: 'Workspace' })
     expect(workspaceNavigation).not.toHaveClass('hidden')
-    expect(within(workspaceNavigation).getByText('Projects')).toBeInTheDocument()
     expect(
-      within(workspaceNavigation).getByRole('button', { name: 'New conversation' }),
+      within(workspaceNavigation).getByRole('button', { name: 'New task' }),
     ).toBeInTheDocument()
     expect(
       within(workspaceNavigation).queryByRole('button', { name: 'Search' }),
@@ -159,7 +167,7 @@ describe('AppShell', () => {
 
     renderAppShell()
 
-    const workspaceNavigation = screen.getByRole('navigation', { name: 'Workspace' })
+    const workspaceNavigation = screen.getByRole('complementary', { name: 'Workspace' })
 
     expect(workspaceNavigation).toHaveAttribute('data-collapsed', 'true')
     expect(within(workspaceNavigation).queryByText('Recent conversations')).not.toBeInTheDocument()

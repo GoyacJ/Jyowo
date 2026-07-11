@@ -17,7 +17,7 @@ export type UiPreferences = {
 }
 
 const UI_PREFERENCES_DEFAULTS: UiPreferences = {
-  theme: 'light',
+  theme: 'system',
   locale: DEFAULT_APP_LOCALE,
   sidebarCollapsed: false,
   taskWorkbenchMode: 'closed',
@@ -83,6 +83,9 @@ export async function writeUiPreferences(preferences: Partial<UiPreferences>) {
   >
 
   await Promise.all(entries.map(([key, value]) => store.set(key, value)))
+  if (preferences.theme && typeof window !== 'undefined') {
+    window.localStorage.setItem('jyowo-ui-theme', preferences.theme)
+  }
 }
 
 function isUiThemePreference(value: unknown): value is UiThemePreference {

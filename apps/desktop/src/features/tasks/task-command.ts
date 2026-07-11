@@ -2,7 +2,7 @@ import type { CommandMetadata, ServerFrame, TypedUlid } from '@/generated/daemon
 
 const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
 
-export class TaskCommandError extends Error {
+class TaskCommandError extends Error {
   constructor(readonly reason: string) {
     super(reason.replaceAll('_', ' '))
     this.name = 'TaskCommandError'

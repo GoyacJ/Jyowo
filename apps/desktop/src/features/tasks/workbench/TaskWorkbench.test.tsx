@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { TaskEventEnvelope, TaskProjection } from '@/generated/daemon-protocol'
@@ -73,6 +73,30 @@ describe('TaskWorkbench', () => {
     expect(await screen.findByText('Artifact is unavailable')).toBeInTheDocument()
   })
 
+  it('clears the selected artifact when switching to a different panel', async () => {
+    const readBlob = vi.fn().mockResolvedValue(blob('diff --git a/a.rs b/a.rs\n+fixed'))
+    uiStore.setState({ taskWorkbenchSelection: selection('changes', { blobId }) })
+    render(<TaskWorkbench client={{ readBlob }} events={events} projection={projection} />)
+
+    expect(await screen.findByText(/diff --git/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'Commands' }))
+
+    expect(uiStore.getState().taskWorkbenchSelection?.blobId).toBeUndefined()
+    expect(screen.queryByText(/diff --git/)).not.toBeInTheDocument()
+    expect(screen.queryByText('Artifact is unavailable')).not.toBeInTheDocument()
+  })
+
+  it('hides decorative workbench icons from assistive technology', () => {
+    const { container } = render(
+      <TaskWorkbench client={{ readBlob: vi.fn() }} events={events} projection={projection} />,
+    )
+
+    expect(container.querySelectorAll('header svg')).not.toHaveLength(0)
+    for (const icon of container.querySelectorAll('header svg')) {
+      expect(icon).toHaveAttribute('aria-hidden', 'true')
+    }
+  })
+
   it('renders historical environment, source, and audit projections from the snapshot', async () => {
     render(
       <TaskWorkbench
@@ -93,19 +117,20 @@ describe('TaskWorkbench', () => {
     expect(screen.getByText('Command failed')).toBeInTheDocument()
   })
 
-  it('overlays narrow layouts and uses the selected desktop width mode', () => {
+  it('stacks narrow layouts and uses the selected desktop width mode', () => {
     const { rerender } = render(
       <TaskWorkbench client={{ readBlob: vi.fn() }} events={events} projection={projection} />,
     )
 
     const workbench = screen.getByRole('complementary', { name: 'Task workbench' })
-    expect(workbench).toHaveClass('absolute', 'w-full', 'md:static', 'md:w-[400px]')
+    expect(workbench).toHaveClass('static', 'w-full', 'task-workbench-panel')
+    expect(workbench).toHaveAttribute('data-mode', 'inspector')
 
     act(() => uiStore.setState({ taskWorkbenchMode: 'collaboration' }))
     rerender(
       <TaskWorkbench client={{ readBlob: vi.fn() }} events={events} projection={projection} />,
     )
-    expect(workbench).toHaveClass('md:w-[48%]')
+    expect(workbench).toHaveAttribute('data-mode', 'collaboration')
   })
 })
 
@@ -150,6 +175,7 @@ function blob(text: string) {
   return {
     blobId,
     bytes: new TextEncoder().encode(text),
+    contentHash: Array.from({ length: 32 }, () => 1),
     mediaType: 'text/plain',
     missing: false,
     size: text.length,

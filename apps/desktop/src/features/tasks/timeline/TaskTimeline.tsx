@@ -67,6 +67,9 @@ export function TaskTimeline({
 
   return (
     <div className="relative min-h-0 flex-1">
+      <p aria-live="polite" className="sr-only" role="status">
+        {latest ? `Task update: ${latest.summary}` : 'Task has no activity yet'}
+      </p>
       <div
         className="h-full overflow-y-auto overscroll-contain px-1 pb-28"
         data-testid="task-timeline-viewport"

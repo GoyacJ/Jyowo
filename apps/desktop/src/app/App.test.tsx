@@ -49,6 +49,17 @@ const uiPreferencesStoreFixture = vi.hoisted(() => ({
 
 vi.mock('@/shared/local-store/ui-preferences-store', () => uiPreferencesStoreFixture)
 
+const tauriWindowFixture = vi.hoisted(() => ({
+  getCurrentWindow: vi.fn(),
+  show: vi.fn(async () => undefined),
+}))
+
+tauriWindowFixture.getCurrentWindow.mockReturnValue({ show: tauriWindowFixture.show })
+
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: tauriWindowFixture.getCurrentWindow,
+}))
+
 function setSystemColorSchemeFixture(matches: boolean) {
   const listeners = new Set<EventListenerOrEventListenerObject>()
   const mediaQueryList = {
@@ -109,9 +120,14 @@ describe('App', () => {
     })
     uiPreferencesStoreFixture.writeUiPreferences.mockReset()
     uiPreferencesStoreFixture.writeUiPreferences.mockResolvedValue(undefined)
+    tauriWindowFixture.getCurrentWindow.mockClear()
+    tauriWindowFixture.show.mockReset()
+    tauriWindowFixture.show.mockResolvedValue(undefined)
+    Reflect.deleteProperty(window, '__TAURI_INTERNALS__')
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     window.history.pushState(null, '', '/')
     uiStore.getState().setTheme('light')
     uiStore.getState().setLocale('en-US')
@@ -119,6 +135,7 @@ describe('App', () => {
     uiStore.getState().setTaskWorkbenchMode('closed')
     document.documentElement.classList.remove('dark')
     delete document.documentElement.dataset.theme
+    Reflect.deleteProperty(window, '__TAURI_INTERNALS__')
     vi.restoreAllMocks()
   })
 
@@ -391,5 +408,146 @@ describe('App', () => {
       sidebarCollapsed: true,
       taskWorkbenchMode: 'collaboration',
     })
+  })
+
+  it('shows the Tauri window only after the stored theme is applied', async () => {
+    let resolvePreferences!: (
+      preferences: Awaited<ReturnType<typeof uiPreferencesStoreFixture.readUiPreferences>>,
+    ) => void
+    uiPreferencesStoreFixture.readUiPreferences.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolvePreferences = resolve
+      }),
+    )
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    })
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      queueMicrotask(() => callback(0))
+      return 1
+    })
+    let themeAtShow: string | null = null
+    tauriWindowFixture.show.mockImplementation(async () => {
+      themeAtShow = document.documentElement.classList.contains('dark') ? 'dark' : 'light'
+    })
+
+    render(
+      <AppProviders commandClient={createTestCommandClient()}>
+        <span>Workspace</span>
+      </AppProviders>,
+    )
+
+    expect(tauriWindowFixture.show).not.toHaveBeenCalled()
+
+    await act(async () => {
+      resolvePreferences({
+        theme: 'dark',
+        locale: 'en-US',
+        sidebarCollapsed: false,
+        taskWorkbenchMode: 'closed',
+        chatComposerHeight: 160,
+        contextPanelWidth: 320,
+      })
+    })
+
+    await waitFor(() => expect(tauriWindowFixture.show).toHaveBeenCalledOnce())
+    expect(themeAtShow).toBe('dark')
+    expect(document.documentElement.dataset.theme).toBe('dark')
+  })
+
+  it('shows the Tauri window with the prepaint theme when preference hydration times out', async () => {
+    vi.useFakeTimers()
+    uiPreferencesStoreFixture.readUiPreferences.mockReturnValueOnce(new Promise(() => undefined))
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    })
+    uiStore.getState().setTheme('system')
+    document.documentElement.dataset.theme = 'system'
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0)
+      return 1
+    })
+
+    render(
+      <AppProviders commandClient={createTestCommandClient()}>
+        <span>Workspace</span>
+      </AppProviders>,
+    )
+
+    expect(tauriWindowFixture.show).not.toHaveBeenCalled()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500)
+    })
+
+    expect(tauriWindowFixture.show).toHaveBeenCalledOnce()
+    expect(document.documentElement.dataset.theme).toBe('system')
+  })
+
+  it('retries a transient Tauri window show failure', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    })
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0)
+      return 1
+    })
+    tauriWindowFixture.show.mockRejectedValueOnce(new Error('window manager unavailable'))
+    tauriWindowFixture.show.mockResolvedValueOnce(undefined)
+
+    render(
+      <AppProviders commandClient={createTestCommandClient()}>
+        <span>Workspace</span>
+      </AppProviders>,
+    )
+
+    await act(async () => {
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(250)
+    })
+
+    expect(tauriWindowFixture.show).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows the hidden Tauri window without waiting for animation frames', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    })
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
+
+    render(
+      <AppProviders commandClient={createTestCommandClient()}>
+        <span>Workspace</span>
+      </AppProviders>,
+    )
+
+    await waitFor(() => expect(tauriWindowFixture.show).toHaveBeenCalledOnce())
+  })
+
+  it('retries when showing the Tauri window does not settle', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    })
+    tauriWindowFixture.show.mockReturnValueOnce(new Promise(() => undefined))
+    tauriWindowFixture.show.mockResolvedValueOnce(undefined)
+
+    render(
+      <AppProviders commandClient={createTestCommandClient()}>
+        <span>Workspace</span>
+      </AppProviders>,
+    )
+
+    await act(async () => {
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(1_250)
+    })
+
+    expect(tauriWindowFixture.show).toHaveBeenCalledTimes(2)
   })
 })

@@ -16,6 +16,7 @@ import type {
 } from '@/shared/tauri/commands'
 import { pickAttachmentPath } from '@/shared/tauri/file-dialog'
 import { useCommandClient, useDaemonClient } from '@/shared/tauri/react'
+import { PendingPermissionDecision } from './PendingPermissionDecision'
 import { QueuedMessages } from './queue/QueuedMessages'
 import { RunStatusBar } from './RunStatusBar'
 import { TaskComposer } from './TaskComposer'
@@ -187,10 +188,10 @@ export function TaskWorkspaceView({
   }
 
   return (
-    <section className="flex h-full min-h-0 w-full flex-col">
-      <div className="relative flex min-h-0 flex-1">
+    <section className="task-workspace-container flex h-full min-h-0 w-full flex-col">
+      <div className="task-workspace-layout relative flex min-h-0 flex-1 flex-col overflow-y-auto">
         <div
-          className="mx-auto flex h-full min-w-0 w-full max-w-[820px] flex-col"
+          className="task-reading-column mx-auto flex h-full min-w-0 w-full max-w-[820px] shrink-0 flex-col"
           data-testid="task-reading-column"
         >
           <header className="flex items-start justify-between gap-6 border-border/70 border-b px-1 pb-4">
@@ -215,6 +216,14 @@ export function TaskWorkspaceView({
           </div>
           {client ? (
             <div className="shrink-0 border-border/70 border-t bg-background/95 px-1 pt-3 pb-1 backdrop-blur-sm">
+              {snapshot.projection.pendingPermission && executeCommand ? (
+                <PendingPermissionDecision
+                  executeCommand={executeCommand}
+                  key={`${snapshot.projection.pendingPermission.requestId}:${snapshot.projection.pendingPermission.revision}`}
+                  permission={snapshot.projection.pendingPermission}
+                  taskId={snapshot.projection.taskId}
+                />
+              ) : null}
               <QueuedMessages
                 client={client}
                 expectedStreamVersion={commandStreamVersion}
@@ -271,7 +280,7 @@ function workbenchPanel(item: TimelineItemProjection): TaskWorkbenchPanel | null
   return null
 }
 
-export function queueItems(snapshot: TaskSnapshot, events: TaskEventEnvelope[]) {
+function queueItems(snapshot: TaskSnapshot, events: TaskEventEnvelope[]) {
   const byId = new Map(snapshot.projection.queue.map((item) => [item.queueItemId, item]))
   for (const event of events) {
     if (event.globalOffset <= snapshot.snapshotOffset) continue

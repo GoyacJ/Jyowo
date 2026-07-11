@@ -32,7 +32,7 @@ describe('TaskWorkspace', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Malformed daemon frame')
   })
 
-  it('renders daemon-projected queued messages above the composer without adding timeline turns', () => {
+  it('renders daemon-projected queued messages above the composer without adding timeline turns', async () => {
     const client = { connect: vi.fn(), request: vi.fn() }
     const { rerender } = render(
       <TaskWorkspaceView
@@ -73,6 +73,8 @@ describe('TaskWorkspace', () => {
     const queue = screen.getByRole('list', { name: 'Queued messages' })
     expect(within(queue).getByText('First queued instruction')).toBeInTheDocument()
     expect(within(queue).getByText('Second queued instruction')).toBeInTheDocument()
+    const queueAnnouncement = await screen.findByText('2 queued messages added')
+    expect(queueAnnouncement).toHaveAttribute('aria-live', 'polite')
     expect(screen.queryAllByTestId('user-message')).toHaveLength(0)
     expect(
       screen.getByPlaceholderText('Ask Jyowo anything about this project…'),
@@ -136,6 +138,85 @@ describe('TaskWorkspace', () => {
         metadata: expect.objectContaining({ expectedStreamVersion: 3 }),
       }),
     )
+  })
+
+  it('resolves the projected foreground permission with its request revision', async () => {
+    const request = vi.fn().mockResolvedValue(acceptedCommand(3, 3))
+    const permissionSnapshot: TaskSnapshot = {
+      ...runningSnapshot,
+      projection: {
+        ...runningSnapshot.projection,
+        pendingPermission: {
+          details: {
+            actionPlanHash: 'plan-hash',
+            actorSource: { kind: 'engine' },
+            expiresAt: '2026-07-11T02:00:00Z',
+            kind: 'command',
+            options: [
+              { label: 'Allow once', optionId: 'allow_once' },
+              { label: 'Deny', optionId: 'deny' },
+            ],
+            preview: 'Run cargo test',
+            sandboxPolicyHash: 'sandbox-hash',
+            segmentId: '01J00000000000000000000021',
+            subject: { command: 'cargo test' },
+            workspace: '/workspace',
+          },
+          requestId: '01J00000000000000000000022',
+          revision: 4,
+          route: 'foreground_task',
+        },
+      },
+    }
+    render(
+      <TaskWorkspaceView
+        client={{ connect: vi.fn(), request }}
+        connectionState="connected"
+        snapshot={permissionSnapshot}
+      />,
+    )
+
+    expect(screen.getByRole('status', { name: 'Pending permission request' })).toHaveTextContent(
+      'Permission request: Run cargo test',
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
+
+    await waitFor(() => expect(request).toHaveBeenCalledOnce())
+    expect(request.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        optionId: 'allow_once',
+        permissionRequestId: '01J00000000000000000000022',
+        requestRevision: 4,
+        taskId: runningSnapshot.projection.taskId,
+        type: 'resolve_permission',
+      }),
+    )
+  })
+
+  it('shows a recoverable error when projected permission details are unavailable', () => {
+    const permissionSnapshot: TaskSnapshot = {
+      ...runningSnapshot,
+      projection: {
+        ...runningSnapshot.projection,
+        pendingPermission: {
+          requestId: '01J00000000000000000000022',
+          revision: 4,
+          route: 'foreground_task',
+        },
+      },
+    }
+
+    render(
+      <TaskWorkspaceView
+        client={{ connect: vi.fn(), request: vi.fn() }}
+        connectionState="connected"
+        snapshot={permissionSnapshot}
+      />,
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Permission details unavailable')
+    expect(screen.getByRole('alert')).toHaveTextContent('Restart or recover the task')
+    expect(screen.queryByRole('button', { name: 'Allow once' })).not.toBeInTheDocument()
   })
 
   it('serializes queue and composer commands against one workspace stream cursor', async () => {
@@ -209,6 +290,7 @@ describe('TaskWorkspace', () => {
     )
 
     expect(screen.getByTestId('user-message')).toHaveTextContent('Consumed instruction')
+    expect(screen.getByTestId('user-message')).toHaveClass('break-words')
     expect(screen.queryByText('Deleted instruction')).not.toBeInTheDocument()
     expect(screen.queryByRole('list', { name: 'Queued messages' })).not.toBeInTheDocument()
   })

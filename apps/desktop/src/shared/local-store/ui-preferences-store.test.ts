@@ -39,7 +39,7 @@ describe('ui-preferences-store', () => {
     const { UI_PREFERENCES_STORE_PATH, readUiPreferences } = await importUiPreferencesStore()
 
     await expect(readUiPreferences()).resolves.toEqual({
-      theme: 'light',
+      theme: 'system',
       locale: 'zh-CN',
       sidebarCollapsed: false,
       taskWorkbenchMode: 'closed',
@@ -50,7 +50,7 @@ describe('ui-preferences-store', () => {
     expect(storeFixture.load).toHaveBeenCalledWith(UI_PREFERENCES_STORE_PATH, {
       autoSave: 100,
       defaults: {
-        theme: 'light',
+        theme: 'system',
         locale: 'zh-CN',
         sidebarCollapsed: false,
         taskWorkbenchMode: 'closed',
@@ -72,7 +72,7 @@ describe('ui-preferences-store', () => {
     const { readUiPreferences } = await importUiPreferencesStore()
 
     await expect(readUiPreferences()).resolves.toEqual({
-      theme: 'light',
+      theme: 'system',
       locale: 'zh-CN',
       sidebarCollapsed: false,
       taskWorkbenchMode: 'closed',

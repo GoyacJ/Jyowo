@@ -2,6 +2,7 @@ import { Clock3, GitPullRequestArrow, ListTodo, LoaderCircle } from 'lucide-reac
 import { useEffect, useState } from 'react'
 
 import type { TaskProjection, TimelineItemProjection } from '@/generated/daemon-protocol'
+import { cn } from '@/shared/lib/utils'
 
 export function RunStatusBar({
   items,
@@ -24,22 +25,30 @@ export function RunStatusBar({
   const changeSummary = [...segmentItems].reverse().find((item) => item.kind === 'diff')?.summary
 
   return (
-    <div
+    <section
       aria-label="Current run status"
       className="flex min-h-9 items-center gap-4 border-border border-t bg-surface/75 px-4 text-xs backdrop-blur-sm"
-      role="status"
     >
-      <span className="flex min-w-0 flex-1 items-center gap-2 font-medium text-foreground">
+      <span aria-atomic="true" aria-live="polite" className="sr-only" role="status">
+        {currentStep}, {queueCount} queued, {changeSummary ?? 'No file changes'}
+      </span>
+      <span
+        className={cn(
+          'flex min-w-0 flex-1 items-center gap-2 font-medium',
+          run.state === 'waiting_permission'
+            ? 'text-state-waiting'
+            : run.state === 'yielding'
+              ? 'text-state-yielding'
+              : 'text-state-running',
+        )}
+      >
         <LoaderCircle aria-hidden="true" className="size-3.5 shrink-0 animate-spin" />
         <span className="truncate">{currentStep}</span>
       </span>
       <StatusDatum icon={<Clock3 />} label={formatElapsed(run.startedAt, clock)} />
       <StatusDatum icon={<ListTodo />} label={`${queueCount} queued`} />
-      <StatusDatum
-        icon={<GitPullRequestArrow />}
-        label={changeSummary ?? 'No file changes'}
-      />
-    </div>
+      <StatusDatum icon={<GitPullRequestArrow />} label={changeSummary ?? 'No file changes'} />
+    </section>
   )
 }
 

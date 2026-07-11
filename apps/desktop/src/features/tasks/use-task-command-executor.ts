@@ -10,7 +10,7 @@ import type { DaemonClient } from '@/shared/daemon/client'
 
 import { createTaskCommandMetadata } from './task-command'
 
-export type TaskMutationRequest = Extract<ClientRequest, { metadata: CommandMetadata }>
+type TaskMutationRequest = Extract<ClientRequest, { metadata: CommandMetadata }>
 
 export type TaskCommandExecutor = (
   operation: string,

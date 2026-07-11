@@ -9,7 +9,11 @@
     "src/**/*.{ts,tsx}",
     "*.ts"
   ],
+  "ignore": [
+    "src/generated/**"
+  ],
   "ignoreDependencies": [
+    "json-schema-to-typescript",
     "tailwindcss"
   ]
 }

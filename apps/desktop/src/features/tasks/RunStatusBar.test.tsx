@@ -17,11 +17,15 @@ describe('RunStatusBar', () => {
       />,
     )
 
-    const status = screen.getByRole('status', { name: 'Current run status' })
-    expect(status).toHaveTextContent('Running tests')
-    expect(status).toHaveTextContent('1m 5s')
-    expect(status).toHaveTextContent('2 queued')
-    expect(status).toHaveTextContent('Changed recovery.rs')
+    const statusBar = screen.getByRole('region', { name: 'Current run status' })
+    expect(statusBar).toHaveTextContent('Running tests')
+    expect(statusBar).toHaveTextContent('1m 5s')
+    expect(statusBar).toHaveTextContent('2 queued')
+    expect(statusBar).toHaveTextContent('Changed recovery.rs')
+
+    const announcement = screen.getByRole('status')
+    expect(announcement).toHaveTextContent('Running tests, 2 queued, Changed recovery.rs')
+    expect(announcement).not.toHaveTextContent('1m 5s')
   })
 
   it('is absent when no segment is active', () => {

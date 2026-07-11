@@ -19,12 +19,12 @@ type BridgeOwnedRequest =
   | Extract<ClientRequest, { type: 'read_blob' }>
   | Extract<ClientRequest, { type: 'subscribe_events' }>
 
-export type DaemonRequest = Exclude<ClientRequest, BridgeOwnedRequest>
+type DaemonRequest = Exclude<ClientRequest, BridgeOwnedRequest>
 export type TaskSnapshot = Omit<Extract<ServerMessage, { type: 'task_snapshot' }>, 'type'>
 export type DaemonEventBatch = Extract<ServerMessage, { type: 'event_batch' }>
 export type DaemonSubscriptionHandler = (frame: ServerFrame) => void
 
-export interface DaemonBlob {
+interface DaemonBlob {
   blobId: TypedUlid
   bytes: Uint8Array | null
   contentHash: number[]
@@ -216,7 +216,7 @@ export function createDaemonClient(
   }
 }
 
-export class DaemonResponseError extends Error {
+class DaemonResponseError extends Error {
   constructor(
     readonly code: string,
     message: string,

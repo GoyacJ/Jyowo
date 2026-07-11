@@ -1,6 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 
 import { fireEvent, render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { TaskProjection, TaskState } from '@/generated/daemon-protocol'
@@ -56,6 +57,38 @@ describe('TaskList', () => {
     expect(onSelectTask).toHaveBeenCalledWith(taskId(1))
     fireEvent.click(screen.getByRole('button', { name: 'New task' }))
     expect(onCreateTask).toHaveBeenCalledOnce()
+  })
+
+  it('reaches task creation and task selection from the keyboard', async () => {
+    const user = userEvent.setup()
+    const onCreateTask = vi.fn()
+    const onSelectTask = vi.fn()
+    render(
+      <TaskList
+        onCreateTask={onCreateTask}
+        onSelectTask={onSelectTask}
+        tasks={[projection(1, 'completed')]}
+      />,
+    )
+
+    await user.tab()
+    expect(screen.getByRole('button', { name: 'New task' })).toHaveFocus()
+    await user.keyboard('{Enter}')
+    expect(onCreateTask).toHaveBeenCalledOnce()
+
+    await user.tab()
+    expect(screen.getByRole('button', { name: /Task 1/ })).toHaveFocus()
+    await user.keyboard('{Enter}')
+    expect(onSelectTask).toHaveBeenCalledWith(taskId(1))
+  })
+
+  it('uses the idle state token for a ready task', () => {
+    render(
+      <TaskList onCreateTask={vi.fn()} onSelectTask={vi.fn()} tasks={[projection(1, 'idle')]} />,
+    )
+
+    const task = screen.getByRole('button', { name: /Task 1/ })
+    expect(task.querySelector('svg')).toHaveClass('text-state-idle')
   })
 })
 

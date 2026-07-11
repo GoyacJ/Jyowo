@@ -35,7 +35,7 @@ export function TaskList({
         <button
           aria-label="New task"
           className={cn(
-            'flex h-9 w-full items-center rounded-md border border-border bg-surface text-sm hover:bg-muted disabled:opacity-50',
+            'flex h-9 w-full items-center rounded-md border border-border bg-surface-raised text-sm hover:bg-row-muted disabled:opacity-50',
             compact ? 'justify-center px-0' : 'gap-2 px-2.5',
           )}
           disabled={creating}
@@ -107,7 +107,7 @@ function TaskGroup({
               className={cn(
                 'flex w-full items-center rounded-md text-left hover:bg-muted',
                 compact ? 'h-9 justify-center' : 'gap-2.5 px-2 py-2',
-                task.taskId === activeTaskId && 'bg-muted text-foreground',
+                task.taskId === activeTaskId && 'bg-selection text-foreground',
               )}
               onClick={() => onSelectTask(task.taskId)}
               title={compact ? task.title : undefined}
@@ -134,6 +134,7 @@ type DisplayStatus =
   | 'archived'
   | 'completed'
   | 'failed'
+  | 'idle'
   | 'interrupted'
   | 'queued'
   | 'running'
@@ -154,13 +155,13 @@ function taskStatus(task: TaskProjection): { key: DisplayStatus; label: string }
   if (task.state === 'interrupted') return { key: 'interrupted', label: 'Interrupted' }
   if (task.state === 'failed') return { key: 'failed', label: 'Failed' }
   return {
-    key: 'completed',
+    key: task.state === 'idle' ? 'idle' : 'completed',
     label: task.state === 'idle' ? 'Ready' : 'Completed',
   }
 }
 
 function TaskStatusIcon({ status }: { status: DisplayStatus }) {
-  const className = 'size-4 shrink-0 text-muted-foreground'
+  const className = cn('size-4 shrink-0', statusColor(status))
   if (status === 'running')
     return <LoaderCircle aria-hidden="true" className={`${className} animate-spin`} />
   if (status === 'waiting') return <CirclePause aria-hidden="true" className={className} />
@@ -169,6 +170,17 @@ function TaskStatusIcon({ status }: { status: DisplayStatus }) {
   if (status === 'failed') return <CircleAlert aria-hidden="true" className={className} />
   if (status === 'archived') return <Archive aria-hidden="true" className={className} />
   return <CircleCheck aria-hidden="true" className={className} />
+}
+
+function statusColor(status: DisplayStatus) {
+  if (status === 'running') return 'text-state-running'
+  if (status === 'waiting') return 'text-state-waiting'
+  if (status === 'queued') return 'text-state-queued'
+  if (status === 'interrupted') return 'text-state-interrupted'
+  if (status === 'failed') return 'text-state-failed'
+  if (status === 'archived') return 'text-state-archived'
+  if (status === 'idle') return 'text-state-idle'
+  return 'text-state-completed'
 }
 
 function groupTasks(tasks: TaskProjection[]) {

@@ -51,7 +51,7 @@ export function createUiStore() {
     activeRunId: undefined,
     activeRunsByConversation: {},
     evidenceDisclosureOpen: {},
-    theme: 'light',
+    theme: initialTheme(),
     locale: DEFAULT_APP_LOCALE,
     sidebarCollapsed: false,
     contextPanelCollapsed: true,
@@ -130,4 +130,14 @@ function latestActiveRun(activeRunsByConversation: Record<string, string>) {
   }
 
   return { conversationId, runId }
+}
+
+function initialTheme(): ThemeMode {
+  if (typeof window === 'undefined') return 'system'
+  try {
+    const stored = window.localStorage.getItem('jyowo-ui-theme')
+    return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system'
+  } catch {
+    return 'system'
+  }
 }

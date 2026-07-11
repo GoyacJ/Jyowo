@@ -103,7 +103,7 @@ export type ModelAssetRow = {
 
 type ModelSettingsSummaryMetric<T> = SectionState<T>
 
-export type ModelSettingsSummaryView = {
+type ModelSettingsSummaryView = {
   defaultModel: ModelSettingsSummaryMetric<{
     configId: string
     displayName: string

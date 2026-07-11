@@ -14,7 +14,7 @@ export type TaskConnectionState =
 
 export type TaskSnapshot = DaemonTaskSnapshot
 
-export interface TaskStoreState {
+interface TaskStoreState {
   taskId: TypedUlid
   snapshot: TaskSnapshot | null
   events: TaskEventEnvelope[]

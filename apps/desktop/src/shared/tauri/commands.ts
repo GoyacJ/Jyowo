@@ -222,7 +222,7 @@ const runtimeToolSummarySchema = z
     serviceBinding: runtimeToolServiceBindingSchema.nullable(),
   })
   .strict()
-export const listRuntimeToolsResponseSchema = z
+const listRuntimeToolsResponseSchema = z
   .object({
     generation: z.number().int().nonnegative(),
     tools: z.array(runtimeToolSummarySchema),
@@ -6566,13 +6566,6 @@ export function addProject(
   client: CommandClient = tauriCommandClient,
 ): Promise<SwitchProjectResponse> {
   return client.addProject(path)
-}
-
-export function switchProject(
-  path: string,
-  client: CommandClient = tauriCommandClient,
-): Promise<SwitchProjectResponse> {
-  return client.switchProject(path)
 }
 
 export function moveProject(
