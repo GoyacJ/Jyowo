@@ -14,15 +14,23 @@ export function useTaskEvents(taskId: TypedUlid, store: TaskStore) {
     let queuedFrames: ServerFrame[] = []
     let resyncing = false
     let resnapshotRequested = false
+    let protocolFailed = false
     let unsubscribe: (() => Promise<void>) | undefined
 
     const protocolError = (error: Error) => {
-      if (!cancelled) store.getState().setConnectionState('protocol_error', error)
+      if (cancelled || protocolFailed) return
+      protocolFailed = true
+      queuedFrames = []
+      if (frameHandle !== null) {
+        cancelAnimationFrameSafe(frameHandle)
+        frameHandle = null
+      }
+      store.getState().setConnectionState('protocol_error', error)
     }
 
     const subscribeFrom = async (offset: number) => {
       const nextUnsubscribe = await client.subscribe(offset, handleFrame, protocolError)
-      if (cancelled) {
+      if (cancelled || protocolFailed) {
         await nextUnsubscribe()
         return
       }
@@ -30,7 +38,7 @@ export function useTaskEvents(taskId: TypedUlid, store: TaskStore) {
     }
 
     const loadSnapshot = async (connect: boolean) => {
-      if (cancelled) return
+      if (cancelled || protocolFailed) return
       if (resyncing) {
         if (!connect) resnapshotRequested = true
         return
@@ -44,7 +52,7 @@ export function useTaskEvents(taskId: TypedUlid, store: TaskStore) {
           store.getState().setConnectionState('resyncing')
         }
         const snapshot = await client.loadTask(taskId)
-        if (cancelled) return
+        if (cancelled || protocolFailed) return
         store.getState().replaceSnapshot(snapshot)
         if (unsubscribe) {
           const previous = unsubscribe
@@ -53,10 +61,12 @@ export function useTaskEvents(taskId: TypedUlid, store: TaskStore) {
         }
         await subscribeFrom(snapshot.snapshotOffset)
       } catch (error) {
-        if (!cancelled) store.getState().setConnectionState('disconnected', asError(error))
+        if (!cancelled && !protocolFailed) {
+          store.getState().setConnectionState('disconnected', asError(error))
+        }
       } finally {
         resyncing = false
-        if (resnapshotRequested && !cancelled) {
+        if (resnapshotRequested && !cancelled && !protocolFailed) {
           resnapshotRequested = false
           void loadSnapshot(false)
         }
@@ -64,6 +74,7 @@ export function useTaskEvents(taskId: TypedUlid, store: TaskStore) {
     }
 
     function handleFrame(frame: ServerFrame) {
+      if (protocolFailed) return
       if (frame.message.type !== 'event_batch') {
         protocolError(new Error(`Expected event_batch, received ${frame.message.type}`))
         return
@@ -74,6 +85,10 @@ export function useTaskEvents(taskId: TypedUlid, store: TaskStore) {
 
     function flushFrames() {
       frameHandle = null
+      if (protocolFailed) {
+        queuedFrames = []
+        return
+      }
       const frames = queuedFrames
       queuedFrames = []
       let resnapshotRequired = false
@@ -89,7 +104,7 @@ export function useTaskEvents(taskId: TypedUlid, store: TaskStore) {
 
     return () => {
       cancelled = true
-      if (frameHandle !== null) {
+      if (frameHandle !== null && !protocolFailed) {
         cancelAnimationFrameSafe(frameHandle)
         frameHandle = null
         flushFrames()

@@ -79,6 +79,106 @@ describe('useTaskEvents', () => {
     })
   })
 
+  it('discards queued frames when a later frame enters protocol_error', async () => {
+    const store = createTaskStore(taskId)
+    let handler: DaemonSubscriptionHandler | undefined
+    let renderFrame: FrameRequestCallback | undefined
+    const animationFrame = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback) => {
+        renderFrame = callback
+        return 1
+      })
+    const client = {
+      connect: vi.fn(async () => taskListFrame()),
+      loadTask: vi.fn(async () => snapshot(40, 'valid snapshot')),
+      subscribe: vi.fn(async (_afterOffset, onFrame) => {
+        handler = onFrame
+        return vi.fn(async () => undefined)
+      }),
+    } as unknown as DaemonClient
+
+    renderHook(() => useTaskEvents(taskId, store), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <DaemonClientProvider client={client}>{children}</DaemonClientProvider>
+      ),
+    })
+    await waitFor(() => expect(handler).toBeTypeOf('function'))
+
+    act(() => {
+      handler?.(eventBatch([event(41)], 40, 41))
+      handler?.(taskListFrame())
+    })
+    expect(store.getState()).toMatchObject({
+      connectionError: 'Expected event_batch, received task_list',
+      connectionState: 'protocol_error',
+    })
+
+    act(() => renderFrame?.(0))
+    animationFrame.mockRestore()
+
+    expect(store.getState()).toMatchObject({
+      connectionState: 'protocol_error',
+      events: [],
+      lastAppliedOffset: 40,
+    })
+  })
+
+  it('keeps protocol_error terminal after an in-flight resnapshot completes', async () => {
+    const store = createTaskStore(taskId)
+    let handler: DaemonSubscriptionHandler | undefined
+    let protocolError: ((error: Error) => void) | undefined
+    let renderFrame: FrameRequestCallback | undefined
+    const resnapshot = deferred<TaskSnapshot>()
+    const animationFrame = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback) => {
+        renderFrame = callback
+        return 1
+      })
+    const client = {
+      connect: vi.fn(async () => taskListFrame()),
+      loadTask: vi
+        .fn<DaemonClient['loadTask']>()
+        .mockResolvedValueOnce(snapshot(40, 'initial'))
+        .mockImplementationOnce(() => resnapshot.promise),
+      subscribe: vi.fn(async (_afterOffset, onFrame, onProtocolError) => {
+        handler = onFrame
+        protocolError = onProtocolError
+        return vi.fn(async () => undefined)
+      }),
+    } as unknown as DaemonClient
+
+    renderHook(() => useTaskEvents(taskId, store), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <DaemonClientProvider client={client}>{children}</DaemonClientProvider>
+      ),
+    })
+    await waitFor(() => expect(handler).toBeTypeOf('function'))
+
+    act(() => {
+      handler?.(gapBatch(40, 50))
+      renderFrame?.(0)
+    })
+    await waitFor(() => expect(client.loadTask).toHaveBeenCalledTimes(2))
+
+    act(() => protocolError?.(new Error('Invalid daemon server frame')))
+    await act(async () => {
+      resnapshot.resolve(snapshot(50, 'must not apply'))
+      await resnapshot.promise
+      await Promise.resolve()
+    })
+    animationFrame.mockRestore()
+
+    expect(store.getState()).toMatchObject({
+      connectionError: 'Invalid daemon server frame',
+      connectionState: 'protocol_error',
+      lastAppliedOffset: 40,
+      snapshot: { projection: { title: 'initial' } },
+    })
+    expect(client.subscribe).toHaveBeenCalledOnce()
+  })
+
   it('batches event rendering on one animation frame without changing offset order', async () => {
     const store = createTaskStore(taskId)
     let handler: DaemonSubscriptionHandler | undefined
