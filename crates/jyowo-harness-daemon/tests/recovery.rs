@@ -1675,6 +1675,7 @@ impl RunCoordinatorFactory for RecordingFactory {
         &self,
         request: StartSegmentRequest,
         _workspace_tools: harness_daemon::WorkspaceToolDispatcher,
+        _subagent_runner: Arc<dyn harness_subagent::SubagentRunner>,
     ) -> RunningSegment {
         self.requests.lock().unwrap().push(request);
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -1695,6 +1696,7 @@ impl RunCoordinatorFactory for PanicThreeTimesFactory {
         &self,
         _request: StartSegmentRequest,
         _workspace_tools: harness_daemon::WorkspaceToolDispatcher,
+        _subagent_runner: Arc<dyn harness_subagent::SubagentRunner>,
     ) -> RunningSegment {
         let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
         if attempt == 0 {

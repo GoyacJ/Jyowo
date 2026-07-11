@@ -17,7 +17,8 @@ use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     decide_consume_next, decide_queue, CheckpointService, CheckpointState, QueueCommand,
-    RunCoordinatorEvent, StartSegmentRequest, WorkspaceBoundRunCoordinatorFactory,
+    RunCoordinatorEvent, StartSegmentRequest, SubagentStopMode,
+    WorkspaceBoundRunCoordinatorFactory,
 };
 
 #[derive(Debug)]
@@ -58,6 +59,8 @@ pub(crate) enum TaskActorError {
     RuntimeStatePoisoned,
     #[error("segment start delivery is no longer pending")]
     SegmentStartDeliveryNotPending,
+    #[error("subagent stop propagation failed: {0}")]
+    SubagentStop(#[source] harness_subagent::SubagentError),
 }
 
 impl ValidatedTaskCommand {
@@ -357,23 +360,55 @@ async fn handle_command(
                 Err(error) => command_store_error(error, command_id, command_task_id)?,
             };
             let accepted = matches!(outcome, CommandOutcome::Accepted { .. });
-            if accepted {
-                if let (Some(mode), Some(target), Some(active)) =
-                    (promotion_mode, steering_target, active.as_ref())
-                {
-                    if active.segment_id != target {
-                        return Ok(());
+            reply_before_control_propagation(reply, outcome, || {
+                if accepted {
+                    if let (Some(mode), Some(target), Some(active)) =
+                        (promotion_mode, steering_target, active.as_ref())
+                    {
+                        if active.segment_id != target {
+                            return Ok(());
+                        }
+                        retry_control_propagation(|| {
+                            factory.request_parent_stop(
+                                task_id,
+                                match mode {
+                                    PromotionMode::SafePoint => SubagentStopMode::SafePoint,
+                                    PromotionMode::ForceStop => SubagentStopMode::Force,
+                                },
+                            )
+                        })?;
+                        active.control.request(match mode {
+                            PromotionMode::SafePoint => RunControl::YieldAfterAtomicOperation,
+                            PromotionMode::ForceStop => RunControl::ForceStop,
+                        });
                     }
-                    active.control.request(match mode {
-                        PromotionMode::SafePoint => RunControl::YieldAfterAtomicOperation,
-                        PromotionMode::ForceStop => RunControl::ForceStop,
-                    });
                 }
-            }
-            let _ = reply.send(outcome);
+                Ok(())
+            })
+            .map_err(TaskActorError::SubagentStop)?;
         }
     }
     Ok(())
+}
+
+fn reply_before_control_propagation<T, E>(
+    reply: oneshot::Sender<T>,
+    outcome: T,
+    propagate: impl FnOnce() -> Result<(), E>,
+) -> Result<(), E> {
+    let _ = reply.send(outcome);
+    propagate()
+}
+
+fn retry_control_propagation<E>(mut propagate: impl FnMut() -> Result<(), E>) -> Result<(), E> {
+    for attempt in 0..3 {
+        match propagate() {
+            Ok(()) => return Ok(()),
+            Err(error) if attempt == 2 => return Err(error),
+            Err(_) => {}
+        }
+    }
+    unreachable!("the retry loop always returns on its final attempt")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -551,6 +586,38 @@ fn command_store_error(
             },
         }),
         error => Err(TaskActorError::Store(error)),
+    }
+}
+
+#[cfg(test)]
+mod accepted_reply_tests {
+    use std::cell::Cell;
+
+    use tokio::sync::oneshot;
+
+    use super::{reply_before_control_propagation, retry_control_propagation};
+
+    #[tokio::test]
+    async fn accepted_reply_is_delivered_when_control_propagation_fails() {
+        let (reply, response) = oneshot::channel();
+
+        let error =
+            reply_before_control_propagation(reply, "accepted", || Err::<(), _>("control failed"));
+
+        assert_eq!(response.await.unwrap(), "accepted");
+        assert_eq!(error, Err("control failed"));
+    }
+
+    #[test]
+    fn control_propagation_retries_before_returning_failure() {
+        let attempts = Cell::new(0);
+        let error = retry_control_propagation(|| {
+            attempts.set(attempts.get() + 1);
+            Err::<(), _>("durable stop failed")
+        });
+
+        assert_eq!(attempts.get(), 3);
+        assert_eq!(error, Err("durable stop failed"));
     }
 }
 

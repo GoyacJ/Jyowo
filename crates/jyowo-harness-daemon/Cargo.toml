@@ -20,6 +20,8 @@ jyowo-harness-engine = { path = "../jyowo-harness-engine" }
 jyowo-harness-fs = { path = "../jyowo-harness-fs" }
 jyowo-harness-journal = { path = "../jyowo-harness-journal", features = ["sqlite", "blob-file"] }
 jyowo-harness-sdk = { path = "../jyowo-harness-sdk" }
+jyowo-harness-subagent = { path = "../jyowo-harness-subagent" }
+async-trait = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }

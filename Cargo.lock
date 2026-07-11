@@ -3019,6 +3019,7 @@ dependencies = [
 name = "jyowo-harness-daemon"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "futures",
  "jyowo-harness-agent-runtime",
@@ -3027,6 +3028,7 @@ dependencies = [
  "jyowo-harness-fs",
  "jyowo-harness-journal",
  "jyowo-harness-sdk",
+ "jyowo-harness-subagent",
  "proptest",
  "rusqlite",
  "rustix",

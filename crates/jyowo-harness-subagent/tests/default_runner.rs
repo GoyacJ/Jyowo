@@ -7,9 +7,9 @@ use harness_contracts::{
     AssistantMessageCompletedEvent, BlobId, BlobRef, ConfigHash, ContentHash, EndReason, Event,
     JournalOffset, Message, MessageContent, MessageId, MessagePart, MessageRole, ModelError,
     ModelProtocol, NoopRedactor, PermissionMode, RunId, RunModelSnapshot, RunStartedEvent,
-    SnapshotId, StopReason, SubagentContextReport, SubagentStatus, SubagentTerminationReason,
-    ToolResult, ToolUseCompletedEvent, ToolUseId, TranscriptRef, UsageSnapshot,
-    UserMessageAppendedEvent,
+    SessionId, SnapshotId, StopReason, SubagentContextReport, SubagentStatus,
+    SubagentTerminationReason, ToolResult, ToolUseCompletedEvent, ToolUseId, TranscriptRef,
+    UsageSnapshot, UserMessageAppendedEvent,
 };
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_model::{
@@ -159,12 +159,14 @@ async fn default_runner_accepts_engine_factory_as_production_path() {
     let workspace = tempfile::tempdir().unwrap();
     let store: Arc<InMemoryEventStore> = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let factory = Arc::new(RecordingEngineFactory::default());
+    let child_session_id = SessionId::new();
     let runner = DefaultSubagentRunner::new_with_engine_factory(
         factory.clone(),
         store,
         workspace.path(),
         harness_subagent::DelegationPolicy::default(),
-    );
+    )
+    .with_child_session_id(child_session_id);
     let parent = ParentContext::for_test(0);
 
     let announcement = runner
@@ -187,9 +189,98 @@ async fn default_runner_accepts_engine_factory_as_production_path() {
             .await
             .as_ref()
             .unwrap()
+            .child_session_id,
+        child_session_id
+    );
+    assert_eq!(
+        factory
+            .request
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
             .correlation_id,
         parent.correlation_id
     );
+}
+
+#[tokio::test]
+async fn external_lifecycle_owner_runs_isolated_child_without_parent_journal_writes() {
+    let workspace = tempfile::tempdir().unwrap();
+    let store: Arc<InMemoryEventStore> = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let factory = Arc::new(RecordingEngineFactory::default());
+    let child_session_id = SessionId::new();
+    let runner = DefaultSubagentRunner::new_with_engine_factory(
+        factory.clone(),
+        store.clone(),
+        workspace.path(),
+        harness_subagent::DelegationPolicy::default(),
+    )
+    .with_child_session_id(child_session_id)
+    .with_external_lifecycle_owner();
+    let parent = ParentContext::for_test(0);
+
+    let announcement = runner
+        .spawn(
+            SubagentSpec::minimal("reviewer", "inspect"),
+            test_input("inspect"),
+            parent.clone(),
+        )
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+
+    assert_eq!(announcement.status, SubagentStatus::Completed);
+    assert_eq!(
+        factory
+            .request
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .child_session_id,
+        child_session_id
+    );
+    assert!(store
+        .read(
+            parent.tenant_id,
+            parent.parent_session_id,
+            ReplayCursor::FromStart,
+        )
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await
+        .is_empty());
+}
+
+#[tokio::test]
+async fn external_lifecycle_owner_rejects_parent_fork_context() {
+    let workspace = tempfile::tempdir().unwrap();
+    let store: Arc<InMemoryEventStore> = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let runner = DefaultSubagentRunner::new_with_engine_factory(
+        Arc::new(RecordingEngineFactory::default()),
+        store,
+        workspace.path(),
+        harness_subagent::DelegationPolicy::default(),
+    )
+    .with_child_session_id(SessionId::new())
+    .with_external_lifecycle_owner();
+    let mut spec = SubagentSpec::minimal("reviewer", "inspect");
+    spec.context_mode = SubagentContextMode::ForkFromParent {
+        include_tool_results: false,
+    };
+
+    let error = runner
+        .spawn(spec, test_input("inspect"), ParentContext::for_test(0))
+        .await
+        .expect_err("daemon-owned runner must not read a parent stream through the child store");
+
+    assert!(error
+        .to_string()
+        .contains("externally owned subagent lifecycle requires isolated context"));
 }
 
 #[tokio::test]

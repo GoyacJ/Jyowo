@@ -1065,6 +1065,16 @@ pub trait SubagentRunner: Send + Sync + 'static {
         input: TurnInput,
         parent_ctx: ParentContext,
     ) -> Result<SubagentHandle, SubagentError>;
+
+    async fn spawn_controlled(
+        &self,
+        spec: SubagentSpec,
+        input: TurnInput,
+        parent_ctx: ParentContext,
+        _control: SubagentCancellationToken,
+    ) -> Result<SubagentHandle, SubagentError> {
+        self.spawn(spec, input, parent_ctx).await
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1124,7 +1134,9 @@ impl SubagentEngineFactory for ChildSessionRunnerFactory {
 #[derive(Debug, Default)]
 struct SubagentCancellationState {
     cancelled: AtomicBool,
-    notify: Notify,
+    cancellation_notify: Notify,
+    yield_requested: AtomicBool,
+    yield_notify: Notify,
 }
 
 #[derive(Clone, Default)]
@@ -1149,7 +1161,13 @@ impl SubagentCancellationToken {
 
     pub fn cancel(&self) {
         if !self.state.cancelled.swap(true, Ordering::SeqCst) {
-            self.state.notify.notify_waiters();
+            self.state.cancellation_notify.notify_waiters();
+        }
+    }
+
+    pub fn request_yield(&self) {
+        if !self.state.yield_requested.swap(true, Ordering::SeqCst) {
+            self.state.yield_notify.notify_waiters();
         }
     }
 
@@ -1158,9 +1176,20 @@ impl SubagentCancellationToken {
         self.state.cancelled.load(Ordering::SeqCst)
     }
 
+    #[must_use]
+    pub fn is_yield_requested(&self) -> bool {
+        self.state.yield_requested.load(Ordering::SeqCst)
+    }
+
     pub async fn cancelled(&self) {
         while !self.is_cancelled() {
-            self.state.notify.notified().await;
+            self.state.cancellation_notify.notified().await;
+        }
+    }
+
+    pub async fn yield_requested(&self) {
+        while !self.is_yield_requested() {
+            self.state.yield_notify.notified().await;
         }
     }
 }
@@ -1177,6 +1206,8 @@ pub struct DefaultSubagentRunner {
     watchdog_started: AtomicBool,
     spawning_paused: AtomicBool,
     admin_session_id: SessionId,
+    child_session_id: Option<SessionId>,
+    owns_lifecycle_journal: bool,
     announcement_renderer: Arc<dyn AnnouncementRenderer>,
     announcement_summarizer: Option<Arc<dyn AnnouncementSummarizer>>,
 }
@@ -1219,6 +1250,8 @@ impl DefaultSubagentRunner {
             watchdog_started: AtomicBool::new(false),
             spawning_paused: AtomicBool::new(false),
             admin_session_id: SessionId::new(),
+            child_session_id: None,
+            owns_lifecycle_journal: true,
             announcement_renderer: Arc::new(SubagentAnnouncementRenderer::default()),
             announcement_summarizer: None,
         }
@@ -1277,6 +1310,18 @@ impl DefaultSubagentRunner {
         self.admin_session_id
     }
 
+    #[must_use]
+    pub fn with_child_session_id(mut self, child_session_id: SessionId) -> Self {
+        self.child_session_id = Some(child_session_id);
+        self
+    }
+
+    #[must_use]
+    pub fn with_external_lifecycle_owner(mut self) -> Self {
+        self.owns_lifecycle_journal = false;
+        self
+    }
+
     pub fn spawn_watchdog(self: Arc<Self>, interval: Duration) -> Result<(), SubagentError> {
         self.start_watchdog(interval)
     }
@@ -1313,13 +1358,13 @@ impl DefaultSubagentRunner {
     }
 }
 
-#[async_trait]
-impl SubagentRunner for DefaultSubagentRunner {
-    async fn spawn(
+impl DefaultSubagentRunner {
+    async fn spawn_with_control_inner(
         &self,
         spec: SubagentSpec,
         input: TurnInput,
         parent_ctx: ParentContext,
+        cancellation: SubagentCancellationToken,
     ) -> Result<SubagentHandle, SubagentError> {
         self.ensure_watchdog_started()?;
         if self.spawning_paused.load(Ordering::SeqCst) {
@@ -1341,12 +1386,15 @@ impl SubagentRunner for DefaultSubagentRunner {
         }
 
         let _slot = self.pool.acquire(&parent_ctx).await?;
-        let child_session_id = SessionId::new();
+        let child_session_id = self.child_session_id.unwrap_or_else(SessionId::new);
         let child_run_id = RunId::new();
         let subagent_id = SubagentId::new();
-        let cancellation = self
-            .pool
-            .register_running(subagent_id, &parent_ctx, spec.role.clone());
+        self.pool.register_running_with_cancellation(
+            subagent_id,
+            &parent_ctx,
+            spec.role.clone(),
+            cancellation.clone(),
+        );
 
         let create_result = Session::builder()
             .with_options(
@@ -1478,6 +1526,30 @@ impl SubagentRunner for DefaultSubagentRunner {
 }
 
 #[async_trait]
+impl SubagentRunner for DefaultSubagentRunner {
+    async fn spawn(
+        &self,
+        spec: SubagentSpec,
+        input: TurnInput,
+        parent_ctx: ParentContext,
+    ) -> Result<SubagentHandle, SubagentError> {
+        self.spawn_with_control_inner(spec, input, parent_ctx, SubagentCancellationToken::new())
+            .await
+    }
+
+    async fn spawn_controlled(
+        &self,
+        spec: SubagentSpec,
+        input: TurnInput,
+        parent_ctx: ParentContext,
+        control: SubagentCancellationToken,
+    ) -> Result<SubagentHandle, SubagentError> {
+        self.spawn_with_control_inner(spec, input, parent_ctx, control)
+            .await
+    }
+}
+
+#[async_trait]
 impl SubagentAdmin for DefaultSubagentRunner {
     async fn list_active(&self) -> Vec<RunningSubagent> {
         self.pool.list_running()
@@ -1597,6 +1669,16 @@ impl DefaultSubagentRunner {
         parent: &ParentContext,
         child_session_id: SessionId,
     ) -> Result<(Vec<Message>, bool), SubagentError> {
+        if !self.owns_lifecycle_journal
+            && matches!(
+                spec.context_mode,
+                SubagentContextMode::ForkFromParent { .. }
+            )
+        {
+            return Err(SubagentError::Engine(
+                "externally owned subagent lifecycle requires isolated context".to_owned(),
+            ));
+        }
         let SubagentContextMode::ForkFromParent {
             include_tool_results,
         } = spec.context_mode
@@ -1730,6 +1812,9 @@ impl DefaultSubagentRunner {
         parent: &ParentContext,
         subagent_id: SubagentId,
     ) -> Result<(), SubagentError> {
+        if !self.owns_lifecycle_journal {
+            return Ok(());
+        }
         let spec_bytes =
             serde_json::to_vec(spec).map_err(|error| SubagentError::Engine(error.to_string()))?;
         let spec_hash = *blake3::hash(&spec_bytes).as_bytes();
@@ -1770,6 +1855,9 @@ impl DefaultSubagentRunner {
         run_id: RunId,
         correlation_id: CorrelationId,
     ) -> Result<(), SubagentError> {
+        if !self.owns_lifecycle_journal {
+            return Ok(());
+        }
         let rendered = self.announcement_renderer.render(announcement);
         let mut metadata = MessageMetadata {
             source: Some("subagent".to_owned()),
@@ -1829,6 +1917,9 @@ impl DefaultSubagentRunner {
         reason: SubagentTerminationReason,
         final_usage: UsageSnapshot,
     ) -> Result<(), SubagentError> {
+        if !self.owns_lifecycle_journal {
+            return Ok(());
+        }
         self.event_store
             .append_with_metadata(
                 tenant_id,
@@ -2355,6 +2446,17 @@ impl ConcurrentSubagentPool {
         role: String,
     ) -> SubagentCancellationToken {
         let cancellation = SubagentCancellationToken::new();
+        self.register_running_with_cancellation(subagent_id, parent, role, cancellation.clone());
+        cancellation
+    }
+
+    pub fn register_running_with_cancellation(
+        &self,
+        subagent_id: SubagentId,
+        parent: &ParentContext,
+        role: String,
+        cancellation: SubagentCancellationToken,
+    ) {
         let now = Utc::now();
         self.running.insert(
             subagent_id,
@@ -2371,7 +2473,6 @@ impl ConcurrentSubagentPool {
                 cancellation: cancellation.clone(),
             },
         );
-        cancellation
     }
 
     pub fn mark_activity(&self, subagent_id: &SubagentId) {

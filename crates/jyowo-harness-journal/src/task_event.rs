@@ -7,8 +7,9 @@ use harness_contracts::{
     ActorId, BlobId, BlobRef, CausationId, CommandId, ConversationAttachmentReference,
     CorrelationId, Event, EventSource, EventSourceKind, IndeterminateToolDecision, MessageContent,
     MessagePart, PermissionProjection, QueueItemId, ReferenceKind, RequestId, RunId, RunSegmentId,
-    RunTerminalReason, SessionId, TenantId, ToolResult, ToolResultPart, ToolUseId,
-    WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceLeaseState,
+    RunTerminalReason, SessionId, SubagentParentProjection, SubagentProjection, TenantId,
+    ToolResult, ToolResultPart, ToolUseId, WorkspaceLeaseId, WorkspaceLeaseProjection,
+    WorkspaceLeaseState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -123,6 +124,24 @@ pub(crate) enum TaskEvent {
     SubagentSpawned {
         actor_id: ActorId,
         started_at: DateTime<Utc>,
+        child: Option<SubagentProjection>,
+    },
+    SubagentLinked {
+        actor_id: ActorId,
+        context_cursor: u64,
+        parent: SubagentParentProjection,
+    },
+    SubagentStateChanged {
+        child: SubagentProjection,
+    },
+    SubagentSummaryUpdated {
+        child: SubagentProjection,
+    },
+    SubagentBackgrounded {
+        child: SubagentProjection,
+    },
+    SubagentTerminal {
+        child: SubagentProjection,
     },
     WorkspacePreparing {
         lease: WorkspaceLeaseProjection,
@@ -304,6 +323,16 @@ struct PermissionInvalidatedPayload {
 struct SubagentSpawnedPayload {
     actor_id: ActorId,
     started_at: DateTime<Utc>,
+    #[serde(default)]
+    child: Option<SubagentProjection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SubagentLinkedPayload {
+    actor_id: ActorId,
+    context_cursor: u64,
+    parent: SubagentParentProjection,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -600,7 +629,62 @@ impl NewTaskEvent {
             event: TaskEvent::SubagentSpawned {
                 actor_id,
                 started_at,
+                child: None,
             },
+        }
+    }
+
+    #[must_use]
+    pub fn subagent_actor_spawned(child: SubagentProjection) -> Self {
+        Self {
+            event: TaskEvent::SubagentSpawned {
+                actor_id: child.actor_id,
+                started_at: child.started_at,
+                child: Some(child),
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn subagent_linked(
+        actor_id: ActorId,
+        context_cursor: u64,
+        parent: SubagentParentProjection,
+    ) -> Self {
+        Self {
+            event: TaskEvent::SubagentLinked {
+                actor_id,
+                context_cursor,
+                parent,
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn subagent_state_changed(child: SubagentProjection) -> Self {
+        Self {
+            event: TaskEvent::SubagentStateChanged { child },
+        }
+    }
+
+    #[must_use]
+    pub const fn subagent_summary_updated(child: SubagentProjection) -> Self {
+        Self {
+            event: TaskEvent::SubagentSummaryUpdated { child },
+        }
+    }
+
+    #[must_use]
+    pub const fn subagent_backgrounded(child: SubagentProjection) -> Self {
+        Self {
+            event: TaskEvent::SubagentBackgrounded { child },
+        }
+    }
+
+    #[must_use]
+    pub const fn subagent_terminal(child: SubagentProjection) -> Self {
+        Self {
+            event: TaskEvent::SubagentTerminal { child },
         }
     }
 
@@ -1050,8 +1134,29 @@ impl TaskEvent {
                 Ok(Self::SubagentSpawned {
                     actor_id: value.actor_id,
                     started_at: value.started_at,
+                    child: value.child,
                 })
             }
+            "subagent.linked" => {
+                let value: SubagentLinkedPayload = serde_json::from_value(payload)?;
+                Ok(Self::SubagentLinked {
+                    actor_id: value.actor_id,
+                    context_cursor: value.context_cursor,
+                    parent: value.parent,
+                })
+            }
+            "subagent.state_changed" => Ok(Self::SubagentStateChanged {
+                child: serde_json::from_value(payload)?,
+            }),
+            "subagent.summary_updated" => Ok(Self::SubagentSummaryUpdated {
+                child: serde_json::from_value(payload)?,
+            }),
+            "subagent.backgrounded" => Ok(Self::SubagentBackgrounded {
+                child: serde_json::from_value(payload)?,
+            }),
+            "subagent.terminal" => Ok(Self::SubagentTerminal {
+                child: serde_json::from_value(payload)?,
+            }),
             "workspace.preparing" => Ok(Self::WorkspacePreparing {
                 lease: serde_json::from_value(payload)?,
             }),
@@ -1136,6 +1241,11 @@ impl TaskEvent {
             Self::PermissionResolved { .. } => "permission.resolved",
             Self::PermissionInvalidated { .. } => "permission.invalidated",
             Self::SubagentSpawned { .. } => "subagent.spawned",
+            Self::SubagentLinked { .. } => "subagent.linked",
+            Self::SubagentStateChanged { .. } => "subagent.state_changed",
+            Self::SubagentSummaryUpdated { .. } => "subagent.summary_updated",
+            Self::SubagentBackgrounded { .. } => "subagent.backgrounded",
+            Self::SubagentTerminal { .. } => "subagent.terminal",
             Self::WorkspacePreparing { .. } => "workspace.preparing",
             Self::WorkspaceAcquired { .. } => "workspace.acquired",
             Self::WorkspaceWaiting { .. } => "workspace.waiting",
@@ -1296,10 +1406,25 @@ impl TaskEvent {
             Self::SubagentSpawned {
                 actor_id,
                 started_at,
+                child,
             } => serde_json::to_value(SubagentSpawnedPayload {
                 actor_id: *actor_id,
                 started_at: *started_at,
+                child: child.clone(),
             })?,
+            Self::SubagentLinked {
+                actor_id,
+                context_cursor,
+                parent,
+            } => serde_json::to_value(SubagentLinkedPayload {
+                actor_id: *actor_id,
+                context_cursor: *context_cursor,
+                parent: parent.clone(),
+            })?,
+            Self::SubagentStateChanged { child }
+            | Self::SubagentSummaryUpdated { child }
+            | Self::SubagentBackgrounded { child }
+            | Self::SubagentTerminal { child } => serde_json::to_value(child)?,
             Self::WorkspacePreparing { lease } => serde_json::to_value(lease)?,
             Self::WorkspaceAcquired { lease } => serde_json::to_value(lease)?,
             Self::WorkspaceWaiting { lease } => serde_json::to_value(lease)?,
@@ -1403,6 +1528,14 @@ impl TaskEvent {
             | Self::WorkspaceCleanupPending { .. } => matches!(
                 source.kind,
                 EventSourceKind::Supervisor | EventSourceKind::Recovery
+            ),
+            Self::SubagentLinked { .. }
+            | Self::SubagentStateChanged { .. }
+            | Self::SubagentSummaryUpdated { .. }
+            | Self::SubagentBackgrounded { .. }
+            | Self::SubagentTerminal { .. } => matches!(
+                source.kind,
+                EventSourceKind::Subagent | EventSourceKind::Supervisor | EventSourceKind::Recovery
             ),
             Self::WorkspaceOverrideApplied { .. } => source.kind == EventSourceKind::User,
             Self::Engine { .. } => source.kind == EventSourceKind::Engine,

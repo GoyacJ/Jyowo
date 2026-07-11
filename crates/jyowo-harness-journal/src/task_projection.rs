@@ -3,8 +3,8 @@
 use chrono::{DateTime, Utc};
 use harness_contracts::{
     ActorId, PromotionMode, QueueItemProjection, QueueItemState, RunProjection, RunState,
-    RunTerminalReason, TaskEventEnvelope, TaskId, TaskProjection, TaskState, TimelineEventKind,
-    TimelineItemProjection,
+    RunTerminalReason, SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection, TaskState,
+    TimelineEventKind, TimelineItemProjection,
 };
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -98,6 +98,9 @@ fn reduce_task(
             }
             projection.title.clone_from(title);
             projection.state = TaskState::Idle;
+            projection.actor_id = Some(ActorId::from_u128(u128::from_be_bytes(
+                envelope.task_id.as_bytes(),
+            )));
         }
         TaskEvent::TaskTitleChanged { title } => {
             if projection.stream_version == 0 {
@@ -427,7 +430,60 @@ fn reduce_task(
                 TaskState::Idle
             };
         }
-        TaskEvent::SubagentSpawned { .. } => {}
+        TaskEvent::SubagentSpawned { child, .. } => {
+            if let Some(child) = child {
+                if child.parent_task_id != envelope.task_id {
+                    return integrity("subagent.spawned child belongs to another parent");
+                }
+                if projection
+                    .subagents
+                    .iter()
+                    .any(|existing| existing.child_task_id == child.child_task_id)
+                {
+                    return invalid_transition("subagent.spawned child is already linked");
+                }
+                if child.state != harness_contracts::SubagentActorState::Starting
+                    || child.detached
+                    || child.summary.is_some()
+                    || child.ended_at.is_some()
+                    || child.workspace_lease_id.is_some()
+                {
+                    return invalid_transition("subagent.spawned requires a pristine child actor");
+                }
+                if projection.actor_id == Some(child.actor_id)
+                    || projection
+                        .current_run
+                        .as_ref()
+                        .is_some_and(|run| run.segment_id == child.segment_id)
+                {
+                    return invalid_transition(
+                        "subagent child actor and segment identities must be independent",
+                    );
+                }
+                projection.subagents.push(child.clone());
+            }
+        }
+        TaskEvent::SubagentLinked {
+            actor_id,
+            context_cursor,
+            parent,
+        } => {
+            if projection.parent.is_some() {
+                return invalid_transition("subagent.linked cannot relink a child task");
+            }
+            if parent.parent_task_id == envelope.task_id {
+                return invalid_transition("subagent.linked cannot make a task its own parent");
+            }
+            projection.actor_id = Some(*actor_id);
+            projection.context_cursor = *context_cursor;
+            projection.parent = Some(parent.clone());
+        }
+        TaskEvent::SubagentStateChanged { child }
+        | TaskEvent::SubagentSummaryUpdated { child }
+        | TaskEvent::SubagentBackgrounded { child }
+        | TaskEvent::SubagentTerminal { child } => {
+            apply_subagent_update(&mut projection, envelope.task_id, child)?;
+        }
         TaskEvent::Engine { .. } => {}
         TaskEvent::WorkspacePreparing { lease }
         | TaskEvent::WorkspaceAcquired { lease }
@@ -650,22 +706,48 @@ fn project_entity_tables(
         TaskEvent::SubagentSpawned {
             actor_id,
             started_at,
+            child,
         } => {
-            let subagent = SubagentProjection {
-                actor_id: *actor_id,
-                state: SubagentState::Running,
-                started_at: *started_at,
-                ended_at: None,
-            };
+            if let Some(child) = child {
+                upsert_entity(
+                    transaction,
+                    "subagent_projection",
+                    "actor_id",
+                    envelope,
+                    &actor_id.to_string(),
+                    child,
+                )?;
+            } else {
+                let legacy = LegacySubagentProjection {
+                    actor_id: *actor_id,
+                    state: LegacySubagentState::Running,
+                    started_at: *started_at,
+                    ended_at: None,
+                };
+                upsert_entity(
+                    transaction,
+                    "subagent_projection",
+                    "actor_id",
+                    envelope,
+                    &actor_id.to_string(),
+                    &legacy,
+                )?;
+            }
+        }
+        TaskEvent::SubagentStateChanged { child }
+        | TaskEvent::SubagentSummaryUpdated { child }
+        | TaskEvent::SubagentBackgrounded { child }
+        | TaskEvent::SubagentTerminal { child } => {
             upsert_entity(
                 transaction,
                 "subagent_projection",
                 "actor_id",
                 envelope,
-                &actor_id.to_string(),
-                &subagent,
+                &child.actor_id.to_string(),
+                child,
             )?;
         }
+        TaskEvent::SubagentLinked { .. } => {}
         TaskEvent::WorkspacePreparing { lease }
         | TaskEvent::WorkspaceAcquired { lease }
         | TaskEvent::WorkspaceCleanupPending { lease } => {
@@ -870,6 +952,44 @@ fn project_timeline(
             None,
             false,
         ),
+        TaskEvent::SubagentLinked { .. } => (
+            TimelineEventKind::Subagent,
+            "Subagent linked".into(),
+            None,
+            false,
+        ),
+        TaskEvent::SubagentStateChanged { child } => (
+            TimelineEventKind::Subagent,
+            format!("Subagent {:?}", child.state),
+            Some(child.segment_id),
+            false,
+        ),
+        TaskEvent::SubagentSummaryUpdated { child } => (
+            TimelineEventKind::Subagent,
+            child
+                .summary
+                .as_deref()
+                .map(bounded_summary)
+                .unwrap_or_else(|| "Subagent summary updated".into()),
+            Some(child.segment_id),
+            false,
+        ),
+        TaskEvent::SubagentBackgrounded { child } => (
+            TimelineEventKind::Subagent,
+            "Subagent continuing in background".into(),
+            Some(child.segment_id),
+            false,
+        ),
+        TaskEvent::SubagentTerminal { child } => (
+            TimelineEventKind::Subagent,
+            child
+                .summary
+                .as_deref()
+                .map(bounded_summary)
+                .unwrap_or_else(|| format!("Subagent {:?}", child.state)),
+            Some(child.segment_id),
+            child.state == harness_contracts::SubagentActorState::Failed,
+        ),
         TaskEvent::WorkspaceAcquired { .. } => (
             TimelineEventKind::Notice,
             "Workspace acquired".into(),
@@ -963,17 +1083,73 @@ fn bounded_summary(summary: &str) -> String {
     summary.chars().take(MAX_TIMELINE_SUMMARY_CHARS).collect()
 }
 
+fn apply_subagent_update(
+    projection: &mut TaskProjection,
+    task_id: TaskId,
+    child: &SubagentProjection,
+) -> Result<(), TaskStoreError> {
+    if task_id == child.parent_task_id {
+        let existing = projection
+            .subagents
+            .iter_mut()
+            .find(|existing| existing.child_task_id == child.child_task_id)
+            .ok_or_else(|| projector_error("subagent update references an unlinked child"))?;
+        if existing.actor_id != child.actor_id
+            || existing.segment_id != child.segment_id
+            || existing.parent_segment_id != child.parent_segment_id
+            || existing.delegation_id != child.delegation_id
+            || existing.context_cursor > child.context_cursor
+            || existing.workspace_lease_id.is_some()
+                && existing.workspace_lease_id != child.workspace_lease_id
+            || existing.detached && !child.detached
+            || existing.ended_at.is_some() && existing.ended_at != child.ended_at
+            || existing.summary.is_some() && child.summary.is_none()
+            || !valid_subagent_state_transition(existing.state, child.state)
+        {
+            return invalid_transition("subagent update violates immutable or monotonic state");
+        }
+        *existing = child.clone();
+        return Ok(());
+    }
+    if task_id == child.child_task_id {
+        projection.actor_id = Some(child.actor_id);
+        projection.context_cursor = child.context_cursor;
+        return Ok(());
+    }
+    integrity("subagent update belongs to another task")
+}
+
+fn valid_subagent_state_transition(
+    current: harness_contracts::SubagentActorState,
+    next: harness_contracts::SubagentActorState,
+) -> bool {
+    use harness_contracts::SubagentActorState::{
+        Background, Cancelled, Completed, Failed, Running, Starting, Yielding,
+    };
+    current == next
+        || matches!(
+            (current, next),
+            (Starting, Running | Yielding | Cancelled | Failed)
+                | (
+                    Running,
+                    Yielding | Background | Completed | Cancelled | Failed
+                )
+                | (Yielding, Background | Completed | Cancelled | Failed)
+                | (Background, Completed | Cancelled | Failed)
+        )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum SubagentState {
+enum LegacySubagentState {
     Running,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SubagentProjection {
+struct LegacySubagentProjection {
     actor_id: ActorId,
-    state: SubagentState,
+    state: LegacySubagentState,
     started_at: DateTime<Utc>,
     ended_at: Option<DateTime<Utc>>,
 }
@@ -1037,6 +1213,10 @@ pub(crate) fn empty_task_projection(task_id: TaskId) -> TaskProjection {
         current_run: None,
         pending_permission: None,
         queue: Vec::new(),
+        actor_id: None,
+        context_cursor: 0,
+        parent: None,
+        subagents: Vec::new(),
     }
 }
 

@@ -665,7 +665,10 @@ impl Harness {
         let mut subagent_assembly = None;
         #[cfg(feature = "agents-subagent")]
         if let Some(agent_tool_policy) = run_options.agent_tool_policy.as_ref() {
-            if harness_agent_runtime::should_install_subagent_runner(agent_tool_policy) {
+            if super::tool_pool::should_install_default_subagent_runner(
+                harness_has_subagent_runner,
+                agent_tool_policy,
+            ) {
                 subagent_assembly = Some(super::tool_pool::install_subagent_runner_for_run(
                     &mut cap_registry,
                     agent_tool_policy,

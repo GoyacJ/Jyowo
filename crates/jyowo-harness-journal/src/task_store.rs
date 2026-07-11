@@ -11,9 +11,11 @@ use chrono::{DateTime, Utc};
 use fs2::FileExt;
 use harness_contracts::{
     now, ActorId, BlobId, CheckpointId, ClientId, CommandId, Event, EventId, EventSource,
-    EventSourceKind, IdParseError, IndeterminateToolDecision, QueueItemProjection, RunSegmentId,
-    SessionId, TaskEventEnvelope, TaskId, TaskProjection, TenantId, ToolUseId, WorkspaceLeaseId,
-    WorkspaceLeaseProjection, WorkspaceLeaseState, WorkspaceMode,
+    EventSourceKind, IdParseError, IndeterminateToolDecision, QueueItemProjection, RedactRules,
+    Redactor, RunSegmentId, RunState, RunTerminalReason, SessionId, SubagentActorState, SubagentId,
+    SubagentParentProjection, SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection,
+    TenantId, ToolUseId, WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceLeaseState,
+    WorkspaceMode,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -211,6 +213,230 @@ pub struct TaskStore {
     blob_root_lock: Mutex<Option<std::fs::File>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateSubagentActorRequest {
+    pub child_task_id: TaskId,
+    pub actor_id: ActorId,
+    pub segment_id: RunSegmentId,
+    pub parent_task_id: TaskId,
+    pub parent_segment_id: RunSegmentId,
+    pub parent_actor_id: ActorId,
+    pub parent_workspace_lease_id: WorkspaceLeaseId,
+    pub delegation_id: SubagentId,
+    pub context_cursor: u64,
+    pub title: String,
+    pub started_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedactedSubagentSummary(String);
+
+impl RedactedSubagentSummary {
+    #[must_use]
+    pub fn new(redactor: &dyn Redactor, input: &str) -> Self {
+        Self(
+            redactor
+                .redact(input, &RedactRules::default())
+                .chars()
+                .take(256)
+                .collect(),
+        )
+    }
+
+    fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentLifecycleAuthority {
+    Supervisor,
+    Actor(ActorId),
+    Recovery,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentLifecycleCommand {
+    pub parent_task_id: TaskId,
+    pub child_task_id: TaskId,
+    pub actor_id: ActorId,
+    pub authority: SubagentLifecycleAuthority,
+    pub transition: SubagentLifecycleTransition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubagentLifecycleTransition {
+    Running {
+        workspace_lease_id: WorkspaceLeaseId,
+        context_cursor: u64,
+    },
+    Yielding,
+    Background,
+    Completed {
+        summary: RedactedSubagentSummary,
+        ended_at: DateTime<Utc>,
+    },
+    Cancelled {
+        ended_at: DateTime<Utc>,
+    },
+    Failed {
+        ended_at: DateTime<Utc>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpectedParentStopSubagent {
+    pub child_task_id: TaskId,
+    pub actor_id: ActorId,
+    pub expected_state: SubagentActorState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParentSubagentStopMode {
+    SafePoint,
+    Force { ended_at: DateTime<Utc> },
+}
+
+fn subagent_lifecycle_authority(
+    authority: SubagentLifecycleAuthority,
+    actor_id: ActorId,
+) -> Result<EventAuthority, TaskStoreError> {
+    match authority {
+        SubagentLifecycleAuthority::Supervisor => Ok(TaskStore::supervisor_authority()),
+        SubagentLifecycleAuthority::Actor(claimed) if claimed == actor_id => {
+            Ok(TaskStore::subagent_authority(actor_id))
+        }
+        SubagentLifecycleAuthority::Actor(_) => Err(TaskStoreError::InvalidInput(
+            "subagent lifecycle authority does not match the durable actor".into(),
+        )),
+        SubagentLifecycleAuthority::Recovery => Ok(TaskStore::recovery_authority()),
+    }
+}
+
+fn validate_subagent_lifecycle_authority(
+    authority: SubagentLifecycleAuthority,
+    transition: &SubagentLifecycleTransition,
+) -> Result<(), TaskStoreError> {
+    if matches!(authority, SubagentLifecycleAuthority::Actor(_))
+        && matches!(
+            transition,
+            SubagentLifecycleTransition::Yielding | SubagentLifecycleTransition::Background
+        )
+    {
+        return Err(TaskStoreError::InvalidInput(
+            "only the supervisor may yield or background a subagent".into(),
+        ));
+    }
+    if authority == SubagentLifecycleAuthority::Recovery
+        && !matches!(
+            transition,
+            SubagentLifecycleTransition::Cancelled { .. }
+                | SubagentLifecycleTransition::Failed { .. }
+        )
+    {
+        return Err(TaskStoreError::InvalidInput(
+            "recovery authority may only terminate a subagent".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn require_subagent_state(
+    actual: SubagentActorState,
+    expected: SubagentActorState,
+) -> Result<(), TaskStoreError> {
+    if actual != expected {
+        return Err(TaskStoreError::InvalidInput(format!(
+            "subagent lifecycle expected {expected:?}, found {actual:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn is_nonterminal_subagent_state(state: SubagentActorState) -> bool {
+    matches!(
+        state,
+        SubagentActorState::Starting
+            | SubagentActorState::Running
+            | SubagentActorState::Yielding
+            | SubagentActorState::Background
+    )
+}
+
+fn require_nonterminal_subagent_state(state: SubagentActorState) -> Result<(), TaskStoreError> {
+    if !is_nonterminal_subagent_state(state) {
+        return Err(TaskStoreError::InvalidInput(
+            "subagent lifecycle transition requires a nonterminal actor".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_subagent_end_time(
+    child: &SubagentProjection,
+    ended_at: DateTime<Utc>,
+) -> Result<(), TaskStoreError> {
+    if ended_at < child.started_at {
+        return Err(TaskStoreError::InvalidInput(
+            "subagent terminal time precedes its start".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn subagent_run_completed(child: &SubagentProjection) -> Option<NewTaskEvent> {
+    let ended_at = child.ended_at?;
+    let terminal_reason = match child.state {
+        SubagentActorState::Completed => RunTerminalReason::Completed,
+        SubagentActorState::Cancelled => RunTerminalReason::Cancelled,
+        SubagentActorState::Failed => RunTerminalReason::Failed,
+        _ => return None,
+    };
+    Some(NewTaskEvent::run_completed(
+        child.segment_id,
+        ended_at,
+        terminal_reason,
+        child.state != SubagentActorState::Completed,
+    ))
+}
+
+fn mark_subagent_workspace_cleanup_pending_in_transaction(
+    transaction: &Transaction<'_>,
+    child: &SubagentProjection,
+) -> Result<Option<NewTaskEvent>, TaskStoreError> {
+    let Some(lease_id) = child.workspace_lease_id else {
+        return Ok(None);
+    };
+    let mut lease = workspace_lease_in_transaction(transaction, lease_id)?;
+    if lease.task_id != child.child_task_id
+        || lease.actor_id != child.actor_id
+        || lease.mode != WorkspaceMode::ManagedWorktree
+    {
+        return Err(TaskStoreError::ProjectionIntegrity(
+            "subagent terminal workspace lease ownership mismatch".into(),
+        ));
+    }
+    if lease.state == TaskWorkspaceLeaseState::CleanupPending {
+        return Ok(None);
+    }
+    if !matches!(
+        lease.state,
+        TaskWorkspaceLeaseState::Active
+            | TaskWorkspaceLeaseState::Preparing
+            | TaskWorkspaceLeaseState::Expired
+            | TaskWorkspaceLeaseState::CleanupBlocked
+    ) {
+        return Err(TaskStoreError::InvalidInput(format!(
+            "subagent workspace lease {lease_id} cannot enter terminal cleanup"
+        )));
+    }
+    lease.state = TaskWorkspaceLeaseState::CleanupPending;
+    update_workspace_lease_in_transaction(transaction, &lease)?;
+    Ok(Some(NewTaskEvent::workspace_cleanup_pending(
+        workspace_lease_projection(&lease),
+    )))
+}
+
 pub struct WorkspaceDispatchGuard<'a> {
     store: &'a TaskStore,
     lease_id: WorkspaceLeaseId,
@@ -248,6 +474,565 @@ struct StagedBlobMetadata {
 impl TaskStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, TaskStoreError> {
         Self::open_with_projector(path, Arc::new(SynchronousTaskProjector))
+    }
+
+    pub fn create_subagent_actor_checked(
+        &self,
+        request: CreateSubagentActorRequest,
+    ) -> Result<(), TaskStoreError> {
+        if request.child_task_id == request.parent_task_id {
+            return Err(TaskStoreError::InvalidInput(
+                "subagent child task must differ from its parent".into(),
+            ));
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if stream_version_in_transaction(&transaction, request.child_task_id)? != 0 {
+            return Err(TaskStoreError::InvalidInput(format!(
+                "subagent child task {} already exists",
+                request.child_task_id
+            )));
+        }
+        let parent_projection = load_task_projection(&transaction, request.parent_task_id)?
+            .ok_or_else(|| {
+                TaskStoreError::InvalidInput(format!(
+                    "subagent parent task {} does not exist",
+                    request.parent_task_id
+                ))
+            })?;
+        if parent_projection.actor_id != Some(request.parent_actor_id) {
+            return Err(TaskStoreError::InvalidInput(
+                "subagent parent actor does not match the durable task actor".into(),
+            ));
+        }
+        if !parent_projection.current_run.as_ref().is_some_and(|run| {
+            run.segment_id == request.parent_segment_id && run.state == RunState::Running
+        }) {
+            return Err(TaskStoreError::InvalidInput(
+                "subagent parent segment is not the current running segment".into(),
+            ));
+        }
+        let parent_lease =
+            workspace_lease_in_transaction(&transaction, request.parent_workspace_lease_id)?;
+        if parent_lease.task_id != request.parent_task_id
+            || parent_lease.actor_id != request.parent_actor_id
+            || parent_lease.state != TaskWorkspaceLeaseState::Active
+        {
+            return Err(TaskStoreError::InvalidInput(
+                "subagent parent workspace lease does not belong to the active parent actor".into(),
+            ));
+        }
+        let child = SubagentProjection {
+            child_task_id: request.child_task_id,
+            actor_id: request.actor_id,
+            segment_id: request.segment_id,
+            parent_task_id: request.parent_task_id,
+            parent_segment_id: request.parent_segment_id,
+            delegation_id: request.delegation_id,
+            context_cursor: request.context_cursor,
+            workspace_lease_id: None,
+            state: SubagentActorState::Starting,
+            detached: false,
+            summary: None,
+            started_at: request.started_at,
+            ended_at: None,
+        };
+        let parent = SubagentParentProjection {
+            parent_task_id: child.parent_task_id,
+            parent_segment_id: child.parent_segment_id,
+            delegation_id: child.delegation_id,
+        };
+        let supervisor = Self::supervisor_authority();
+        let mut child_events = append_in_transaction(
+            &transaction,
+            child.child_task_id,
+            0,
+            supervisor.source(),
+            vec![NewTaskEvent::task_created(request.title)],
+        )?;
+        child_events.extend(append_in_transaction(
+            &transaction,
+            child.child_task_id,
+            1,
+            Self::subagent_authority(child.actor_id).source(),
+            vec![NewTaskEvent::subagent_linked(
+                child.actor_id,
+                child.context_cursor,
+                parent,
+            )],
+        )?);
+        child_events.extend(append_in_transaction(
+            &transaction,
+            child.child_task_id,
+            2,
+            supervisor.source(),
+            vec![NewTaskEvent::run_started(
+                child.segment_id,
+                child.started_at,
+            )],
+        )?);
+        let parent_events = append_in_transaction(
+            &transaction,
+            child.parent_task_id,
+            parent_projection.stream_version,
+            supervisor.source(),
+            vec![NewTaskEvent::subagent_actor_spawned(child)],
+        )?;
+        for event in child_events.iter().chain(&parent_events) {
+            self.projector.apply(&transaction, event)?;
+        }
+        roll_forward_subagent_checkpoint_if_running(
+            &transaction,
+            child_events[0].task_id,
+            &child_events,
+        )?;
+        roll_forward_subagent_checkpoint_if_running(
+            &transaction,
+            parent_events[0].task_id,
+            &parent_events,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn apply_subagent_lifecycle(
+        &self,
+        command: SubagentLifecycleCommand,
+    ) -> Result<SubagentProjection, TaskStoreError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let parent_projection = load_task_projection(&transaction, command.parent_task_id)?
+            .ok_or_else(|| {
+                TaskStoreError::InvalidInput("subagent parent task is missing".into())
+            })?;
+        let existing = parent_projection
+            .subagents
+            .iter()
+            .find(|child| child.child_task_id == command.child_task_id)
+            .ok_or_else(|| {
+                TaskStoreError::InvalidInput("subagent child is not linked to the parent".into())
+            })?;
+        if existing.actor_id != command.actor_id {
+            return Err(TaskStoreError::InvalidInput(
+                "subagent lifecycle actor does not match durable topology".into(),
+            ));
+        }
+        let child_projection = load_task_projection(&transaction, command.child_task_id)?
+            .ok_or_else(|| TaskStoreError::InvalidInput("subagent child task is missing".into()))?;
+        let expected_parent = SubagentParentProjection {
+            parent_task_id: existing.parent_task_id,
+            parent_segment_id: existing.parent_segment_id,
+            delegation_id: existing.delegation_id,
+        };
+        if child_projection.actor_id != Some(existing.actor_id)
+            || child_projection.parent.as_ref() != Some(&expected_parent)
+        {
+            return Err(TaskStoreError::ProjectionIntegrity(
+                "subagent parent and child topology disagree".into(),
+            ));
+        }
+        let source = subagent_lifecycle_authority(command.authority, existing.actor_id)?;
+        let mut child = existing.clone();
+        validate_subagent_lifecycle_authority(command.authority, &command.transition)?;
+        let child_updates = match command.transition {
+            SubagentLifecycleTransition::Running {
+                workspace_lease_id,
+                context_cursor,
+            } => {
+                if !matches!(
+                    child.state,
+                    SubagentActorState::Starting | SubagentActorState::Yielding
+                ) {
+                    return Err(TaskStoreError::InvalidInput(format!(
+                        "subagent workspace start expected Starting or Yielding, found {:?}",
+                        child.state
+                    )));
+                }
+                let pending_yield = child.state == SubagentActorState::Yielding;
+                let lease = workspace_lease_in_transaction(&transaction, workspace_lease_id)?;
+                if lease.task_id != child.child_task_id
+                    || lease.actor_id != child.actor_id
+                    || lease.mode != WorkspaceMode::ManagedWorktree
+                    || lease.state != TaskWorkspaceLeaseState::Active
+                {
+                    return Err(TaskStoreError::InvalidInput(
+                        "subagent workspace lease does not belong to the active child actor".into(),
+                    ));
+                }
+                child.workspace_lease_id = Some(workspace_lease_id);
+                child.context_cursor = context_cursor;
+                if !pending_yield {
+                    child.state = SubagentActorState::Running;
+                }
+                vec![NewTaskEvent::subagent_state_changed(child.clone())]
+            }
+            SubagentLifecycleTransition::Yielding => {
+                require_subagent_state(child.state, SubagentActorState::Running)?;
+                child.state = SubagentActorState::Yielding;
+                vec![NewTaskEvent::subagent_state_changed(child.clone())]
+            }
+            SubagentLifecycleTransition::Background => {
+                if !matches!(
+                    child.state,
+                    SubagentActorState::Running | SubagentActorState::Yielding
+                ) {
+                    return Err(TaskStoreError::InvalidInput(
+                        "only a running or yielding subagent can continue in background".into(),
+                    ));
+                }
+                child.detached = true;
+                child.state = SubagentActorState::Background;
+                vec![NewTaskEvent::subagent_backgrounded(child.clone())]
+            }
+            SubagentLifecycleTransition::Completed { summary, ended_at } => {
+                require_nonterminal_subagent_state(child.state)?;
+                validate_subagent_end_time(&child, ended_at)?;
+                let mut summarized = child.clone();
+                summarized.summary = Some(summary.into_inner());
+                child = summarized.clone();
+                child.state = SubagentActorState::Completed;
+                child.ended_at = Some(ended_at);
+                vec![
+                    NewTaskEvent::subagent_summary_updated(summarized),
+                    NewTaskEvent::subagent_terminal(child.clone()),
+                ]
+            }
+            SubagentLifecycleTransition::Cancelled { ended_at } => {
+                require_nonterminal_subagent_state(child.state)?;
+                validate_subagent_end_time(&child, ended_at)?;
+                child.state = SubagentActorState::Cancelled;
+                child.ended_at = Some(ended_at);
+                vec![NewTaskEvent::subagent_terminal(child.clone())]
+            }
+            SubagentLifecycleTransition::Failed { ended_at } => {
+                require_nonterminal_subagent_state(child.state)?;
+                validate_subagent_end_time(&child, ended_at)?;
+                child.state = SubagentActorState::Failed;
+                child.ended_at = Some(ended_at);
+                vec![NewTaskEvent::subagent_terminal(child.clone())]
+            }
+        };
+        let parent_updates = child_updates.clone();
+        let run_completion_update = subagent_run_completed(&child);
+        let cleanup_update = if matches!(
+            child.state,
+            SubagentActorState::Completed
+                | SubagentActorState::Cancelled
+                | SubagentActorState::Failed
+        ) {
+            mark_subagent_workspace_cleanup_pending_in_transaction(&transaction, &child)?
+        } else {
+            None
+        };
+        let child_version = child_projection.stream_version;
+        let mut child_events = append_in_transaction(
+            &transaction,
+            child.child_task_id,
+            child_version,
+            source.source(),
+            child_updates,
+        )?;
+        if let Some(run_completion_update) = run_completion_update {
+            child_events.extend(append_in_transaction(
+                &transaction,
+                child.child_task_id,
+                child_version + child_events.len() as u64,
+                Self::supervisor_authority().source(),
+                vec![run_completion_update],
+            )?);
+        }
+        if let Some(cleanup_update) = cleanup_update {
+            child_events.extend(append_in_transaction(
+                &transaction,
+                child.child_task_id,
+                child_version + child_events.len() as u64,
+                Self::supervisor_authority().source(),
+                vec![cleanup_update],
+            )?);
+        }
+        let parent_events = append_in_transaction(
+            &transaction,
+            child.parent_task_id,
+            parent_projection.stream_version,
+            source.source(),
+            parent_updates,
+        )?;
+        for envelope in child_events.iter().chain(&parent_events) {
+            self.projector.apply(&transaction, envelope)?;
+        }
+        roll_forward_subagent_checkpoint_if_running(
+            &transaction,
+            child.child_task_id,
+            &child_events,
+        )?;
+        roll_forward_subagent_checkpoint_if_running(
+            &transaction,
+            child.parent_task_id,
+            &parent_events,
+        )?;
+        transaction.commit()?;
+        Ok(child)
+    }
+
+    pub fn apply_parent_subagent_stop(
+        &self,
+        parent_task_id: TaskId,
+        expected_children: &[ExpectedParentStopSubagent],
+        mode: ParentSubagentStopMode,
+    ) -> Result<Vec<SubagentProjection>, TaskStoreError> {
+        let mut identities = HashSet::with_capacity(expected_children.len());
+        if expected_children
+            .iter()
+            .any(|child| !identities.insert((child.child_task_id, child.actor_id)))
+        {
+            return Err(TaskStoreError::InvalidInput(
+                "parent subagent stop contains a duplicate child".into(),
+            ));
+        }
+
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let parent_projection =
+            load_task_projection(&transaction, parent_task_id)?.ok_or_else(|| {
+                TaskStoreError::InvalidInput("subagent parent task is missing".into())
+            })?;
+        let mut validated = Vec::with_capacity(expected_children.len());
+        for expected in expected_children {
+            let existing = parent_projection
+                .subagents
+                .iter()
+                .find(|child| child.child_task_id == expected.child_task_id)
+                .ok_or_else(|| {
+                    TaskStoreError::InvalidInput(
+                        "parent stop child is not linked to the parent".into(),
+                    )
+                })?;
+            if existing.actor_id != expected.actor_id {
+                return Err(TaskStoreError::InvalidInput(
+                    "parent stop child actor is stale".into(),
+                ));
+            }
+            if existing.detached || !is_nonterminal_subagent_state(existing.state) {
+                continue;
+            }
+            require_subagent_state(existing.state, expected.expected_state)?;
+            let child_projection = load_task_projection(&transaction, existing.child_task_id)?
+                .ok_or_else(|| {
+                    TaskStoreError::InvalidInput("subagent child task is missing".into())
+                })?;
+            let expected_parent = SubagentParentProjection {
+                parent_task_id: existing.parent_task_id,
+                parent_segment_id: existing.parent_segment_id,
+                delegation_id: existing.delegation_id,
+            };
+            if child_projection.actor_id != Some(existing.actor_id)
+                || child_projection.parent.as_ref() != Some(&expected_parent)
+            {
+                return Err(TaskStoreError::ProjectionIntegrity(
+                    "subagent parent and child topology disagree".into(),
+                ));
+            }
+            let mut updated = existing.clone();
+            let event = match mode {
+                ParentSubagentStopMode::SafePoint => {
+                    if !matches!(
+                        updated.state,
+                        SubagentActorState::Starting | SubagentActorState::Running
+                    ) {
+                        return Err(TaskStoreError::InvalidInput(format!(
+                            "safe parent stop expected Starting or Running, found {:?}",
+                            updated.state
+                        )));
+                    }
+                    updated.state = SubagentActorState::Yielding;
+                    NewTaskEvent::subagent_state_changed(updated.clone())
+                }
+                ParentSubagentStopMode::Force { ended_at } => {
+                    require_nonterminal_subagent_state(updated.state)?;
+                    validate_subagent_end_time(&updated, ended_at)?;
+                    updated.state = SubagentActorState::Cancelled;
+                    updated.ended_at = Some(ended_at);
+                    NewTaskEvent::subagent_terminal(updated.clone())
+                }
+            };
+            let mut child_events = vec![event.clone()];
+            if matches!(mode, ParentSubagentStopMode::Force { .. }) {
+                if let Some(run_completed) = subagent_run_completed(&updated) {
+                    child_events.push(run_completed);
+                }
+                if let Some(cleanup_update) =
+                    mark_subagent_workspace_cleanup_pending_in_transaction(&transaction, &updated)?
+                {
+                    child_events.push(cleanup_update);
+                }
+            }
+            validated.push((
+                child_projection.stream_version,
+                updated,
+                child_events,
+                event,
+            ));
+        }
+
+        let source = Self::supervisor_authority();
+        let mut committed_child_events = Vec::with_capacity(validated.len());
+        let mut parent_updates = Vec::with_capacity(validated.len());
+        let mut updated_children = Vec::with_capacity(validated.len());
+        for (child_version, child, child_updates, parent_update) in validated {
+            let child_events = append_in_transaction(
+                &transaction,
+                child.child_task_id,
+                child_version,
+                source.source(),
+                child_updates,
+            )?;
+            committed_child_events.push((child.child_task_id, child_events));
+            parent_updates.push(parent_update);
+            updated_children.push(child);
+        }
+        let parent_events = append_in_transaction(
+            &transaction,
+            parent_task_id,
+            parent_projection.stream_version,
+            source.source(),
+            parent_updates,
+        )?;
+        for (_, events) in &committed_child_events {
+            for event in events {
+                self.projector.apply(&transaction, event)?;
+            }
+        }
+        for event in &parent_events {
+            self.projector.apply(&transaction, event)?;
+        }
+        for (child_task_id, events) in &committed_child_events {
+            roll_forward_subagent_checkpoint_if_running(&transaction, *child_task_id, events)?;
+        }
+        if !parent_events.is_empty() {
+            roll_forward_subagent_checkpoint_if_running(
+                &transaction,
+                parent_task_id,
+                &parent_events,
+            )?;
+        }
+        transaction.commit()?;
+        Ok(updated_children)
+    }
+
+    pub fn nonterminal_subagent_actors(&self) -> Result<Vec<SubagentProjection>, TaskStoreError> {
+        Ok(self
+            .task_projections()?
+            .into_iter()
+            .flat_map(|projection| projection.subagents)
+            .filter(|child| is_nonterminal_subagent_state(child.state))
+            .collect())
+    }
+
+    pub fn recover_subagent_actor(
+        &self,
+        child_task_id: TaskId,
+        actor_id: ActorId,
+        ended_at: DateTime<Utc>,
+    ) -> Result<SubagentProjection, TaskStoreError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let child_projection = load_task_projection(&transaction, child_task_id)?
+            .ok_or_else(|| TaskStoreError::InvalidInput("subagent child task is missing".into()))?;
+        if child_projection.actor_id != Some(actor_id) {
+            return Err(TaskStoreError::InvalidInput(
+                "recovery actor does not match the durable child actor".into(),
+            ));
+        }
+        let parent = child_projection.parent.as_ref().ok_or_else(|| {
+            TaskStoreError::ProjectionIntegrity("subagent child has no durable parent".into())
+        })?;
+        let parent_projection = load_task_projection(&transaction, parent.parent_task_id)?
+            .ok_or_else(|| {
+                TaskStoreError::InvalidInput("subagent parent task is missing".into())
+            })?;
+        let existing = parent_projection
+            .subagents
+            .iter()
+            .find(|child| child.child_task_id == child_task_id)
+            .ok_or_else(|| {
+                TaskStoreError::ProjectionIntegrity(
+                    "subagent child is not linked from its durable parent".into(),
+                )
+            })?;
+        if existing.actor_id != actor_id {
+            return Err(TaskStoreError::ProjectionIntegrity(
+                "subagent recovery topology actor mismatch".into(),
+            ));
+        }
+        if existing.state == SubagentActorState::Failed {
+            return Ok(existing.clone());
+        }
+        require_nonterminal_subagent_state(existing.state)?;
+        validate_subagent_end_time(existing, ended_at)?;
+
+        let mut recovered = existing.clone();
+        recovered.state = SubagentActorState::Failed;
+        recovered.ended_at = Some(ended_at);
+        let mut child_updates = vec![NewTaskEvent::subagent_terminal(recovered.clone())];
+        if let Some(run_completed) = subagent_run_completed(&recovered) {
+            child_updates.push(run_completed);
+        }
+        if let Some(lease_id) = recovered.workspace_lease_id {
+            let mut lease = workspace_lease_in_transaction(&transaction, lease_id)?;
+            if lease.task_id != child_task_id
+                || lease.actor_id != actor_id
+                || lease.mode != WorkspaceMode::ManagedWorktree
+            {
+                return Err(TaskStoreError::ProjectionIntegrity(
+                    "recovered subagent workspace lease ownership mismatch".into(),
+                ));
+            }
+            if lease.state != TaskWorkspaceLeaseState::CleanupPending {
+                if !matches!(
+                    lease.state,
+                    TaskWorkspaceLeaseState::Active
+                        | TaskWorkspaceLeaseState::Preparing
+                        | TaskWorkspaceLeaseState::Expired
+                        | TaskWorkspaceLeaseState::CleanupBlocked
+                ) {
+                    return Err(TaskStoreError::InvalidInput(format!(
+                        "workspace lease {lease_id} cannot enter recovery cleanup"
+                    )));
+                }
+                lease.state = TaskWorkspaceLeaseState::CleanupPending;
+                update_workspace_lease_in_transaction(&transaction, &lease)?;
+                child_updates.push(NewTaskEvent::workspace_cleanup_pending(
+                    workspace_lease_projection(&lease),
+                ));
+            }
+        }
+
+        let recovery = Self::recovery_authority();
+        let child_events = append_in_transaction(
+            &transaction,
+            child_task_id,
+            child_projection.stream_version,
+            recovery.source(),
+            child_updates,
+        )?;
+        let parent_events = append_in_transaction(
+            &transaction,
+            parent_projection.task_id,
+            parent_projection.stream_version,
+            recovery.source(),
+            vec![NewTaskEvent::subagent_terminal(recovered.clone())],
+        )?;
+        for event in child_events.iter().chain(&parent_events) {
+            self.projector.apply(&transaction, event)?;
+        }
+        roll_forward_subagent_checkpoint_if_running(&transaction, child_task_id, &child_events)?;
+        roll_forward_subagent_checkpoint_if_running(
+            &transaction,
+            parent_projection.task_id,
+            &parent_events,
+        )?;
+        transaction.commit()?;
+        Ok(recovered)
     }
 
     pub(crate) fn open_with_projector(
@@ -316,6 +1101,18 @@ impl TaskStore {
                 client_id: None,
             },
             principal_id: "system:recovery".into(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn subagent_authority(actor_id: ActorId) -> EventAuthority {
+        EventAuthority {
+            source: EventSource {
+                kind: EventSourceKind::Subagent,
+                actor_id: Some(actor_id),
+                client_id: None,
+            },
+            principal_id: format!("subagent:{actor_id}"),
         }
     }
 
@@ -3537,6 +4334,27 @@ fn roll_forward_safe_checkpoint_in_transaction(
         created_at: now(),
     };
     insert_checkpoint_in_transaction(transaction, &checkpoint)?;
+    Ok(())
+}
+
+fn roll_forward_subagent_checkpoint_if_running(
+    transaction: &Transaction<'_>,
+    task_id: TaskId,
+    committed: &[TaskEventEnvelope],
+) -> Result<(), TaskStoreError> {
+    let running = load_task_projection(transaction, task_id)?
+        .and_then(|projection| projection.current_run)
+        .is_some_and(|run| {
+            matches!(
+                run.state,
+                harness_contracts::RunState::Running
+                    | harness_contracts::RunState::WaitingPermission
+                    | harness_contracts::RunState::Yielding
+            )
+        });
+    if running {
+        roll_forward_safe_checkpoint_in_transaction(transaction, task_id, committed)?;
+    }
     Ok(())
 }
 

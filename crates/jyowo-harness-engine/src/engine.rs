@@ -1050,10 +1050,20 @@ impl ChildCancellationBridge {
     fn spawn(
         child_cancellation: harness_subagent::SubagentCancellationToken,
         engine_cancellation: crate::CancellationToken,
+        run_control: crate::RunControlHandle,
     ) -> Self {
         let handle = tokio::spawn(async move {
-            child_cancellation.cancelled().await;
-            engine_cancellation.cancel(crate::InterruptCause::Parent);
+            tokio::select! {
+                biased;
+                () = child_cancellation.cancelled() => {
+                    engine_cancellation.cancel(crate::InterruptCause::Parent);
+                }
+                () = child_cancellation.yield_requested() => {
+                    run_control.request(crate::RunControl::YieldAfterAtomicOperation);
+                    child_cancellation.cancelled().await;
+                    engine_cancellation.cancel(crate::InterruptCause::Parent);
+                }
+            }
         });
         Self { handle }
     }
@@ -1092,8 +1102,12 @@ impl harness_subagent::SubagentEngineFactory for EngineBoundSubagentFactory {
         let child_session_id = request.child_session_id;
         let (child_engine, context_report) = scoped_child_engine(engine, &request).await?;
         let cancellation = crate::CancellationToken::new();
-        let _cancellation_bridge =
-            ChildCancellationBridge::spawn(request.cancellation.clone(), cancellation.clone());
+        let run_control = crate::RunControlHandle::new();
+        let _cancellation_bridge = ChildCancellationBridge::spawn(
+            request.cancellation.clone(),
+            cancellation.clone(),
+            run_control.clone(),
+        );
 
         let ctx = RunContext::new(
             request.tenant_id,
@@ -1114,7 +1128,8 @@ impl harness_subagent::SubagentEngineFactory for EngineBoundSubagentFactory {
         .with_interactivity(interactivity_level(request.spec.interactivity.clone()))
         .with_budget_limits(subagent_budget_limits(&request.spec))
         .with_context_seed(request.context_seed.clone())
-        .with_cancellation(cancellation);
+        .with_cancellation(cancellation)
+        .with_run_control(run_control);
         #[cfg(feature = "recall-memory")]
         let ctx = ctx.with_memory_thread_settings(Some(subagent_memory_thread_settings(
             request.child_session_id,
@@ -2287,9 +2302,11 @@ agent rules
     async fn child_cancellation_bridge_aborts_on_drop() {
         let parent_cancellation = harness_subagent::SubagentCancellationToken::new();
         let engine_cancellation = crate::CancellationToken::new();
+        let run_control = crate::RunControlHandle::new();
         let bridge = super::ChildCancellationBridge::spawn(
             parent_cancellation.clone(),
             engine_cancellation.clone(),
+            run_control,
         );
 
         drop(bridge);
@@ -2297,6 +2314,27 @@ agent rules
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
         assert!(!engine_cancellation.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn child_control_bridge_forwards_safe_yield_to_the_engine() {
+        let child_control = harness_subagent::SubagentCancellationToken::new();
+        let engine_cancellation = crate::CancellationToken::new();
+        let run_control = crate::RunControlHandle::new();
+        let _bridge = super::ChildCancellationBridge::spawn(
+            child_control.clone(),
+            engine_cancellation,
+            run_control.clone(),
+        );
+
+        child_control.request_yield();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while run_control.decision() != crate::SafePointDecision::Yield {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("safe-yield reaches the engine run control");
     }
 
     fn mcp_origin(server_id: &str) -> ToolOrigin {

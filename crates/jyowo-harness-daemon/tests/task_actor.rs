@@ -117,6 +117,7 @@ impl RunCoordinatorFactory for ControlledFactory {
         &self,
         request: StartSegmentRequest,
         _workspace_tools: harness_daemon::WorkspaceToolDispatcher,
+        _subagent_runner: Arc<dyn harness_subagent::SubagentRunner>,
     ) -> RunningSegment {
         let gate = self
             .state

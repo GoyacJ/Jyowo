@@ -5,9 +5,14 @@ use harness_contracts::{
     IndeterminateToolDecision, RunSegmentId, RunTerminalReason, TaskId, ToolUseId, WorkspaceLeaseId,
 };
 use harness_engine::{RunControlHandle, TurnOutcome};
+use harness_journal::TaskStore;
+use harness_subagent::SubagentRunner;
 use tokio::sync::mpsc;
 
-use crate::{WorkspaceCoordinator, WorkspaceCoordinatorError, WorkspaceToolAuthorization};
+use crate::{
+    SubagentParentBinding, SubagentStopMode, SubagentSupervisor, WorkspaceCoordinator,
+    WorkspaceCoordinatorError, WorkspaceToolAuthorization,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceToolAction {
@@ -172,12 +177,15 @@ pub trait RunCoordinatorFactory: Send + Sync + 'static {
         &self,
         request: StartSegmentRequest,
         workspace_tools: WorkspaceToolDispatcher,
+        subagent_runner: Arc<dyn SubagentRunner>,
     ) -> RunningSegment;
 }
 
 pub(crate) struct WorkspaceBoundRunCoordinatorFactory {
     inner: Arc<dyn RunCoordinatorFactory>,
     workspace_tools: WorkspaceToolDispatcher,
+    store: Arc<TaskStore>,
+    subagents: Arc<SubagentSupervisor>,
 }
 
 impl WorkspaceBoundRunCoordinatorFactory {
@@ -185,16 +193,45 @@ impl WorkspaceBoundRunCoordinatorFactory {
     pub(crate) fn new(
         inner: Arc<dyn RunCoordinatorFactory>,
         workspace_tools: WorkspaceToolDispatcher,
+        store: Arc<TaskStore>,
+        subagents: Arc<SubagentSupervisor>,
     ) -> Self {
         Self {
             inner,
             workspace_tools,
+            store,
+            subagents,
         }
     }
 
     pub(crate) fn spawn_idempotent(&self, request: StartSegmentRequest) -> RunningSegment {
+        let parent_actor_id = self
+            .store
+            .task_projection(request.task_id)
+            .ok()
+            .flatten()
+            .and_then(|projection| projection.actor_id)
+            .unwrap_or_else(|| {
+                harness_contracts::ActorId::from_u128(u128::from_be_bytes(
+                    request.task_id.as_bytes(),
+                ))
+            });
+        let subagent_runner = self.subagents.bind(SubagentParentBinding {
+            parent_task_id: request.task_id,
+            parent_segment_id: request.segment_id,
+            parent_actor_id,
+            depth: 0,
+        });
         self.inner
-            .spawn_idempotent(request, self.workspace_tools.clone())
+            .spawn_idempotent(request, self.workspace_tools.clone(), subagent_runner)
+    }
+
+    pub(crate) fn request_parent_stop(
+        &self,
+        task_id: TaskId,
+        mode: SubagentStopMode,
+    ) -> Result<(), harness_subagent::SubagentError> {
+        self.subagents.request_parent_stop(task_id, mode)
     }
 }
 

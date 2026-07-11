@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::{
     ActorId, BlobId, CheckpointId, ClientId, CommandId, EventId, QueueItemId, RequestId,
-    RunSegmentId, TaskId, WorkspaceLeaseId,
+    RunSegmentId, SubagentId, TaskId, WorkspaceLeaseId,
 };
 
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -396,6 +396,61 @@ pub struct TaskProjection {
     pub current_run: Option<RunProjection>,
     pub pending_permission: Option<PermissionProjection>,
     pub queue: Vec<QueueItemProjection>,
+    #[serde(default)]
+    pub actor_id: Option<ActorId>,
+    #[serde(default)]
+    pub context_cursor: u64,
+    #[serde(default)]
+    pub parent: Option<SubagentParentProjection>,
+    #[serde(default)]
+    pub subagents: Vec<SubagentProjection>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentActorState {
+    Starting,
+    Running,
+    Yielding,
+    Background,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubagentParentProjection {
+    pub parent_task_id: TaskId,
+    pub parent_segment_id: RunSegmentId,
+    pub delegation_id: SubagentId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubagentProjection {
+    pub child_task_id: TaskId,
+    pub actor_id: ActorId,
+    pub segment_id: RunSegmentId,
+    pub parent_task_id: TaskId,
+    pub parent_segment_id: RunSegmentId,
+    pub delegation_id: SubagentId,
+    pub context_cursor: u64,
+    pub workspace_lease_id: Option<WorkspaceLeaseId>,
+    pub state: SubagentActorState,
+    pub detached: bool,
+    pub summary: Option<String>,
+    #[serde(
+        serialize_with = "strict_rfc3339::serialize",
+        deserialize_with = "strict_rfc3339::deserialize"
+    )]
+    pub started_at: DateTime<Utc>,
+    #[serde(
+        default,
+        serialize_with = "strict_rfc3339::option::serialize",
+        deserialize_with = "strict_rfc3339::option::deserialize"
+    )]
+    pub ended_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
