@@ -1,12 +1,17 @@
 import '@testing-library/jest-dom/vitest'
 
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TaskEventEnvelope } from '@/generated/daemon-protocol'
+import { uiStore } from '@/shared/state/ui-store'
 import { TaskWorkspaceView, timelineItems } from './TaskWorkspace'
 import type { TaskSnapshot } from './task-store'
 
 describe('TaskWorkspace', () => {
+  beforeEach(() => {
+    uiStore.setState({ taskWorkbenchMode: 'closed', taskWorkbenchSelection: null })
+  })
+
   it('renders a centered readable timeline and connection state', () => {
     render(<TaskWorkspaceView connectionState="connected" snapshot={snapshot} />)
 
@@ -223,6 +228,61 @@ describe('TaskWorkspace', () => {
     expect(timelineItems(boundarySnapshot, events).map((item) => item.globalOffset)).toEqual([
       2, 3, 4, 5,
     ])
+  })
+
+  it('opens timeline evidence in the task workbench and clears it when switching tasks', () => {
+    const evidenceSnapshot: TaskSnapshot = {
+      ...snapshot,
+      timeline: [
+        {
+          blobId: '01J00000000000000000000031',
+          globalOffset: 3,
+          id: '01J00000000000000000000032',
+          incomplete: false,
+          kind: 'diff',
+          runSegmentId: '01J00000000000000000000033',
+          summary: '2 files changed',
+        },
+      ],
+    }
+    const client = {
+      connect: vi.fn(),
+      readBlob: vi.fn().mockResolvedValue({
+        blobId: '01J00000000000000000000031',
+        bytes: null,
+        mediaType: 'text/plain',
+        missing: true,
+        size: 0,
+      }),
+      request: vi.fn(),
+    }
+    const { rerender } = render(
+      <TaskWorkspaceView client={client} connectionState="connected" snapshot={evidenceSnapshot} />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Changes' }))
+    expect(uiStore.getState().taskWorkbenchSelection).toEqual({
+      blobId: '01J00000000000000000000031',
+      eventId: '01J00000000000000000000032',
+      panel: 'changes',
+      segmentId: '01J00000000000000000000033',
+      taskId: snapshot.projection.taskId,
+    })
+    expect(uiStore.getState().taskWorkbenchMode).toBe('inspector')
+
+    act(() => {
+      rerender(
+        <TaskWorkspaceView
+          client={client}
+          connectionState="connected"
+          snapshot={{
+            ...snapshot,
+            projection: { ...snapshot.projection, taskId: '01J00000000000000000000099' },
+          }}
+        />,
+      )
+    })
+    expect(uiStore.getState().taskWorkbenchSelection).toBeNull()
   })
 })
 

@@ -2,6 +2,24 @@ import type { ConversationEventRef } from '@/shared/tauri/commands'
 
 type EvidenceRefId = string
 
+export type TaskWorkbenchPanel =
+  | 'changes'
+  | 'commands'
+  | 'agents'
+  | 'environment'
+  | 'sources'
+  | 'audit'
+
+export type TaskWorkbenchMode = 'closed' | 'inspector' | 'collaboration'
+
+export type TaskWorkbenchSelection = {
+  blobId?: string
+  eventId: string
+  panel: TaskWorkbenchPanel
+  segmentId?: string
+  taskId: string
+}
+
 export type WorkbenchSelection =
   | { kind: 'context' }
   | { kind: 'decision'; conversationId: string; requestId: string }

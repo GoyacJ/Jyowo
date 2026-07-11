@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import type {
   TaskEventEnvelope,
@@ -6,13 +6,17 @@ import type {
   TypedUlid,
 } from '@/generated/daemon-protocol'
 import type { DaemonClient } from '@/shared/daemon/client'
+import { useUiStore } from '@/shared/state/ui-store'
+import type { TaskWorkbenchPanel } from '@/shared/state/workbench-selection'
 import { pickAttachmentPath } from '@/shared/tauri/file-dialog'
 import { useCommandClient, useDaemonClient } from '@/shared/tauri/react'
 import { QueuedMessages } from './queue/QueuedMessages'
+import { RunStatusBar } from './RunStatusBar'
 import { TaskComposer } from './TaskComposer'
 import type { TaskConnectionState, TaskSnapshot } from './task-store'
 import { TaskTimeline } from './timeline/TaskTimeline'
 import { useTask } from './use-task'
+import { TaskWorkbench } from './workbench/TaskWorkbench'
 
 export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
   const task = useTask(taskId)
@@ -40,7 +44,7 @@ export function TaskWorkspaceView({
   onPickAttachmentPath,
   snapshot,
 }: {
-  client?: Pick<DaemonClient, 'connect' | 'request'>
+  client?: Pick<DaemonClient, 'connect' | 'request'> & Partial<Pick<DaemonClient, 'readBlob'>>
   connectionError?: string | null
   connectionState: TaskConnectionState
   events?: TaskEventEnvelope[]
@@ -49,6 +53,10 @@ export function TaskWorkspaceView({
   snapshot: TaskSnapshot | null
 }) {
   const snapshotTaskId = snapshot?.projection.taskId ?? null
+  const workbenchMode = useUiStore((state) => state.taskWorkbenchMode)
+  const workbenchSelection = useUiStore((state) => state.taskWorkbenchSelection)
+  const setWorkbenchMode = useUiStore((state) => state.setTaskWorkbenchMode)
+  const setWorkbenchSelection = useUiStore((state) => state.setTaskWorkbenchSelection)
   const projectedStreamVersion = snapshot
     ? events.reduce(
         (version, event) => Math.max(version, event.streamSequence),
@@ -70,6 +78,11 @@ export function TaskWorkspaceView({
       version: current.taskId === snapshotTaskId ? Math.max(current.version, version) : version,
     }))
   }
+  useEffect(() => {
+    if (workbenchSelection && workbenchSelection.taskId !== snapshotTaskId) {
+      setWorkbenchSelection(null)
+    }
+  }, [setWorkbenchSelection, snapshotTaskId, workbenchSelection])
 
   if (connectionState === 'protocol_error') {
     return (
@@ -94,50 +107,98 @@ export function TaskWorkspaceView({
 
   const items = timelineItems(snapshot, events)
   const queue = queueItems(snapshot, events)
+  const taskId = snapshot.projection.taskId
+  const showWorkbench =
+    workbenchMode !== 'closed' && workbenchSelection?.taskId === taskId && client?.readBlob
+
+  function selectTimelineItem(item: TimelineItemProjection) {
+    const panel = workbenchPanel(item)
+    if (!panel) return
+    setWorkbenchSelection({
+      blobId: item.blobId ?? undefined,
+      eventId: item.id,
+      panel,
+      segmentId: item.runSegmentId ?? undefined,
+      taskId,
+    })
+    if (workbenchMode === 'closed') setWorkbenchMode('inspector')
+  }
+
   return (
-    <section
-      className="mx-auto flex h-full w-full max-w-[820px] min-h-0 flex-col"
-      data-testid="task-reading-column"
-    >
-      <header className="flex items-start justify-between gap-6 border-border/70 border-b px-1 pb-4">
-        <div className="min-w-0">
-          <h1 className="truncate font-semibold text-lg tracking-[-0.015em]">
-            {snapshot.projection.title}
-          </h1>
-          <p className="mt-1 text-muted-foreground text-xs capitalize">
-            {snapshot.projection.state.replace('_', ' ')}
-          </p>
+    <section className="flex h-full min-h-0 w-full flex-col">
+      <div className="relative flex min-h-0 flex-1">
+        <div
+          className="mx-auto flex h-full min-w-0 w-full max-w-[820px] flex-col"
+          data-testid="task-reading-column"
+        >
+          <header className="flex items-start justify-between gap-6 border-border/70 border-b px-1 pb-4">
+            <div className="min-w-0">
+              <h1 className="truncate font-semibold text-lg tracking-[-0.015em]">
+                {snapshot.projection.title}
+              </h1>
+              <p className="mt-1 text-muted-foreground text-xs capitalize">
+                {snapshot.projection.state.replace('_', ' ')}
+              </p>
+            </div>
+            <span className="mt-1 shrink-0 text-muted-foreground text-xs">
+              {connectionLabel(connectionState)}
+            </span>
+          </header>
+          <div className="flex min-h-0 flex-1 pt-6">
+            <TaskTimeline
+              currentRun={snapshot.projection.currentRun}
+              items={items}
+              onSelectItem={selectTimelineItem}
+            />
+          </div>
+          {client ? (
+            <div className="shrink-0 border-border/70 border-t bg-background/95 px-1 pt-3 pb-1 backdrop-blur-sm">
+              <QueuedMessages
+                client={client}
+                expectedStreamVersion={commandStreamVersion}
+                items={queue}
+                onCommandAccepted={commandAccepted}
+                taskId={snapshot.projection.taskId}
+              />
+              <TaskComposer
+                client={client}
+                connectionState={connectionState}
+                onCommandAccepted={commandAccepted}
+                onCreateAttachmentFromPath={onCreateAttachmentFromPath}
+                onPickAttachmentPath={onPickAttachmentPath}
+                streamVersion={commandStreamVersion}
+                taskId={snapshot.projection.taskId}
+                taskState={snapshot.projection.state}
+              />
+            </div>
+          ) : null}
         </div>
-        <span className="mt-1 shrink-0 text-muted-foreground text-xs">
-          {connectionLabel(connectionState)}
-        </span>
-      </header>
-      <div className="flex min-h-0 flex-1 pt-6">
-        <TaskTimeline currentRun={snapshot.projection.currentRun} items={items} />
+        {showWorkbench && client.readBlob ? (
+          <TaskWorkbench
+            client={{ readBlob: client.readBlob }}
+            events={events}
+            projection={snapshot.projection}
+            timeline={items}
+          />
+        ) : null}
       </div>
-      {client ? (
-        <div className="shrink-0 border-border/70 border-t bg-background/95 px-1 pt-3 pb-1 backdrop-blur-sm">
-          <QueuedMessages
-            client={client}
-            expectedStreamVersion={commandStreamVersion}
-            items={queue}
-            onCommandAccepted={commandAccepted}
-            taskId={snapshot.projection.taskId}
-          />
-          <TaskComposer
-            client={client}
-            connectionState={connectionState}
-            onCommandAccepted={commandAccepted}
-            onCreateAttachmentFromPath={onCreateAttachmentFromPath}
-            onPickAttachmentPath={onPickAttachmentPath}
-            streamVersion={commandStreamVersion}
-            taskId={snapshot.projection.taskId}
-            taskState={snapshot.projection.state}
-          />
-        </div>
-      ) : null}
+      <RunStatusBar items={items} projection={snapshot.projection} />
     </section>
   )
+}
+
+function workbenchPanel(item: TimelineItemProjection): TaskWorkbenchPanel | null {
+  if (item.kind === 'diff') return 'changes'
+  if (item.kind === 'command') return 'commands'
+  if (item.kind === 'subagent') return 'agents'
+  if (item.kind === 'image') return 'sources'
+  if (item.kind === 'notice' && item.summary.toLowerCase().startsWith('workspace')) {
+    return 'environment'
+  }
+  if (['compaction', 'error', 'notice', 'permission', 'tool_activity'].includes(item.kind)) {
+    return 'audit'
+  }
+  return null
 }
 
 export function queueItems(snapshot: TaskSnapshot, events: TaskEventEnvelope[]) {

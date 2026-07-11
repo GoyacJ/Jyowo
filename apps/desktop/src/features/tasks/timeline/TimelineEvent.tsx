@@ -14,7 +14,13 @@ import type { TimelineItemProjection } from '@/generated/daemon-protocol'
 import { ArtifactContainer } from './ArtifactContainer'
 import { UserMessage } from './UserMessage'
 
-export function TimelineEvent({ item }: { item: TimelineItemProjection }) {
+export function TimelineEvent({
+  item,
+  onSelect,
+}: {
+  item: TimelineItemProjection
+  onSelect?: (item: TimelineItemProjection) => void
+}) {
   if (item.kind === 'user_message') {
     return (
       <TimelineItem item={item}>
@@ -36,7 +42,12 @@ export function TimelineEvent({ item }: { item: TimelineItemProjection }) {
   if (isArtifact(item)) {
     return (
       <TimelineItem item={item}>
-        <ArtifactContainer item={item} label={artifactLabel(item.kind)}>
+        <ArtifactContainer
+          item={item}
+          label={artifactLabel(item.kind)}
+          onOpen={onSelect ? () => onSelect(item) : undefined}
+          openLabel={onSelect ? `Open ${workbenchLabel(item)}` : undefined}
+        >
           <div className="flex items-start gap-2.5 text-sm leading-6">
             <ArtifactIcon kind={item.kind} />
             <span className={item.kind === 'command' ? 'font-mono text-[13px]' : undefined}>
@@ -48,13 +59,27 @@ export function TimelineEvent({ item }: { item: TimelineItemProjection }) {
     )
   }
 
+  const row = (
+    <div className="flex items-start gap-2.5 py-1 text-muted-foreground text-sm leading-5">
+      <RowIcon kind={item.kind} />
+      <span>{item.summary}</span>
+      {item.incomplete ? <span className="sr-only">Incomplete</span> : null}
+    </div>
+  )
   return (
     <TimelineItem item={item}>
-      <div className="flex items-start gap-2.5 py-1 text-muted-foreground text-sm leading-5">
-        <RowIcon kind={item.kind} />
-        <span>{item.summary}</span>
-        {item.incomplete ? <span className="sr-only">Incomplete</span> : null}
-      </div>
+      {onSelect && isWorkbenchRow(item) ? (
+        <button
+          aria-label={`Open ${workbenchLabel(item)}`}
+          className="w-full rounded-md text-left hover:bg-muted/60"
+          onClick={() => onSelect(item)}
+          type="button"
+        >
+          {row}
+        </button>
+      ) : (
+        row
+      )}
     </TimelineItem>
   )
 }
@@ -112,4 +137,19 @@ function RowIcon({ kind }: { kind: TimelineItemProjection['kind'] }) {
   if (kind === 'tool_activity') return <Search className={className} />
   if (kind === 'subagent') return <Bot className={className} />
   return <Sparkles className={className} />
+}
+
+function isWorkbenchRow(item: TimelineItemProjection) {
+  return ['compaction', 'notice', 'subagent', 'tool_activity'].includes(item.kind)
+}
+
+function workbenchLabel(item: TimelineItemProjection) {
+  if (item.kind === 'diff') return 'Changes'
+  if (item.kind === 'command') return 'Commands'
+  if (item.kind === 'subagent') return 'Agents'
+  if (item.kind === 'image') return 'Sources'
+  if (item.kind === 'notice' && item.summary.toLowerCase().startsWith('workspace')) {
+    return 'Environment'
+  }
+  return 'Audit'
 }

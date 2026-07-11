@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { ClientRequest, QueueItemProjection, TypedUlid } from '@/generated/daemon-protocol'
@@ -28,7 +28,9 @@ export function QueuedMessages({
   taskId: TypedUlid
 }) {
   const { t } = useTranslation('tasks')
-  const [busyItemIds, setBusyItemIds] = useState<Set<TypedUlid>>(new Set())
+  const [busy, setBusy] = useState(false)
+  const busyRef = useRef(false)
+  const pendingMetadata = useRef(new Map<string, ReturnType<typeof createTaskCommandMetadata>>())
   const [latestById, setLatestById] = useState<Record<TypedUlid, QueueItemProjection>>({})
   const [announcement, setAnnouncement] = useState('')
 
@@ -62,11 +64,26 @@ export function QueuedMessages({
 
   if (activeItems.length === 0) return null
 
-  async function send(item: QueueItemProjection, request: QueueCommandRequest) {
-    setBusyItemIds((current) => new Set(current).add(item.queueItemId))
+  function metadata(operation: string) {
+    const existing = pendingMetadata.current.get(operation)
+    if (existing) return existing
+    const created = createTaskCommandMetadata(taskId, expectedStreamVersion, operation)
+    pendingMetadata.current.set(operation, created)
+    return created
+  }
+
+  async function send(
+    item: QueueItemProjection,
+    operation: string,
+    request: QueueCommandRequest,
+  ) {
+    if (busyRef.current) return
+    busyRef.current = true
+    setBusy(true)
     setAnnouncement('')
     try {
       const frame = await client.request(request)
+      pendingMetadata.current.delete(operation)
       if (
         frame.message.type === 'command_rejected' &&
         frame.message.reason === 'stale_queue_revision' &&
@@ -77,17 +94,19 @@ export function QueuedMessages({
           ...current,
           [item.queueItemId]: latestQueueItem,
         }))
+        if (frame.message.currentStreamVersion !== undefined) {
+          onCommandAccepted?.(frame.message.currentStreamVersion)
+        }
         setAnnouncement(t('queue.staleConflict'))
         return
       }
       const accepted = requireAcceptedCommand(frame, taskId)
       onCommandAccepted?.(accepted.streamVersion)
+    } catch (error) {
+      setAnnouncement(error instanceof Error ? error.message : String(error))
     } finally {
-      setBusyItemIds((current) => {
-        const next = new Set(current)
-        next.delete(item.queueItemId)
-        return next
-      })
+      busyRef.current = false
+      setBusy(false)
     }
   }
 
@@ -105,67 +124,55 @@ export function QueuedMessages({
       <ol aria-label={t('queue.label')}>
         {activeItems.map((item, index) => (
           <QueuedMessageRow
-            busy={busyItemIds.has(item.queueItemId)}
+            busy={busy}
             item={item}
             key={item.queueItemId}
-            onDelete={() =>
-              send(item, {
+            onDelete={() => {
+              const operation = `delete:${item.queueItemId}:${item.revision}`
+              return send(item, operation, {
                 expectedRevision: item.revision,
-                metadata: createTaskCommandMetadata(
-                  taskId,
-                  expectedStreamVersion,
-                  `delete:${item.queueItemId}:${item.revision}`,
-                ),
+                metadata: metadata(operation),
                 queueItemId: item.queueItemId,
                 taskId,
                 type: 'delete_queued_message',
               })
-            }
-            onEdit={(content) =>
-              send(item, {
+            }}
+            onEdit={(content) => {
+              const operation = `edit:${item.queueItemId}:${item.revision}:${content}`
+              return send(item, operation, {
                 attachments: item.attachments,
                 content,
                 contextReferences: item.contextReferences,
                 expectedRevision: item.revision,
-                metadata: createTaskCommandMetadata(
-                  taskId,
-                  expectedStreamVersion,
-                  `edit:${item.queueItemId}:${item.revision}`,
-                ),
+                metadata: metadata(operation),
                 queueItemId: item.queueItemId,
                 taskId,
                 type: 'edit_queued_message',
               })
-            }
+            }}
             onForcePromote={async () => {
               if (!window.confirm(t('queue.forceConfirmation'))) return
-              await send(item, {
+              const operation = `force:${item.queueItemId}:${item.revision}`
+              await send(item, operation, {
                 expectedRevision: item.revision,
-                metadata: createTaskCommandMetadata(
-                  taskId,
-                  expectedStreamVersion,
-                  `force:${item.queueItemId}:${item.revision}`,
-                ),
+                metadata: metadata(operation),
                 mode: 'force_stop',
                 queueItemId: item.queueItemId,
                 taskId,
                 type: 'promote_queued_message',
               })
             }}
-            onSafePromote={() =>
-              send(item, {
+            onSafePromote={() => {
+              const operation = `safe:${item.queueItemId}:${item.revision}`
+              return send(item, operation, {
                 expectedRevision: item.revision,
-                metadata: createTaskCommandMetadata(
-                  taskId,
-                  expectedStreamVersion,
-                  `safe:${item.queueItemId}:${item.revision}`,
-                ),
+                metadata: metadata(operation),
                 mode: 'safe_point',
                 queueItemId: item.queueItemId,
                 taskId,
                 type: 'promote_queued_message',
               })
-            }
+            }}
             order={index + 1}
           />
         ))}

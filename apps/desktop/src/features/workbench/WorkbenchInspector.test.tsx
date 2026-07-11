@@ -497,4 +497,14 @@ describe('WorkbenchInspector', () => {
     const { container } = renderInspector()
     expect(container.innerHTML).toBe('')
   })
+
+  it('identifies the legacy conversation inspector scope', () => {
+    setupStore({ inspectorOpen: true, workbenchSelection: null })
+    renderInspector()
+
+    expect(screen.getByRole('complementary', { name: 'Inspector' })).toHaveAttribute(
+      'data-workbench-scope',
+      'conversation',
+    )
+  })
 })

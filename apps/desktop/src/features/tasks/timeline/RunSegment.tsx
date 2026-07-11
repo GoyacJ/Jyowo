@@ -4,12 +4,14 @@ import { TimelineEvent, TimelineItem } from './TimelineEvent'
 
 export function RunSegment({
   items,
+  onSelectItem,
   run,
   segmentId,
   showHeader = true,
   statusItems = items,
 }: {
   items: TimelineItemProjection[]
+  onSelectItem?: (item: TimelineItemProjection) => void
   run?: RunProjection | null
   segmentId: string
   showHeader?: boolean
@@ -17,7 +19,7 @@ export function RunSegment({
 }) {
   const status = run?.segmentId === segmentId ? projectedStatus(run) : inferStatus(statusItems)
   const duration = run?.segmentId === segmentId ? formatDuration(run) : null
-  const content = <div className="space-y-4">{renderItems(items)}</div>
+  const content = <div className="space-y-4">{renderItems(items, onSelectItem)}</div>
 
   if (!showHeader) {
     return (
@@ -57,7 +59,10 @@ function projectedStatus(run: RunProjection) {
   }
 }
 
-function renderItems(items: TimelineItemProjection[]) {
+function renderItems(
+  items: TimelineItemProjection[],
+  onSelectItem?: (item: TimelineItemProjection) => void,
+) {
   const rendered: React.ReactNode[] = []
   let index = 0
 
@@ -65,7 +70,7 @@ function renderItems(items: TimelineItemProjection[]) {
     const item = items[index]
     if (!item) break
     if (item.kind !== 'assistant_text') {
-      rendered.push(<TimelineEvent item={item} key={item.id} />)
+      rendered.push(<TimelineEvent item={item} key={item.id} onSelect={onSelectItem} />)
       index += 1
       continue
     }

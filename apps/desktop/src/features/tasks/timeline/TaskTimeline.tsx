@@ -28,9 +28,11 @@ type TimelineBlock =
 export function TaskTimeline({
   currentRun,
   items,
+  onSelectItem,
 }: {
   currentRun?: RunProjection | null
   items: TimelineItemProjection[]
+  onSelectItem?: (item: TimelineItemProjection) => void
 }) {
   const orderedItems = [...items].sort(
     (left, right) => left.globalOffset - right.globalOffset || left.id.localeCompare(right.id),
@@ -88,7 +90,11 @@ export function TaskTimeline({
                   ref={rowVirtualizer.measureElement}
                   style={{ transform: `translateY(${virtualRow.start}px)` }}
                 >
-                  <TimelineBlockView block={block} currentRun={currentRun} />
+                  <TimelineBlockView
+                    block={block}
+                    currentRun={currentRun}
+                    onSelectItem={onSelectItem}
+                  />
                 </div>
               )
             })}
@@ -102,7 +108,12 @@ export function TaskTimeline({
         ) : (
           <div className="space-y-8" data-testid="task-timeline-scroll-content">
             {blocks.map((block) => (
-              <TimelineBlockView block={block} currentRun={currentRun} key={block.key} />
+              <TimelineBlockView
+                block={block}
+                currentRun={currentRun}
+                key={block.key}
+                onSelectItem={onSelectItem}
+              />
             ))}
             <div aria-hidden="true" ref={endRef} />
           </div>
@@ -159,14 +170,17 @@ function createBlocks(items: TimelineItemProjection[]): TimelineBlock[] {
 function TimelineBlockView({
   block,
   currentRun,
+  onSelectItem,
 }: {
   block: TimelineBlock
   currentRun?: RunProjection | null
+  onSelectItem?: (item: TimelineItemProjection) => void
 }) {
-  if (block.kind === 'item') return <TimelineEvent item={block.item} />
+  if (block.kind === 'item') return <TimelineEvent item={block.item} onSelect={onSelectItem} />
   return (
     <RunSegment
       items={block.items}
+      onSelectItem={onSelectItem}
       run={currentRun}
       segmentId={block.segmentId}
       showHeader={block.showHeader}

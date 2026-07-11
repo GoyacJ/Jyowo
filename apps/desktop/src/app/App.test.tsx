@@ -4,6 +4,7 @@ import { QueryClient } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppProviders } from '@/app/providers'
+import type { DaemonClient } from '@/shared/daemon/client'
 import { uiStore, useUiStore } from '@/shared/state/ui-store'
 import { createTestCommandClient, testJyowoProject } from '@/testing/command-client'
 import App from './App'
@@ -14,12 +15,24 @@ const emptyProviderSettingsList = {
   configs: [],
 }
 
+const daemonClient = {
+  connect: vi.fn().mockResolvedValue(undefined),
+  listTasks: vi.fn().mockResolvedValue({ tasks: [], type: 'task_list' }),
+  loadTask: vi.fn(),
+  readBlob: vi.fn(),
+  request: vi.fn(),
+  subscribe: vi.fn().mockResolvedValue(async () => undefined),
+} as unknown as DaemonClient
+
+const daemonTaskId = '01J00000000000000000000071'
+
 const uiPreferencesStoreFixture = vi.hoisted(() => ({
   readUiPreferences: vi.fn<
     () => Promise<{
       theme: 'light' | 'dark' | 'system'
       locale: 'zh-CN' | 'en-US'
       sidebarCollapsed: boolean
+      taskWorkbenchMode: 'closed' | 'inspector' | 'collaboration'
       chatComposerHeight: number
       contextPanelWidth: number
     }>
@@ -27,6 +40,7 @@ const uiPreferencesStoreFixture = vi.hoisted(() => ({
     theme: 'light',
     locale: 'en-US',
     sidebarCollapsed: false,
+    taskWorkbenchMode: 'closed',
     chatComposerHeight: 160,
     contextPanelWidth: 320,
   })),
@@ -89,6 +103,7 @@ describe('App', () => {
       theme: 'light',
       locale: 'en-US',
       sidebarCollapsed: false,
+      taskWorkbenchMode: 'closed',
       chatComposerHeight: 160,
       contextPanelWidth: 320,
     })
@@ -101,13 +116,14 @@ describe('App', () => {
     uiStore.getState().setTheme('light')
     uiStore.getState().setLocale('en-US')
     uiStore.getState().setSidebarCollapsed(false)
+    uiStore.getState().setTaskWorkbenchMode('closed')
     document.documentElement.classList.remove('dark')
     delete document.documentElement.dataset.theme
     vi.restoreAllMocks()
   })
 
   it('renders the index route through providers and router', async () => {
-    window.history.pushState(null, '', '/?conversationId=conversation-001')
+    window.history.pushState(null, '', `/?taskId=${daemonTaskId}`)
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: {
@@ -116,9 +132,41 @@ describe('App', () => {
       },
     })
 
+    const taskDaemonClient = {
+      ...daemonClient,
+      listTasks: vi.fn().mockResolvedValue({
+        tasks: [
+          {
+            archived: false,
+            lastGlobalOffset: 0,
+            queue: [],
+            state: 'idle',
+            streamVersion: 0,
+            taskId: daemonTaskId,
+            title: 'Build the desktop foundation',
+          },
+        ],
+        type: 'task_list',
+      }),
+      loadTask: vi.fn().mockResolvedValue({
+        projection: {
+          archived: false,
+          lastGlobalOffset: 0,
+          queue: [],
+          state: 'idle',
+          streamVersion: 0,
+          taskId: daemonTaskId,
+          title: 'Build the desktop foundation',
+        },
+        snapshotOffset: 0,
+        timeline: [],
+      }),
+    } as unknown as DaemonClient
+
     render(
       <App
         commandClient={createTestCommandClient({ projects: testJyowoProject })}
+        daemonClient={taskDaemonClient}
         queryClient={queryClient}
       />,
     )
@@ -126,7 +174,7 @@ describe('App', () => {
     expect(
       await screen.findByRole('heading', { name: 'Build the desktop foundation' }),
     ).toBeInTheDocument()
-    expect(screen.getByRole('navigation', { name: 'Workspace' })).toBeInTheDocument()
+    expect(screen.getByRole('complementary', { name: 'Workspace' })).toBeInTheDocument()
     expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Status' })).toBeInTheDocument()
     expect(
@@ -144,10 +192,16 @@ describe('App', () => {
       },
     })
 
-    render(<App commandClient={createTestCommandClient()} queryClient={queryClient} />)
+    render(
+      <App
+        commandClient={createTestCommandClient()}
+        daemonClient={daemonClient}
+        queryClient={queryClient}
+      />,
+    )
 
-    expect(await screen.findByRole('heading', { name: 'Welcome to Jyowo' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Open project' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Choose a task' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New task' })).toBeInTheDocument()
   })
 
   it('renders the memory browser support route', async () => {
@@ -160,11 +214,17 @@ describe('App', () => {
       },
     })
 
-    render(<App commandClient={createTestCommandClient()} queryClient={queryClient} />)
+    render(
+      <App
+        commandClient={createTestCommandClient()}
+        daemonClient={daemonClient}
+        queryClient={queryClient}
+      />,
+    )
 
     expect(await screen.findByRole('heading', { name: 'Memory' })).toBeInTheDocument()
     expect(await screen.findByText('Prefers concise Chinese responses')).toBeInTheDocument()
-    expect(screen.getByRole('navigation', { name: 'Workspace' })).toBeInTheDocument()
+    expect(screen.getByRole('complementary', { name: 'Workspace' })).toBeInTheDocument()
   })
 
   it('renders support routes for skills, settings, and evals', async () => {
@@ -221,7 +281,9 @@ describe('App', () => {
     })
 
     window.history.pushState(null, '', '/skills')
-    const { rerender } = render(<App commandClient={commandClient} queryClient={queryClient} />)
+    const { rerender } = render(
+      <App commandClient={commandClient} daemonClient={daemonClient} queryClient={queryClient} />,
+    )
 
     expect(await screen.findByRole('region', { name: 'Skills' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { level: 1, name: 'Skills' })).not.toBeInTheDocument()
@@ -244,7 +306,9 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'MCP servers' })).toBeInTheDocument()
 
     window.history.pushState(null, '', '/settings')
-    rerender(<App commandClient={commandClient} queryClient={queryClient} />)
+    rerender(
+      <App commandClient={commandClient} daemonClient={daemonClient} queryClient={queryClient} />,
+    )
 
     expect(await screen.findByRole('region', { name: 'Settings' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'true')
@@ -262,7 +326,9 @@ describe('App', () => {
     expect(screen.queryByRole('heading', { name: 'Model configuration' })).not.toBeInTheDocument()
 
     window.history.pushState(null, '', '/evals')
-    rerender(<App commandClient={commandClient} queryClient={queryClient} />)
+    rerender(
+      <App commandClient={commandClient} daemonClient={daemonClient} queryClient={queryClient} />,
+    )
 
     expect(await screen.findByRole('heading', { name: 'Eval lab' })).toBeInTheDocument()
     expect(await screen.findByText('Regression smoke')).toBeInTheDocument()
@@ -297,6 +363,7 @@ describe('App', () => {
       theme: 'dark',
       locale: 'en-US',
       sidebarCollapsed: true,
+      taskWorkbenchMode: 'collaboration',
       chatComposerHeight: 160,
       contextPanelWidth: 320,
     })
@@ -310,6 +377,7 @@ describe('App', () => {
     await waitFor(() => {
       expect(uiStore.getState().theme).toBe('dark')
       expect(uiStore.getState().sidebarCollapsed).toBe(true)
+      expect(uiStore.getState().taskWorkbenchMode).toBe('collaboration')
       expect(document.documentElement).toHaveClass('dark')
     })
 
@@ -321,6 +389,7 @@ describe('App', () => {
       locale: 'en-US',
       theme: 'system',
       sidebarCollapsed: true,
+      taskWorkbenchMode: 'collaboration',
     })
   })
 })

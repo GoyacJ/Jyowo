@@ -111,6 +111,56 @@ describe('QueuedMessages', () => {
     )
   })
 
+  it('advances the command cursor from a stale-revision response', async () => {
+    const latest = queuedItem({ revision: 4 })
+    const rejected = rejectedFrame(latest)
+    const request = vi.fn().mockResolvedValue({
+      ...rejected,
+      message: { ...rejected.message, currentStreamVersion: 12 },
+    })
+    const onCommandAccepted = vi.fn()
+    renderQueue({ client: clientWith(request), items: [queuedItem()], onCommandAccepted })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete queued message 1' }))
+
+    await waitFor(() => expect(onCommandAccepted).toHaveBeenCalledWith(12))
+  })
+
+  it('serializes commands across different queue rows', async () => {
+    let finishFirst!: (frame: ServerFrame) => void
+    const request = vi
+      .fn()
+      .mockReturnValueOnce(new Promise<ServerFrame>((resolve) => (finishFirst = resolve)))
+      .mockResolvedValue(acceptedFrame())
+    renderQueue({
+      client: clientWith(request),
+      items: [queuedItem(), queuedItem({ queueItemId: consumedId, content: 'Second queued item' })],
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete queued message 1' }))
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+    expect(screen.getByRole('button', { name: 'Delete queued message 2' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete queued message 2' }))
+    expect(request).toHaveBeenCalledTimes(1)
+
+    finishFirst(acceptedFrame())
+  })
+
+  it('reuses command metadata after an uncertain transport failure', async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('connection closed before response'))
+      .mockResolvedValueOnce(acceptedFrame())
+    renderQueue({ client: clientWith(request), items: [queuedItem()] })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete queued message 1' }))
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete queued message 1' }))
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+
+    expect(request.mock.calls[1]?.[0].metadata).toEqual(request.mock.calls[0]?.[0].metadata)
+  })
+
   it('disables edit and delete while a message is promoting', () => {
     renderQueue({
       client: clientWith(vi.fn()),
@@ -120,6 +170,23 @@ describe('QueuedMessages', () => {
     expect(screen.getByRole('button', { name: 'Edit queued message 1' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Delete queued message 1' })).toBeDisabled()
     expect(screen.getByText('Preparing to run')).toBeInTheDocument()
+  })
+
+  it('closes an open inline editor when the item starts promoting', () => {
+    const { rerender } = renderQueue({ client: clientWith(vi.fn()), items: [queuedItem()] })
+    fireEvent.click(screen.getByRole('button', { name: 'Edit queued message 1' }))
+    expect(screen.getByRole('textbox', { name: 'Edit queued message 1' })).toBeInTheDocument()
+
+    rerender(
+      <QueuedMessages
+        client={clientWith(vi.fn())}
+        expectedStreamVersion={9}
+        items={[queuedItem({ state: 'promoting' })]}
+        taskId={taskId}
+      />,
+    )
+
+    expect(screen.queryByRole('textbox', { name: 'Edit queued message 1' })).not.toBeInTheDocument()
   })
 
   it('omits consumed and deleted items from the active queue', () => {
@@ -161,12 +228,20 @@ function queuedItem(overrides: Partial<QueueItemProjection> = {}): QueueItemProj
 function renderQueue({
   client,
   items,
+  onCommandAccepted,
 }: {
   client: Pick<DaemonClient, 'request'>
   items: QueueItemProjection[]
+  onCommandAccepted?: (streamVersion: number) => void
 }) {
   return render(
-    <QueuedMessages client={client} expectedStreamVersion={9} items={items} taskId={taskId} />,
+    <QueuedMessages
+      client={client}
+      expectedStreamVersion={9}
+      items={items}
+      onCommandAccepted={onCommandAccepted}
+      taskId={taskId}
+    />,
   )
 }
 

@@ -7,10 +7,14 @@ export function ArtifactContainer({
   children,
   item,
   label,
+  onOpen,
+  openLabel,
 }: {
   children: ReactNode
   item: TimelineItemProjection
   label: string
+  onOpen?: () => void
+  openLabel?: string
 }) {
   return (
     <section
@@ -19,7 +23,19 @@ export function ArtifactContainer({
     >
       <div className="flex min-h-9 items-center justify-between gap-3 border-border/70 border-b px-3 text-muted-foreground text-xs">
         <span className="font-medium text-foreground">{label}</span>
-        {item.incomplete ? <span>Incomplete</span> : null}
+        <span className="flex items-center gap-2">
+          {item.incomplete ? <span>Incomplete</span> : null}
+          {onOpen ? (
+            <button
+              aria-label={openLabel}
+              className="rounded px-1.5 py-0.5 font-medium text-foreground hover:bg-muted"
+              onClick={onOpen}
+              type="button"
+            >
+              Open
+            </button>
+          ) : null}
+        </span>
       </div>
       <div className="px-3 py-3">{children}</div>
       <details className="group border-border/70 border-t px-3 py-2 text-muted-foreground text-xs">

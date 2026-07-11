@@ -268,6 +268,7 @@ export function WorkbenchInspector({ contextPane }: { contextPane?: ReactNode } 
     <aside
       aria-label={t('inspector.label', 'Inspector')}
       className="flex h-full flex-col border-border border-l bg-background"
+      data-workbench-scope="conversation"
       style={{ width: '360px', minWidth: '280px' }}
     >
       <div className="flex h-10 items-center justify-between border-border border-b px-3">

@@ -80,9 +80,11 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
   const theme = useUiStore((state) => state.theme)
   const locale = useUiStore((state) => state.locale)
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed)
+  const taskWorkbenchMode = useUiStore((state) => state.taskWorkbenchMode)
   const setTheme = useUiStore((state) => state.setTheme)
   const setLocale = useUiStore((state) => state.setLocale)
   const setSidebarCollapsed = useUiStore((state) => state.setSidebarCollapsed)
+  const setTaskWorkbenchMode = useUiStore((state) => state.setTaskWorkbenchMode)
   const [hydrated, setHydrated] = useState(false)
 
   useEffect(() => {
@@ -97,6 +99,7 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
         setTheme(preferences.theme)
         setLocale(preferences.locale)
         setSidebarCollapsed(preferences.sidebarCollapsed)
+        setTaskWorkbenchMode(preferences.taskWorkbenchMode)
         setHydrated(true)
       })
       .catch(() => {
@@ -111,17 +114,17 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [setLocale, setSidebarCollapsed, setTheme])
+  }, [setLocale, setSidebarCollapsed, setTaskWorkbenchMode, setTheme])
 
   useEffect(() => {
     if (!hydrated) {
       return
     }
 
-    void writeUiPreferences({ locale, sidebarCollapsed, theme }).catch(() => {
+    void writeUiPreferences({ locale, sidebarCollapsed, taskWorkbenchMode, theme }).catch(() => {
       // Local UI preferences are non-security settings; the app can keep running without persistence.
     })
-  }, [hydrated, locale, sidebarCollapsed, theme])
+  }, [hydrated, locale, sidebarCollapsed, taskWorkbenchMode, theme])
 
   return children
 }

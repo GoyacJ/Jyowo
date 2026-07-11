@@ -2,7 +2,11 @@ import { useStore } from 'zustand'
 import { createStore } from 'zustand/vanilla'
 
 import { type AppLocale, DEFAULT_APP_LOCALE } from '@/shared/i18n/locales'
-import type { WorkbenchSelection } from '@/shared/state/workbench-selection'
+import type {
+  TaskWorkbenchMode,
+  TaskWorkbenchSelection,
+  WorkbenchSelection,
+} from '@/shared/state/workbench-selection'
 
 type ThemeMode = 'light' | 'dark' | 'system'
 
@@ -22,6 +26,8 @@ export interface UiState {
   contextPanelCollapsed: boolean
   inspectorOpen: boolean
   workbenchSelection: WorkbenchSelection | null
+  taskWorkbenchMode: TaskWorkbenchMode
+  taskWorkbenchSelection: TaskWorkbenchSelection | null
   timelineScrollRequest: TimelineScrollRequest | null
   clearActiveRun: (conversationId?: string) => void
   resetEvidenceDisclosure: () => void
@@ -33,6 +39,8 @@ export interface UiState {
   setContextPanelCollapsed: (contextPanelCollapsed: boolean) => void
   setInspectorOpen: (inspectorOpen: boolean) => void
   setWorkbenchSelection: (selection: WorkbenchSelection | null) => void
+  setTaskWorkbenchMode: (mode: TaskWorkbenchMode) => void
+  setTaskWorkbenchSelection: (selection: TaskWorkbenchSelection | null) => void
   requestTimelineScroll: (anchorId: string) => void
   clearTimelineScrollRequest: () => void
 }
@@ -49,6 +57,8 @@ export function createUiStore() {
     contextPanelCollapsed: true,
     inspectorOpen: false,
     workbenchSelection: null,
+    taskWorkbenchMode: 'closed',
+    taskWorkbenchSelection: null,
     timelineScrollRequest: null,
     clearActiveRun: (conversationId) =>
       set((state) => {
@@ -93,6 +103,8 @@ export function createUiStore() {
     setContextPanelCollapsed: (contextPanelCollapsed) => set({ contextPanelCollapsed }),
     setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
     setWorkbenchSelection: (workbenchSelection) => set({ workbenchSelection }),
+    setTaskWorkbenchMode: (taskWorkbenchMode) => set({ taskWorkbenchMode }),
+    setTaskWorkbenchSelection: (taskWorkbenchSelection) => set({ taskWorkbenchSelection }),
     requestTimelineScroll: (anchorId) =>
       set((state) => ({
         timelineScrollRequest: {

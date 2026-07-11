@@ -22,6 +22,15 @@ export function createTaskCommandMetadata(
   }
 }
 
+export function createTaskCreationMetadata(): CommandMetadata {
+  const commandId = createUlid()
+  return {
+    commandId,
+    expectedStreamVersion: 0,
+    idempotencyKey: `create:${commandId}`,
+  }
+}
+
 export function requireAcceptedCommand(frame: ServerFrame, taskId: TypedUlid) {
   if (frame.message.type === 'command_rejected') {
     throw new TaskCommandError(frame.message.reason)

@@ -1,5 +1,5 @@
 import { Pencil, SquareArrowUp, Trash2, Zap } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { QueueItemProjection } from '@/generated/daemon-protocol'
@@ -27,6 +27,10 @@ export function QueuedMessageRow({
   const [editing, setEditing] = useState(false)
   const locked = busy || item.state === 'promoting'
   const editLabel = t('queue.editLabel', { order })
+
+  useEffect(() => {
+    if (locked) setEditing(false)
+  }, [locked])
 
   return (
     <li className="border-border/70 border-b px-3 py-2.5 last:border-b-0">
