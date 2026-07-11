@@ -1,7 +1,7 @@
-use chrono::{TimeZone, Utc};
+use chrono::{NaiveDate, TimeZone, Utc};
 use harness_contracts::{
-    export_all_schemas, CapabilityRouteHealth, CapabilityRouteKind, ModelUsageBucket,
-    ModelUsagePeriod, ModelUsageSummary, ModelUsageWindow, OfficialQuotaSnapshot,
+    export_all_schemas, CapabilityRouteHealth, CapabilityRouteKind, ModelUsageActivity,
+    ModelUsageBucket, ModelUsagePeriod, ModelUsageSummary, ModelUsageWindow, OfficialQuotaSnapshot,
     OfficialQuotaStatus, ProviderProbeErrorKind, ProviderProbeSnapshot, ProviderProbeStatus,
     UsageSnapshot,
 };
@@ -124,6 +124,15 @@ fn model_usage_summary_serializes_timezone_fields() {
         today: sample_usage_window(ModelUsagePeriod::Today),
         month_to_date: sample_usage_window(ModelUsagePeriod::MonthToDate),
         all_time: sample_usage_window(ModelUsagePeriod::AllTime),
+        activity: ModelUsageActivity {
+            range_start: NaiveDate::from_ymd_opt(2026, 6, 30).unwrap(),
+            range_end: NaiveDate::from_ymd_opt(2026, 6, 30).unwrap(),
+            days: Vec::new(),
+            peak_day_tokens: 0,
+            current_streak_days: 0,
+            longest_streak_days: 0,
+            longest_task_duration_ms: 0,
+        },
         generated_at: Utc.with_ymd_and_hms(2026, 6, 30, 12, 0, 0).unwrap(),
     };
 
