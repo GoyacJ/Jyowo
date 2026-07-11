@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Utc};
 use harness_contracts::{
     BlobId, CommandId, IndeterminateToolDecision, PermissionMode, PromotionMode, QueueItemId,
-    QueueItemState, RunSegmentId, RunState, TaskId, ToolUseId,
+    QueueItemState, RunSegmentId, RunState, StopMode, TaskId, ToolUseId,
 };
 use harness_engine::{RunControl, RunControlHandle};
 use harness_journal::{
@@ -53,6 +53,10 @@ pub enum ValidatedTaskCommand {
         started_at: DateTime<Utc>,
         indeterminate_tools: Vec<IndeterminateToolDecision>,
     },
+    StopRun {
+        command: AcceptedCommand,
+        mode: StopMode,
+    },
     Queue {
         command: AcceptedCommand,
         queue_item_id: QueueItemId,
@@ -80,6 +84,7 @@ impl ValidatedTaskCommand {
             Self::SubmitMessage { command, .. }
             | Self::StartSegment { command, .. }
             | Self::ContinueTask { command, .. }
+            | Self::StopRun { command, .. }
             | Self::Queue { command, .. } => command,
         };
         CommandOutcome::Rejected {
@@ -285,6 +290,83 @@ async fn handle_command(
                 Some(indeterminate_tools),
                 reply,
             )?;
+        }
+        ValidatedTaskCommand::StopRun { mut command, mode } => {
+            if command.task_id != task_id {
+                let _ = reply.send(CommandOutcome::Rejected {
+                    command_id: command.command_id,
+                    task_id: command.task_id,
+                    rejection: CommandRejection::InvalidCommand {
+                        message: "command task does not match actor task".into(),
+                    },
+                });
+                return Ok(());
+            }
+            let force = mode == StopMode::Force;
+            command.payload = json!({
+                "type": "stop_run",
+                "mode": mode,
+            });
+            command.authority = TaskStore::supervisor_command_authority(&command.authority);
+            let command_id = command.command_id;
+            let command_task_id = command.task_id;
+            let mut stop_target = None;
+            let outcome = match store.transact_command(command, |projection| {
+                let Some(run) = projection.current_run.as_ref().filter(|run| {
+                    matches!(run.state, RunState::Running | RunState::WaitingPermission)
+                }) else {
+                    return Err(CommandRejection::InvalidCommand {
+                        message: "stop_run requires an active foreground run".into(),
+                    });
+                };
+                stop_target = Some(run.segment_id);
+                let mut events = Vec::new();
+                if let Some(permission) = projection.pending_permission.as_ref() {
+                    events.push(NewTaskEvent::permission_invalidated(
+                        permission.request_id,
+                        permission.revision,
+                        "run stopped by user",
+                    ));
+                }
+                events.push(NewTaskEvent::run_yield_requested(
+                    run.segment_id,
+                    force,
+                    Utc::now(),
+                ));
+                Ok(events)
+            }) {
+                Ok(outcome) => outcome,
+                Err(error) => command_store_error(error, command_id, command_task_id)?,
+            };
+            let accepted = matches!(outcome, CommandOutcome::Accepted { .. });
+            reply_before_control_propagation(reply, outcome, || {
+                if !accepted {
+                    return Ok(());
+                }
+                let (Some(target), Some(active)) = (stop_target, active.as_ref()) else {
+                    return Ok(());
+                };
+                if active.segment_id != target {
+                    return Ok(());
+                }
+                retry_control_propagation(|| {
+                    factory.request_parent_stop(
+                        task_id,
+                        if force {
+                            SubagentStopMode::Force
+                        } else {
+                            SubagentStopMode::SafePoint
+                        },
+                    )
+                })?;
+                active.control.request(if force {
+                    RunControl::ForceStop
+                } else {
+                    RunControl::YieldAfterAtomicOperation
+                });
+                Ok(())
+            })
+            .map_err(TaskActorError::SubagentStop)?;
         }
         ValidatedTaskCommand::Queue {
             mut command,
@@ -923,13 +1005,57 @@ fn handle_run_event(
             {
                 return Ok(false);
             }
-            let Some(promoted) = projection
+            let promoted = projection
                 .queue
                 .iter()
-                .find(|item| item.state == QueueItemState::Promoting)
-            else {
+                .find(|item| item.state == QueueItemState::Promoting);
+            if promoted.is_none() {
+                let terminal_reason = if forced {
+                    harness_contracts::RunTerminalReason::ForcedInterruption
+                } else {
+                    harness_contracts::RunTerminalReason::Cancelled
+                };
+                let command = AcceptedCommand {
+                    command_id: CommandId::new(),
+                    task_id,
+                    idempotency_key: format!("stop-transition-{}", CommandId::new()),
+                    expected_stream_version: projection.stream_version,
+                    authority: TaskStore::supervisor_authority(),
+                    payload: json!({
+                        "type": "stop_transition",
+                        "segmentId": segment_id,
+                        "forced": forced,
+                        "incompleteOutput": incomplete_output,
+                        "nonRevertibleToolUseIds": non_revertible_tool_use_ids,
+                    }),
+                };
+                let outcome = store.transact_command(command, |_| {
+                    Ok(vec![
+                        NewTaskEvent::run_safe_point_reached(
+                            segment_id,
+                            forced,
+                            incomplete_output,
+                            non_revertible_tool_use_ids,
+                            reached_at,
+                        ),
+                        NewTaskEvent::run_completed(
+                            segment_id,
+                            reached_at,
+                            terminal_reason,
+                            incomplete_output,
+                        ),
+                    ])
+                })?;
+                if matches!(outcome, CommandOutcome::Accepted { .. }) {
+                    persist_checkpoint_boundary(store, task_id, segment_id, Vec::new())?;
+                    *active = None;
+                    *active_segment_state
+                        .lock()
+                        .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = None;
+                }
                 return Ok(false);
-            };
+            }
+            let promoted = promoted.expect("standalone stop handled above");
             let next_segment_id = RunSegmentId::new();
             let command = AcceptedCommand {
                 command_id: CommandId::new(),
@@ -1018,13 +1144,10 @@ fn handle_run_event(
             {
                 return Ok(false);
             }
-            let Some(promoted) = projection
+            let promoted = projection
                 .queue
                 .iter()
-                .find(|item| item.state == QueueItemState::Promoting)
-            else {
-                return Ok(false);
-            };
+                .find(|item| item.state == QueueItemState::Promoting);
             let checkpoint_tool_use_ids = indeterminate_tool_use_ids.clone();
             let command = AcceptedCommand {
                 command_id: CommandId::new(),
@@ -1035,12 +1158,12 @@ fn handle_run_event(
                 payload: json!({
                     "type": "force_stop_timed_out",
                     "segmentId": segment_id,
-                    "queueItemId": promoted.queue_item_id,
+                    "queueItemId": promoted.map(|item| item.queue_item_id),
                     "indeterminateToolUseIds": indeterminate_tool_use_ids,
                 }),
             };
             let outcome = store.transact_command(command, |_| {
-                Ok(vec![
+                let mut events = vec![
                     NewTaskEvent::run_force_stop_timed_out(
                         segment_id,
                         indeterminate_tool_use_ids,
@@ -1052,8 +1175,14 @@ fn handle_run_event(
                         harness_contracts::RunTerminalReason::Failed,
                         true,
                     ),
-                    NewTaskEvent::message_recovered(promoted.queue_item_id, promoted.revision),
-                ])
+                ];
+                if let Some(promoted) = promoted {
+                    events.push(NewTaskEvent::message_recovered(
+                        promoted.queue_item_id,
+                        promoted.revision,
+                    ));
+                }
+                Ok(events)
             })?;
             if matches!(outcome, CommandOutcome::Accepted { .. }) {
                 persist_checkpoint_boundary(store, task_id, segment_id, checkpoint_tool_use_ids)?;

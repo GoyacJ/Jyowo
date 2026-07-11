@@ -354,6 +354,8 @@ fn requires_task_supervisor(request: &ClientRequest) -> bool {
             | ClientRequest::EditQueuedMessage(_)
             | ClientRequest::DeleteQueuedMessage(_)
             | ClientRequest::PromoteQueuedMessage(_)
+            | ClientRequest::StopRun(_)
+            | ClientRequest::ContinueTask(_)
             | ClientRequest::ResolvePermission(_)
     )
 }
@@ -429,12 +431,32 @@ fn validated_task_command(
                 },
             }
         }
+        ClientRequest::StopRun(request) => {
+            let task_id = request.task_id;
+            let payload = serde_json::to_value(&request)?;
+            ValidatedTaskCommand::StopRun {
+                command: accepted_command(client_id, task_id, request.metadata, payload),
+                mode: request.mode,
+            }
+        }
+        ClientRequest::ContinueTask(request) => {
+            let task_id = request.task_id;
+            let command_id = request.metadata.command_id;
+            let payload = serde_json::to_value(&request)?;
+            ValidatedTaskCommand::ContinueTask {
+                command: accepted_command(client_id, task_id, request.metadata, payload),
+                segment_id: RunSegmentId::from_u128(u128::from_be_bytes(command_id.as_bytes())),
+                started_at: chrono::Utc::now(),
+                indeterminate_tools: request.indeterminate_tools,
+            }
+        }
         _ => return Ok(None),
     };
     let task_id = match &command {
         ValidatedTaskCommand::SubmitMessage { command, .. }
         | ValidatedTaskCommand::StartSegment { command, .. }
         | ValidatedTaskCommand::ContinueTask { command, .. }
+        | ValidatedTaskCommand::StopRun { command, .. }
         | ValidatedTaskCommand::Queue { command, .. } => command.task_id,
     };
     Ok(Some((task_id, command)))

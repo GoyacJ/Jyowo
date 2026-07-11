@@ -1,18 +1,21 @@
 use std::sync::Arc;
 
 use harness_contracts::{
-    now, ClientFrame, ClientId, ClientRequest, CommandId, CommandMetadata, CreateTaskCommand,
-    DaemonPermissionKind, HandshakeRequest, PermissionOption, QueueItemId, RequestId,
-    ResolvePermissionCommand, ServerMessage, WorkspaceMode, WorkspaceSelection,
+    now, ClientFrame, ClientId, ClientRequest, CommandId, CommandMetadata, ContinueTaskCommand,
+    CreateTaskCommand, DaemonPermissionKind, HandshakeRequest, PermissionOption, QueueItemId,
+    RequestId, ResolvePermissionCommand, RunSegmentId, RunState, RunTerminalReason, ServerMessage,
+    StopMode, StopRunCommand, TaskState, ToolUseId, WorkspaceMode, WorkspaceSelection,
     MAX_DAEMON_BLOB_BYTES, PROTOCOL_VERSION,
 };
 use harness_daemon::{
     encode_frame, IpcConnection, IpcServerConfig, JsonFrameDecoder, LocalIpcServer,
-    PermissionRequestDraft, RunCoordinatorFactory, RunningSegment, StartSegmentRequest, Supervisor,
-    SupervisorQuotas, MAX_FRAME_BYTES,
+    PermissionRequestDraft, RecoveryService, RunCoordinatorFactory, RunningSegment,
+    StartSegmentRequest, Supervisor, SupervisorQuotas, MAX_FRAME_BYTES,
 };
+use harness_engine::{RunControlHandle, SafePointDecision, TurnOutcome};
 use harness_journal::{AcceptedCommand, NewTaskEvent, TaskBlobStore, TaskStore};
 use serde_json::json;
+use std::sync::Mutex;
 
 struct IdleRunFactory;
 
@@ -26,6 +29,45 @@ impl RunCoordinatorFactory for IdleRunFactory {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         std::mem::forget(sender);
         RunningSegment::new(receiver)
+    }
+}
+
+#[derive(Default)]
+struct ControlledRunFactory {
+    starts: Mutex<Vec<StartSegmentRequest>>,
+    controls: Mutex<Vec<(RunSegmentId, RunControlHandle)>>,
+    senders: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<harness_daemon::RunCoordinatorEvent>>>,
+}
+
+impl ControlledRunFactory {
+    fn control(&self, segment_id: RunSegmentId) -> RunControlHandle {
+        self.controls
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(candidate, _)| *candidate == segment_id)
+            .unwrap()
+            .1
+            .clone()
+    }
+}
+
+impl RunCoordinatorFactory for ControlledRunFactory {
+    fn spawn_idempotent(
+        &self,
+        request: StartSegmentRequest,
+        _workspace_tools: harness_daemon::WorkspaceToolDispatcher,
+        _subagent_runner: Arc<dyn harness_subagent::SubagentRunner>,
+    ) -> RunningSegment {
+        let control = RunControlHandle::new();
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        self.starts.lock().unwrap().push(request.clone());
+        self.controls
+            .lock()
+            .unwrap()
+            .push((request.segment_id, control.clone()));
+        self.senders.lock().unwrap().push(sender);
+        RunningSegment::with_control(request.segment_id, receiver, control)
     }
 }
 
@@ -350,6 +392,301 @@ async fn authenticated_submit_message_is_dispatched_through_the_task_supervisor(
         .expect("message.queued event");
     assert_eq!(queued.payload["modelConfigId"], "provider-config-001");
     assert_eq!(queued.payload["permissionMode"], "auto");
+}
+
+#[tokio::test]
+async fn authenticated_continue_task_is_dispatched_through_the_task_supervisor() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let factory = Arc::new(ControlledRunFactory::default());
+    let supervisor = Arc::new(
+        Supervisor::start(
+            Arc::clone(&store),
+            factory.clone(),
+            SupervisorQuotas::new(2, 2),
+        )
+        .unwrap(),
+    );
+    let mut connection =
+        IpcConnection::with_supervisor(Arc::clone(&store), config(), Arc::clone(&supervisor));
+    connection.handle(handshake("token-a")).unwrap();
+    let created = connection
+        .handle(create("create", CommandId::new(), "create-continue-task"))
+        .unwrap();
+    let task_id = match &created[0].message {
+        ServerMessage::CommandAccepted(accepted) => accepted.task_id,
+        other => panic!("unexpected {other:?}"),
+    };
+    let interrupted_segment = RunSegmentId::new();
+    store
+        .transact_command(
+            AcceptedCommand {
+                command_id: CommandId::new(),
+                task_id,
+                idempotency_key: "start-before-recovery".into(),
+                expected_stream_version: 1,
+                authority: TaskStore::supervisor_authority(),
+                payload: json!({ "type": "test_start" }),
+            },
+            |_| {
+                Ok(vec![NewTaskEvent::run_started(
+                    interrupted_segment,
+                    chrono::Utc::now(),
+                )])
+            },
+        )
+        .unwrap();
+    RecoveryService::new(Arc::clone(&store))
+        .recover_task(task_id)
+        .unwrap();
+    assert_eq!(
+        store
+            .task_projection(task_id)
+            .unwrap()
+            .unwrap()
+            .current_run
+            .unwrap()
+            .terminal_reason,
+        Some(RunTerminalReason::InterruptedByRestart)
+    );
+    let command_id = CommandId::new();
+
+    let response = connection
+        .handle_async(frame(
+            "continue",
+            ClientRequest::ContinueTask(ContinueTaskCommand {
+                metadata: CommandMetadata {
+                    command_id,
+                    idempotency_key: "continue-through-supervisor".into(),
+                    expected_stream_version: store.stream_version(task_id).unwrap(),
+                },
+                task_id,
+                indeterminate_tools: Vec::new(),
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        &response[0].message,
+        ServerMessage::CommandAccepted(accepted) if accepted.command_id == command_id
+    ));
+    let projection = store.task_projection(task_id).unwrap().unwrap();
+    let continued = projection.current_run.unwrap();
+    assert_eq!(continued.state, RunState::Running);
+    assert_ne!(continued.segment_id, interrupted_segment);
+    assert_eq!(factory.starts.lock().unwrap().len(), 1);
+    assert_eq!(
+        factory.starts.lock().unwrap()[0].segment_id,
+        continued.segment_id
+    );
+}
+
+#[tokio::test]
+async fn authenticated_stop_run_controls_and_terminates_the_active_segment() {
+    for (mode, expected_decision, expected_terminal) in [
+        (
+            StopMode::SafePoint,
+            SafePointDecision::Yield,
+            RunTerminalReason::Cancelled,
+        ),
+        (
+            StopMode::Force,
+            SafePointDecision::ForceStop,
+            RunTerminalReason::ForcedInterruption,
+        ),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+        let factory = Arc::new(ControlledRunFactory::default());
+        let supervisor = Arc::new(
+            Supervisor::start(
+                Arc::clone(&store),
+                factory.clone(),
+                SupervisorQuotas::new(2, 2),
+            )
+            .unwrap(),
+        );
+        let mut connection =
+            IpcConnection::with_supervisor(Arc::clone(&store), config(), supervisor);
+        connection.handle(handshake("token-a")).unwrap();
+        let created = connection
+            .handle(create("create", CommandId::new(), "create-stop-task"))
+            .unwrap();
+        let task_id = match &created[0].message {
+            ServerMessage::CommandAccepted(accepted) => accepted.task_id,
+            other => panic!("unexpected {other:?}"),
+        };
+        connection
+            .handle_async(frame(
+                "submit",
+                ClientRequest::SubmitMessage(harness_contracts::SubmitMessageCommand {
+                    metadata: CommandMetadata {
+                        command_id: CommandId::new(),
+                        idempotency_key: "submit-before-stop".into(),
+                        expected_stream_version: 1,
+                    },
+                    task_id,
+                    content: "run until stopped".into(),
+                    attachments: Vec::new(),
+                    context_references: Vec::new(),
+                    model_config_id: None,
+                    permission_mode: harness_contracts::PermissionMode::Default,
+                }),
+            ))
+            .await
+            .unwrap();
+        let segment_id = store
+            .task_projection(task_id)
+            .unwrap()
+            .unwrap()
+            .current_run
+            .unwrap()
+            .segment_id;
+        let command_id = CommandId::new();
+
+        let response = connection
+            .handle_async(frame(
+                "stop",
+                ClientRequest::StopRun(StopRunCommand {
+                    metadata: CommandMetadata {
+                        command_id,
+                        idempotency_key: "stop-through-supervisor".into(),
+                        expected_stream_version: store.stream_version(task_id).unwrap(),
+                    },
+                    task_id,
+                    mode,
+                }),
+            ))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            &response[0].message,
+            ServerMessage::CommandAccepted(accepted) if accepted.command_id == command_id
+        ));
+        assert_eq!(factory.control(segment_id).decision(), expected_decision);
+        assert_eq!(
+            store
+                .task_projection(task_id)
+                .unwrap()
+                .unwrap()
+                .current_run
+                .unwrap()
+                .state,
+            RunState::Yielding
+        );
+        factory.control(segment_id).finish(match expected_decision {
+            SafePointDecision::Yield => TurnOutcome::YieldedAtSafePoint,
+            SafePointDecision::ForceStop => TurnOutcome::ForceStopped {
+                non_revertible_tool_use_ids: Vec::new(),
+            },
+            SafePointDecision::Continue => unreachable!(),
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let projection = store.task_projection(task_id).unwrap().unwrap();
+                if projection
+                    .current_run
+                    .as_ref()
+                    .and_then(|run| run.terminal_reason.as_ref())
+                    == Some(&expected_terminal)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn force_stop_timeout_fails_a_standalone_stop_without_a_promoted_message() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let factory = Arc::new(ControlledRunFactory::default());
+    let supervisor = Arc::new(
+        Supervisor::start(
+            Arc::clone(&store),
+            factory.clone(),
+            SupervisorQuotas::new(2, 2),
+        )
+        .unwrap(),
+    );
+    let mut connection = IpcConnection::with_supervisor(Arc::clone(&store), config(), supervisor);
+    connection.handle(handshake("token-a")).unwrap();
+    let created = connection
+        .handle(create("create", CommandId::new(), "create-timeout-task"))
+        .unwrap();
+    let task_id = match &created[0].message {
+        ServerMessage::CommandAccepted(accepted) => accepted.task_id,
+        other => panic!("unexpected {other:?}"),
+    };
+    connection
+        .handle_async(frame(
+            "submit",
+            ClientRequest::SubmitMessage(harness_contracts::SubmitMessageCommand {
+                metadata: CommandMetadata {
+                    command_id: CommandId::new(),
+                    idempotency_key: "submit-before-timeout".into(),
+                    expected_stream_version: 1,
+                },
+                task_id,
+                content: "run until stop times out".into(),
+                attachments: Vec::new(),
+                context_references: Vec::new(),
+                model_config_id: None,
+                permission_mode: harness_contracts::PermissionMode::Default,
+            }),
+        ))
+        .await
+        .unwrap();
+    let segment_id = store
+        .task_projection(task_id)
+        .unwrap()
+        .unwrap()
+        .current_run
+        .unwrap()
+        .segment_id;
+    connection
+        .handle_async(frame(
+            "stop",
+            ClientRequest::StopRun(StopRunCommand {
+                metadata: CommandMetadata {
+                    command_id: CommandId::new(),
+                    idempotency_key: "force-stop-before-timeout".into(),
+                    expected_stream_version: store.stream_version(task_id).unwrap(),
+                },
+                task_id,
+                mode: StopMode::Force,
+            }),
+        ))
+        .await
+        .unwrap();
+    let tool_use_id = ToolUseId::new();
+
+    factory
+        .control(segment_id)
+        .finish(TurnOutcome::ForceStopTimedOut {
+            indeterminate_tool_use_ids: vec![tool_use_id],
+        });
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if store.task_projection(task_id).unwrap().unwrap().state == TaskState::Failed {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(store.events_after(0, 32).unwrap().iter().any(|event| {
+        event.event_type == "run.force_stop_timed_out"
+            && event.payload["indeterminateToolUseIds"][0] == tool_use_id.to_string()
+    }));
 }
 
 #[tokio::test]
