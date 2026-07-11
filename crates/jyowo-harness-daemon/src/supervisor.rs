@@ -155,6 +155,7 @@ impl Supervisor {
             store,
             factory,
             workspace,
+            Arc::clone(&permissions),
             Arc::new(Semaphore::new(quotas.foreground_runs)),
             receiver,
             events.clone(),
@@ -284,6 +285,7 @@ async fn run_supervisor(
     store: Arc<TaskStore>,
     factory: Arc<WorkspaceBoundRunCoordinatorFactory>,
     workspace: Arc<WorkspaceCoordinator>,
+    permissions: Arc<PermissionBroker>,
     foreground_runs: Arc<Semaphore>,
     mut requests: mpsc::Receiver<SupervisorRequest>,
     events: broadcast::Sender<SupervisorEvent>,
@@ -338,6 +340,7 @@ async fn run_supervisor(
                                 generation,
                                 Arc::clone(&store),
                                 Arc::clone(&factory),
+                                Arc::clone(&permissions),
                                 Arc::clone(&foreground_runs),
                                 None,
                                 Duration::ZERO,
@@ -386,6 +389,7 @@ async fn run_supervisor(
                                     generation,
                                     Arc::clone(&store),
                                     Arc::clone(&factory),
+                                    Arc::clone(&permissions),
                                     Arc::clone(&foreground_runs),
                                     Some(segment_id),
                                     pending_segment_start_retry_delay(retry.1),
@@ -414,6 +418,7 @@ async fn run_supervisor(
                                     generation,
                                     Arc::clone(&store),
                                     Arc::clone(&factory),
+                                    Arc::clone(&permissions),
                                     Arc::clone(&foreground_runs),
                                     None,
                                     Duration::ZERO,
@@ -461,6 +466,7 @@ fn spawn_actor(
     generation: u64,
     store: Arc<TaskStore>,
     factory: Arc<WorkspaceBoundRunCoordinatorFactory>,
+    permissions: Arc<PermissionBroker>,
     foreground_runs: Arc<Semaphore>,
     pending_start_retry_segment: Option<harness_contracts::RunSegmentId>,
     startup_delay: Duration,
@@ -475,6 +481,7 @@ fn spawn_actor(
             task_id,
             store,
             factory,
+            permissions,
             foreground_runs,
             active_segment_state,
             pending_start_retry_segment,
@@ -489,7 +496,8 @@ fn spawn_actor(
                 TaskActorError::Store(_)
                 | TaskActorError::RuntimeStatePoisoned
                 | TaskActorError::SegmentStartDeliveryNotPending
-                | TaskActorError::SubagentStop(_),
+                | TaskActorError::SubagentStop(_)
+                | TaskActorError::Permission(_),
             ))
             | Err(_) => true,
         };

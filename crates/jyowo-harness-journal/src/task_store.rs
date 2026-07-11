@@ -12,11 +12,11 @@ use fs2::FileExt;
 use harness_contracts::{
     now, ActorId, BlobId, CheckpointId, ClientId, CommandId, Event, EventId, EventSource,
     EventSourceKind, IdParseError, IndeterminateToolDecision, PermissionMode, QueueItemId,
-    QueueItemProjection, RedactRules, Redactor, RunId, RunSegmentId, RunState, RunTerminalReason,
-    SessionId, SubagentActorState, SubagentId, SubagentParentProjection, SubagentProjection,
-    TaskEventEnvelope, TaskId, TaskProjection, TenantId, TimelineItemProjection, ToolUseId,
-    WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceLeaseState, WorkspaceMode,
-    WorkspaceSelection,
+    QueueItemProjection, RedactRules, Redactor, RequestId, RunId, RunSegmentId, RunState,
+    RunTerminalReason, SessionId, SubagentActorState, SubagentId, SubagentParentProjection,
+    SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection, TenantId,
+    TimelineItemProjection, ToolUseId, WorkspaceLeaseId, WorkspaceLeaseProjection,
+    WorkspaceLeaseState, WorkspaceMode, WorkspaceSelection,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -203,6 +203,15 @@ pub struct AcquireTaskWorkspaceLease {
     pub expires_at: Option<DateTime<Utc>>,
     pub baseline_commit: Option<String>,
     pub baseline_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceCommandAuthority {
+    pub lease_id: WorkspaceLeaseId,
+    pub task_id: TaskId,
+    pub actor_id: ActorId,
+    pub execution_root: String,
+    pub writable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1217,6 +1226,44 @@ impl TaskStore {
     where
         F: FnOnce(&TaskProjection) -> Result<Vec<NewTaskEvent>, CommandRejection>,
     {
+        self.transact_command_inner(command, None, None, decide)
+    }
+
+    pub fn transact_command_with_workspace_authority<F>(
+        &self,
+        command: AcceptedCommand,
+        workspace_authority: WorkspaceCommandAuthority,
+        decide: F,
+    ) -> Result<CommandOutcome, TaskStoreError>
+    where
+        F: FnOnce(&TaskProjection) -> Result<Vec<NewTaskEvent>, CommandRejection>,
+    {
+        self.transact_command_inner(command, Some(workspace_authority), None, decide)
+    }
+
+    pub fn transact_permission_request<F>(
+        &self,
+        command: AcceptedCommand,
+        request_id: RequestId,
+        workspace_authority: Option<WorkspaceCommandAuthority>,
+        decide: F,
+    ) -> Result<CommandOutcome, TaskStoreError>
+    where
+        F: FnOnce(&TaskProjection) -> Result<Vec<NewTaskEvent>, CommandRejection>,
+    {
+        self.transact_command_inner(command, workspace_authority, Some(request_id), decide)
+    }
+
+    fn transact_command_inner<F>(
+        &self,
+        command: AcceptedCommand,
+        workspace_authority: Option<WorkspaceCommandAuthority>,
+        permission_request_id: Option<RequestId>,
+        decide: F,
+    ) -> Result<CommandOutcome, TaskStoreError>
+    where
+        F: FnOnce(&TaskProjection) -> Result<Vec<NewTaskEvent>, CommandRejection>,
+    {
         validate_command(&command)?;
         let command_hash = command_hash(&command)?;
         let mut connection = self.lock()?;
@@ -1263,6 +1310,62 @@ impl TaskStore {
             )?;
             transaction.commit()?;
             return Ok(outcome);
+        }
+
+        if let Some(authority) = workspace_authority.as_ref() {
+            if let Err(rejection) =
+                validate_workspace_command_authority(&transaction, authority, command.task_id)
+            {
+                let outcome = CommandOutcome::Rejected {
+                    command_id: command.command_id,
+                    task_id: command.task_id,
+                    rejection,
+                };
+                finish_command(
+                    &transaction,
+                    command.command_id,
+                    "rejected",
+                    &outcome,
+                    actual,
+                    latest_global_offset_in_transaction(&transaction)?,
+                    0,
+                )?;
+                transaction.commit()?;
+                return Ok(outcome);
+            }
+        }
+
+        if let Some(request_id) = permission_request_id {
+            let already_requested = transaction.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM event_log
+                    WHERE task_id = ?1
+                      AND event_type = 'permission.requested'
+                      AND json_extract(payload_json, '$.requestId') = ?2
+                )",
+                params![command.task_id.to_string(), request_id.to_string()],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if already_requested {
+                let outcome = CommandOutcome::Rejected {
+                    command_id: command.command_id,
+                    task_id: command.task_id,
+                    rejection: CommandRejection::InvalidCommand {
+                        message: "permission request id has already been used for this task".into(),
+                    },
+                };
+                finish_command(
+                    &transaction,
+                    command.command_id,
+                    "rejected",
+                    &outcome,
+                    actual,
+                    latest_global_offset_in_transaction(&transaction)?,
+                    0,
+                )?;
+                transaction.commit()?;
+                return Ok(outcome);
+            }
         }
 
         let events = match decide(&projection) {
@@ -2107,6 +2210,35 @@ impl TaskStore {
                 .and_then(StoredTaskEvent::decode)
         })
         .collect()
+    }
+
+    pub fn permission_resolution_option(
+        &self,
+        task_id: TaskId,
+        request_id: RequestId,
+        revision: u64,
+    ) -> Result<Option<String>, TaskStoreError> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT json_extract(payload_json, '$.optionId')
+                 FROM event_log
+                 WHERE task_id = ?1
+                   AND event_type = 'permission.resolved'
+                   AND json_extract(payload_json, '$.requestId') = ?2
+                   AND json_extract(payload_json, '$.revision') = ?3
+                 ORDER BY global_offset DESC
+                 LIMIT 1",
+                params![
+                    task_id.to_string(),
+                    request_id.to_string(),
+                    sqlite_integer(revision)?,
+                ],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map(Option::flatten)
+            .map_err(TaskStoreError::from)
     }
 
     pub fn task_events_after_global_offset(
@@ -5006,6 +5138,37 @@ fn workspace_lease_in_transaction(
             TaskStoreError::InvalidInput(format!("workspace lease {lease_id} does not exist"))
         })?;
     Ok(serde_json::from_str(&json)?)
+}
+
+fn validate_workspace_command_authority(
+    transaction: &Transaction<'_>,
+    authority: &WorkspaceCommandAuthority,
+    command_task_id: TaskId,
+) -> Result<(), CommandRejection> {
+    let lease = workspace_lease_in_transaction(transaction, authority.lease_id).map_err(|_| {
+        CommandRejection::InvalidCommand {
+            message: "permission workspace lease is unavailable".into(),
+        }
+    })?;
+    let execution_root = match lease.mode {
+        WorkspaceMode::Current => Some(lease.canonical_root.as_str()),
+        WorkspaceMode::ManagedWorktree => lease.worktree_path.as_deref(),
+    };
+    if command_task_id != authority.task_id
+        || lease.task_id != authority.task_id
+        || lease.actor_id != authority.actor_id
+        || lease.state != TaskWorkspaceLeaseState::Active
+        || lease
+            .expires_at
+            .is_some_and(|expires_at| expires_at <= now())
+        || lease.writable != authority.writable
+        || execution_root != Some(authority.execution_root.as_str())
+    {
+        return Err(CommandRejection::InvalidCommand {
+            message: "permission workspace authority changed while awaiting a decision".into(),
+        });
+    }
+    Ok(())
 }
 
 fn active_workspace_leases_in_transaction(

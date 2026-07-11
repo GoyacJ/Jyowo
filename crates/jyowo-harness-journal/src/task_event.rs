@@ -119,6 +119,7 @@ pub(crate) enum TaskEvent {
     PermissionResolved {
         request_id: RequestId,
         revision: u64,
+        option_id: Option<String>,
     },
     PermissionInvalidated {
         request_id: RequestId,
@@ -324,6 +325,8 @@ struct QueueStateChangedPayload {
 struct PermissionResolvedPayload {
     request_id: RequestId,
     revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    option_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -657,6 +660,22 @@ impl NewTaskEvent {
             event: TaskEvent::PermissionResolved {
                 request_id,
                 revision,
+                option_id: None,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn permission_resolved_with_option(
+        request_id: RequestId,
+        revision: u64,
+        option_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            event: TaskEvent::PermissionResolved {
+                request_id,
+                revision,
+                option_id: Some(option_id.into()),
             },
         }
     }
@@ -1177,6 +1196,7 @@ impl TaskEvent {
                 Ok(Self::PermissionResolved {
                     request_id: value.request_id,
                     revision: value.revision,
+                    option_id: value.option_id,
                 })
             }
             "permission.invalidated" => {
@@ -1454,9 +1474,11 @@ impl TaskEvent {
             Self::PermissionResolved {
                 request_id,
                 revision,
+                option_id,
             } => serde_json::to_value(PermissionResolvedPayload {
                 request_id: *request_id,
                 revision: *revision,
+                option_id: option_id.clone(),
             })?,
             Self::PermissionInvalidated {
                 request_id,

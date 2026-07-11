@@ -408,6 +408,7 @@ fn reduce_task(
         TaskEvent::PermissionResolved {
             request_id,
             revision,
+            ..
         }
         | TaskEvent::PermissionInvalidated {
             request_id,

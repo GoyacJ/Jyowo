@@ -16,9 +16,9 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
-    decide_consume_next, decide_queue, CheckpointService, CheckpointState, QueueCommand,
-    RunCoordinatorEvent, RunningSegment, StartSegmentRequest, SubagentStopMode,
-    WorkspaceBoundRunCoordinatorFactory,
+    decide_consume_next, decide_queue, CheckpointService, CheckpointState, PermissionBroker,
+    PermissionBrokerError, QueueCommand, RunCoordinatorEvent, RunningSegment, StartSegmentRequest,
+    SubagentStopMode, WorkspaceBoundRunCoordinatorFactory,
 };
 
 #[derive(Debug)]
@@ -76,6 +76,8 @@ pub(crate) enum TaskActorError {
     SegmentStartDeliveryNotPending,
     #[error("subagent stop propagation failed: {0}")]
     SubagentStop(#[source] harness_subagent::SubagentError),
+    #[error("permission routing failed: {0}")]
+    Permission(#[from] PermissionBrokerError),
 }
 
 impl ValidatedTaskCommand {
@@ -107,6 +109,7 @@ pub(crate) async fn run_task_actor(
     task_id: TaskId,
     store: Arc<TaskStore>,
     factory: Arc<WorkspaceBoundRunCoordinatorFactory>,
+    permissions: Arc<PermissionBroker>,
     foreground_runs: Arc<Semaphore>,
     active_segment_state: Arc<Mutex<Option<RunSegmentId>>>,
     pending_start_retry_segment: Option<RunSegmentId>,
@@ -161,6 +164,7 @@ pub(crate) async fn run_task_actor(
                     task_id,
                     &store,
                     &factory,
+                    &permissions,
                     &foreground_runs,
                     &active_segment_state,
                     &mailbox,
@@ -204,6 +208,7 @@ async fn handle_command(
     task_id: TaskId,
     store: &TaskStore,
     factory: &Arc<WorkspaceBoundRunCoordinatorFactory>,
+    permissions: &PermissionBroker,
     foreground_runs: &Arc<Semaphore>,
     active_segment_state: &Mutex<Option<RunSegmentId>>,
     mailbox: &mpsc::Sender<TaskActorMessage>,
@@ -309,7 +314,10 @@ async fn handle_command(
             let command_id = command.command_id;
             let command_task_id = command.task_id;
             let mut stop_target = None;
-            let outcome = match store.transact_command(command, |projection| {
+            let pending_permission = store
+                .task_projection(task_id)?
+                .and_then(|projection| projection.pending_permission);
+            let decide = |projection: &harness_contracts::TaskProjection| {
                 let Some(run) = projection.current_run.as_ref().filter(|run| {
                     matches!(run.state, RunState::Running | RunState::WaitingPermission)
                 }) else {
@@ -318,23 +326,28 @@ async fn handle_command(
                     });
                 };
                 stop_target = Some(run.segment_id);
-                let mut events = Vec::new();
-                if let Some(permission) = projection.pending_permission.as_ref() {
-                    events.push(NewTaskEvent::permission_invalidated(
-                        permission.request_id,
-                        permission.revision,
-                        "run stopped by user",
-                    ));
-                }
-                events.push(NewTaskEvent::run_yield_requested(
+                Ok(vec![NewTaskEvent::run_yield_requested(
                     run.segment_id,
                     force,
                     Utc::now(),
-                ));
-                Ok(events)
-            }) {
-                Ok(outcome) => outcome,
-                Err(error) => command_store_error(error, command_id, command_task_id)?,
+                )])
+            };
+            let outcome = if let Some(permission) = pending_permission {
+                match permissions.transact_invalidating_command(
+                    command,
+                    permission.request_id,
+                    permission.revision,
+                    "run stopped by user",
+                    decide,
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(error) => permission_command_error(error, command_id, command_task_id)?,
+                }
+            } else {
+                match store.transact_command(command, decide) {
+                    Ok(outcome) => outcome,
+                    Err(error) => command_store_error(error, command_id, command_task_id)?,
+                }
             };
             let accepted = matches!(outcome, CommandOutcome::Accepted { .. });
             reply_before_control_propagation(reply, outcome, || {
@@ -423,7 +436,14 @@ async fn handle_command(
             }
             let mut steering_target = None;
             let durable_queue_item = store.queue_item_projection(task_id, queue_item_id)?;
-            let outcome = match store.transact_command(command, |projection| {
+            let pending_permission = if promotion_mode.is_some() {
+                store
+                    .task_projection(task_id)?
+                    .and_then(|projection| projection.pending_permission)
+            } else {
+                None
+            };
+            let decide = |projection: &harness_contracts::TaskProjection| {
                 if is_submit
                     && !projection.current_run.as_ref().is_some_and(|run| {
                         matches!(
@@ -461,17 +481,7 @@ async fn handle_command(
                     .iter()
                     .find(|item| item.queue_item_id == queue_item_id)
                     .or(durable_queue_item.as_ref());
-                let mut events = Vec::new();
-                if promotion_mode.is_some() {
-                    if let Some(permission) = projection.pending_permission.as_ref() {
-                        events.push(NewTaskEvent::permission_invalidated(
-                            permission.request_id,
-                            permission.revision,
-                            "superseded by steering",
-                        ));
-                    }
-                }
-                events.extend(decide_queue(current, queue_command)?);
+                let mut events = decide_queue(current, queue_command)?;
                 if let Some(mode) = promotion_mode.as_ref() {
                     let segment_id = projection
                         .current_run
@@ -486,9 +496,23 @@ async fn handle_command(
                     ));
                 }
                 Ok(events)
-            }) {
-                Ok(outcome) => outcome,
-                Err(error) => command_store_error(error, command_id, command_task_id)?,
+            };
+            let outcome = if let Some(permission) = pending_permission {
+                match permissions.transact_invalidating_command(
+                    command,
+                    permission.request_id,
+                    permission.revision,
+                    "superseded by steering",
+                    decide,
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(error) => permission_command_error(error, command_id, command_task_id)?,
+                }
+            } else {
+                match store.transact_command(command, decide) {
+                    Ok(outcome) => outcome,
+                    Err(error) => command_store_error(error, command_id, command_task_id)?,
+                }
             };
             let accepted = matches!(outcome, CommandOutcome::Accepted { .. });
             reply_before_control_propagation(reply, outcome, || {
@@ -826,6 +850,22 @@ fn command_store_error(
             },
         }),
         error => Err(TaskActorError::Store(error)),
+    }
+}
+
+fn permission_command_error(
+    error: PermissionBrokerError,
+    command_id: CommandId,
+    task_id: TaskId,
+) -> Result<CommandOutcome, TaskActorError> {
+    match error {
+        PermissionBrokerError::Store(error) => command_store_error(error, command_id, task_id),
+        PermissionBrokerError::Rejected(rejection) => Ok(CommandOutcome::Rejected {
+            command_id,
+            task_id,
+            rejection,
+        }),
+        error => Err(TaskActorError::Permission(error)),
     }
 }
 

@@ -5,12 +5,13 @@ use std::time::Duration;
 
 use chrono::Utc;
 use harness_contracts::{
-    BlobId, ClientId, CommandId, QueueItemId, QueueItemState, RunSegmentId, RunState,
+    BlobId, ClientId, CommandId, QueueItemId, QueueItemState, RequestId, RunSegmentId, RunState,
     RunTerminalReason, TaskId, TaskState,
 };
 use harness_daemon::{
-    QueueCommand, RunCoordinatorEvent, RunCoordinatorFactory, RunningSegment, StartSegmentRequest,
-    Supervisor, SupervisorQuotas, ValidatedTaskCommand,
+    DaemonPermissionKind, PermissionOption, PermissionRequestDraft, QueueCommand,
+    RunCoordinatorEvent, RunCoordinatorFactory, RunningSegment, StartSegmentRequest, Supervisor,
+    SupervisorQuotas, ValidatedTaskCommand,
 };
 use harness_journal::{AcceptedCommand, CommandOutcome, NewTaskEvent, TaskStore};
 use serde_json::json;
@@ -1079,6 +1080,118 @@ async fn conflicting_client_command_is_rejected_without_killing_the_actor() {
 
     factory.complete(task_id, first_segment);
     wait_for_state(&store, task_id, TaskState::Completed).await;
+}
+
+#[tokio::test]
+async fn conflicting_client_command_during_permission_wait_is_rejected_without_killing_the_actor() {
+    let (store, _root) = test_store();
+    let task_id = create_task(&store, "permission command conflict");
+    let factory = Arc::new(ControlledFactory::default());
+    let supervisor =
+        Supervisor::start(Arc::clone(&store), factory, SupervisorQuotas::new(1, 1)).unwrap();
+    let mut events = supervisor.subscribe();
+    let segment_id = RunSegmentId::new();
+    assert!(accepted(
+        supervisor
+            .dispatch(task_id, start_command(&store, task_id, segment_id))
+            .await
+            .unwrap()
+    ));
+    let queue_item_id = QueueItemId::new();
+    assert!(accepted(
+        supervisor
+            .dispatch(
+                task_id,
+                ValidatedTaskCommand::Queue {
+                    command: command(task_id, store.stream_version(task_id).unwrap(), json!({}),),
+                    queue_item_id,
+                    queue_command: QueueCommand::Submit {
+                        queue_item_id,
+                        content: "promote after permission".into(),
+                        attachments: Vec::new(),
+                        context_references: Vec::new(),
+                        created_at: Utc::now(),
+                    },
+                },
+            )
+            .await
+            .unwrap()
+    ));
+
+    let durable_command = command(
+        task_id,
+        store.stream_version(task_id).unwrap(),
+        json!({ "type": "reserved" }),
+    );
+    assert!(accepted(
+        store
+            .transact_command(durable_command.clone(), |_| {
+                Ok(vec![NewTaskEvent::task_title_changed("reserved")])
+            })
+            .unwrap()
+    ));
+    let request_id = RequestId::new();
+    supervisor
+        .permission_broker()
+        .request(PermissionRequestDraft {
+            task_id,
+            segment_id,
+            request_id,
+            request_revision: 1,
+            expected_task_version: store.stream_version(task_id).unwrap(),
+            kind: DaemonPermissionKind::Command,
+            action_plan_hash: "plan-v1".into(),
+            sandbox_policy_hash: "sandbox-v1".into(),
+            workspace: "/workspace".into(),
+            subject: json!({ "operation": "command" }),
+            actor_source: json!({ "type": "parent_run" }),
+            options: vec![PermissionOption {
+                option_id: "deny-once".into(),
+                label: "Deny once".into(),
+            }],
+            preview: "command".into(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+        })
+        .unwrap();
+
+    let outcome = supervisor
+        .dispatch(
+            task_id,
+            ValidatedTaskCommand::Queue {
+                command: durable_command,
+                queue_item_id,
+                queue_command: QueueCommand::Promote {
+                    expected_revision: 1,
+                    mode: harness_contracts::PromotionMode::SafePoint,
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(outcome, CommandOutcome::Rejected { .. }));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), events.recv())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        store.task_projection(task_id).unwrap().unwrap().state,
+        TaskState::WaitingPermission
+    );
+    assert_eq!(
+        supervisor
+            .permission_broker()
+            .resolve(harness_daemon::PermissionDecisionInput {
+                task_id,
+                request_id,
+                request_revision: 1,
+                option_id: "deny-once".into(),
+                expected_task_version: store.stream_version(task_id).unwrap(),
+            })
+            .is_ok(),
+        true
+    );
 }
 
 #[tokio::test]
