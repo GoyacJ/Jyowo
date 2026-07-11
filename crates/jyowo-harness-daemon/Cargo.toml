@@ -24,12 +24,15 @@ jyowo-harness-subagent = { path = "../jyowo-harness-subagent" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
+fs2 = { workspace = true }
+semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["process"] }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "net", "process", "signal"] }
 tracing = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

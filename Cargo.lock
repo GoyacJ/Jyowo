@@ -3021,6 +3021,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "fs2",
  "futures",
  "jyowo-harness-agent-runtime",
  "jyowo-harness-contracts",
@@ -3032,12 +3033,14 @@ dependencies = [
  "proptest",
  "rusqlite",
  "rustix",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

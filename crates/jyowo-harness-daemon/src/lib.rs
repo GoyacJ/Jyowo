@@ -3,6 +3,8 @@
 #![forbid(unsafe_code)]
 
 mod checkpoint;
+mod ipc;
+mod lifecycle;
 mod permission_broker;
 mod queue;
 mod recovery;
@@ -13,6 +15,8 @@ mod task_actor;
 mod workspace;
 
 pub use checkpoint::*;
+pub use ipc::*;
+pub use lifecycle::*;
 pub use permission_broker::*;
 pub use queue::*;
 pub use recovery::*;
