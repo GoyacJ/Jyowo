@@ -332,10 +332,11 @@ fn duplicate_commands_are_idempotent_and_clients_observe_identical_offsets() {
 async fn authenticated_submit_message_is_dispatched_through_the_task_supervisor() {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let factory = Arc::new(ControlledRunFactory::default());
     let supervisor = Arc::new(
         Supervisor::start(
             Arc::clone(&store),
-            Arc::new(IdleRunFactory),
+            factory.clone(),
             SupervisorQuotas::new(2, 2),
         )
         .unwrap(),
@@ -392,6 +393,25 @@ async fn authenticated_submit_message_is_dispatched_through_the_task_supervisor(
         .expect("message.queued event");
     assert_eq!(queued.payload["modelConfigId"], "provider-config-001");
     assert_eq!(queued.payload["permissionMode"], "auto");
+    let starts = factory.starts.lock().unwrap();
+    assert_eq!(starts.len(), 1);
+    assert_eq!(starts[0].input.content, "run this task");
+    assert_eq!(
+        starts[0].input.model_config_id.as_deref(),
+        Some("provider-config-001")
+    );
+    assert_eq!(
+        starts[0].input.permission_mode,
+        harness_contracts::PermissionMode::Auto
+    );
+    assert_eq!(
+        starts[0].input.session_id,
+        harness_contracts::SessionId::from_u128(u128::from_be_bytes(task_id.as_bytes()))
+    );
+    assert_eq!(
+        starts[0].input.run_id,
+        harness_contracts::RunId::from_u128(u128::from_be_bytes(starts[0].segment_id.as_bytes()))
+    );
 }
 
 #[tokio::test]
@@ -435,6 +455,9 @@ async fn authenticated_continue_task_is_dispatched_through_the_task_supervisor()
                 )])
             },
         )
+        .unwrap();
+    store
+        .mark_segment_start_delivered(task_id, interrupted_segment)
         .unwrap();
     RecoveryService::new(Arc::clone(&store))
         .recover_task(task_id)

@@ -17,7 +17,7 @@ use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     decide_consume_next, decide_queue, CheckpointService, CheckpointState, QueueCommand,
-    RunCoordinatorEvent, StartSegmentRequest, SubagentStopMode,
+    RunCoordinatorEvent, RunningSegment, StartSegmentRequest, SubagentStopMode,
     WorkspaceBoundRunCoordinatorFactory,
 };
 
@@ -128,7 +128,10 @@ pub(crate) async fn run_task_actor(
             )
         })
     {
-        if let Some(pending) = store.pending_segment_start(task_id, run.segment_id)? {
+        if store
+            .pending_segment_start(task_id, run.segment_id)?
+            .is_some()
+        {
             retried_pending_start = true;
             let permit = Arc::clone(&foreground_runs)
                 .acquire_owned()
@@ -137,12 +140,7 @@ pub(crate) async fn run_task_actor(
             *active_segment_state
                 .lock()
                 .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = Some(run.segment_id);
-            let running = factory.spawn_idempotent(StartSegmentRequest {
-                task_id: pending.task_id,
-                segment_id: pending.segment_id,
-                indeterminate_tools: pending.indeterminate_tools,
-            });
-            store.mark_segment_start_delivered(task_id, run.segment_id)?;
+            let running = spawn_pending_segment(&store, &factory, task_id, run.segment_id)?;
             let control = running.control();
             active = Some(ActiveSegment {
                 segment_id: run.segment_id,
@@ -630,11 +628,7 @@ fn handle_submit_message(
     *active_segment_state
         .lock()
         .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = Some(segment_id);
-    let running = factory.spawn_idempotent(StartSegmentRequest {
-        task_id,
-        segment_id,
-        indeterminate_tools: Vec::new(),
-    });
+    let running = spawn_pending_segment(store, factory, task_id, segment_id)?;
     let control = running.control();
     *active = Some(ActiveSegment {
         segment_id,
@@ -691,8 +685,7 @@ fn handle_start_segment(
         let _ = reply.send(outcome);
         return Ok(());
     }
-    let durable_delivery = indeterminate_tools.is_some();
-    let checkpoint = if durable_delivery {
+    let checkpoint = if indeterminate_tools.is_some() {
         store.latest_checkpoint(task_id)?
     } else {
         None
@@ -752,14 +745,7 @@ fn handle_start_segment(
     *active_segment_state
         .lock()
         .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = Some(segment_id);
-    let running = factory.spawn_idempotent(StartSegmentRequest {
-        task_id,
-        segment_id,
-        indeterminate_tools: indeterminate_tools.unwrap_or_default(),
-    });
-    if durable_delivery {
-        store.mark_segment_start_delivered(task_id, segment_id)?;
-    }
+    let running = spawn_pending_segment(store, factory, task_id, segment_id)?;
     let control = running.control();
     *active = Some(ActiveSegment {
         segment_id,
@@ -945,11 +931,8 @@ fn handle_run_event(
                             .lock()
                             .map_err(|_| TaskActorError::RuntimeStatePoisoned)? =
                             Some(next_segment_id);
-                        let running = factory.spawn_idempotent(StartSegmentRequest {
-                            task_id,
-                            segment_id: next_segment_id,
-                            indeterminate_tools: Vec::new(),
-                        });
+                        let running =
+                            spawn_pending_segment(store, factory, task_id, next_segment_id)?;
                         let control = running.control();
                         *active = Some(ActiveSegment {
                             segment_id: next_segment_id,
@@ -1112,11 +1095,7 @@ fn handle_run_event(
             *active_segment_state
                 .lock()
                 .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = Some(next_segment_id);
-            let running = factory.spawn_idempotent(StartSegmentRequest {
-                task_id,
-                segment_id: next_segment_id,
-                indeterminate_tools: Vec::new(),
-            });
+            let running = spawn_pending_segment(store, factory, task_id, next_segment_id)?;
             let control = running.control();
             *active = Some(ActiveSegment {
                 segment_id: next_segment_id,
@@ -1257,11 +1236,7 @@ fn handle_start_next_queued(
     *active_segment_state
         .lock()
         .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = Some(segment_id);
-    let running = factory.spawn_idempotent(StartSegmentRequest {
-        task_id,
-        segment_id,
-        indeterminate_tools: Vec::new(),
-    });
+    let running = spawn_pending_segment(store, factory, task_id, segment_id)?;
     let control = running.control();
     *active = Some(ActiveSegment {
         segment_id,
@@ -1270,6 +1245,25 @@ fn handle_start_next_queued(
     });
     forward_run_events(segment_id, mailbox.clone(), running.into_events());
     Ok(())
+}
+
+fn spawn_pending_segment(
+    store: &TaskStore,
+    factory: &WorkspaceBoundRunCoordinatorFactory,
+    task_id: TaskId,
+    segment_id: RunSegmentId,
+) -> Result<RunningSegment, TaskActorError> {
+    let pending = store
+        .pending_segment_start(task_id, segment_id)?
+        .ok_or(TaskActorError::SegmentStartDeliveryNotPending)?;
+    let running = factory.spawn_idempotent(StartSegmentRequest {
+        task_id: pending.task_id,
+        segment_id: pending.segment_id,
+        input: pending.input,
+        indeterminate_tools: pending.indeterminate_tools,
+    });
+    store.mark_segment_start_delivered(task_id, segment_id)?;
+    Ok(running)
 }
 
 fn persist_checkpoint_boundary(

@@ -27,6 +27,7 @@ struct SteeringFactory {
 #[derive(Default)]
 struct FactoryState {
     starts: Vec<RunSegmentId>,
+    requests: Vec<StartSegmentRequest>,
     controls: HashMap<RunSegmentId, RunControlHandle>,
     events: HashMap<RunSegmentId, mpsc::UnboundedSender<RunCoordinatorEvent>>,
     panic_next: bool,
@@ -106,6 +107,10 @@ impl SteeringFactory {
     fn starts(&self) -> Vec<RunSegmentId> {
         self.state.lock().unwrap().starts.clone()
     }
+
+    fn requests(&self) -> Vec<StartSegmentRequest> {
+        self.state.lock().unwrap().requests.clone()
+    }
 }
 
 impl RunCoordinatorFactory for SteeringFactory {
@@ -124,6 +129,7 @@ impl RunCoordinatorFactory for SteeringFactory {
             panic!("coordinator start failed");
         }
         state.starts.push(request.segment_id);
+        state.requests.push(request.clone());
         state.controls.insert(request.segment_id, control.clone());
         state.events.insert(request.segment_id, events);
         RunningSegment::with_control(request.segment_id, receiver, control)
@@ -353,6 +359,10 @@ async fn safe_promotion_yields_then_atomically_starts_the_promoted_message() {
         .unwrap();
     assert_eq!(consumed.state, QueueItemState::Consumed);
     assert_ne!(consumed.consumed_by, Some(first_segment));
+    let requests = factory.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].input.queue_item_id, Some(queue_item_id));
+    assert_eq!(requests[1].input.content, "switch now");
 }
 
 #[tokio::test]
@@ -658,14 +668,13 @@ async fn safe_point_mode_must_match_the_durable_request() {
 }
 
 #[tokio::test]
-async fn coordinator_panic_after_steering_is_persisted_for_the_new_segment() {
+async fn coordinator_panic_after_steering_retries_the_durable_new_segment_start() {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
     let task_id = create_task(&store);
     let factory = Arc::new(SteeringFactory::default());
     let supervisor =
         Supervisor::start(store.clone(), factory.clone(), SupervisorQuotas::new(1, 1)).unwrap();
-    let mut events = supervisor.subscribe();
     let first_segment = RunSegmentId::new();
     assert!(accepted(
         supervisor
@@ -685,13 +694,16 @@ async fn coordinator_panic_after_steering_is_persisted_for_the_new_segment() {
     factory.panic_on_next_start();
 
     factory.reach_safe_point(first_segment, false, Vec::new());
-    tokio::time::timeout(Duration::from_secs(2), events.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while factory.starts().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
 
     let projection = store.task_projection(task_id).unwrap().unwrap();
-    assert_eq!(projection.state, TaskState::Failed);
+    assert_eq!(projection.state, TaskState::Running);
     assert_ne!(projection.current_run.unwrap().segment_id, first_segment);
     assert_eq!(
         store

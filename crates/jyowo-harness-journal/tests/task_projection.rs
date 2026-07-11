@@ -1,5 +1,6 @@
 use harness_contracts::{
-    ClientId, CommandId, PermissionMode, QueueItemId, RunSegmentId, TaskId, TaskState,
+    ClientId, CommandId, PermissionMode, QueueItemId, RunId, RunSegmentId, SessionId, TaskId,
+    TaskState, WorkspaceMode, WorkspaceSelection,
 };
 use harness_journal::{AcceptedCommand, NewTaskEvent, TaskStore};
 use serde_json::json;
@@ -69,6 +70,73 @@ fn consumed_message_retains_the_runtime_input_for_its_segment() {
         Some("provider-config-001")
     );
     assert_eq!(input.permission_mode, PermissionMode::AcceptEdits);
+
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn segment_start_outbox_freezes_the_complete_normal_run_input() {
+    let path = temp_path("segment-start-outbox-run-input");
+    let task_id = TaskId::new();
+    let queue_item_id = QueueItemId::new();
+    let segment_id = RunSegmentId::new();
+    let workspace = WorkspaceSelection {
+        mode: WorkspaceMode::Current,
+        root: "/workspace/project".into(),
+    };
+    let store = TaskStore::open(&path).unwrap();
+    store
+        .transact_command(command(task_id, 0), |_| {
+            Ok(vec![NewTaskEvent::task_created_in_workspace(
+                "Durable runtime input",
+                workspace.clone(),
+            )])
+        })
+        .unwrap();
+    store
+        .transact_command(supervisor_command(task_id, 1), |_| {
+            Ok(vec![
+                NewTaskEvent::run_started(segment_id, chrono::Utc::now()),
+                NewTaskEvent::message_queued_with_runtime(
+                    queue_item_id,
+                    "inspect the workspace",
+                    Vec::new(),
+                    vec!["src/lib.rs".into()],
+                    Some("provider-config-001".into()),
+                    PermissionMode::AcceptEdits,
+                    chrono::Utc::now(),
+                ),
+                NewTaskEvent::message_consumed(queue_item_id, 1, segment_id),
+            ])
+        })
+        .unwrap();
+
+    let pending = store
+        .pending_segment_start(task_id, segment_id)
+        .unwrap()
+        .expect("normal segment start remains pending until delivery");
+    assert_eq!(pending.task_id, task_id);
+    assert_eq!(pending.segment_id, segment_id);
+    assert!(pending.indeterminate_tools.is_empty());
+    assert_eq!(pending.input.queue_item_id, Some(queue_item_id));
+    assert_eq!(pending.input.content, "inspect the workspace");
+    assert_eq!(pending.input.context_references, vec!["src/lib.rs"]);
+    assert_eq!(
+        pending.input.model_config_id.as_deref(),
+        Some("provider-config-001")
+    );
+    assert_eq!(pending.input.permission_mode, PermissionMode::AcceptEdits);
+    assert_eq!(pending.input.workspace, Some(workspace));
+    assert_eq!(
+        pending.input.session_id,
+        SessionId::from_u128(u128::from_be_bytes(task_id.as_bytes()))
+    );
+    assert_eq!(
+        pending.input.run_id,
+        RunId::from_u128(u128::from_be_bytes(segment_id.as_bytes()))
+    );
+    assert_eq!(pending.input.workspace_lease_id, None);
 
     drop(store);
     let _ = std::fs::remove_file(path);

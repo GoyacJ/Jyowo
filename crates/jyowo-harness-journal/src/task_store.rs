@@ -12,10 +12,11 @@ use fs2::FileExt;
 use harness_contracts::{
     now, ActorId, BlobId, CheckpointId, ClientId, CommandId, Event, EventId, EventSource,
     EventSourceKind, IdParseError, IndeterminateToolDecision, PermissionMode, QueueItemId,
-    QueueItemProjection, RedactRules, Redactor, RunSegmentId, RunState, RunTerminalReason,
+    QueueItemProjection, RedactRules, Redactor, RunId, RunSegmentId, RunState, RunTerminalReason,
     SessionId, SubagentActorState, SubagentId, SubagentParentProjection, SubagentProjection,
     TaskEventEnvelope, TaskId, TaskProjection, TenantId, TimelineItemProjection, ToolUseId,
     WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceLeaseState, WorkspaceMode,
+    WorkspaceSelection,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -56,14 +57,19 @@ pub struct EventAuthority {
     principal_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SegmentRunInput {
-    pub queue_item_id: QueueItemId,
+    pub queue_item_id: Option<QueueItemId>,
     pub content: String,
     pub attachments: Vec<BlobId>,
     pub context_references: Vec<String>,
     pub model_config_id: Option<String>,
     pub permission_mode: PermissionMode,
+    pub workspace: Option<WorkspaceSelection>,
+    pub session_id: SessionId,
+    pub run_id: RunId,
+    pub workspace_lease_id: Option<WorkspaceLeaseId>,
 }
 
 impl EventAuthority {
@@ -137,6 +143,7 @@ pub struct TaskCheckpoint {
 pub struct PendingSegmentStart {
     pub task_id: TaskId,
     pub segment_id: RunSegmentId,
+    pub input: SegmentRunInput,
     pub indeterminate_tools: Vec<IndeterminateToolDecision>,
 }
 
@@ -1983,76 +1990,22 @@ impl TaskStore {
         segment_id: RunSegmentId,
     ) -> Result<Option<PendingSegmentStart>, TaskStoreError> {
         let connection = self.lock()?;
-        let event_payload = connection
-            .query_row(
-                "SELECT payload_json
-                 FROM event_log
-                 WHERE task_id = ?1
-                   AND event_type = 'run.started'
-                   AND json_extract(payload_json, '$.segmentId') = ?2",
-                params![task_id.to_string(), segment_id.to_string()],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .ok_or_else(|| {
-                TaskStoreError::ProjectionIntegrity(
-                    "segment start delivery has no canonical run start".into(),
-                )
-            })?;
-        let event_payload: Value = serde_json::from_str(&event_payload).map_err(|error| {
-            TaskStoreError::ProjectionIntegrity(format!(
-                "canonical run start payload is invalid: {error}"
-            ))
-        })?;
-        if event_payload.get("recoveryStart").and_then(Value::as_bool) != Some(true) {
-            return Ok(None);
-        }
-        let canonical_decisions = serde_json::from_value::<Vec<IndeterminateToolDecision>>(
-            event_payload
-                .get("indeterminateTools")
-                .cloned()
-                .unwrap_or_else(|| json!([])),
+        Ok(
+            load_segment_start_delivery(&connection, task_id, segment_id)?
+                .and_then(|(request, delivered)| (!delivered).then_some(request)),
         )
-        .map_err(|error| {
-            TaskStoreError::ProjectionIntegrity(format!(
-                "canonical run recovery decisions are invalid: {error}"
-            ))
-        })?;
-        let (body, delivered_at) = connection
-            .query_row(
-                "SELECT request_json, delivered_at
-                 FROM segment_start_outbox
-                 WHERE task_id = ?1 AND run_segment_id = ?2",
-                params![task_id.to_string(), segment_id.to_string()],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-            )
-            .optional()?
-            .ok_or_else(|| {
-                TaskStoreError::ProjectionIntegrity(
-                    "canonical recovery run start has no delivery outbox entry".into(),
-                )
-            })?;
-        if body.len() > MAX_COMMAND_PAYLOAD_BYTES {
-            return Err(TaskStoreError::ProjectionIntegrity(
-                "pending segment start exceeds 1 MiB".into(),
-            ));
-        }
-        let request: PendingSegmentStart = serde_json::from_str(&body).map_err(|error| {
-            TaskStoreError::ProjectionIntegrity(format!(
-                "pending segment start payload is invalid: {error}"
-            ))
-        })?;
-        if request.task_id != task_id || request.segment_id != segment_id {
-            return Err(TaskStoreError::ProjectionIntegrity(
-                "pending segment start columns disagree with its payload".into(),
-            ));
-        }
-        if request.indeterminate_tools != canonical_decisions {
-            return Err(TaskStoreError::ProjectionIntegrity(
-                "pending segment start disagrees with the canonical run start".into(),
-            ));
-        }
-        Ok(delivered_at.is_none().then_some(request))
+    }
+
+    pub fn segment_start(
+        &self,
+        task_id: TaskId,
+        segment_id: RunSegmentId,
+    ) -> Result<Option<PendingSegmentStart>, TaskStoreError> {
+        let connection = self.lock()?;
+        Ok(
+            load_segment_start_delivery(&connection, task_id, segment_id)?
+                .map(|(request, _)| request),
+        )
     }
 
     pub fn mark_segment_start_delivered(
@@ -2505,72 +2458,11 @@ impl TaskStore {
         segment_id: RunSegmentId,
     ) -> Result<Option<SegmentRunInput>, TaskStoreError> {
         let connection = self.lock()?;
-        let mut statement = connection.prepare(
-            "SELECT queue_item_id, projection_json
-             FROM queue_projection
-             WHERE task_id = ?1
-               AND json_extract(projection_json, '$.consumedBy') = ?2
-             ORDER BY queue_item_id ASC
-             LIMIT 2",
-        )?;
-        let mut rows = statement.query(params![task_id.to_string(), segment_id.to_string()])?;
-        let Some(row) = rows.next()? else {
-            return Ok(None);
-        };
-        let stored_queue_item_id = row.get::<_, String>(0)?;
-        let projection_json = row.get::<_, String>(1)?;
-        if rows.next()?.is_some() {
-            return Err(TaskStoreError::ProjectionIntegrity(format!(
-                "run segment {segment_id} consumed more than one queue item"
-            )));
-        }
-        let projection: QueueItemProjection = serde_json::from_str(&projection_json)?;
-        if projection.queue_item_id.to_string() != stored_queue_item_id
-            || projection.consumed_by != Some(segment_id)
-        {
-            return Err(TaskStoreError::ProjectionIntegrity(format!(
-                "run segment {segment_id} queue projection identity is inconsistent"
-            )));
-        }
-        let payload_json = connection
-            .query_row(
-                "SELECT payload_json
-                 FROM event_log
-                 WHERE task_id = ?1
-                   AND event_type = 'message.queued'
-                   AND json_extract(payload_json, '$.queueItemId') = ?2
-                 ORDER BY stream_sequence ASC
-                 LIMIT 1",
-                params![task_id.to_string(), stored_queue_item_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .ok_or_else(|| {
-                TaskStoreError::ProjectionIntegrity(format!(
-                    "queue item {} has no canonical message.queued event",
-                    projection.queue_item_id
-                ))
-            })?;
-        let payload: Value = serde_json::from_str(&payload_json)?;
-        let model_config_id = payload
-            .get("modelConfigId")
-            .filter(|value| !value.is_null())
-            .map(|value| serde_json::from_value::<String>(value.clone()))
-            .transpose()?;
-        let permission_mode = payload
-            .get("permissionMode")
-            .cloned()
-            .map(serde_json::from_value::<PermissionMode>)
-            .transpose()?
-            .unwrap_or_default();
-        Ok(Some(SegmentRunInput {
-            queue_item_id: projection.queue_item_id,
-            content: projection.content,
-            attachments: projection.attachments,
-            context_references: projection.context_references,
-            model_config_id,
-            permission_mode,
-        }))
+        Ok(
+            load_segment_start_delivery(&connection, task_id, segment_id)?
+                .map(|(request, _)| request.input)
+                .filter(|input| input.queue_item_id.is_some()),
+        )
     }
 
     pub fn latest_queue_revision(&self, task_id: TaskId) -> Result<u64, TaskStoreError> {
@@ -3278,10 +3170,79 @@ fn enqueue_segment_start_in_transaction(
     command_payload: &Value,
     committed: &[TaskEventEnvelope],
 ) -> Result<(), TaskStoreError> {
-    if command_payload.get("type").and_then(Value::as_str) != Some("continue_task") {
-        return Ok(());
+    let declared_continue = (command_payload.get("type").and_then(Value::as_str)
+        == Some("continue_task"))
+    .then(|| serde_json::from_value::<ContinueTaskCommandPayload>(command_payload.clone()))
+    .transpose()?;
+    if let Some(payload) = declared_continue.as_ref() {
+        validate_continue_segment_start(payload, committed)?;
     }
-    let payload: ContinueTaskCommandPayload = serde_json::from_value(command_payload.clone())?;
+
+    for start in committed
+        .iter()
+        .filter(|event| event.event_type == "run.started")
+    {
+        let segment_id = start
+            .payload
+            .get("segmentId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| TaskStoreError::InvalidInput("run.started has no segment id".into()))
+            .and_then(|value| RunSegmentId::parse(value).map_err(TaskStoreError::from))?;
+        let recovery_start = start
+            .payload
+            .get("recoveryStart")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let indeterminate_tools = serde_json::from_value::<Vec<IndeterminateToolDecision>>(
+            start
+                .payload
+                .get("indeterminateTools")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        )?;
+        if recovery_start && declared_continue.is_none() {
+            return Err(TaskStoreError::InvalidInput(
+                "a recovery run start requires continue_task input".into(),
+            ));
+        }
+        let input = segment_run_input_in_transaction(
+            transaction,
+            task_id,
+            segment_id,
+            recovery_start,
+            committed,
+        )?;
+        let request = PendingSegmentStart {
+            task_id,
+            segment_id,
+            input,
+            indeterminate_tools,
+        };
+        let body = serde_json::to_string(&request)?;
+        if body.len() > MAX_COMMAND_PAYLOAD_BYTES {
+            return Err(TaskStoreError::InvalidInput(
+                "pending segment start exceeds 1 MiB".into(),
+            ));
+        }
+        transaction.execute(
+            "INSERT INTO segment_start_outbox (
+                task_id, run_segment_id, request_json, created_at, delivered_at
+             ) VALUES (?1, ?2, ?3, ?4, NULL)",
+            params![
+                task_id.to_string(),
+                request.segment_id.to_string(),
+                body,
+                now().to_rfc3339(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_continue_segment_start(
+    payload: &ContinueTaskCommandPayload,
+    committed: &[TaskEventEnvelope],
+) -> Result<(), TaskStoreError> {
     if payload.command_type != "continue_task"
         || payload.indeterminate_tools.len() > MAX_EVENTS_PER_TRANSACTION
     {
@@ -3314,29 +3275,335 @@ fn enqueue_segment_start_in_transaction(
             "continue_task must commit its declared run segment".into(),
         ));
     }
-    let request = PendingSegmentStart {
-        task_id,
-        segment_id: payload.segment_id,
-        indeterminate_tools: payload.indeterminate_tools,
-    };
-    let body = serde_json::to_string(&request)?;
-    if body.len() > MAX_COMMAND_PAYLOAD_BYTES {
+    Ok(())
+}
+
+fn segment_run_input_in_transaction(
+    transaction: &Transaction<'_>,
+    task_id: TaskId,
+    segment_id: RunSegmentId,
+    recovery_start: bool,
+    committed: &[TaskEventEnvelope],
+) -> Result<SegmentRunInput, TaskStoreError> {
+    let projection = task_projection_in_transaction(transaction, task_id)?;
+    let workspace = projection.as_ref().and_then(|task| task.workspace.clone());
+    let active_lease_id = active_workspace_lease_id_in_transaction(transaction, task_id)?;
+    let session_id = stable_session_id(task_id);
+    let run_id = stable_run_id(segment_id);
+
+    let consumed = committed
+        .iter()
+        .filter(|event| {
+            event.event_type == "message.consumed"
+                && event.payload.get("runSegmentId") == Some(&Value::String(segment_id.to_string()))
+        })
+        .collect::<Vec<_>>();
+    if consumed.len() > 1 {
         return Err(TaskStoreError::InvalidInput(
+            "a run segment may consume only one queued message".into(),
+        ));
+    }
+    if let Some(consumed) = consumed.first() {
+        let queue_item_id = consumed
+            .payload
+            .get("queueItemId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                TaskStoreError::InvalidInput("message.consumed has no queue item id".into())
+            })
+            .and_then(|value| QueueItemId::parse(value).map_err(TaskStoreError::from))?;
+        let revision = consumed
+            .payload
+            .get("revision")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                TaskStoreError::InvalidInput("message.consumed has no queue revision".into())
+            })?;
+        let (content, attachments, context_references) =
+            frozen_queue_content_in_transaction(transaction, queue_item_id, revision, committed)?;
+        let (model_config_id, permission_mode) =
+            queue_runtime_options_in_transaction(transaction, task_id, queue_item_id, committed)?;
+        return Ok(SegmentRunInput {
+            queue_item_id: Some(queue_item_id),
+            content,
+            attachments,
+            context_references,
+            model_config_id,
+            permission_mode,
+            workspace,
+            session_id,
+            run_id,
+            workspace_lease_id: active_lease_id,
+        });
+    }
+
+    if recovery_start {
+        if let Some(previous_segment_id) = projection
+            .as_ref()
+            .and_then(|task| task.current_run.as_ref())
+            .map(|run| run.segment_id)
+        {
+            if let Some((previous, _)) =
+                load_segment_start_delivery(transaction, task_id, previous_segment_id)?
+            {
+                let mut input = previous.input;
+                input.workspace = workspace.or(input.workspace);
+                input.session_id = session_id;
+                input.run_id = run_id;
+                input.workspace_lease_id = active_lease_id.or(input.workspace_lease_id);
+                return Ok(input);
+            }
+        }
+    }
+
+    Ok(SegmentRunInput {
+        queue_item_id: None,
+        content: String::new(),
+        attachments: Vec::new(),
+        context_references: Vec::new(),
+        model_config_id: None,
+        permission_mode: PermissionMode::Default,
+        workspace,
+        session_id,
+        run_id,
+        workspace_lease_id: active_lease_id,
+    })
+}
+
+fn frozen_queue_content_in_transaction(
+    transaction: &Transaction<'_>,
+    queue_item_id: QueueItemId,
+    revision: u64,
+    committed: &[TaskEventEnvelope],
+) -> Result<(String, Vec<BlobId>, Vec<String>), TaskStoreError> {
+    if let Some(queued) = committed.iter().find(|event| {
+        event.event_type == "message.queued"
+            && event.payload.get("queueItemId") == Some(&Value::String(queue_item_id.to_string()))
+    }) {
+        let frozen = if revision == 1 {
+            &queued.payload
+        } else {
+            &committed
+                .iter()
+                .find(|event| {
+                    event.event_type == "message.edited"
+                        && event.payload.get("queueItemId")
+                            == Some(&Value::String(queue_item_id.to_string()))
+                        && event.payload.get("revision") == Some(&Value::from(revision))
+                })
+                .ok_or_else(|| {
+                    TaskStoreError::Projector(
+                        "newly queued message is missing its consumed revision".into(),
+                    )
+                })?
+                .payload
+        };
+        return Ok((
+            serde_json::from_value(frozen["content"].clone())?,
+            serde_json::from_value(frozen["attachments"].clone())?,
+            serde_json::from_value(frozen["contextReferences"].clone())?,
+        ));
+    }
+    let body = transaction
+        .query_row(
+            "SELECT projection_json FROM queue_projection WHERE queue_item_id = ?1",
+            [queue_item_id.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            TaskStoreError::ProjectionIntegrity(format!(
+                "queue item {queue_item_id} has no projection at segment start"
+            ))
+        })?;
+    let projection: QueueItemProjection = serde_json::from_str(&body)?;
+    if projection.queue_item_id != queue_item_id || projection.revision != revision {
+        return Err(TaskStoreError::Projector(format!(
+            "queue item {queue_item_id} changed before its segment input was frozen"
+        )));
+    }
+    Ok((
+        projection.content,
+        projection.attachments,
+        projection.context_references,
+    ))
+}
+
+fn queue_runtime_options_in_transaction(
+    transaction: &Transaction<'_>,
+    task_id: TaskId,
+    queue_item_id: QueueItemId,
+    committed: &[TaskEventEnvelope],
+) -> Result<(Option<String>, PermissionMode), TaskStoreError> {
+    let payload = if let Some(queued) = committed.iter().find(|event| {
+        event.event_type == "message.queued"
+            && event.payload.get("queueItemId") == Some(&Value::String(queue_item_id.to_string()))
+    }) {
+        queued.payload.clone()
+    } else {
+        let body = transaction
+            .query_row(
+                "SELECT payload_json
+                 FROM event_log
+                 WHERE task_id = ?1
+                   AND event_type = 'message.queued'
+                   AND json_extract(payload_json, '$.queueItemId') = ?2
+                 ORDER BY stream_sequence ASC
+                 LIMIT 1",
+                params![task_id.to_string(), queue_item_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                TaskStoreError::ProjectionIntegrity(format!(
+                    "queue item {queue_item_id} has no canonical message.queued event"
+                ))
+            })?;
+        serde_json::from_str(&body)?
+    };
+    let model_config_id = payload
+        .get("modelConfigId")
+        .filter(|value| !value.is_null())
+        .map(|value| serde_json::from_value::<String>(value.clone()))
+        .transpose()?;
+    let permission_mode = payload
+        .get("permissionMode")
+        .cloned()
+        .map(serde_json::from_value::<PermissionMode>)
+        .transpose()?
+        .unwrap_or_default();
+    Ok((model_config_id, permission_mode))
+}
+
+fn task_projection_in_transaction(
+    transaction: &Transaction<'_>,
+    task_id: TaskId,
+) -> Result<Option<TaskProjection>, TaskStoreError> {
+    transaction
+        .query_row(
+            "SELECT projection_json FROM task_projection WHERE task_id = ?1",
+            [task_id.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|body| serde_json::from_str(&body).map_err(TaskStoreError::from))
+        .transpose()
+}
+
+fn active_workspace_lease_id_in_transaction(
+    transaction: &Transaction<'_>,
+    task_id: TaskId,
+) -> Result<Option<WorkspaceLeaseId>, TaskStoreError> {
+    transaction
+        .query_row(
+            "SELECT workspace_lease_id
+             FROM workspace_leases
+             WHERE task_id = ?1 AND state = 'active'
+             ORDER BY CASE mode WHEN 'current' THEN 0 ELSE 1 END,
+                      workspace_lease_id ASC
+             LIMIT 1",
+            [task_id.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|value| WorkspaceLeaseId::parse(&value).map_err(TaskStoreError::from))
+        .transpose()
+}
+
+fn stable_session_id(task_id: TaskId) -> SessionId {
+    SessionId::from_u128(u128::from_be_bytes(task_id.as_bytes()))
+}
+
+fn stable_run_id(segment_id: RunSegmentId) -> RunId {
+    RunId::from_u128(u128::from_be_bytes(segment_id.as_bytes()))
+}
+
+fn load_segment_start_delivery(
+    connection: &Connection,
+    task_id: TaskId,
+    segment_id: RunSegmentId,
+) -> Result<Option<(PendingSegmentStart, bool)>, TaskStoreError> {
+    let event_payload = connection
+        .query_row(
+            "SELECT payload_json
+             FROM event_log
+             WHERE task_id = ?1
+               AND event_type = 'run.started'
+               AND json_extract(payload_json, '$.segmentId') = ?2",
+            params![task_id.to_string(), segment_id.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            TaskStoreError::ProjectionIntegrity(
+                "segment start delivery has no canonical run start".into(),
+            )
+        })?;
+    let event_payload: Value = serde_json::from_str(&event_payload).map_err(|error| {
+        TaskStoreError::ProjectionIntegrity(format!(
+            "canonical run start payload is invalid: {error}"
+        ))
+    })?;
+    let recovery_start = event_payload
+        .get("recoveryStart")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let canonical_decisions = serde_json::from_value::<Vec<IndeterminateToolDecision>>(
+        event_payload
+            .get("indeterminateTools")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+    )
+    .map_err(|error| {
+        TaskStoreError::ProjectionIntegrity(format!(
+            "canonical run recovery decisions are invalid: {error}"
+        ))
+    })?;
+    let stored = connection
+        .query_row(
+            "SELECT request_json, delivered_at
+             FROM segment_start_outbox
+             WHERE task_id = ?1 AND run_segment_id = ?2",
+            params![task_id.to_string(), segment_id.to_string()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()?;
+    let Some((body, delivered_at)) = stored else {
+        if recovery_start {
+            return Err(TaskStoreError::ProjectionIntegrity(
+                "canonical recovery run start has no delivery outbox entry".into(),
+            ));
+        }
+        return Ok(None);
+    };
+    if body.len() > MAX_COMMAND_PAYLOAD_BYTES {
+        return Err(TaskStoreError::ProjectionIntegrity(
             "pending segment start exceeds 1 MiB".into(),
         ));
     }
-    transaction.execute(
-        "INSERT INTO segment_start_outbox (
-            task_id, run_segment_id, request_json, created_at, delivered_at
-         ) VALUES (?1, ?2, ?3, ?4, NULL)",
-        params![
-            task_id.to_string(),
-            request.segment_id.to_string(),
-            body,
-            now().to_rfc3339(),
-        ],
-    )?;
-    Ok(())
+    let request: PendingSegmentStart = serde_json::from_str(&body).map_err(|error| {
+        TaskStoreError::ProjectionIntegrity(format!(
+            "pending segment start payload is invalid: {error}"
+        ))
+    })?;
+    if request.task_id != task_id || request.segment_id != segment_id {
+        return Err(TaskStoreError::ProjectionIntegrity(
+            "pending segment start columns disagree with its payload".into(),
+        ));
+    }
+    if request.indeterminate_tools != canonical_decisions {
+        return Err(TaskStoreError::ProjectionIntegrity(
+            "pending segment start disagrees with the canonical run start".into(),
+        ));
+    }
+    if request.input.session_id != stable_session_id(task_id)
+        || request.input.run_id != stable_run_id(segment_id)
+    {
+        return Err(TaskStoreError::ProjectionIntegrity(
+            "pending segment start has unstable session or run identity".into(),
+        ));
+    }
+    Ok(Some((request, delivered_at.is_some())))
 }
 
 fn validate_blob_references_in_transaction(

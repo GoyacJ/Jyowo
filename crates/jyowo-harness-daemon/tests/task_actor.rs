@@ -10,7 +10,7 @@ use harness_contracts::{
 };
 use harness_daemon::{
     QueueCommand, RunCoordinatorEvent, RunCoordinatorFactory, RunningSegment, StartSegmentRequest,
-    Supervisor, SupervisorEvent, SupervisorQuotas, ValidatedTaskCommand,
+    Supervisor, SupervisorQuotas, ValidatedTaskCommand,
 };
 use harness_journal::{AcceptedCommand, CommandOutcome, NewTaskEvent, TaskStore};
 use serde_json::json;
@@ -26,6 +26,7 @@ struct FactoryState {
     active: HashMap<TaskId, usize>,
     maximum_active: HashMap<TaskId, usize>,
     starts: HashMap<TaskId, Vec<RunSegmentId>>,
+    requests: HashMap<TaskId, Vec<StartSegmentRequest>>,
     controls: HashMap<RunSegmentId, mpsc::UnboundedSender<RunCoordinatorEvent>>,
     panic_next: Option<TaskId>,
     block_next: HashMap<TaskId, Arc<StartGate>>,
@@ -71,6 +72,16 @@ impl ControlledFactory {
             .get(&task_id)
             .copied()
             .unwrap_or(0)
+    }
+
+    fn requests(&self, task_id: TaskId) -> Vec<StartSegmentRequest> {
+        self.state
+            .lock()
+            .unwrap()
+            .requests
+            .get(&task_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn complete(&self, task_id: TaskId, segment_id: RunSegmentId) {
@@ -144,6 +155,11 @@ impl RunCoordinatorFactory for ControlledFactory {
             .entry(request.task_id)
             .or_default()
             .push(request.segment_id);
+        state
+            .requests
+            .entry(request.task_id)
+            .or_default()
+            .push(request.clone());
         let (sender, receiver) = mpsc::unbounded_channel();
         state.controls.insert(request.segment_id, sender);
         RunningSegment::new(receiver)
@@ -352,6 +368,10 @@ async fn running_task_accepts_queue_edits_and_consumes_fifo_when_idle() {
     factory.complete(task_id, active_segment);
     wait_for_start_count(&factory, task_id, 2).await;
     assert_eq!(factory.start_count(task_id), 2);
+    let requests = factory.requests(task_id);
+    assert_eq!(requests[1].input.queue_item_id, Some(queue_item_id));
+    assert_eq!(requests[1].input.content, "edited draft");
+    assert_eq!(requests[1].input.context_references, vec!["context:two"]);
     let projection = store.task_projection(task_id).unwrap().unwrap();
     assert!(projection.queue.is_empty());
     assert_ne!(projection.current_run.unwrap().segment_id, active_segment);
@@ -900,7 +920,7 @@ async fn a_completed_task_accepts_a_new_message_as_a_new_segment() {
 }
 
 #[tokio::test]
-async fn actor_panic_is_persisted_and_does_not_stop_another_task() {
+async fn actor_panic_retries_the_durable_start_and_does_not_stop_another_task() {
     let (store, _root) = test_store();
     let task_a = create_task(&store, "crashing");
     let task_b = create_task(&store, "survivor");
@@ -912,8 +932,6 @@ async fn actor_panic_is_persisted_and_does_not_stop_another_task() {
         SupervisorQuotas::new(2, 2),
     )
     .unwrap();
-    let mut events = supervisor.subscribe();
-
     let failed_segment = RunSegmentId::new();
     assert!(accepted(
         supervisor
@@ -922,16 +940,22 @@ async fn actor_panic_is_persisted_and_does_not_stop_another_task() {
             .unwrap()
     ));
 
-    let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
-        .await
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while factory.start_count(task_a) < 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let recovered = store.task_projection(task_a).unwrap().unwrap();
+    assert_eq!(recovered.state, TaskState::Running);
+    let recovered_run = recovered.current_run.unwrap();
+    assert_eq!(recovered_run.segment_id, failed_segment);
+    assert_eq!(recovered_run.state, RunState::Running);
+    assert!(store
+        .pending_segment_start(task_a, failed_segment)
         .unwrap()
-        .unwrap();
-    assert!(matches!(event, SupervisorEvent::ActorFailed { task_id } if task_id == task_a));
-    let failed = store.task_projection(task_a).unwrap().unwrap();
-    assert_eq!(failed.state, TaskState::Failed);
-    let failed_run = failed.current_run.unwrap();
-    assert_eq!(failed_run.segment_id, failed_segment);
-    assert_eq!(failed_run.state, RunState::Failed);
+        .is_none());
 
     let survivor_segment = RunSegmentId::new();
     assert!(accepted(

@@ -7,10 +7,10 @@ use std::time::Duration;
 use chrono::Utc;
 use harness_contracts::{
     ActorId, ClientId, CommandId, DeferPolicy, Event, EventId, IndeterminateToolDecision,
-    IndeterminateToolResolution, NoopRedactor, PermissionProjection, PermissionRoute, QueueItemId,
-    QueueItemState, RequestId, RunId, RunSegmentId, RunState, RunTerminalReason, SessionId, TaskId,
-    TenantId, ToolProperties, ToolResult, ToolUseCompletedEvent, ToolUseId, ToolUseRequestedEvent,
-    ToolUseStartedEvent,
+    IndeterminateToolResolution, NoopRedactor, PermissionMode, PermissionProjection,
+    PermissionRoute, QueueItemId, QueueItemState, RequestId, RunId, RunSegmentId, RunState,
+    RunTerminalReason, SessionId, TaskId, TenantId, ToolProperties, ToolResult,
+    ToolUseCompletedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseStartedEvent,
 };
 use harness_daemon::{
     CheckpointService, CheckpointState, RecoveryService, RunCoordinatorFactory, RunningSegment,
@@ -1387,6 +1387,85 @@ async fn continue_task_requires_all_indeterminate_tool_decisions_and_starts_a_ne
 }
 
 #[tokio::test]
+async fn continue_task_reuses_the_interrupted_segments_immutable_run_input() {
+    let (store, _root) = test_store();
+    let task_id = TaskId::new();
+    let queue_item_id = QueueItemId::new();
+    let interrupted_segment_id = RunSegmentId::new();
+    append(
+        &store,
+        task_id,
+        0,
+        vec![NewTaskEvent::task_created("continue immutable input")],
+    );
+    append(
+        &store,
+        task_id,
+        1,
+        vec![
+            NewTaskEvent::run_started(interrupted_segment_id, Utc::now()),
+            NewTaskEvent::message_queued_with_runtime(
+                queue_item_id,
+                "resume this exact prompt",
+                Vec::new(),
+                vec!["context:durable".into()],
+                Some("provider-config-continue".into()),
+                PermissionMode::AcceptEdits,
+                Utc::now(),
+            ),
+            NewTaskEvent::message_consumed(queue_item_id, 1, interrupted_segment_id),
+        ],
+    );
+    RecoveryService::new(Arc::clone(&store))
+        .recover_startup()
+        .unwrap();
+
+    let factory = Arc::new(RecordingFactory::default());
+    let supervisor = Supervisor::start(
+        Arc::clone(&store),
+        factory.clone(),
+        SupervisorQuotas::new(1, 1),
+    )
+    .unwrap();
+    let continued_segment_id = RunSegmentId::new();
+    assert!(matches!(
+        supervisor
+            .dispatch(
+                task_id,
+                continue_command(&store, task_id, continued_segment_id, Vec::new()),
+            )
+            .await
+            .unwrap(),
+        CommandOutcome::Accepted { .. }
+    ));
+
+    let requests = factory.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].input.queue_item_id, Some(queue_item_id));
+    assert_eq!(requests[0].input.content, "resume this exact prompt");
+    assert_eq!(
+        requests[0].input.context_references,
+        vec!["context:durable"]
+    );
+    assert_eq!(
+        requests[0].input.model_config_id.as_deref(),
+        Some("provider-config-continue")
+    );
+    assert_eq!(
+        requests[0].input.permission_mode,
+        PermissionMode::AcceptEdits
+    );
+    assert_eq!(
+        requests[0].input.session_id,
+        SessionId::from_u128(u128::from_be_bytes(task_id.as_bytes()))
+    );
+    assert_eq!(
+        requests[0].input.run_id,
+        RunId::from_u128(u128::from_be_bytes(continued_segment_id.as_bytes()))
+    );
+}
+
+#[tokio::test]
 async fn committed_continue_decisions_are_redelivered_after_restart_before_spawn() {
     let (store, _root) = test_store();
     let task_id = TaskId::new();
@@ -1450,6 +1529,11 @@ async fn committed_continue_decisions_are_redelivered_after_restart_before_spawn
         }),
         Ok(CommandOutcome::Accepted { .. })
     ));
+    let expected_input = store
+        .pending_segment_start(task_id, continued_segment_id)
+        .unwrap()
+        .unwrap()
+        .input;
 
     let factory = Arc::new(RecordingFactory::default());
     let supervisor = Supervisor::start(
@@ -1488,6 +1572,7 @@ async fn committed_continue_decisions_are_redelivered_after_restart_before_spawn
         &[StartSegmentRequest {
             task_id,
             segment_id: continued_segment_id,
+            input: expected_input,
             indeterminate_tools: decisions,
         }]
     );
@@ -1775,6 +1860,11 @@ fn append_with_authority(
     events: Vec<NewTaskEvent>,
     authority: harness_journal::EventAuthority,
 ) {
+    let previous_segment_id = store
+        .task_projection(task_id)
+        .unwrap()
+        .and_then(|projection| projection.current_run)
+        .map(|run| run.segment_id);
     let command = AcceptedCommand {
         command_id: CommandId::new(),
         task_id,
@@ -1787,6 +1877,23 @@ fn append_with_authority(
         store.transact_command(command, |_| Ok(events)).unwrap(),
         CommandOutcome::Accepted { .. }
     ));
+    let current_segment_id = store
+        .task_projection(task_id)
+        .unwrap()
+        .and_then(|projection| projection.current_run)
+        .map(|run| run.segment_id);
+    if current_segment_id != previous_segment_id {
+        if let Some(segment_id) = current_segment_id.filter(|segment_id| {
+            store
+                .pending_segment_start(task_id, *segment_id)
+                .unwrap()
+                .is_some()
+        }) {
+            store
+                .mark_segment_start_delivered(task_id, segment_id)
+                .unwrap();
+        }
+    }
 }
 
 fn test_store() -> (Arc<TaskStore>, tempfile::TempDir) {

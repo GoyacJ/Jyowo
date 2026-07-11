@@ -5,7 +5,7 @@ use harness_contracts::{
     IndeterminateToolDecision, RunSegmentId, RunTerminalReason, TaskId, ToolUseId, WorkspaceLeaseId,
 };
 use harness_engine::{RunControlHandle, TurnOutcome};
-use harness_journal::TaskStore;
+use harness_journal::{SegmentRunInput, TaskStore};
 use harness_subagent::SubagentRunner;
 use tokio::sync::mpsc;
 
@@ -70,6 +70,7 @@ impl WorkspaceToolDispatcher {
 pub struct StartSegmentRequest {
     pub task_id: TaskId,
     pub segment_id: RunSegmentId,
+    pub input: SegmentRunInput,
     pub indeterminate_tools: Vec<IndeterminateToolDecision>,
 }
 

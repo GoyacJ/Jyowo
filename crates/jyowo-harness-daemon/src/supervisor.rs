@@ -682,6 +682,9 @@ mod tests {
                 },
             )
             .unwrap();
+        store
+            .mark_segment_start_delivered(active_task_id, active_segment_id)
+            .unwrap();
 
         let supervisor = Supervisor::start(
             Arc::clone(&store),
