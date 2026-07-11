@@ -5,8 +5,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use harness_contracts::{
-    BlobId, ClientFrame, ClientRequest, HandshakeResponse, ServerFrame, ServerMessage,
-    PROTOCOL_VERSION,
+    BlobId, ClientFrame, ClientRequest, HandshakeResponse, ProtocolError, ProtocolErrorCode,
+    ServerFrame, ServerMessage, PROTOCOL_VERSION,
 };
 use jyowo_desktop_shell::daemon_client::{DaemonClient, DaemonClientConfig, DaemonClientError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -112,6 +112,72 @@ async fn bridge_reconnects_after_daemon_restart_and_blob_reads_accept_only_ids()
 }
 
 #[tokio::test]
+async fn requestless_protocol_error_completes_the_current_non_streaming_request() {
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("daemon.sock");
+    let token = root.path().join("connection.token");
+    write_private_token(&token, "token-a");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let (release_server, hold_server) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let handshake = read_frame(&mut stream).await;
+        write_frame(
+            &mut stream,
+            &ServerFrame {
+                request_id: Some(handshake.request_id),
+                protocol_version: PROTOCOL_VERSION,
+                message: ServerMessage::Handshake(HandshakeResponse {
+                    daemon_version: "0.1.0".into(),
+                    user_instance_id: "user-a".into(),
+                    latest_global_offset: 0,
+                }),
+            },
+        )
+        .await;
+        let request = read_frame(&mut stream).await;
+        assert_eq!(request.request_id.len(), 129);
+        write_frame(
+            &mut stream,
+            &ServerFrame {
+                request_id: None,
+                protocol_version: PROTOCOL_VERSION,
+                message: ServerMessage::Error(ProtocolError {
+                    code: ProtocolErrorCode::InvalidFrame,
+                    message: "invalid request ID".into(),
+                }),
+            },
+        )
+        .await;
+        let _ = hold_server.await;
+    });
+    let client = client(&socket, &token);
+    let response = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        client.send_frame(ClientFrame {
+            request_id: "r".repeat(129),
+            protocol_version: PROTOCOL_VERSION,
+            request: ClientRequest::ListTasks,
+        }),
+    )
+    .await;
+    let _ = release_server.send(());
+    server.await.unwrap();
+
+    let response = response
+        .expect("requestless protocol error must not leave the bridge waiting")
+        .unwrap();
+    assert!(response.request_id.is_none());
+    assert!(matches!(
+        response.message,
+        ServerMessage::Error(ProtocolError {
+            code: ProtocolErrorCode::InvalidFrame,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
 async fn bridge_rejects_symlinked_or_overexposed_connection_tokens() {
     let root = tempfile::tempdir().unwrap();
     let token_target = root.path().join("token-target");
@@ -200,8 +266,8 @@ fn tauri_exposes_only_thin_daemon_bridge_commands() {
         "concurrent subscriptions must use separate event channels"
     );
     assert!(
-        source.contains(".remove(&cleanup_id)"),
-        "finished subscriptions must remove their bridge handles"
+        source.contains(".remove_finished_subscription(&cleanup_id, subscription_token)"),
+        "finished subscriptions must remove only their own bridge handles"
     );
     assert!(
         source.contains("window.on_window_event")
@@ -210,13 +276,23 @@ fn tauri_exposes_only_thin_daemon_bridge_commands() {
     );
     assert!(
         source.find("contains_key(&subscription_id)")
-            < source.find("window.on_window_event"),
+            < source.find("register_window(owner_window_instance)"),
         "a rejected duplicate subscription must not register a cleanup callback that can abort the existing subscription"
     );
     assert!(
-        source.contains("lifecycle_windows")
-            && source.contains("insert(owner_window_label.clone())"),
-        "each window must install at most one daemon subscription lifecycle handler"
+        source.contains("window.resources_table()")
+            && source.contains("WindowInstanceId")
+            && source.contains("window_registration.install_handler"),
+        "each webview window instance must install at most one daemon subscription lifecycle handler"
+    );
+    assert!(
+        source.contains("owner_window_generation")
+            && source.contains("remove_window_subscriptions(window_generation)"),
+        "destroy cleanup must be scoped to the destroyed window generation"
+    );
+    assert!(
+        source.contains("subscription.token == token"),
+        "natural completion must not remove a replacement subscription with a reused id"
     );
 }
 

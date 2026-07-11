@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,12 +25,128 @@ pub struct DaemonBridgeState {
 #[derive(Default)]
 struct DaemonSubscriptionRegistry {
     subscriptions: HashMap<String, DaemonSubscription>,
-    lifecycle_windows: HashSet<String>,
+    lifecycle_windows: HashMap<WindowInstanceId, WindowLifecycle>,
+    next_window_generation: u64,
+    next_subscription_token: u64,
 }
 
 struct DaemonSubscription {
-    owner_window_label: String,
+    owner_window_generation: WindowGeneration,
+    token: SubscriptionToken,
     task: JoinHandle<()>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct WindowInstanceId(usize);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WindowGeneration(u64);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SubscriptionToken(u64);
+
+struct WindowLifecycle {
+    generation: WindowGeneration,
+    _instance: WindowInstance,
+}
+
+struct WindowRegistration {
+    generation: WindowGeneration,
+    install_handler: bool,
+}
+
+struct WindowInstance {
+    id: WindowInstanceId,
+    // Retaining the handle keeps the instance's resource table allocation alive,
+    // so its address cannot be reused before generation-specific cleanup runs.
+    _window: Option<WebviewWindow>,
+}
+
+impl WindowInstance {
+    fn from_window(window: &WebviewWindow) -> Self {
+        let resources = window.resources_table();
+        let id = WindowInstanceId((&*resources as *const tauri::ResourceTable) as usize);
+        drop(resources);
+        Self {
+            id,
+            _window: Some(window.clone()),
+        }
+    }
+
+    #[cfg(test)]
+    fn test(id: usize) -> Self {
+        Self {
+            id: WindowInstanceId(id),
+            _window: None,
+        }
+    }
+}
+
+impl DaemonSubscriptionRegistry {
+    fn register_window(&mut self, instance: WindowInstance) -> WindowRegistration {
+        let instance_id = instance.id;
+        if let Some(window) = self.lifecycle_windows.get(&instance_id) {
+            return WindowRegistration {
+                generation: window.generation,
+                install_handler: false,
+            };
+        }
+        self.next_window_generation = self
+            .next_window_generation
+            .checked_add(1)
+            .expect("daemon window generation exhausted");
+        let generation = WindowGeneration(self.next_window_generation);
+        self.lifecycle_windows.insert(
+            instance_id,
+            WindowLifecycle {
+                generation,
+                _instance: instance,
+            },
+        );
+        WindowRegistration {
+            generation,
+            install_handler: true,
+        }
+    }
+
+    fn next_subscription_token(&mut self) -> SubscriptionToken {
+        self.next_subscription_token = self
+            .next_subscription_token
+            .checked_add(1)
+            .expect("daemon subscription token exhausted");
+        SubscriptionToken(self.next_subscription_token)
+    }
+
+    fn remove_finished_subscription(&mut self, subscription_id: &str, token: SubscriptionToken) {
+        if self
+            .subscriptions
+            .get(subscription_id)
+            .is_some_and(|subscription| subscription.token == token)
+        {
+            self.subscriptions.remove(subscription_id);
+        }
+    }
+
+    fn remove_window_subscriptions(&mut self, generation: WindowGeneration) -> Vec<JoinHandle<()>> {
+        self.lifecycle_windows
+            .retain(|_, window| window.generation != generation);
+        let subscription_ids = self
+            .subscriptions
+            .iter()
+            .filter_map(|(subscription_id, subscription)| {
+                (subscription.owner_window_generation == generation)
+                    .then(|| subscription_id.clone())
+            })
+            .collect::<Vec<_>>();
+        subscription_ids
+            .into_iter()
+            .filter_map(|subscription_id| {
+                self.subscriptions
+                    .remove(&subscription_id)
+                    .map(|subscription| subscription.task)
+            })
+            .collect()
+    }
 }
 
 impl DaemonBridgeState {
@@ -91,20 +207,20 @@ pub async fn daemon_subscribe(
     if subscriptions.subscriptions.contains_key(&subscription_id) {
         return Err("daemon subscription already exists".into());
     }
-    let owner_window_label = window.label().to_owned();
-    if subscriptions
-        .lifecycle_windows
-        .insert(owner_window_label.clone())
-    {
+    let owner_window_instance = WindowInstance::from_window(&window);
+    let window_registration = subscriptions.register_window(owner_window_instance);
+    if window_registration.install_handler {
         let window_subscriptions = Arc::clone(&state.subscriptions);
+        let owner_window_generation = window_registration.generation;
         window.on_window_event(move |event| {
             cleanup_subscriptions_on_window_event(
                 event,
-                owner_window_label.clone(),
+                owner_window_generation,
                 Arc::clone(&window_subscriptions),
             );
         });
     }
+    let subscription_token = subscriptions.next_subscription_token();
     let emitter_window = window.clone();
     let (start_tx, start_rx) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async move {
@@ -119,13 +235,13 @@ pub async fn daemon_subscribe(
         subscription_registry
             .lock()
             .await
-            .subscriptions
-            .remove(&cleanup_id);
+            .remove_finished_subscription(&cleanup_id, subscription_token);
     });
     subscriptions.subscriptions.insert(
         subscription_id.clone(),
         DaemonSubscription {
-            owner_window_label: window.label().to_owned(),
+            owner_window_generation: window_registration.generation,
+            token: subscription_token,
             task,
         },
     );
@@ -136,7 +252,7 @@ pub async fn daemon_subscribe(
 
 fn cleanup_subscriptions_on_window_event(
     event: &tauri::WindowEvent,
-    window_label: String,
+    window_generation: WindowGeneration,
     subscriptions: Arc<Mutex<DaemonSubscriptionRegistry>>,
 ) {
     if !matches!(event, tauri::WindowEvent::Destroyed) {
@@ -145,24 +261,7 @@ fn cleanup_subscriptions_on_window_event(
     tauri::async_runtime::spawn(async move {
         let tasks = {
             let mut registry = subscriptions.lock().await;
-            registry.lifecycle_windows.remove(&window_label);
-            let subscription_ids = registry
-                .subscriptions
-                .iter()
-                .filter_map(|(subscription_id, subscription)| {
-                    (subscription.owner_window_label == window_label)
-                        .then(|| subscription_id.clone())
-                })
-                .collect::<Vec<_>>();
-            subscription_ids
-                .into_iter()
-                .filter_map(|subscription_id| {
-                    registry
-                        .subscriptions
-                        .remove(&subscription_id)
-                        .map(|subscription| subscription.task)
-                })
-                .collect::<Vec<_>>()
+            registry.remove_window_subscriptions(window_generation)
         };
         for task in tasks {
             task.abort();
@@ -290,6 +389,37 @@ mod tests {
 
     use super::*;
 
+    fn insert_subscription(
+        registry: &mut DaemonSubscriptionRegistry,
+        subscription_id: &str,
+        owner_window_generation: WindowGeneration,
+        task: JoinHandle<()>,
+    ) -> SubscriptionToken {
+        let token = registry.next_subscription_token();
+        registry.subscriptions.insert(
+            subscription_id.into(),
+            DaemonSubscription {
+                owner_window_generation,
+                token,
+                task,
+            },
+        );
+        token
+    }
+
+    #[test]
+    fn repeated_registration_reuses_one_handler_for_the_same_window_instance() {
+        let mut registry = DaemonSubscriptionRegistry::default();
+
+        let first = registry.register_window(WindowInstance::test(1));
+        let second = registry.register_window(WindowInstance::test(1));
+
+        assert!(first.install_handler);
+        assert!(!second.install_handler);
+        assert_eq!(first.generation, second.generation);
+        assert_eq!(registry.lifecycle_windows.len(), 1);
+    }
+
     #[tokio::test]
     async fn destroyed_window_aborts_only_its_daemon_subscriptions() {
         let state = DaemonBridgeState::default();
@@ -299,37 +429,20 @@ mod tests {
         let first_status = first.abort_handle();
         let second_status = second.abort_handle();
         let third_status = third.abort_handle();
+        let window_a_generation;
+        let window_b_generation;
         {
             let mut registry = state.subscriptions.lock().await;
-            registry
-                .lifecycle_windows
-                .extend(["window-a".into(), "window-b".into()]);
-            registry.subscriptions.insert(
-                "subscription-a".into(),
-                DaemonSubscription {
-                    owner_window_label: "window-a".into(),
-                    task: first,
-                },
-            );
-            registry.subscriptions.insert(
-                "subscription-b".into(),
-                DaemonSubscription {
-                    owner_window_label: "window-b".into(),
-                    task: second,
-                },
-            );
-            registry.subscriptions.insert(
-                "subscription-c".into(),
-                DaemonSubscription {
-                    owner_window_label: "window-a".into(),
-                    task: third,
-                },
-            );
+            window_a_generation = registry.register_window(WindowInstance::test(1)).generation;
+            window_b_generation = registry.register_window(WindowInstance::test(2)).generation;
+            insert_subscription(&mut registry, "subscription-a", window_a_generation, first);
+            insert_subscription(&mut registry, "subscription-b", window_b_generation, second);
+            insert_subscription(&mut registry, "subscription-c", window_a_generation, third);
         }
 
         cleanup_subscriptions_on_window_event(
             &tauri::WindowEvent::Destroyed,
-            "window-a".into(),
+            window_a_generation,
             Arc::clone(&state.subscriptions),
         );
         tokio::time::timeout(Duration::from_secs(1), async {
@@ -344,10 +457,85 @@ mod tests {
         assert!(!registry.subscriptions.contains_key("subscription-a"));
         assert!(registry.subscriptions.contains_key("subscription-b"));
         assert!(!registry.subscriptions.contains_key("subscription-c"));
-        assert!(!registry.lifecycle_windows.contains("window-a"));
-        assert!(registry.lifecycle_windows.contains("window-b"));
+        assert!(!registry
+            .lifecycle_windows
+            .values()
+            .any(|window| window.generation == window_a_generation));
+        assert!(registry
+            .lifecycle_windows
+            .values()
+            .any(|window| window.generation == window_b_generation));
         assert!(first_status.is_finished());
         assert!(!second_status.is_finished());
         assert!(third_status.is_finished());
+    }
+
+    #[tokio::test]
+    async fn delayed_destroy_for_reused_window_label_does_not_abort_new_window_subscription() {
+        let state = DaemonBridgeState::default();
+        let old_task = tokio::spawn(pending::<()>());
+        let new_task = tokio::spawn(pending::<()>());
+        let old_status = old_task.abort_handle();
+        let new_status = new_task.abort_handle();
+
+        let mut registry = state.subscriptions.lock().await;
+        let old_generation = registry.register_window(WindowInstance::test(1)).generation;
+        insert_subscription(&mut registry, "old-subscription", old_generation, old_task);
+
+        cleanup_subscriptions_on_window_event(
+            &tauri::WindowEvent::Destroyed,
+            old_generation,
+            Arc::clone(&state.subscriptions),
+        );
+
+        let new_registration = registry.register_window(WindowInstance::test(2));
+        assert_ne!(old_generation, new_registration.generation);
+        assert!(new_registration.install_handler);
+        insert_subscription(
+            &mut registry,
+            "new-subscription",
+            new_registration.generation,
+            new_task,
+        );
+        drop(registry);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !old_status.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let registry = state.subscriptions.lock().await;
+        assert!(!registry.subscriptions.contains_key("old-subscription"));
+        assert!(registry.subscriptions.contains_key("new-subscription"));
+        assert!(!new_status.is_finished());
+    }
+
+    #[tokio::test]
+    async fn delayed_completion_does_not_remove_a_reused_subscription_id() {
+        let mut registry = DaemonSubscriptionRegistry::default();
+        let generation = registry.register_window(WindowInstance::test(1)).generation;
+        let old_task = tokio::spawn(pending::<()>());
+        let old_token = insert_subscription(&mut registry, "subscription", generation, old_task);
+
+        let old_subscription = registry.subscriptions.remove("subscription").unwrap();
+        old_subscription.task.abort();
+
+        let new_task = tokio::spawn(pending::<()>());
+        let new_status = new_task.abort_handle();
+        let new_token = insert_subscription(&mut registry, "subscription", generation, new_task);
+
+        registry.remove_finished_subscription("subscription", old_token);
+
+        assert_eq!(
+            registry
+                .subscriptions
+                .get("subscription")
+                .map(|subscription| subscription.token),
+            Some(new_token)
+        );
+        assert!(!new_status.is_finished());
     }
 }

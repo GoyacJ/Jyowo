@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { taskStoreFor } from '@/features/tasks/use-task'
 import { uiStore } from '@/shared/state/ui-store'
 import type { CommandClient } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
@@ -232,6 +233,40 @@ describe('AppShell', () => {
     expect(
       within(screen.getByRole('region', { name: 'Status' })).queryByText('run-002'),
     ).not.toBeInTheDocument()
+  })
+
+  it('reflects the selected task generated current run in the status bar', () => {
+    const taskId = '01J00000000000000000000041'
+    window.history.pushState(null, '', `/?taskId=${taskId}`)
+    act(() => {
+      taskStoreFor(taskId)
+        .getState()
+        .replaceSnapshot({
+          projection: {
+            archived: false,
+            currentRun: {
+              incompleteOutput: false,
+              segmentId: '01J00000000000000000000042',
+              startedAt: '2026-07-11T06:00:00Z',
+              state: 'running',
+            },
+            lastGlobalOffset: 4,
+            queue: [],
+            state: 'running',
+            streamVersion: 4,
+            taskId,
+            title: 'Generated task projection',
+          },
+          snapshotOffset: 4,
+          timeline: [],
+        })
+    })
+
+    renderAppShell()
+
+    expect(
+      within(screen.getByRole('region', { name: 'Status' })).getByText('In progress'),
+    ).toBeInTheDocument()
   })
 
   it('keeps active run context off standalone pages', async () => {

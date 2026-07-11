@@ -45,14 +45,12 @@ impl IpcConnection {
     }
 
     pub fn handle(&mut self, frame: ClientFrame) -> Result<Vec<ServerFrame>, IpcError> {
-        if frame.request_id.is_empty()
-            || frame.request_id.len() > harness_contracts::MAX_DAEMON_REQUEST_ID_BYTES
-        {
+        if !valid_request_id(&frame.request_id) {
             return Ok(vec![server_frame(
                 None,
                 protocol_error(
                     ProtocolErrorCode::InvalidFrame,
-                    "request ID is empty or exceeds the daemon response envelope limit",
+                    "request ID must be 1-128 printable ASCII characters",
                 ),
             )]);
         }
@@ -244,6 +242,14 @@ impl IpcConnection {
             events,
         })
     }
+}
+
+fn valid_request_id(request_id: &str) -> bool {
+    !request_id.is_empty()
+        && request_id.len() <= harness_contracts::MAX_DAEMON_REQUEST_ID_BYTES
+        && request_id
+            .bytes()
+            .all(|byte| byte == b' ' || byte.is_ascii_graphic())
 }
 
 fn versions_compatible(client: &str, daemon: &str) -> bool {

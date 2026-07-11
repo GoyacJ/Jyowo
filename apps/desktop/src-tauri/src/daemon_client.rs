@@ -239,6 +239,9 @@ async fn request_on_connection(
         if response.request_id.as_deref() == Some(frame.request_id.as_str()) {
             return Ok(response);
         }
+        if response.request_id.is_none() && matches!(response.message, ServerMessage::Error(_)) {
+            return Ok(response);
+        }
     }
 }
 

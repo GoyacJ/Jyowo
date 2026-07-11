@@ -6,13 +6,26 @@ export function RunSegment({
   items,
   run,
   segmentId,
+  showHeader = true,
+  statusItems = items,
 }: {
   items: TimelineItemProjection[]
   run?: RunProjection | null
   segmentId: string
+  showHeader?: boolean
+  statusItems?: TimelineItemProjection[]
 }) {
-  const status = run?.segmentId === segmentId ? run.state : inferStatus(items)
+  const status = run?.segmentId === segmentId ? projectedStatus(run) : inferStatus(statusItems)
   const duration = run?.segmentId === segmentId ? formatDuration(run) : null
+  const content = <div className="space-y-4">{renderItems(items)}</div>
+
+  if (!showHeader) {
+    return (
+      <div className="space-y-5" data-run-segment={segmentId}>
+        {content}
+      </div>
+    )
+  }
 
   return (
     <section aria-label={`Run ${status}`} className="space-y-5" data-run-segment={segmentId}>
@@ -21,9 +34,27 @@ export function RunSegment({
         {duration ? <span>{duration}</span> : null}
         <span aria-hidden="true" className="h-px flex-1 bg-border" />
       </div>
-      <div className="space-y-4">{renderItems(items)}</div>
+      {content}
     </section>
   )
+}
+
+function projectedStatus(run: RunProjection) {
+  switch (run.terminalReason) {
+    case 'cancelled':
+      return 'cancelled'
+    case 'superseded':
+      return 'superseded'
+    case 'forced_interruption':
+    case 'interrupted_by_restart':
+      return 'interrupted'
+    case 'failed':
+      return 'failed'
+    case 'completed':
+      return 'completed'
+    default:
+      return run.state
+  }
 }
 
 function renderItems(items: TimelineItemProjection[]) {
@@ -63,6 +94,8 @@ function renderItems(items: TimelineItemProjection[]) {
 
 function inferStatus(items: TimelineItemProjection[]) {
   const finalSummary = items.at(-1)?.summary.toLowerCase() ?? ''
+  if (finalSummary.includes('cancel')) return 'cancelled'
+  if (finalSummary.includes('supersed')) return 'superseded'
   if (finalSummary.includes('interrupt') || finalSummary.includes('force-stop'))
     return 'interrupted'
   if (finalSummary.includes('fail')) return 'failed'

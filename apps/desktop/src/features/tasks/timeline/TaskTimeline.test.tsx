@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
 import type { TimelineItemProjection } from '@/generated/daemon-protocol'
@@ -41,6 +41,70 @@ describe('TaskTimeline', () => {
     ).toBeInTheDocument()
     expect(screen.getByText('Read scheduler.rs').closest('[data-artifact]')).toBeNull()
     expect(screen.getByText(/left this sentence/)).toHaveAttribute('data-incomplete', 'true')
+  })
+
+  it('offers a jump to latest when partial output grows away from the bottom', () => {
+    const partial = item(40, 'assistant_text', 'partial', 'segment-streaming', true)
+    const { rerender } = render(<TaskTimeline items={[partial]} />)
+    const viewport = screen.getByTestId('task-timeline-viewport')
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, value: 1_200 },
+      scrollTop: { configurable: true, value: 200, writable: true },
+    })
+    fireEvent.scroll(viewport)
+
+    rerender(<TaskTimeline items={[{ ...partial, summary: 'partial output grew' }]} />)
+
+    expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeInTheDocument()
+  })
+
+  it('renders cancelled and superseded historical run terminal states', () => {
+    render(
+      <TaskTimeline
+        items={[
+          item(50, 'notice', 'Run started', 'segment-cancelled'),
+          item(51, 'notice', 'Run cancelled', 'segment-cancelled'),
+          item(52, 'user_message', 'Replace it'),
+          item(53, 'notice', 'Run started', 'segment-superseded'),
+          item(54, 'notice', 'Run superseded', 'segment-superseded'),
+        ]}
+      />,
+    )
+
+    expect(screen.getByRole('region', { name: 'Run cancelled' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Run superseded' })).toBeInTheDocument()
+  })
+
+  it('prefers the generated terminal reason for the projected current run', () => {
+    render(
+      <TaskTimeline
+        currentRun={{
+          endedAt: '2026-07-11T06:01:00Z',
+          incompleteOutput: false,
+          segmentId: 'segment-current',
+          startedAt: '2026-07-11T06:00:00Z',
+          state: 'completed',
+          terminalReason: 'cancelled',
+        }}
+        items={[item(60, 'notice', 'Run completed', 'segment-current')]}
+      />,
+    )
+
+    expect(screen.getByRole('region', { name: 'Run cancelled' })).toBeInTheDocument()
+  })
+
+  it('virtualizes a long single-run history instead of mounting every event', () => {
+    const longRun = Array.from({ length: 500 }, (_, index) =>
+      item(100 + index, 'tool_activity', `Read file ${index}`, 'segment-long'),
+    )
+
+    render(<TaskTimeline items={longRun} />)
+
+    const renderedItems = screen.getAllByTestId('timeline-item')
+    expect(renderedItems.length).toBeGreaterThan(0)
+    expect(renderedItems.length).toBeLessThan(longRun.length)
+    expect(screen.getByTestId('task-timeline-scroll-content')).toHaveClass('relative')
   })
 })
 

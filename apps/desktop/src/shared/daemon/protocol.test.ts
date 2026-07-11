@@ -45,6 +45,23 @@ describe('daemon protocol validation', () => {
     expect(parseClientFrame(completeSubmitMessageFrame)).toEqual(completeSubmitMessageFrame)
   })
 
+  it('accepts bounded printable ASCII request IDs', () => {
+    const frame = { ...completeSubmitMessageFrame, requestId: '~'.repeat(128) }
+
+    expect(parseClientFrame(frame)).toEqual(frame)
+  })
+
+  it.each([
+    '',
+    'r'.repeat(129),
+    'request-\n1',
+    '请求-1',
+  ])('rejects a non-printable or non-ASCII request ID: %j', (requestId) => {
+    expect(() => parseClientFrame({ ...completeSubmitMessageFrame, requestId })).toThrow(
+      'Invalid daemon client frame',
+    )
+  })
+
   it('rejects an unknown server message type', () => {
     expect(() =>
       parseServerFrame({

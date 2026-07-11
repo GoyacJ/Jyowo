@@ -29,6 +29,8 @@ describe('daemon protocol boundary', () => {
   it('detects handwritten aliases and Zod schemas for generated declarations', () => {
     expect(declaresGeneratedProtocol('export interface TaskEventEnvelope {}')).toBe(true)
     expect(declaresGeneratedProtocol('const taskEventEnvelopeSchema = z.object({})')).toBe(true)
+    expect(declaresGeneratedProtocol('const TaskEventEnvelopeSchema = z.object({})')).toBe(true)
+    expect(declaresGeneratedProtocol('export type TaskDaemonEvent = unknown')).toBe(true)
     expect(declaresGeneratedProtocol('export const runProjectionSchema = z.object({})')).toBe(true)
     expect(declaresGeneratedProtocol('export type RunEvent = z.infer<typeof runEventSchema>')).toBe(
       false,
@@ -38,13 +40,13 @@ describe('daemon protocol boundary', () => {
 
 function declaresGeneratedProtocol(source: string) {
   for (const name of generatedProtocolNames) {
-    const schemaName = `${name[0]?.toLowerCase()}${name.slice(1)}Schema`
+    const schemaNames = [`${name[0]?.toLowerCase()}${name.slice(1)}Schema`, `${name}Schema`]
     const declarationPattern = new RegExp(
-      `\\b(?:type|interface)\\s+${name}\\b|\\b(?:const|let|var)\\s+${schemaName}\\b`,
+      `\\b(?:type|interface)\\s+${name}\\b|\\b(?:const|let|var)\\s+(?:${schemaNames.join('|')})\\b`,
     )
     if (declarationPattern.test(source)) return true
   }
-  return /\b(?:type|interface)\s+DaemonEvent[A-Za-z0-9_]*\b|\b(?:const|let|var)\s+daemonEvent[A-Za-z0-9_]*Schema\b/.test(
+  return /\b(?:type|interface)\s+[A-Za-z0-9_]*DaemonEvent[A-Za-z0-9_]*\b|\b(?:const|let|var)\s+daemonEvent[A-Za-z0-9_]*Schema\b/.test(
     source,
   )
 }

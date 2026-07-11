@@ -156,6 +156,24 @@ fn ipc_rejects_request_ids_larger_than_the_response_envelope_reserve() {
 }
 
 #[test]
+fn ipc_rejects_non_printable_ascii_request_ids() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+
+    for request_id in ["request-\n1", "请求-1"] {
+        let mut connection = IpcConnection::new(Arc::clone(&store), config());
+        let mut request = handshake("token-a");
+        request.request_id = request_id.into();
+
+        let response = connection.handle(request).unwrap();
+
+        assert!(response[0].request_id.is_none());
+        assert!(matches!(response[0].message, ServerMessage::Error(_)));
+        assert!(encode_frame(&response[0]).is_ok());
+    }
+}
+
+#[test]
 fn duplicate_commands_are_idempotent_and_clients_observe_identical_offsets() {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());

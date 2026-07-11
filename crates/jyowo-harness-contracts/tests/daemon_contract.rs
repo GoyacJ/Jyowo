@@ -34,6 +34,16 @@ fn daemon_protocol_exports_one_versioned_schema() {
 }
 
 #[test]
+fn daemon_request_ids_are_bounded_printable_ascii() {
+    let value = serde_json::to_value(daemon_protocol_schema()).expect("serialize daemon schema");
+    let request_id = &value["$defs"]["ClientFrame"]["properties"]["requestId"];
+
+    assert_eq!(request_id["minLength"], 1);
+    assert_eq!(request_id["maxLength"], 128);
+    assert_eq!(request_id["pattern"], r"^[\x20-\x7E]+$");
+}
+
+#[test]
 fn daemon_protocol_exports_permission_routing() {
     let value = serde_json::to_value(daemon_protocol_schema()).expect("serialize daemon schema");
     let permission_route = &value["$defs"]["PermissionRoute"];

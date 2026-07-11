@@ -31,7 +31,8 @@
         "requestId": {
           "type": "string",
           "maxLength": 128,
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "^[\\x20-\\x7E]+$"
         }
       },
       "additionalProperties": false,

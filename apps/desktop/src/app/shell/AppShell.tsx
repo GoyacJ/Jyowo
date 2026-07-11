@@ -2,7 +2,9 @@ import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { Command as CommandIcon } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useStore } from 'zustand'
 import { ActivityRail } from '@/features/activity/ActivityRail'
+import { taskStoreFor } from '@/features/tasks/use-task'
 import { OPEN_COMMAND_PALETTE_EVENT } from '@/features/workspace/CommandPalette'
 import { SidebarNav } from '@/features/workspace/SidebarNav'
 import { useUiStore } from '@/shared/state/ui-store'
@@ -21,10 +23,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     select: (state) => state.location.pathname,
   })
   const selectedTaskId = typeof currentSearch.taskId === 'string' ? currentSearch.taskId : undefined
-  const hasRootSelection = pathname === '/' && selectedTaskId
-  const selectedActiveRun = hasRootSelection
-    ? undefined
-    : selectOnlyActiveRun(activeRunsByConversation)
+  const selectedActiveRun = selectOnlyActiveRun(activeRunsByConversation)
   const sidebarWidth = sidebarCollapsed || compactSidebar ? '48px' : '300px'
 
   function openSettings() {
@@ -63,9 +62,28 @@ export function AppShell({ children }: { children: ReactNode }) {
           </main>
         </div>
       </div>
-      <ActivityRail activeRunId={selectedActiveRun?.runId} onOpenSettings={openSettings} />
+      {pathname === '/' && selectedTaskId ? (
+        <SelectedTaskActivityRail onOpenSettings={openSettings} taskId={selectedTaskId} />
+      ) : (
+        <ActivityRail activeRunId={selectedActiveRun?.runId} onOpenSettings={openSettings} />
+      )}
     </div>
   )
+}
+
+function SelectedTaskActivityRail({
+  onOpenSettings,
+  taskId,
+}: {
+  onOpenSettings: () => void
+  taskId: string
+}) {
+  const activeRunId = useStore(
+    taskStoreFor(taskId),
+    (state) => state.snapshot?.projection.currentRun?.segmentId,
+  )
+
+  return <ActivityRail activeRunId={activeRunId} onOpenSettings={onOpenSettings} />
 }
 
 function selectOnlyActiveRun(activeRunsByConversation: Record<string, string>) {

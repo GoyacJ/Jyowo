@@ -47,14 +47,20 @@ export function useConversationScrollAnchor(
       scrollHeight: viewport.scrollHeight,
       scrollTop: viewport.scrollTop,
     }
-  }, [options.prependAnchorKey])
+  })
 
   useLayoutEffect(() => {
-    if (options.streamingScrollTick === undefined || !followRef.current.followLatest) {
+    if (options.streamingScrollTick === undefined) {
+      return
+    }
+
+    if (!followRef.current.followLatest) {
+      setShowJumpToLatest(true)
       return
     }
 
     scrollToEnd(endRef.current)
+    setShowJumpToLatest(false)
   }, [options.streamingScrollTick])
 
   useLayoutEffect(() => {
