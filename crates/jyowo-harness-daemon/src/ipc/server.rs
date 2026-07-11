@@ -5,8 +5,9 @@ use std::sync::Arc;
 use base64::Engine as _;
 use harness_contracts::{
     BlobPayload, ClientFrame, ClientId, ClientRequest, CommandAccepted, CommandRejected,
-    CommandRejectionReason, HandshakeResponse, ProtocolError, ProtocolErrorCode, ServerFrame,
-    ServerMessage, TaskEventBatch, TaskId, TaskSnapshot, PROTOCOL_VERSION,
+    CommandRejectionReason, HandshakeResponse, ProtocolError, ProtocolErrorCode, QueueItemId,
+    RunSegmentId, ServerFrame, ServerMessage, TaskEventBatch, TaskId, TaskSnapshot,
+    PROTOCOL_VERSION,
 };
 use harness_journal::{
     AcceptedCommand, BlobRead, CommandOutcome, CommandRejection, NewTaskEvent, TaskBlobStore,
@@ -16,6 +17,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use super::IpcError;
+use crate::{QueueCommand, Supervisor, ValidatedTaskCommand};
 
 #[derive(Debug, Clone)]
 pub struct IpcServerConfig {
@@ -29,6 +31,7 @@ pub struct IpcServerConfig {
 pub struct IpcConnection {
     store: Arc<TaskStore>,
     config: IpcServerConfig,
+    supervisor: Option<Arc<Supervisor>>,
     client_id: Option<ClientId>,
     subscription_offset: Option<u64>,
 }
@@ -39,9 +42,48 @@ impl IpcConnection {
         Self {
             store,
             config,
+            supervisor: None,
             client_id: None,
             subscription_offset: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_supervisor(
+        store: Arc<TaskStore>,
+        config: IpcServerConfig,
+        supervisor: Arc<Supervisor>,
+    ) -> Self {
+        Self {
+            store,
+            config,
+            supervisor: Some(supervisor),
+            client_id: None,
+            subscription_offset: None,
+        }
+    }
+
+    pub async fn handle_async(&mut self, frame: ClientFrame) -> Result<Vec<ServerFrame>, IpcError> {
+        let request_id = frame.request_id.clone();
+        let request = frame.request.clone();
+        let response = self.handle(frame)?;
+        if !requires_task_supervisor(&request) || !is_supervisor_required_response(&response) {
+            return Ok(response);
+        }
+        let Some(supervisor) = self.supervisor.as_ref() else {
+            return Ok(response);
+        };
+        let Some(client_id) = self.client_id else {
+            return Ok(response);
+        };
+        let Some((task_id, command)) = validated_task_command(client_id, request)? else {
+            return Ok(response);
+        };
+        let outcome = supervisor.dispatch(task_id, command).await?;
+        Ok(vec![server_frame(
+            Some(request_id),
+            command_message(outcome),
+        )])
     }
 
     pub fn handle(&mut self, frame: ClientFrame) -> Result<Vec<ServerFrame>, IpcError> {
@@ -130,8 +172,11 @@ impl IpcConnection {
                     payload: serde_json::to_value(&command)?,
                 };
                 let title = command.title;
+                let workspace = command.workspace;
                 let outcome = match self.store.transact_command(accepted, move |_| {
-                    Ok(vec![NewTaskEvent::task_created(title)])
+                    Ok(vec![NewTaskEvent::task_created_in_workspace(
+                        title, workspace,
+                    )])
                 }) {
                     Ok(outcome) => outcome,
                     Err(harness_journal::TaskStoreError::CommandConflict { .. }) => {
@@ -167,6 +212,46 @@ impl IpcConnection {
                     None => protocol_error(ProtocolErrorCode::NotFound, "task not found"),
                 }
             }
+            ClientRequest::StageBlob(command) => {
+                if self.store.task_projection(command.task_id)?.is_none() {
+                    protocol_error(ProtocolErrorCode::NotFound, "task not found")
+                } else {
+                    let estimated_size = command.base64_data.len().saturating_mul(3) / 4;
+                    if estimated_size > harness_contracts::MAX_DAEMON_BLOB_BYTES {
+                        protocol_error(ProtocolErrorCode::InvalidFrame, "blob is too large")
+                    } else {
+                        match base64::engine::general_purpose::STANDARD
+                            .decode(command.base64_data.as_bytes())
+                        {
+                            Ok(bytes)
+                                if bytes.len() <= harness_contracts::MAX_DAEMON_BLOB_BYTES =>
+                            {
+                                let blobs = TaskBlobStore::open(
+                                    Arc::clone(&self.store),
+                                    command.task_id,
+                                    &self.config.blob_root,
+                                )?;
+                                let blob = blobs.put(&command.media_type, &bytes)?;
+                                ServerMessage::Blob(BlobPayload {
+                                    blob_id: blob.id,
+                                    media_type: blob.content_type.unwrap_or(command.media_type),
+                                    size: blob.size,
+                                    content_hash: blob.content_hash.to_vec(),
+                                    base64_data: None,
+                                    missing: false,
+                                })
+                            }
+                            Ok(_) => {
+                                protocol_error(ProtocolErrorCode::InvalidFrame, "blob is too large")
+                            }
+                            Err(_) => protocol_error(
+                                ProtocolErrorCode::InvalidFrame,
+                                "blob body is not valid base64",
+                            ),
+                        }
+                    }
+                }
+            }
             ClientRequest::ReadBlob { blob_id } => match self.store.blob_owner_task(blob_id)? {
                 Some(task_id) => {
                     let blobs = TaskBlobStore::open(
@@ -188,6 +273,7 @@ impl IpcConnection {
                             .content_type
                             .unwrap_or_else(|| "application/octet-stream".into()),
                         size: blob.size,
+                        content_hash: blob.content_hash.to_vec(),
                         base64_data,
                         missing,
                     })
@@ -241,6 +327,114 @@ impl IpcConnection {
             gap,
             events,
         })
+    }
+}
+
+fn requires_task_supervisor(request: &ClientRequest) -> bool {
+    matches!(
+        request,
+        ClientRequest::SubmitMessage(_)
+            | ClientRequest::EditQueuedMessage(_)
+            | ClientRequest::DeleteQueuedMessage(_)
+            | ClientRequest::PromoteQueuedMessage(_)
+    )
+}
+
+fn is_supervisor_required_response(response: &[ServerFrame]) -> bool {
+    matches!(
+        response,
+        [ServerFrame {
+            message: ServerMessage::Error(ProtocolError {
+                code: ProtocolErrorCode::InvalidFrame,
+                message,
+            }),
+            ..
+        }] if message == "command requires the task supervisor"
+    )
+}
+
+fn validated_task_command(
+    client_id: ClientId,
+    request: ClientRequest,
+) -> Result<Option<(TaskId, ValidatedTaskCommand)>, IpcError> {
+    let command = match request {
+        ClientRequest::SubmitMessage(request) => {
+            let task_id = request.task_id;
+            let command_id = request.metadata.command_id;
+            let payload = serde_json::to_value(&request)?;
+            ValidatedTaskCommand::SubmitMessage {
+                command: accepted_command(client_id, task_id, request.metadata, payload),
+                queue_item_id: QueueItemId::from_u128(u128::from_be_bytes(command_id.as_bytes())),
+                segment_id: RunSegmentId::from_u128(u128::from_be_bytes(command_id.as_bytes())),
+                content: request.content,
+                attachments: request.attachments,
+                context_references: request.context_references,
+                model_config_id: request.model_config_id,
+                permission_mode: request.permission_mode,
+                submitted_at: chrono::Utc::now(),
+            }
+        }
+        ClientRequest::EditQueuedMessage(request) => {
+            let task_id = request.task_id;
+            let payload = serde_json::to_value(&request)?;
+            ValidatedTaskCommand::Queue {
+                command: accepted_command(client_id, task_id, request.metadata, payload),
+                queue_item_id: request.queue_item_id,
+                queue_command: QueueCommand::Edit {
+                    expected_revision: request.expected_revision,
+                    content: request.content,
+                    attachments: request.attachments,
+                    context_references: request.context_references,
+                },
+            }
+        }
+        ClientRequest::DeleteQueuedMessage(request) => {
+            let task_id = request.task_id;
+            let payload = serde_json::to_value(&request)?;
+            ValidatedTaskCommand::Queue {
+                command: accepted_command(client_id, task_id, request.metadata, payload),
+                queue_item_id: request.queue_item_id,
+                queue_command: QueueCommand::Delete {
+                    expected_revision: request.expected_revision,
+                },
+            }
+        }
+        ClientRequest::PromoteQueuedMessage(request) => {
+            let task_id = request.task_id;
+            let payload = serde_json::to_value(&request)?;
+            ValidatedTaskCommand::Queue {
+                command: accepted_command(client_id, task_id, request.metadata, payload),
+                queue_item_id: request.queue_item_id,
+                queue_command: QueueCommand::Promote {
+                    expected_revision: request.expected_revision,
+                    mode: request.mode,
+                },
+            }
+        }
+        _ => return Ok(None),
+    };
+    let task_id = match &command {
+        ValidatedTaskCommand::SubmitMessage { command, .. }
+        | ValidatedTaskCommand::StartSegment { command, .. }
+        | ValidatedTaskCommand::ContinueTask { command, .. }
+        | ValidatedTaskCommand::Queue { command, .. } => command.task_id,
+    };
+    Ok(Some((task_id, command)))
+}
+
+fn accepted_command(
+    client_id: ClientId,
+    task_id: TaskId,
+    metadata: harness_contracts::CommandMetadata,
+    payload: serde_json::Value,
+) -> AcceptedCommand {
+    AcceptedCommand {
+        command_id: metadata.command_id,
+        task_id,
+        idempotency_key: metadata.idempotency_key,
+        expected_stream_version: metadata.expected_stream_version,
+        authority: TaskStore::user_authority(client_id),
+        payload,
     }
 }
 

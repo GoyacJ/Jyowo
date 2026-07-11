@@ -2,9 +2,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use harness_contracts::{RunState, PROTOCOL_VERSION};
-use harness_daemon::{IpcServerConfig, LocalIpcServer, RecoveryService, RuntimeGuard};
+use harness_contracts::{RunState, RunTerminalReason, PROTOCOL_VERSION};
+use harness_daemon::{
+    IpcServerConfig, LocalIpcServer, RecoveryService, RunCoordinatorEvent, RunCoordinatorFactory,
+    RunningSegment, RuntimeGuard, StartSegmentRequest, Supervisor, SupervisorQuotas,
+    WorkspaceToolDispatcher,
+};
 use harness_journal::TaskStore;
+use harness_subagent::SubagentRunner;
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
@@ -27,15 +32,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         event_batch_capacity: 512,
         blob_root: runtime.runtime_dir().join("blobs"),
     };
+    let supervisor = Arc::new(Supervisor::start(
+        Arc::clone(&store),
+        Arc::new(UnavailableRunFactory),
+        SupervisorQuotas::new(20, 8),
+    )?);
 
     #[cfg(unix)]
-    let server =
-        LocalIpcServer::bind_unix(runtime.endpoint_path(), Arc::clone(&store), config).await?;
+    let server = LocalIpcServer::bind_unix_with_supervisor(
+        runtime.endpoint_path(),
+        Arc::clone(&store),
+        config,
+        Arc::clone(&supervisor),
+    )
+    .await?;
     #[cfg(windows)]
-    let server = LocalIpcServer::bind_named_pipe(
+    let server = LocalIpcServer::bind_named_pipe_with_supervisor(
         format!(r"\\.\pipe\jyowo-harness-daemon-{user_instance_id}"),
         Arc::clone(&store),
         config,
+        Arc::clone(&supervisor),
     )
     .await?;
 
@@ -47,6 +63,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     wait_for_shutdown(&server, &store).await?;
     server.shutdown().await?;
     Ok(())
+}
+
+struct UnavailableRunFactory;
+
+impl RunCoordinatorFactory for UnavailableRunFactory {
+    fn spawn_idempotent(
+        &self,
+        request: StartSegmentRequest,
+        _workspace_tools: WorkspaceToolDispatcher,
+        _subagent_runner: Arc<dyn SubagentRunner>,
+    ) -> RunningSegment {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let _ = sender.send(RunCoordinatorEvent::Completed {
+            segment_id: request.segment_id,
+            terminal_reason: RunTerminalReason::Failed,
+            incomplete_output: true,
+            ended_at: chrono::Utc::now(),
+        });
+        RunningSegment::new(receiver)
+    }
 }
 
 async fn wait_for_shutdown(

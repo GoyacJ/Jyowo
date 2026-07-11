@@ -1,5 +1,6 @@
 use harness_contracts::{
-    daemon_protocol_schema, ClientFrame, ClientRequest, ServerFrame, PROTOCOL_VERSION,
+    daemon_protocol_schema, ClientFrame, ClientRequest, ServerFrame, TaskProjection, WorkspaceMode,
+    PROTOCOL_VERSION,
 };
 use serde_json::json;
 
@@ -90,6 +91,64 @@ fn client_command_payloads_reject_unknown_fields() {
     });
 
     assert!(serde_json::from_value::<ClientFrame>(frame).is_err());
+}
+
+#[test]
+fn submit_message_carries_runtime_choices() {
+    let frame = json!({
+        "requestId": "req-1",
+        "protocolVersion": PROTOCOL_VERSION,
+        "request": {
+            "type": "submit_message",
+            "metadata": {
+                "commandId": "00000000000000000000000001",
+                "idempotencyKey": "submit-1",
+                "expectedStreamVersion": 0
+            },
+            "taskId": "00000000000000000000000002",
+            "content": "hello",
+            "attachments": [],
+            "contextReferences": [],
+            "modelConfigId": "provider-config-001",
+            "permissionMode": "auto"
+        }
+    });
+
+    let parsed = serde_json::from_value::<ClientFrame>(frame).expect("runtime choices parse");
+    let encoded = serde_json::to_value(parsed).expect("runtime choices serialize");
+    assert_eq!(encoded["request"]["modelConfigId"], "provider-config-001");
+    assert_eq!(encoded["request"]["permissionMode"], "auto");
+}
+
+#[test]
+fn task_projection_persists_its_workspace_selection() {
+    let projection = serde_json::from_value::<TaskProjection>(json!({
+        "taskId": "00000000000000000000000002",
+        "title": "workspace task",
+        "state": "idle",
+        "archived": false,
+        "streamVersion": 1,
+        "lastGlobalOffset": 1,
+        "currentRun": null,
+        "pendingPermission": null,
+        "queue": [],
+        "workspace": { "mode": "current", "root": "/tmp/project" }
+    }))
+    .expect("task projection with workspace");
+
+    let workspace = projection.workspace.expect("workspace persisted");
+    assert_eq!(workspace.mode, WorkspaceMode::Current);
+    assert_eq!(workspace.root, "/tmp/project");
+}
+
+#[test]
+fn blob_payload_exposes_its_content_hash_without_a_path() {
+    let schema = serde_json::to_value(schemars::schema_for!(harness_contracts::BlobPayload))
+        .expect("serialize blob schema");
+    let properties = &schema["properties"];
+
+    assert!(properties.get("contentHash").is_some());
+    assert!(properties.get("path").is_none());
 }
 
 #[test]

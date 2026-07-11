@@ -9,7 +9,7 @@ use harness_contracts::{
     MessagePart, PermissionProjection, QueueItemId, ReferenceKind, RequestId, RunId, RunSegmentId,
     RunTerminalReason, SessionId, SubagentParentProjection, SubagentProjection, TenantId,
     ToolResult, ToolResultPart, ToolUseId, WorkspaceLeaseId, WorkspaceLeaseProjection,
-    WorkspaceLeaseState,
+    WorkspaceLeaseState, WorkspaceSelection,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,6 +23,7 @@ const MAX_MESSAGE_ATTACHMENTS: usize = 64;
 const MAX_CONTEXT_REFERENCES: usize = 64;
 const MAX_CONTEXT_REFERENCE_BYTES: usize = 4096;
 const MAX_SIDE_EFFECTS: usize = 256;
+const MAX_WORKSPACE_ROOT_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewTaskEvent {
@@ -33,6 +34,7 @@ pub struct NewTaskEvent {
 pub(crate) enum TaskEvent {
     TaskCreated {
         title: String,
+        workspace: Option<WorkspaceSelection>,
     },
     TaskTitleChanged {
         title: String,
@@ -83,6 +85,8 @@ pub(crate) enum TaskEvent {
         content: String,
         attachments: Vec<BlobId>,
         context_references: Vec<String>,
+        model_config_id: Option<String>,
+        permission_mode: harness_contracts::PermissionMode,
         created_at: DateTime<Utc>,
     },
     MessageEdited {
@@ -203,6 +207,14 @@ struct TitlePayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TaskCreatedPayload {
+    title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace: Option<WorkspaceSelection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ArchivedPayload {
     archived: bool,
 }
@@ -275,6 +287,10 @@ struct MessageQueuedPayload {
     content: String,
     attachments: Vec<BlobId>,
     context_references: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_config_id: Option<String>,
+    #[serde(default)]
+    permission_mode: harness_contracts::PermissionMode,
     created_at: DateTime<Utc>,
 }
 
@@ -366,6 +382,20 @@ impl NewTaskEvent {
         Self {
             event: TaskEvent::TaskCreated {
                 title: title.into(),
+                workspace: None,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn task_created_in_workspace(
+        title: impl Into<String>,
+        workspace: WorkspaceSelection,
+    ) -> Self {
+        Self {
+            event: TaskEvent::TaskCreated {
+                title: title.into(),
+                workspace: Some(workspace),
             },
         }
     }
@@ -516,12 +546,35 @@ impl NewTaskEvent {
         context_references: Vec<String>,
         created_at: DateTime<Utc>,
     ) -> Self {
+        Self::message_queued_with_runtime(
+            queue_item_id,
+            content,
+            attachments,
+            context_references,
+            None,
+            harness_contracts::PermissionMode::Default,
+            created_at,
+        )
+    }
+
+    #[must_use]
+    pub fn message_queued_with_runtime(
+        queue_item_id: QueueItemId,
+        content: impl Into<String>,
+        attachments: Vec<BlobId>,
+        context_references: Vec<String>,
+        model_config_id: Option<String>,
+        permission_mode: harness_contracts::PermissionMode,
+        created_at: DateTime<Utc>,
+    ) -> Self {
         Self {
             event: TaskEvent::MessageQueued {
                 queue_item_id,
                 content: content.into(),
                 attachments,
                 context_references,
+                model_config_id,
+                permission_mode,
                 created_at,
             },
         }
@@ -993,8 +1046,11 @@ impl TaskEvent {
         }
         let event: Result<Self, TaskStoreError> = match event_type {
             "task.created" => {
-                let value: TitlePayload = serde_json::from_value(payload)?;
-                Ok(Self::TaskCreated { title: value.title })
+                let value: TaskCreatedPayload = serde_json::from_value(payload)?;
+                Ok(Self::TaskCreated {
+                    title: value.title,
+                    workspace: value.workspace,
+                })
             }
             "task.title_changed" => {
                 let value: TitlePayload = serde_json::from_value(payload)?;
@@ -1072,6 +1128,8 @@ impl TaskEvent {
                     content: value.content,
                     attachments: value.attachments,
                     context_references: value.context_references,
+                    model_config_id: value.model_config_id,
+                    permission_mode: value.permission_mode,
                     created_at: value.created_at,
                 })
             }
@@ -1259,11 +1317,13 @@ impl TaskEvent {
 
     fn payload(&self) -> Result<Value, TaskStoreError> {
         Ok(match self {
-            Self::TaskCreated { title } | Self::TaskTitleChanged { title } => {
-                serde_json::to_value(TitlePayload {
-                    title: title.clone(),
-                })?
-            }
+            Self::TaskCreated { title, workspace } => serde_json::to_value(TaskCreatedPayload {
+                title: title.clone(),
+                workspace: workspace.clone(),
+            })?,
+            Self::TaskTitleChanged { title } => serde_json::to_value(TitlePayload {
+                title: title.clone(),
+            })?,
             Self::TaskArchived { archived } => serde_json::to_value(ArchivedPayload {
                 archived: *archived,
             })?,
@@ -1341,12 +1401,16 @@ impl TaskEvent {
                 content,
                 attachments,
                 context_references,
+                model_config_id,
+                permission_mode,
                 created_at,
             } => serde_json::to_value(MessageQueuedPayload {
                 queue_item_id: *queue_item_id,
                 content: content.clone(),
                 attachments: attachments.clone(),
                 context_references: context_references.clone(),
+                model_config_id: model_config_id.clone(),
+                permission_mode: *permission_mode,
                 created_at: *created_at,
             })?,
             Self::MessageEdited {
@@ -1560,7 +1624,22 @@ impl TaskEvent {
                     ));
                 }
             }
-            Self::TaskCreated { title } | Self::TaskTitleChanged { title } => {
+            Self::TaskCreated { title, workspace } => {
+                if title.chars().count() > MAX_TITLE_CHARS {
+                    return Err(TaskStoreError::InvalidInput(format!(
+                        "task title may contain at most {MAX_TITLE_CHARS} characters"
+                    )));
+                }
+                if workspace.as_ref().is_some_and(|selection| {
+                    selection.root.trim().is_empty()
+                        || selection.root.len() > MAX_WORKSPACE_ROOT_BYTES
+                }) {
+                    return Err(TaskStoreError::InvalidInput(
+                        "task workspace root must be non-empty and bounded".into(),
+                    ));
+                }
+            }
+            Self::TaskTitleChanged { title } => {
                 if title.chars().count() > MAX_TITLE_CHARS {
                     return Err(TaskStoreError::InvalidInput(format!(
                         "task title may contain at most {MAX_TITLE_CHARS} characters"

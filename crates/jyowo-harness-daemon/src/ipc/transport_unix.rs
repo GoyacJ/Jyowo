@@ -20,7 +20,25 @@ impl LocalIpcServer {
         store: Arc<TaskStore>,
         config: IpcServerConfig,
     ) -> Result<Self, IpcError> {
-        let endpoint = endpoint.as_ref().to_path_buf();
+        Self::bind_unix_inner(endpoint.as_ref(), store, config, None).await
+    }
+
+    pub async fn bind_unix_with_supervisor(
+        endpoint: impl AsRef<Path>,
+        store: Arc<TaskStore>,
+        config: IpcServerConfig,
+        supervisor: Arc<crate::Supervisor>,
+    ) -> Result<Self, IpcError> {
+        Self::bind_unix_inner(endpoint.as_ref(), store, config, Some(supervisor)).await
+    }
+
+    async fn bind_unix_inner(
+        endpoint: &Path,
+        store: Arc<TaskStore>,
+        config: IpcServerConfig,
+        supervisor: Option<Arc<crate::Supervisor>>,
+    ) -> Result<Self, IpcError> {
+        let endpoint = endpoint.to_path_buf();
         let listener = UnixListener::bind(&endpoint)?;
         std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o600))?;
         let endpoint_cleanup =
@@ -35,7 +53,14 @@ impl LocalIpcServer {
                     _ = &mut shutdown_rx => break,
                     accepted = listener.accept() => {
                         let (stream, _) = accepted?;
-                        let connection = IpcConnection::new(Arc::clone(&store), config.clone());
+                        let connection = supervisor.as_ref().map_or_else(
+                            || IpcConnection::new(Arc::clone(&store), config.clone()),
+                            |supervisor| IpcConnection::with_supervisor(
+                                Arc::clone(&store),
+                                config.clone(),
+                                Arc::clone(supervisor),
+                            ),
+                        );
                         let client_lease = ClientLease::new(Arc::clone(&server_clients));
                         client_tasks.spawn(async move {
                             let _client_lease = client_lease;
@@ -91,7 +116,7 @@ async fn serve_unix_client(
                 let Some(frame) = frame? else {
                     return Ok(());
                 };
-                for response in connection.handle(frame)? {
+                for response in connection.handle_async(frame).await? {
                     stream.write_all(&encode_frame(&response)?).await?;
                 }
             }

@@ -1,6 +1,6 @@
 import { Send, X } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type {
@@ -124,6 +124,8 @@ export function Composer({
       : draftScope
         ? getDraft(draftScope)
         : getEmptyDraft()
+  const draftRef = useRef(draft)
+  draftRef.current = draft
   const setDraft = (update: React.SetStateAction<ComposerDraft>) => {
     setDraftState((current) => {
       const currentDraft =
@@ -132,8 +134,10 @@ export function Composer({
           : draftScope
             ? getDraft(draftScope)
             : getEmptyDraft()
+      const nextDraft = typeof update === 'function' ? update(currentDraft) : update
+      draftRef.current = nextDraft
       return {
-        draft: typeof update === 'function' ? update(currentDraft) : update,
+        draft: nextDraft,
         scope: draftScope,
       }
     })
@@ -178,6 +182,7 @@ export function Composer({
   )
 
   async function submitDraft() {
+    const submittedDraft = draft
     const submittedText = draft.text.trim()
     if (!submittedText || submitDisabled) {
       return
@@ -195,8 +200,24 @@ export function Composer({
 
     try {
       await onSubmit(payload)
-      setDraft(getEmptyDraft())
-      if (draftScope) clearDraft(draftScope)
+      if (draftRef.current === submittedDraft) {
+        setDraft(getEmptyDraft())
+        if (draftScope) clearDraft(draftScope)
+      } else {
+        const submittedAttachmentIds = new Set(
+          submittedDraft.attachments.map((attachment) => attachment.id),
+        )
+        const submittedReferenceKeys = new Set(submittedDraft.contextReferences.map(referenceKey))
+        setDraft((current) => ({
+          attachments: current.attachments.filter(
+            (attachment) => !submittedAttachmentIds.has(attachment.id),
+          ),
+          contextReferences: current.contextReferences.filter(
+            (reference) => !submittedReferenceKeys.has(referenceKey(reference)),
+          ),
+          text: current.text === submittedDraft.text ? '' : current.text,
+        }))
+      }
       setComposerError(null)
     } catch {
       // The parent owns the submitted error message. Keeping draft state is the important part here.
@@ -493,7 +514,7 @@ export function Composer({
         }
       />
 
-      <div className="mt-1 flex items-center justify-between">
+      <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
         <ComposerToolbar
           disabled={editorDisabled}
           supportsAttachments={supportsAttachments}

@@ -30,6 +30,8 @@ pub fn run() {
             commands::daemon_subscribe,
             commands::daemon_unsubscribe,
             commands::daemon_read_blob,
+            commands::daemon_stage_blob_from_path,
+            commands::daemon_list_reference_candidates,
             commands::add_project,
             commands::archive_background_agent,
             commands::cancel_run,

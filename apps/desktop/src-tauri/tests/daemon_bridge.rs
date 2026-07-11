@@ -242,6 +242,8 @@ fn tauri_exposes_only_thin_daemon_bridge_commands() {
         "daemon_subscribe",
         "daemon_unsubscribe",
         "daemon_read_blob",
+        "daemon_stage_blob_from_path",
+        "daemon_list_reference_candidates",
     ] {
         assert!(source.contains(command), "missing command {command}");
     }
@@ -309,6 +311,8 @@ fn active_tauri_runtime_manages_and_registers_the_daemon_bridge() {
         "commands::daemon_subscribe",
         "commands::daemon_unsubscribe",
         "commands::daemon_read_blob",
+        "commands::daemon_stage_blob_from_path",
+        "commands::daemon_list_reference_candidates",
     ] {
         assert!(
             source.contains(command),

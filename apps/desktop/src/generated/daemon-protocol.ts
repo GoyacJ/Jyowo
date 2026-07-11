@@ -25,6 +25,14 @@ export type ClientRequest =
       content: string
       contextReferences: string[]
       metadata: CommandMetadata
+      modelConfigId?: string | null
+      permissionMode?:
+        | 'default'
+        | 'plan'
+        | 'accept_edits'
+        | 'bypass_permissions'
+        | 'dont_ask'
+        | 'auto'
       taskId: TypedUlid
       type: 'submit_message'
     }
@@ -83,6 +91,12 @@ export type ClientRequest =
     }
   | {
       type: 'list_tasks'
+    }
+  | {
+      base64Data: string
+      mediaType: string
+      taskId: TypedUlid
+      type: 'stage_blob'
     }
   | {
       blobId: TypedUlid
@@ -159,6 +173,44 @@ export type ServerMessage =
   | {
       base64Data?: string | null
       blobId: TypedUlid
+      /**
+       * @minItems 32
+       * @maxItems 32
+       */
+      contentHash: [
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+      ]
       mediaType: string
       missing: boolean
       size: number
@@ -282,6 +334,17 @@ export type ProtocolErrorCode =
   | 'authentication_failed'
   | 'not_found'
   | 'internal'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "PermissionMode".
+ */
+export type PermissionMode =
+  | 'default'
+  | 'plan'
+  | 'accept_edits'
+  | 'bypass_permissions'
+  | 'dont_ask'
+  | 'auto'
 
 export interface DaemonProtocol {
   client: ClientFrame
@@ -363,6 +426,7 @@ export interface TaskProjection {
   subagents?: SubagentProjection[]
   taskId: TypedUlid
   title: string
+  workspace?: WorkspaceSelection | null
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema

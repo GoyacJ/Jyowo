@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    ActorId, BlobId, CheckpointId, ClientId, CommandId, EventId, QueueItemId, RequestId,
-    RunSegmentId, SubagentId, TaskId, WorkspaceLeaseId,
+    ActorId, BlobId, CheckpointId, ClientId, CommandId, EventId, PermissionMode, QueueItemId,
+    RequestId, RunSegmentId, SubagentId, TaskId, WorkspaceLeaseId,
 };
 
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -57,6 +57,7 @@ pub enum ClientRequest {
     SubscribeEvents { after_offset: u64 },
     LoadTask { task_id: TaskId },
     ListTasks,
+    StageBlob(StageBlobCommand),
     ReadBlob { blob_id: BlobId },
 }
 
@@ -135,6 +136,10 @@ pub struct SubmitMessageCommand {
     pub content: String,
     pub attachments: Vec<BlobId>,
     pub context_references: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_config_id: Option<String>,
+    #[serde(default)]
+    pub permission_mode: PermissionMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -192,6 +197,14 @@ pub struct ResolvePermissionCommand {
     pub permission_request_id: RequestId,
     pub request_revision: u64,
     pub option_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StageBlobCommand {
+    pub task_id: TaskId,
+    pub media_type: String,
+    pub base64_data: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -450,6 +463,8 @@ pub struct TaskProjection {
     pub pending_permission: Option<PermissionProjection>,
     pub queue: Vec<QueueItemProjection>,
     #[serde(default)]
+    pub workspace: Option<WorkspaceSelection>,
+    #[serde(default)]
     pub actor_id: Option<ActorId>,
     #[serde(default)]
     pub context_cursor: u64,
@@ -604,6 +619,8 @@ pub struct BlobPayload {
     pub blob_id: BlobId,
     pub media_type: String,
     pub size: u64,
+    #[schemars(length(min = 32, max = 32))]
+    pub content_hash: Vec<u8>,
     pub base64_data: Option<String>,
     pub missing: bool,
 }

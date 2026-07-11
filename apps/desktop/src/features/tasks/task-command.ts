@@ -18,8 +18,24 @@ export function createTaskCommandMetadata(
   return {
     commandId,
     expectedStreamVersion,
-    idempotencyKey: `${taskId}:${operation}:${commandId}`,
+    idempotencyKey: `${taskId}:${boundedOperation(operation)}:${commandId}`,
   }
+}
+
+function boundedOperation(operation: string) {
+  const prefix = (operation.split(':', 1)[0] || 'command')
+    .replaceAll(/[^a-zA-Z0-9_-]/g, '_')
+    .slice(0, 24)
+  let first = 0x811c9dc5
+  let second = 0x9e3779b9
+  for (let index = 0; index < operation.length; index += 1) {
+    const code = operation.charCodeAt(index)
+    first = Math.imul(first ^ code, 0x01000193)
+    second = Math.imul(second ^ code, 0x85ebca6b)
+  }
+  return `${prefix}:${(first >>> 0).toString(16).padStart(8, '0')}${(second >>> 0)
+    .toString(16)
+    .padStart(8, '0')}`
 }
 
 export function createTaskCreationMetadata(): CommandMetadata {

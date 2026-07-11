@@ -16,6 +16,10 @@ ajv.addFormat('uint16', {
   type: 'number',
   validate: (value: number) => Number.isInteger(value) && value >= 0 && value <= 65_535,
 })
+ajv.addFormat('uint8', {
+  type: 'number',
+  validate: (value: number) => Number.isInteger(value) && value >= 0 && value <= 255,
+})
 ajv.addFormat('uint64', {
   type: 'number',
   validate: (value: number) => Number.isSafeInteger(value) && value >= 0,

@@ -24,6 +24,8 @@ pub enum IpcError {
     Io(#[from] std::io::Error),
     #[error("task store failed: {0}")]
     Store(#[from] harness_journal::TaskStoreError),
+    #[error("task supervisor failed: {0}")]
+    Supervisor(#[from] crate::SupervisorError),
     #[error("IPC server task failed: {0}")]
     Join(#[from] tokio::task::JoinError),
 }

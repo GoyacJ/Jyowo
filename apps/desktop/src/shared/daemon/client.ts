@@ -7,6 +7,7 @@ import type {
   ServerMessage,
   TypedUlid,
 } from '@/generated/daemon-protocol'
+import type { AttachmentReference, ListReferenceCandidatesResponse } from '@/shared/tauri/commands'
 
 import { parseClientFrame, parseServerFrame } from './protocol'
 
@@ -26,6 +27,7 @@ export type DaemonSubscriptionHandler = (frame: ServerFrame) => void
 export interface DaemonBlob {
   blobId: TypedUlid
   bytes: Uint8Array | null
+  contentHash: number[]
   mediaType: string
   missing: boolean
   size: number
@@ -41,7 +43,12 @@ export interface DaemonClient {
   request: (request: DaemonRequest) => Promise<ServerFrame>
   loadTask: (taskId: TypedUlid) => Promise<TaskSnapshot>
   listTasks: () => Promise<Extract<ServerMessage, { type: 'task_list' }>>
+  listReferenceCandidates: (taskId: TypedUlid) => Promise<ListReferenceCandidatesResponse>
   readBlob: (blobId: TypedUlid) => Promise<DaemonBlob>
+  stageBlobFromPath: (
+    taskId: TypedUlid,
+    path: string,
+  ) => Promise<{ attachment: AttachmentReference }>
   subscribe: (
     afterOffset: number,
     onFrame: DaemonSubscriptionHandler,
@@ -93,6 +100,11 @@ export function createDaemonClient(
       }
       return frame.message
     },
+    async listReferenceCandidates(taskId) {
+      return parseReferenceCandidates(
+        await transport.invoke('daemon_list_reference_candidates', { taskId }),
+      )
+    },
     async readBlob(blobId) {
       parseClientFrame({
         protocolVersion: PROTOCOL_VERSION,
@@ -112,9 +124,40 @@ export function createDaemonClient(
       return {
         blobId: frame.message.blobId,
         bytes: decodeBlobBytes(frame.message),
+        contentHash: frame.message.contentHash,
         mediaType: frame.message.mediaType,
         missing: frame.message.missing,
         size: frame.message.size,
+      }
+    },
+    async stageBlobFromPath(taskId, path) {
+      const frame = parseServerFrame(
+        await transport.invoke('daemon_stage_blob_from_path', { path, taskId }),
+      )
+      if (frame.message.type === 'error') {
+        throw new DaemonResponseError(frame.message.code, frame.message.message)
+      }
+      if (frame.message.type !== 'blob') {
+        throw new Error(`Expected blob, received ${frame.message.type}`)
+      }
+      if (frame.message.missing || frame.message.base64Data != null) {
+        throw new Error('Daemon returned an invalid staged blob')
+      }
+      const name = path.split(/[\\/]/).pop()?.trim() || 'attachment'
+      const contentHash = frame.message.contentHash
+      return {
+        attachment: {
+          blobRef: {
+            contentHash,
+            contentType: frame.message.mediaType,
+            id: frame.message.blobId,
+            size: frame.message.size,
+          },
+          id: `attachment-${contentHash.map(hexByte).join('')}`,
+          mimeType: frame.message.mediaType,
+          name,
+          sizeBytes: frame.message.size,
+        },
       }
     },
     async subscribe(afterOffset, onFrame, onProtocolError = () => undefined) {
@@ -206,6 +249,10 @@ function asError(error: unknown) {
   return error instanceof Error ? error : new Error(String(error))
 }
 
+function hexByte(byte: number) {
+  return byte.toString(16).padStart(2, '0')
+}
+
 function decodeBlobBytes(message: Extract<ServerMessage, { type: 'blob' }>) {
   if (message.missing) {
     if (message.base64Data != null) throw new Error('Missing daemon blob included data')
@@ -216,4 +263,63 @@ function decodeBlobBytes(message: Extract<ServerMessage, { type: 'blob' }>) {
   const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
   if (bytes.byteLength !== message.size) throw new Error('Daemon blob size mismatch')
   return bytes
+}
+
+function parseReferenceCandidates(value: unknown): ListReferenceCandidatesResponse {
+  if (!isRecord(value)) throw new Error('Invalid task reference candidates')
+  const keys = [
+    'artifacts',
+    'conversations',
+    'files',
+    'memories',
+    'mcpServers',
+    'skills',
+    'tools',
+  ] as const
+  if (Object.keys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key))) {
+    throw new Error('Invalid task reference candidate categories')
+  }
+  const parsed = Object.fromEntries(keys.map((key) => [key, parseCandidateList(value[key])]))
+  return parsed as unknown as ListReferenceCandidatesResponse
+}
+
+function parseCandidateList(value: unknown) {
+  if (!Array.isArray(value)) throw new Error('Invalid task reference candidate list')
+  return value.map((candidate) => {
+    if (!isRecord(candidate)) throw new Error('Invalid task reference candidate')
+    const keys = Object.keys(candidate)
+    if (
+      keys.some((key) => !['id', 'label', 'path'].includes(key)) ||
+      typeof candidate.label !== 'string' ||
+      candidate.label.length === 0 ||
+      (candidate.id !== undefined &&
+        (typeof candidate.id !== 'string' || candidate.id.length === 0)) ||
+      (candidate.path !== undefined &&
+        (typeof candidate.path !== 'string' || !isSafeRelativeReferencePath(candidate.path)))
+    ) {
+      throw new Error('Invalid task reference candidate')
+    }
+    return {
+      ...(candidate.id === undefined ? {} : { id: candidate.id }),
+      label: candidate.label,
+      ...(candidate.path === undefined ? {} : { path: candidate.path }),
+    }
+  })
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isSafeRelativeReferencePath(path: string) {
+  if (
+    path.length === 0 ||
+    path.includes('\0') ||
+    path.startsWith('/') ||
+    path.startsWith('\\') ||
+    /^[a-zA-Z]:[\\/]/.test(path)
+  ) {
+    return false
+  }
+  return !path.split(/[\\/]/).some((part) => part === '..')
 }

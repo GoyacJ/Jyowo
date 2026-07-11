@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    BlobId, PromotionMode, QueueItemId, QueueItemProjection, QueueItemState, RunSegmentId,
-    RunState, TaskProjection,
+    BlobId, PermissionMode, PromotionMode, QueueItemId, QueueItemProjection, QueueItemState,
+    RunSegmentId, RunState, TaskProjection,
 };
 use harness_journal::{CommandRejection, NewTaskEvent};
 use serde_json::{json, Value};
@@ -13,6 +13,15 @@ pub enum QueueCommand {
         content: String,
         attachments: Vec<BlobId>,
         context_references: Vec<String>,
+        created_at: DateTime<Utc>,
+    },
+    SubmitWithRuntime {
+        queue_item_id: QueueItemId,
+        content: String,
+        attachments: Vec<BlobId>,
+        context_references: Vec<String>,
+        model_config_id: Option<String>,
+        permission_mode: PermissionMode,
         created_at: DateTime<Utc>,
     },
     Edit {
@@ -49,6 +58,22 @@ impl QueueCommand {
                 "content": content,
                 "attachments": attachments,
                 "contextReferences": context_references,
+            }),
+            Self::SubmitWithRuntime {
+                content,
+                attachments,
+                context_references,
+                model_config_id,
+                permission_mode,
+                created_at: _,
+                ..
+            } => json!({
+                "type": "queue_submit",
+                "content": content,
+                "attachments": attachments,
+                "contextReferences": context_references,
+                "modelConfigId": model_config_id,
+                "permissionMode": permission_mode,
             }),
             Self::Edit {
                 expected_revision,
@@ -113,6 +138,26 @@ pub fn decide_queue(
             content,
             attachments,
             context_references,
+            created_at,
+        )]),
+        (
+            None,
+            QueueCommand::SubmitWithRuntime {
+                queue_item_id,
+                content,
+                attachments,
+                context_references,
+                model_config_id,
+                permission_mode,
+                created_at,
+            },
+        ) => Ok(vec![NewTaskEvent::message_queued_with_runtime(
+            queue_item_id,
+            content,
+            attachments,
+            context_references,
+            model_config_id,
+            permission_mode,
             created_at,
         )]),
         (

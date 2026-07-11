@@ -138,6 +138,46 @@ describe('TaskWorkspace', () => {
     )
   })
 
+  it('serializes queue and composer commands against one workspace stream cursor', async () => {
+    let acceptQueueCommand!: (frame: ReturnType<typeof acceptedCommand>) => void
+    const request = vi
+      .fn()
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          acceptQueueCommand = resolve
+        }),
+      )
+      .mockResolvedValueOnce(acceptedCommand(4, 4))
+    const events = [
+      taskEvent(3, 'message.queued', {
+        attachments: [],
+        content: 'Queued command under edit',
+        contextReferences: [],
+        createdAt: '2026-07-11T01:00:00Z',
+        queueItemId: '01J00000000000000000000011',
+      }),
+    ]
+    render(
+      <TaskWorkspaceView
+        client={{ connect: vi.fn(), request }}
+        connectionState="connected"
+        events={events}
+        snapshot={runningSnapshot}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete queued message 1' }))
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+    const editor = screen.getByPlaceholderText('Ask Jyowo anything about this project…')
+    fireEvent.change(editor, { target: { value: 'Submit after queue mutation' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Queue message' }))
+    expect(request).toHaveBeenCalledTimes(1)
+
+    acceptQueueCommand(acceptedCommand(4, 4))
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+    expect(request.mock.calls[1]?.[0].metadata.expectedStreamVersion).toBe(4)
+  })
+
   it('moves consumed messages from the active queue into the timeline and omits deleted messages', () => {
     const consumedId = '01J00000000000000000000013'
     const deletedId = '01J00000000000000000000014'
@@ -250,6 +290,7 @@ describe('TaskWorkspace', () => {
       readBlob: vi.fn().mockResolvedValue({
         blobId: '01J00000000000000000000031',
         bytes: null,
+        contentHash: Array.from({ length: 32 }, () => 1),
         mediaType: 'text/plain',
         missing: true,
         size: 0,

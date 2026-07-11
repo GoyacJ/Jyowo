@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
 import type {
@@ -8,6 +9,11 @@ import type {
 import type { DaemonClient } from '@/shared/daemon/client'
 import { useUiStore } from '@/shared/state/ui-store'
 import type { TaskWorkbenchPanel } from '@/shared/state/workbench-selection'
+import type {
+  ConversationModelCapability,
+  ListReferenceCandidatesResponse,
+  PermissionMode,
+} from '@/shared/tauri/commands'
 import { pickAttachmentPath } from '@/shared/tauri/file-dialog'
 import { useCommandClient, useDaemonClient } from '@/shared/tauri/react'
 import { QueuedMessages } from './queue/QueuedMessages'
@@ -16,20 +22,57 @@ import { TaskComposer } from './TaskComposer'
 import type { TaskConnectionState, TaskSnapshot } from './task-store'
 import { TaskTimeline } from './timeline/TaskTimeline'
 import { useTask } from './use-task'
+import { useTaskCommandExecutor } from './use-task-command-executor'
 import { TaskWorkbench } from './workbench/TaskWorkbench'
 
 export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
   const task = useTask(taskId)
   const daemonClient = useDaemonClient()
   const commandClient = useCommandClient()
+  const providerSettings = useQuery({
+    queryFn: () => commandClient.listProviderSettings(),
+    queryKey: ['task-model-configs'],
+  }).data
+  const executionSettings = useQuery({
+    queryFn: () => commandClient.getExecutionSettings(),
+    queryKey: ['task-execution-settings'],
+  }).data
+  const [modelOverride, setModelOverride] = useState<{ taskId: TypedUlid; value: string } | null>(
+    null,
+  )
+  const [permissionOverride, setPermissionOverride] = useState<{
+    taskId: TypedUlid
+    value: PermissionMode
+  } | null>(null)
+  const configuredModels = providerSettings?.configs.filter((config) => config.hasApiKey) ?? []
+  const modelConfigId =
+    modelOverride?.taskId === taskId
+      ? modelOverride.value
+      : (providerSettings?.defaultConfigId ?? undefined)
+  const selectedModel = configuredModels.find((config) => config.id === modelConfigId)
+  const permissionMode =
+    permissionOverride?.taskId === taskId
+      ? permissionOverride.value
+      : executionSettings?.permissionMode
   return (
     <TaskWorkspaceView
       client={daemonClient}
       connectionError={task.connectionError}
       connectionState={task.connectionState}
       events={task.events}
-      onCreateAttachmentFromPath={(path) => commandClient.createAttachmentFromPath(path)}
+      modelCapability={selectedModel?.modelDescriptor.conversationCapability ?? null}
+      modelConfigId={modelConfigId}
+      modelConfigs={configuredModels.map((config) => ({
+        id: config.id,
+        label: `${config.displayName} / ${config.modelId}${
+          config.id === providerSettings?.defaultConfigId ? ' (default)' : ''
+        }`,
+      }))}
+      onListReferenceCandidates={() => daemonClient.listReferenceCandidates(taskId)}
+      onModelConfigChange={(value) => setModelOverride({ taskId, value })}
       onPickAttachmentPath={pickAttachmentPath}
+      onPermissionModeChange={(value) => setPermissionOverride({ taskId, value })}
+      permissionMode={permissionMode}
       snapshot={task.snapshot}
     />
   )
@@ -40,16 +83,29 @@ export function TaskWorkspaceView({
   connectionState,
   client,
   events = [],
-  onCreateAttachmentFromPath,
+  modelCapability,
+  modelConfigId,
+  modelConfigs,
+  onListReferenceCandidates,
+  onModelConfigChange,
   onPickAttachmentPath,
+  onPermissionModeChange,
+  permissionMode,
   snapshot,
 }: {
-  client?: Pick<DaemonClient, 'connect' | 'request'> & Partial<Pick<DaemonClient, 'readBlob'>>
+  client?: Pick<DaemonClient, 'connect' | 'request'> &
+    Partial<Pick<DaemonClient, 'readBlob' | 'stageBlobFromPath'>>
   connectionError?: string | null
   connectionState: TaskConnectionState
   events?: TaskEventEnvelope[]
-  onCreateAttachmentFromPath?: Parameters<typeof TaskComposer>[0]['onCreateAttachmentFromPath']
+  modelCapability?: ConversationModelCapability | null
+  modelConfigId?: string
+  modelConfigs?: Array<{ id: string; label: string }>
+  onListReferenceCandidates?: () => Promise<ListReferenceCandidatesResponse>
+  onModelConfigChange?: (modelConfigId: string) => void
   onPickAttachmentPath?: Parameters<typeof TaskComposer>[0]['onPickAttachmentPath']
+  onPermissionModeChange?: (mode: PermissionMode) => void
+  permissionMode?: PermissionMode
   snapshot: TaskSnapshot | null
 }) {
   const snapshotTaskId = snapshot?.projection.taskId ?? null
@@ -78,6 +134,12 @@ export function TaskWorkspaceView({
       version: current.taskId === snapshotTaskId ? Math.max(current.version, version) : version,
     }))
   }
+  const executeCommand = useTaskCommandExecutor({
+    client: client ?? null,
+    expectedStreamVersion: commandStreamVersion,
+    onCommandAccepted: commandAccepted,
+    taskId: snapshotTaskId,
+  })
   useEffect(() => {
     if (workbenchSelection && workbenchSelection.taskId !== snapshotTaskId) {
       setWorkbenchSelection(null)
@@ -156,6 +218,7 @@ export function TaskWorkspaceView({
               <QueuedMessages
                 client={client}
                 expectedStreamVersion={commandStreamVersion}
+                executeCommand={executeCommand}
                 items={queue}
                 onCommandAccepted={commandAccepted}
                 taskId={snapshot.projection.taskId}
@@ -163,9 +226,16 @@ export function TaskWorkspaceView({
               <TaskComposer
                 client={client}
                 connectionState={connectionState}
+                executeCommand={executeCommand}
+                modelCapability={modelCapability}
+                modelConfigId={modelConfigId}
+                modelConfigs={modelConfigs}
                 onCommandAccepted={commandAccepted}
-                onCreateAttachmentFromPath={onCreateAttachmentFromPath}
+                onListReferenceCandidates={onListReferenceCandidates}
+                onModelConfigChange={onModelConfigChange}
                 onPickAttachmentPath={onPickAttachmentPath}
+                onPermissionModeChange={onPermissionModeChange}
+                permissionMode={permissionMode}
                 streamVersion={commandStreamVersion}
                 taskId={snapshot.projection.taskId}
                 taskState={snapshot.projection.state}

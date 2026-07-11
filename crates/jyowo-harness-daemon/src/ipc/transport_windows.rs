@@ -19,7 +19,24 @@ impl LocalIpcServer {
         store: Arc<TaskStore>,
         config: IpcServerConfig,
     ) -> Result<Self, IpcError> {
-        let pipe_name = pipe_name.into();
+        Self::bind_named_pipe_inner(pipe_name.into(), store, config, None).await
+    }
+
+    pub async fn bind_named_pipe_with_supervisor(
+        pipe_name: impl Into<String>,
+        store: Arc<TaskStore>,
+        config: IpcServerConfig,
+        supervisor: Arc<crate::Supervisor>,
+    ) -> Result<Self, IpcError> {
+        Self::bind_named_pipe_inner(pipe_name.into(), store, config, Some(supervisor)).await
+    }
+
+    async fn bind_named_pipe_inner(
+        pipe_name: String,
+        store: Arc<TaskStore>,
+        config: IpcServerConfig,
+        supervisor: Option<Arc<crate::Supervisor>>,
+    ) -> Result<Self, IpcError> {
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
         let clients = Arc::new(AtomicUsize::new(0));
         let server_clients = Arc::clone(&clients);
@@ -37,7 +54,14 @@ impl LocalIpcServer {
                     _ = &mut shutdown_rx => break,
                     connected = server.connect() => {
                         connected?;
-                        let connection = IpcConnection::new(Arc::clone(&store), config.clone());
+                        let connection = supervisor.as_ref().map_or_else(
+                            || IpcConnection::new(Arc::clone(&store), config.clone()),
+                            |supervisor| IpcConnection::with_supervisor(
+                                Arc::clone(&store),
+                                config.clone(),
+                                Arc::clone(supervisor),
+                            ),
+                        );
                         let client_lease = ClientLease::new(Arc::clone(&server_clients));
                         client_tasks.spawn(async move {
                             let _client_lease = client_lease;
@@ -77,7 +101,7 @@ async fn serve_named_pipe_client(
                 let Some(frame) = frame? else {
                     return Ok(());
                 };
-                for response in connection.handle(frame)? {
+                for response in connection.handle_async(frame).await? {
                     pipe.write_all(&encode_frame(&response)?).await?;
                 }
             }

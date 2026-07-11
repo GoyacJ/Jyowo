@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    CommandId, IndeterminateToolDecision, PromotionMode, QueueItemId, QueueItemState, RunSegmentId,
-    RunState, TaskId, ToolUseId,
+    BlobId, CommandId, IndeterminateToolDecision, PermissionMode, PromotionMode, QueueItemId,
+    QueueItemState, RunSegmentId, RunState, TaskId, ToolUseId,
 };
 use harness_engine::{RunControl, RunControlHandle};
 use harness_journal::{
@@ -31,6 +31,17 @@ pub enum TaskActorMessage {
 
 #[derive(Debug, Clone)]
 pub enum ValidatedTaskCommand {
+    SubmitMessage {
+        command: AcceptedCommand,
+        queue_item_id: QueueItemId,
+        segment_id: RunSegmentId,
+        content: String,
+        attachments: Vec<BlobId>,
+        context_references: Vec<String>,
+        model_config_id: Option<String>,
+        permission_mode: PermissionMode,
+        submitted_at: DateTime<Utc>,
+    },
     StartSegment {
         command: AcceptedCommand,
         segment_id: RunSegmentId,
@@ -66,7 +77,8 @@ pub(crate) enum TaskActorError {
 impl ValidatedTaskCommand {
     pub(crate) fn rejected(&self, message: impl Into<String>) -> CommandOutcome {
         let command = match self {
-            Self::StartSegment { command, .. }
+            Self::SubmitMessage { command, .. }
+            | Self::StartSegment { command, .. }
             | Self::ContinueTask { command, .. }
             | Self::Queue { command, .. } => command,
         };
@@ -197,6 +209,37 @@ async fn handle_command(
     reply: oneshot::Sender<CommandOutcome>,
 ) -> Result<(), TaskActorError> {
     match command {
+        ValidatedTaskCommand::SubmitMessage {
+            command,
+            queue_item_id,
+            segment_id,
+            content,
+            attachments,
+            context_references,
+            model_config_id,
+            permission_mode,
+            submitted_at,
+        } => {
+            handle_submit_message(
+                task_id,
+                store,
+                factory,
+                foreground_runs,
+                active_segment_state,
+                mailbox,
+                active,
+                command,
+                queue_item_id,
+                segment_id,
+                content,
+                attachments,
+                context_references,
+                model_config_id,
+                permission_mode,
+                submitted_at,
+                reply,
+            )?;
+        }
         ValidatedTaskCommand::StartSegment {
             command,
             segment_id,
@@ -396,6 +439,127 @@ async fn handle_command(
             .map_err(TaskActorError::SubagentStop)?;
         }
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_submit_message(
+    task_id: TaskId,
+    store: &TaskStore,
+    factory: &Arc<WorkspaceBoundRunCoordinatorFactory>,
+    foreground_runs: &Arc<Semaphore>,
+    active_segment_state: &Mutex<Option<RunSegmentId>>,
+    mailbox: &mpsc::Sender<TaskActorMessage>,
+    active: &mut Option<ActiveSegment>,
+    mut command: AcceptedCommand,
+    queue_item_id: QueueItemId,
+    segment_id: RunSegmentId,
+    content: String,
+    attachments: Vec<BlobId>,
+    context_references: Vec<String>,
+    model_config_id: Option<String>,
+    permission_mode: PermissionMode,
+    submitted_at: DateTime<Utc>,
+    reply: oneshot::Sender<CommandOutcome>,
+) -> Result<(), TaskActorError> {
+    if command.task_id != task_id {
+        let _ = reply.send(CommandOutcome::Rejected {
+            command_id: command.command_id,
+            task_id: command.task_id,
+            rejection: CommandRejection::InvalidCommand {
+                message: "command task does not match actor task".into(),
+            },
+        });
+        return Ok(());
+    }
+
+    let command_id = command.command_id;
+    let command_task_id = command.task_id;
+    command.authority = TaskStore::supervisor_command_authority(&command.authority);
+    let mut acquired_permit = None;
+    let mut starts_segment = false;
+    let outcome = match store.transact_command(command, |projection| {
+        let active_run = projection.current_run.as_ref().is_some_and(|run| {
+            matches!(
+                run.state,
+                RunState::Running | RunState::WaitingPermission | RunState::Yielding
+            )
+        });
+        if active_run {
+            if projection.queue.len() >= MAX_ACTIVE_QUEUE_ITEMS {
+                return Err(CommandRejection::InvalidCommand {
+                    message: format!(
+                        "a task may contain at most {MAX_ACTIVE_QUEUE_ITEMS} active queue items"
+                    ),
+                });
+            }
+            return decide_queue(
+                None,
+                QueueCommand::SubmitWithRuntime {
+                    queue_item_id,
+                    content: content.clone(),
+                    attachments: attachments.clone(),
+                    context_references: context_references.clone(),
+                    model_config_id: model_config_id.clone(),
+                    permission_mode,
+                    created_at: submitted_at,
+                },
+            );
+        }
+        if projection.current_run.as_ref().is_some_and(|run| {
+            run.terminal_reason == Some(harness_contracts::RunTerminalReason::InterruptedByRestart)
+        }) {
+            return Err(CommandRejection::InvalidCommand {
+                message: "an interrupted restart must use continue_task".into(),
+            });
+        }
+        let Ok(permit) = Arc::clone(foreground_runs).try_acquire_owned() else {
+            return Err(CommandRejection::InvalidCommand {
+                message: "global foreground-run quota is exhausted".into(),
+            });
+        };
+        acquired_permit = Some(permit);
+        starts_segment = true;
+        Ok(vec![
+            NewTaskEvent::run_started(segment_id, submitted_at),
+            NewTaskEvent::message_queued_with_runtime(
+                queue_item_id,
+                content.clone(),
+                attachments.clone(),
+                context_references.clone(),
+                model_config_id.clone(),
+                permission_mode,
+                submitted_at,
+            ),
+            NewTaskEvent::message_consumed(queue_item_id, 1, segment_id),
+        ])
+    }) {
+        Ok(outcome) => outcome,
+        Err(error) => command_store_error(error, command_id, command_task_id)?,
+    };
+    let accepted = matches!(outcome, CommandOutcome::Accepted { .. });
+    let _ = reply.send(outcome);
+    if !accepted || !starts_segment {
+        return Ok(());
+    }
+    let Some(permit) = acquired_permit else {
+        return Ok(());
+    };
+    *active_segment_state
+        .lock()
+        .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = Some(segment_id);
+    let running = factory.spawn_idempotent(StartSegmentRequest {
+        task_id,
+        segment_id,
+        indeterminate_tools: Vec::new(),
+    });
+    let control = running.control();
+    *active = Some(ActiveSegment {
+        segment_id,
+        control,
+        permit,
+    });
+    forward_run_events(segment_id, mailbox.clone(), running.into_events());
     Ok(())
 }
 

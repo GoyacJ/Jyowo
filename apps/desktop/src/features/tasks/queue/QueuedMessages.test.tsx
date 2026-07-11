@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { QueueItemProjection, ServerFrame } from '@/generated/daemon-protocol'
@@ -146,6 +146,39 @@ describe('QueuedMessages', () => {
     finishFirst(acceptedFrame())
   })
 
+  it('does not cache stale metadata for a command rejected by the busy guard', async () => {
+    let finishFirst!: (frame: ServerFrame) => void
+    const request = vi
+      .fn()
+      .mockReturnValueOnce(new Promise<ServerFrame>((resolve) => (finishFirst = resolve)))
+      .mockResolvedValueOnce(acceptedFrame())
+    const second = queuedItem({ queueItemId: consumedId, content: 'Second queued item' })
+    const { rerender } = renderQueue({
+      client: clientWith(request),
+      items: [queuedItem(), second],
+    })
+
+    act(() => {
+      screen.getByRole('button', { name: 'Delete queued message 1' }).click()
+      screen.getByRole('button', { name: 'Delete queued message 2' }).click()
+    })
+    expect(request).toHaveBeenCalledTimes(1)
+
+    await act(async () => finishFirst(acceptedFrame()))
+    rerender(
+      <QueuedMessages
+        client={clientWith(request)}
+        expectedStreamVersion={10}
+        items={[queuedItem(), second]}
+        taskId={taskId}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Delete queued message 2' }))
+
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+    expect(request.mock.calls[1]?.[0].metadata.expectedStreamVersion).toBe(10)
+  })
+
   it('reuses command metadata after an uncertain transport failure', async () => {
     const request = vi
       .fn()
@@ -159,6 +192,21 @@ describe('QueuedMessages', () => {
     await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
 
     expect(request.mock.calls[1]?.[0].metadata).toEqual(request.mock.calls[0]?.[0].metadata)
+  })
+
+  it('keeps edited text open after a failed save', async () => {
+    const request = vi.fn().mockRejectedValue(new Error('daemon unavailable'))
+    renderQueue({ client: clientWith(request), items: [queuedItem()] })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit queued message 1' }))
+    const editor = screen.getByRole('textbox', { name: 'Edit queued message 1' })
+    fireEvent.change(editor, { target: { value: 'Keep this repaired text' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save queued message' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('daemon unavailable')
+    expect(screen.getByRole('textbox', { name: 'Edit queued message 1' })).toHaveValue(
+      'Keep this repaired text',
+    )
   })
 
   it('disables edit and delete while a message is promoting', () => {

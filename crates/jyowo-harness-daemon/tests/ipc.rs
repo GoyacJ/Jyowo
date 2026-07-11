@@ -6,10 +6,27 @@ use harness_contracts::{
     MAX_DAEMON_BLOB_BYTES, PROTOCOL_VERSION,
 };
 use harness_daemon::{
-    encode_frame, IpcConnection, IpcServerConfig, JsonFrameDecoder, LocalIpcServer, MAX_FRAME_BYTES,
+    encode_frame, IpcConnection, IpcServerConfig, JsonFrameDecoder, LocalIpcServer,
+    RunCoordinatorFactory, RunningSegment, StartSegmentRequest, Supervisor, SupervisorQuotas,
+    MAX_FRAME_BYTES,
 };
 use harness_journal::{AcceptedCommand, NewTaskEvent, TaskBlobStore, TaskStore};
 use serde_json::json;
+
+struct IdleRunFactory;
+
+impl RunCoordinatorFactory for IdleRunFactory {
+    fn spawn_idempotent(
+        &self,
+        _request: StartSegmentRequest,
+        _workspace_tools: harness_daemon::WorkspaceToolDispatcher,
+        _subagent_runner: Arc<dyn harness_subagent::SubagentRunner>,
+    ) -> RunningSegment {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        std::mem::forget(sender);
+        RunningSegment::new(receiver)
+    }
+}
 
 fn config() -> IpcServerConfig {
     IpcServerConfig {
@@ -189,6 +206,10 @@ fn duplicate_commands_are_idempotent_and_clients_observe_identical_offsets() {
     let replayed = first
         .handle(create("create-2", command_id, "same-create"))
         .unwrap();
+    let task_id = match &accepted[0].message {
+        ServerMessage::CommandAccepted(accepted) => accepted.task_id,
+        other => panic!("unexpected {other:?}"),
+    };
     assert!(matches!(
         accepted[0].message,
         ServerMessage::CommandAccepted(_)
@@ -198,6 +219,14 @@ fn duplicate_commands_are_idempotent_and_clients_observe_identical_offsets() {
         ServerMessage::CommandAccepted(_)
     ));
     assert_eq!(store.latest_global_offset().unwrap(), 1);
+    let projection = store.task_projection_snapshot(task_id).unwrap().unwrap().0;
+    assert_eq!(
+        projection.workspace,
+        Some(WorkspaceSelection {
+            mode: WorkspaceMode::Current,
+            root: "/tmp/workspace".into(),
+        })
+    );
 
     let mut conflicting = create("create-3", command_id, "same-create");
     if let ClientRequest::CreateTask(command) = &mut conflicting.request {
@@ -249,6 +278,132 @@ fn duplicate_commands_are_idempotent_and_clients_observe_identical_offsets() {
     assert!(matches!(
         &gap[0].message,
         ServerMessage::EventBatch(batch) if batch.gap && batch.events.is_empty()
+    ));
+}
+
+#[tokio::test]
+async fn authenticated_submit_message_is_dispatched_through_the_task_supervisor() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let supervisor = Arc::new(
+        Supervisor::start(
+            Arc::clone(&store),
+            Arc::new(IdleRunFactory),
+            SupervisorQuotas::new(2, 2),
+        )
+        .unwrap(),
+    );
+    let mut connection = IpcConnection::with_supervisor(Arc::clone(&store), config(), supervisor);
+    connection.handle(handshake("token-a")).unwrap();
+    let created = connection
+        .handle(create("create", CommandId::new(), "create-submit-task"))
+        .unwrap();
+    let task_id = match &created[0].message {
+        ServerMessage::CommandAccepted(accepted) => accepted.task_id,
+        other => panic!("unexpected {other:?}"),
+    };
+    let command_id = CommandId::new();
+    let response = connection
+        .handle_async(frame(
+            "submit",
+            ClientRequest::SubmitMessage(harness_contracts::SubmitMessageCommand {
+                metadata: CommandMetadata {
+                    command_id,
+                    idempotency_key: "submit-through-supervisor".into(),
+                    expected_stream_version: 1,
+                },
+                task_id,
+                content: "run this task".into(),
+                attachments: Vec::new(),
+                context_references: Vec::new(),
+                model_config_id: Some("provider-config-001".into()),
+                permission_mode: harness_contracts::PermissionMode::Auto,
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        &response[0].message,
+        ServerMessage::CommandAccepted(accepted)
+            if accepted.command_id == command_id && accepted.task_id == task_id
+    ));
+    let (projection, _, timeline) = store.task_projection_snapshot(task_id).unwrap().unwrap();
+    assert_eq!(projection.state, harness_contracts::TaskState::Running);
+    assert!(timeline
+        .iter()
+        .any(|item| item.kind == harness_contracts::TimelineEventKind::UserMessage));
+    let queued = store
+        .task_events_after(task_id, 0, 16)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == "message.queued")
+        .expect("message.queued event");
+    assert_eq!(queued.payload["modelConfigId"], "provider-config-001");
+    assert_eq!(queued.payload["permissionMode"], "auto");
+}
+
+#[tokio::test]
+async fn staged_blob_is_owned_by_the_target_task_and_can_be_submitted() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let supervisor = Arc::new(
+        Supervisor::start(
+            Arc::clone(&store),
+            Arc::new(IdleRunFactory),
+            SupervisorQuotas::new(2, 2),
+        )
+        .unwrap(),
+    );
+    let mut ipc_config = config();
+    ipc_config.blob_root = root.path().join("blobs");
+    let mut connection = IpcConnection::with_supervisor(Arc::clone(&store), ipc_config, supervisor);
+    connection.handle(handshake("token-a")).unwrap();
+    let created = connection
+        .handle(create("create", CommandId::new(), "create-attachment-task"))
+        .unwrap();
+    let task_id = match &created[0].message {
+        ServerMessage::CommandAccepted(accepted) => accepted.task_id,
+        other => panic!("unexpected {other:?}"),
+    };
+
+    let staged = connection
+        .handle(frame(
+            "stage",
+            ClientRequest::StageBlob(harness_contracts::StageBlobCommand {
+                task_id,
+                media_type: "text/plain".into(),
+                base64_data: "bm90ZXM=".into(),
+            }),
+        ))
+        .unwrap();
+    let blob_id = match &staged[0].message {
+        ServerMessage::Blob(blob) => blob.blob_id,
+        other => panic!("unexpected {other:?}"),
+    };
+    let response = connection
+        .handle_async(frame(
+            "submit-attachment",
+            ClientRequest::SubmitMessage(harness_contracts::SubmitMessageCommand {
+                metadata: CommandMetadata {
+                    command_id: CommandId::new(),
+                    idempotency_key: "submit-staged-attachment".into(),
+                    expected_stream_version: 1,
+                },
+                task_id,
+                content: "inspect notes".into(),
+                attachments: vec![blob_id],
+                context_references: Vec::new(),
+                model_config_id: None,
+                permission_mode: harness_contracts::PermissionMode::Default,
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        response[0].message,
+        ServerMessage::CommandAccepted(_)
     ));
 }
 

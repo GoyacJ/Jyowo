@@ -6,6 +6,7 @@ import { createDaemonClient, type DaemonTransport } from './client'
 
 const taskId = '00000000000000000000000001'
 const blobId = '00000000000000000000000002'
+const contentHash = Array.from({ length: 32 }, (_, index) => index)
 
 describe('daemon client', () => {
   it('validates every response and builds generated request frames', async () => {
@@ -113,6 +114,7 @@ describe('daemon client', () => {
       message: {
         type: 'blob',
         blobId,
+        contentHash,
         mediaType: 'text/plain',
         missing: false,
         size: 3,
@@ -124,6 +126,7 @@ describe('daemon client', () => {
     await expect(client.readBlob(blobId)).resolves.toEqual({
       blobId,
       bytes: new Uint8Array([97, 98, 99]),
+      contentHash,
       mediaType: 'text/plain',
       missing: false,
       size: 3,
@@ -139,6 +142,7 @@ describe('daemon client', () => {
       message: {
         type: 'blob',
         blobId: '00000000000000000000000009',
+        contentHash,
         mediaType: 'text/plain',
         missing: false,
         size: 3,
@@ -148,6 +152,76 @@ describe('daemon client', () => {
     const client = createDaemonClient(transport(invoke))
 
     await expect(client.readBlob(blobId)).rejects.toThrow('another blob')
+  })
+
+  it('stages a local path through Tauri and returns a daemon-owned attachment', async () => {
+    const invoke = vi.fn(async () => ({
+      requestId: null,
+      protocolVersion: 1,
+      message: {
+        type: 'blob',
+        blobId,
+        contentHash,
+        mediaType: 'text/plain',
+        missing: false,
+        size: 5,
+        base64Data: null,
+      },
+    }))
+    const client = createDaemonClient(transport(invoke))
+
+    await expect(client.stageBlobFromPath(taskId, '/tmp/notes.txt')).resolves.toEqual({
+      attachment: {
+        blobRef: {
+          contentHash,
+          contentType: 'text/plain',
+          id: blobId,
+          size: 5,
+        },
+        id: `attachment-${contentHash.map((byte) => byte.toString(16).padStart(2, '0')).join('')}`,
+        mimeType: 'text/plain',
+        name: 'notes.txt',
+        sizeBytes: 5,
+      },
+    })
+    expect(invoke).toHaveBeenCalledWith('daemon_stage_blob_from_path', {
+      path: '/tmp/notes.txt',
+      taskId,
+    })
+  })
+
+  it('lists reference candidates through the task-native bridge', async () => {
+    const payload = {
+      artifacts: [],
+      conversations: [],
+      files: [{ label: 'src/main.ts', path: 'src/main.ts' }],
+      memories: [],
+      mcpServers: [],
+      skills: [],
+      tools: [],
+    }
+    const invoke = vi.fn().mockResolvedValue(payload)
+    const client = createDaemonClient(transport(invoke))
+
+    await expect(client.listReferenceCandidates(taskId)).resolves.toEqual(payload)
+    expect(invoke).toHaveBeenCalledWith('daemon_list_reference_candidates', { taskId })
+  })
+
+  it('rejects absolute paths from the task reference bridge', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      artifacts: [],
+      conversations: [],
+      files: [{ label: '/private/secret', path: '/private/secret' }],
+      memories: [],
+      mcpServers: [],
+      skills: [],
+      tools: [],
+    })
+    const client = createDaemonClient(transport(invoke))
+
+    await expect(client.listReferenceCandidates(taskId)).rejects.toThrow(
+      'Invalid task reference candidate',
+    )
   })
 
   it('rejects invalid subscription offsets before opening a listener', async () => {

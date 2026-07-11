@@ -2908,6 +2908,7 @@ dependencies = [
  "image",
  "jyowo-harness-contracts",
  "jyowo-harness-execution",
+ "jyowo-harness-fs",
  "jyowo-harness-journal",
  "jyowo-harness-memory",
  "jyowo-harness-model",

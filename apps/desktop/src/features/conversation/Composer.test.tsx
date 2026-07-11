@@ -636,6 +636,27 @@ describe('Composer', () => {
     expect(screen.getByText('notes.txt')).toBeInTheDocument()
   })
 
+  it('clears only the submitted snapshot when the user types the next message in flight', async () => {
+    let finishSubmit!: () => void
+    const onSubmit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishSubmit = resolve
+        }),
+    )
+    render(<Composer draftKey="task:in-flight-draft" onSubmit={onSubmit} />)
+
+    const editor = screen.getByPlaceholderText('Ask Jyowo anything about this project…')
+    fireEvent.change(editor, { target: { value: 'First message' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce())
+
+    fireEvent.change(editor, { target: { value: 'Second message' } })
+    finishSubmit()
+
+    await waitFor(() => expect(editor).toHaveValue('Second message'))
+  })
+
   it('does not render a local runtime label inside the input surface', () => {
     render(<Composer modelConfigId="provider-config-001" onSubmit={vi.fn()} />)
 

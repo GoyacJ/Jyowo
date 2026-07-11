@@ -92,11 +92,12 @@ fn reduce_task(
     let mut terminal_queue_item = None;
     let mut recovered_queue_items = Vec::new();
     match event {
-        TaskEvent::TaskCreated { title } => {
+        TaskEvent::TaskCreated { title, workspace } => {
             if projection.stream_version != 0 || !projection.title.is_empty() {
                 return invalid_transition("task.created requires a new task stream");
             }
             projection.title.clone_from(title);
+            projection.workspace.clone_from(workspace);
             projection.state = TaskState::Idle;
             projection.actor_id = Some(ActorId::from_u128(u128::from_be_bytes(
                 envelope.task_id.as_bytes(),
@@ -285,6 +286,7 @@ fn reduce_task(
             attachments,
             context_references,
             created_at,
+            ..
         } => {
             if projection.queue.len() >= MAX_ACTIVE_QUEUE_ITEMS {
                 return invalid_transition(format!(
@@ -1213,6 +1215,7 @@ pub(crate) fn empty_task_projection(task_id: TaskId) -> TaskProjection {
         current_run: None,
         pending_permission: None,
         queue: Vec::new(),
+        workspace: None,
         actor_id: None,
         context_cursor: 0,
         parent: None,

@@ -1,9 +1,13 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use harness_contracts::{BlobId, ClientFrame, ClientRequest, ServerFrame};
+use base64::{engine::general_purpose, Engine as _};
+use harness_contracts::{
+    BlobId, ClientFrame, ClientRequest, ServerFrame, ServerMessage, StageBlobCommand, TaskId,
+    MAX_DAEMON_BLOB_BYTES,
+};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
@@ -11,6 +15,8 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::daemon_client::{DaemonClient, DaemonClientConfig};
+
+use super::contracts::{ListReferenceCandidatesResponse, ReferenceCandidatePayload};
 
 const DAEMON_SIDECAR_NAME: &str = "jyowo-harness-daemon";
 const DAEMON_EVENT_NAME: &str = "jyowo://daemon-events";
@@ -299,6 +305,157 @@ pub async fn daemon_read_blob(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+pub async fn daemon_stage_blob_from_path(
+    task_id: TaskId,
+    path: String,
+    state: State<'_, DaemonBridgeState>,
+) -> Result<ServerFrame, String> {
+    let request =
+        tokio::task::spawn_blocking(move || stage_blob_request(task_id, PathBuf::from(path)))
+            .await
+            .map_err(|error| format!("attachment reader failed: {error}"))??;
+    state
+        .client()
+        .await?
+        .request(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn daemon_list_reference_candidates(
+    task_id: TaskId,
+    state: State<'_, DaemonBridgeState>,
+) -> Result<ListReferenceCandidatesResponse, String> {
+    let frame = state
+        .client()
+        .await?
+        .request(ClientRequest::LoadTask { task_id })
+        .await
+        .map_err(|error| error.to_string())?;
+    let projection = match frame.message {
+        ServerMessage::TaskSnapshot(snapshot) if snapshot.projection.task_id == task_id => {
+            snapshot.projection
+        }
+        ServerMessage::Error(error) => return Err(error.message),
+        _ => return Err("daemon returned an unexpected task reference response".into()),
+    };
+    let workspace = projection
+        .workspace
+        .ok_or_else(|| "task workspace is unavailable".to_owned())?;
+    tokio::task::spawn_blocking(move || reference_candidates_from_workspace(&workspace.root))
+        .await
+        .map_err(|error| format!("reference candidate scan failed: {error}"))?
+}
+
+fn reference_candidates_from_workspace(
+    workspace_root: &str,
+) -> Result<ListReferenceCandidatesResponse, String> {
+    let root = std::fs::canonicalize(workspace_root)
+        .map_err(|error| format!("task workspace is invalid: {error}"))?;
+    if !root.is_dir() {
+        return Err("task workspace is not a directory".into());
+    }
+    let mut paths = Vec::new();
+    let mut scanned = 0_usize;
+    collect_reference_paths(&root, &root, 0, &mut scanned, &mut paths)?;
+    paths.sort();
+    paths.truncate(200);
+    let files = paths
+        .into_iter()
+        .map(|path| ReferenceCandidatePayload {
+            id: None,
+            label: path.clone(),
+            path: Some(path),
+        })
+        .collect();
+    Ok(ListReferenceCandidatesResponse {
+        artifacts: Vec::new(),
+        conversations: Vec::new(),
+        files,
+        memories: Vec::new(),
+        mcp_servers: Vec::new(),
+        skills: Vec::new(),
+        tools: Vec::new(),
+    })
+}
+
+fn collect_reference_paths(
+    root: &Path,
+    directory: &Path,
+    depth: usize,
+    scanned: &mut usize,
+    paths: &mut Vec<String>,
+) -> Result<(), String> {
+    if depth > 12 || *scanned >= 20_000 || paths.len() >= 200 {
+        return Ok(());
+    }
+    let mut entries = std::fs::read_dir(directory)
+        .map_err(|error| format!("cannot read task workspace: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("cannot read task workspace entry: {error}"))?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        if *scanned >= 20_000 || paths.len() >= 200 {
+            break;
+        }
+        *scanned += 1;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let metadata = std::fs::symlink_metadata(entry.path())
+            .map_err(|error| format!("cannot inspect task workspace entry: {error}"))?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            if is_ignored_reference_directory(&name) {
+                continue;
+            }
+            collect_reference_paths(root, &entry.path(), depth + 1, scanned, paths)?;
+        } else if metadata.is_file() {
+            let relative = entry
+                .path()
+                .strip_prefix(root)
+                .map_err(|_| "task workspace entry escaped its root".to_owned())?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !relative.is_empty() {
+                paths.push(relative);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_ignored_reference_directory(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | ".worktrees"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "build"
+            | ".next"
+            | ".nuxt"
+            | "coverage"
+    )
+}
+
+fn stage_blob_request(task_id: TaskId, path: PathBuf) -> Result<ClientRequest, String> {
+    let source_path = std::fs::canonicalize(&path)
+        .map_err(|error| format!("attachment path is invalid: {error}"))?;
+    let bytes = harness_fs::read_file_no_follow_bounded(&source_path, MAX_DAEMON_BLOB_BYTES)
+        .map_err(|error| format!("attachment read failed: {error}"))?
+        .ok_or_else(|| "attachment does not exist".to_owned())?;
+    Ok(ClientRequest::StageBlob(StageBlobCommand {
+        task_id,
+        media_type: super::conversations::infer_mime_type(&source_path),
+        base64_data: general_purpose::STANDARD.encode(bytes),
+    }))
+}
+
 fn validate_subscription_id(subscription_id: &str) -> Result<(), String> {
     if subscription_id.is_empty()
         || subscription_id.len() > 128
@@ -388,6 +545,45 @@ mod tests {
     use std::future::pending;
 
     use super::*;
+
+    #[test]
+    fn staged_attachment_request_contains_bytes_and_never_the_source_path() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("notes.txt");
+        std::fs::write(&path, b"notes").unwrap();
+        let task_id = TaskId::new();
+
+        let request = stage_blob_request(task_id, path.clone()).unwrap();
+        let value = serde_json::to_value(&request).unwrap();
+
+        assert_eq!(value["type"], "stage_blob");
+        assert_eq!(value["taskId"], task_id.to_string());
+        assert_eq!(value["mediaType"], "text/plain");
+        assert_eq!(value["base64Data"], "bm90ZXM=");
+        assert!(!serde_json::to_string(&value)
+            .unwrap()
+            .contains(path.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn task_reference_candidates_are_workspace_relative_and_skip_generated_trees() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("src/nested")).unwrap();
+        std::fs::create_dir_all(root.path().join("node_modules/pkg")).unwrap();
+        std::fs::write(root.path().join("src/lib.rs"), b"").unwrap();
+        std::fs::write(root.path().join("src/nested/mod.rs"), b"").unwrap();
+        std::fs::write(root.path().join("node_modules/pkg/index.js"), b"").unwrap();
+
+        let candidates =
+            reference_candidates_from_workspace(root.path().to_str().unwrap()).unwrap();
+        let paths = candidates
+            .files
+            .into_iter()
+            .map(|candidate| candidate.path.unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(paths, vec!["src/lib.rs", "src/nested/mod.rs"]);
+    }
 
     fn insert_subscription(
         registry: &mut DaemonSubscriptionRegistry,

@@ -125,6 +125,16 @@
             "metadata": {
               "$ref": "#/$defs/CommandMetadata"
             },
+            "modelConfigId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "permissionMode": {
+              "$ref": "#/$defs/PermissionMode",
+              "default": "default"
+            },
             "taskId": {
               "$ref": "#/$defs/TypedUlid"
             },
@@ -398,6 +408,31 @@
         {
           "type": "object",
           "properties": {
+            "base64Data": {
+              "type": "string"
+            },
+            "mediaType": {
+              "type": "string"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "stage_blob"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "taskId",
+            "mediaType",
+            "base64Data"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "blobId": {
               "$ref": "#/$defs/TypedUlid"
             },
@@ -524,6 +559,17 @@
       "enum": [
         "treat_as_failed",
         "execute_again"
+      ]
+    },
+    "PermissionMode": {
+      "type": "string",
+      "enum": [
+        "default",
+        "plan",
+        "accept_edits",
+        "bypass_permissions",
+        "dont_ask",
+        "auto"
       ]
     },
     "PermissionOption": {
@@ -1033,6 +1079,17 @@
             "blobId": {
               "$ref": "#/$defs/TypedUlid"
             },
+            "contentHash": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0
+              },
+              "maxItems": 32,
+              "minItems": 32
+            },
             "mediaType": {
               "type": "string"
             },
@@ -1055,6 +1112,7 @@
             "blobId",
             "mediaType",
             "size",
+            "contentHash",
             "missing"
           ]
         },
@@ -1330,6 +1388,17 @@
         },
         "title": {
           "type": "string"
+        },
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceSelection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "additionalProperties": false,

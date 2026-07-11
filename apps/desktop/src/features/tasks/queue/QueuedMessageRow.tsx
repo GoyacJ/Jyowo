@@ -18,10 +18,10 @@ export function QueuedMessageRow({
   busy: boolean
   item: QueueItemProjection
   order: number
-  onDelete: () => Promise<void>
-  onEdit: (content: string) => Promise<void>
-  onForcePromote: () => Promise<void>
-  onSafePromote: () => Promise<void>
+  onDelete: () => Promise<boolean>
+  onEdit: (content: string) => Promise<boolean>
+  onForcePromote: () => Promise<boolean>
+  onSafePromote: () => Promise<boolean>
 }) {
   const { t } = useTranslation('tasks')
   const [editing, setEditing] = useState(false)
@@ -29,12 +29,12 @@ export function QueuedMessageRow({
   const editLabel = t('queue.editLabel', { order })
 
   useEffect(() => {
-    if (locked) setEditing(false)
-  }, [locked])
+    if (item.state === 'promoting') setEditing(false)
+  }, [item.state])
 
   return (
     <li className="border-border/70 border-b px-3 py-2.5 last:border-b-0">
-      <div className="flex items-start gap-3">
+      <div className="flex flex-wrap items-start gap-3">
         <span
           aria-hidden="true"
           className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-muted font-medium text-[10px] text-muted-foreground"
@@ -57,7 +57,7 @@ export function QueuedMessageRow({
             </p>
           ) : null}
         </div>
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div className="ml-8 flex w-full items-center justify-end gap-0.5 sm:ml-0 sm:w-auto sm:shrink-0">
           <QueueAction disabled={locked} label={editLabel} onClick={() => setEditing(true)}>
             <Pencil className="size-3.5" />
           </QueueAction>
@@ -93,8 +93,7 @@ export function QueuedMessageRow({
           label={editLabel}
           onCancel={() => setEditing(false)}
           onSave={async (content) => {
-            await onEdit(content)
-            setEditing(false)
+            if (await onEdit(content)) setEditing(false)
           }}
         />
       ) : null}

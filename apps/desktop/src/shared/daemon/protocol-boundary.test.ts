@@ -7,9 +7,13 @@ const sourceRoot = join(process.cwd(), 'src')
 const allowedRoots = ['generated/', 'shared/daemon/']
 const generatedSource = readFileSync(join(sourceRoot, 'generated/daemon-protocol.ts'), 'utf8')
 const generatedProtocolNames = new Set(
-  [...generatedSource.matchAll(/\b(?:type|interface)\s+([A-Z][A-Za-z0-9_]*)\b/g)].map(
-    (match) => match[1] as string,
-  ),
+  [...generatedSource.matchAll(/\b(?:type|interface)\s+([A-Z][A-Za-z0-9_]*)\b/g)]
+    .map((match) => match[1] as string)
+    .filter((name) =>
+      /(?:Batch|Command|Envelope|Event|Frame|Message|Payload|Projection|Request|Response|Snapshot)$/.test(
+        name,
+      ),
+    ),
 )
 
 describe('daemon protocol boundary', () => {

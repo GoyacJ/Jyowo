@@ -29,6 +29,7 @@ image = { workspace = true }
 async-trait = { workspace = true }
 jyowo-harness-contracts = { path = "../../../crates/jyowo-harness-contracts" }
 jyowo-harness-execution = { path = "../../../crates/jyowo-harness-execution" }
+jyowo-harness-fs = { path = "../../../crates/jyowo-harness-fs" }
 jyowo-harness-observability = { path = "../../../crates/jyowo-harness-observability" }
 jyowo-harness-permission = { path = "../../../crates/jyowo-harness-permission", features = ["integrity"] }
 jyowo-harness-plugin = { path = "../../../crates/jyowo-harness-plugin" }

@@ -33,6 +33,69 @@ describe('TaskComposer', () => {
     )
   })
 
+  it('submits the selected model and permission mode to the daemon', async () => {
+    const request = vi.fn().mockResolvedValue(acceptedFrame())
+    render(
+      <TaskComposer
+        client={clientWith(request)}
+        connectionState="connected"
+        modelConfigId="provider-config-001"
+        modelConfigs={[{ id: 'provider-config-001', label: 'OpenAI / GPT-5' }]}
+        permissionMode="auto"
+        streamVersion={9}
+        taskId={taskId}
+        taskState="idle"
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
+      target: { value: 'Use the selected runtime' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          modelConfigId: 'provider-config-001',
+          permissionMode: 'auto',
+          type: 'submit_message',
+        }),
+      ),
+    )
+  })
+
+  it('stages a selected attachment in the daemon task blob store', async () => {
+    const request = vi.fn().mockResolvedValue(acceptedFrame())
+    const stageBlobFromPath = vi.fn().mockResolvedValue({
+      attachment: {
+        blobRef: {
+          contentHash: Array.from({ length: 32 }, () => 1),
+          contentType: 'text/plain',
+          id: '01J00000000000000000000005',
+          size: 5,
+        },
+        id: `attachment-${'01'.repeat(32)}`,
+        mimeType: 'text/plain',
+        name: 'notes.txt',
+        sizeBytes: 5,
+      },
+    })
+    render(
+      <TaskComposer
+        client={{ ...clientWith(request), stageBlobFromPath } as never}
+        connectionState="connected"
+        onPickAttachmentPath={vi.fn().mockResolvedValue('/tmp/notes.txt')}
+        streamVersion={9}
+        taskId={taskId}
+        taskState="idle"
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Attach file' }))
+
+    await waitFor(() => expect(stageBlobFromPath).toHaveBeenCalledWith(taskId, '/tmp/notes.txt'))
+  })
+
   it.each([
     'waiting_permission',
     'yielding',
@@ -85,6 +148,25 @@ describe('TaskComposer', () => {
     expect(editor).toHaveValue('Do not lose this draft')
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(connect).toHaveBeenCalledOnce()
+  })
+
+  it('reuses command metadata when retrying an uncertain submit result', async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('connection closed before response'))
+      .mockResolvedValueOnce(acceptedFrame())
+    renderComposer({ client: clientWith(request), taskState: 'running' })
+
+    const editor = screen.getByPlaceholderText('Ask Jyowo anything about this project…')
+    fireEvent.change(editor, { target: { value: 'Queue exactly once' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Queue message' }))
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Queue message' })).toBeEnabled())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Queue message' }))
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+
+    expect(request.mock.calls[1]?.[0].metadata).toEqual(request.mock.calls[0]?.[0].metadata)
   })
 })
 

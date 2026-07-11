@@ -22,6 +22,8 @@ export function QueuedMessageEditor({
     setSaving(true)
     try {
       await onSave(nextContent)
+    } catch {
+      // The queue-level live region owns the error message; keep this draft open for retry.
     } finally {
       setSaving(false)
     }
