@@ -29,7 +29,9 @@
           "$ref": "#/$defs/ClientRequest"
         },
         "requestId": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
         }
       },
       "additionalProperties": false,
