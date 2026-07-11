@@ -3,6 +3,7 @@ import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import {
   createScrollFollowMode,
   isNearBottom,
+  preservedScrollTop,
   shouldAutoFollowOnAnchorChange,
   shouldShowJumpToLatest,
 } from './conversation-scroll-controller'
@@ -13,13 +14,40 @@ function scrollToEnd(endElement: HTMLElement | null) {
 
 export function useConversationScrollAnchor(
   latestAnchorKey: string | null,
-  options: { isStreamingUpdate?: boolean; streamingScrollTick?: number | string } = {},
+  options: {
+    isStreamingUpdate?: boolean
+    prependAnchorKey?: number | string
+    streamingScrollTick?: number | string
+  } = {},
 ) {
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const endRef = useRef<HTMLDivElement | null>(null)
   const followRef = useRef(createScrollFollowMode())
   const lastAnchorKeyRef = useRef<string | null>(null)
+  const previousPrependRef = useRef<{
+    key: number | string | undefined
+    scrollHeight: number
+    scrollTop: number
+  } | null>(null)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    const previous = previousPrependRef.current
+    if (previous && previous.key !== options.prependAnchorKey) {
+      viewport.scrollTop = preservedScrollTop({
+        nextScrollHeight: viewport.scrollHeight,
+        previousScrollHeight: previous.scrollHeight,
+        previousScrollTop: previous.scrollTop,
+      })
+    }
+    previousPrependRef.current = {
+      key: options.prependAnchorKey,
+      scrollHeight: viewport.scrollHeight,
+      scrollTop: viewport.scrollTop,
+    }
+  }, [options.prependAnchorKey])
 
   useLayoutEffect(() => {
     if (options.streamingScrollTick === undefined || !followRef.current.followLatest) {
@@ -62,6 +90,10 @@ export function useConversationScrollAnchor(
     }
 
     followRef.current.followLatest = isNearBottom(viewport, followRef.current.nearBottomThresholdPx)
+    if (previousPrependRef.current) {
+      previousPrependRef.current.scrollHeight = viewport.scrollHeight
+      previousPrependRef.current.scrollTop = viewport.scrollTop
+    }
     if (followRef.current.followLatest) {
       setShowJumpToLatest(false)
     }

@@ -201,7 +201,7 @@ describe('AppShell', () => {
   })
 
   it('does not show another conversation run while the selected conversation is idle', async () => {
-    window.history.pushState(null, '', '/?conversationId=conversation-001')
+    window.history.pushState(null, '', '/?taskId=task-001')
     const commandClient = createTestCommandClient()
     const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
     const trackedClient = {

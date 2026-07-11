@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   isNearBottom,
+  preservedScrollTop,
   shouldAutoFollowOnAnchorChange,
   turnScrollAnchorKey,
 } from './conversation-scroll-controller'
@@ -34,5 +35,15 @@ describe('conversationScrollController', () => {
     } as HTMLElement
 
     expect(isNearBottom(viewport, 96)).toBe(true)
+  })
+
+  it('preserves the visible row when older history is prepended', () => {
+    expect(
+      preservedScrollTop({
+        previousScrollHeight: 1_000,
+        nextScrollHeight: 1_420,
+        previousScrollTop: 240,
+      }),
+    ).toBe(660)
   })
 })

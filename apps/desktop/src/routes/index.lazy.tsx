@@ -1,25 +1,24 @@
-import { createLazyFileRoute, useNavigate } from '@tanstack/react-router'
+import { createLazyFileRoute } from '@tanstack/react-router'
 
-import { ConversationWorkspace } from '@/features/conversation/ConversationWorkspace'
-import { WelcomeWorkspace } from '@/features/conversation/WelcomeWorkspace'
+import { TaskWorkspace } from '@/features/tasks/TaskWorkspace'
 
 export const Route = createLazyFileRoute('/')({
-  component: ConversationRoute,
+  component: TaskRoute,
 })
 
-function ConversationRoute() {
-  const { conversationId } = Route.useSearch()
-  const navigate = useNavigate()
+function TaskRoute() {
+  const { taskId } = Route.useSearch()
 
-  if (!conversationId) {
+  if (!taskId) {
     return (
-      <WelcomeWorkspace
-        onConversationCreated={(nextConversationId) => {
-          void navigate({ search: { conversationId: nextConversationId }, to: '/' })
-        }}
-      />
+      <section className="mx-auto flex h-full max-w-[820px] flex-col items-center justify-center text-center">
+        <h1 className="font-semibold text-2xl">Choose a task</h1>
+        <p className="mt-2 text-muted-foreground text-sm">
+          Select or create a task from the sidebar.
+        </p>
+      </section>
     )
   }
 
-  return <ConversationWorkspace conversationId={conversationId} />
+  return <TaskWorkspace taskId={taskId} />
 }

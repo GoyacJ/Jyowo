@@ -44,3 +44,11 @@ export function shouldAutoFollowOnAnchorChange(input: {
 export function shouldShowJumpToLatest(followLatest: boolean) {
   return !followLatest
 }
+
+export function preservedScrollTop(input: {
+  previousScrollHeight: number
+  previousScrollTop: number
+  nextScrollHeight: number
+}) {
+  return input.previousScrollTop + Math.max(0, input.nextScrollHeight - input.previousScrollHeight)
+}

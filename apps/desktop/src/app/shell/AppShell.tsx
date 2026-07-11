@@ -20,9 +20,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
-  const selectedConversationId =
-    typeof currentSearch.conversationId === 'string' ? currentSearch.conversationId : undefined
-  const selectedActiveRun = selectActiveRun(activeRunsByConversation, selectedConversationId)
+  const selectedTaskId = typeof currentSearch.taskId === 'string' ? currentSearch.taskId : undefined
+  const hasRootSelection = pathname === '/' && selectedTaskId
+  const selectedActiveRun = hasRootSelection
+    ? undefined
+    : selectOnlyActiveRun(activeRunsByConversation)
   const sidebarWidth = sidebarCollapsed || compactSidebar ? '48px' : '300px'
 
   function openSettings() {
@@ -66,23 +68,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   )
 }
 
-function selectActiveRun(
-  activeRunsByConversation: Record<string, string>,
-  selectedConversationId: string | undefined,
-) {
-  if (selectedConversationId) {
-    const runId = activeRunsByConversation[selectedConversationId]
-
-    if (runId) {
-      return {
-        conversationId: selectedConversationId,
-        runId,
-      }
-    }
-
-    return undefined
-  }
-
+function selectOnlyActiveRun(activeRunsByConversation: Record<string, string>) {
   const activeRuns = Object.entries(activeRunsByConversation)
 
   if (activeRuns.length !== 1) {

@@ -84,7 +84,7 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const selectedConversationId = useRouterState({
-    select: (state) => state.location.search.conversationId,
+    select: (state) => state.location.search.taskId,
   })
   const clearActiveRun = useUiStore((state) => state.clearActiveRun)
   const activeRunsByConversation = useUiStore((state) => state.activeRunsByConversation)
@@ -149,7 +149,7 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
         mergeCreatedConversationsWithFetched([response.conversation], current),
       )
       setExpandedSections((current) => new Set(current).add('conversations'))
-      void navigate({ search: { conversationId: response.conversation.id }, to: '/' }).then(() => {
+      void navigate({ search: { taskId: response.conversation.id }, to: '/' }).then(() => {
         window.setTimeout(() => {
           document.querySelector<HTMLTextAreaElement>('textarea')?.focus()
         }, 0)
@@ -170,7 +170,7 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
         await switchProjectCommand(projectPath, commandClient)
         await onProjectWorkspaceChanged(queryClient, navigate)
       }
-      void navigate({ search: { conversationId: response.conversation.id }, to: '/' }).then(() => {
+      void navigate({ search: { taskId: response.conversation.id }, to: '/' }).then(() => {
         window.setTimeout(() => {
           document.querySelector<HTMLTextAreaElement>('textarea')?.focus()
         }, 0)
@@ -334,7 +334,7 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
   }, [pinnedConversationIds])
 
   function selectConversation(conversationId: string) {
-    void navigate({ search: { conversationId }, to: '/' })
+    void navigate({ search: { taskId: conversationId }, to: '/' })
   }
 
   async function selectProjectConversation(projectPath: string, conversationId: string) {
@@ -344,7 +344,7 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
         await switchProjectCommand(projectPath, commandClient)
         await onProjectWorkspaceChanged(queryClient, navigate)
       }
-      void navigate({ search: { conversationId }, to: '/' })
+      void navigate({ search: { taskId: conversationId }, to: '/' })
     } catch (error) {
       setNavigationError(error)
     }
