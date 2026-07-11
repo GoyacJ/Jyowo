@@ -107,6 +107,7 @@ mod background_agents;
 mod constants;
 mod contracts;
 mod conversations;
+mod daemon;
 mod error;
 mod evals;
 mod mcp;
@@ -128,6 +129,7 @@ pub(crate) use conversations::{
     conversation_tail_event_id, mark_conversation_metadata_active,
     wait_for_started_conversation_run,
 };
+pub use daemon::*;
 use error::{invalid_payload, runtime_unavailable};
 use harness_contracts::AgentCapabilityKind;
 pub(crate) use providers::{
@@ -345,7 +347,6 @@ pub use runtime::{
     spawn_automation_scheduler, spawn_automation_scheduler_on_tauri_runtime, ManagedDesktopRuntime,
 };
 pub(crate) use runtime::{
-    ensure_agent_supervisor_sidecar_for_state,
     global_conversation_runtime_layout_with_runtime_root, project_runtime_layout,
     runtime_state_for_global_conversation_with_runtime_root,
     runtime_state_from_stream_permission_runtime,

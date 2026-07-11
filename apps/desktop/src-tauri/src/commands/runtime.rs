@@ -1080,6 +1080,7 @@ fn jyowo_home_dir() -> PathBuf {
     PathBuf::from(home).join(".jyowo")
 }
 
+#[allow(dead_code)] // Removed with the legacy supervisor runtime in Task 19.
 pub(crate) async fn ensure_agent_supervisor_sidecar_for_state<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &DesktopRuntimeState,

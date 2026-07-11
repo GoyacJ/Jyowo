@@ -11,4 +11,5 @@ target/
 apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/.jyowo/
 apps/desktop/src-tauri/binaries/jyowo-agent-supervisor-*
+apps/desktop/src-tauri/binaries/jyowo-harness-daemon-*
 output/

@@ -1,5 +1,6 @@
 pub mod agent_supervisor;
 pub mod commands;
+pub mod daemon_client;
 pub mod project_registry;
 pub mod skill_catalog;
 pub mod storage_layout;
@@ -17,19 +18,18 @@ pub fn run() {
             project_registry::ProjectRegistry::load().expect("project registry should initialize"),
         )
         .manage(managed_runtime.clone())
-        .setup(move |app| {
+        .manage(commands::DaemonBridgeState::default())
+        .setup(move |_app| {
             let _scheduler =
                 commands::spawn_automation_scheduler_on_tauri_runtime(managed_runtime.clone());
-            let app_handle = app.handle().clone();
-            let supervisor_runtime = managed_runtime.clone();
-            tauri::async_runtime::spawn(async move {
-                let state = supervisor_runtime.read().await.clone();
-                let _ =
-                    commands::ensure_agent_supervisor_sidecar_for_state(&app_handle, &state).await;
-            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::daemon_connect,
+            commands::daemon_request,
+            commands::daemon_subscribe,
+            commands::daemon_unsubscribe,
+            commands::daemon_read_blob,
             commands::add_project,
             commands::archive_background_agent,
             commands::cancel_run,
