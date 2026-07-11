@@ -5,8 +5,12 @@ import { describe, expect, it } from 'vitest'
 
 const sourceRoot = join(process.cwd(), 'src')
 const allowedRoots = ['generated/', 'shared/daemon/']
-const daemonEventDeclaration =
-  /\b(?:type|interface)\s+(?:DaemonEvent\w*|TaskEventEnvelope|EventBatch)\b/
+const generatedSource = readFileSync(join(sourceRoot, 'generated/daemon-protocol.ts'), 'utf8')
+const generatedProtocolNames = new Set(
+  [...generatedSource.matchAll(/\b(?:type|interface)\s+([A-Z][A-Za-z0-9_]*)\b/g)].map(
+    (match) => match[1] as string,
+  ),
+)
 
 describe('daemon protocol boundary', () => {
   it('keeps daemon event declarations in generated output or shared daemon code', () => {
@@ -16,12 +20,34 @@ describe('daemon protocol boundary', () => {
         const projectPath = relative(sourceRoot, path).replaceAll('\\', '/')
         return !allowedRoots.some((root) => projectPath.startsWith(root))
       })
-      .filter(({ source }) => daemonEventDeclaration.test(source))
+      .filter(({ source }) => declaresGeneratedProtocol(source))
       .map(({ path }) => relative(process.cwd(), path).replaceAll('\\', '/'))
 
     expect(violations).toEqual([])
   })
+
+  it('detects handwritten aliases and Zod schemas for generated declarations', () => {
+    expect(declaresGeneratedProtocol('export interface TaskEventEnvelope {}')).toBe(true)
+    expect(declaresGeneratedProtocol('const taskEventEnvelopeSchema = z.object({})')).toBe(true)
+    expect(declaresGeneratedProtocol('export const runProjectionSchema = z.object({})')).toBe(true)
+    expect(declaresGeneratedProtocol('export type RunEvent = z.infer<typeof runEventSchema>')).toBe(
+      false,
+    )
+  })
 })
+
+function declaresGeneratedProtocol(source: string) {
+  for (const name of generatedProtocolNames) {
+    const schemaName = `${name[0]?.toLowerCase()}${name.slice(1)}Schema`
+    const declarationPattern = new RegExp(
+      `\\b(?:type|interface)\\s+${name}\\b|\\b(?:const|let|var)\\s+${schemaName}\\b`,
+    )
+    if (declarationPattern.test(source)) return true
+  }
+  return /\b(?:type|interface)\s+DaemonEvent[A-Za-z0-9_]*\b|\b(?:const|let|var)\s+daemonEvent[A-Za-z0-9_]*Schema\b/.test(
+    source,
+  )
+}
 
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

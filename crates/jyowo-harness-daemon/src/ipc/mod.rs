@@ -28,4 +28,4 @@ pub enum IpcError {
     Join(#[from] tokio::task::JoinError),
 }
 
-pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+pub use harness_contracts::MAX_DAEMON_FRAME_BYTES as MAX_FRAME_BYTES;

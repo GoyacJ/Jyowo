@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use harness_contracts::{
     now, BlobId, CheckpointId, ClientId, CommandId, QueueItemId, RunSegmentId, RunTerminalReason,
-    TaskId,
+    TaskId, MAX_DAEMON_BLOB_BYTES,
 };
 use harness_journal::{
     AcceptedCommand, BlobRead, CommandOutcome, CommandRejection, NewTaskEvent, TaskBlobStore,
@@ -177,6 +177,33 @@ fn task_blob_reads_report_missing_and_reject_corruption() {
         blobs.put("../invalid", b"body"),
         Err(TaskStoreError::InvalidInput(_))
     ));
+
+    drop((blobs, store));
+    cleanup(&database_path, &blob_root);
+}
+
+#[test]
+fn task_blob_store_rejects_bytes_that_cannot_fit_a_daemon_frame() {
+    let database_path = temp_path("daemon-frame-limit", "db");
+    let blob_root = temp_path("daemon-frame-limit", "blobs");
+    let store = Arc::new(TaskStore::open(&database_path).unwrap());
+    let task_id = TaskId::new();
+    create_task(&store, task_id);
+    let blobs = TaskBlobStore::open(Arc::clone(&store), task_id, &blob_root).unwrap();
+
+    let error = blobs
+        .put(
+            "application/octet-stream",
+            &vec![0_u8; MAX_DAEMON_BLOB_BYTES + 1],
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        TaskStoreError::InvalidInput(message)
+            if message.contains("daemon IPC frame")
+    ));
+    assert_eq!(table_count(&database_path, "blob_staging"), 0);
 
     drop((blobs, store));
     cleanup(&database_path, &blob_root);

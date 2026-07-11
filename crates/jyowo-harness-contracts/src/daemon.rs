@@ -12,9 +12,23 @@ use crate::{
 
 pub const PROTOCOL_VERSION: u16 = 1;
 
+/// Maximum JSON body accepted by the length-prefixed local daemon transport.
+pub const MAX_DAEMON_FRAME_BYTES: usize = 8 * 1024 * 1024;
+
+/// Maximum request ID size reserved in every daemon response envelope.
+pub const MAX_DAEMON_REQUEST_ID_BYTES: usize = 128;
+
+/// Maximum raw blob body that can be returned inline after base64 expansion.
+///
+/// Base64 consumes four bytes for every three input bytes. The additional
+/// four-KiB reserve keeps the response envelope, request ID, blob metadata,
+/// and JSON syntax within [`MAX_DAEMON_FRAME_BYTES`].
+pub const MAX_DAEMON_BLOB_BYTES: usize = 6 * 1024 * 1024 - 4 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClientFrame {
+    #[schemars(length(min = 1, max = "MAX_DAEMON_REQUEST_ID_BYTES"))]
     pub request_id: String,
     pub protocol_version: u16,
     pub request: ClientRequest,

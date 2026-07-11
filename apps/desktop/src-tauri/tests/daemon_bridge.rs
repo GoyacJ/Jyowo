@@ -200,8 +200,23 @@ fn tauri_exposes_only_thin_daemon_bridge_commands() {
         "concurrent subscriptions must use separate event channels"
     );
     assert!(
-        source.contains("subscriptions.lock().await.remove(&cleanup_id)"),
+        source.contains(".remove(&cleanup_id)"),
         "finished subscriptions must remove their bridge handles"
+    );
+    assert!(
+        source.contains("window.on_window_event")
+            && source.contains("tauri::WindowEvent::Destroyed"),
+        "destroying an invoking window must actively reclaim its subscriptions"
+    );
+    assert!(
+        source.find("contains_key(&subscription_id)")
+            < source.find("window.on_window_event"),
+        "a rejected duplicate subscription must not register a cleanup callback that can abort the existing subscription"
+    );
+    assert!(
+        source.contains("lifecycle_windows")
+            && source.contains("insert(owner_window_label.clone())"),
+        "each window must install at most one daemon subscription lifecycle handler"
     );
 }
 

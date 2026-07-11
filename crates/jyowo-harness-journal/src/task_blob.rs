@@ -3,12 +3,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use harness_contracts::{BlobId, BlobRef, TaskId};
+use harness_contracts::{BlobId, BlobRef, TaskId, MAX_DAEMON_BLOB_BYTES};
 
 use crate::{TaskStore, TaskStoreError};
 
 const MAX_MEDIA_TYPE_BYTES: usize = 255;
-const MAX_BLOB_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlobRead {
@@ -52,9 +51,9 @@ impl TaskBlobStore {
         F: FnOnce(),
     {
         validate_media_type(media_type)?;
-        if bytes.len() > MAX_BLOB_BYTES {
+        if bytes.len() > MAX_DAEMON_BLOB_BYTES {
             return Err(TaskStoreError::InvalidInput(format!(
-                "task blob exceeds {MAX_BLOB_BYTES} bytes"
+                "task blob exceeds the {MAX_DAEMON_BLOB_BYTES} byte daemon IPC frame limit"
             )));
         }
         let byte_size =
@@ -121,7 +120,7 @@ impl TaskBlobStore {
     pub fn read(&self, blob_id: &BlobId) -> Result<BlobRead, TaskStoreError> {
         let metadata = self.store.blob_metadata_for_task(self.task_id, *blob_id)?;
         validate_media_type(&metadata.media_type)?;
-        if metadata.byte_size > MAX_BLOB_BYTES as u64 {
+        if metadata.byte_size > MAX_DAEMON_BLOB_BYTES as u64 {
             return Err(TaskStoreError::BlobIntegrity(format!(
                 "blob {blob_id} exceeds the maximum stored blob size"
             )));

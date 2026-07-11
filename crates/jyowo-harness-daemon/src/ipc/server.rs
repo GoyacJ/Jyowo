@@ -45,6 +45,17 @@ impl IpcConnection {
     }
 
     pub fn handle(&mut self, frame: ClientFrame) -> Result<Vec<ServerFrame>, IpcError> {
+        if frame.request_id.is_empty()
+            || frame.request_id.len() > harness_contracts::MAX_DAEMON_REQUEST_ID_BYTES
+        {
+            return Ok(vec![server_frame(
+                None,
+                protocol_error(
+                    ProtocolErrorCode::InvalidFrame,
+                    "request ID is empty or exceeds the daemon response envelope limit",
+                ),
+            )]);
+        }
         let request_id = frame.request_id.clone();
         if frame.protocol_version != PROTOCOL_VERSION {
             return Ok(vec![error_frame(

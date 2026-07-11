@@ -1,13 +1,13 @@
 import { useTranslation } from 'react-i18next'
 
 import { type CommandDetails, CommandPreview } from './CommandPreview'
-import { PermissionDialog, type PermissionRequestDetails } from './PermissionDialog'
+import { type ActivityPermissionDetails, PermissionDialog } from './PermissionDialog'
 import { type RawJsonDetails, RawJsonView } from './RawJsonView'
 import { ToolCallCard, type ToolCallDetails } from './ToolCallCard'
 
 type RunEventDetailsModel = {
   command?: CommandDetails
-  permissions?: PermissionRequestDetails[]
+  permissions?: ActivityPermissionDetails[]
   rawJson?: RawJsonDetails
   toolCall?: ToolCallDetails
 }

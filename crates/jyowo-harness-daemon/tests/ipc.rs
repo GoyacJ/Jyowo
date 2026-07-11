@@ -3,7 +3,7 @@ use std::sync::Arc;
 use harness_contracts::{
     now, ClientFrame, ClientId, ClientRequest, CommandId, CommandMetadata, CreateTaskCommand,
     HandshakeRequest, QueueItemId, ServerMessage, WorkspaceMode, WorkspaceSelection,
-    PROTOCOL_VERSION,
+    MAX_DAEMON_BLOB_BYTES, PROTOCOL_VERSION,
 };
 use harness_daemon::{
     encode_frame, IpcConnection, IpcServerConfig, JsonFrameDecoder, LocalIpcServer, MAX_FRAME_BYTES,
@@ -139,6 +139,20 @@ fn handshake_rejects_protocol_token_and_instance_mismatches() {
         connection.handle(future_offset).unwrap()[0].message,
         ServerMessage::Error(_)
     ));
+}
+
+#[test]
+fn ipc_rejects_request_ids_larger_than_the_response_envelope_reserve() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let mut connection = IpcConnection::new(store, config());
+    let mut request = handshake("token-a");
+    request.request_id = "r".repeat(129);
+
+    let response = connection.handle(request).unwrap();
+
+    assert!(matches!(response[0].message, ServerMessage::Error(_)));
+    assert!(encode_frame(&response[0]).is_ok());
 }
 
 #[test]
@@ -314,6 +328,61 @@ fn read_blob_returns_owned_bytes_and_metadata() {
         }
         other => panic!("unexpected {other:?}"),
     }
+}
+
+#[test]
+fn largest_task_blob_encodes_within_one_daemon_frame() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let blob_root = root.path().join("blobs");
+    let mut ipc_config = config();
+    ipc_config.blob_root.clone_from(&blob_root);
+    let mut connection = IpcConnection::new(Arc::clone(&store), ipc_config);
+    connection.handle(handshake("token-a")).unwrap();
+    let created = connection
+        .handle(create("create", CommandId::new(), "create-max-blob-task"))
+        .unwrap();
+    let task_id = match &created[0].message {
+        ServerMessage::CommandAccepted(accepted) => accepted.task_id,
+        other => panic!("unexpected {other:?}"),
+    };
+    let blobs = TaskBlobStore::open(Arc::clone(&store), task_id, blob_root).unwrap();
+    let media_type = format!("application/{}", "a".repeat(243));
+    assert_eq!(media_type.len(), 255);
+    let blob = blobs
+        .put(&media_type, &vec![0_u8; MAX_DAEMON_BLOB_BYTES])
+        .unwrap();
+    store
+        .transact_command(
+            AcceptedCommand {
+                command_id: CommandId::new(),
+                task_id,
+                idempotency_key: "attach-max-ipc-blob".into(),
+                expected_stream_version: 1,
+                authority: TaskStore::user_authority(ClientId::new()),
+                payload: json!({ "type": "attach_max_ipc_blob" }),
+            },
+            |_| {
+                Ok(vec![NewTaskEvent::message_queued(
+                    QueueItemId::new(),
+                    "blob",
+                    vec![blob.id],
+                    Vec::new(),
+                    now(),
+                )])
+            },
+        )
+        .unwrap();
+
+    let response = connection
+        .handle(frame(
+            &"r".repeat(128),
+            ClientRequest::ReadBlob { blob_id: blob.id },
+        ))
+        .unwrap();
+    let encoded = encode_frame(&response[0]).unwrap();
+
+    assert!(encoded.len() <= MAX_FRAME_BYTES + 4);
 }
 
 #[cfg(unix)]
