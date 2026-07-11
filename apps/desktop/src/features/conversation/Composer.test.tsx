@@ -584,6 +584,19 @@ describe('Composer', () => {
     expect(screen.getByPlaceholderText('Ask Jyowo anything about this project…')).toBeEnabled()
   })
 
+  it('keeps drafts isolated when the task draft scope changes', () => {
+    const { rerender } = render(<Composer draftKey="task:draft-a" onSubmit={vi.fn()} />)
+    const editor = screen.getByPlaceholderText('Ask Jyowo anything about this project…')
+    fireEvent.change(editor, { target: { value: 'Draft for task A' } })
+
+    rerender(<Composer draftKey="task:draft-b" onSubmit={vi.fn()} />)
+    expect(editor).toHaveValue('')
+    fireEvent.change(editor, { target: { value: 'Draft for task B' } })
+
+    rerender(<Composer draftKey="task:draft-a" onSubmit={vi.fn()} />)
+    expect(editor).toHaveValue('Draft for task A')
+  })
+
   it('shows a cancel action while a run is active', () => {
     const onCancelRun = vi.fn()
 

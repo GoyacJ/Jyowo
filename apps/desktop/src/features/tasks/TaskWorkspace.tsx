@@ -1,19 +1,31 @@
+import { useState } from 'react'
+
 import type {
   TaskEventEnvelope,
   TimelineItemProjection,
   TypedUlid,
 } from '@/generated/daemon-protocol'
+import type { DaemonClient } from '@/shared/daemon/client'
+import { pickAttachmentPath } from '@/shared/tauri/file-dialog'
+import { useCommandClient, useDaemonClient } from '@/shared/tauri/react'
+import { QueuedMessages } from './queue/QueuedMessages'
+import { TaskComposer } from './TaskComposer'
 import type { TaskConnectionState, TaskSnapshot } from './task-store'
 import { TaskTimeline } from './timeline/TaskTimeline'
 import { useTask } from './use-task'
 
 export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
   const task = useTask(taskId)
+  const daemonClient = useDaemonClient()
+  const commandClient = useCommandClient()
   return (
     <TaskWorkspaceView
+      client={daemonClient}
       connectionError={task.connectionError}
       connectionState={task.connectionState}
       events={task.events}
+      onCreateAttachmentFromPath={(path) => commandClient.createAttachmentFromPath(path)}
+      onPickAttachmentPath={pickAttachmentPath}
       snapshot={task.snapshot}
     />
   )
@@ -22,14 +34,43 @@ export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
 export function TaskWorkspaceView({
   connectionError,
   connectionState,
+  client,
   events = [],
+  onCreateAttachmentFromPath,
+  onPickAttachmentPath,
   snapshot,
 }: {
+  client?: Pick<DaemonClient, 'connect' | 'request'>
   connectionError?: string | null
   connectionState: TaskConnectionState
   events?: TaskEventEnvelope[]
+  onCreateAttachmentFromPath?: Parameters<typeof TaskComposer>[0]['onCreateAttachmentFromPath']
+  onPickAttachmentPath?: Parameters<typeof TaskComposer>[0]['onPickAttachmentPath']
   snapshot: TaskSnapshot | null
 }) {
+  const snapshotTaskId = snapshot?.projection.taskId ?? null
+  const projectedStreamVersion = snapshot
+    ? events.reduce(
+        (version, event) => Math.max(version, event.streamSequence),
+        snapshot.projection.streamVersion,
+      )
+    : 0
+  const [acceptedCommandCursor, setAcceptedCommandCursor] = useState<{
+    taskId: TypedUlid | null
+    version: number
+  }>({ taskId: snapshotTaskId, version: projectedStreamVersion })
+  const commandStreamVersion =
+    acceptedCommandCursor.taskId === snapshotTaskId
+      ? Math.max(acceptedCommandCursor.version, projectedStreamVersion)
+      : projectedStreamVersion
+  const commandAccepted = (version: number) => {
+    if (!snapshotTaskId) return
+    setAcceptedCommandCursor((current) => ({
+      taskId: snapshotTaskId,
+      version: current.taskId === snapshotTaskId ? Math.max(current.version, version) : version,
+    }))
+  }
+
   if (connectionState === 'protocol_error') {
     return (
       <div className="grid h-full place-items-center">
@@ -52,6 +93,7 @@ export function TaskWorkspaceView({
   }
 
   const items = timelineItems(snapshot, events)
+  const queue = queueItems(snapshot, events)
   return (
     <section
       className="mx-auto flex h-full w-full max-w-[820px] min-h-0 flex-col"
@@ -70,10 +112,85 @@ export function TaskWorkspaceView({
           {connectionLabel(connectionState)}
         </span>
       </header>
-      <div className="min-h-0 flex-1 pt-6">
+      <div className="flex min-h-0 flex-1 pt-6">
         <TaskTimeline currentRun={snapshot.projection.currentRun} items={items} />
       </div>
+      {client ? (
+        <div className="shrink-0 border-border/70 border-t bg-background/95 px-1 pt-3 pb-1 backdrop-blur-sm">
+          <QueuedMessages
+            client={client}
+            expectedStreamVersion={commandStreamVersion}
+            items={queue}
+            onCommandAccepted={commandAccepted}
+            taskId={snapshot.projection.taskId}
+          />
+          <TaskComposer
+            client={client}
+            connectionState={connectionState}
+            onCommandAccepted={commandAccepted}
+            onCreateAttachmentFromPath={onCreateAttachmentFromPath}
+            onPickAttachmentPath={onPickAttachmentPath}
+            streamVersion={commandStreamVersion}
+            taskId={snapshot.projection.taskId}
+            taskState={snapshot.projection.state}
+          />
+        </div>
+      ) : null}
     </section>
+  )
+}
+
+export function queueItems(snapshot: TaskSnapshot, events: TaskEventEnvelope[]) {
+  const byId = new Map(snapshot.projection.queue.map((item) => [item.queueItemId, item]))
+  for (const event of events) {
+    if (event.globalOffset <= snapshot.snapshotOffset) continue
+    const payload = record(event.payload)
+    const queueItemId = stringValue(payload?.queueItemId)
+    if (!queueItemId) continue
+    const current = byId.get(queueItemId)
+
+    if (event.eventType === 'message.queued') {
+      const content = stringValue(payload?.content)
+      const createdAt = stringValue(payload?.createdAt)
+      if (!content || !createdAt) continue
+      byId.set(queueItemId, {
+        attachments: stringArray(payload?.attachments),
+        content,
+        contextReferences: stringArray(payload?.contextReferences),
+        createdAt,
+        createdGlobalOffset: event.globalOffset,
+        queueItemId,
+        revision: 1,
+        state: 'queued',
+      })
+      continue
+    }
+    if (!current) continue
+    const revision = numberValue(payload?.revision)
+    if (revision === undefined || revision < current.revision) continue
+
+    if (event.eventType === 'message.edited') {
+      const content = stringValue(payload?.content)
+      if (!content) continue
+      byId.set(queueItemId, {
+        ...current,
+        attachments: stringArray(payload?.attachments),
+        content,
+        contextReferences: stringArray(payload?.contextReferences),
+        revision,
+      })
+    } else if (event.eventType === 'message.promoted') {
+      byId.set(queueItemId, { ...current, state: 'promoting' })
+    } else if (event.eventType === 'message.recovered') {
+      byId.set(queueItemId, { ...current, state: 'queued' })
+    } else if (event.eventType === 'message.consumed' || event.eventType === 'message.deleted') {
+      byId.delete(queueItemId)
+    }
+  }
+  return [...byId.values()].sort(
+    (left, right) =>
+      left.createdGlobalOffset - right.createdGlobalOffset ||
+      left.queueItemId.localeCompare(right.queueItemId),
   )
 }
 
@@ -93,8 +210,6 @@ function projectEvent(
   queuedContent: Map<string, string>,
 ): TimelineItemProjection | null {
   const payload = record(event.payload)
-  const embedded = payload?.timelineItem
-  if (isTimelineItem(embedded)) return embedded
   if (
     [
       'message.queued',
@@ -272,6 +387,16 @@ function stringValue(value: unknown) {
   return typeof value === 'string' ? value : undefined
 }
 
+function numberValue(value: unknown) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+}
+
+function stringArray(value: unknown) {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
+    ? (value as string[])
+    : []
+}
+
 function childRecord(payload: Record<string, unknown> | null) {
   return record(payload?.child)
 }
@@ -286,15 +411,4 @@ function childState(payload: Record<string, unknown> | null) {
 
 function childSummary(payload: Record<string, unknown> | null) {
   return stringValue(childRecord(payload)?.summary) ?? childState(payload)
-}
-
-function isTimelineItem(value: unknown): value is TimelineItemProjection {
-  const item = record(value)
-  return (
-    typeof item?.globalOffset === 'number' &&
-    typeof item.id === 'string' &&
-    typeof item.kind === 'string' &&
-    typeof item.summary === 'string' &&
-    typeof item.incomplete === 'boolean'
-  )
 }

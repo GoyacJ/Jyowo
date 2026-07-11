@@ -18,6 +18,33 @@ export const zhCN = {
       success: '成功',
     },
   },
+  tasks: {
+    composer: {
+      disconnected: '连接已断开。草稿已保留。',
+      queue: '排队',
+      queueMessage: '消息排队',
+      send: '发送',
+      sendMessage: '发送消息',
+    },
+    queue: {
+      cancelEdit: '取消',
+      count: '{{count}} 条排队消息',
+      contextSummary: '{{attachments}} 个附件 · {{references}} 个引用',
+      deleteLabel: '删除第 {{order}} 条排队消息',
+      editLabel: '编辑第 {{order}} 条排队消息',
+      forceConfirmation:
+        '将尽可能终止运行中的进程。已提交的副作用不会回滚。立即停止并运行这条消息？',
+      forceLabel: '立即停止并运行第 {{order}} 条排队消息',
+      label: '排队消息',
+      promoting: '准备运行',
+      queued: '排队中',
+      runNext: '下一条运行',
+      safeLabel: '将第 {{order}} 条排队消息设为下一条运行',
+      saveEdit: '保存排队消息',
+      staleConflict: '这条排队消息已在别处更改。当前显示服务器上的最新版本。',
+      title: '后续消息',
+    },
+  },
   shell: {
     workspace: '工作区',
     localWorkspace: '本地工作区',

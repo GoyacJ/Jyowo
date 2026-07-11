@@ -16,6 +16,33 @@ export const enUS = {
       success: 'Success',
     },
   },
+  tasks: {
+    composer: {
+      disconnected: 'Connection lost. Your draft is preserved.',
+      queue: 'Queue',
+      queueMessage: 'Queue message',
+      send: 'Send',
+      sendMessage: 'Send message',
+    },
+    queue: {
+      cancelEdit: 'Cancel',
+      count: '{{count}} queued',
+      contextSummary: '{{attachments}} attachments · {{references}} references',
+      deleteLabel: 'Delete queued message {{order}}',
+      editLabel: 'Edit queued message {{order}}',
+      forceConfirmation:
+        'Running processes are terminated when possible. Committed side effects are not rolled back. Stop now and run this message?',
+      forceLabel: 'Stop now and run queued message {{order}}',
+      label: 'Queued messages',
+      promoting: 'Preparing to run',
+      queued: 'Queued',
+      runNext: 'Run next',
+      safeLabel: 'Run queued message {{order}} next',
+      saveEdit: 'Save queued message',
+      staleConflict: 'This queued message changed elsewhere. The latest version is shown.',
+      title: 'Next messages',
+    },
+  },
   shell: {
     workspace: 'Workspace',
     localWorkspace: 'Local workspace',

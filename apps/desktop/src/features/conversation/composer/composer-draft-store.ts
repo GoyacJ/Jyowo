@@ -12,20 +12,20 @@ const emptyDraft: ComposerDraft = {
   text: '',
 }
 
-// In-memory draft per conversation. Never persisted to localStorage
+// In-memory draft per conversation or task. Never persisted to localStorage
 // to avoid accidentally storing secrets, API keys, or private paths.
-const draftsByConversation = new Map<string, ComposerDraft>()
+const draftsByScope = new Map<string, ComposerDraft>()
 
-export function getDraft(conversationId: string): ComposerDraft {
-  return draftsByConversation.get(conversationId) ?? { ...emptyDraft }
+export function getDraft(scopeId: string): ComposerDraft {
+  return draftsByScope.get(scopeId) ?? { ...emptyDraft }
 }
 
-export function saveDraft(conversationId: string, draft: ComposerDraft): void {
-  draftsByConversation.set(conversationId, { ...draft })
+export function saveDraft(scopeId: string, draft: ComposerDraft): void {
+  draftsByScope.set(scopeId, { ...draft })
 }
 
-export function clearDraft(conversationId: string): void {
-  draftsByConversation.delete(conversationId)
+export function clearDraft(scopeId: string): void {
+  draftsByScope.delete(scopeId)
 }
 
 export function getEmptyDraft(): ComposerDraft {

@@ -1,0 +1,203 @@
+import '@testing-library/jest-dom/vitest'
+
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import type { QueueItemProjection, ServerFrame } from '@/generated/daemon-protocol'
+import type { DaemonClient } from '@/shared/daemon/client'
+
+import { QueuedMessages } from './QueuedMessages'
+
+describe('QueuedMessages', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('edits a queued message with its server revision', async () => {
+    const request = vi.fn().mockResolvedValue(acceptedFrame())
+    renderQueue({ client: clientWith(request), items: [queuedItem()] })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit queued message 1' }))
+    const editor = screen.getByRole('textbox', { name: 'Edit queued message 1' })
+    fireEvent.change(editor, { target: { value: 'Use the repaired scheduler' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save queued message' }))
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: 'Use the repaired scheduler',
+          expectedRevision: 3,
+          queueItemId: queueItemId,
+          taskId,
+          type: 'edit_queued_message',
+        }),
+      ),
+    )
+  })
+
+  it('deletes a queued message with its server revision', async () => {
+    const request = vi.fn().mockResolvedValue(acceptedFrame())
+    renderQueue({ client: clientWith(request), items: [queuedItem()] })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete queued message 1' }))
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedRevision: 3,
+          queueItemId,
+          taskId,
+          type: 'delete_queued_message',
+        }),
+      ),
+    )
+  })
+
+  it('promotes safely by default', async () => {
+    const request = vi.fn().mockResolvedValue(acceptedFrame())
+    renderQueue({ client: clientWith(request), items: [queuedItem()] })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run queued message 1 next' }))
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedRevision: 3,
+          mode: 'safe_point',
+          queueItemId,
+          type: 'promote_queued_message',
+        }),
+      ),
+    )
+  })
+
+  it('explains and confirms force promotion before requesting it', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const request = vi.fn().mockResolvedValue(acceptedFrame())
+    renderQueue({ client: clientWith(request), items: [queuedItem()] })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop now and run queued message 1' }))
+
+    expect(confirm).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /running processes.*terminated.*committed side effects.*not.*rolled back/i,
+      ),
+    )
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: 'force_stop',
+          queueItemId,
+          type: 'promote_queued_message',
+        }),
+      ),
+    )
+  })
+
+  it('replaces a stale local row with the latest server item and announces the conflict', async () => {
+    const latest = queuedItem({ content: 'Latest server text', revision: 4 })
+    const request = vi.fn().mockResolvedValue(rejectedFrame(latest))
+    renderQueue({ client: clientWith(request), items: [queuedItem()] })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit queued message 1' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Edit queued message 1' }), {
+      target: { value: 'Outdated local text' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save queued message' }))
+
+    expect(await screen.findByText('Latest server text')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'This queued message changed elsewhere. The latest version is shown.',
+    )
+  })
+
+  it('disables edit and delete while a message is promoting', () => {
+    renderQueue({
+      client: clientWith(vi.fn()),
+      items: [queuedItem({ state: 'promoting' })],
+    })
+
+    expect(screen.getByRole('button', { name: 'Edit queued message 1' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Delete queued message 1' })).toBeDisabled()
+    expect(screen.getByText('Preparing to run')).toBeInTheDocument()
+  })
+
+  it('omits consumed and deleted items from the active queue', () => {
+    renderQueue({
+      client: clientWith(vi.fn()),
+      items: [
+        queuedItem(),
+        queuedItem({ content: 'Already consumed', queueItemId: consumedId, state: 'consumed' }),
+        queuedItem({ content: 'Already deleted', queueItemId: deletedId, state: 'deleted' }),
+      ],
+    })
+
+    const queue = screen.getByRole('list', { name: 'Queued messages' })
+    expect(within(queue).getByText('Repair the scheduler')).toBeInTheDocument()
+    expect(within(queue).queryByText('Already consumed')).not.toBeInTheDocument()
+    expect(within(queue).queryByText('Already deleted')).not.toBeInTheDocument()
+  })
+})
+
+const taskId = '01J00000000000000000000000'
+const queueItemId = '01J00000000000000000000001'
+const consumedId = '01J00000000000000000000002'
+const deletedId = '01J00000000000000000000003'
+
+function queuedItem(overrides: Partial<QueueItemProjection> = {}): QueueItemProjection {
+  return {
+    attachments: [],
+    content: 'Repair the scheduler',
+    contextReferences: [],
+    createdAt: '2026-07-11T00:00:00Z',
+    createdGlobalOffset: 12,
+    queueItemId,
+    revision: 3,
+    state: 'queued',
+    ...overrides,
+  }
+}
+
+function renderQueue({
+  client,
+  items,
+}: {
+  client: Pick<DaemonClient, 'request'>
+  items: QueueItemProjection[]
+}) {
+  return render(
+    <QueuedMessages client={client} expectedStreamVersion={9} items={items} taskId={taskId} />,
+  )
+}
+
+function clientWith(request: ReturnType<typeof vi.fn>): Pick<DaemonClient, 'request'> {
+  return { request: request as unknown as DaemonClient['request'] }
+}
+
+function acceptedFrame(): ServerFrame {
+  return {
+    message: {
+      commandId: '01J00000000000000000000004',
+      committedOffset: 13,
+      streamVersion: 10,
+      taskId,
+      type: 'command_accepted',
+    },
+    protocolVersion: 1,
+    requestId: 'request-1',
+  }
+}
+
+function rejectedFrame(latestQueueItem: QueueItemProjection): ServerFrame {
+  return {
+    message: {
+      commandId: '01J00000000000000000000004',
+      latestQueueItem,
+      reason: 'stale_queue_revision',
+      taskId,
+      type: 'command_rejected',
+    },
+    protocolVersion: 1,
+    requestId: 'request-1',
+  }
+}
