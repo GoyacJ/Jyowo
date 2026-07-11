@@ -2,14 +2,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use harness_contracts::{RunState, RunTerminalReason, PROTOCOL_VERSION};
+use harness_contracts::{Redactor, RunState, PROTOCOL_VERSION};
 use harness_daemon::{
-    IpcServerConfig, LocalIpcServer, RecoveryService, RunCoordinatorEvent, RunCoordinatorFactory,
-    RunningSegment, RuntimeGuard, StartSegmentRequest, Supervisor, SupervisorQuotas,
-    WorkspaceToolDispatcher,
+    IpcServerConfig, LocalIpcServer, PermissionBroker, ProviderConfigResolver, RecoveryService,
+    RuntimeGuard, SdkRunCoordinatorFactory, SdkSubagentEngineRegistry,
+    SdkWorkspaceSubagentRunnerFactory, Supervisor, SupervisorQuotas,
+    WorkspaceSubagentRunnerFactory,
 };
 use harness_journal::TaskStore;
-use harness_subagent::SubagentRunner;
+use harness_observability::DefaultRedactor;
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
@@ -25,17 +26,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let store = Arc::new(TaskStore::open(runtime.runtime_dir().join("tasks.sqlite"))?);
     RecoveryService::new(Arc::clone(&store)).recover_startup()?;
+    let blob_root = runtime.runtime_dir().join("blobs");
     let config = IpcServerConfig {
         daemon_version: env!("CARGO_PKG_VERSION").into(),
         user_instance_id: user_instance_id.clone(),
         connection_token: runtime.connection_token().into(),
         event_batch_capacity: 512,
-        blob_root: runtime.runtime_dir().join("blobs"),
+        blob_root: blob_root.clone(),
     };
-    let supervisor = Arc::new(Supervisor::start(
+    let redactor: Arc<dyn Redactor> = Arc::new(DefaultRedactor::default());
+    let permissions = Arc::new(PermissionBroker::new(
         Arc::clone(&store),
-        Arc::new(UnavailableRunFactory),
+        Arc::clone(&redactor),
+    ));
+    let subagent_engines = Arc::new(SdkSubagentEngineRegistry::default());
+    let run_factory = Arc::new(SdkRunCoordinatorFactory::new_with_subagent_engines(
+        Arc::clone(&store),
+        ProviderConfigResolver::new(config_root()),
+        blob_root,
+        Arc::clone(&permissions),
+        Arc::clone(&redactor),
+        Arc::clone(&subagent_engines),
+    ));
+    let runner_factory: Arc<dyn WorkspaceSubagentRunnerFactory> =
+        Arc::new(SdkWorkspaceSubagentRunnerFactory::new(subagent_engines));
+    let supervisor = Arc::new(Supervisor::start_with_runtime_components(
+        Arc::clone(&store),
+        run_factory,
         SupervisorQuotas::new(20, 8),
+        runner_factory,
+        redactor,
+        8,
+        permissions,
     )?);
 
     #[cfg(unix)]
@@ -63,26 +85,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     wait_for_shutdown(&server, &store).await?;
     server.shutdown().await?;
     Ok(())
-}
-
-struct UnavailableRunFactory;
-
-impl RunCoordinatorFactory for UnavailableRunFactory {
-    fn spawn_idempotent(
-        &self,
-        request: StartSegmentRequest,
-        _workspace_tools: WorkspaceToolDispatcher,
-        _subagent_runner: Arc<dyn SubagentRunner>,
-    ) -> RunningSegment {
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        let _ = sender.send(RunCoordinatorEvent::Completed {
-            segment_id: request.segment_id,
-            terminal_reason: RunTerminalReason::Failed,
-            incomplete_output: true,
-            ended_at: chrono::Utc::now(),
-        });
-        RunningSegment::new(receiver)
-    }
 }
 
 async fn wait_for_shutdown(
@@ -116,6 +118,21 @@ async fn wait_for_shutdown(
             }
         }
     }
+}
+
+fn config_root() -> PathBuf {
+    std::env::var_os("JYOWO_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+        .map(|root| {
+            if std::env::var_os("JYOWO_CONFIG_DIR").is_some() {
+                root
+            } else {
+                root.join(".jyowo").join("config")
+            }
+        })
+        .unwrap_or_else(|| PathBuf::from(".jyowo/config"))
 }
 
 #[cfg(unix)]

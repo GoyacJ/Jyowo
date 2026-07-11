@@ -9,7 +9,6 @@ use super::constants::*;
 #[allow(unused_imports)]
 use super::contracts::*;
 #[allow(unused_imports)]
-use super::conversations::*;
 #[allow(unused_imports)]
 use super::error::*;
 #[allow(unused_imports)]

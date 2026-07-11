@@ -368,20 +368,7 @@ impl Harness {
         let journal_session_exists = self
             .conversation_session_has_journal_events(options.tenant_id, options.session_id)
             .await?;
-        #[cfg(feature = "sqlite-store")]
-        let (read_model, read_model_has_session) = {
-            let read_model = self.conversation_read_model().await?;
-            let exists = read_model
-                .summary(options.tenant_id, options.session_id)
-                .await
-                .map_err(HarnessError::Journal)?
-                .is_some();
-            (read_model, exists)
-        };
-        #[cfg(not(feature = "sqlite-store"))]
-        let read_model_has_session = false;
-
-        if !journal_session_exists && !read_model_has_session {
+        if !journal_session_exists {
             return Ok(false);
         }
 
@@ -400,23 +387,12 @@ impl Harness {
                 .map_err(HarnessError::Journal)?;
         }
 
-        #[cfg_attr(not(feature = "sqlite-store"), allow(unused_mut))]
-        let mut deleted = self
+        let deleted = self
             .inner
             .event_store
             .delete_session(options.tenant_id, options.session_id)
             .await
             .map_err(HarnessError::Journal)?;
-        #[cfg(feature = "sqlite-store")]
-        {
-            if deleted || read_model_has_session {
-                read_model
-                    .reset_session(options.tenant_id, options.session_id)
-                    .await
-                    .map_err(HarnessError::Journal)?;
-                deleted = true;
-            }
-        }
         if !deleted {
             return Ok(false);
         }

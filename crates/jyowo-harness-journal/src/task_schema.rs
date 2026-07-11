@@ -111,6 +111,22 @@ CREATE TABLE IF NOT EXISTS segment_start_outbox (
 CREATE INDEX IF NOT EXISTS idx_segment_start_outbox_pending
     ON segment_start_outbox(task_id, delivered_at, created_at);
 
+CREATE TABLE IF NOT EXISTS segment_execution (
+    task_id TEXT NOT NULL,
+    run_segment_id TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('in_progress', 'completed')),
+    claimed_at TEXT NOT NULL,
+    completed_at TEXT,
+    terminal_json TEXT,
+    PRIMARY KEY(task_id, run_segment_id),
+    CHECK(
+        (status = 'in_progress' AND completed_at IS NULL AND terminal_json IS NULL)
+        OR
+        (status = 'completed' AND completed_at IS NOT NULL AND terminal_json IS NOT NULL)
+    )
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS task_projection (
     task_id TEXT PRIMARY KEY,
     last_global_offset INTEGER NOT NULL,

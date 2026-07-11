@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -12,7 +12,6 @@ import type { WorkbenchSelection } from '@/shared/state/workbench-selection'
 import type {
   ConversationInspectorItem,
   ConversationInspectorSelection,
-  ResolvePermissionRequest,
 } from '@/shared/tauri/commands'
 import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { useCommandClient } from '@/shared/tauri/react'
@@ -27,7 +26,6 @@ type InspectorPaneRendererProps = {
 function InspectorPaneRenderer({ contextPane, selection }: InspectorPaneRendererProps) {
   const { t } = useTranslation('conversation')
   const commandClient = useCommandClient()
-  const queryClient = useQueryClient()
   const needsProjection = selection.kind !== 'context'
   const conversationId = needsProjection ? selection.conversationId : undefined
   const inspectorSelection =
@@ -95,20 +93,6 @@ function InspectorPaneRenderer({ contextPane, selection }: InspectorPaneRenderer
     <InspectorItemView
       conversationId={selection.conversationId}
       item={item}
-      onResolve={async (request) => {
-        await commandClient.resolvePermission(request)
-        await Promise.all([
-          queryClient.invalidateQueries({
-            queryKey: ['workbench-inspector-item', selection.conversationId],
-          }),
-          queryClient.invalidateQueries({
-            predicate: (query) => query.queryKey[0] === 'conversation-worktree',
-          }),
-          queryClient.invalidateQueries({
-            predicate: (query) => query.queryKey[0] === 'context-snapshot',
-          }),
-        ])
-      }}
       selection={selection}
     />
   )
@@ -117,12 +101,10 @@ function InspectorPaneRenderer({ contextPane, selection }: InspectorPaneRenderer
 function InspectorItemView({
   conversationId,
   item,
-  onResolve,
   selection,
 }: {
   conversationId: string
   item: Exclude<ConversationInspectorItem, { kind: 'empty' }>
-  onResolve: (request: ResolvePermissionRequest) => Promise<void>
   selection: Exclude<WorkbenchSelection, { kind: 'context' }>
 }) {
   const { t } = useTranslation('conversation')
@@ -138,11 +120,7 @@ function InspectorItemView({
     case 'decision':
       return (
         <div className="grid gap-3 p-3">
-          <DecisionPanel
-            conversationId={conversationId}
-            decision={item.decision}
-            onResolve={(request) => void onResolve(request)}
-          />
+          <DecisionPanel conversationId={conversationId} decision={item.decision} />
           {item.decision.decisionOptions.length > 0 ? (
             <section className="grid gap-2 rounded-md border border-border px-3 py-2">
               <h4 className="text-muted-foreground text-xs font-medium">
@@ -162,11 +140,7 @@ function InspectorItemView({
         <div className="grid gap-3 p-3">
           <ToolInvocationCard attempt={item.attempt} />
           {item.attempt.permission ? (
-            <DecisionPanel
-              conversationId={conversationId}
-              decision={item.attempt.permission}
-              onResolve={(request) => void onResolve(request)}
-            />
+            <DecisionPanel conversationId={conversationId} decision={item.attempt.permission} />
           ) : null}
           {item.attempt.failureSummary ? (
             <p className="border-destructive/40 border-l pl-3 text-destructive text-sm">

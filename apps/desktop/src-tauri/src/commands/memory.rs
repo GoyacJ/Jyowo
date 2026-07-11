@@ -9,7 +9,6 @@ use super::constants::*;
 #[allow(unused_imports)]
 use super::contracts::*;
 #[allow(unused_imports)]
-use super::conversations::*;
 #[allow(unused_imports)]
 use super::error::*;
 #[allow(unused_imports)]
@@ -34,13 +33,13 @@ use harness_contracts::ActionPlanId;
 pub async fn list_memory_items_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<ListMemoryItemsResponse, CommandErrorPayload> {
-    let Some(harness) = state.harness() else {
+    let Some(settings_runtime) = state.settings_runtime() else {
         return Err(runtime_unavailable(
             "Listing memory requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id)?;
-    let mut items = harness
+    let options = state.settings_session_options(state.default_conversation_id)?;
+    let mut items = settings_runtime
         .list_memory_items(options)
         .await
         .map_err(|_| memory_operation_failed("Memory items could not be loaded."))?
@@ -62,19 +61,19 @@ pub async fn get_memory_item_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<GetMemoryItemResponse, CommandErrorPayload> {
     let id = parse_memory_id(&request.id)?;
-    let Some(harness) = state.harness() else {
+    let Some(settings_runtime) = state.settings_runtime() else {
         return Err(runtime_unavailable(
             "Inspecting memory requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id)?;
-    let summary = harness
+    let options = state.settings_session_options(state.default_conversation_id)?;
+    let summary = settings_runtime
         .list_memory_items(options.clone())
         .await
         .ok()
         .and_then(|items| items.into_iter().find(|item| item.id == id))
         .ok_or_else(|| memory_operation_failed("Memory detail metadata could not be loaded."))?;
-    let item = harness
+    let item = settings_runtime
         .get_memory_item(options, id)
         .await
         .map_err(|_| memory_operation_failed("Memory detail could not be loaded."))?;
@@ -92,18 +91,18 @@ pub async fn update_memory_item_with_runtime_state(
     let action_plan_id = parse_optional_action_plan_id(request.action_plan_id.as_deref())?;
     ensure_non_empty("content", &request.content)?;
     ensure_max_bytes("content", &request.content, MAX_MEMORY_CONTENT_BYTES)?;
-    let Some(harness) = state.harness() else {
+    let Some(settings_runtime) = state.settings_runtime() else {
         return Err(runtime_unavailable(
             "Editing memory requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id)?;
-    let item = harness
+    let options = state.settings_session_options(state.default_conversation_id)?;
+    let item = settings_runtime
         .update_memory_item_content(options, id, request.content, action_plan_id)
         .await
         .map_err(|_| memory_operation_failed("Memory item could not be saved."))?;
-    let summary = harness
-        .list_memory_items(state.conversation_session_options(state.default_conversation_id)?)
+    let summary = settings_runtime
+        .list_memory_items(state.settings_session_options(state.default_conversation_id)?)
         .await
         .ok()
         .and_then(|items| items.into_iter().find(|item| item.id == id))
@@ -120,13 +119,13 @@ pub async fn delete_memory_item_with_runtime_state(
 ) -> Result<DeleteMemoryItemResponse, CommandErrorPayload> {
     let id = parse_memory_id(&request.id)?;
     let action_plan_id = parse_optional_action_plan_id(request.action_plan_id.as_deref())?;
-    let Some(harness) = state.harness() else {
+    let Some(settings_runtime) = state.settings_runtime() else {
         return Err(runtime_unavailable(
             "Deleting memory requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id)?;
-    harness
+    let options = state.settings_session_options(state.default_conversation_id)?;
+    settings_runtime
         .delete_memory_item(options, id, action_plan_id)
         .await
         .map_err(|_| memory_operation_failed("Memory item could not be deleted."))?;
@@ -141,15 +140,14 @@ pub async fn export_memory_items_with_runtime_state(
     request: ExportMemoryItemsRequest,
     state: &DesktopRuntimeState,
 ) -> Result<ExportMemoryItemsResponse, CommandErrorPayload> {
-    let Some(harness) = state.harness() else {
+    let Some(settings_runtime) = state.settings_runtime() else {
         return Err(runtime_unavailable(
             "Exporting memory requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(
-        request.session_id.unwrap_or(state.default_conversation_id),
-    )?;
-    let export = harness
+    let options = state
+        .settings_session_options(request.session_id.unwrap_or(state.default_conversation_id))?;
+    let export = settings_runtime
         .export_memory_items(
             options,
             request.scope.as_str(),
@@ -179,13 +177,13 @@ pub async fn list_memory_candidates_with_runtime_state(
     request: ListMemoryCandidatesRequest,
     state: &DesktopRuntimeState,
 ) -> Result<ListMemoryCandidatesResponse, CommandErrorPayload> {
-    let Some(harness) = state.harness() else {
+    let Some(settings_runtime) = state.settings_runtime() else {
         return Err(runtime_unavailable(
             "Listing memory candidates requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id)?;
-    harness
+    let options = state.settings_session_options(state.default_conversation_id)?;
+    settings_runtime
         .list_memory_candidates(options, request)
         .await
         .map_err(|_| memory_operation_failed("Memory candidates could not be loaded."))
@@ -195,13 +193,13 @@ pub async fn approve_memory_candidate_with_runtime_state(
     request: ApproveMemoryCandidateRequest,
     state: &DesktopRuntimeState,
 ) -> Result<ApproveMemoryCandidateResponse, CommandErrorPayload> {
-    let Some(harness) = state.harness() else {
+    let Some(settings_runtime) = state.settings_runtime() else {
         return Err(runtime_unavailable(
             "Approving memory candidates requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id)?;
-    harness
+    let options = state.settings_session_options(state.default_conversation_id)?;
+    settings_runtime
         .approve_memory_candidate(options, request)
         .await
         .map_err(|_| memory_operation_failed("Memory candidate could not be approved."))
@@ -212,13 +210,13 @@ pub async fn reject_memory_candidate_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<RejectMemoryCandidateResponse, CommandErrorPayload> {
     ensure_non_empty("reason", &request.reason)?;
-    let Some(harness) = state.harness() else {
+    let Some(settings_runtime) = state.settings_runtime() else {
         return Err(runtime_unavailable(
             "Rejecting memory candidates requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id)?;
-    harness
+    let options = state.settings_session_options(state.default_conversation_id)?;
+    settings_runtime
         .reject_memory_candidate(options, request)
         .await
         .map_err(|_| memory_operation_failed("Memory candidate could not be rejected."))
@@ -243,13 +241,13 @@ pub async fn merge_memory_candidate_with_runtime_state(
             "candidate_ids must contain distinct candidates".to_owned(),
         ));
     }
-    let Some(harness) = state.harness() else {
+    let Some(settings_runtime) = state.settings_runtime() else {
         return Err(runtime_unavailable(
             "Merging memory candidates requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id)?;
-    harness
+    let options = state.settings_session_options(state.default_conversation_id)?;
+    settings_runtime
         .merge_memory_candidate(options, request)
         .await
         .map_err(|_| memory_operation_failed("Memory candidates could not be merged."))
@@ -259,15 +257,14 @@ pub async fn list_memory_recall_traces_with_runtime_state(
     request: ListMemoryRecallTracesRequest,
     state: &DesktopRuntimeState,
 ) -> Result<ListMemoryRecallTracesResponse, CommandErrorPayload> {
-    let Some(harness) = state.harness() else {
+    let Some(settings_runtime) = state.settings_runtime() else {
         return Err(runtime_unavailable(
             "Listing memory recall traces requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(
-        request.session_id.unwrap_or(state.default_conversation_id),
-    )?;
-    harness
+    let options = state
+        .settings_session_options(request.session_id.unwrap_or(state.default_conversation_id))?;
+    settings_runtime
         .list_memory_recall_traces(options, request)
         .await
         .map_err(|_| memory_operation_failed("Memory recall traces could not be loaded."))
@@ -277,13 +274,13 @@ pub async fn get_memory_recall_trace_with_runtime_state(
     request: GetMemoryRecallTraceRequest,
     state: &DesktopRuntimeState,
 ) -> Result<GetMemoryRecallTraceResponse, CommandErrorPayload> {
-    let Some(harness) = state.harness() else {
+    let Some(settings_runtime) = state.settings_runtime() else {
         return Err(runtime_unavailable(
             "Loading memory recall traces requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(state.default_conversation_id)?;
-    harness
+    let options = state.settings_session_options(state.default_conversation_id)?;
+    settings_runtime
         .get_memory_recall_trace(options, request)
         .await
         .map_err(|_| memory_operation_failed("Memory recall trace could not be loaded."))
@@ -293,13 +290,13 @@ pub async fn get_model_request_preview_with_runtime_state(
     request: GetModelRequestPreviewRequest,
     state: &DesktopRuntimeState,
 ) -> Result<GetModelRequestPreviewResponse, CommandErrorPayload> {
-    let Some(harness) = state.harness() else {
+    let Some(settings_runtime) = state.settings_runtime() else {
         return Err(runtime_unavailable(
             "Building model request preview requires the runtime memory facade.",
         ));
     };
-    let options = state.conversation_session_options(request.session_id)?;
-    harness
+    let options = state.settings_session_options(request.session_id)?;
+    settings_runtime
         .get_model_request_preview(options, request)
         .await
         .map_err(|_| memory_operation_failed("Model request preview could not be built."))

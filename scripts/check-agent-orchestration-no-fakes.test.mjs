@@ -368,6 +368,171 @@ export function Composer() {
   )
 })
 
+test('fails Tauri imports of task runtime ownership types', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'apps/desktop/src-tauri/src/commands/tasks.rs',
+    content: `
+use harness_journal::TaskStore;
+use jyowo_harness_sdk::Harness;
+use harness_daemon::{TaskActor, RunCoordinator};
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  assert.deepEqual(
+    new Set(result.violations.map((violation) => violation.rule)),
+    new Set(['tauri-runtime-owner-import']),
+  )
+})
+
+test('fails multiline Tauri imports of task runtime ownership types', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'apps/desktop/src-tauri/src/commands/tasks.rs',
+    content: `
+use jyowo_harness_sdk::{
+  ConversationTurnRequest,
+  Harness,
+  SessionOptions,
+};
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.violations.some(
+      (violation) => violation.rule === 'tauri-runtime-owner-import' && violation.line === 2,
+    ),
+  )
+})
+
+test('fails legacy Harness owner names in Tauri production state', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'apps/desktop/src-tauri/src/commands/runtime.rs',
+    content: `
+struct DesktopActiveRuntime {
+  harness: Option<DesktopSettingsRuntime>,
+}
+
+fn build_desktop_harness() {}
+
+fn reload(state: &DesktopRuntimeState) {
+  state.replace_harness();
+  let _ = state.harness();
+}
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.violations.some(
+      (violation) => violation.rule === 'tauri-legacy-harness-owner-name',
+    ),
+  )
+})
+
+test('fails daemon production access to legacy stores and loopback control', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'crates/jyowo-harness-daemon/src/legacy.rs',
+    content: `
+use std::net::{TcpListener, TcpStream};
+use harness_journal::{ConversationReadModel, JsonlEventStore};
+
+fn open_legacy() {
+  let database = "agent-runtime.sqlite";
+  let control_addr = "127.0.0.1:9000";
+}
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  const rules = new Set(result.violations.map((violation) => violation.rule))
+  assert.ok(rules.has('daemon-legacy-store'))
+  assert.ok(rules.has('daemon-loopback-control'))
+})
+
+test('fails agent runtime access to the retired supervisor control plane', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'crates/jyowo-harness-agent-runtime/src/policy.rs',
+    content: `
+use std::net::TcpStream;
+
+fn probe() {
+  let control_addr = "127.0.0.1:9000";
+  let lock = "agent-supervisor.lock";
+}
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  const rules = new Set(result.violations.map((violation) => violation.rule))
+  assert.ok(rules.has('agent-runtime-loopback-control'))
+  assert.ok(rules.has('agent-runtime-legacy-supervisor'))
+})
+
+test('fails daemon read-blob dispatch that accepts a client path', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'crates/jyowo-harness-daemon/src/ipc.rs',
+    content: `
+fn dispatch(request: ClientRequest) {
+  match request {
+    ClientRequest::ReadBlob { path } => read_blob(path),
+  }
+}
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  assert.ok(result.violations.some((violation) => violation.rule === 'daemon-client-blob-path'))
+})
+
+test('fails handwritten frontend daemon event unions outside generated boundaries', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'apps/desktop/src/features/tasks/task-events.ts',
+    content: `
+export type TaskDaemonEvent =
+  | { type: 'task.created' }
+  | { type: 'run.started' }
+`,
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  assert.ok(result.violations.some((violation) => violation.rule === 'frontend-daemon-event-union'))
+})
+
+test('fails more than one production task SQLite path construction', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'crates/jyowo-harness-daemon/src/bin/daemon.rs',
+    content: 'let store = TaskStore::open(root.join("tasks.sqlite"))?;',
+  })
+  const secondPath = 'crates/jyowo-harness-daemon/src/secondary_store.rs'
+  writeFixtureAtRoot({
+    root,
+    relativePath: secondPath,
+    content: 'let second = TaskStore::open(other.join("tasks.sqlite"))?;',
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, {
+    scopedPaths: [relativePath, secondPath],
+  })
+
+  assert.equal(result.ok, false)
+  assert.ok(result.violations.some((violation) => violation.rule === 'multiple-task-sqlite-paths'))
+})
+
 test('requires agent context near generic fake mock noop todo markers', () => {
   const { root, relativePath } = writeFixture({
     relativePath: 'apps/desktop/src/features/conversation/ConversationWorkspace.tsx',

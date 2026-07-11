@@ -109,6 +109,11 @@ impl RunControlHandle {
             let _ = outcome.changed().await;
         }
     }
+
+    #[must_use]
+    pub fn finished_outcome(&self) -> Option<TurnOutcome> {
+        self.inner.outcome.borrow().clone()
+    }
 }
 
 impl Default for RunControlHandle {

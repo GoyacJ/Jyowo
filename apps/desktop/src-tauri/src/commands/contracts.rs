@@ -7,7 +7,6 @@ use super::automations::*;
 #[allow(unused_imports)]
 use super::constants::*;
 #[allow(unused_imports)]
-use super::conversations::*;
 #[allow(unused_imports)]
 use super::error::*;
 #[allow(unused_imports)]
@@ -37,8 +36,6 @@ use harness_contracts::{
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-pub type ConversationEventBatchEmitter =
-    Arc<dyn Fn(ConversationEventBatchPayload) -> Result<(), String> + Send + Sync>;
 pub type McpDiagnosticBatchEmitter =
     Arc<dyn Fn(McpDiagnosticBatchPayload) -> Result<(), String> + Send + Sync>;
 
@@ -1470,18 +1467,6 @@ pub struct ExportMemoryItemsResponse {
     pub audit_hash: String,
 }
 
-pub trait PermissionResolver: Send + Sync {
-    fn resolve_permission_option<'a>(
-        &'a self,
-        request_id: RequestId,
-        tenant_id: TenantId,
-        session_id: SessionId,
-        option_id: PermissionOptionId,
-        submitted_decision: Decision,
-        confirmation_text: Option<&'a str>,
-    ) -> Pin<Box<dyn Future<Output = Result<Decision, CommandErrorPayload>> + Send + 'a>>;
-}
-
 pub trait ProviderSettingsStore: Send + Sync {
     fn selection_scope(&self) -> SettingsScope {
         SettingsScope::Global
@@ -2044,49 +2029,6 @@ pub struct ListActivityRequest {
     pub run_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubscribeConversationEventsRequest {
-    pub conversation_id: String,
-    pub after_cursor: Option<ConversationCursor>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubscribeConversationEventsResponse {
-    pub subscription_id: String,
-    pub conversation_id: String,
-    pub replay_events: Vec<RunEventPayload>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<ConversationCursor>,
-    pub gap: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UnsubscribeConversationEventsRequest {
-    pub subscription_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UnsubscribeConversationEventsResponse {
-    pub subscription_id: String,
-    pub status: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConversationEventBatchPayload {
-    pub subscription_id: String,
-    pub conversation_id: String,
-    pub events: Vec<RunEventPayload>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<ConversationCursor>,
-    pub gap: bool,
-    pub phase: &'static str,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunEventPayload {
@@ -2208,60 +2150,9 @@ pub struct ReplayTimelineResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PageConversationTimelineRequest {
-    pub conversation_id: String,
-    #[serde(default)]
-    pub after_cursor: Option<ConversationCursor>,
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PageConversationWorktreeDirection {
-    Before,
-    After,
-}
-
-impl From<PageConversationWorktreeDirection> for ConversationTurnPageDirection {
-    fn from(value: PageConversationWorktreeDirection) -> Self {
-        match value {
-            PageConversationWorktreeDirection::Before => ConversationTurnPageDirection::Before,
-            PageConversationWorktreeDirection::After => ConversationTurnPageDirection::After,
-        }
-    }
-}
-
-pub(crate) fn default_worktree_direction() -> PageConversationWorktreeDirection {
-    PageConversationWorktreeDirection::After
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PageConversationWorktreeRequest {
-    pub conversation_id: String,
-    #[serde(default)]
-    pub page_cursor: Option<ConversationTurnCursor>,
-    #[serde(default = "default_worktree_direction")]
-    pub direction: PageConversationWorktreeDirection,
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct GetConversationInspectorItemRequest {
     pub conversation_id: String,
     pub selection: ConversationInspectorSelection,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PageConversationTimelineResponse {
-    pub events: Vec<RunEventPayload>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<ConversationCursor>,
-    pub gap: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

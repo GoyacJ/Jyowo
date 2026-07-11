@@ -147,6 +147,21 @@ pub struct PendingSegmentStart {
     pub indeterminate_tools: Vec<IndeterminateToolDecision>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SegmentExecutionClaim {
+    Claimed,
+    InProgress,
+    Completed(SegmentExecutionTerminal),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SegmentExecutionTerminal {
+    pub terminal_reason: RunTerminalReason,
+    pub incomplete_output: bool,
+    pub ended_at: DateTime<Utc>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ContinueTaskCommandPayload {
@@ -2135,6 +2150,134 @@ impl TaskStore {
         Ok(())
     }
 
+    pub fn claim_segment_execution(
+        &self,
+        task_id: TaskId,
+        segment_id: RunSegmentId,
+        request_digest: &str,
+    ) -> Result<SegmentExecutionClaim, TaskStoreError> {
+        if request_digest.is_empty() || request_digest.len() > 256 {
+            return Err(TaskStoreError::InvalidInput(
+                "segment execution request digest is invalid".into(),
+            ));
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = transaction
+            .query_row(
+                "SELECT request_digest, status, terminal_json
+                 FROM segment_execution
+                 WHERE task_id = ?1 AND run_segment_id = ?2",
+                params![task_id.to_string(), segment_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let claim = match existing {
+            None => {
+                transaction.execute(
+                    "INSERT INTO segment_execution (
+                        task_id, run_segment_id, request_digest, status, claimed_at,
+                        completed_at, terminal_json
+                     ) VALUES (?1, ?2, ?3, 'in_progress', ?4, NULL, NULL)",
+                    params![
+                        task_id.to_string(),
+                        segment_id.to_string(),
+                        request_digest,
+                        now().to_rfc3339(),
+                    ],
+                )?;
+                SegmentExecutionClaim::Claimed
+            }
+            Some((stored_digest, _, _)) if stored_digest != request_digest => {
+                return Err(TaskStoreError::InvalidInput(
+                    "segment execution request conflicts with its durable claim".into(),
+                ));
+            }
+            Some((_, status, terminal)) if status == "in_progress" && terminal.is_none() => {
+                SegmentExecutionClaim::InProgress
+            }
+            Some((_, status, Some(terminal))) if status == "completed" => {
+                SegmentExecutionClaim::Completed(serde_json::from_str(&terminal)?)
+            }
+            Some(_) => {
+                return Err(TaskStoreError::ProjectionIntegrity(
+                    "segment execution state is inconsistent".into(),
+                ));
+            }
+        };
+        transaction.commit()?;
+        Ok(claim)
+    }
+
+    pub fn complete_segment_execution(
+        &self,
+        task_id: TaskId,
+        segment_id: RunSegmentId,
+        request_digest: &str,
+        terminal: &SegmentExecutionTerminal,
+    ) -> Result<(), TaskStoreError> {
+        let terminal_json = serde_json::to_string(terminal)?;
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = transaction
+            .query_row(
+                "SELECT request_digest, status, terminal_json
+                 FROM segment_execution
+                 WHERE task_id = ?1 AND run_segment_id = ?2",
+                params![task_id.to_string(), segment_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| {
+                TaskStoreError::InvalidInput("segment execution was not claimed".into())
+            })?;
+        if existing.0 != request_digest {
+            return Err(TaskStoreError::InvalidInput(
+                "segment execution request conflicts with its durable claim".into(),
+            ));
+        }
+        match (existing.1.as_str(), existing.2) {
+            ("in_progress", None) => {
+                transaction.execute(
+                    "UPDATE segment_execution
+                     SET status = 'completed', completed_at = ?3, terminal_json = ?4
+                     WHERE task_id = ?1 AND run_segment_id = ?2 AND status = 'in_progress'",
+                    params![
+                        task_id.to_string(),
+                        segment_id.to_string(),
+                        terminal.ended_at.to_rfc3339(),
+                        terminal_json,
+                    ],
+                )?;
+            }
+            ("completed", Some(stored)) if stored == terminal_json => {}
+            ("completed", Some(_)) => {
+                return Err(TaskStoreError::InvalidInput(
+                    "segment execution already has a different terminal outcome".into(),
+                ));
+            }
+            _ => {
+                return Err(TaskStoreError::ProjectionIntegrity(
+                    "segment execution state is inconsistent".into(),
+                ));
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn events_after(
         &self,
         after_global_offset: u64,
@@ -2210,6 +2353,39 @@ impl TaskStore {
                 .and_then(StoredTaskEvent::decode)
         })
         .collect()
+    }
+
+    pub fn run_terminal_reason(
+        &self,
+        task_id: TaskId,
+        segment_id: RunSegmentId,
+    ) -> Result<Option<RunTerminalReason>, TaskStoreError> {
+        let connection = self.lock()?;
+        let payload_json = connection
+            .query_row(
+                "SELECT payload_json
+                 FROM event_log
+                 WHERE task_id = ?1
+                   AND event_type = 'run.completed'
+                   AND json_extract(payload_json, '$.segmentId') = ?2
+                 ORDER BY global_offset DESC
+                 LIMIT 1",
+                params![task_id.to_string(), segment_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(payload_json) = payload_json else {
+            return Ok(None);
+        };
+        let payload: Value = serde_json::from_str(&payload_json)?;
+        let reason = payload.get("terminalReason").cloned().ok_or_else(|| {
+            TaskStoreError::ProjectionIntegrity(
+                "run.completed is missing terminalReason".to_owned(),
+            )
+        })?;
+        serde_json::from_value(reason)
+            .map(Some)
+            .map_err(TaskStoreError::from)
     }
 
     pub fn permission_resolution_option(

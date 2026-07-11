@@ -4,6 +4,7 @@
 //!
 
 #![forbid(unsafe_code)]
+#![recursion_limit = "512"]
 
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
@@ -2172,7 +2173,235 @@ impl Default for AgentTool {
                     "properties": {
                         "role": { "type": "string" },
                         "task": { "type": "string" },
-                        "prompt_template": { "type": "object" }
+                        "prompt_template": {
+                            "type": "object",
+                            "required": ["body"],
+                            "properties": {
+                                "body": { "type": "string" }
+                            },
+                            "additionalProperties": false
+                        },
+                        "toolset": {
+                            "oneOf": [
+                                { "const": "inherit_all" },
+                                {
+                                    "type": "object",
+                                    "required": ["inherit_with_blocklist"],
+                                    "properties": {
+                                        "inherit_with_blocklist": {
+                                            "type": "array",
+                                            "items": { "type": "string" },
+                                            "uniqueItems": true
+                                        }
+                                    },
+                                    "additionalProperties": false
+                                },
+                                {
+                                    "type": "object",
+                                    "required": ["preset"],
+                                    "properties": {
+                                        "preset": { "type": "string" }
+                                    },
+                                    "additionalProperties": false
+                                },
+                                {
+                                    "type": "object",
+                                    "required": ["custom"],
+                                    "properties": {
+                                        "custom": {
+                                            "type": "array",
+                                            "items": { "type": "string" },
+                                            "uniqueItems": true
+                                        }
+                                    },
+                                    "additionalProperties": false
+                                }
+                            ]
+                        },
+                        "tool_blocklist": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "uniqueItems": true
+                        },
+                        "sandbox_policy": {
+                            "oneOf": [
+                                { "enum": ["inherit", "empty"] },
+                                {
+                                    "type": "object",
+                                    "required": ["require"],
+                                    "properties": {
+                                        "require": { "type": "object" }
+                                    },
+                                    "additionalProperties": false
+                                },
+                                {
+                                    "type": "object",
+                                    "required": ["override"],
+                                    "properties": {
+                                        "override": { "type": "object" }
+                                    },
+                                    "additionalProperties": false
+                                }
+                            ]
+                        },
+                        "context_mode": {
+                            "oneOf": [
+                                { "const": "isolated" },
+                                {
+                                    "type": "object",
+                                    "required": ["fork_from_parent"],
+                                    "properties": {
+                                        "fork_from_parent": {
+                                            "type": "object",
+                                            "required": ["include_tool_results"],
+                                            "properties": {
+                                                "include_tool_results": { "type": "boolean" }
+                                            },
+                                            "additionalProperties": false
+                                        }
+                                    },
+                                    "additionalProperties": false
+                                }
+                            ]
+                        },
+                        "permission_mode": {
+                            "enum": [
+                                "default",
+                                "plan",
+                                "accept_edits",
+                                "bypass_permissions",
+                                "dont_ask",
+                                "auto"
+                            ]
+                        },
+                        "max_turns": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 4294967295_u64
+                        },
+                        "max_depth": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 255
+                        },
+                        "announce_mode": {
+                            "enum": ["structured_only", "summary_text", "full_transcript"]
+                        },
+                        "mcp_servers": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "uniqueItems": true
+                        },
+                        "required_mcp_servers": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "uniqueItems": true
+                        },
+                        "interactivity": {
+                            "enum": [
+                                "deferred_interactive",
+                                "fully_interactive",
+                                "no_interactive"
+                            ]
+                        },
+                        "quota": {
+                            "type": ["object", "null"],
+                            "properties": {
+                                "max_tokens": { "type": ["integer", "null"], "minimum": 0 },
+                                "max_tool_calls": { "type": ["integer", "null"], "minimum": 0 },
+                                "max_duration": { "type": ["object", "null"] },
+                                "max_cost_cents": { "type": ["integer", "null"], "minimum": 0 }
+                            },
+                            "additionalProperties": false
+                        },
+                        "memory_scope": {
+                            "oneOf": [
+                                {
+                                    "enum": [
+                                        "inherit",
+                                        "empty",
+                                        "read_only",
+                                        "read_write",
+                                        "candidate_only"
+                                    ]
+                                },
+                                {
+                                    "type": "object",
+                                    "required": ["subset"],
+                                    "properties": {
+                                        "subset": {
+                                            "type": "object",
+                                            "required": ["selectors"],
+                                            "properties": {
+                                                "selectors": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "oneOf": [
+                                                            {
+                                                                "type": "object",
+                                                                "required": ["tag"],
+                                                                "properties": {
+                                                                    "tag": { "type": "string" }
+                                                                },
+                                                                "additionalProperties": false
+                                                            },
+                                                            {
+                                                                "type": "object",
+                                                                "required": ["provider"],
+                                                                "properties": {
+                                                                    "provider": { "type": "string" }
+                                                                },
+                                                                "additionalProperties": false
+                                                            }
+                                                        ]
+                                                    }
+                                                }
+                                            },
+                                            "additionalProperties": false
+                                        }
+                                    },
+                                    "additionalProperties": false
+                                }
+                            ]
+                        },
+                        "input_strategy": {
+                            "oneOf": [
+                                { "enum": ["latest_user_only", "inherit_all"] },
+                                {
+                                    "type": "object",
+                                    "required": ["custom"],
+                                    "properties": {
+                                        "custom": {
+                                            "type": "object",
+                                            "required": ["selector_id"],
+                                            "properties": {
+                                                "selector_id": { "type": "string" }
+                                            },
+                                            "additionalProperties": false
+                                        }
+                                    },
+                                    "additionalProperties": false
+                                }
+                            ]
+                        },
+                        "system_header_extra": { "type": ["string", "null"] },
+                        "bootstrap_filter": {
+                            "oneOf": [
+                                { "enum": ["exclude_all", "inherit_all"] },
+                                {
+                                    "type": "object",
+                                    "required": ["allow"],
+                                    "properties": {
+                                        "allow": {
+                                            "type": "array",
+                                            "items": { "type": "string" },
+                                            "uniqueItems": true
+                                        }
+                                    },
+                                    "additionalProperties": false
+                                }
+                            ]
+                        }
                     },
                     "additionalProperties": false
                 }),

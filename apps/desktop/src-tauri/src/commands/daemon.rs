@@ -451,9 +451,35 @@ fn stage_blob_request(task_id: TaskId, path: PathBuf) -> Result<ClientRequest, S
         .ok_or_else(|| "attachment does not exist".to_owned())?;
     Ok(ClientRequest::StageBlob(StageBlobCommand {
         task_id,
-        media_type: super::conversations::infer_mime_type(&source_path),
+        media_type: infer_mime_type(&source_path),
         base64_data: general_purpose::STANDARD.encode(bytes),
     }))
+}
+
+fn infer_mime_type(path: &Path) -> String {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "css" => "text/css",
+        "csv" => "text/csv",
+        "html" | "htm" => "text/html",
+        "json" => "application/json",
+        "md" | "markdown" => "text/markdown",
+        "rs" | "tsx" | "ts" | "js" | "jsx" | "txt" | "toml" | "yaml" | "yml" => "text/plain",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        _ => "application/octet-stream",
+    }
+    .to_owned()
 }
 
 fn validate_subscription_id(subscription_id: &str) -> Result<(), String> {

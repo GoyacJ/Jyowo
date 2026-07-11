@@ -307,6 +307,7 @@ Git：
 - `MiniMaxFileUploadTool`
 - `MiniMaxFileListTool`
 - `MiniMaxFileRetrieveTool`
+- `MiniMaxFileRetrieveContent`
 - `MiniMaxFileDeleteTool`
 - `MiniMaxModelsListTool`
 - `MiniMaxModelRetrieveTool`
@@ -316,6 +317,9 @@ Git：
 - `MiniMaxAnthropicCountTokensTool`
 - `MiniMaxAnthropicModelsListTool`
 - `MiniMaxAnthropicModelRetrieveTool`
+- `MiniMaxTextChatCompletion`
+- `MiniMaxTextToSpeechWs`
+- `MiniMaxVideoDownload`
 
 实现文件：
 
@@ -335,6 +339,36 @@ Git：
 
 - `crates/jyowo-harness-tool/src/builtin/seedance.rs`
 - `crates/jyowo-harness-tool/src/provider_media.rs`
+
+### Gemini 工具
+
+这些工具需要 `gemini-tools` feature。
+
+- `GeminiModelsList`
+- `GeminiModelGet`
+- `GeminiTokensCount`
+- `GeminiFileUpload`
+- `GeminiFileList`
+- `GeminiFileGet`
+- `GeminiFileDelete`
+- `GeminiCachedContentCreate`
+- `GeminiCachedContentGet`
+- `GeminiCachedContentList`
+- `GeminiCachedContentDelete`
+- `GeminiEmbedding`
+- `GeminiEmbeddingBatch`
+- `GeminiBatchCreate`
+- `GeminiBatchGet`
+- `GeminiBatchList`
+- `GeminiBatchCancel`
+- `GeminiImageGeneration`
+- `GeminiVideoGeneration`
+- `GeminiVideoGenerationQuery`
+- `GeminiTextToSpeech`
+
+实现文件：
+
+- `crates/jyowo-harness-tool/src/builtin/gemini.rs`
 
 ### 工具搜索和 deferred tools
 

@@ -9,7 +9,6 @@ use super::constants::*;
 #[allow(unused_imports)]
 use super::contracts::*;
 #[allow(unused_imports)]
-use super::conversations::*;
 #[allow(unused_imports)]
 use super::error::*;
 #[allow(unused_imports)]
@@ -36,8 +35,8 @@ pub async fn list_plugins_with_runtime_state(
 ) -> Result<ListPluginsResponse, CommandErrorPayload> {
     let settings = state.plugin_store.load_record()?;
     let allow_project_plugins = settings.allow_project_plugins;
-    if let Some(harness) = state.harness() {
-        if let Some(registry) = harness.plugin_registry() {
+    if let Some(settings_runtime) = state.settings_runtime() {
+        if let Some(registry) = settings_runtime.plugin_registry() {
             registry.discover().await.map_err(|error| {
                 runtime_operation_failed(format!("plugin discovery failed: {error}"))
             })?;
@@ -68,8 +67,8 @@ pub async fn get_plugin_detail_with_runtime_state(
     request: GetPluginDetailRequest,
     state: &DesktopRuntimeState,
 ) -> Result<GetPluginDetailResponse, CommandErrorPayload> {
-    if let Some(harness) = state.harness() {
-        if let Some(registry) = harness.plugin_registry() {
+    if let Some(settings_runtime) = state.settings_runtime() {
+        if let Some(registry) = settings_runtime.plugin_registry() {
             registry.discover().await.map_err(|error| {
                 runtime_operation_failed(format!("plugin discovery failed: {error}"))
             })?;
@@ -129,7 +128,7 @@ pub async fn install_plugin_from_path_with_runtime_state(
         });
     }
 
-    let _start_run_guard = state.start_run_lock.lock().await;
+    let _settings_reload_guard = state.settings_reload_lock.lock().await;
     let _plugin_store_guard = state.plugin_store_lock.lock().await;
     let mut settings = state.plugin_store.load_record()?;
     let previous_settings = settings.clone();
@@ -206,7 +205,7 @@ pub async fn install_plugin_from_path_with_runtime_state(
         let _ = state.plugin_store.delete_plugin_package(&package_dir);
         return Err(error);
     }
-    if let Err(error) = reload_desktop_harness_after_plugin_change_locked(state).await {
+    if let Err(error) = reload_desktop_settings_runtime_after_plugin_change_locked(state).await {
         let _ = state.plugin_store.save_record(&previous_settings);
         let _ = state.plugin_store.delete_plugin_package(&package_dir);
         return Err(error);
@@ -224,7 +223,7 @@ pub async fn set_plugin_enabled_with_runtime_state(
     request: SetPluginEnabledRequest,
     state: &DesktopRuntimeState,
 ) -> Result<PluginOperationResult, CommandErrorPayload> {
-    let _start_run_guard = state.start_run_lock.lock().await;
+    let _settings_reload_guard = state.settings_reload_lock.lock().await;
     let _plugin_store_guard = state.plugin_store_lock.lock().await;
     let mut settings = state.plugin_store.load_record()?;
     let previous_settings = settings.clone();
@@ -242,7 +241,7 @@ pub async fn set_plugin_enabled_with_runtime_state(
             return Err(error);
         }
     }
-    if let Err(error) = reload_desktop_harness_after_plugin_change_locked(state).await {
+    if let Err(error) = reload_desktop_settings_runtime_after_plugin_change_locked(state).await {
         let _ = state.plugin_store.save_record(&previous_settings);
         return Err(error);
     }
@@ -263,13 +262,13 @@ pub async fn set_project_plugins_enabled_with_runtime_state(
     request: SetProjectPluginsEnabledRequest,
     state: &DesktopRuntimeState,
 ) -> Result<SetProjectPluginsEnabledResponse, CommandErrorPayload> {
-    let _start_run_guard = state.start_run_lock.lock().await;
+    let _settings_reload_guard = state.settings_reload_lock.lock().await;
     let _plugin_store_guard = state.plugin_store_lock.lock().await;
     let mut settings = state.plugin_store.load_record()?;
     let previous_settings = settings.clone();
     settings.allow_project_plugins = request.enabled;
     state.plugin_store.save_record(&settings)?;
-    if let Err(error) = reload_desktop_harness_after_plugin_change_locked(state).await {
+    if let Err(error) = reload_desktop_settings_runtime_after_plugin_change_locked(state).await {
         let _ = state.plugin_store.save_record(&previous_settings);
         return Err(error);
     }
@@ -282,7 +281,7 @@ pub async fn update_plugin_config_with_runtime_state(
     request: UpdatePluginConfigRequest,
     state: &DesktopRuntimeState,
 ) -> Result<PluginOperationResult, CommandErrorPayload> {
-    let _start_run_guard = state.start_run_lock.lock().await;
+    let _settings_reload_guard = state.settings_reload_lock.lock().await;
     let _plugin_store_guard = state.plugin_store_lock.lock().await;
     let mut settings = state.plugin_store.load_record()?;
     let previous_settings = settings.clone();
@@ -336,7 +335,7 @@ pub async fn update_plugin_config_with_runtime_state(
             return Err(error);
         }
     }
-    if let Err(error) = reload_desktop_harness_after_plugin_change_locked(state).await {
+    if let Err(error) = reload_desktop_settings_runtime_after_plugin_change_locked(state).await {
         let _ = state.plugin_store.save_record(&previous_settings);
         return Err(error);
     }
@@ -353,7 +352,7 @@ pub async fn uninstall_plugin_with_runtime_state(
     request: UninstallPluginRequest,
     state: &DesktopRuntimeState,
 ) -> Result<PluginOperationResult, CommandErrorPayload> {
-    let _start_run_guard = state.start_run_lock.lock().await;
+    let _settings_reload_guard = state.settings_reload_lock.lock().await;
     let _plugin_store_guard = state.plugin_store_lock.lock().await;
     let mut settings = state.plugin_store.load_record()?;
     let previous_settings = settings.clone();
@@ -371,14 +370,14 @@ pub async fn uninstall_plugin_with_runtime_state(
         return Err(invalid_payload("plugin not found".to_owned()));
     }
     state.plugin_store.save_record(&settings)?;
-    if let Err(error) = reload_desktop_harness_after_plugin_change_locked(state).await {
+    if let Err(error) = reload_desktop_settings_runtime_after_plugin_change_locked(state).await {
         let _ = state.plugin_store.save_record(&previous_settings);
         return Err(error);
     }
     for package_dir in &package_dirs {
         if let Err(error) = state.plugin_store.delete_plugin_package(package_dir) {
             let _ = state.plugin_store.save_record(&previous_settings);
-            let _ = reload_desktop_harness_after_plugin_change_locked(state).await;
+            let _ = reload_desktop_settings_runtime_after_plugin_change_locked(state).await;
             return Err(error);
         }
     }
@@ -394,7 +393,7 @@ pub async fn reload_plugin_with_runtime_state(
     request: ReloadPluginRequest,
     state: &DesktopRuntimeState,
 ) -> Result<PluginOperationResult, CommandErrorPayload> {
-    let _start_run_guard = state.start_run_lock.lock().await;
+    let _settings_reload_guard = state.settings_reload_lock.lock().await;
     let _plugin_store_guard = state.plugin_store_lock.lock().await;
     let settings = state.plugin_store.load_record()?;
     let installed_record = settings
@@ -405,7 +404,7 @@ pub async fn reload_plugin_with_runtime_state(
     if installed_record.enabled {
         preflight_plugin_activation(state, &request.plugin_id).await?;
     }
-    reload_desktop_harness_after_plugin_change_locked(state).await?;
+    reload_desktop_settings_runtime_after_plugin_change_locked(state).await?;
     let summary = plugin_summary_after_reload(state, &request.plugin_id).await?;
     Ok(PluginOperationResult {
         plugin_id: Some(request.plugin_id),
@@ -987,8 +986,11 @@ pub(crate) fn skill_detail_from_runtime_view(
     }
 }
 
-pub(crate) fn runtime_status_for_name(harness: &Harness, name: &str) -> Option<&'static str> {
-    harness
+pub(crate) fn runtime_status_for_name(
+    settings_runtime: &DesktopSettingsRuntime,
+    name: &str,
+) -> Option<&'static str> {
+    settings_runtime
         .list_runtime_skills()
         .iter()
         .find(|skill| skill.name == name)

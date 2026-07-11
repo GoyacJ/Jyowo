@@ -48,7 +48,6 @@ import type {
   ListSkillsResponse,
   ModelProviderCatalogResponse,
   ModelSettingsPageResponse,
-  PageConversationTimelineResponse,
   PageConversationWorktreeResponse,
   PluginInstallReport,
   PluginOperationResult,
@@ -66,7 +65,6 @@ import type {
   SetAutomationEnabledResponse,
   SetExecutionSettingsResponse,
   SetProjectPluginsEnabledResponse,
-  SubscribeConversationEventsResponse,
   SubscribeMcpDiagnosticsResponse,
   ValidateProviderSettingsResponse,
 } from '@/shared/tauri/commands'
@@ -253,12 +251,10 @@ export interface TestCommandClientOptions {
   replayTimeline?: ReplayTimelineResponse
   runtimeExecutionStatus?: RuntimeExecutionStatus
   runtimeTools?: ListRuntimeToolsResponse
-  conversationTimelinePage?: PageConversationTimelineResponse
   conversationInspectorItem?: TestCommandResponseOverride<
     CommandClient['getConversationInspectorItem']
   >
   conversationWorktreePage?: PageConversationWorktreeResponse
-  subscribeConversationEvents?: SubscribeConversationEventsResponse
   subscribeMcpDiagnostics?: SubscribeMcpDiagnosticsResponse
   skillDetail?: GetSkillDetailResponse
   skillFile?: GetSkillFileResponse

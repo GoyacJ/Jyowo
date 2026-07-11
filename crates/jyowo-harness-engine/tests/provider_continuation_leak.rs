@@ -5,17 +5,15 @@ use futures::{stream, StreamExt};
 use harness_context::ContextEngine;
 use harness_contracts::NoopRedactor;
 use harness_contracts::{
-    CapabilityRegistry, ConversationCursor, ConversationTimelineEvent, DeltaChunk, Event, EventId,
-    Message, MessageId, MessagePart, MessageRole, ModelError, ModelProtocol, PermissionError,
-    RunId, RunModelSnapshot, SessionId, StopReason, TenantId, TurnInput, UsageSnapshot,
+    CapabilityRegistry, Event, Message, MessageId, MessagePart, MessageRole, ModelError,
+    ModelProtocol, PermissionError, RunId, RunModelSnapshot, SessionId, StopReason, TenantId,
+    TurnInput, UsageSnapshot,
 };
 use harness_engine::{
     turn_assembly::TurnAssembly, Engine, EngineId, EngineRunner, RunContext, SessionHandle,
 };
 use harness_hook::{HookDispatcher, HookRegistry};
-use harness_journal::{
-    project_conversation_worktree_snapshot, EventStore, InMemoryEventStore, ReplayCursor,
-};
+use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_model::{
     ContentDelta, ConversationModelCapability, HealthStatus, InferContext, ModelDescriptor,
     ModelLifecycle, ModelProvider, ModelRequest, ModelRuntimeSemantics, ModelStream,
@@ -59,30 +57,6 @@ mod provider_continuation_leak {
 
         let journal_json = serde_json::to_string(&journal_events).unwrap();
         assert!(!journal_json.contains(PRIVATE_SENTINEL));
-    }
-
-    #[tokio::test]
-    async fn provider_continuation_payload_not_projected_to_conversation_read_model() {
-        let harness =
-            ProviderContinuationLeakHarness::new(provider_continuation_then_text_events()).await;
-
-        let events = harness.run_with_seed(Vec::new()).await;
-        let timeline = timeline_events_for_events(events);
-        let worktree = project_conversation_worktree_snapshot(
-            &harness.session_id.to_string(),
-            timeline.clone(),
-        );
-        let projected = format!(
-            "{}\n{}",
-            serde_json::to_string(&timeline).unwrap(),
-            serde_json::to_string(&json!({
-                "turns": worktree.turns,
-                "eventCursor": worktree.event_cursor,
-                "eventRefs": worktree.event_refs,
-            }))
-            .unwrap()
-        );
-        assert!(!projected.contains(PRIVATE_SENTINEL));
     }
 
     #[tokio::test]
@@ -536,110 +510,4 @@ fn assistant_completed_id(events: &[Event]) -> MessageId {
             _ => None,
         })
         .expect("assistant message completed")
-}
-
-fn timeline_events_for_events(events: Vec<Event>) -> Vec<ConversationTimelineEvent> {
-    events
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, event)| {
-            let sequence = (index + 1) as u64;
-            let event_id = EventId::new();
-            let (run_id, event_type, source, payload, timestamp) = match event {
-                Event::RunStarted(event) => (
-                    event.run_id,
-                    "run.started",
-                    "engine",
-                    json!({
-                        "sessionId": event.session_id.to_string(),
-                        "model": {
-                            "modelConfigId": event.model.model_config_id,
-                            "providerId": event.model.provider_id,
-                            "modelId": event.model.model_id,
-                            "displayName": event.model.display_name,
-                            "protocol": event.model.protocol,
-                        },
-                        "permissionMode": event.permission_mode,
-                    }),
-                    event.started_at,
-                ),
-                Event::UserMessageAppended(event) => (
-                    event.run_id,
-                    "user.message.appended",
-                    "user",
-                    json!({
-                        "messageId": event.message_id.to_string(),
-                        "body": message_body(&event.content),
-                    }),
-                    event.at,
-                ),
-                Event::AssistantDeltaProduced(event) => match event.delta {
-                    DeltaChunk::Text(text) => (
-                        event.run_id,
-                        "assistant.delta",
-                        "assistant",
-                        json!({
-                            "messageId": event.message_id.to_string(),
-                            "text": text,
-                        }),
-                        event.at,
-                    ),
-                    DeltaChunk::Thought(_) | DeltaChunk::ReasoningSummary(_) => (
-                        event.run_id,
-                        "assistant.thinking.delta",
-                        "assistant",
-                        json!({"status": "running"}),
-                        event.at,
-                    ),
-                    _ => return None,
-                },
-                Event::AssistantMessageCompleted(event) => (
-                    event.run_id,
-                    "assistant.completed",
-                    "assistant",
-                    json!({
-                        "messageId": event.message_id.to_string(),
-                        "body": message_body(&event.content),
-                        "toolUses": event.tool_uses.iter().map(|tool_use| {
-                            json!({
-                                "toolUseId": tool_use.tool_use_id.to_string(),
-                                "toolName": tool_use.tool_name,
-                            })
-                        }).collect::<Vec<_>>(),
-                    }),
-                    event.at,
-                ),
-                _ => return None,
-            };
-            Some(ConversationTimelineEvent {
-                id: event_id.to_string(),
-                cursor: ConversationCursor {
-                    event_id,
-                    conversation_sequence: sequence,
-                },
-                payload,
-                run_id: run_id.to_string(),
-                sequence,
-                source: source.to_owned(),
-                timestamp,
-                event_type: event_type.to_owned(),
-                visibility: "public".to_owned(),
-            })
-        })
-        .collect()
-}
-
-fn message_body(content: &harness_contracts::MessageContent) -> String {
-    match content {
-        harness_contracts::MessageContent::Text(text) => text.clone(),
-        harness_contracts::MessageContent::Structured(value) => value.to_string(),
-        harness_contracts::MessageContent::Multimodal(parts) => parts
-            .iter()
-            .filter_map(|part| match part {
-                MessagePart::Text(text) => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    }
 }

@@ -324,3 +324,91 @@ fn active_tauri_runtime_manages_and_registers_the_daemon_bridge() {
         "legacy supervisor is still launched by the active runtime"
     );
 }
+
+#[test]
+fn active_tauri_handler_does_not_register_legacy_task_runtime_commands() {
+    let source = std::fs::read_to_string("src/lib.rs").unwrap();
+    for command in [
+        "commands::cancel_run",
+        "commands::create_conversation",
+        "commands::create_default_conversation",
+        "commands::create_project_conversation",
+        "commands::delete_conversation",
+        "commands::get_conversation",
+        "commands::get_runtime_execution_status",
+        "commands::harness_healthcheck",
+        "commands::list_conversations",
+        "commands::list_runtime_tools",
+        "commands::start_run",
+    ] {
+        assert!(
+            !source.contains(command),
+            "active handler still registers legacy runtime command {command}"
+        );
+    }
+}
+
+#[test]
+fn legacy_supervisor_and_loopback_control_plane_are_absent() {
+    for path in [
+        "src/agent_supervisor.rs",
+        "src/bin/jyowo-agent-supervisor.rs",
+    ] {
+        assert!(
+            !std::path::Path::new(path).exists(),
+            "legacy runtime remains: {path}"
+        );
+    }
+
+    for path in [
+        "src/lib.rs",
+        "src/commands/mod.rs",
+        "src/commands/runtime.rs",
+        "src/commands/providers.rs",
+        "src/commands/background_agents.rs",
+        "src/commands/conversations.rs",
+    ] {
+        let Ok(source) = std::fs::read_to_string(path) else {
+            assert!(
+                !std::path::Path::new(path).exists(),
+                "failed to read active runtime source: {path}"
+            );
+            continue;
+        };
+        for forbidden in [
+            "agent_supervisor",
+            "AgentSupervisor",
+            "jyowo-agent-supervisor",
+            "TcpListener",
+            "TcpStream",
+            "control_addr",
+            "page_conversation_timeline",
+            "subscribe_conversation_events",
+            "unsubscribe_conversation_events",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{path} still contains legacy control-plane token {forbidden}"
+            );
+        }
+    }
+
+    for path in ["src/lib.rs", "src/commands/mod.rs"] {
+        let source = std::fs::read_to_string(path).unwrap();
+        assert!(
+            !source.contains("page_conversation_worktree"),
+            "{path} still exposes the legacy conversation worktree command"
+        );
+    }
+
+    let source = std::fs::read_to_string("src/lib.rs").unwrap();
+    assert!(
+        !source.contains("commands::resolve_permission"),
+        "src/lib.rs still registers the legacy conversation permission command"
+    );
+    let source = std::fs::read_to_string("src/commands/mod.rs").unwrap();
+    assert!(
+        !source.contains("pub async fn resolve_permission("),
+        "src/commands/mod.rs still exposes the legacy conversation permission command"
+    );
+}

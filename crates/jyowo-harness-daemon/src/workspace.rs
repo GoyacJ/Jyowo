@@ -1,8 +1,11 @@
-use std::fs::File;
+use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
+use std::fs::{File, Metadata};
 use std::future::Future;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use chrono::{DateTime, Utc};
 use harness_agent_runtime::{GitDiscovery, WorkspaceIsolationError, WorkspaceLeaseRepository};
@@ -12,6 +15,7 @@ use harness_journal::{
     ReleaseTaskWorkspaceLeaseOutcome, TaskStore, TaskStoreError, TaskWorkspaceAcquireOutcome,
     TaskWorkspaceLease, TaskWorkspaceLeaseState,
 };
+use harness_sandbox::LocalIsolation;
 use serde_json::json;
 use thiserror::Error;
 
@@ -57,6 +61,8 @@ pub enum WorkspaceCleanupOutcome {
 }
 
 const MAX_WORKSPACE_READ_BYTES: u64 = 16 * 1024 * 1024;
+#[cfg(unix)]
+static WORKSPACE_TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
 pub struct WorkspaceToolAuthorization {
@@ -64,6 +70,7 @@ pub struct WorkspaceToolAuthorization {
     pub writable: bool,
     root: Arc<File>,
     relative_path: PathBuf,
+    write_lock: Arc<Mutex<()>>,
     state: Arc<WorkspaceToolAuthorizationState>,
 }
 
@@ -80,35 +87,7 @@ impl WorkspaceToolAuthorization {
         #[cfg(unix)]
         {
             let (directory, file_name) = self.open_parent()?;
-            let fd = rustix::fs::openat(
-                &directory,
-                Path::new(&file_name),
-                rustix::fs::OFlags::RDONLY
-                    | rustix::fs::OFlags::NONBLOCK
-                    | rustix::fs::OFlags::NOFOLLOW
-                    | rustix::fs::OFlags::CLOEXEC,
-                rustix::fs::Mode::empty(),
-            )
-            .map_err(workspace_open_error)?;
-            let file = File::from(fd);
-            let metadata = file.metadata()?;
-            if !metadata.is_file() {
-                return Err(std::io::Error::other("workspace target is not a regular file").into());
-            }
-            if metadata.len() > MAX_WORKSPACE_READ_BYTES {
-                return Err(WorkspaceCoordinatorError::WorkspaceReadLimitExceeded {
-                    limit: MAX_WORKSPACE_READ_BYTES,
-                });
-            }
-            let mut bytes = Vec::new();
-            file.take(MAX_WORKSPACE_READ_BYTES + 1)
-                .read_to_end(&mut bytes)?;
-            if bytes.len() as u64 > MAX_WORKSPACE_READ_BYTES {
-                return Err(WorkspaceCoordinatorError::WorkspaceReadLimitExceeded {
-                    limit: MAX_WORKSPACE_READ_BYTES,
-                });
-            }
-            Ok(bytes)
+            read_workspace_file_at(&directory, &file_name).map(|(bytes, _, _)| bytes)
         }
     }
 
@@ -119,29 +98,48 @@ impl WorkspaceToolAuthorization {
                 lease_id: self.lease_id,
             });
         }
+        let _write_guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| std::io::Error::other("workspace write lock poisoned"))?;
         #[cfg(not(unix))]
         return Err(WorkspaceCoordinatorError::SecureWorkspaceIoUnavailable);
         #[cfg(unix)]
         {
             let (directory, file_name) = self.open_parent()?;
-            let fd = rustix::fs::openat(
-                &directory,
-                Path::new(&file_name),
-                rustix::fs::OFlags::WRONLY
-                    | rustix::fs::OFlags::CREATE
-                    | rustix::fs::OFlags::NONBLOCK
-                    | rustix::fs::OFlags::NOFOLLOW
-                    | rustix::fs::OFlags::CLOEXEC,
-                rustix::fs::Mode::from_raw_mode(0o600),
-            )
-            .map_err(workspace_open_error)?;
-            let mut file = File::from(fd);
-            if !file.metadata()?.is_file() {
-                return Err(std::io::Error::other("workspace target is not a regular file").into());
-            }
-            file.set_len(0)?;
-            file.write_all(bytes)?;
-            Ok(())
+            let mode = workspace_file_mode_at(&directory, &file_name)?.unwrap_or(0o600);
+            replace_workspace_file_at(&directory, &file_name, bytes, mode, None)
+        }
+    }
+
+    pub fn edit_bytes<T>(
+        &self,
+        edit: impl FnOnce(&[u8]) -> std::io::Result<(Vec<u8>, T)>,
+    ) -> Result<T, WorkspaceCoordinatorError> {
+        let _operation = self.begin_operation()?;
+        if !self.writable {
+            return Err(WorkspaceCoordinatorError::ReadOnlyAuthorization {
+                lease_id: self.lease_id,
+            });
+        }
+        // Daemon-authorized edits for the same lease/path are serialized through
+        // the compare-and-rename section. External host writers do not share this lock.
+        let _write_guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| std::io::Error::other("workspace write lock poisoned"))?;
+        #[cfg(not(unix))]
+        {
+            let _ = edit;
+            return Err(WorkspaceCoordinatorError::SecureWorkspaceIoUnavailable);
+        }
+        #[cfg(unix)]
+        {
+            let (directory, file_name) = self.open_parent()?;
+            let (bytes, version, mode) = read_workspace_file_at(&directory, &file_name)?;
+            let (edited, result) = edit(&bytes)?;
+            replace_workspace_file_at(&directory, &file_name, &edited, mode, Some(&version))?;
+            Ok(result)
         }
     }
 
@@ -197,6 +195,175 @@ impl WorkspaceToolAuthorization {
             file_name.ok_or_else(|| std::io::Error::other("workspace target has no file name"))?;
         Ok((directory, file_name))
     }
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkspaceFileVersion {
+    device: u64,
+    inode: u64,
+    length: u64,
+    modified: Option<std::time::SystemTime>,
+    content_hash: [u8; 32],
+}
+
+#[cfg(unix)]
+fn read_workspace_file_at(
+    directory: &File,
+    file_name: &OsStr,
+) -> Result<(Vec<u8>, WorkspaceFileVersion, u32), WorkspaceCoordinatorError> {
+    let file = open_workspace_file_at(directory, file_name)?.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "workspace target does not exist",
+        )
+    })?;
+    let metadata = file.metadata()?;
+    validate_workspace_regular_file(&metadata)?;
+    if metadata.len() > MAX_WORKSPACE_READ_BYTES {
+        return Err(WorkspaceCoordinatorError::WorkspaceReadLimitExceeded {
+            limit: MAX_WORKSPACE_READ_BYTES,
+        });
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_WORKSPACE_READ_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_WORKSPACE_READ_BYTES {
+        return Err(WorkspaceCoordinatorError::WorkspaceReadLimitExceeded {
+            limit: MAX_WORKSPACE_READ_BYTES,
+        });
+    }
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let version = WorkspaceFileVersion {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        length: metadata.len(),
+        modified: metadata.modified().ok(),
+        content_hash: *blake3::hash(&bytes).as_bytes(),
+    };
+    Ok((bytes, version, metadata.permissions().mode() & 0o777))
+}
+
+#[cfg(unix)]
+fn open_workspace_file_at(
+    directory: &File,
+    file_name: &OsStr,
+) -> Result<Option<File>, WorkspaceCoordinatorError> {
+    match rustix::fs::openat(
+        directory,
+        Path::new(file_name),
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::NONBLOCK
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(fd) => Ok(Some(File::from(fd))),
+        Err(rustix::io::Errno::NOENT) => Ok(None),
+        Err(error) => Err(workspace_open_error(error)),
+    }
+}
+
+#[cfg(unix)]
+fn workspace_file_mode_at(
+    directory: &File,
+    file_name: &OsStr,
+) -> Result<Option<u32>, WorkspaceCoordinatorError> {
+    let Some(file) = open_workspace_file_at(directory, file_name)? else {
+        return Ok(None);
+    };
+    let metadata = file.metadata()?;
+    validate_workspace_regular_file(&metadata)?;
+    use std::os::unix::fs::PermissionsExt;
+    Ok(Some(metadata.permissions().mode() & 0o777))
+}
+
+#[cfg(unix)]
+fn validate_workspace_regular_file(metadata: &Metadata) -> Result<(), WorkspaceCoordinatorError> {
+    if metadata.is_file() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("workspace target is not a regular file").into())
+    }
+}
+
+#[cfg(unix)]
+fn replace_workspace_file_at(
+    directory: &File,
+    file_name: &OsStr,
+    bytes: &[u8],
+    mode: u32,
+    expected: Option<&WorkspaceFileVersion>,
+) -> Result<(), WorkspaceCoordinatorError> {
+    let (temp_name, mut temp_file) = create_workspace_temp_file(directory, file_name, mode)?;
+    let result = (|| {
+        temp_file.write_all(bytes)?;
+        temp_file.sync_all()?;
+        drop(temp_file);
+
+        if let Some(expected) = expected {
+            let (_, actual, _) = read_workspace_file_at(directory, file_name)?;
+            if &actual != expected {
+                return Err(std::io::Error::other(
+                    "workspace target changed while the edit was being prepared",
+                )
+                .into());
+            }
+        }
+
+        rustix::fs::renameat(
+            directory,
+            Path::new(&temp_name),
+            directory,
+            Path::new(file_name),
+        )
+        .map_err(|error| {
+            WorkspaceCoordinatorError::Io(std::io::Error::other(format!(
+                "workspace atomic replace failed: {error}"
+            )))
+        })?;
+        directory.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = rustix::fs::unlinkat(
+            directory,
+            Path::new(&temp_name),
+            rustix::fs::AtFlags::empty(),
+        );
+    }
+    result
+}
+
+#[cfg(unix)]
+fn create_workspace_temp_file(
+    directory: &File,
+    file_name: &OsStr,
+    mode: u32,
+) -> Result<(OsString, File), WorkspaceCoordinatorError> {
+    for _ in 0..64 {
+        let sequence = WORKSPACE_TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let name = OsString::from(format!(
+            ".{}.jyowo-write-{}-{sequence}",
+            file_name.to_string_lossy(),
+            std::process::id()
+        ));
+        match rustix::fs::openat(
+            directory,
+            Path::new(&name),
+            rustix::fs::OFlags::WRONLY
+                | rustix::fs::OFlags::CREATE
+                | rustix::fs::OFlags::EXCL
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::from_raw_mode((mode & 0o777) as _),
+        ) {
+            Ok(fd) => return Ok((name, File::from(fd))),
+            Err(rustix::io::Errno::EXIST) => continue,
+            Err(error) => return Err(workspace_open_error(error)),
+        }
+    }
+    Err(std::io::Error::other("workspace temporary file name collision limit exceeded").into())
 }
 
 #[derive(Debug)]
@@ -295,6 +462,7 @@ pub struct WorkspaceCoordinator {
     store: Arc<TaskStore>,
     lease_repository: Arc<dyn WorkspaceLeaseRepository>,
     managed_worktrees_root: PathBuf,
+    workspace_write_locks: Mutex<HashMap<(WorkspaceLeaseId, PathBuf), Weak<Mutex<()>>>>,
 }
 
 impl WorkspaceCoordinator {
@@ -310,6 +478,7 @@ impl WorkspaceCoordinator {
             store,
             lease_repository,
             managed_worktrees_root,
+            workspace_write_locks: Mutex::new(HashMap::new()),
         };
         coordinator.expire_stale(Utc::now())?;
         coordinator.reconcile_managed_worktrees()?;
@@ -525,8 +694,9 @@ impl WorkspaceCoordinator {
         &self,
         lease_id: WorkspaceLeaseId,
         action: WorkspaceToolAction,
+        sandboxed_command: bool,
     ) -> Result<WorkspaceToolAuthorization, WorkspaceCoordinatorError> {
-        if matches!(action, WorkspaceToolAction::Command { .. }) {
+        if matches!(action, WorkspaceToolAction::Command { .. }) && !sandboxed_command {
             return Err(WorkspaceCoordinatorError::SandboxedCommandRequired);
         }
         let lease = self.store.workspace_lease(lease_id)?.ok_or_else(|| {
@@ -581,12 +751,33 @@ impl WorkspaceCoordinator {
                 return Err(WorkspaceCoordinatorError::ExclusiveWriteLeaseRequired { lease_id });
             }
         }
+        let write_lock = self.workspace_write_lock(lease_id, &canonical_path)?;
         workspace_authorization(
             lease_id,
             &execution_root,
             &canonical_path,
             action.requires_write(),
+            write_lock,
         )
+    }
+
+    fn workspace_write_lock(
+        &self,
+        lease_id: WorkspaceLeaseId,
+        path: &Path,
+    ) -> Result<Arc<Mutex<()>>, WorkspaceCoordinatorError> {
+        let mut locks = self
+            .workspace_write_locks
+            .lock()
+            .map_err(|_| std::io::Error::other("workspace write-lock registry poisoned"))?;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        let key = (lease_id, path.to_path_buf());
+        if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+            return Ok(lock);
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(key, Arc::downgrade(&lock));
+        Ok(lock)
     }
 
     pub async fn dispatch_tool<T, F>(
@@ -598,9 +789,34 @@ impl WorkspaceCoordinator {
     where
         F: Future<Output = T>,
     {
-        self.authorize_tool(lease_id, action.clone())?;
+        self.authorize_tool(lease_id, action.clone(), false)?;
         let _dispatch_guard = self.store.begin_workspace_dispatch(lease_id)?;
-        let authorization = self.authorize_tool(lease_id, action)?;
+        let authorization = self.authorize_tool(lease_id, action, false)?;
+        let _activation_guard = authorization.activation_guard();
+        Ok(execute(authorization).await)
+    }
+
+    pub async fn dispatch_sandboxed_command<T, F>(
+        &self,
+        lease_id: WorkspaceLeaseId,
+        cwd: PathBuf,
+        requires_write: bool,
+        isolation: LocalIsolation,
+        execute: impl FnOnce(WorkspaceToolAuthorization) -> F,
+    ) -> Result<T, WorkspaceCoordinatorError>
+    where
+        F: Future<Output = T>,
+    {
+        if !workspace_command_isolation_enforced(isolation) {
+            return Err(WorkspaceCoordinatorError::SandboxedCommandRequired);
+        }
+        let action = WorkspaceToolAction::Command {
+            cwd,
+            requires_write,
+        };
+        self.authorize_tool(lease_id, action.clone(), true)?;
+        let _dispatch_guard = self.store.begin_workspace_dispatch(lease_id)?;
+        let authorization = self.authorize_tool(lease_id, action, true)?;
         let _activation_guard = authorization.activation_guard();
         Ok(execute(authorization).await)
     }
@@ -713,8 +929,9 @@ impl WorkspaceCoordinator {
                 lease_id: command.lease_id,
             });
         }
+        let write_lock = self.workspace_write_lock(command.lease_id, &canonical_path)?;
         let authorization =
-            workspace_authorization(command.lease_id, &root, &canonical_path, true)?;
+            workspace_authorization(command.lease_id, &root, &canonical_path, true, write_lock)?;
         let _activation_guard = authorization.activation_guard();
         Ok(execute(authorization).await)
     }
@@ -768,6 +985,13 @@ impl WorkspaceCoordinator {
     }
 }
 
+pub(crate) fn workspace_command_isolation_enforced(isolation: LocalIsolation) -> bool {
+    matches!(
+        isolation,
+        LocalIsolation::Bubblewrap | LocalIsolation::Seatbelt
+    )
+}
+
 fn current_workspace_baseline(
     root: &Path,
 ) -> Result<(Option<String>, String), WorkspaceCoordinatorError> {
@@ -787,6 +1011,7 @@ fn workspace_authorization(
     root: &Path,
     canonical_path: &Path,
     writable: bool,
+    write_lock: Arc<Mutex<()>>,
 ) -> Result<WorkspaceToolAuthorization, WorkspaceCoordinatorError> {
     let relative_path = canonical_path
         .strip_prefix(root)
@@ -800,6 +1025,7 @@ fn workspace_authorization(
         writable,
         root: Arc::new(open_directory_no_follow(root)?),
         relative_path,
+        write_lock,
         state: Arc::new(WorkspaceToolAuthorizationState {
             inner: Mutex::new(WorkspaceToolAuthorizationStateInner {
                 accepting_operations: true,

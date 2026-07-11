@@ -1031,12 +1031,24 @@ fn json_number(value: f64) -> serde_json::Value {
 #[derive(Default)]
 pub struct EngineBoundSubagentFactory {
     engine: tokio::sync::OnceCell<Engine>,
+    latest_external_engine: std::sync::RwLock<Option<Engine>>,
 }
 
 #[cfg(feature = "subagent-tool")]
 impl EngineBoundSubagentFactory {
     pub fn bind_engine(&self, engine: Engine) -> Result<(), ()> {
         self.engine.set(engine).map_err(|_| ())
+    }
+
+    /// Replaces the engine used by an externally owned subagent runner.
+    ///
+    /// SDK conversation setup may construct a preparatory engine before the actual turn engine.
+    /// The daemon registry must follow the latest engine before any delegated tool can execute.
+    pub fn bind_latest_external_engine(&self, engine: Engine) {
+        *self
+            .latest_external_engine
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(engine);
     }
 }
 
@@ -1083,9 +1095,17 @@ impl harness_subagent::SubagentEngineFactory for EngineBoundSubagentFactory {
         &self,
         request: harness_subagent::ChildRunRequest,
     ) -> Result<harness_subagent::ChildRunOutcome, harness_subagent::SubagentError> {
-        let engine = self.engine.get().ok_or_else(|| {
-            harness_subagent::SubagentError::Engine("engine self runner missing".to_owned())
-        })?;
+        let external_engine = self
+            .latest_external_engine
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let engine = external_engine
+            .as_ref()
+            .or_else(|| self.engine.get())
+            .ok_or_else(|| {
+                harness_subagent::SubagentError::Engine("engine self runner missing".to_owned())
+            })?;
         if request.cancellation.is_cancelled() {
             return Err(harness_subagent::SubagentError::Cancelled);
         }
@@ -2422,6 +2442,7 @@ agent rules
                     origin,
                     search_hint: None,
                     service_binding: None,
+                    metadata: Default::default(),
                 },
             }
         }

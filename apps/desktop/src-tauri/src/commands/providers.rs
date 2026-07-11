@@ -9,7 +9,6 @@ use super::constants::*;
 #[allow(unused_imports)]
 use super::contracts::*;
 #[allow(unused_imports)]
-use super::conversations::*;
 #[allow(unused_imports)]
 use super::error::*;
 #[allow(unused_imports)]
@@ -45,7 +44,6 @@ pub(crate) struct DesktopProviderCredentialResolver {
 
 impl DesktopProviderCredentialResolver {
     pub(crate) fn new(
-        _conversation_metadata_store: Arc<dyn ConversationMetadataStore>,
         provider_settings_store: Arc<dyn ProviderSettingsStore>,
         provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
     ) -> Self {
@@ -146,12 +144,10 @@ impl ProviderCredentialResolverCap for DesktopProviderCredentialResolver {
 }
 
 pub fn desktop_provider_credential_resolver_with_stores(
-    conversation_metadata_store: Arc<dyn ConversationMetadataStore>,
     provider_settings_store: Arc<dyn ProviderSettingsStore>,
     provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
 ) -> Arc<dyn ProviderCredentialResolverCap> {
     Arc::new(DesktopProviderCredentialResolver::new(
-        conversation_metadata_store,
         provider_settings_store,
         provider_capability_routes,
     ))
@@ -209,9 +205,11 @@ pub(crate) fn desktop_provider_service_adapter_availability(
     runtime_state: &DesktopRuntimeState,
 ) -> ProviderServiceAdapterAvailability {
     runtime_state
-        .harness()
-        .map(|harness| {
-            provider_service_adapter_availability_from_snapshot(&harness.tool_registry().snapshot())
+        .settings_runtime()
+        .map(|settings_runtime| {
+            provider_service_adapter_availability_from_snapshot(
+                &settings_runtime.tool_registry().snapshot(),
+            )
         })
         .unwrap_or_else(default_desktop_provider_service_adapter_availability)
 }
@@ -230,8 +228,8 @@ pub(crate) fn sync_runtime_provider_capability_routes(
     routes: &ProviderCapabilityRouteSettings,
 ) {
     *runtime_state.provider_capability_routes.write() = routes.clone();
-    if let Some(harness) = runtime_state.harness() {
-        *harness.provider_capability_routes().write() = routes.clone();
+    if let Some(settings_runtime) = runtime_state.settings_runtime() {
+        *settings_runtime.provider_capability_routes().write() = routes.clone();
     }
 }
 
@@ -897,7 +895,7 @@ pub(crate) fn no_workspace_agent_capabilities_payload(
 pub(crate) fn no_workspace_agent_capabilities_payload_for_conversation(
     record: &harness_contracts::ExecutionDefaultsRecord,
     runtime_root: &Path,
-    conversation_id: Option<SessionId>,
+    _conversation_id: Option<SessionId>,
     context: Option<&AgentCapabilityResolutionContext>,
 ) -> AgentCapabilitiesPayload {
     let stream_permission_runtime_available = context
@@ -906,22 +904,6 @@ pub(crate) fn no_workspace_agent_capabilities_payload_for_conversation(
         .stream_permission_runtime_available;
     let runtime_store = jyowo_harness_sdk::AgentRuntimeStore::open_runtime_dir(runtime_root);
     let runtime_store_available = runtime_store.is_ok();
-    let restart_recovery_ok = runtime_store
-        .as_ref()
-        .ok()
-        .and_then(|store| store.table_exists("restart_recovery_markers").ok())
-        .unwrap_or(false);
-    let supervisor_scope = conversation_id.map_or_else(
-        || crate::agent_supervisor::AgentSupervisorScope::runtime(runtime_root.to_path_buf()),
-        |conversation_id| {
-            crate::agent_supervisor::AgentSupervisorScope::runtime_conversation(
-                runtime_root.to_path_buf(),
-                conversation_id,
-            )
-        },
-    );
-    let background_supervisor_available =
-        crate::agent_supervisor::agent_supervisor_available_for_scope(&supervisor_scope);
     let environment = jyowo_harness_sdk::default_agent_capability_environment();
 
     let subagents_available = environment.subagents_compiled
@@ -929,11 +911,6 @@ pub(crate) fn no_workspace_agent_capabilities_payload_for_conversation(
         && stream_permission_runtime_available;
     let agent_teams_available =
         subagents_available && environment.agent_teams_compiled && runtime_store_available;
-    let background_agents_available = runtime_store_available
-        && restart_recovery_ok
-        && background_supervisor_available
-        && stream_permission_runtime_available;
-
     let mut unavailable_reasons = Vec::new();
     if !runtime_store_available {
         for capability in [
@@ -957,6 +934,9 @@ pub(crate) fn no_workspace_agent_capabilities_payload_for_conversation(
             capability: AgentCapabilityKind::AgentTeams,
         });
     }
+    unavailable_reasons.push(AgentCapabilityUnavailableReason::NotCompiled {
+        capability: AgentCapabilityKind::BackgroundAgents,
+    });
     if !stream_permission_runtime_available {
         unavailable_reasons.push(
             AgentCapabilityUnavailableReason::PermissionRuntimeUnavailable {
@@ -969,14 +949,26 @@ pub(crate) fn no_workspace_agent_capabilities_payload_for_conversation(
             },
         );
     }
-    if !background_supervisor_available {
-        unavailable_reasons.push(
-            AgentCapabilityUnavailableReason::BackgroundSupervisorUnavailable {
-                message: "runtime-scope background agent supervisor is unavailable".to_owned(),
-            },
-        );
-    }
-
+    let background_agents_available = !unavailable_reasons.iter().any(|reason| {
+        matches!(
+            reason,
+            AgentCapabilityUnavailableReason::NotCompiled {
+                capability: AgentCapabilityKind::BackgroundAgents,
+            } | AgentCapabilityUnavailableReason::RuntimeStoreUnavailable {
+                capability: AgentCapabilityKind::BackgroundAgents,
+                ..
+            } | AgentCapabilityUnavailableReason::PermissionRuntimeUnavailable {
+                capability: AgentCapabilityKind::BackgroundAgents,
+            } | AgentCapabilityUnavailableReason::InvalidAgentProfiles {
+                capability: AgentCapabilityKind::BackgroundAgents,
+                ..
+            } | AgentCapabilityUnavailableReason::BackgroundSupervisorUnavailable { .. }
+                | AgentCapabilityUnavailableReason::WorkspaceIsolationUnavailable {
+                    capability: AgentCapabilityKind::BackgroundAgents,
+                    ..
+                }
+        )
+    });
     AgentCapabilitiesPayload {
         subagents_enabled: record.subagents_enabled,
         agent_teams_enabled: record.agent_teams_enabled,

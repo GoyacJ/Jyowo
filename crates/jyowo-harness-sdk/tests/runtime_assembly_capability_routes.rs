@@ -49,6 +49,7 @@ mod capability_route_filter {
             budget: default_result_budget(),
             provider_restriction: ProviderRestriction::All,
             origin: ToolOrigin::Builtin,
+            metadata: Default::default(),
             search_hint: None,
             service_binding,
         }
@@ -343,6 +344,7 @@ mod session_assembly_filter_chain {
                     },
                     provider_restriction: ProviderRestriction::All,
                     origin: ToolOrigin::Builtin,
+                    metadata: Default::default(),
                     search_hint: None,
                     service_binding: None,
                 },

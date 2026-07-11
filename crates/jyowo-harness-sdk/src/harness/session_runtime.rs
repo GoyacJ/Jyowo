@@ -13,6 +13,32 @@ pub(super) struct SessionEngine {
 }
 
 impl Harness {
+    #[cfg(feature = "agents-subagent")]
+    pub async fn prepare_external_subagent_engine(
+        &self,
+        options: SessionOptions,
+        mut run_options: ConversationRunOptions,
+    ) -> Result<(), HarnessError> {
+        let factory = self.inner.subagent_engine_factory.as_ref().ok_or_else(|| {
+            HarnessError::Other("external subagent engine factory is missing".to_owned())
+        })?;
+        let options = self.effective_sdk_session_options(options)?;
+        if !self.inner.options.tool_search_enabled {
+            run_options.tool_search = ToolSearchMode::Disabled;
+        }
+        let prompt_inputs = self.load_effective_prompt_inputs(&options)?;
+        #[cfg(feature = "memory-provider-registry")]
+        let session_engine = self
+            .engine_for_session(&options, &run_options, &prompt_inputs, None, None, None)
+            .await?;
+        #[cfg(not(feature = "memory-provider-registry"))]
+        let session_engine = self
+            .engine_for_session(&options, &run_options, &prompt_inputs, None, None)
+            .await?;
+        factory.bind_latest_external_engine(session_engine.engine);
+        Ok(())
+    }
+
     pub async fn create_session(&self, options: SessionOptions) -> Result<Session, HarnessError> {
         let mut options = self.effective_session_options(options)?;
         if !self.inner.options.tool_search_enabled {
@@ -186,27 +212,6 @@ impl Harness {
             .collect::<Vec<_>>()
             .await;
         let Some(envelope) = envelopes.first() else {
-            return Ok(false);
-        };
-        let Event::SessionCreated(created) = &envelope.payload else {
-            return Ok(false);
-        };
-        Ok(created.tenant_id == tenant_id && created.session_id == session_id)
-    }
-
-    #[cfg(feature = "sqlite-store")]
-    pub(super) async fn is_conversation_session_stream_page(
-        &self,
-        tenant_id: TenantId,
-        session_id: SessionId,
-    ) -> Result<bool, HarnessError> {
-        let page = self
-            .inner
-            .event_store
-            .page_session_envelopes(tenant_id, session_id, None, 1)
-            .await
-            .map_err(HarnessError::Journal)?;
-        let Some(envelope) = page.envelopes.first() else {
             return Ok(false);
         };
         let Event::SessionCreated(created) = &envelope.payload else {
@@ -777,6 +782,12 @@ impl Harness {
                         "subagent engine factory already bound to parent engine".to_owned(),
                     )
                 })?;
+        }
+        #[cfg(feature = "agents-subagent")]
+        if enable_subagent_tool {
+            if let Some(factory) = &self.inner.subagent_engine_factory {
+                factory.bind_latest_external_engine(engine.clone());
+            }
         }
         Ok(SessionEngine {
             engine,

@@ -1,7 +1,6 @@
 #![allow(unused_imports)]
 
 use super::automation_support::*;
-use super::preview_support::*;
 use super::provider_route_support::*;
 use super::provider_support::*;
 use super::support::*;
@@ -15,9 +14,7 @@ async fn provider_credential_route_provider_only_resolution_requires_run_model_c
     provider_store
         .save_record(&provider_settings)
         .expect("provider settings should save");
-    let conversation_store = DesktopConversationMetadataStore::new(workspace);
     let resolver = desktop_provider_credential_resolver_with_stores(
-        Arc::new(conversation_store),
         Arc::new(provider_store),
         empty_provider_capability_routes(),
     );
@@ -48,7 +45,6 @@ async fn provider_credential_route_provider_only_resolution_uses_run_model_confi
         .save_record(&provider_settings)
         .expect("provider settings should save");
     let resolver = desktop_provider_credential_resolver_with_stores(
-        Arc::new(DesktopConversationMetadataStore::new(workspace)),
         Arc::new(provider_store),
         empty_provider_capability_routes(),
     );
@@ -79,9 +75,7 @@ async fn provider_credential_route_provider_only_resolution_still_works() {
     provider_store
         .save_record(&provider_settings)
         .expect("provider settings should save");
-    let conversation_store = DesktopConversationMetadataStore::new(workspace);
     let resolver = desktop_provider_credential_resolver_with_stores(
-        Arc::new(conversation_store),
         Arc::new(provider_store),
         empty_provider_capability_routes(),
     );
@@ -113,9 +107,7 @@ async fn provider_credential_route_routed_service_context_fails_closed_without_r
     provider_store
         .save_record(&provider_settings)
         .expect("provider settings should save");
-    let conversation_store = DesktopConversationMetadataStore::new(workspace);
     let resolver = desktop_provider_credential_resolver_with_stores(
-        Arc::new(conversation_store),
         Arc::new(provider_store),
         empty_provider_capability_routes(),
     );
@@ -152,11 +144,8 @@ async fn provider_credential_route_resolves_routed_service_credential() {
         version: 1,
         routes: vec![minimax_image_route("minimax-image", true)],
     }));
-    let resolver = desktop_provider_credential_resolver_with_stores(
-        Arc::new(DesktopConversationMetadataStore::new(workspace)),
-        Arc::new(provider_store),
-        routes,
-    );
+    let resolver =
+        desktop_provider_credential_resolver_with_stores(Arc::new(provider_store), routes);
 
     let credential = resolver
         .resolve_provider_credential(ProviderCredentialResolveContext {
@@ -190,11 +179,8 @@ async fn provider_credential_route_wrong_provider_denies_routed_service_credenti
         version: 1,
         routes: vec![minimax_image_route("minimax-image", true)],
     }));
-    let resolver = desktop_provider_credential_resolver_with_stores(
-        Arc::new(DesktopConversationMetadataStore::new(workspace)),
-        Arc::new(provider_store),
-        routes,
-    );
+    let resolver =
+        desktop_provider_credential_resolver_with_stores(Arc::new(provider_store), routes);
 
     let error = resolver
         .resolve_provider_credential(ProviderCredentialResolveContext {
@@ -227,11 +213,8 @@ async fn provider_credential_route_disabled_route_denies_routed_service_credenti
         version: 1,
         routes: vec![minimax_image_route("minimax-image", false)],
     }));
-    let resolver = desktop_provider_credential_resolver_with_stores(
-        Arc::new(DesktopConversationMetadataStore::new(workspace)),
-        Arc::new(provider_store),
-        routes,
-    );
+    let resolver =
+        desktop_provider_credential_resolver_with_stores(Arc::new(provider_store), routes);
 
     let error = resolver
         .resolve_provider_credential(ProviderCredentialResolveContext {
@@ -261,7 +244,6 @@ async fn provider_credential_route_routed_service_never_falls_back_to_default_co
         ))
         .expect("provider settings should save");
     let resolver = desktop_provider_credential_resolver_with_stores(
-        Arc::new(DesktopConversationMetadataStore::new(workspace)),
         Arc::new(provider_store),
         empty_provider_capability_routes(),
     );

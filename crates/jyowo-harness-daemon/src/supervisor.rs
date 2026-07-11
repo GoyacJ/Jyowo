@@ -116,6 +116,33 @@ impl Supervisor {
         if quotas.foreground_runs == 0 || quotas.subagents == 0 {
             return Err(SupervisorError::InvalidQuota);
         }
+        let permissions = Arc::new(PermissionBroker::new(
+            Arc::clone(&store),
+            Arc::clone(&redactor),
+        ));
+        Self::start_with_runtime_components(
+            store,
+            factory,
+            quotas,
+            runner_factory,
+            redactor,
+            max_depth,
+            permissions,
+        )
+    }
+
+    pub fn start_with_runtime_components(
+        store: Arc<TaskStore>,
+        factory: Arc<dyn RunCoordinatorFactory>,
+        quotas: SupervisorQuotas,
+        runner_factory: Arc<dyn WorkspaceSubagentRunnerFactory>,
+        redactor: Arc<dyn Redactor>,
+        max_depth: u8,
+        permissions: Arc<PermissionBroker>,
+    ) -> Result<Self, SupervisorError> {
+        if quotas.foreground_runs == 0 || quotas.subagents == 0 {
+            return Err(SupervisorError::InvalidQuota);
+        }
         let managed_root = store
             .database_path()
             .parent()
@@ -126,11 +153,10 @@ impl Supervisor {
             Arc::clone(&store),
             Arc::clone(&workspace),
             runner_factory,
-            Arc::clone(&redactor),
+            redactor,
             max_depth,
             quotas.subagents,
         ));
-        let permissions = Arc::new(PermissionBroker::new(Arc::clone(&store), redactor));
         Self::start_inner(store, factory, quotas, workspace, subagents, permissions)
     }
 
@@ -896,6 +922,36 @@ mod tests {
         .is_err());
         drop(permit);
         let _permit = supervisor.acquire_subagent_permit().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn production_components_share_the_supplied_permission_broker() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+        let redactor: Arc<dyn Redactor> = Arc::new(NoopRedactor);
+        let permissions = Arc::new(PermissionBroker::new(
+            Arc::clone(&store),
+            Arc::clone(&redactor),
+        ));
+        let runner_factory: Arc<dyn WorkspaceSubagentRunnerFactory> =
+            Arc::new(|_context: crate::WorkspaceSubagentRunContext| {
+                Err(harness_subagent::SubagentError::Engine(
+                    "runner is not used by this test".into(),
+                ))
+            });
+
+        let supervisor = Supervisor::start_with_runtime_components(
+            Arc::clone(&store),
+            Arc::new(IdleFactory),
+            SupervisorQuotas::new(1, 1),
+            runner_factory,
+            redactor,
+            4,
+            Arc::clone(&permissions),
+        )
+        .unwrap();
+
+        assert!(Arc::ptr_eq(&permissions, &supervisor.permission_broker()));
     }
 
     #[tokio::test]

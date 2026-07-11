@@ -532,10 +532,10 @@ async fn save_mcp_server_with_runtime_state_registers_and_injects_stdio_tools() 
     })
     .await
     .unwrap();
-    let harness = state.harness().unwrap();
+    let settings_runtime = state.settings_runtime().unwrap();
 
     let connection_state = state
-        .harness()
+        .settings_runtime()
         .unwrap()
         .mcp_config()
         .unwrap()
@@ -548,7 +548,10 @@ async fn save_mcp_server_with_runtime_state_registers_and_injects_stdio_tools() 
         connection_state
     );
     assert_eq!(payload.server.exposed_tool_count, 1);
-    assert!(harness.tool_registry().get("mcp__stdio__echo").is_some());
+    assert!(settings_runtime
+        .tool_registry()
+        .get("mcp__stdio__echo")
+        .is_some());
 }
 
 #[tokio::test]
@@ -721,18 +724,21 @@ async fn disabled_mcp_server_with_runtime_state_does_not_register_or_inject_tool
     )
     .await
     .unwrap();
-    let harness = state.harness().unwrap();
+    let settings_runtime = state.settings_runtime().unwrap();
 
     assert_eq!(payload.server.status, "disabled");
     assert!(!payload.server.enabled);
-    assert!(harness
+    assert!(settings_runtime
         .mcp_config()
         .unwrap()
         .registry
         .server_spec(&McpServerId("stdio".to_owned()))
         .await
         .is_none());
-    assert!(harness.tool_registry().get("mcp__stdio__echo").is_none());
+    assert!(settings_runtime
+        .tool_registry()
+        .get("mcp__stdio__echo")
+        .is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -777,7 +783,7 @@ async fn set_mcp_server_enabled_registers_and_injects_tools() {
     .unwrap();
 
     let connection_state = state
-        .harness()
+        .settings_runtime()
         .unwrap()
         .mcp_config()
         .unwrap()
@@ -791,7 +797,7 @@ async fn set_mcp_server_enabled_registers_and_injects_tools() {
     );
     assert!(payload.server.enabled);
     assert!(state
-        .harness()
+        .settings_runtime()
         .unwrap()
         .tool_registry()
         .get("mcp__stdio__echo")
@@ -838,7 +844,7 @@ async fn set_mcp_server_enabled_rejects_missing_bearer_env_without_persisting_en
         .contains("MCP bearer token env var is unavailable: MCP_ENABLE_TEST_BEARER"));
     assert!(!store.record.lock().unwrap().as_ref().unwrap().enabled);
     assert!(state
-        .harness()
+        .settings_runtime()
         .unwrap()
         .mcp_config()
         .unwrap()
@@ -893,7 +899,7 @@ async fn restart_mcp_server_removes_registers_and_injects_tools() {
     .unwrap();
 
     let connection_state = state
-        .harness()
+        .settings_runtime()
         .unwrap()
         .mcp_config()
         .unwrap()
@@ -906,7 +912,7 @@ async fn restart_mcp_server_removes_registers_and_injects_tools() {
         connection_state
     );
     assert!(state
-        .harness()
+        .settings_runtime()
         .unwrap()
         .tool_registry()
         .get("mcp__stdio__echo")
@@ -948,7 +954,7 @@ async fn http_mcp_server_with_runtime_state_registers_as_http_transport() {
     .await
     .unwrap();
     let spec = state
-        .harness()
+        .settings_runtime()
         .unwrap()
         .mcp_config()
         .unwrap()
@@ -1012,15 +1018,18 @@ async fn delete_mcp_server_with_runtime_state_removes_registry_server_and_inject
         vec![server_id.clone()],
     )
     .await;
-    let harness = state.harness().unwrap();
-    harness
+    let settings_runtime = state.settings_runtime().unwrap();
+    settings_runtime
         .mcp_config()
         .unwrap()
         .registry
-        .inject_tools_into(harness.tool_registry(), &server_id)
+        .inject_tools_into(settings_runtime.tool_registry(), &server_id)
         .await
         .unwrap();
-    assert!(harness.tool_registry().get("mcp__github__search").is_some());
+    assert!(settings_runtime
+        .tool_registry()
+        .get("mcp__github__search")
+        .is_some());
 
     let payload = delete_mcp_server_with_runtime_state(
         DeleteMcpServerRequest {
@@ -1034,7 +1043,10 @@ async fn delete_mcp_server_with_runtime_state_removes_registry_server_and_inject
 
     assert_eq!(payload.status, "deleted");
     assert!(servers.servers.is_empty());
-    assert!(harness.tool_registry().get("mcp__github__search").is_none());
+    assert!(settings_runtime
+        .tool_registry()
+        .get("mcp__github__search")
+        .is_none());
 }
 
 #[tokio::test]

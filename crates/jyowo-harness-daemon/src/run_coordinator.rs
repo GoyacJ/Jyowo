@@ -6,6 +6,7 @@ use harness_contracts::{
 };
 use harness_engine::{RunControlHandle, TurnOutcome};
 use harness_journal::{SegmentRunInput, TaskStore};
+use harness_sandbox::LocalIsolation;
 use harness_subagent::SubagentRunner;
 use tokio::sync::mpsc;
 
@@ -18,7 +19,10 @@ use crate::{
 pub enum WorkspaceToolAction {
     ReadPath(std::path::PathBuf),
     WritePath(std::path::PathBuf),
-    Command { cwd: std::path::PathBuf },
+    Command {
+        cwd: std::path::PathBuf,
+        requires_write: bool,
+    },
 }
 
 impl WorkspaceToolAction {
@@ -26,7 +30,7 @@ impl WorkspaceToolAction {
     pub fn path(&self) -> &std::path::Path {
         match self {
             Self::ReadPath(path) | Self::WritePath(path) => path,
-            Self::Command { cwd } => cwd,
+            Self::Command { cwd, .. } => cwd,
         }
     }
 
@@ -35,7 +39,7 @@ impl WorkspaceToolAction {
         match self {
             Self::ReadPath(_) => false,
             Self::WritePath(_) => true,
-            Self::Command { .. } => true,
+            Self::Command { requires_write, .. } => *requires_write,
         }
     }
 }
@@ -62,6 +66,22 @@ impl WorkspaceToolDispatcher {
     {
         self.coordinator
             .dispatch_tool(lease_id, action, execute)
+            .await
+    }
+
+    pub async fn dispatch_sandboxed_command<T, F>(
+        &self,
+        lease_id: WorkspaceLeaseId,
+        cwd: std::path::PathBuf,
+        requires_write: bool,
+        isolation: LocalIsolation,
+        execute: impl FnOnce(WorkspaceToolAuthorization) -> F,
+    ) -> Result<T, WorkspaceCoordinatorError>
+    where
+        F: Future<Output = T>,
+    {
+        self.coordinator
+            .dispatch_sandboxed_command(lease_id, cwd, requires_write, isolation, execute)
             .await
     }
 }

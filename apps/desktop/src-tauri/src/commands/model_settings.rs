@@ -3,38 +3,26 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    Event, EventId, ForkReason, JournalError, JournalOffset, ModelRef, ModelUsageBucket,
-    ModelUsagePeriod, ModelUsageSummary, ModelUsageWindow, RunEndedEvent, RunStartedEvent,
-    SessionId, TenantId, UsageAccumulatedEvent, UsageSnapshot,
-};
-use harness_journal::{
-    AppendMetadata, EventEnvelope, EventEnvelopePage, PrunePolicy, PruneReport, ReplayCursor,
-    SessionFilter, SessionSnapshot, SessionSummary,
+    ModelUsagePeriod, ModelUsageSummary, ModelUsageWindow, UsageAccumulatedEvent, UsageSnapshot,
 };
 use harness_model::{fetch_official_quota, with_staleness, ProviderAccountUsageRequest};
 use harness_observability::{
-    normalize_usage_activity, summarize_from_events, summarize_model_usage, IanaTimezoneResolver,
-    LocalTimezoneResolver, WorkspaceTimezoneResolver,
+    normalize_usage_activity, summarize_model_usage, IanaTimezoneResolver, LocalTimezoneResolver,
+    WorkspaceTimezoneResolver,
 };
 
-use futures::stream::BoxStream;
-use jyowo_harness_sdk::ext::{
-    inventory_from_models_api_json, runnable_inventory_models, EventStore,
-};
+use jyowo_harness_sdk::ext::{inventory_from_models_api_json, runnable_inventory_models};
 
 use super::contracts::{
     ConversationModelCapabilityRecord, ModelCatalogEntry, ModelLifecyclePayload,
     ModelRuntimeStatusPayload, ModelSettingsCatalogSnapshotPayload, ModelSettingsPageResponse,
-    ModelSettingsPageSlice, ModelUsageRollupRecord, ModelUsageRollupStore,
-    ProviderCatalogSnapshotRecord, ProviderModelModalityRecord, ProviderProbeSnapshotPayload,
-    RefreshModelProviderCatalogResponse, RefreshOfficialQuotaResponse,
+    ModelSettingsPageSlice, ModelUsageRollupRecord, ProviderCatalogSnapshotRecord,
+    ProviderModelModalityRecord, ProviderProbeSnapshotPayload, RefreshModelProviderCatalogResponse,
+    RefreshOfficialQuotaResponse,
 };
-use super::error::{
-    invalid_payload, runtime_operation_failed, runtime_unavailable, CommandErrorPayload,
-};
+use super::error::{invalid_payload, runtime_operation_failed, CommandErrorPayload};
 use super::providers::{
     build_provider_for_config, desktop_provider_service_adapter_availability,
     list_model_provider_catalog_payload, list_provider_capability_route_options_from_inputs,
@@ -62,250 +50,6 @@ const MODEL_USAGE_ROLLUP_SCHEMA_VERSION: u32 = 2;
 const MAX_OPENROUTER_MODELS_API_BYTES: usize = 2 * 1024 * 1024;
 static MODEL_USAGE_ROLLUP_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
-
-#[derive(Debug, Clone)]
-struct UsageBucketState {
-    provider_id: String,
-    model_id: String,
-    usage: UsageSnapshot,
-    last_used_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Clone)]
-enum ModelUsageProjectionEvent {
-    UsageAccumulated(UsageAccumulatedEvent),
-    RunStarted(RunStartedEvent),
-    RunEnded(RunEndedEvent),
-}
-
-pub(crate) struct ProjectingEventStore {
-    inner: Arc<dyn EventStore>,
-    model_usage_rollup_store: Arc<dyn ModelUsageRollupStore>,
-}
-
-impl ProjectingEventStore {
-    pub(crate) fn new(
-        inner: Arc<dyn EventStore>,
-        model_usage_rollup_store: Arc<dyn ModelUsageRollupStore>,
-    ) -> Self {
-        Self {
-            inner,
-            model_usage_rollup_store,
-        }
-    }
-}
-
-fn model_usage_projection_events(events: &[Event]) -> Vec<ModelUsageProjectionEvent> {
-    events
-        .iter()
-        .filter_map(|event| match event {
-            Event::UsageAccumulated(event) => {
-                Some(ModelUsageProjectionEvent::UsageAccumulated(event.clone()))
-            }
-            Event::RunStarted(event) => Some(ModelUsageProjectionEvent::RunStarted(event.clone())),
-            Event::RunEnded(event) => Some(ModelUsageProjectionEvent::RunEnded(event.clone())),
-            _ => None,
-        })
-        .collect()
-}
-
-#[async_trait]
-impl EventStore for ProjectingEventStore {
-    async fn append(
-        &self,
-        tenant: TenantId,
-        session_id: SessionId,
-        events: &[Event],
-    ) -> Result<JournalOffset, JournalError> {
-        let projection_events = model_usage_projection_events(events);
-        if !projection_events.is_empty() {
-            let _guard = MODEL_USAGE_ROLLUP_LOCK.lock().await;
-            let result = self.inner.append(tenant, session_id, events).await;
-            if result.is_ok() {
-                if let Err(error) = project_model_usage_events_into_store_locked(
-                    self.model_usage_rollup_store.as_ref(),
-                    &projection_events,
-                    Utc::now(),
-                ) {
-                    log::warn!("model usage rollup projection failed: {}", error.message);
-                }
-            }
-            return result;
-        }
-
-        let result = self.inner.append(tenant, session_id, events).await;
-        result
-    }
-
-    async fn append_with_metadata(
-        &self,
-        tenant: TenantId,
-        session_id: SessionId,
-        metadata: AppendMetadata,
-        events: &[Event],
-    ) -> Result<JournalOffset, JournalError> {
-        let projection_events = model_usage_projection_events(events);
-        if !projection_events.is_empty() {
-            let _guard = MODEL_USAGE_ROLLUP_LOCK.lock().await;
-            let result = self
-                .inner
-                .append_with_metadata(tenant, session_id, metadata, events)
-                .await;
-            if result.is_ok() {
-                if let Err(error) = project_model_usage_events_into_store_locked(
-                    self.model_usage_rollup_store.as_ref(),
-                    &projection_events,
-                    Utc::now(),
-                ) {
-                    log::warn!("model usage rollup projection failed: {}", error.message);
-                }
-            }
-            return result;
-        }
-
-        let result = self
-            .inner
-            .append_with_metadata(tenant, session_id, metadata, events)
-            .await;
-        result
-    }
-
-    async fn append_with_metadata_expect_next_offset(
-        &self,
-        tenant: TenantId,
-        session_id: SessionId,
-        metadata: AppendMetadata,
-        expected_next_offset: JournalOffset,
-        events: &[Event],
-    ) -> Result<JournalOffset, JournalError> {
-        let projection_events = model_usage_projection_events(events);
-        if !projection_events.is_empty() {
-            let _guard = MODEL_USAGE_ROLLUP_LOCK.lock().await;
-            let result = self
-                .inner
-                .append_with_metadata_expect_next_offset(
-                    tenant,
-                    session_id,
-                    metadata,
-                    expected_next_offset,
-                    events,
-                )
-                .await;
-            if result.is_ok() {
-                if let Err(error) = project_model_usage_events_into_store_locked(
-                    self.model_usage_rollup_store.as_ref(),
-                    &projection_events,
-                    Utc::now(),
-                ) {
-                    log::warn!("model usage rollup projection failed: {}", error.message);
-                }
-            }
-            return result;
-        }
-
-        let result = self
-            .inner
-            .append_with_metadata_expect_next_offset(
-                tenant,
-                session_id,
-                metadata,
-                expected_next_offset,
-                events,
-            )
-            .await;
-        result
-    }
-
-    async fn read_envelopes(
-        &self,
-        tenant: TenantId,
-        session_id: SessionId,
-        cursor: ReplayCursor,
-    ) -> Result<BoxStream<'static, EventEnvelope>, JournalError> {
-        self.inner.read_envelopes(tenant, session_id, cursor).await
-    }
-
-    async fn page_session_envelopes(
-        &self,
-        tenant: TenantId,
-        session_id: SessionId,
-        after_event_id: Option<EventId>,
-        limit: usize,
-    ) -> Result<EventEnvelopePage, JournalError> {
-        self.inner
-            .page_session_envelopes(tenant, session_id, after_event_id, limit)
-            .await
-    }
-
-    async fn query_after(
-        &self,
-        tenant: TenantId,
-        after: Option<EventId>,
-        limit: usize,
-    ) -> Result<Vec<EventEnvelope>, JournalError> {
-        self.inner.query_after(tenant, after, limit).await
-    }
-
-    async fn snapshot(
-        &self,
-        tenant: TenantId,
-        session_id: SessionId,
-    ) -> Result<Option<SessionSnapshot>, JournalError> {
-        self.inner.snapshot(tenant, session_id).await
-    }
-
-    async fn save_snapshot(
-        &self,
-        tenant: TenantId,
-        snapshot: SessionSnapshot,
-    ) -> Result<(), JournalError> {
-        self.inner.save_snapshot(tenant, snapshot).await
-    }
-
-    async fn compact_link(
-        &self,
-        parent: SessionId,
-        child: SessionId,
-        reason: ForkReason,
-    ) -> Result<(), JournalError> {
-        self.inner.compact_link(parent, child, reason).await
-    }
-
-    async fn delete_session(
-        &self,
-        tenant: TenantId,
-        session_id: SessionId,
-    ) -> Result<bool, JournalError> {
-        self.inner.delete_session(tenant, session_id).await
-    }
-
-    async fn list_sessions(
-        &self,
-        tenant: TenantId,
-        filter: SessionFilter,
-    ) -> Result<Vec<SessionSummary>, JournalError> {
-        self.inner.list_sessions(tenant, filter).await
-    }
-
-    async fn prune(
-        &self,
-        tenant: TenantId,
-        policy: PrunePolicy,
-    ) -> Result<PruneReport, JournalError> {
-        self.inner.prune(tenant, policy).await
-    }
-
-    async fn prune_sessions(
-        &self,
-        tenant: TenantId,
-        session_ids: &[SessionId],
-        keep_snapshots: bool,
-    ) -> Result<PruneReport, JournalError> {
-        self.inner
-            .prune_sessions(tenant, session_ids, keep_snapshots)
-            .await
-    }
-}
 
 pub async fn get_model_settings_page_with_runtime_state(
     runtime_state: &DesktopRuntimeState,
@@ -996,13 +740,9 @@ async fn load_or_create_usage_rollup(
 ) -> Result<ModelUsageRollupRecord, CommandErrorPayload> {
     let timezone = workspace_timezone_resolver();
     let Some(mut record) = runtime_state.model_usage_rollup_store.load_record()? else {
-        if runtime_state.harness().is_some() {
-            return rebuild_usage_rollup_from_event_store(runtime_state, now).await;
-        }
-
         let record = ModelUsageRollupRecord {
             schema_version: MODEL_USAGE_ROLLUP_SCHEMA_VERSION,
-            dirty: true,
+            dirty: false,
             summary: empty_usage_summary(now, &timezone),
             pending_run_starts: BTreeMap::new(),
         };
@@ -1013,15 +753,15 @@ async fn load_or_create_usage_rollup(
     };
 
     if record.schema_version != MODEL_USAGE_ROLLUP_SCHEMA_VERSION {
-        return rebuild_usage_rollup_from_event_store(runtime_state, now).await;
+        return reset_usage_rollup(runtime_state, now);
     }
 
     if record.dirty {
-        return rebuild_usage_rollup_from_event_store(runtime_state, now).await;
+        return Ok(record);
     }
 
     if usage_summary_timezone_changed(&record.summary, now, &timezone) {
-        return rebuild_usage_rollup_from_event_store(runtime_state, now).await;
+        return reset_usage_rollup(runtime_state, now);
     }
 
     if normalize_usage_windows(&mut record.summary, now, &timezone) {
@@ -1033,56 +773,10 @@ async fn load_or_create_usage_rollup(
     Ok(record)
 }
 
-async fn rebuild_usage_rollup_from_event_store(
+fn reset_usage_rollup(
     runtime_state: &DesktopRuntimeState,
     now: DateTime<Utc>,
 ) -> Result<ModelUsageRollupRecord, CommandErrorPayload> {
-    let Some(harness) = runtime_state.harness() else {
-        let timezone = workspace_timezone_resolver();
-        let record = ModelUsageRollupRecord {
-            schema_version: MODEL_USAGE_ROLLUP_SCHEMA_VERSION,
-            dirty: true,
-            summary: empty_usage_summary(now, &timezone),
-            pending_run_starts: BTreeMap::new(),
-        };
-        runtime_state
-            .model_usage_rollup_store
-            .save_record(&record)?;
-        return Ok(record);
-    };
-
-    let events = collect_persisted_model_usage_projection_events(
-        harness.event_store().as_ref(),
-        TenantId::SINGLE,
-    )
-    .await?;
-    let timezone = workspace_timezone_resolver();
-    let record = ModelUsageRollupRecord {
-        schema_version: MODEL_USAGE_ROLLUP_SCHEMA_VERSION,
-        dirty: false,
-        summary: summarize_from_events(events.iter(), now, &timezone),
-        pending_run_starts: pending_run_starts_from_events(&events),
-    };
-    runtime_state
-        .model_usage_rollup_store
-        .save_record(&record)?;
-    Ok(record)
-}
-
-#[doc(hidden)]
-pub fn project_usage_events_into_rollup_for_test(
-    runtime_state: &DesktopRuntimeState,
-    events: &[UsageAccumulatedEvent],
-) -> Result<(), CommandErrorPayload> {
-    project_usage_events_into_rollup(runtime_state, events, Utc::now())
-}
-
-#[doc(hidden)]
-pub fn seed_usage_events_into_clean_rollup_for_test(
-    runtime_state: &DesktopRuntimeState,
-    events: &[UsageAccumulatedEvent],
-) -> Result<(), CommandErrorPayload> {
-    let now = Utc::now();
     let timezone = workspace_timezone_resolver();
     let record = ModelUsageRollupRecord {
         schema_version: MODEL_USAGE_ROLLUP_SCHEMA_VERSION,
@@ -1093,111 +787,7 @@ pub fn seed_usage_events_into_clean_rollup_for_test(
     runtime_state
         .model_usage_rollup_store
         .save_record(&record)?;
-    project_usage_events_into_rollup(runtime_state, events, now)
-}
-
-pub fn load_model_usage_rollup_record_for_test(
-    runtime_state: &DesktopRuntimeState,
-) -> Result<Option<ModelUsageRollupRecord>, CommandErrorPayload> {
-    runtime_state.model_usage_rollup_store.load_record()
-}
-
-pub fn save_model_usage_rollup_record_for_test(
-    runtime_state: &DesktopRuntimeState,
-    record: &ModelUsageRollupRecord,
-) -> Result<(), CommandErrorPayload> {
-    runtime_state.model_usage_rollup_store.save_record(record)
-}
-
-pub(crate) fn project_usage_events_into_rollup(
-    runtime_state: &DesktopRuntimeState,
-    events: &[UsageAccumulatedEvent],
-    now: DateTime<Utc>,
-) -> Result<(), CommandErrorPayload> {
-    let projection_events = events
-        .iter()
-        .cloned()
-        .map(ModelUsageProjectionEvent::UsageAccumulated)
-        .collect::<Vec<_>>();
-    project_model_usage_events_into_store(
-        runtime_state.model_usage_rollup_store.as_ref(),
-        &projection_events,
-        now,
-    )
-}
-
-fn project_model_usage_events_into_store(
-    store: &dyn ModelUsageRollupStore,
-    events: &[ModelUsageProjectionEvent],
-    now: DateTime<Utc>,
-) -> Result<(), CommandErrorPayload> {
-    project_model_usage_events_into_store_locked(store, events, now)
-}
-
-fn project_model_usage_events_into_store_locked(
-    store: &dyn ModelUsageRollupStore,
-    events: &[ModelUsageProjectionEvent],
-    now: DateTime<Utc>,
-) -> Result<(), CommandErrorPayload> {
-    let timezone = workspace_timezone_resolver();
-    let Some(mut record) = store.load_record()? else {
-        let record = ModelUsageRollupRecord {
-            schema_version: MODEL_USAGE_ROLLUP_SCHEMA_VERSION,
-            dirty: true,
-            summary: empty_usage_summary(now, &timezone),
-            pending_run_starts: BTreeMap::new(),
-        };
-        return store.save_record(&record);
-    };
-    if record.schema_version != MODEL_USAGE_ROLLUP_SCHEMA_VERSION || record.dirty {
-        let record = ModelUsageRollupRecord {
-            schema_version: MODEL_USAGE_ROLLUP_SCHEMA_VERSION,
-            dirty: true,
-            summary: empty_usage_summary(now, &timezone),
-            pending_run_starts: BTreeMap::new(),
-        };
-        return store.save_record(&record);
-    }
-    if usage_summary_timezone_changed(&record.summary, now, &timezone) {
-        record.dirty = true;
-        return store.save_record(&record);
-    }
-
-    normalize_usage_windows(&mut record.summary, now, &timezone);
-    record.dirty = true;
-    store.save_record(&record)?;
-
-    for event in events {
-        match event {
-            ModelUsageProjectionEvent::UsageAccumulated(event) => {
-                add_usage_event_to_summary(&mut record.summary, event, &timezone);
-            }
-            ModelUsageProjectionEvent::RunStarted(event) => {
-                record
-                    .pending_run_starts
-                    .insert(event.run_id.to_string(), event.started_at);
-            }
-            ModelUsageProjectionEvent::RunEnded(event) => {
-                let run_id = event.run_id.to_string();
-                if let Some(started_at) = record.pending_run_starts.remove(&run_id) {
-                    if let Ok(duration) = event.ended_at.signed_duration_since(started_at).to_std()
-                    {
-                        let duration_ms = duration.as_millis().min(u128::from(u64::MAX)) as u64;
-                        record.summary.activity.longest_task_duration_ms = record
-                            .summary
-                            .activity
-                            .longest_task_duration_ms
-                            .max(duration_ms);
-                    }
-                }
-            }
-        }
-    }
-    record.summary.generated_at = now;
-    record.summary.timezone_id = timezone.timezone_id().map(str::to_owned);
-    record.summary.timezone_offset_minutes = timezone.offset_minutes_at(now);
-    record.dirty = false;
-    store.save_record(&record)
+    Ok(record)
 }
 
 fn empty_usage_summary(
@@ -1278,162 +868,6 @@ fn normalize_usage_windows(
     summary.timezone_offset_minutes = timezone.offset_minutes_at(now);
     changed |= normalize_usage_activity(summary, now, timezone);
     changed
-}
-
-fn add_usage_event_to_summary(
-    summary: &mut ModelUsageSummary,
-    event: &UsageAccumulatedEvent,
-    timezone: &dyn WorkspaceTimezoneResolver,
-) {
-    if event.diagnostic || usage_snapshot_is_empty(&event.delta) {
-        return;
-    }
-
-    let period_end = summary.generated_at;
-    if summary
-        .today
-        .period_start
-        .is_some_and(|start| event.at >= start && event.at <= period_end)
-    {
-        add_usage_event_to_window(&mut summary.today, event);
-    }
-    if summary
-        .month_to_date
-        .period_start
-        .is_some_and(|start| event.at >= start && event.at <= period_end)
-    {
-        add_usage_event_to_window(&mut summary.month_to_date, event);
-    }
-    add_usage_event_to_activity(summary, event, timezone);
-    add_usage_event_to_window(&mut summary.all_time, event);
-}
-
-fn add_usage_event_to_activity(
-    summary: &mut ModelUsageSummary,
-    event: &UsageAccumulatedEvent,
-    timezone: &dyn WorkspaceTimezoneResolver,
-) {
-    if event.at > summary.generated_at {
-        return;
-    }
-
-    let local_date = timezone.local_datetime(event.at).date();
-    let Some(day) = summary
-        .activity
-        .days
-        .iter_mut()
-        .find(|day| day.date == local_date)
-    else {
-        return;
-    };
-
-    merge_usage(&mut day.usage, &event.delta);
-    recompute_usage_activity_stats(summary);
-}
-
-fn add_usage_event_to_window(window: &mut ModelUsageWindow, event: &UsageAccumulatedEvent) {
-    merge_usage(&mut window.total, &event.delta);
-
-    let Some(model_ref) = &event.model_ref else {
-        return;
-    };
-    let mut buckets: BTreeMap<String, UsageBucketState> = window
-        .by_model
-        .drain(..)
-        .map(|bucket| {
-            (
-                bucket.key,
-                UsageBucketState {
-                    provider_id: bucket.provider_id,
-                    model_id: bucket.model_id,
-                    usage: bucket.usage,
-                    last_used_at: bucket.last_used_at,
-                },
-            )
-        })
-        .collect();
-    let key = model_usage_key(model_ref);
-    let bucket = buckets.entry(key).or_insert_with(|| UsageBucketState {
-        provider_id: model_ref.provider_id.clone(),
-        model_id: model_ref.model_id.clone(),
-        usage: UsageSnapshot::default(),
-        last_used_at: None,
-    });
-    merge_usage(&mut bucket.usage, &event.delta);
-    bucket.last_used_at = Some(bucket.last_used_at.map_or(event.at, |at| at.max(event.at)));
-    window.by_model = buckets
-        .into_iter()
-        .map(|(key, bucket)| ModelUsageBucket {
-            key,
-            provider_id: bucket.provider_id,
-            model_id: bucket.model_id,
-            usage: bucket.usage,
-            last_used_at: bucket.last_used_at,
-        })
-        .collect();
-}
-
-fn model_usage_key(model_ref: &ModelRef) -> String {
-    format!("{}/{}", model_ref.provider_id, model_ref.model_id)
-}
-
-fn merge_usage(total: &mut UsageSnapshot, delta: &UsageSnapshot) {
-    total.input_tokens = total.input_tokens.saturating_add(delta.input_tokens);
-    total.output_tokens = total.output_tokens.saturating_add(delta.output_tokens);
-    total.cache_read_tokens = total
-        .cache_read_tokens
-        .saturating_add(delta.cache_read_tokens);
-    total.cache_write_tokens = total
-        .cache_write_tokens
-        .saturating_add(delta.cache_write_tokens);
-    total.cost_micros = total.cost_micros.saturating_add(delta.cost_micros);
-    total.tool_calls = total.tool_calls.saturating_add(delta.tool_calls);
-}
-
-fn recompute_usage_activity_stats(summary: &mut ModelUsageSummary) {
-    summary.activity.peak_day_tokens = summary
-        .activity
-        .days
-        .iter()
-        .map(|day| usage_token_total(&day.usage))
-        .max()
-        .unwrap_or(0);
-    summary.activity.current_streak_days = summary
-        .activity
-        .days
-        .iter()
-        .rev()
-        .take_while(|day| usage_token_total(&day.usage) > 0)
-        .count() as u32;
-
-    let mut longest = 0_u32;
-    let mut current = 0_u32;
-    for day in &summary.activity.days {
-        if usage_token_total(&day.usage) > 0 {
-            current = current.saturating_add(1);
-            longest = longest.max(current);
-        } else {
-            current = 0;
-        }
-    }
-    summary.activity.longest_streak_days = longest;
-}
-
-fn usage_token_total(snapshot: &UsageSnapshot) -> u64 {
-    snapshot
-        .input_tokens
-        .saturating_add(snapshot.output_tokens)
-        .saturating_add(snapshot.cache_read_tokens)
-        .saturating_add(snapshot.cache_write_tokens)
-}
-
-fn usage_snapshot_is_empty(snapshot: &UsageSnapshot) -> bool {
-    snapshot.input_tokens == 0
-        && snapshot.output_tokens == 0
-        && snapshot.cache_read_tokens == 0
-        && snapshot.cache_write_tokens == 0
-        && snapshot.cost_micros == 0
-        && snapshot.tool_calls == 0
 }
 
 pub(crate) type ProviderProbeFlights = Arc<
@@ -1656,100 +1090,12 @@ pub(crate) fn workspace_timezone_resolver() -> DesktopWorkspaceTimezone {
     DesktopWorkspaceTimezone::Local(LocalTimezoneResolver)
 }
 
-pub async fn collect_persisted_usage_events(
-    store: &dyn EventStore,
-    tenant: TenantId,
-) -> Result<Vec<UsageAccumulatedEvent>, CommandErrorPayload> {
-    const PAGE_SIZE: usize = 1024;
-    let mut events = Vec::new();
-    let mut after = None;
-
-    loop {
-        let batch = store
-            .query_after(tenant, after, PAGE_SIZE)
-            .await
-            .map_err(|error| {
-                runtime_operation_failed(format!("usage summary read failed: {error}"))
-            })?;
-        let batch_len = batch.len();
-        for envelope in batch {
-            after = Some(envelope.event_id);
-            if let Event::UsageAccumulated(usage) = envelope.payload {
-                events.push(usage);
-            }
-        }
-        if batch_len < PAGE_SIZE {
-            break;
-        }
-    }
-
-    Ok(events)
-}
-
-async fn collect_persisted_model_usage_projection_events(
-    store: &dyn EventStore,
-    tenant: TenantId,
-) -> Result<Vec<Event>, CommandErrorPayload> {
-    const PAGE_SIZE: usize = 1024;
-    let mut events = Vec::new();
-    let mut after = None;
-
-    loop {
-        let batch = store
-            .query_after(tenant, after, PAGE_SIZE)
-            .await
-            .map_err(|error| {
-                runtime_operation_failed(format!("usage summary read failed: {error}"))
-            })?;
-        let batch_len = batch.len();
-        for envelope in batch {
-            after = Some(envelope.event_id);
-            match envelope.payload {
-                Event::UsageAccumulated(_) | Event::RunStarted(_) | Event::RunEnded(_) => {
-                    events.push(envelope.payload)
-                }
-                _ => {}
-            }
-        }
-        if batch_len < PAGE_SIZE {
-            break;
-        }
-    }
-
-    Ok(events)
-}
-
-fn pending_run_starts_from_events(events: &[Event]) -> BTreeMap<String, DateTime<Utc>> {
-    let mut pending = BTreeMap::new();
-    for event in events {
-        match event {
-            Event::RunStarted(event) => {
-                pending.insert(event.run_id.to_string(), event.started_at);
-            }
-            Event::RunEnded(event) => {
-                pending.remove(&event.run_id.to_string());
-            }
-            _ => {}
-        }
-    }
-    pending
-}
-
 pub async fn get_model_usage_summary_with_runtime_state(
     runtime_state: &DesktopRuntimeState,
 ) -> Result<GetModelUsageSummaryResponse, CommandErrorPayload> {
-    let harness = runtime_state.harness().ok_or_else(|| {
-        runtime_unavailable("Model usage summary requires an active harness runtime.")
-    })?;
-    let events = collect_persisted_model_usage_projection_events(
-        harness.event_store().as_ref(),
-        TenantId::SINGLE,
-    )
-    .await?;
-    let now = Utc::now();
-    let timezone = workspace_timezone_resolver();
-    let summary = summarize_from_events(events.iter(), now, &timezone);
-    Ok(summary.into())
+    let _guard = MODEL_USAGE_ROLLUP_LOCK.lock().await;
+    let record = load_or_create_usage_rollup(runtime_state, Utc::now()).await?;
+    Ok(record.summary.into())
 }
 
 pub async fn refresh_official_quota_with_runtime_state(

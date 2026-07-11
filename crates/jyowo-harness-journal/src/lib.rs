@@ -9,8 +9,6 @@
 pub mod audit;
 pub mod blob;
 #[cfg(feature = "sqlite")]
-pub mod conversation_read_model;
-pub mod conversation_worktree_projector;
 pub mod evidence;
 #[cfg(feature = "jsonl")]
 pub mod jsonl;
@@ -47,8 +45,6 @@ pub mod version;
 pub use audit::*;
 pub use blob::*;
 #[cfg(feature = "sqlite")]
-pub use conversation_read_model::*;
-pub use conversation_worktree_projector::*;
 pub use evidence::*;
 #[cfg(feature = "jsonl")]
 pub use jsonl::*;

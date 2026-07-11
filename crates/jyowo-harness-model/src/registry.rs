@@ -309,7 +309,13 @@ pub fn build_provider(
     }
     #[cfg(feature = "openai")]
     if provider_id == "openai" {
-        let provider = crate::OpenAiProvider::from_api_key(api_key);
+        let mut provider = crate::OpenAiProvider::from_api_key(api_key);
+        if model_descriptor
+            .as_ref()
+            .is_some_and(|descriptor| descriptor.protocol == ModelProtocol::ChatCompletions)
+        {
+            provider = provider.with_chat_completions();
+        }
         return Ok(Box::new(match base_url {
             Some(base_url) => provider.with_base_url(base_url),
             None => provider,

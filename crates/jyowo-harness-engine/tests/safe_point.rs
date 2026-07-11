@@ -49,6 +49,18 @@ async fn yield_request_is_observed_only_at_a_safe_boundary() {
     assert_eq!(control.outcome().await, TurnOutcome::YieldedAtSafePoint);
 }
 
+#[test]
+fn finished_outcome_is_available_without_blocking_after_the_run_finishes() {
+    let control = RunControlHandle::new();
+
+    assert_eq!(control.finished_outcome(), None);
+    control.finish(TurnOutcome::YieldedAtSafePoint);
+    assert_eq!(
+        control.finished_outcome(),
+        Some(TurnOutcome::YieldedAtSafePoint)
+    );
+}
+
 #[tokio::test]
 async fn force_stop_dominates_a_pending_yield_request() {
     let control = RunControlHandle::new();

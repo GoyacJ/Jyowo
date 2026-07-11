@@ -4,7 +4,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { uiStore } from '@/shared/state/ui-store'
 import { createTestCommandClient } from '@/testing/command-client'
-import { commandDetail, permissionState } from '@/testing/conversation-worktree-builders'
+import { commandDetail } from '@/testing/conversation-worktree-builders'
 import {
   createInspectorQueryClient,
   inspectorTurn,
@@ -29,103 +29,6 @@ describe('WorkbenchInspector', () => {
     renderInspector(undefined, undefined, <div>Real project context</div>)
     expect(screen.getByText('Real project context')).toBeInTheDocument()
     expect(screen.queryByText('Workspace context and runtime state.')).not.toBeInTheDocument()
-  })
-
-  it('resolves a selected decision pane through the backend command client', async () => {
-    const resolvePermission = vi.fn().mockResolvedValue({
-      conversationId: 'conversation-inspector',
-      requestId: 'request-inspector',
-      decision: 'approve',
-      optionId: 'option-allow-once',
-      status: 'resolved',
-    })
-    setupStore({
-      inspectorOpen: true,
-      workbenchSelection: {
-        kind: 'decision',
-        conversationId: 'conversation-inspector',
-        requestId: 'request-inspector',
-      },
-    })
-    renderInspector({
-      ...createTestCommandClient({
-        conversationInspectorItem: {
-          item: {
-            kind: 'decision',
-            decision: permissionState({
-              id: 'permission-inspector',
-              requestId: 'request-inspector',
-              status: 'pending',
-            }),
-          },
-        },
-      }),
-      resolvePermission,
-    })
-
-    fireEvent.click(await screen.findByRole('button', { name: /Approve.*Allow once/ }))
-    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
-
-    await waitFor(() =>
-      expect(resolvePermission).toHaveBeenCalledWith({
-        conversationId: 'conversation-inspector',
-        requestId: 'request-inspector',
-        decision: 'approve',
-        optionId: 'option-allow-once',
-      }),
-    )
-  })
-
-  it('resolves a selected tool permission pane through the backend command client', async () => {
-    const resolvePermission = vi.fn().mockResolvedValue({
-      conversationId: 'conversation-inspector',
-      requestId: 'request-tool-inspector',
-      decision: 'deny',
-      optionId: 'option-deny-once',
-      status: 'resolved',
-    })
-    setupStore({
-      inspectorOpen: true,
-      workbenchSelection: {
-        kind: 'tool',
-        conversationId: 'conversation-inspector',
-        toolUseId: 'tool-use-inspector',
-      },
-    })
-    renderInspector({
-      ...createTestCommandClient({
-        conversationInspectorItem: {
-          item: {
-            kind: 'tool',
-            attempt: {
-              id: 'tool-attempt-inspector',
-              order: 0,
-              toolUseId: 'tool-use-inspector',
-              toolName: 'read_file',
-              status: 'waitingPermission',
-              permission: permissionState({
-                id: 'permission-tool-inspector',
-                requestId: 'request-tool-inspector',
-                status: 'pending',
-                toolUseId: 'tool-use-inspector',
-              }),
-            },
-          },
-        },
-      }),
-      resolvePermission,
-    })
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Deny' }))
-
-    await waitFor(() =>
-      expect(resolvePermission).toHaveBeenCalledWith({
-        conversationId: 'conversation-inspector',
-        requestId: 'request-tool-inspector',
-        decision: 'deny',
-        optionId: 'option-deny-once',
-      }),
-    )
   })
 
   it('renders the selected decision pane from the worktree projection', async () => {
@@ -388,7 +291,6 @@ describe('WorkbenchInspector', () => {
         fullOutputRef: 'evidence-command-inspector',
       },
     })
-    const pageConversationWorktree = vi.fn().mockRejectedValue(new Error('should not refetch'))
     const getConversationInspectorItem = vi.fn().mockResolvedValue({
       item: {
         kind: 'command',
@@ -410,7 +312,6 @@ describe('WorkbenchInspector', () => {
       {
         ...createTestCommandClient(),
         getConversationInspectorItem,
-        pageConversationWorktree,
       },
       queryClient,
     )
@@ -423,7 +324,6 @@ describe('WorkbenchInspector', () => {
         fullOutputRef: 'evidence-command-inspector',
       },
     })
-    expect(pageConversationWorktree).not.toHaveBeenCalled()
   })
 
   it('renders a typed empty state when the backend inspector authority misses', async () => {

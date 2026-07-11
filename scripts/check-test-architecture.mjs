@@ -23,6 +23,51 @@ function lineCount(p) {
 
 const temporaryAllowlist = [
   {
+    file: 'apps/desktop/src-tauri/tests/commands/mcp.rs',
+    reason: 'historical desktop MCP command coverage already above the limit at branch point',
+    followUp: 'test-architecture follow-up: split desktop MCP command coverage',
+  },
+  {
+    file: 'apps/desktop/src-tauri/tests/commands/provider_routes.rs',
+    reason: 'historical provider route coverage already above the limit at branch point',
+    followUp: 'test-architecture follow-up: split provider route coverage',
+  },
+  {
+    file: 'apps/desktop/src-tauri/tests/commands/provider_settings.rs',
+    reason: 'historical provider settings coverage already above the limit at branch point',
+    followUp: 'test-architecture follow-up: split provider settings coverage',
+  },
+  {
+    file: 'apps/desktop/src/features/settings/models/ModelConfigDialog.test.tsx',
+    reason: 'historical model dialog coverage already above the limit at branch point',
+    followUp: 'test-architecture follow-up: split model dialog coverage',
+  },
+  {
+    file: 'crates/jyowo-harness-model/tests/provider_domestic.rs',
+    reason: 'historical domestic provider coverage already above the limit at branch point',
+    followUp: 'test-architecture follow-up: split domestic provider coverage',
+  },
+  {
+    file: 'crates/jyowo-harness-model/tests/registry.rs',
+    reason: 'historical model registry coverage already above the limit at branch point',
+    followUp: 'test-architecture follow-up: split model registry coverage',
+  },
+  {
+    file: 'crates/jyowo-harness-sdk/tests/agents_team.rs',
+    reason: 'historical SDK agent-team coverage already above the limit at branch point',
+    followUp: 'test-architecture follow-up: split SDK agent-team coverage',
+  },
+  {
+    file: 'crates/jyowo-harness-tool/tests/builtin_exec.rs',
+    reason: 'historical builtin exec coverage already above the limit at branch point',
+    followUp: 'test-architecture follow-up: split builtin exec coverage',
+  },
+  {
+    file: 'crates/jyowo-harness-tool/tests/minimax_tools.rs',
+    reason: 'historical MiniMax tool coverage already above the limit at branch point',
+    followUp: 'test-architecture follow-up: split MiniMax tool coverage',
+  },
+  {
     file: 'apps/desktop/src/shared/tauri/commands.test.ts',
     reason: 'historical IPC schema coverage outside the 2026-07-01 cleanup targets',
     followUp: 'test-architecture follow-up: split shared Tauri command schema coverage',
@@ -36,16 +81,6 @@ const temporaryAllowlist = [
     file: 'crates/jyowo-harness-engine/tests/subagent_tool_feature.rs',
     reason: 'historical subagent tool coverage outside the 2026-07-01 cleanup targets',
     followUp: 'test-architecture follow-up: split engine subagent tool coverage',
-  },
-  {
-    file: 'crates/jyowo-harness-journal/tests/conversation_worktree_projector.rs',
-    reason: 'historical conversation projection coverage outside the 2026-07-01 cleanup targets',
-    followUp: 'test-architecture follow-up: split journal projector coverage',
-  },
-  {
-    file: 'crates/jyowo-harness-journal/tests/conversation_read_model.rs',
-    reason: 'historical read-model coverage outside the 2026-07-01 cleanup targets',
-    followUp: 'test-architecture follow-up: split journal read-model coverage',
   },
   {
     file: 'crates/jyowo-harness-engine/tests/main_loop.rs',

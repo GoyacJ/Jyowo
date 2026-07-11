@@ -1,10 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsStr;
-use std::future::Future;
-use std::io::{Cursor, Write};
+use std::io::Cursor;
 use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
-use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -14,24 +12,20 @@ use chrono::{DateTime, NaiveDate, Utc};
 use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
 use harness_contracts::{
     validate_agent_profile, validate_provider_capability_route, AgentCapabilityUnavailableReason,
-    AgentProfile, AgentProfileScope, AgentUsePolicy, ApproveMemoryCandidateRequest,
-    ApproveMemoryCandidateResponse, AutomationRunRecord, AutomationRunStatus, AutomationSpec,
-    AutomationWorkspaceScope, BackgroundAgentStarterCap, BackgroundAgentState,
-    BackgroundAgentToolStartRequest, BackgroundAgentToolStartResponse, CapabilityRouteKind,
-    ConversationCursor, ConversationInspectorItemResponse, ConversationInspectorSelection,
-    ConversationMessageAuthor, ConversationTurnCursor, ConversationWorktreePage, DeferPolicy,
-    DiagnosticsRawOutput, DiagnosticsRunRequest, DiagnosticsRunnerCap, DiagnosticsRunnerKind,
+    AgentProfile, AgentProfileScope, ApproveMemoryCandidateRequest, ApproveMemoryCandidateResponse,
+    AutomationRunRecord, AutomationSpec, AutomationWorkspaceScope, BackgroundAgentState,
+    CapabilityRouteKind, ConversationInspectorSelection, DiagnosticsRawOutput,
+    DiagnosticsRunRequest, DiagnosticsRunnerCap, DiagnosticsRunnerKind,
     GetMemoryRecallTraceRequest, GetMemoryRecallTraceResponse, GetMemorySettingsRequest,
     GetMemorySettingsResponse, GetModelRequestPreviewRequest, GetModelRequestPreviewResponse,
     GetThreadMemorySettingsRequest, GetThreadMemorySettingsResponse, ListMemoryCandidatesRequest,
     ListMemoryCandidatesResponse, ListMemoryRecallTracesRequest, ListMemoryRecallTracesResponse,
     ListProviderCapabilityRouteOptionsResponse, LocalIsolationTag, MergeMemoryCandidateRequest,
-    MergeMemoryCandidateResponse, MissedRunPolicy, PermissionOptionId, PluginCapabilitiesSummary,
-    PluginConfigUpdate, PluginDetail, PluginId, PluginInstallReport, PluginOperationResult,
-    PluginOperationStatus, PluginSummary, ProviderCapabilityRoute, ProviderCapabilityRouteOption,
-    ProviderCapabilityRouteSettings, ProviderProbeSnapshot, ProviderServiceAdapterAvailability,
-    RejectMemoryCandidateRequest, RejectMemoryCandidateResponse, RejectionReason,
-    RuntimeExecutionStatus, SandboxMode, ToolDescriptor, ToolGroup, ToolOrigin, TrustLevel,
+    MergeMemoryCandidateResponse, MissedRunPolicy, PluginConfigUpdate, PluginDetail, PluginId,
+    PluginInstallReport, PluginOperationResult, PluginOperationStatus, PluginSummary,
+    ProviderCapabilityRoute, ProviderCapabilityRouteOption, ProviderCapabilityRouteSettings,
+    ProviderProbeSnapshot, ProviderServiceAdapterAvailability, RejectMemoryCandidateRequest,
+    RejectMemoryCandidateResponse, RejectionReason, SandboxMode, TrustLevel,
     UpdateMemorySettingsRequest, UpdateMemorySettingsResponse, UpdateThreadMemorySettingsRequest,
     UpdateThreadMemorySettingsResponse, WorkspaceAccess,
 };
@@ -49,35 +43,27 @@ use harness_tool::{
 };
 use image::{ImageFormat, ImageReader, Limits};
 use jyowo_harness_sdk::builtin::{
-    DefaultRedactor, FileBlobStore, JsonlEventStore, LocalLlamaProvider, LocalSandbox,
+    DefaultRedactor, FileBlobStore, LocalLlamaProvider, LocalSandbox,
 };
 use jyowo_harness_sdk::ext::inventory_from_models_api_json;
 use jyowo_harness_sdk::ext::{
     build_provider, now, provider_catalog_entries, resolve_model_descriptor,
-    runnable_inventory_models, AgentId, BlobMeta, BlobRef, BlobRetention, BlobStore,
-    ConversationModelCapability, Decision, DecisionScope, DeltaChunk, DirectorySourceKind,
-    EndReason, Event, EventId, EventStore, FallbackPolicy, HttpTransport, InteractivityLevel,
-    McpAuthorizationContext, McpConnectContext, McpConnectionState, McpEventSink, McpRegistry,
-    McpServerId, McpServerScope, McpServerSource, McpServerSpec, MemoryId, MemoryKind,
-    MemoryRecord, MemorySource, MemorySummary, MemoryVisibility, MessageContent, MessagePart,
-    ModelDescriptor, ModelInventoryEntry, ModelLifecycle, ModelModality, ModelProtocol,
-    ModelProvider, ModelRuntimeStatus, PendingPermissionRequest, PermissionMode, PermissionSubject,
-    ProviderBaseUrlRegion, ProviderBuildConfig, ProviderCredential,
-    ProviderCredentialResolveContext, ProviderCredentialResolverCap, ProviderProbeInput,
-    ProviderProbeRunner, ProviderRegistryError, ProviderRequestDefaults, ProviderRuntimeCapability,
-    ProviderServiceCapability, ProviderServiceCategory, ProviderServiceCostRisk,
-    ProviderServiceExecution, RequestId, RunId, SessionId, Severity, SkillLoader,
-    SkillSourceConfig, StdioEnv, StdioPolicy, StdioTransport, TenantId, ToolCapability, ToolError,
-    ToolProfile, ToolUseId, TransportChoice,
+    runnable_inventory_models, AgentId, BlobRef, BlobRetention, BlobStore,
+    ConversationModelCapability, DirectorySourceKind, Event, EventId, EventStore, FallbackPolicy,
+    HttpTransport, InteractivityLevel, McpAuthorizationContext, McpConnectContext,
+    McpConnectionState, McpEventSink, McpRegistry, McpServerId, McpServerScope, McpServerSource,
+    McpServerSpec, MemoryId, MemoryKind, MemoryRecord, MemorySource, MemorySummary,
+    MemoryVisibility, ModelDescriptor, ModelInventoryEntry, ModelLifecycle, ModelModality,
+    ModelProtocol, ModelProvider, ModelRuntimeStatus, PermissionMode, ProviderBaseUrlRegion,
+    ProviderBuildConfig, ProviderCredential, ProviderCredentialResolveContext,
+    ProviderCredentialResolverCap, ProviderProbeInput, ProviderProbeRunner, ProviderRegistryError,
+    ProviderRequestDefaults, ProviderRuntimeCapability, ProviderServiceCapability,
+    ProviderServiceCategory, ProviderServiceCostRisk, ProviderServiceExecution, RunId, SessionId,
+    SkillLoader, SkillSourceConfig, StdioEnv, StdioPolicy, StdioTransport, TenantId,
+    ToolCapability, ToolError, ToolProfile, TransportChoice,
 };
 use jyowo_harness_sdk::{
-    resolve_agent_runtime_policy, AgentCapabilitiesInput, AgentCapabilityResolutionContext,
-    AgentRuntimePolicyError, AgentRuntimeStore, BackgroundAgentManager,
-    BackgroundAgentStartRequest, ConversationAttachmentReference, ConversationContextReference,
-    ConversationEventsPageRequest, ConversationRunOptions, ConversationTurnInput,
-    ConversationTurnPageDirection, ConversationTurnRequest, ExecutionSettingsAgentInput, Harness,
-    McpConfig, ResolvedAgentToolPolicy, RuntimeSkillSummary, RuntimeSkillView, SessionOptions,
-    StreamPermissionRuntime,
+    DesktopSettingsRuntime, McpConfig, RuntimeSkillSummary, RuntimeSkillView, SessionOptions,
 };
 use parking_lot::{Mutex as ParkingMutex, RwLock as ParkingRwLock};
 use serde::{Deserialize, Serialize};
@@ -101,12 +87,12 @@ use crate::skill_catalog::{
 
 mod agents;
 mod app;
+#[allow(dead_code)]
 mod artifacts;
 mod automations;
-mod background_agents;
+#[allow(dead_code)]
 mod constants;
 mod contracts;
-mod conversations;
 mod daemon;
 mod error;
 mod evals;
@@ -120,29 +106,23 @@ mod providers;
 mod runtime;
 mod skills;
 pub mod stores;
+#[allow(dead_code)]
+mod support;
 #[cfg(test)]
 mod tests;
 mod validation;
 
-use contracts::default_worktree_direction;
-pub(crate) use conversations::{
-    conversation_tail_event_id, mark_conversation_metadata_active,
-    wait_for_started_conversation_run,
-};
 pub use daemon::*;
-use error::{invalid_payload, runtime_unavailable};
+use error::invalid_payload;
 use harness_contracts::AgentCapabilityKind;
-pub(crate) use providers::{
-    agent_capabilities_payload, no_workspace_agent_capabilities_payload_for_conversation,
-};
 use providers::{
     provider_capability_route_runtime_context, save_provider_settings_with_runtime_state_unlocked,
     sync_runtime_provider_capability_routes,
 };
-pub(crate) use runtime::build_desktop_harness;
+pub(crate) use runtime::build_desktop_settings_runtime;
+pub(crate) use support::*;
 use validation::{ensure_non_empty, ensure_provider_settings};
 
-pub(crate) use agents::list_global_agent_profiles_with_builtin;
 pub use agents::{
     delete_agent_profile_with_runtime_state, list_agent_profiles_with_runtime_state,
     save_agent_profile_with_runtime_state,
@@ -151,21 +131,10 @@ pub use app::{
     get_app_info_payload, harness_healthcheck_payload, list_eval_cases_payload,
     list_eval_cases_with_runtime_state,
 };
-pub use artifacts::{
-    get_artifact_media_preview_with_runtime_state, get_attachment_media_preview_with_runtime_state,
-    list_artifacts_with_runtime_state,
-};
 pub use automations::{
     delete_automation_with_runtime_state, list_automation_runs_with_runtime_state,
-    list_automations_with_runtime_state, run_automation_now_with_runtime_state,
-    run_due_automations_once_with_runtime_state, save_automation_with_runtime_state,
+    list_automations_with_runtime_state, save_automation_with_runtime_state,
     set_automation_enabled_with_runtime_state,
-};
-pub use background_agents::{
-    archive_background_agent_with_runtime_state, cancel_background_agent_with_runtime_state,
-    delete_background_agent_with_runtime_state, get_background_agent_with_runtime_state,
-    list_background_agents_with_runtime_state, pause_background_agent_with_runtime_state,
-    resume_background_agent_with_runtime_state, send_background_agent_input_with_runtime_state,
 };
 pub use contracts::{
     AppInfoPayload, ArtifactRevisionPayload, ArtifactSummaryPayload, AttachmentBlobRefPayload,
@@ -173,15 +142,14 @@ pub use contracts::{
     BackgroundAgentDeleteResponse, BackgroundAgentIdRequest, BackgroundAgentPayload,
     BrowserMcpPresetId, BrowserMcpPresetSummaryPayload, CancelRunRequest, CancelRunResponse,
     ClearMcpDiagnosticsRequest, ClearMcpDiagnosticsResponse, ContextDecisionPayload,
-    ContextFilePayload, ContextReferencePayload, ConversationEventBatchEmitter,
-    ConversationEventBatchPayload, ConversationMessagePayload, ConversationMetadataFile,
-    ConversationMetadataRecord, ConversationMetadataState, ConversationMetadataStore,
-    ConversationModelCapabilityRecord, ConversationPayload, ConversationSummaryPayload,
-    CreateAttachmentFromPathRequest, CreateAttachmentFromPathResponse, CreateConversationResponse,
-    DeleteAgentProfileRequest, DeleteAgentProfileResponse, DeleteAutomationRequest,
-    DeleteAutomationResponse, DeleteConversationRequest, DeleteConversationResponse,
-    DeleteMcpServerRequest, DeleteMcpServerResponse, DeleteMemoryItemRequest,
-    DeleteMemoryItemResponse, DeleteProviderCapabilityRouteRequest,
+    ContextFilePayload, ContextReferencePayload, ConversationMessagePayload,
+    ConversationMetadataFile, ConversationMetadataRecord, ConversationMetadataState,
+    ConversationMetadataStore, ConversationModelCapabilityRecord, ConversationPayload,
+    ConversationSummaryPayload, CreateAttachmentFromPathRequest, CreateAttachmentFromPathResponse,
+    CreateConversationResponse, DeleteAgentProfileRequest, DeleteAgentProfileResponse,
+    DeleteAutomationRequest, DeleteAutomationResponse, DeleteConversationRequest,
+    DeleteConversationResponse, DeleteMcpServerRequest, DeleteMcpServerResponse,
+    DeleteMemoryItemRequest, DeleteMemoryItemResponse, DeleteProviderCapabilityRouteRequest,
     DeleteProviderCapabilityRouteResponse, DeleteSkillRequest, DeleteSkillResponse,
     EvalCasePayload, EvalLastRunPayload, ExportConversationEvidenceRequest,
     ExportConversationEvidenceResponse, ExportMemoryItemsFormat, ExportMemoryItemsRequest,
@@ -216,9 +184,7 @@ pub use contracts::{
     ModelCatalogEntry, ModelLifecyclePayload, ModelProviderCatalogEntry,
     ModelProviderCatalogResponse, ModelRuntimeStatusPayload, ModelSettingsPageResponse,
     OfficialQuotaScopePayload, OfficialQuotaSnapshotPayload, OfficialQuotaStatusPayload,
-    PageConversationTimelineRequest, PageConversationTimelineResponse,
-    PageConversationWorktreeDirection, PageConversationWorktreeRequest, PermissionDecision,
-    PermissionRequestedRunEventPayload, PermissionResolver, PluginSettingsRecord, PluginStore,
+    PermissionDecision, PermissionRequestedRunEventPayload, PluginSettingsRecord, PluginStore,
     PluginStoreRecord, ProbeProviderConfigRequest, ProbeProviderConfigResponse,
     ProviderBaseUrlRegionPayload, ProviderCapabilityRouteStore,
     ProviderCapabilityRouteValidationToken, ProviderConfigPayload, ProviderConfigRecord,
@@ -245,34 +211,11 @@ pub use contracts::{
     SkillCatalogInstallProgressEmitter, SkillCatalogInstallProgressPayload,
     SkillCatalogInstallTaskPayload, SkillDetailPayload, SkillFileContentPayload, SkillFilePayload,
     SkillParameterPayload, SkillStore, SkillStoreRecord, SkillSummaryPayload, StartRunRequest,
-    StartRunResponse, SubscribeConversationEventsRequest, SubscribeConversationEventsResponse,
-    SubscribeMcpDiagnosticsRequest, SubscribeMcpDiagnosticsResponse, UninstallPluginRequest,
-    UnsubscribeConversationEventsRequest, UnsubscribeConversationEventsResponse,
-    UnsubscribeMcpDiagnosticsRequest, UnsubscribeMcpDiagnosticsResponse, UpdateMemoryItemRequest,
-    UpdateMemoryItemResponse, UpdatePluginConfigRequest, ValidatePluginFromPathRequest,
-    ValidateProviderSettingsRequest, ValidateProviderSettingsResponse,
-};
-pub use conversations::{
-    cancel_run_payload, cancel_run_with_runtime_state, create_attachment_from_path_payload,
-    create_attachment_from_path_with_runtime_state, create_conversation_with_runtime_state,
-    create_default_conversation_with_runtime_handle, create_project_conversation_payload,
-    delete_conversation_payload, delete_conversation_with_runtime_state,
-    delete_project_conversation_payload, export_conversation_evidence_with_runtime_state,
-    export_support_bundle_with_runtime_state, get_artifact_revision_content_with_runtime_state,
-    get_context_snapshot_with_runtime_state, get_conversation_command_output_with_runtime_state,
-    get_conversation_diff_patch_with_runtime_state,
-    get_conversation_inspector_item_with_runtime_state, get_conversation_with_runtime_state,
-    get_replay_timeline_with_runtime_state, list_activity_payload,
-    list_activity_with_runtime_state, list_conversations_with_runtime_state,
-    list_project_conversation_groups_payload, list_reference_candidates_payload,
-    list_reference_candidates_with_runtime_state, page_conversation_timeline_with_runtime_state,
-    page_conversation_worktree_with_runtime_state,
-    resolve_permission_for_window_with_runtime_state, resolve_permission_payload,
-    resolve_permission_with_runtime_state, resolve_start_run_agent_policy, start_run_payload,
-    start_run_with_runtime_state, subscribe_conversation_events_for_window_with_runtime_state,
-    subscribe_conversation_events_with_runtime_state,
-    unsubscribe_conversation_events_for_window_with_runtime_state,
-    unsubscribe_conversation_events_payload, unsubscribe_conversation_events_with_runtime_state,
+    StartRunResponse, SubscribeMcpDiagnosticsRequest, SubscribeMcpDiagnosticsResponse,
+    UninstallPluginRequest, UnsubscribeMcpDiagnosticsRequest, UnsubscribeMcpDiagnosticsResponse,
+    UpdateMemoryItemRequest, UpdateMemoryItemResponse, UpdatePluginConfigRequest,
+    ValidatePluginFromPathRequest, ValidateProviderSettingsRequest,
+    ValidateProviderSettingsResponse,
 };
 pub use error::CommandErrorPayload;
 pub use evals::{run_eval_case_payload, run_eval_case_with_runtime_state};
@@ -304,13 +247,11 @@ pub use memory_settings::{
     update_memory_settings_with_runtime_state, update_thread_memory_settings_with_runtime_state,
 };
 pub use model_settings::{
-    collect_persisted_usage_events, get_model_settings_page_with_runtime_state,
-    get_model_usage_summary_with_runtime_state, list_official_quota_snapshots_with_runtime_state,
-    list_provider_probe_snapshots_with_runtime_state, load_model_usage_rollup_record_for_test,
-    probe_provider_config_with_provider, probe_provider_config_with_runtime_state,
-    project_usage_events_into_rollup_for_test, refresh_model_provider_catalog_with_runtime_state,
-    refresh_official_quota_with_runtime_state, save_model_usage_rollup_record_for_test,
-    seed_usage_events_into_clean_rollup_for_test,
+    get_model_settings_page_with_runtime_state, get_model_usage_summary_with_runtime_state,
+    list_official_quota_snapshots_with_runtime_state,
+    list_provider_probe_snapshots_with_runtime_state, probe_provider_config_with_provider,
+    probe_provider_config_with_runtime_state, refresh_model_provider_catalog_with_runtime_state,
+    refresh_official_quota_with_runtime_state,
 };
 pub use plugins::{
     get_plugin_detail_with_runtime_state, install_plugin_from_path_with_runtime_state,
@@ -341,15 +282,8 @@ pub use providers::{
     NoWorkspaceProviderCapabilityRouteStore,
 };
 pub use runtime::{
-    agent_supervisor_sidecar_startup_result_for_project_command, managed_runtime_state,
-    runtime_state, runtime_state_async, runtime_state_for_workspace,
-    runtime_state_from_stream_permission_runtime_with_provider_settings_store_for_test,
-    spawn_automation_scheduler, spawn_automation_scheduler_on_tauri_runtime, ManagedDesktopRuntime,
-};
-pub(crate) use runtime::{
-    global_conversation_runtime_layout_with_runtime_root, project_runtime_layout,
-    runtime_state_for_global_conversation_with_runtime_root,
-    runtime_state_from_stream_permission_runtime,
+    managed_runtime_state, runtime_state, runtime_state_async, runtime_state_for_workspace,
+    runtime_state_with_provider_settings_store_for_test, ManagedDesktopRuntime,
 };
 pub use skills::{
     delete_skill_with_runtime_state, get_skill_catalog_entry_with_runtime_state,
@@ -374,218 +308,6 @@ pub fn get_app_info() -> AppInfoPayload {
 }
 
 #[tauri::command]
-pub fn harness_healthcheck() -> HarnessHealthcheckPayload {
-    harness_healthcheck_payload()
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_runtime_execution_status(
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<RuntimeExecutionStatus, CommandErrorPayload> {
-    let state = runtime_handle.read().await;
-    let harness = state.harness().ok_or_else(|| CommandErrorPayload {
-        code: "RUNTIME_NOT_READY",
-        message: "harness is not initialized".to_owned(),
-    })?;
-    Ok(harness.runtime_execution_status())
-}
-
-pub fn list_runtime_tools_with_runtime_state(
-    state: &DesktopRuntimeState,
-) -> Result<ListRuntimeToolsResponse, CommandErrorPayload> {
-    let harness = state.harness().ok_or_else(|| CommandErrorPayload {
-        code: "RUNTIME_NOT_READY",
-        message: "harness is not initialized".to_owned(),
-    })?;
-    let snapshot = harness.tool_registry().snapshot();
-    let generation = snapshot.generation();
-    let mut tools = snapshot
-        .as_descriptors()
-        .into_iter()
-        .map(runtime_tool_summary_from_descriptor)
-        .collect::<Vec<_>>();
-
-    tools.sort_by(|left, right| {
-        left.group_label
-            .cmp(&right.group_label)
-            .then_with(|| left.display_name.cmp(&right.display_name))
-            .then_with(|| left.name.cmp(&right.name))
-    });
-
-    Ok(ListRuntimeToolsResponse { generation, tools })
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn list_runtime_tools(
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ListRuntimeToolsResponse, CommandErrorPayload> {
-    let state = runtime_handle.read().await;
-    list_runtime_tools_with_runtime_state(&state)
-}
-
-fn runtime_tool_summary_from_descriptor(descriptor: &ToolDescriptor) -> RuntimeToolSummary {
-    let (origin_kind, origin_id) = runtime_tool_origin(&descriptor.origin);
-
-    RuntimeToolSummary {
-        name: descriptor.name.clone(),
-        display_name: descriptor.display_name.clone(),
-        description: descriptor.description.clone(),
-        category: descriptor.category.clone(),
-        group: runtime_tool_group(&descriptor.group),
-        group_label: runtime_tool_group_label(&descriptor.group),
-        origin_kind,
-        origin_id,
-        access: runtime_tool_access(descriptor),
-        execution_channel: runtime_tool_execution_channel(descriptor),
-        required_capabilities: descriptor
-            .required_capabilities
-            .iter()
-            .map(ToString::to_string)
-            .collect(),
-        defer_policy: runtime_tool_defer_policy(descriptor.properties.defer_policy),
-        long_running: descriptor.properties.long_running.is_some(),
-        service_binding: descriptor.service_binding.as_ref().map(|binding| {
-            RuntimeToolServiceBindingSummary {
-                provider_id: binding.provider_id.clone(),
-                operation_id: binding.operation_id.clone(),
-                route_kind: runtime_tool_route_kind(binding.route_kind),
-            }
-        }),
-    }
-}
-
-fn runtime_tool_access(descriptor: &ToolDescriptor) -> String {
-    if descriptor.properties.is_destructive {
-        "destructive".to_owned()
-    } else if descriptor.properties.is_read_only {
-        "readOnly".to_owned()
-    } else {
-        "mutating".to_owned()
-    }
-}
-
-fn runtime_tool_origin(origin: &ToolOrigin) -> (String, Option<String>) {
-    match origin {
-        ToolOrigin::Builtin => ("builtin".to_owned(), None),
-        ToolOrigin::Plugin { plugin_id, .. } => ("plugin".to_owned(), Some(plugin_id.0.clone())),
-        ToolOrigin::Mcp(mcp) => ("mcp".to_owned(), Some(mcp.server_id.0.clone())),
-        ToolOrigin::Skill(skill) => ("skill".to_owned(), Some(skill.skill_id.0.clone())),
-        _ => ("custom".to_owned(), None),
-    }
-}
-
-fn runtime_tool_execution_channel(descriptor: &ToolDescriptor) -> String {
-    if matches!(
-        descriptor.origin,
-        ToolOrigin::Plugin { .. } | ToolOrigin::Mcp(_) | ToolOrigin::Skill(_)
-    ) {
-        return "externalCapability".to_owned();
-    }
-    if descriptor.service_binding.is_some() {
-        return "httpBroker".to_owned();
-    }
-    if descriptor.name == "WebFetch" || descriptor.name.starts_with("MiniMax") {
-        return "httpBroker".to_owned();
-    }
-    if descriptor.required_capabilities.iter().any(|capability| {
-        capability.to_string() == "custom:jyowo.builtin.brokered_platform_runtime"
-    }) {
-        return "externalCapability".to_owned();
-    }
-    match descriptor.name.as_str() {
-        "Bash" | "Diagnostics" | "ProcessStart" | "ExecuteCode" => "processSandbox".to_owned(),
-        "SendMessage" | "WebSearch" => "externalCapability".to_owned(),
-        _ => "directAuthorizedRust".to_owned(),
-    }
-}
-
-fn runtime_tool_defer_policy(policy: DeferPolicy) -> String {
-    match policy {
-        DeferPolicy::AlwaysLoad => "alwaysLoad".to_owned(),
-        DeferPolicy::AutoDefer => "autoDefer".to_owned(),
-        DeferPolicy::ForceDefer => "forceDefer".to_owned(),
-        _ => "autoDefer".to_owned(),
-    }
-}
-
-fn runtime_tool_route_kind(kind: CapabilityRouteKind) -> String {
-    match kind {
-        CapabilityRouteKind::ImageGeneration => "imageGeneration".to_owned(),
-        CapabilityRouteKind::VideoGeneration => "videoGeneration".to_owned(),
-        CapabilityRouteKind::ThreeDGeneration => "threeDGeneration".to_owned(),
-        CapabilityRouteKind::EmbeddingGeneration => "embeddingGeneration".to_owned(),
-        CapabilityRouteKind::FileOperation => "fileOperation".to_owned(),
-        CapabilityRouteKind::TextToSpeech => "textToSpeech".to_owned(),
-        CapabilityRouteKind::SpeechToText => "speechToText".to_owned(),
-        CapabilityRouteKind::MusicGeneration => "musicGeneration".to_owned(),
-        CapabilityRouteKind::Moderation => "moderation".to_owned(),
-        CapabilityRouteKind::FileManagement => "fileManagement".to_owned(),
-        CapabilityRouteKind::VectorStoreManagement => "vectorStoreManagement".to_owned(),
-        CapabilityRouteKind::BatchJob => "batchJob".to_owned(),
-        CapabilityRouteKind::FineTuningJob => "fineTuningJob".to_owned(),
-        CapabilityRouteKind::EvalRun => "evalRun".to_owned(),
-        CapabilityRouteKind::ContainerSession => "containerSession".to_owned(),
-        CapabilityRouteKind::RealtimeSession => "realtimeSession".to_owned(),
-        CapabilityRouteKind::AdminOperation => "adminOperation".to_owned(),
-        CapabilityRouteKind::WebhookVerification => "webhookVerification".to_owned(),
-    }
-}
-
-fn runtime_tool_group(group: &ToolGroup) -> String {
-    match group {
-        ToolGroup::FileSystem => "fileSystem".to_owned(),
-        ToolGroup::Search => "search".to_owned(),
-        ToolGroup::Network => "network".to_owned(),
-        ToolGroup::Shell => "shell".to_owned(),
-        ToolGroup::Git => "git".to_owned(),
-        ToolGroup::Worktree => "worktree".to_owned(),
-        ToolGroup::Session => "session".to_owned(),
-        ToolGroup::Artifact => "artifact".to_owned(),
-        ToolGroup::Browser => "browser".to_owned(),
-        ToolGroup::Computer => "computer".to_owned(),
-        ToolGroup::Image => "image".to_owned(),
-        ToolGroup::Notebook => "notebook".to_owned(),
-        ToolGroup::Lsp => "lsp".to_owned(),
-        ToolGroup::Automation => "automation".to_owned(),
-        ToolGroup::Workflow => "workflow".to_owned(),
-        ToolGroup::Agent => "agent".to_owned(),
-        ToolGroup::Coordinator => "coordinator".to_owned(),
-        ToolGroup::Memory => "memory".to_owned(),
-        ToolGroup::Clarification => "clarification".to_owned(),
-        ToolGroup::Meta => "meta".to_owned(),
-        ToolGroup::Custom(value) => value.clone(),
-        _ => "custom".to_owned(),
-    }
-}
-
-fn runtime_tool_group_label(group: &ToolGroup) -> String {
-    match group {
-        ToolGroup::FileSystem => "File system".to_owned(),
-        ToolGroup::Search => "Search".to_owned(),
-        ToolGroup::Network => "Network".to_owned(),
-        ToolGroup::Shell => "Shell".to_owned(),
-        ToolGroup::Git => "Git".to_owned(),
-        ToolGroup::Worktree => "Worktree".to_owned(),
-        ToolGroup::Session => "Session".to_owned(),
-        ToolGroup::Artifact => "Artifact".to_owned(),
-        ToolGroup::Browser => "Browser".to_owned(),
-        ToolGroup::Computer => "Computer".to_owned(),
-        ToolGroup::Image => "Image".to_owned(),
-        ToolGroup::Notebook => "Notebook".to_owned(),
-        ToolGroup::Lsp => "LSP".to_owned(),
-        ToolGroup::Automation => "Automation".to_owned(),
-        ToolGroup::Workflow => "Workflow".to_owned(),
-        ToolGroup::Agent => "Agent".to_owned(),
-        ToolGroup::Coordinator => "Coordinator".to_owned(),
-        ToolGroup::Memory => "Memory".to_owned(),
-        ToolGroup::Clarification => "Clarification".to_owned(),
-        ToolGroup::Meta => "Meta".to_owned(),
-        ToolGroup::Custom(value) => value.clone(),
-        _ => "Custom".to_owned(),
-    }
-}
-
-#[tauri::command]
 pub fn list_projects(project_registry: tauri::State<'_, ProjectRegistry>) -> ListProjectsResponse {
     list_projects_payload(&project_registry)
 }
@@ -602,20 +324,10 @@ pub fn move_project(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn switch_project(
     path: String,
-    app: tauri::AppHandle,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
     project_registry: tauri::State<'_, ProjectRegistry>,
 ) -> Result<SwitchProjectResponse, CommandErrorPayload> {
-    let response = switch_project_payload(path, &runtime_handle, &project_registry).await?;
-    let runtime_state = runtime_handle.read().await;
-    agent_supervisor_sidecar_startup_result_for_project_command(
-        crate::agent_supervisor::launch_agent_supervisor_sidecar(
-            &app,
-            runtime_state.workspace_root().to_path_buf(),
-        )
-        .await,
-    )?;
-    Ok(response)
+    switch_project_payload(path, &runtime_handle, &project_registry).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -630,20 +342,10 @@ pub async fn delete_project(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn add_project(
     path: String,
-    app: tauri::AppHandle,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
     project_registry: tauri::State<'_, ProjectRegistry>,
 ) -> Result<SwitchProjectResponse, CommandErrorPayload> {
-    let response = add_project_payload(path, &runtime_handle, &project_registry).await?;
-    let runtime_state = runtime_handle.read().await;
-    agent_supervisor_sidecar_startup_result_for_project_command(
-        crate::agent_supervisor::launch_agent_supervisor_sidecar(
-            &app,
-            runtime_state.workspace_root().to_path_buf(),
-        )
-        .await,
-    )?;
-    Ok(response)
+    add_project_payload(path, &runtime_handle, &project_registry).await
 }
 
 #[tauri::command]
@@ -658,12 +360,11 @@ pub fn get_execution_settings(
     project_registry: tauri::State<'_, ProjectRegistry>,
 ) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.blocking_read();
-    let context = runtime_state.agent_capability_resolution_context();
     get_execution_settings_for_state_request(
         GetExecutionSettingsRequest { workspace_path },
         &runtime_state,
         &project_registry,
-        Some(&context),
+        None,
     )
 }
 
@@ -679,7 +380,6 @@ pub async fn set_execution_settings(
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
     let _execution_settings_guard = runtime_state.execution_settings_lock.lock().await;
-    let context = runtime_state.agent_capability_resolution_context();
     set_execution_settings_with_store(
         SetExecutionSettingsRequest {
             permission_mode,
@@ -690,7 +390,7 @@ pub async fn set_execution_settings(
             background_agents_enabled,
         },
         runtime_state.execution_settings_store.as_ref(),
-        Some(&context),
+        None,
     )
 }
 
@@ -732,15 +432,6 @@ pub async fn set_automation_enabled(
         &runtime_state,
     )
     .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn run_automation_now(
-    id: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<RunAutomationNowResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    run_automation_now_with_runtime_state(id, &runtime_state).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -999,21 +690,21 @@ pub async fn save_provider_settings(
     let response =
         save_provider_settings_with_runtime_state_unlocked(request, &runtime_state).await?;
     if response.config.is_default {
-        let stream_permission_runtime = runtime_state
-            .stream_permission_runtime
-            .as_ref()
-            .ok_or_else(|| runtime_unavailable("Provider settings require the desktop runtime."))?;
         let layout = runtime_state.runtime_layout().clone();
-        let (harness, model_id, protocol, model_options) = build_desktop_harness(
+        let (settings_runtime, model_id, protocol, model_options) = build_desktop_settings_runtime(
             &layout,
-            Arc::clone(stream_permission_runtime),
             Some(&response.config.id),
             Arc::clone(&runtime_state.provider_capability_routes),
             Some(Arc::clone(&runtime_state.provider_settings_store)),
         )
         .await?;
-        let _start_run_guard = runtime_state.start_run_lock.lock().await;
-        runtime_state.replace_harness(Arc::new(harness), model_id, protocol, model_options);
+        let _settings_reload_guard = runtime_state.settings_reload_lock.lock().await;
+        runtime_state.replace_settings_runtime(
+            Arc::new(settings_runtime),
+            model_id,
+            protocol,
+            model_options,
+        );
     }
     Ok(response)
 }
@@ -1478,146 +1169,6 @@ pub async fn delete_agent_profile(
     delete_agent_profile_with_runtime_state(DeleteAgentProfileRequest { id }, &*runtime_state).await
 }
 
-#[tauri::command(rename_all = "camelCase")]
-pub async fn list_background_agents(
-    conversation_id: Option<String>,
-    include_archived: Option<bool>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ListBackgroundAgentsResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    list_background_agents_with_runtime_state(
-        ListBackgroundAgentsRequest {
-            conversation_id,
-            include_archived: include_archived.unwrap_or(false),
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_background_agent(
-    background_agent_id: String,
-    conversation_id: Option<String>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<GetBackgroundAgentResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    get_background_agent_with_runtime_state(
-        GetBackgroundAgentRequest {
-            background_agent_id,
-            conversation_id,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn pause_background_agent(
-    background_agent_id: String,
-    conversation_id: Option<String>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<BackgroundAgentActionResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    pause_background_agent_with_runtime_state(
-        BackgroundAgentIdRequest {
-            background_agent_id,
-            conversation_id,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn resume_background_agent(
-    background_agent_id: String,
-    conversation_id: Option<String>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<BackgroundAgentActionResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    resume_background_agent_with_runtime_state(
-        BackgroundAgentIdRequest {
-            background_agent_id,
-            conversation_id,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn cancel_background_agent(
-    background_agent_id: String,
-    conversation_id: Option<String>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<BackgroundAgentActionResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    cancel_background_agent_with_runtime_state(
-        BackgroundAgentIdRequest {
-            background_agent_id,
-            conversation_id,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn send_background_agent_input(
-    background_agent_id: String,
-    conversation_id: Option<String>,
-    input: String,
-    request_id: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<BackgroundAgentActionResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    send_background_agent_input_with_runtime_state(
-        SendBackgroundAgentInputRequest {
-            background_agent_id,
-            conversation_id,
-            input,
-            request_id,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn archive_background_agent(
-    background_agent_id: String,
-    conversation_id: Option<String>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<BackgroundAgentActionResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    archive_background_agent_with_runtime_state(
-        BackgroundAgentIdRequest {
-            background_agent_id,
-            conversation_id,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn delete_background_agent(
-    background_agent_id: String,
-    conversation_id: Option<String>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<BackgroundAgentDeleteResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    delete_background_agent_with_runtime_state(
-        BackgroundAgentIdRequest {
-            background_agent_id,
-            conversation_id,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
 #[tauri::command]
 pub async fn list_memory_items(
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
@@ -1782,480 +1333,4 @@ pub async fn get_model_request_preview(
 ) -> Result<GetModelRequestPreviewResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
     get_model_request_preview_with_runtime_state(request, &*runtime_state).await
-}
-
-#[tauri::command]
-pub async fn list_conversations(
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ListConversationsResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    Ok(list_conversations_with_runtime_state(&*runtime_state).await)
-}
-
-#[tauri::command]
-pub async fn list_project_conversation_groups(
-    project_registry: tauri::State<'_, ProjectRegistry>,
-) -> Result<ListProjectConversationGroupsResponse, CommandErrorPayload> {
-    list_project_conversation_groups_payload(&project_registry).await
-}
-
-#[tauri::command]
-pub async fn create_conversation(
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<CreateConversationResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    create_conversation_with_runtime_state(&*runtime_state).await
-}
-
-#[tauri::command]
-pub async fn create_default_conversation(
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-    project_registry: tauri::State<'_, ProjectRegistry>,
-) -> Result<CreateConversationResponse, CommandErrorPayload> {
-    create_default_conversation_with_runtime_handle(&runtime_handle, &project_registry).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn create_project_conversation(
-    path: String,
-    project_registry: tauri::State<'_, ProjectRegistry>,
-) -> Result<CreateConversationResponse, CommandErrorPayload> {
-    create_project_conversation_payload(path, &project_registry).await
-}
-
-#[tauri::command]
-pub async fn list_eval_cases(
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ListEvalCasesResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    list_eval_cases_with_runtime_state(&*runtime_state)
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn list_artifacts(
-    conversation_id: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ListArtifactsResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    list_artifacts_with_runtime_state(ListArtifactsRequest { conversation_id }, &*runtime_state)
-        .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_artifact_media_preview(
-    conversation_id: String,
-    artifact_id: String,
-    content_ref: Option<String>,
-    revision_id: Option<String>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<GetArtifactMediaPreviewResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    get_artifact_media_preview_with_runtime_state(
-        GetArtifactMediaPreviewRequest {
-            conversation_id,
-            artifact_id,
-            content_ref,
-            revision_id,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_attachment_media_preview(
-    conversation_id: String,
-    attachment_id: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<GetAttachmentMediaPreviewResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    get_attachment_media_preview_with_runtime_state(
-        GetAttachmentMediaPreviewRequest {
-            conversation_id,
-            attachment_id,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn run_eval_case(
-    case_id: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<RunEvalCaseResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    run_eval_case_with_runtime_state(RunEvalCaseRequest { case_id }, &*runtime_state)
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_conversation(
-    conversation_id: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<GetConversationResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    get_conversation_with_runtime_state(GetConversationRequest { conversation_id }, &*runtime_state)
-        .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_conversation_command_output(
-    conversation_id: String,
-    full_output_ref: String,
-    cursor: Option<String>,
-    max_bytes: Option<u64>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<GetConversationCommandOutputResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    get_conversation_command_output_with_runtime_state(
-        GetConversationCommandOutputRequest {
-            conversation_id,
-            full_output_ref,
-            cursor,
-            max_bytes,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_conversation_diff_patch(
-    conversation_id: String,
-    full_patch_ref: String,
-    cursor: Option<String>,
-    max_bytes: Option<u64>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<GetConversationDiffPatchResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    get_conversation_diff_patch_with_runtime_state(
-        GetConversationDiffPatchRequest {
-            conversation_id,
-            full_patch_ref,
-            cursor,
-            max_bytes,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_artifact_revision_content(
-    conversation_id: String,
-    content_ref: String,
-    cursor: Option<String>,
-    max_bytes: Option<u64>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<GetArtifactRevisionContentResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    get_artifact_revision_content_with_runtime_state(
-        GetArtifactRevisionContentRequest {
-            conversation_id,
-            content_ref,
-            cursor,
-            max_bytes,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn export_conversation_evidence(
-    conversation_id: String,
-    kind: String,
-    ref_id: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ExportConversationEvidenceResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    export_conversation_evidence_with_runtime_state(
-        ExportConversationEvidenceRequest {
-            conversation_id,
-            kind,
-            ref_id,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn delete_conversation(
-    conversation_id: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<DeleteConversationResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    delete_conversation_with_runtime_state(
-        DeleteConversationRequest { conversation_id },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn delete_project_conversation(
-    path: String,
-    conversation_id: String,
-    project_registry: tauri::State<'_, ProjectRegistry>,
-) -> Result<DeleteConversationResponse, CommandErrorPayload> {
-    delete_project_conversation_payload(path, conversation_id, &project_registry).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn start_run(
-    attachments: Option<Vec<AttachmentReferencePayload>>,
-    client_message_id: Option<String>,
-    context_references: Option<Vec<ContextReferencePayload>>,
-    conversation_id: String,
-    model_config_id: Option<String>,
-    permission_mode: Option<PermissionMode>,
-    prompt: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<StartRunResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    start_run_with_runtime_state(
-        StartRunRequest {
-            attachments,
-            client_message_id,
-            context_references,
-            conversation_id,
-            model_config_id,
-            permission_mode,
-            prompt,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn create_attachment_from_path(
-    conversation_id: Option<String>,
-    path: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<CreateAttachmentFromPathResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    create_attachment_from_path_with_runtime_state(
-        CreateAttachmentFromPathRequest {
-            conversation_id,
-            path,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn list_reference_candidates(
-    conversation_id: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ListReferenceCandidatesResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    list_reference_candidates_with_runtime_state(
-        ListReferenceCandidatesRequest { conversation_id },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn cancel_run(
-    run_id: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<CancelRunResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    cancel_run_with_runtime_state(CancelRunRequest { run_id }, &*runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn resolve_permission(
-    conversation_id: String,
-    confirmation_text: Option<String>,
-    decision: PermissionDecision,
-    option_id: String,
-    request_id: String,
-    window: tauri::Window,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ResolvePermissionResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    let window_label = window.label().to_owned();
-    resolve_permission_for_window_with_runtime_state(
-        ResolvePermissionRequest {
-            conversation_id,
-            confirmation_text,
-            decision,
-            option_id,
-            request_id,
-        },
-        window_label,
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn list_activity(
-    conversation_id: Option<String>,
-    run_id: Option<String>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ListActivityResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    list_activity_with_runtime_state(
-        ListActivityRequest {
-            conversation_id,
-            run_id,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_replay_timeline(
-    conversation_id: Option<String>,
-    run_id: Option<String>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ReplayTimelineResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    get_replay_timeline_with_runtime_state(
-        ReplayTimelineRequest {
-            conversation_id,
-            run_id,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn page_conversation_timeline(
-    conversation_id: String,
-    after_cursor: Option<ConversationCursor>,
-    limit: Option<usize>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<PageConversationTimelineResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    page_conversation_timeline_with_runtime_state(
-        PageConversationTimelineRequest {
-            conversation_id,
-            after_cursor,
-            limit,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn page_conversation_worktree(
-    conversation_id: String,
-    page_cursor: Option<ConversationTurnCursor>,
-    direction: Option<PageConversationWorktreeDirection>,
-    limit: Option<usize>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ConversationWorktreePage, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    page_conversation_worktree_with_runtime_state(
-        PageConversationWorktreeRequest {
-            conversation_id,
-            page_cursor,
-            direction: direction.unwrap_or_else(default_worktree_direction),
-            limit,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_conversation_inspector_item(
-    conversation_id: String,
-    selection: ConversationInspectorSelection,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ConversationInspectorItemResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    get_conversation_inspector_item_with_runtime_state(
-        GetConversationInspectorItemRequest {
-            conversation_id,
-            selection,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn subscribe_conversation_events(
-    conversation_id: String,
-    after_cursor: Option<ConversationCursor>,
-    window: tauri::Window,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<SubscribeConversationEventsResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    let window_label = window.label().to_owned();
-    let emitter = Arc::new(move |batch: ConversationEventBatchPayload| {
-        window
-            .emit("conversation_event_batch", batch)
-            .map_err(|error| error.to_string())
-    });
-    subscribe_conversation_events_for_window_with_runtime_state(
-        SubscribeConversationEventsRequest {
-            conversation_id,
-            after_cursor,
-        },
-        window_label,
-        emitter,
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn unsubscribe_conversation_events(
-    subscription_id: String,
-    window: tauri::Window,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<UnsubscribeConversationEventsResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    unsubscribe_conversation_events_for_window_with_runtime_state(
-        UnsubscribeConversationEventsRequest { subscription_id },
-        window.label().to_owned(),
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn export_support_bundle(
-    conversation_id: Option<String>,
-    run_id: Option<String>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ExportSupportBundleResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    export_support_bundle_with_runtime_state(
-        ExportSupportBundleRequest {
-            conversation_id,
-            run_id,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_context_snapshot(
-    conversation_id: Option<String>,
-    run_id: Option<String>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<GetContextSnapshotResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    get_context_snapshot_with_runtime_state(
-        GetContextSnapshotRequest {
-            conversation_id,
-            run_id,
-        },
-        &*runtime_state,
-    )
-    .await
 }

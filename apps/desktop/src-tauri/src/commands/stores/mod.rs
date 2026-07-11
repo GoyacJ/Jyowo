@@ -9,7 +9,6 @@ use super::constants::*;
 #[allow(unused_imports)]
 use super::contracts::*;
 #[allow(unused_imports)]
-use super::conversations::*;
 #[allow(unused_imports)]
 use super::error::*;
 #[allow(unused_imports)]
@@ -2401,19 +2400,13 @@ pub struct DesktopRuntimeState {
     pub(crate) active_runtime: Arc<RwLock<DesktopActiveRuntime>>,
     pub(crate) automation_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) automation_store: Arc<dyn AutomationStore>,
-    pub(crate) conversation_metadata_lock: Arc<tokio::sync::Mutex<()>>,
-    pub(crate) conversation_metadata_store: Arc<dyn ConversationMetadataStore>,
-    pub(crate) conversation_event_subscriptions:
-        Arc<tokio::sync::Mutex<HashMap<String, ConversationSubscriptionHandle>>>,
     pub(crate) default_conversation_id: SessionId,
-    pub(crate) deleted_conversation_ids: Arc<tokio::sync::Mutex<HashSet<SessionId>>>,
     pub(crate) memory_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) mcp_diagnostic_store: Arc<dyn McpDiagnosticStore>,
     pub(crate) mcp_diagnostic_subscriptions:
         Arc<tokio::sync::Mutex<HashMap<String, McpDiagnosticSubscriptionHandle>>>,
     pub(crate) mcp_server_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) mcp_server_store: Arc<dyn McpServerStore>,
-    pub(crate) permission_resolver: Option<Arc<dyn PermissionResolver>>,
     pub(crate) provider_api_key_reveal_tokens:
         Arc<tokio::sync::Mutex<HashMap<String, ProviderConfigRevealTokenRecord>>>,
     pub(crate) plugin_store: Arc<dyn PluginStore>,
@@ -2437,8 +2430,7 @@ pub struct DesktopRuntimeState {
         Arc<RwLock<HashMap<SkillCatalogInstallTaskKey, SkillCatalogInstallTaskPayload>>>,
     pub(crate) skill_store: Arc<dyn SkillStore>,
     pub(crate) skill_store_lock: Arc<tokio::sync::Mutex<()>>,
-    pub(crate) start_run_lock: Arc<tokio::sync::Mutex<()>>,
-    pub(crate) stream_permission_runtime: Option<Arc<StreamPermissionRuntime>>,
+    pub(crate) settings_reload_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) runtime_layout: crate::storage_layout::RuntimeLayout,
     pub(crate) workspace_root: PathBuf,
 }

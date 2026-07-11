@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
@@ -15,6 +15,20 @@ describe('conversation production boundaries', () => {
 
     for (const retiredModule of retiredModules) {
       expect(existsSync(join(process.cwd(), retiredModule)), retiredModule).toBe(false)
+    }
+  })
+
+  it('keeps legacy conversation timeline commands out of the desktop client', () => {
+    const commands = readFileSync(join(process.cwd(), 'src/shared/tauri/commands.ts'), 'utf8')
+
+    for (const retiredCommand of [
+      'pageConversationTimeline',
+      'pageConversationWorktree',
+      'resolvePermission',
+      'subscribeConversationEvents',
+      'unsubscribeConversationEvents',
+    ]) {
+      expect(commands, retiredCommand).not.toContain(retiredCommand)
     }
   })
 })

@@ -297,11 +297,6 @@ impl StorageLayout {
         self.runtime_root_for(scope).join("blobs")
     }
 
-    pub fn runtime_conversation_read_model_file_for(&self, scope: &RuntimeScope) -> PathBuf {
-        self.runtime_root_for(scope)
-            .join("conversation-read-model.sqlite")
-    }
-
     pub fn runtime_provider_continuations_file_for(&self, scope: &RuntimeScope) -> PathBuf {
         self.runtime_root_for(scope)
             .join("provider-continuations.jsonl")
@@ -310,10 +305,6 @@ impl StorageLayout {
     pub fn runtime_permission_decisions_file_for(&self, scope: &RuntimeScope) -> PathBuf {
         self.runtime_root_for(scope)
             .join("permission-decisions.json")
-    }
-
-    pub fn runtime_agent_database_file_for(&self, scope: &RuntimeScope) -> PathBuf {
-        self.runtime_root_for(scope).join("agent-runtime.sqlite")
     }
 
     pub fn runtime_agent_worktrees_dir_for(&self, scope: &RuntimeScope) -> PathBuf {
@@ -594,12 +585,6 @@ mod tests {
             Path::new("/home/alice/.jyowo/runtime/global-conversations/blobs")
         );
         assert_eq!(
-            layout.runtime_conversation_read_model_file_for(&global_scope),
-            Path::new(
-                "/home/alice/.jyowo/runtime/global-conversations/conversation-read-model.sqlite"
-            )
-        );
-        assert_eq!(
             layout.runtime_provider_continuations_file_for(&global_scope),
             Path::new(
                 "/home/alice/.jyowo/runtime/global-conversations/provider-continuations.jsonl"
@@ -616,10 +601,6 @@ mod tests {
         assert_eq!(
             layout.runtime_memory_file_for(&global_scope),
             Path::new("/home/alice/.jyowo/runtime/global-conversations/memory/memory.sqlite3")
-        );
-        assert_eq!(
-            layout.runtime_agent_database_file_for(&global_scope),
-            Path::new("/home/alice/.jyowo/runtime/global-conversations/agent-runtime.sqlite")
         );
         assert_eq!(
             layout.runtime_agent_worktrees_dir_for(&global_scope),
