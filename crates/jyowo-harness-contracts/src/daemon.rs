@@ -312,6 +312,42 @@ pub enum PermissionRoute {
     SavedPolicy,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonPermissionKind {
+    Command,
+    Filesystem,
+    Network,
+    Mcp,
+    Automation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PermissionOption {
+    pub option_id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PermissionRequestDetails {
+    pub kind: DaemonPermissionKind,
+    pub segment_id: RunSegmentId,
+    pub action_plan_hash: String,
+    pub sandbox_policy_hash: String,
+    pub workspace: String,
+    pub subject: Value,
+    pub actor_source: Value,
+    pub options: Vec<PermissionOption>,
+    pub preview: String,
+    #[serde(
+        serialize_with = "strict_rfc3339::serialize",
+        deserialize_with = "strict_rfc3339::deserialize"
+    )]
+    pub expires_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TimelineEventKind {
@@ -459,6 +495,8 @@ pub struct PermissionProjection {
     pub request_id: RequestId,
     pub revision: u64,
     pub route: PermissionRoute,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<PermissionRequestDetails>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]

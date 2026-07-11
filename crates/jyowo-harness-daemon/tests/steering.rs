@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use chrono::Utc;
 use harness_contracts::{
-    ClientId, CommandId, Event, NoopRedactor, PromotionMode, QueueItemId, QueueItemState, RunId,
-    RunSegmentId, RunState, RunTerminalReason, SessionId, TaskId, TaskState, TenantId, ToolUseId,
-    ToolUseStartedEvent,
+    ClientId, CommandId, Event, NoopRedactor, PermissionProjection, PermissionRoute, PromotionMode,
+    QueueItemId, QueueItemState, RequestId, RunId, RunSegmentId, RunState, RunTerminalReason,
+    SessionId, TaskId, TaskState, TenantId, ToolUseId, ToolUseStartedEvent,
 };
 use harness_daemon::{
     QueueCommand, RunCoordinatorEvent, RunCoordinatorFactory, RunningSegment, StartSegmentRequest,
@@ -128,6 +128,146 @@ impl RunCoordinatorFactory for SteeringFactory {
         state.events.insert(request.segment_id, events);
         RunningSegment::with_control(request.segment_id, receiver, control)
     }
+}
+
+#[tokio::test]
+async fn queue_commands_remain_available_and_promotion_invalidates_pending_permission() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let task_id = create_task(&store);
+    let factory = Arc::new(SteeringFactory::default());
+    let supervisor =
+        Supervisor::start(store.clone(), factory.clone(), SupervisorQuotas::new(1, 1)).unwrap();
+    let segment_id = RunSegmentId::new();
+    assert!(accepted(
+        supervisor
+            .dispatch(task_id, start_command(&store, task_id, segment_id))
+            .await
+            .unwrap()
+    ));
+    let editable_item = QueueItemId::new();
+    let promoted_item = QueueItemId::new();
+    for (queue_item_id, content) in [
+        (editable_item, "edit then delete"),
+        (promoted_item, "promote while waiting"),
+    ] {
+        assert!(accepted(
+            supervisor
+                .dispatch(
+                    task_id,
+                    queue_command(
+                        &store,
+                        task_id,
+                        queue_item_id,
+                        QueueCommand::Submit {
+                            queue_item_id,
+                            content: content.into(),
+                            attachments: Vec::new(),
+                            context_references: Vec::new(),
+                            created_at: Utc::now(),
+                        },
+                    ),
+                )
+                .await
+                .unwrap()
+        ));
+    }
+    let permission_request_id = RequestId::new();
+    assert!(accepted(
+        store
+            .transact_command(
+                AcceptedCommand {
+                    command_id: CommandId::new(),
+                    task_id,
+                    idempotency_key: format!("permission-{permission_request_id}"),
+                    expected_stream_version: store.stream_version(task_id).unwrap(),
+                    authority: TaskStore::permission_broker_authority(),
+                    payload: json!({ "type": "permission_request" }),
+                },
+                |_| {
+                    Ok(vec![NewTaskEvent::permission_requested(
+                        PermissionProjection {
+                            request_id: permission_request_id,
+                            revision: 1,
+                            route: PermissionRoute::ForegroundTask,
+                            details: None,
+                        },
+                    )])
+                },
+            )
+            .unwrap()
+    ));
+
+    assert!(accepted(
+        supervisor
+            .dispatch(
+                task_id,
+                queue_command(
+                    &store,
+                    task_id,
+                    editable_item,
+                    QueueCommand::Edit {
+                        expected_revision: 1,
+                        content: "edited".into(),
+                        attachments: Vec::new(),
+                        context_references: Vec::new(),
+                    },
+                ),
+            )
+            .await
+            .unwrap()
+    ));
+    assert!(accepted(
+        supervisor
+            .dispatch(
+                task_id,
+                queue_command(
+                    &store,
+                    task_id,
+                    editable_item,
+                    QueueCommand::Delete {
+                        expected_revision: 2,
+                    },
+                ),
+            )
+            .await
+            .unwrap()
+    ));
+    assert!(accepted(
+        supervisor
+            .dispatch(
+                task_id,
+                queue_command(
+                    &store,
+                    task_id,
+                    promoted_item,
+                    QueueCommand::Promote {
+                        expected_revision: 1,
+                        mode: PromotionMode::SafePoint,
+                    },
+                ),
+            )
+            .await
+            .unwrap()
+    ));
+
+    let projection = store.task_projection(task_id).unwrap().unwrap();
+    assert!(projection.pending_permission.is_none());
+    assert_eq!(projection.current_run.unwrap().state, RunState::Yielding);
+    assert_eq!(
+        factory.control(segment_id).decision(),
+        SafePointDecision::Yield
+    );
+    let events = store.task_events_after(task_id, 0, 128).unwrap();
+    let invalidated = events
+        .iter()
+        .position(|event| event.event_type == "permission.invalidated")
+        .unwrap();
+    let yielding = events
+        .iter()
+        .position(|event| event.event_type == "run.yield_requested")
+        .unwrap();
+    assert!(invalidated < yielding);
 }
 
 #[tokio::test]

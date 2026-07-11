@@ -321,14 +321,12 @@ async fn handle_command(
                     });
                 }
                 if promotion_mode.is_some()
-                    && (!projection
-                        .current_run
-                        .as_ref()
-                        .is_some_and(|run| run.state == RunState::Running)
-                        || projection
-                            .queue
-                            .iter()
-                            .any(|item| item.state == QueueItemState::Promoting))
+                    && (!projection.current_run.as_ref().is_some_and(|run| {
+                        matches!(run.state, RunState::Running | RunState::WaitingPermission)
+                    }) || projection
+                        .queue
+                        .iter()
+                        .any(|item| item.state == QueueItemState::Promoting))
                 {
                     return Err(CommandRejection::InvalidCommand {
                         message: "promotion requires one running segment and no pending promotion"
@@ -340,7 +338,17 @@ async fn handle_command(
                     .iter()
                     .find(|item| item.queue_item_id == queue_item_id)
                     .or(durable_queue_item.as_ref());
-                let mut events = decide_queue(current, queue_command)?;
+                let mut events = Vec::new();
+                if promotion_mode.is_some() {
+                    if let Some(permission) = projection.pending_permission.as_ref() {
+                        events.push(NewTaskEvent::permission_invalidated(
+                            permission.request_id,
+                            permission.revision,
+                            "superseded by steering",
+                        ));
+                    }
+                }
+                events.extend(decide_queue(current, queue_command)?);
                 if let Some(mode) = promotion_mode.as_ref() {
                     let segment_id = projection
                         .current_run

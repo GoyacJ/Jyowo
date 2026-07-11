@@ -445,6 +445,16 @@
         "not_found"
       ]
     },
+    "DaemonPermissionKind": {
+      "type": "string",
+      "enum": [
+        "command",
+        "filesystem",
+        "network",
+        "mcp",
+        "automation"
+      ]
+    },
     "EventSource": {
       "type": "object",
       "properties": {
@@ -513,9 +523,35 @@
         "execute_again"
       ]
     },
+    "PermissionOption": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "optionId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "optionId",
+        "label"
+      ]
+    },
     "PermissionProjection": {
       "type": "object",
       "properties": {
+        "details": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PermissionRequestDetails"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "requestId": {
           "$ref": "#/$defs/TypedUlid"
         },
@@ -533,6 +569,54 @@
         "requestId",
         "revision",
         "route"
+      ]
+    },
+    "PermissionRequestDetails": {
+      "type": "object",
+      "properties": {
+        "actionPlanHash": {
+          "type": "string"
+        },
+        "actorSource": true,
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "kind": {
+          "$ref": "#/$defs/DaemonPermissionKind"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PermissionOption"
+          }
+        },
+        "preview": {
+          "type": "string"
+        },
+        "sandboxPolicyHash": {
+          "type": "string"
+        },
+        "segmentId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "subject": true,
+        "workspace": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "segmentId",
+        "actionPlanHash",
+        "sandboxPolicyHash",
+        "workspace",
+        "subject",
+        "actorSource",
+        "options",
+        "preview",
+        "expiresAt"
       ]
     },
     "PermissionRoute": {
@@ -1001,6 +1085,113 @@
         "force"
       ]
     },
+    "SubagentActorState": {
+      "type": "string",
+      "enum": [
+        "starting",
+        "running",
+        "yielding",
+        "background",
+        "completed",
+        "cancelled",
+        "failed"
+      ]
+    },
+    "SubagentParentProjection": {
+      "type": "object",
+      "properties": {
+        "delegationId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "parentSegmentId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "parentTaskId": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "parentTaskId",
+        "parentSegmentId",
+        "delegationId"
+      ]
+    },
+    "SubagentProjection": {
+      "type": "object",
+      "properties": {
+        "actorId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "childTaskId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "contextCursor": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "delegationId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "endedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "default": null
+        },
+        "parentSegmentId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "parentTaskId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "segmentId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "state": {
+          "$ref": "#/$defs/SubagentActorState"
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspaceLeaseId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "childTaskId",
+        "actorId",
+        "segmentId",
+        "parentTaskId",
+        "parentSegmentId",
+        "delegationId",
+        "contextCursor",
+        "state",
+        "detached",
+        "startedAt"
+      ]
+    },
     "TaskEventEnvelope": {
       "type": "object",
       "properties": {
@@ -1054,8 +1245,25 @@
     "TaskProjection": {
       "type": "object",
       "properties": {
+        "actorId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "archived": {
           "type": "boolean"
+        },
+        "contextCursor": {
+          "type": "integer",
+          "format": "uint64",
+          "default": 0,
+          "minimum": 0
         },
         "currentRun": {
           "anyOf": [
@@ -1071,6 +1279,17 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubagentParentProjection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "pendingPermission": {
           "anyOf": [
@@ -1095,6 +1314,13 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0
+        },
+        "subagents": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SubagentProjection"
+          }
         },
         "taskId": {
           "$ref": "#/$defs/TypedUlid"

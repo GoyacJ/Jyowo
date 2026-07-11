@@ -1130,7 +1130,7 @@ impl TaskStore {
 
     #[must_use]
     #[allow(dead_code)]
-    pub(crate) fn permission_broker_authority() -> EventAuthority {
+    pub fn permission_broker_authority() -> EventAuthority {
         EventAuthority {
             source: EventSource {
                 kind: EventSourceKind::PermissionBroker,

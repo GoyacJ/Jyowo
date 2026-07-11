@@ -210,6 +210,11 @@ export type RunTerminalReason =
   | 'failed'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "DaemonPermissionKind".
+ */
+export type DaemonPermissionKind = 'command' | 'filesystem' | 'network' | 'mcp' | 'automation'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "PermissionRoute".
  */
 export type PermissionRoute = 'foreground_task' | 'saved_policy'
@@ -225,6 +230,18 @@ export type TaskState =
   | 'interrupted'
   | 'failed'
   | 'completed'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "SubagentActorState".
+ */
+export type SubagentActorState =
+  | 'starting'
+  | 'running'
+  | 'yielding'
+  | 'background'
+  | 'completed'
+  | 'cancelled'
+  | 'failed'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "TimelineEventKind".
@@ -333,13 +350,17 @@ export interface QueueItemProjection {
  * via the `definition` "TaskProjection".
  */
 export interface TaskProjection {
+  actorId?: TypedUlid | null
   archived: boolean
+  contextCursor?: number
   currentRun?: RunProjection | null
   lastGlobalOffset: number
+  parent?: SubagentParentProjection | null
   pendingPermission?: PermissionProjection | null
   queue: QueueItemProjection[]
   state: TaskState
   streamVersion: number
+  subagents?: SubagentProjection[]
   taskId: TypedUlid
   title: string
 }
@@ -358,12 +379,65 @@ export interface RunProjection {
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "SubagentParentProjection".
+ */
+export interface SubagentParentProjection {
+  delegationId: TypedUlid
+  parentSegmentId: TypedUlid
+  parentTaskId: TypedUlid
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "PermissionProjection".
  */
 export interface PermissionProjection {
+  details?: PermissionRequestDetails | null
   requestId: TypedUlid
   revision: number
   route: PermissionRoute
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "PermissionRequestDetails".
+ */
+export interface PermissionRequestDetails {
+  actionPlanHash: string
+  actorSource: unknown
+  expiresAt: string
+  kind: DaemonPermissionKind
+  options: PermissionOption[]
+  preview: string
+  sandboxPolicyHash: string
+  segmentId: TypedUlid
+  subject: unknown
+  workspace: string
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "PermissionOption".
+ */
+export interface PermissionOption {
+  label: string
+  optionId: string
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "SubagentProjection".
+ */
+export interface SubagentProjection {
+  actorId: TypedUlid
+  childTaskId: TypedUlid
+  contextCursor: number
+  delegationId: TypedUlid
+  detached: boolean
+  endedAt?: string | null
+  parentSegmentId: TypedUlid
+  parentTaskId: TypedUlid
+  segmentId: TypedUlid
+  startedAt: string
+  state: SubagentActorState
+  summary?: string | null
+  workspaceLeaseId?: TypedUlid | null
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema

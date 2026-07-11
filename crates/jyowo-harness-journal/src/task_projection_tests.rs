@@ -93,6 +93,7 @@ fn typed_events_reduce_complete_task_run_queue_and_permission_state() {
             request_id,
             revision: 1,
             route: PermissionRoute::ForegroundTask,
+            details: None,
         }),
     );
     transact(
@@ -163,7 +164,7 @@ fn typed_events_reduce_complete_task_run_queue_and_permission_state() {
         &store,
         task_id,
         7,
-        user_source(),
+        permission_source(),
         NewTaskEvent::permission_resolved(request_id, 1),
     );
     transact(
@@ -241,6 +242,7 @@ fn typed_events_reduce_complete_task_run_queue_and_permission_state() {
                 request_id,
                 revision: 2,
                 route: PermissionRoute::ForegroundTask,
+                details: None,
             }),
         ),
         (
@@ -319,6 +321,7 @@ fn terminal_runs_require_permission_resolution_and_queue_consumption_requires_ac
             request_id,
             revision: 1,
             route: PermissionRoute::ForegroundTask,
+            details: None,
         }),
     );
 
@@ -340,7 +343,7 @@ fn terminal_runs_require_permission_resolution_and_queue_consumption_requires_ac
         &store,
         task_id,
         4,
-        user_source(),
+        permission_source(),
         NewTaskEvent::permission_resolved(request_id, 1),
     );
     assert!(matches!(
@@ -581,6 +584,7 @@ fn actor_failure_clears_pending_permission_from_every_projection() {
             request_id,
             revision: 1,
             route: PermissionRoute::ForegroundTask,
+            details: None,
         }),
     );
     transact(

@@ -1501,18 +1501,9 @@ impl TaskEvent {
             ),
             Self::ToolIndeterminate { .. } => source.kind == EventSourceKind::Recovery,
             Self::TaskActorFailed { .. } => source.kind == EventSourceKind::Supervisor,
-            Self::PermissionRequested { .. } => matches!(
-                source.kind,
-                EventSourceKind::PermissionBroker
-                    | EventSourceKind::Engine
-                    | EventSourceKind::Supervisor
-            ),
-            Self::PermissionResolved { .. } => matches!(
-                source.kind,
-                EventSourceKind::User
-                    | EventSourceKind::PermissionBroker
-                    | EventSourceKind::Supervisor
-            ),
+            Self::PermissionRequested { .. } | Self::PermissionResolved { .. } => {
+                source.kind == EventSourceKind::PermissionBroker
+            }
             Self::PermissionInvalidated { .. } => matches!(
                 source.kind,
                 EventSourceKind::PermissionBroker

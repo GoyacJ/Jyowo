@@ -138,12 +138,18 @@ fn startup_recovery_invalidates_a_pending_runtime_permission() {
         vec![
             NewTaskEvent::task_created("recover permission"),
             NewTaskEvent::run_started(segment_id, now),
-            NewTaskEvent::permission_requested(PermissionProjection {
-                request_id,
-                revision: 1,
-                route: PermissionRoute::ForegroundTask,
-            }),
         ],
+    );
+    append_permission(
+        &store,
+        task_id,
+        2,
+        vec![NewTaskEvent::permission_requested(PermissionProjection {
+            request_id,
+            revision: 1,
+            route: PermissionRoute::ForegroundTask,
+            details: None,
+        })],
     );
 
     RecoveryService::new(Arc::clone(&store))
@@ -213,7 +219,7 @@ async fn startup_recovery_rejects_tool_history_corrupted_before_the_latest_check
     .await
     .unwrap();
     let request_id = RequestId::new();
-    append(
+    append_permission(
         &store,
         task_id,
         4,
@@ -221,6 +227,7 @@ async fn startup_recovery_rejects_tool_history_corrupted_before_the_latest_check
             request_id,
             revision: 1,
             route: PermissionRoute::ForegroundTask,
+            details: None,
         })],
     );
     assert_eq!(
@@ -295,10 +302,18 @@ fn startup_recovery_does_not_invalidate_a_resolved_permission() {
         vec![
             NewTaskEvent::task_created("recover resolved permission"),
             NewTaskEvent::run_started(segment_id, Utc::now()),
+        ],
+    );
+    append_permission(
+        &store,
+        task_id,
+        2,
+        vec![
             NewTaskEvent::permission_requested(PermissionProjection {
                 request_id,
                 revision: 1,
                 route: PermissionRoute::ForegroundTask,
+                details: None,
             }),
             NewTaskEvent::permission_resolved(request_id, 1),
         ],
@@ -1175,7 +1190,7 @@ fn permission_decision_advances_the_safe_checkpoint() {
     CheckpointService::new(Arc::clone(&store))
         .persist(task_id, segment_id, CheckpointState::default())
         .unwrap();
-    append(
+    append_permission(
         &store,
         task_id,
         2,
@@ -1183,9 +1198,10 @@ fn permission_decision_advances_the_safe_checkpoint() {
             request_id,
             revision: 1,
             route: PermissionRoute::ForegroundTask,
+            details: None,
         })],
     );
-    append(
+    append_permission(
         &store,
         task_id,
         3,
@@ -1733,12 +1749,38 @@ fn continue_command(
 }
 
 fn append(store: &TaskStore, task_id: TaskId, version: u64, events: Vec<NewTaskEvent>) {
+    append_with_authority(
+        store,
+        task_id,
+        version,
+        events,
+        TaskStore::supervisor_authority(),
+    );
+}
+
+fn append_permission(store: &TaskStore, task_id: TaskId, version: u64, events: Vec<NewTaskEvent>) {
+    append_with_authority(
+        store,
+        task_id,
+        version,
+        events,
+        TaskStore::permission_broker_authority(),
+    );
+}
+
+fn append_with_authority(
+    store: &TaskStore,
+    task_id: TaskId,
+    version: u64,
+    events: Vec<NewTaskEvent>,
+    authority: harness_journal::EventAuthority,
+) {
     let command = AcceptedCommand {
         command_id: CommandId::new(),
         task_id,
         idempotency_key: format!("test-{}", CommandId::new()),
         expected_stream_version: version,
-        authority: TaskStore::supervisor_authority(),
+        authority,
         payload: json!({ "type": "test_setup" }),
     };
     assert!(matches!(
