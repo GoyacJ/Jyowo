@@ -26,6 +26,37 @@ struct TestTool {
     resolve_count: Option<Arc<AtomicUsize>>,
 }
 
+struct DelegatingTool {
+    inner: Arc<dyn Tool>,
+}
+
+#[async_trait]
+impl Tool for DelegatingTool {
+    fn descriptor(&self) -> &ToolDescriptor {
+        self.inner.descriptor()
+    }
+
+    async fn resolve_schema(&self, ctx: &SchemaResolverContext) -> Result<Value, ToolError> {
+        self.inner.resolve_schema(ctx).await
+    }
+
+    async fn validate(&self, input: &Value, ctx: &ToolContext) -> Result<(), ValidationError> {
+        self.inner.validate(input, ctx).await
+    }
+
+    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        self.inner.plan(input, ctx).await
+    }
+
+    async fn execute_authorized(
+        &self,
+        authorized: AuthorizedToolInput,
+        ctx: ToolContext,
+    ) -> Result<harness_tool::ToolStream, ToolError> {
+        self.inner.execute_authorized(authorized, ctx).await
+    }
+}
+
 #[async_trait]
 impl Tool for TestTool {
     fn descriptor(&self) -> &ToolDescriptor {
@@ -97,6 +128,52 @@ fn registry_registers_tools_and_snapshots_are_immutable() {
     assert!(snapshot.get("alpha").is_some());
     assert!(snapshot.get("beta").is_none());
     assert!(registry.snapshot().get("beta").is_some());
+}
+
+#[test]
+fn registry_wraps_tools_without_losing_descriptors_or_journal_authority() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Default)
+        .build()
+        .unwrap();
+    let before = registry.snapshot();
+    let bash_before = Arc::clone(before.get("Bash").unwrap());
+    let authority_before = before.journal_authority("Bash");
+
+    registry
+        .wrap_tools(|tool| Arc::new(DelegatingTool { inner: tool }))
+        .unwrap();
+
+    let after = registry.snapshot();
+    let bash_after = after.get("Bash").unwrap();
+    assert!(!Arc::ptr_eq(&bash_before, bash_after));
+    assert_eq!(bash_before.descriptor(), bash_after.descriptor());
+    assert_eq!(after.journal_authority("Bash"), authority_before);
+    assert_eq!(after.generation(), before.generation() + 1);
+}
+
+#[test]
+fn registry_wrap_closure_can_read_the_registry_without_deadlocking() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Default)
+        .build()
+        .unwrap();
+    let worker_registry = registry.clone();
+    let snapshot_registry = registry.clone();
+    let (sender, receiver) = std::sync::mpsc::channel();
+
+    std::thread::spawn(move || {
+        let result = worker_registry.wrap_tools(|tool| {
+            let _ = snapshot_registry.snapshot();
+            Arc::new(DelegatingTool { inner: tool })
+        });
+        let _ = sender.send(result);
+    });
+
+    assert!(receiver
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("wrap closure deadlocked while reading the registry")
+        .is_ok());
 }
 
 #[test]

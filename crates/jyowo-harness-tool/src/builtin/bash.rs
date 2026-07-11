@@ -244,7 +244,7 @@ fn command_resource(spec: ExecSpec, ctx: &ToolContext) -> ActionResource {
     }
 }
 
-fn exec_context(ctx: &ToolContext, event_sink: Arc<dyn EventSink>) -> ExecContext {
+pub(super) fn exec_context(ctx: &ToolContext, event_sink: Arc<dyn EventSink>) -> ExecContext {
     ExecContext {
         session_id: ctx.session_id,
         run_id: ctx.run_id,
@@ -449,7 +449,7 @@ async fn next_text_partial(
     }
 }
 
-async fn wait_outcome_or_interrupt(
+pub(super) async fn wait_outcome_or_interrupt(
     activity: &Arc<dyn ActivityHandle>,
     interrupt: &InterruptToken,
 ) -> Result<ExecOutcome, SandboxError> {
@@ -520,20 +520,20 @@ fn non_empty_text(text: String) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-struct KillOnDrop {
+pub(super) struct KillOnDrop {
     activity: Arc<dyn ActivityHandle>,
     armed: bool,
 }
 
 impl KillOnDrop {
-    fn new(activity: Arc<dyn ActivityHandle>) -> Self {
+    pub(super) fn new(activity: Arc<dyn ActivityHandle>) -> Self {
         Self {
             activity,
             armed: true,
         }
     }
 
-    fn disarm(&mut self) {
+    pub(super) fn disarm(&mut self) {
         self.armed = false;
     }
 }
@@ -606,12 +606,12 @@ fn cwd(input: &Value) -> Option<PathBuf> {
 }
 
 #[derive(Default)]
-struct RecordingEventSink {
+pub(super) struct RecordingEventSink {
     events: Mutex<Vec<Event>>,
 }
 
 impl RecordingEventSink {
-    fn events_from(&self, offset: usize) -> Vec<Event> {
+    pub(super) fn events_from(&self, offset: usize) -> Vec<Event> {
         self.events.lock().iter().skip(offset).cloned().collect()
     }
 }

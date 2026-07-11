@@ -77,8 +77,9 @@ pub use harness_skill::{
     SkillSourceConfig,
 };
 pub use harness_tool::{
-    BuiltinToolset, PermissionCheck, Tool, ToolContext, ToolEvent, ToolRegistry, ToolStream,
-    ValidationError,
+    AuthorizationTicketClaims, AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset,
+    InterruptToken, PermissionCheck, RegistrationError, SchemaResolverContext, TicketLedger, Tool,
+    ToolContext, ToolEvent, ToolJournalAuthority, ToolRegistry, ToolStream, ValidationError,
 };
 
 pub use crate::skill_config::{

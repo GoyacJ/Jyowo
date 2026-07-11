@@ -1,14 +1,16 @@
 use async_trait::async_trait;
-use futures::stream;
+use std::sync::Arc;
+
+use futures::{stream, StreamExt};
 use harness_contracts::{
-    ActionResource, DecisionScope, ExecFingerprint, NetworkAccess, PermissionSubject,
-    ToolActionPlan, ToolDescriptor, ToolDescriptorMetadata, ToolError, ToolExecutionChannel,
-    ToolGroup, ToolIntegrationSource, ToolResult, ToolRiskLevel, WorkspaceAccess,
+    ActionResource, DecisionScope, NetworkAccess, PermissionSubject, SandboxExitStatus,
+    ToolActionPlan, ToolCapability, ToolDescriptor, ToolDescriptorMetadata, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolIntegrationSource, ToolResult, ToolRiskLevel,
+    WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
-use harness_sandbox::ExecSpec;
+use harness_sandbox::{execute_with_lifecycle, ExecSpec, StdioSpec};
 use serde_json::{json, Value};
-use tokio::process::Command;
 
 use crate::{
     action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
@@ -259,7 +261,30 @@ impl GitTool {
         let cwd_path = git_cwd(input, ctx)?;
         let cwd_for_plan = Some(cwd_path.clone());
         let command = "git".to_owned();
-        let fingerprint = command_fingerprint(&command, &argv, Some(&cwd_path));
+        let workspace_access = if self.descriptor.properties.is_read_only {
+            WorkspaceAccess::ReadOnly
+        } else {
+            WorkspaceAccess::ReadWrite {
+                allowed_writable_subpaths: Vec::new(),
+            }
+        };
+        let spec = ExecSpec {
+            command: command.clone(),
+            args: argv.clone(),
+            env: git_runtime_env(),
+            cwd: cwd_for_plan.clone(),
+            stdin: StdioSpec::Null,
+            stdout: StdioSpec::Piped,
+            stderr: StdioSpec::Piped,
+            workspace_access: workspace_access.clone(),
+            ..ExecSpec::default()
+        };
+        let base = ctx
+            .sandbox
+            .as_ref()
+            .map(|sandbox| sandbox.base_config())
+            .unwrap_or_default();
+        let fingerprint = spec.canonical_fingerprint(&base);
         let check = if self.descriptor.properties.is_read_only {
             PermissionCheck::Allowed
         } else {
@@ -287,15 +312,9 @@ impl GitTool {
                 cwd: cwd_for_plan,
                 fingerprint,
             }],
-            if self.descriptor.properties.is_read_only {
-                WorkspaceAccess::ReadOnly
-            } else {
-                WorkspaceAccess::ReadWrite {
-                    allowed_writable_subpaths: Vec::new(),
-                }
-            },
-            NetworkAccess::None,
-            ToolExecutionChannel::DirectAuthorizedRust,
+            workspace_access,
+            self.operation.network_access(),
+            ToolExecutionChannel::ProcessSandbox,
         )
     }
 
@@ -304,30 +323,49 @@ impl GitTool {
         authorized: AuthorizedToolInput,
         ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
-        let (argv, cwd_path) = authorized_git_command(&authorized, &ctx, &self.descriptor)?;
-        let mut command = Command::new("git");
-        command.args(&argv).current_dir(cwd_path);
-        let output = command
-            .output()
+        let sandbox = ctx.sandbox.clone().ok_or_else(|| {
+            ToolError::CapabilityMissing(ToolCapability::Custom("sandbox_backend".to_owned()))
+        })?;
+        let spec = authorized_git_spec(&authorized, &ctx, &self.descriptor)?;
+        let event_sink = Arc::new(super::bash::RecordingEventSink::default());
+        let exec_ctx = super::bash::exec_context(&ctx, event_sink.clone());
+        let handle = execute_with_lifecycle(sandbox, spec, exec_ctx)
             .await
-            .map_err(|error| ToolError::Message(error.to_string()))?;
+            .map_err(ToolError::Sandbox)?;
+        let activity = Arc::clone(&handle.activity);
+        let mut kill_on_drop = super::bash::KillOnDrop::new(Arc::clone(&activity));
+        let stdout = collect_output(handle.stdout);
+        let stderr = collect_output(handle.stderr);
+        let outcome = super::bash::wait_outcome_or_interrupt(&activity, &ctx.interrupt);
+        let (stdout, stderr, outcome) = tokio::join!(stdout, stderr, outcome);
+        let outcome = outcome.map_err(ToolError::Sandbox)?;
+        kill_on_drop.disarm();
+        let status = match outcome.exit_status {
+            SandboxExitStatus::Code(code) => Some(code),
+            _ => None,
+        };
         let result = json!({
-            "status": output.status.code(),
-            "success": output.status.success(),
-            "stdout": String::from_utf8_lossy(&output.stdout),
-            "stderr": String::from_utf8_lossy(&output.stderr),
+            "status": status,
+            "success": status == Some(0),
+            "stdout": String::from_utf8_lossy(&stdout),
+            "stderr": String::from_utf8_lossy(&stderr),
         });
-        Ok(Box::pin(stream::iter([ToolEvent::Final(
-            ToolResult::Structured(result),
-        )])))
+        let events = event_sink
+            .events_from(0)
+            .into_iter()
+            .map(ToolEvent::Journal)
+            .chain(std::iter::once(ToolEvent::Final(ToolResult::Structured(
+                result,
+            ))));
+        Ok(Box::pin(stream::iter(events)))
     }
 }
 
-fn authorized_git_command(
+fn authorized_git_spec(
     authorized: &AuthorizedToolInput,
     ctx: &ToolContext,
     descriptor: &ToolDescriptor,
-) -> Result<(Vec<String>, std::path::PathBuf), ToolError> {
+) -> Result<ExecSpec, ToolError> {
     let plan = authorized.action_plan();
     if plan.tool_name != descriptor.name {
         return Err(ToolError::PermissionDenied(
@@ -353,19 +391,70 @@ fn authorized_git_command(
             "authorized command is not git".to_owned(),
         ));
     }
-    let expected = command_fingerprint(command, argv, cwd.as_ref());
-    if expected != *fingerprint {
+    let spec = ExecSpec {
+        command: command.clone(),
+        args: argv.clone(),
+        env: git_runtime_env(),
+        cwd: cwd.clone().or_else(|| Some(ctx.workspace_root.clone())),
+        stdin: StdioSpec::Null,
+        stdout: StdioSpec::Piped,
+        stderr: StdioSpec::Piped,
+        policy: plan.sandbox_policy.clone(),
+        workspace_access: plan.workspace_access.clone(),
+        ..ExecSpec::default()
+    };
+    let base = ctx
+        .sandbox
+        .as_ref()
+        .map(|sandbox| sandbox.base_config())
+        .unwrap_or_default();
+    if spec.canonical_fingerprint(&base) != *fingerprint {
         return Err(ToolError::PermissionDenied(
             "authorized git command fingerprint mismatch".to_owned(),
         ));
     }
-    Ok((
-        argv.clone(),
-        cwd.clone().unwrap_or_else(|| ctx.workspace_root.clone()),
-    ))
+    Ok(spec)
+}
+
+async fn collect_output(
+    stream: Option<futures::stream::BoxStream<'static, bytes::Bytes>>,
+) -> Vec<u8> {
+    let Some(mut stream) = stream else {
+        return Vec::new();
+    };
+    let mut output = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        output.extend_from_slice(&chunk);
+    }
+    output
+}
+
+fn git_runtime_env() -> std::collections::BTreeMap<String, String> {
+    let mut env = std::collections::BTreeMap::new();
+    let inherited_path = std::env::var("PATH").unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    let path = {
+        let developer_git = "/Library/Developer/CommandLineTools/usr/bin";
+        if std::path::Path::new(developer_git).join("git").is_file() {
+            format!("{developer_git}:{inherited_path}")
+        } else {
+            inherited_path
+        }
+    };
+    #[cfg(not(target_os = "macos"))]
+    let path = inherited_path;
+    env.insert("PATH".to_owned(), path);
+    env
 }
 
 impl GitOperation {
+    fn network_access(self) -> NetworkAccess {
+        match self {
+            Self::Pull | Self::Push => NetworkAccess::Unrestricted,
+            _ => NetworkAccess::None,
+        }
+    }
+
     fn argv(self, input: &Value) -> Result<Vec<String>, String> {
         if !input.is_object() {
             return Err("git tool input must be an object".to_owned());
@@ -475,20 +564,6 @@ fn git_cwd(input: &Value, ctx: &ToolContext) -> Result<std::path::PathBuf, ToolE
         );
     super::workspace_path::ensure_inside_workspace(&path, ctx)?;
     Ok(path)
-}
-
-fn command_fingerprint(
-    command: &str,
-    argv: &[String],
-    cwd: Option<&std::path::PathBuf>,
-) -> ExecFingerprint {
-    ExecSpec {
-        command: command.to_owned(),
-        args: argv.to_vec(),
-        cwd: cwd.cloned(),
-        ..ExecSpec::default()
-    }
-    .canonical_fingerprint(&Default::default())
 }
 
 fn remote_branch_args(command: &str, input: &Value) -> Result<Vec<String>, String> {

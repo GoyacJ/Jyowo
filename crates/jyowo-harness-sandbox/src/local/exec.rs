@@ -1686,6 +1686,7 @@ fn seatbelt_profile_for_workspace_policy(
          (deny default)\n\
          (allow process*)\n\
          (allow file-read*)\n\
+         (allow file-write* (literal \"/dev/null\"))\n\
          {network_rule}"
     );
     for path in write_paths {
