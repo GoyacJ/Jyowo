@@ -215,45 +215,6 @@ impl PermissionBroker {
         &self,
         input: PermissionDecisionInput,
     ) -> Result<CommandOutcome, PermissionBrokerError> {
-        let mut validation_contexts = self
-            .validation_contexts
-            .lock()
-            .map_err(|_| PermissionBrokerError::ValidationStatePoisoned)?;
-        validation_contexts.retain(|_, context| context.expires_at > Utc::now());
-        let context = validation_contexts
-            .get(&input.request_id)
-            .cloned()
-            .ok_or_else(|| {
-                PermissionBrokerError::Rejected(invalid_command(
-                    "permission request has no live daemon validation context",
-                ))
-            })?;
-        if context.task_id != input.task_id || context.request_revision != input.request_revision {
-            return Err(PermissionBrokerError::Rejected(invalid_command(
-                "permission request identity is stale",
-            )));
-        }
-        if Utc::now() > context.expires_at {
-            return Err(PermissionBrokerError::Rejected(invalid_command(
-                "permission request has expired",
-            )));
-        }
-        require_option_for_decision(&context.options, &input.option_id)
-            .map_err(PermissionBrokerError::Rejected)?;
-
-        let redacted_workspace = self
-            .redactor
-            .redact(&context.workspace, &RedactRules::default());
-        let redacted_subject = redact_value(self.redactor.as_ref(), &context.subject);
-        let redacted_actor_source = redact_value(self.redactor.as_ref(), &context.actor_source);
-        let redacted_options = context
-            .options
-            .iter()
-            .map(|option| PermissionOption {
-                option_id: option.option_id.clone(),
-                label: self.redactor.redact(&option.label, &RedactRules::default()),
-            })
-            .collect::<Vec<_>>();
         let command = AcceptedCommand {
             command_id: CommandId::new(),
             task_id: input.task_id,
@@ -270,7 +231,85 @@ impl PermissionBroker {
                 "optionId": input.option_id,
             }),
         };
+        self.resolve_with_command(command, input)
+    }
+
+    pub fn resolve_client_command(
+        &self,
+        mut command: AcceptedCommand,
+        input: PermissionDecisionInput,
+    ) -> Result<CommandOutcome, PermissionBrokerError> {
+        let command_id = command.command_id;
+        let task_id = command.task_id;
+        command.authority = TaskStore::permission_broker_command_authority(&command.authority);
+        match self.resolve_with_command(command, input) {
+            Ok(outcome) => Ok(outcome),
+            Err(PermissionBrokerError::Rejected(rejection)) => Ok(CommandOutcome::Rejected {
+                command_id,
+                task_id,
+                rejection,
+            }),
+            Err(PermissionBrokerError::Store(
+                TaskStoreError::CommandConflict { .. } | TaskStoreError::InvalidInput(_),
+            )) => Ok(CommandOutcome::Rejected {
+                command_id,
+                task_id,
+                rejection: invalid_command("permission command conflicts with durable input"),
+            }),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn resolve_with_command(
+        &self,
+        mut command: AcceptedCommand,
+        input: PermissionDecisionInput,
+    ) -> Result<CommandOutcome, PermissionBrokerError> {
+        if command.task_id != input.task_id
+            || command.expected_stream_version != input.expected_task_version
+        {
+            return Err(PermissionBrokerError::Rejected(invalid_command(
+                "permission command metadata does not match its decision",
+            )));
+        }
+        command.payload = json!({
+            "type": "permission_resolve",
+            "requestId": input.request_id,
+            "requestRevision": input.request_revision,
+            "optionId": input.option_id,
+        });
+        let mut validation_contexts = self
+            .validation_contexts
+            .lock()
+            .map_err(|_| PermissionBrokerError::ValidationStatePoisoned)?;
+        validation_contexts.retain(|_, context| context.expires_at > Utc::now());
+        let context = validation_contexts.get(&input.request_id).cloned();
         let outcome = self.store.transact_command(command, |task| {
+            let context = context.as_ref().ok_or_else(|| {
+                invalid_command("permission request has no live daemon validation context")
+            })?;
+            if context.task_id != input.task_id
+                || context.request_revision != input.request_revision
+            {
+                return Err(invalid_command("permission request identity is stale"));
+            }
+            if Utc::now() > context.expires_at {
+                return Err(invalid_command("permission request has expired"));
+            }
+            require_option_for_decision(&context.options, &input.option_id)?;
+            let redacted_workspace = self
+                .redactor
+                .redact(&context.workspace, &RedactRules::default());
+            let redacted_subject = redact_value(self.redactor.as_ref(), &context.subject);
+            let redacted_actor_source = redact_value(self.redactor.as_ref(), &context.actor_source);
+            let redacted_options = context
+                .options
+                .iter()
+                .map(|option| PermissionOption {
+                    option_id: option.option_id.clone(),
+                    label: self.redactor.redact(&option.label, &RedactRules::default()),
+                })
+                .collect::<Vec<_>>();
             let pending = task
                 .pending_permission
                 .as_ref()
@@ -491,5 +530,109 @@ fn require_accepted(outcome: CommandOutcome) -> Result<(u64, u64), PermissionBro
         CommandOutcome::Rejected { rejection, .. } => {
             Err(PermissionBrokerError::Rejected(rejection))
         }
+    }
+}
+
+#[cfg(test)]
+mod lock_order_tests {
+    use std::sync::{mpsc, Arc};
+    use std::thread;
+    use std::time::Duration as StdDuration;
+
+    use chrono::{Duration, Utc};
+    use harness_contracts::{CommandId, NoopRedactor, RequestId, RunSegmentId, TaskId};
+    use harness_journal::{AcceptedCommand, CommandOutcome, NewTaskEvent, TaskStore};
+    use serde_json::json;
+
+    use super::{
+        DaemonPermissionKind, PermissionBroker, PermissionDecisionInput, PermissionOption,
+        PermissionRequestDraft,
+    };
+
+    #[test]
+    fn permission_resolution_does_not_hold_the_store_while_waiting_for_validation_state() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+        let task_id = TaskId::new();
+        let segment_id = RunSegmentId::new();
+        let created = store
+            .transact_command(
+                AcceptedCommand {
+                    command_id: CommandId::new(),
+                    task_id,
+                    idempotency_key: "create-lock-order-task".into(),
+                    expected_stream_version: 0,
+                    authority: TaskStore::supervisor_authority(),
+                    payload: json!({ "type": "create" }),
+                },
+                |_| {
+                    Ok(vec![
+                        NewTaskEvent::task_created("lock order"),
+                        NewTaskEvent::run_started(segment_id, Utc::now()),
+                    ])
+                },
+            )
+            .unwrap();
+        assert!(matches!(created, CommandOutcome::Accepted { .. }));
+
+        let broker = PermissionBroker::new(Arc::clone(&store), Arc::new(NoopRedactor));
+        let request_id = RequestId::new();
+        broker
+            .request(PermissionRequestDraft {
+                task_id,
+                segment_id,
+                request_id,
+                request_revision: 1,
+                expected_task_version: store.stream_version(task_id).unwrap(),
+                kind: DaemonPermissionKind::Command,
+                action_plan_hash: "plan".into(),
+                sandbox_policy_hash: "sandbox".into(),
+                workspace: "/workspace".into(),
+                subject: json!({ "command": "cargo test" }),
+                actor_source: json!({ "type": "parent_run" }),
+                options: vec![PermissionOption {
+                    option_id: "allow-once".into(),
+                    label: "Allow once".into(),
+                }],
+                preview: "cargo test".into(),
+                expires_at: Utc::now() + Duration::minutes(5),
+            })
+            .unwrap();
+
+        let validation_guard = broker.validation_contexts.lock().unwrap();
+        let resolver = broker.clone();
+        let expected_task_version = store.stream_version(task_id).unwrap();
+        let (resolver_started_tx, resolver_started_rx) = mpsc::channel();
+        let resolver_thread = thread::spawn(move || {
+            resolver_started_tx.send(()).unwrap();
+            resolver.resolve(PermissionDecisionInput {
+                task_id,
+                request_id,
+                request_revision: 1,
+                option_id: "allow-once".into(),
+                expected_task_version,
+            })
+        });
+        resolver_started_rx.recv().unwrap();
+        thread::sleep(StdDuration::from_millis(100));
+
+        let reader_store = Arc::clone(&store);
+        let (reader_tx, reader_rx) = mpsc::channel();
+        let reader_thread = thread::spawn(move || {
+            reader_tx
+                .send(reader_store.stream_version(task_id))
+                .unwrap();
+        });
+        let store_was_available = reader_rx.recv_timeout(StdDuration::from_millis(200));
+
+        drop(validation_guard);
+        let resolution = resolver_thread.join().unwrap();
+        reader_thread.join().unwrap();
+
+        assert!(
+            store_was_available.is_ok(),
+            "permission resolution acquired TaskStore before validation state"
+        );
+        assert!(resolution.is_ok());
     }
 }

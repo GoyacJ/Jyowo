@@ -17,7 +17,8 @@ use tokio::task::{JoinHandle, JoinSet};
 
 use crate::task_actor::{run_task_actor, TaskActorError};
 use crate::{
-    RecoveryService, RunCoordinatorFactory, SubagentStopMode, SubagentSupervisor, TaskActorMessage,
+    PermissionBroker, PermissionBrokerError, PermissionDecisionInput, RecoveryService,
+    RunCoordinatorFactory, SubagentStopMode, SubagentSupervisor, TaskActorMessage,
     ValidatedTaskCommand, WorkspaceBoundRunCoordinatorFactory, WorkspaceCoordinator,
     WorkspaceCoordinatorError, WorkspaceSubagentRunnerFactory, WorkspaceToolDispatcher,
 };
@@ -67,12 +68,15 @@ pub enum SupervisorError {
     StartupRecovery(#[from] TaskStoreError),
     #[error("workspace coordination failed: {0}")]
     Workspace(#[from] WorkspaceCoordinatorError),
+    #[error("permission routing failed: {0}")]
+    Permission(#[from] PermissionBrokerError),
 }
 
 pub struct Supervisor {
     requests: mpsc::Sender<SupervisorRequest>,
     events: broadcast::Sender<SupervisorEvent>,
     subagents: Arc<SubagentSupervisor>,
+    permissions: Arc<PermissionBroker>,
     task: JoinHandle<()>,
 }
 
@@ -122,11 +126,12 @@ impl Supervisor {
             Arc::clone(&store),
             Arc::clone(&workspace),
             runner_factory,
-            redactor,
+            Arc::clone(&redactor),
             max_depth,
             quotas.subagents,
         ));
-        Self::start_inner(store, factory, quotas, workspace, subagents)
+        let permissions = Arc::new(PermissionBroker::new(Arc::clone(&store), redactor));
+        Self::start_inner(store, factory, quotas, workspace, subagents, permissions)
     }
 
     fn start_inner(
@@ -135,6 +140,7 @@ impl Supervisor {
         quotas: SupervisorQuotas,
         workspace: Arc<WorkspaceCoordinator>,
         subagents: Arc<SubagentSupervisor>,
+        permissions: Arc<PermissionBroker>,
     ) -> Result<Self, SupervisorError> {
         recover_unreconnectable_subagents(&store, &workspace)?;
         let (requests, receiver) = bounded_command_channel(SUPERVISOR_REQUEST_CAPACITY);
@@ -157,6 +163,7 @@ impl Supervisor {
             requests,
             events,
             subagents,
+            permissions,
             task,
         })
     }
@@ -186,6 +193,19 @@ impl Supervisor {
             .await
             .map_err(|_| SupervisorError::ActorStopped)?;
         response.await.map_err(|_| SupervisorError::ActorStopped)
+    }
+
+    pub fn resolve_permission(
+        &self,
+        command: AcceptedCommand,
+        input: PermissionDecisionInput,
+    ) -> Result<CommandOutcome, SupervisorError> {
+        Ok(self.permissions.resolve_client_command(command, input)?)
+    }
+
+    #[must_use]
+    pub fn permission_broker(&self) -> Arc<PermissionBroker> {
+        Arc::clone(&self.permissions)
     }
 
     #[must_use]

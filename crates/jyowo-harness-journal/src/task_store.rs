@@ -1142,6 +1142,18 @@ impl TaskStore {
     }
 
     #[must_use]
+    pub fn permission_broker_command_authority(authority: &EventAuthority) -> EventAuthority {
+        EventAuthority {
+            source: EventSource {
+                kind: EventSourceKind::PermissionBroker,
+                actor_id: None,
+                client_id: authority.source.client_id,
+            },
+            principal_id: authority.principal_id.clone(),
+        }
+    }
+
+    #[must_use]
     pub(crate) fn engine_authority() -> EventAuthority {
         EventAuthority {
             source: EventSource {

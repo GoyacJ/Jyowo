@@ -2,13 +2,14 @@ use std::sync::Arc;
 
 use harness_contracts::{
     now, ClientFrame, ClientId, ClientRequest, CommandId, CommandMetadata, CreateTaskCommand,
-    HandshakeRequest, QueueItemId, ServerMessage, WorkspaceMode, WorkspaceSelection,
+    DaemonPermissionKind, HandshakeRequest, PermissionOption, QueueItemId, RequestId,
+    ResolvePermissionCommand, ServerMessage, WorkspaceMode, WorkspaceSelection,
     MAX_DAEMON_BLOB_BYTES, PROTOCOL_VERSION,
 };
 use harness_daemon::{
     encode_frame, IpcConnection, IpcServerConfig, JsonFrameDecoder, LocalIpcServer,
-    RunCoordinatorFactory, RunningSegment, StartSegmentRequest, Supervisor, SupervisorQuotas,
-    MAX_FRAME_BYTES,
+    PermissionRequestDraft, RunCoordinatorFactory, RunningSegment, StartSegmentRequest, Supervisor,
+    SupervisorQuotas, MAX_FRAME_BYTES,
 };
 use harness_journal::{AcceptedCommand, NewTaskEvent, TaskBlobStore, TaskStore};
 use serde_json::json;
@@ -47,10 +48,14 @@ fn frame(request_id: &str, request: ClientRequest) -> ClientFrame {
 }
 
 fn handshake(token: &str) -> ClientFrame {
+    handshake_for_client(token, ClientId::new())
+}
+
+fn handshake_for_client(token: &str, client_id: ClientId) -> ClientFrame {
     frame(
         "handshake",
         ClientRequest::Handshake(HandshakeRequest {
-            client_id: ClientId::new(),
+            client_id,
             client_version: "0.1.0".into(),
             user_instance_id: "user-a".into(),
             connection_token: token.into(),
@@ -293,7 +298,8 @@ async fn authenticated_submit_message_is_dispatched_through_the_task_supervisor(
         )
         .unwrap(),
     );
-    let mut connection = IpcConnection::with_supervisor(Arc::clone(&store), config(), supervisor);
+    let mut connection =
+        IpcConnection::with_supervisor(Arc::clone(&store), config(), Arc::clone(&supervisor));
     connection.handle(handshake("token-a")).unwrap();
     let created = connection
         .handle(create("create", CommandId::new(), "create-submit-task"))
@@ -323,11 +329,14 @@ async fn authenticated_submit_message_is_dispatched_through_the_task_supervisor(
         .await
         .unwrap();
 
-    assert!(matches!(
-        &response[0].message,
-        ServerMessage::CommandAccepted(accepted)
-            if accepted.command_id == command_id && accepted.task_id == task_id
-    ));
+    assert!(
+        matches!(
+            &response[0].message,
+            ServerMessage::CommandAccepted(accepted)
+                if accepted.command_id == command_id && accepted.task_id == task_id
+        ),
+        "unexpected response: {response:?}"
+    );
     let (projection, _, timeline) = store.task_projection_snapshot(task_id).unwrap().unwrap();
     assert_eq!(projection.state, harness_contracts::TaskState::Running);
     assert!(timeline
@@ -341,6 +350,216 @@ async fn authenticated_submit_message_is_dispatched_through_the_task_supervisor(
         .expect("message.queued event");
     assert_eq!(queued.payload["modelConfigId"], "provider-config-001");
     assert_eq!(queued.payload["permissionMode"], "auto");
+}
+
+#[tokio::test]
+async fn authenticated_permission_decision_is_dispatched_through_the_task_supervisor() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let supervisor = Arc::new(
+        Supervisor::start(
+            Arc::clone(&store),
+            Arc::new(IdleRunFactory),
+            SupervisorQuotas::new(2, 2),
+        )
+        .unwrap(),
+    );
+    let mut connection =
+        IpcConnection::with_supervisor(Arc::clone(&store), config(), Arc::clone(&supervisor));
+    let client_a = ClientId::new();
+    let client_b = ClientId::new();
+    connection
+        .handle(handshake_for_client("token-a", client_a))
+        .unwrap();
+    let created = connection
+        .handle(create("create", CommandId::new(), "create-permission-task"))
+        .unwrap();
+    let task_id = match &created[0].message {
+        ServerMessage::CommandAccepted(accepted) => accepted.task_id,
+        other => panic!("unexpected {other:?}"),
+    };
+    connection
+        .handle_async(frame(
+            "submit-before-permission",
+            ClientRequest::SubmitMessage(harness_contracts::SubmitMessageCommand {
+                metadata: CommandMetadata {
+                    command_id: CommandId::new(),
+                    idempotency_key: "submit-before-permission".into(),
+                    expected_stream_version: 1,
+                },
+                task_id,
+                content: "run this task".into(),
+                attachments: Vec::new(),
+                context_references: Vec::new(),
+                model_config_id: None,
+                permission_mode: harness_contracts::PermissionMode::Default,
+            }),
+        ))
+        .await
+        .unwrap();
+    let segment_id = store
+        .task_projection(task_id)
+        .unwrap()
+        .unwrap()
+        .current_run
+        .unwrap()
+        .segment_id;
+    let permission_request_id = RequestId::new();
+    supervisor
+        .permission_broker()
+        .request(PermissionRequestDraft {
+            task_id,
+            segment_id,
+            request_id: permission_request_id,
+            request_revision: 1,
+            expected_task_version: store.stream_version(task_id).unwrap(),
+            kind: DaemonPermissionKind::Command,
+            action_plan_hash: "plan-v1".into(),
+            sandbox_policy_hash: "sandbox-v1".into(),
+            workspace: "/tmp/workspace".into(),
+            subject: json!({ "command": "cargo test" }),
+            actor_source: json!({ "type": "parent_run" }),
+            options: vec![PermissionOption {
+                option_id: "allow-once".into(),
+                label: "Allow once".into(),
+            }],
+            preview: "cargo test".into(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+        })
+        .unwrap();
+    let command_id = CommandId::new();
+    let resolve = ClientRequest::ResolvePermission(ResolvePermissionCommand {
+        metadata: CommandMetadata {
+            command_id,
+            idempotency_key: "resolve-permission-through-supervisor".into(),
+            expected_stream_version: store.stream_version(task_id).unwrap(),
+        },
+        task_id,
+        permission_request_id,
+        request_revision: 1,
+        option_id: "allow-once".into(),
+    });
+
+    let response = connection
+        .handle_async(frame("resolve-permission", resolve.clone()))
+        .await
+        .unwrap();
+    let replay = connection
+        .handle_async(frame("resolve-permission-replay", resolve))
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(
+            &response[0].message,
+            ServerMessage::CommandAccepted(accepted)
+                if accepted.command_id == command_id && accepted.task_id == task_id
+        ),
+        "unexpected response: {response:?}"
+    );
+    assert!(
+        matches!(
+            &replay[0].message,
+            ServerMessage::CommandAccepted(accepted)
+                if accepted.command_id == command_id && accepted.task_id == task_id
+        ),
+        "unexpected replay: {replay:?}"
+    );
+    let projection = store.task_projection(task_id).unwrap().unwrap();
+    assert!(projection.pending_permission.is_none());
+    assert_eq!(
+        projection.current_run.unwrap().state,
+        harness_contracts::RunState::Running
+    );
+
+    let conflicting = connection
+        .handle_async(frame(
+            "resolve-permission-conflict",
+            ClientRequest::ResolvePermission(ResolvePermissionCommand {
+                metadata: CommandMetadata {
+                    command_id,
+                    idempotency_key: "different-key-for-reused-command".into(),
+                    expected_stream_version: store.stream_version(task_id).unwrap(),
+                },
+                task_id,
+                permission_request_id,
+                request_revision: 1,
+                option_id: "allow-once".into(),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            &conflicting[0].message,
+            ServerMessage::CommandRejected(rejected)
+                if rejected.command_id == Some(command_id) && rejected.task_id == Some(task_id)
+        ),
+        "unexpected conflict response: {conflicting:?}"
+    );
+    assert!(matches!(
+        connection
+            .handle_async(frame("list-after-conflict", ClientRequest::ListTasks))
+            .await
+            .unwrap()[0]
+            .message,
+        ServerMessage::TaskList { .. }
+    ));
+
+    let second_permission_request_id = RequestId::new();
+    supervisor
+        .permission_broker()
+        .request(PermissionRequestDraft {
+            task_id,
+            segment_id,
+            request_id: second_permission_request_id,
+            request_revision: 1,
+            expected_task_version: store.stream_version(task_id).unwrap(),
+            kind: DaemonPermissionKind::Command,
+            action_plan_hash: "plan-v2".into(),
+            sandbox_policy_hash: "sandbox-v1".into(),
+            workspace: "/tmp/workspace".into(),
+            subject: json!({ "command": "cargo check" }),
+            actor_source: json!({ "type": "parent_run" }),
+            options: vec![PermissionOption {
+                option_id: "allow-once".into(),
+                label: "Allow once".into(),
+            }],
+            preview: "cargo check".into(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+        })
+        .unwrap();
+    let mut second_connection =
+        IpcConnection::with_supervisor(Arc::clone(&store), config(), Arc::clone(&supervisor));
+    second_connection
+        .handle(handshake_for_client("token-a", client_b))
+        .unwrap();
+    let second_command_id = CommandId::new();
+    let second_response = second_connection
+        .handle_async(frame(
+            "resolve-permission-second-client",
+            ClientRequest::ResolvePermission(ResolvePermissionCommand {
+                metadata: CommandMetadata {
+                    command_id: second_command_id,
+                    idempotency_key: "resolve-permission-through-supervisor".into(),
+                    expected_stream_version: store.stream_version(task_id).unwrap(),
+                },
+                task_id,
+                permission_request_id: second_permission_request_id,
+                request_revision: 1,
+                option_id: "allow-once".into(),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            &second_response[0].message,
+            ServerMessage::CommandAccepted(accepted)
+                if accepted.command_id == second_command_id && accepted.task_id == task_id
+        ),
+        "unexpected second-client response: {second_response:?}"
+    );
 }
 
 #[tokio::test]

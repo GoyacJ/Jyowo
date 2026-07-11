@@ -17,7 +17,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use super::IpcError;
-use crate::{QueueCommand, Supervisor, ValidatedTaskCommand};
+use crate::{PermissionDecisionInput, QueueCommand, Supervisor, ValidatedTaskCommand};
 
 #[derive(Debug, Clone)]
 pub struct IpcServerConfig {
@@ -76,6 +76,23 @@ impl IpcConnection {
         let Some(client_id) = self.client_id else {
             return Ok(response);
         };
+        if let ClientRequest::ResolvePermission(request) = request {
+            let task_id = request.task_id;
+            let input = PermissionDecisionInput {
+                task_id,
+                request_id: request.permission_request_id,
+                request_revision: request.request_revision,
+                option_id: request.option_id.clone(),
+                expected_task_version: request.metadata.expected_stream_version,
+            };
+            let payload = serde_json::to_value(&request)?;
+            let command = accepted_command(client_id, task_id, request.metadata, payload);
+            let outcome = supervisor.resolve_permission(command, input)?;
+            return Ok(vec![server_frame(
+                Some(request_id),
+                command_message(outcome),
+            )]);
+        }
         let Some((task_id, command)) = validated_task_command(client_id, request)? else {
             return Ok(response);
         };
@@ -337,6 +354,7 @@ fn requires_task_supervisor(request: &ClientRequest) -> bool {
             | ClientRequest::EditQueuedMessage(_)
             | ClientRequest::DeleteQueuedMessage(_)
             | ClientRequest::PromoteQueuedMessage(_)
+            | ClientRequest::ResolvePermission(_)
     )
 }
 
