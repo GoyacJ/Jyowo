@@ -247,7 +247,7 @@ test('scans final agent orchestration production surfaces including json and pac
     content: `
 {
   "bundle": {
-    "externalBin": ["binaries/jyowo-agent-supervisor"]
+    "externalBin": ["binaries/jyowo-harness-daemon"]
   },
   "notes": "background agent coming soon"
 }

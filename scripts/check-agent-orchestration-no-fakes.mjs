@@ -113,8 +113,7 @@ const EXCLUDED_FILE_SUFFIXES = ['.test.ts', '.test.tsx', '.test.mjs']
 const SCOPED_RELATIVE_PATHS = [
   'apps/desktop/src-tauri/src/commands',
   'apps/desktop/src-tauri/src/lib.rs',
-  'apps/desktop/src-tauri/src/agent_supervisor.rs',
-  'apps/desktop/src-tauri/src/bin/jyowo-agent-supervisor.rs',
+  'apps/desktop/src-tauri/src/daemon_client.rs',
   'apps/desktop/src-tauri/build.rs',
   'apps/desktop/src-tauri/capabilities/default.json',
   'apps/desktop/src-tauri/tauri.conf.json',
@@ -137,7 +136,7 @@ const SCOPED_RELATIVE_PATHS = [
   'crates/jyowo-harness-sdk',
   'crates/jyowo-harness-subagent',
   'crates/jyowo-harness-team',
-  'scripts/build-agent-supervisor-sidecar.mjs',
+  'scripts/build-daemon-sidecar.mjs',
   'package.json',
 ]
 

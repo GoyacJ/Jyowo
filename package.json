@@ -21,8 +21,6 @@
     "check:agent-orchestration-no-fakes": "node --test scripts/check-agent-orchestration-no-fakes.test.mjs && node scripts/check-agent-orchestration-no-fakes.mjs",
     "check:design-tokens": "node --test scripts/check-design-tokens.test.mjs && node scripts/check-design-tokens.mjs",
     "check:test-architecture": "node --test scripts/test-architecture-policy.test.mjs && node scripts/check-test-architecture.mjs",
-    "check:agent-supervisor-sidecar": "node --test scripts/build-agent-supervisor-sidecar.test.mjs && node --test scripts/check-agent-supervisor-sidecar.test.mjs && node scripts/check-agent-supervisor-sidecar.mjs",
-    "build:agent-supervisor-sidecar": "node scripts/build-agent-supervisor-sidecar.mjs",
     "check:daemon-sidecar": "node --test scripts/build-daemon-sidecar.test.mjs scripts/check-daemon-sidecar.test.mjs && node scripts/check-daemon-sidecar.mjs",
     "build:daemon-sidecar": "node scripts/build-daemon-sidecar.mjs",
     "check:rust-deps": "node scripts/check-rust-deps.mjs",

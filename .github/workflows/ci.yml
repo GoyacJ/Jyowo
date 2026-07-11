@@ -23,7 +23,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm check:release-version && pnpm check:release-workflow && pnpm check:tauri-updater && pnpm check:agent-orchestration-no-fakes && pnpm check:agent-supervisor-sidecar
+      - run: pnpm check:release-version && pnpm check:release-workflow && pnpm check:tauri-updater && pnpm check:agent-orchestration-no-fakes && pnpm check:daemon-sidecar
 
   test-architecture:
     name: test-architecture
