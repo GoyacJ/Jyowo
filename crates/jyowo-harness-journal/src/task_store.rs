@@ -14,8 +14,8 @@ use harness_contracts::{
     EventSourceKind, IdParseError, IndeterminateToolDecision, QueueItemProjection, RedactRules,
     Redactor, RunSegmentId, RunState, RunTerminalReason, SessionId, SubagentActorState, SubagentId,
     SubagentParentProjection, SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection,
-    TenantId, ToolUseId, WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceLeaseState,
-    WorkspaceMode,
+    TenantId, TimelineItemProjection, ToolUseId, WorkspaceLeaseId, WorkspaceLeaseProjection,
+    WorkspaceLeaseState, WorkspaceMode,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -2356,12 +2356,44 @@ impl TaskStore {
         &self,
         task_id: TaskId,
     ) -> Result<Option<TaskProjection>, TaskStoreError> {
+        Ok(self
+            .task_projection_snapshot(task_id)?
+            .map(|(projection, _, _)| projection))
+    }
+
+    pub fn task_projection_snapshot(
+        &self,
+        task_id: TaskId,
+    ) -> Result<Option<(TaskProjection, u64, Vec<TimelineItemProjection>)>, TaskStoreError> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction()?;
         let actual = stream_version_in_transaction(&transaction, task_id)?;
         let projection = projection_for_decision(&transaction, task_id, actual)?;
+        let snapshot_offset = latest_global_offset_in_transaction(&transaction)?;
+        let timeline = {
+            let mut statement = transaction.prepare(
+                "SELECT global_offset, projection_json
+                 FROM timeline_projection
+                 WHERE task_id = ?1
+                 ORDER BY global_offset ASC",
+            )?;
+            let rows = statement.query_map(params![task_id.to_string()], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.map(|row| {
+                let (stored_offset, body) = row?;
+                let item: TimelineItemProjection = serde_json::from_str(&body)?;
+                if item.global_offset != nonnegative_integer(stored_offset)? {
+                    return Err(TaskStoreError::ProjectionIntegrity(
+                        "timeline projection offset disagrees with its row".into(),
+                    ));
+                }
+                Ok(item)
+            })
+            .collect::<Result<Vec<_>, TaskStoreError>>()?
+        };
         transaction.commit()?;
-        Ok((actual > 0).then_some(projection))
+        Ok((actual > 0).then_some((projection, snapshot_offset, timeline)))
     }
 
     pub fn task_projections(&self) -> Result<Vec<TaskProjection>, TaskStoreError> {
@@ -2802,6 +2834,25 @@ impl TaskStore {
             *root_lock = Some(file);
         }
         Ok(())
+    }
+
+    #[cfg(feature = "blob-file")]
+    pub fn blob_owner_task(&self, blob_id: BlobId) -> Result<Option<TaskId>, TaskStoreError> {
+        let connection = self.lock()?;
+        let task_id = connection
+            .query_row(
+                "SELECT task_id
+                 FROM blob_ownership
+                 WHERE blob_id = ?1
+                 ORDER BY task_id ASC
+                 LIMIT 1",
+                [blob_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        task_id
+            .map(|value| TaskId::parse(&value).map_err(TaskStoreError::from))
+            .transpose()
     }
 
     #[cfg(feature = "blob-file")]

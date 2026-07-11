@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
 use harness_contracts::{
-    ClientFrame, ClientId, ClientRequest, CommandId, CommandMetadata, CreateTaskCommand,
-    HandshakeRequest, ServerMessage, WorkspaceMode, WorkspaceSelection, PROTOCOL_VERSION,
+    now, ClientFrame, ClientId, ClientRequest, CommandId, CommandMetadata, CreateTaskCommand,
+    HandshakeRequest, QueueItemId, ServerMessage, WorkspaceMode, WorkspaceSelection,
+    PROTOCOL_VERSION,
 };
 use harness_daemon::{
     encode_frame, IpcConnection, IpcServerConfig, JsonFrameDecoder, LocalIpcServer, MAX_FRAME_BYTES,
 };
-use harness_journal::TaskStore;
+use harness_journal::{AcceptedCommand, NewTaskEvent, TaskBlobStore, TaskStore};
+use serde_json::json;
 
 fn config() -> IpcServerConfig {
     IpcServerConfig {
@@ -15,6 +17,7 @@ fn config() -> IpcServerConfig {
         user_instance_id: "user-a".into(),
         connection_token: "token-a".into(),
         event_batch_capacity: 2,
+        blob_root: std::env::temp_dir().join("jyowo-daemon-ipc-unused-blobs"),
     }
 }
 
@@ -215,6 +218,102 @@ fn duplicate_commands_are_idempotent_and_clients_observe_identical_offsets() {
         &gap[0].message,
         ServerMessage::EventBatch(batch) if batch.gap && batch.events.is_empty()
     ));
+}
+
+#[test]
+fn task_snapshot_uses_the_global_cursor_even_when_other_tasks_advanced_it() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let mut connection = IpcConnection::new(store, config());
+    connection.handle(handshake("token-a")).unwrap();
+
+    let first = connection
+        .handle(create("create-a", CommandId::new(), "create-a"))
+        .unwrap();
+    let task_id = match &first[0].message {
+        ServerMessage::CommandAccepted(accepted) => accepted.task_id,
+        other => panic!("unexpected {other:?}"),
+    };
+    connection
+        .handle(create("create-b", CommandId::new(), "create-b"))
+        .unwrap();
+
+    let loaded = connection
+        .handle(frame("load-a", ClientRequest::LoadTask { task_id }))
+        .unwrap();
+    match &loaded[0].message {
+        ServerMessage::TaskSnapshot(snapshot) => {
+            assert_eq!(snapshot.projection.last_global_offset, 1);
+            assert_eq!(snapshot.snapshot_offset, 2);
+            assert_eq!(
+                snapshot
+                    .timeline
+                    .iter()
+                    .map(|item| item.global_offset)
+                    .collect::<Vec<_>>(),
+                vec![1]
+            );
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn read_blob_returns_owned_bytes_and_metadata() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let blob_root = root.path().join("blobs");
+    let mut ipc_config = config();
+    ipc_config.blob_root.clone_from(&blob_root);
+    let mut connection = IpcConnection::new(Arc::clone(&store), ipc_config);
+    connection.handle(handshake("token-a")).unwrap();
+    let created = connection
+        .handle(create("create", CommandId::new(), "create-blob-task"))
+        .unwrap();
+    let task_id = match &created[0].message {
+        ServerMessage::CommandAccepted(accepted) => accepted.task_id,
+        other => panic!("unexpected {other:?}"),
+    };
+    let blobs = TaskBlobStore::open(Arc::clone(&store), task_id, blob_root).unwrap();
+    let blob = blobs.put("text/plain", b"abc").unwrap();
+    store
+        .transact_command(
+            AcceptedCommand {
+                command_id: CommandId::new(),
+                task_id,
+                idempotency_key: "attach-ipc-blob".into(),
+                expected_stream_version: 1,
+                authority: TaskStore::user_authority(ClientId::new()),
+                payload: json!({ "type": "attach_ipc_blob" }),
+            },
+            |_| {
+                Ok(vec![NewTaskEvent::message_queued(
+                    QueueItemId::new(),
+                    "blob",
+                    vec![blob.id],
+                    Vec::new(),
+                    now(),
+                )])
+            },
+        )
+        .unwrap();
+
+    let response = connection
+        .handle(frame(
+            "read-blob",
+            ClientRequest::ReadBlob { blob_id: blob.id },
+        ))
+        .unwrap();
+    match &response[0].message {
+        ServerMessage::Blob(payload) => {
+            assert_eq!(payload.blob_id, blob.id);
+            assert_eq!(payload.media_type, "text/plain");
+            assert_eq!(payload.size, 3);
+            assert_eq!(payload.base64_data.as_deref(), Some("YWJj"));
+            assert!(!payload.missing);
+        }
+        other => panic!("unexpected {other:?}"),
+    }
 }
 
 #[cfg(unix)]

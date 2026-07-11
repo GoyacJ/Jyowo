@@ -191,6 +191,18 @@ fn tauri_exposes_only_thin_daemon_bridge_commands() {
             "forbidden command authority: {forbidden}"
         );
     }
+    assert!(
+        source.contains("window.emit(&event_name"),
+        "subscription events must be scoped to an invoking webview channel"
+    );
+    assert!(
+        source.contains("format!(\"{DAEMON_EVENT_NAME}/{subscription_id}\")"),
+        "concurrent subscriptions must use separate event channels"
+    );
+    assert!(
+        source.contains("subscriptions.lock().await.remove(&cleanup_id)"),
+        "finished subscriptions must remove their bridge handles"
+    );
 }
 
 #[test]

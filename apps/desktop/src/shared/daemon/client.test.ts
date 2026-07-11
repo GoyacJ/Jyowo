@@ -1,0 +1,228 @@
+import { describe, expect, it, vi } from 'vitest'
+
+import type { ServerFrame } from '@/generated/daemon-protocol'
+
+import { createDaemonClient, type DaemonTransport } from './client'
+
+const taskId = '00000000000000000000000001'
+const blobId = '00000000000000000000000002'
+
+describe('daemon client', () => {
+  it('validates every response and builds generated request frames', async () => {
+    const invoke = vi.fn(async (_command: string, args?: Record<string, unknown>) => {
+      if (_command === 'daemon_connect') {
+        return taskListFrame()
+      }
+      const frame = args?.frame as { requestId: string }
+      return {
+        requestId: frame.requestId,
+        protocolVersion: 1,
+        message: { type: 'task_list', tasks: [] },
+      }
+    })
+    const client = createDaemonClient(transport(invoke), {
+      requestId: () => 'request-1',
+    })
+
+    await expect(client.connect()).resolves.toEqual(taskListFrame())
+    await client.request({ type: 'list_tasks' })
+
+    expect(invoke).toHaveBeenLastCalledWith('daemon_request', {
+      frame: {
+        protocolVersion: 1,
+        request: { type: 'list_tasks' },
+        requestId: 'request-1',
+      },
+    })
+  })
+
+  it('enters protocol error without dispatching an invalid subscription frame', async () => {
+    let listener: ((payload: unknown) => void) | undefined
+    const onFrame = vi.fn()
+    const onProtocolError = vi.fn()
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'daemon_subscribe') return args?.subscriptionId
+      if (command === 'daemon_unsubscribe') return null
+      throw new Error(`unexpected command ${command}`)
+    })
+    const client = createDaemonClient(
+      {
+        invoke,
+        listen: vi.fn(async (_event, handler) => {
+          listener = handler
+          return vi.fn()
+        }),
+      },
+      { requestId: () => 'subscription-1' },
+    )
+
+    const unsubscribe = await client.subscribe(40, onFrame, onProtocolError)
+    listener?.({ protocolVersion: 1, message: { type: 'future_event' } })
+
+    expect(onFrame).not.toHaveBeenCalled()
+    expect(onProtocolError).toHaveBeenCalledOnce()
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('daemon_unsubscribe', {
+        subscriptionId: 'subscription-1',
+      }),
+    )
+    await unsubscribe()
+    expect(invoke.mock.calls.filter(([command]) => command === 'daemon_unsubscribe')).toHaveLength(
+      1,
+    )
+  })
+
+  it('closes a subscription that receives a schema-valid non-event frame', async () => {
+    let listener: ((payload: unknown) => void) | undefined
+    const onFrame = vi.fn()
+    const onProtocolError = vi.fn()
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'daemon_subscribe') return args?.subscriptionId
+      if (command === 'daemon_unsubscribe') return null
+      throw new Error(`unexpected command ${command}`)
+    })
+    const client = createDaemonClient(
+      {
+        invoke,
+        listen: vi.fn(async (_event, handler) => {
+          listener = handler
+          return vi.fn()
+        }),
+      },
+      { requestId: () => 'subscription-1' },
+    )
+
+    await client.subscribe(40, onFrame, onProtocolError)
+    listener?.(taskListFrame())
+
+    expect(onFrame).not.toHaveBeenCalled()
+    expect(onProtocolError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Expected event_batch, received task_list' }),
+    )
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('daemon_unsubscribe', {
+        subscriptionId: 'subscription-1',
+      }),
+    )
+  })
+
+  it('reads blobs only through validated blob ids', async () => {
+    const invoke = vi.fn(async () => ({
+      requestId: null,
+      protocolVersion: 1,
+      message: {
+        type: 'blob',
+        blobId,
+        mediaType: 'text/plain',
+        missing: false,
+        size: 3,
+        base64Data: 'YWJj',
+      },
+    }))
+    const client = createDaemonClient(transport(invoke))
+
+    await expect(client.readBlob(blobId)).resolves.toEqual({
+      blobId,
+      bytes: new Uint8Array([97, 98, 99]),
+      mediaType: 'text/plain',
+      missing: false,
+      size: 3,
+    })
+    await expect(client.readBlob('/tmp/private')).rejects.toThrow('Invalid daemon client frame')
+    expect(invoke).toHaveBeenCalledOnce()
+  })
+
+  it('rejects a blob response for a different blob id', async () => {
+    const invoke = vi.fn(async () => ({
+      requestId: null,
+      protocolVersion: 1,
+      message: {
+        type: 'blob',
+        blobId: '00000000000000000000000009',
+        mediaType: 'text/plain',
+        missing: false,
+        size: 3,
+        base64Data: 'YWJj',
+      },
+    }))
+    const client = createDaemonClient(transport(invoke))
+
+    await expect(client.readBlob(blobId)).rejects.toThrow('another blob')
+  })
+
+  it('rejects invalid subscription offsets before opening a listener', async () => {
+    const daemonTransport = transport(vi.fn())
+    const client = createDaemonClient(daemonTransport)
+
+    await expect(client.subscribe(-1, vi.fn())).rejects.toThrow('Invalid daemon client frame')
+    expect(daemonTransport.invoke).not.toHaveBeenCalled()
+  })
+
+  it('isolates concurrent subscriptions on separate bridge event channels', async () => {
+    const listenedEvents: string[] = []
+    const requestIds = ['subscription-a', 'subscription-b']
+    const client = createDaemonClient(
+      {
+        invoke: vi.fn(async (command, args) => {
+          if (command === 'daemon_subscribe') return args?.subscriptionId
+          if (command === 'daemon_unsubscribe') return null
+          throw new Error(`unexpected command ${command}`)
+        }),
+        listen: vi.fn(async (event) => {
+          listenedEvents.push(event)
+          return vi.fn()
+        }),
+      },
+      { requestId: () => requestIds.shift() as string },
+    )
+
+    const closeA = await client.subscribe(10, vi.fn())
+    const closeB = await client.subscribe(20, vi.fn())
+
+    expect(listenedEvents).toEqual([
+      'jyowo://daemon-events/subscription-a',
+      'jyowo://daemon-events/subscription-b',
+    ])
+    await closeA()
+    await closeB()
+  })
+
+  it('rejects a snapshot for a different task', async () => {
+    const invoke = vi.fn(async () => ({
+      requestId: 'request-1',
+      protocolVersion: 1,
+      message: {
+        type: 'task_snapshot',
+        projection: {
+          archived: false,
+          lastGlobalOffset: 0,
+          queue: [],
+          state: 'idle',
+          streamVersion: 1,
+          taskId: '00000000000000000000000009',
+          title: 'wrong task',
+        },
+        snapshotOffset: 0,
+        timeline: [],
+      },
+    }))
+    const client = createDaemonClient(transport(invoke), { requestId: () => 'request-1' })
+
+    await expect(client.loadTask(taskId)).rejects.toThrow('another task')
+  })
+})
+
+function transport(invoke: DaemonTransport['invoke']): DaemonTransport {
+  return {
+    invoke,
+    listen: async () => () => undefined,
+  }
+}
+
+function taskListFrame(): ServerFrame {
+  return {
+    requestId: null,
+    protocolVersion: 1,
+    message: { type: 'task_list', tasks: [] },
+  }
+}

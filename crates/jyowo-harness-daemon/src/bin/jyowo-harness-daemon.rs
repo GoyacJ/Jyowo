@@ -25,6 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         user_instance_id: user_instance_id.clone(),
         connection_token: runtime.connection_token().into(),
         event_batch_capacity: 512,
+        blob_root: runtime.runtime_dir().join("blobs"),
     };
 
     #[cfg(unix)]

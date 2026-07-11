@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use harness_contracts::{BlobId, ClientFrame, ClientRequest, ServerFrame};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::{Mutex, RwLock};
@@ -18,7 +19,7 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Default)]
 pub struct DaemonBridgeState {
     client: RwLock<Option<DaemonClient>>,
-    subscriptions: Mutex<HashMap<String, JoinHandle<()>>>,
+    subscriptions: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
 }
 
 impl DaemonBridgeState {
@@ -65,25 +66,36 @@ pub async fn daemon_request(
 #[tauri::command]
 pub async fn daemon_subscribe(
     after_offset: u64,
-    app: AppHandle,
+    subscription_id: String,
+    window: WebviewWindow,
     state: State<'_, DaemonBridgeState>,
 ) -> Result<String, String> {
+    validate_subscription_id(&subscription_id)?;
     let client = state.client().await?;
-    let subscription_id = uuid::Uuid::new_v4().simple().to_string();
     let mut subscription = client.subscribe(after_offset);
-    let emit_app = app.clone();
+    let event_name = format!("{DAEMON_EVENT_NAME}/{subscription_id}");
+    let subscriptions = Arc::clone(&state.subscriptions);
+    let cleanup_id = subscription_id.clone();
+    let (start_tx, start_rx) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async move {
+        if start_rx.await.is_err() {
+            return;
+        }
         while let Some(frame) = subscription.recv().await {
-            if emit_app.emit(DAEMON_EVENT_NAME, frame).is_err() {
+            if window.emit(&event_name, frame).is_err() {
                 break;
             }
         }
+        subscriptions.lock().await.remove(&cleanup_id);
     });
-    state
-        .subscriptions
-        .lock()
-        .await
-        .insert(subscription_id.clone(), task);
+    let mut subscriptions = state.subscriptions.lock().await;
+    if subscriptions.contains_key(&subscription_id) {
+        task.abort();
+        return Err("daemon subscription already exists".into());
+    }
+    subscriptions.insert(subscription_id.clone(), task);
+    drop(subscriptions);
+    let _ = start_tx.send(());
     Ok(subscription_id)
 }
 
@@ -92,10 +104,9 @@ pub async fn daemon_unsubscribe(
     subscription_id: String,
     state: State<'_, DaemonBridgeState>,
 ) -> Result<(), String> {
-    let Some(task) = state.subscriptions.lock().await.remove(&subscription_id) else {
-        return Err("daemon subscription was not found".into());
-    };
-    task.abort();
+    if let Some(task) = state.subscriptions.lock().await.remove(&subscription_id) {
+        task.abort();
+    }
     Ok(())
 }
 
@@ -110,6 +121,18 @@ pub async fn daemon_read_blob(
         .read_blob(blob_id)
         .await
         .map_err(|error| error.to_string())
+}
+
+fn validate_subscription_id(subscription_id: &str) -> Result<(), String> {
+    if subscription_id.is_empty()
+        || subscription_id.len() > 128
+        || !subscription_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("invalid daemon subscription id".into());
+    }
+    Ok(())
 }
 
 struct DaemonPaths {

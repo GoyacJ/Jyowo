@@ -1,16 +1,18 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
-
+import type { DaemonClient } from '@/shared/daemon/client'
 import { AppI18nProvider } from '@/shared/i18n/i18n'
 import { readUiPreferences, writeUiPreferences } from '@/shared/local-store/ui-preferences-store'
 import { useUiStore } from '@/shared/state/ui-store'
 import type { CommandClient } from '@/shared/tauri/commands'
-import { CommandClientProvider } from '@/shared/tauri/react'
+import { createDefaultDaemonClient } from '@/shared/tauri/default-client'
+import { CommandClientProvider, DaemonClientProvider } from '@/shared/tauri/react'
 
 export interface AppProvidersProps {
   children: ReactNode
   commandClient: CommandClient
+  daemonClient?: DaemonClient
   queryClient?: QueryClient
 }
 
@@ -124,18 +126,26 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
   return children
 }
 
-export function AppProviders({ children, commandClient, queryClient }: AppProvidersProps) {
+export function AppProviders({
+  children,
+  commandClient,
+  daemonClient,
+  queryClient,
+}: AppProvidersProps) {
   const [defaultQueryClient] = useState(createQueryClient)
+  const [defaultDaemonClient] = useState(createDefaultDaemonClient)
 
   return (
-    <CommandClientProvider client={commandClient}>
-      <QueryClientProvider client={queryClient ?? defaultQueryClient}>
-        <UiPreferencesProvider>
-          <AppI18nProvider>
-            <ThemeProvider>{children}</ThemeProvider>
-          </AppI18nProvider>
-        </UiPreferencesProvider>
-      </QueryClientProvider>
-    </CommandClientProvider>
+    <DaemonClientProvider client={daemonClient ?? defaultDaemonClient}>
+      <CommandClientProvider client={commandClient}>
+        <QueryClientProvider client={queryClient ?? defaultQueryClient}>
+          <UiPreferencesProvider>
+            <AppI18nProvider>
+              <ThemeProvider>{children}</ThemeProvider>
+            </AppI18nProvider>
+          </UiPreferencesProvider>
+        </QueryClientProvider>
+      </CommandClientProvider>
+    </DaemonClientProvider>
   )
 }

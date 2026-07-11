@@ -3020,6 +3020,7 @@ name = "jyowo-harness-daemon"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "fs2",
  "futures",

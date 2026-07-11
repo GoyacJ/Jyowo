@@ -1,14 +1,17 @@
-#[cfg(unix)]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use base64::Engine as _;
 use harness_contracts::{
-    ClientFrame, ClientId, ClientRequest, CommandAccepted, CommandRejected, CommandRejectionReason,
-    HandshakeResponse, ProtocolError, ProtocolErrorCode, ServerFrame, ServerMessage,
-    TaskEventBatch, TaskId, TaskSnapshot, PROTOCOL_VERSION,
+    BlobPayload, ClientFrame, ClientId, ClientRequest, CommandAccepted, CommandRejected,
+    CommandRejectionReason, HandshakeResponse, ProtocolError, ProtocolErrorCode, ServerFrame,
+    ServerMessage, TaskEventBatch, TaskId, TaskSnapshot, PROTOCOL_VERSION,
 };
-use harness_journal::{AcceptedCommand, CommandOutcome, CommandRejection, NewTaskEvent, TaskStore};
+use harness_journal::{
+    AcceptedCommand, BlobRead, CommandOutcome, CommandRejection, NewTaskEvent, TaskBlobStore,
+    TaskStore,
+};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -20,6 +23,7 @@ pub struct IpcServerConfig {
     pub user_instance_id: String,
     pub connection_token: String,
     pub event_batch_capacity: usize,
+    pub blob_root: PathBuf,
 }
 
 pub struct IpcConnection {
@@ -142,17 +146,45 @@ impl IpcConnection {
             ClientRequest::ListTasks => ServerMessage::TaskList {
                 tasks: self.store.task_projections()?,
             },
-            ClientRequest::LoadTask { task_id } => match self.store.task_projection(task_id)? {
-                Some(projection) => ServerMessage::TaskSnapshot(TaskSnapshot {
-                    snapshot_offset: projection.last_global_offset,
-                    projection,
-                    timeline: Vec::new(),
-                }),
-                None => protocol_error(ProtocolErrorCode::NotFound, "task not found"),
-            },
-            ClientRequest::ReadBlob { .. } => {
-                protocol_error(ProtocolErrorCode::NotFound, "blob not found")
+            ClientRequest::LoadTask { task_id } => {
+                match self.store.task_projection_snapshot(task_id)? {
+                    Some((projection, snapshot_offset, timeline)) => {
+                        ServerMessage::TaskSnapshot(TaskSnapshot {
+                            snapshot_offset,
+                            projection,
+                            timeline,
+                        })
+                    }
+                    None => protocol_error(ProtocolErrorCode::NotFound, "task not found"),
+                }
             }
+            ClientRequest::ReadBlob { blob_id } => match self.store.blob_owner_task(blob_id)? {
+                Some(task_id) => {
+                    let blobs = TaskBlobStore::open(
+                        Arc::clone(&self.store),
+                        task_id,
+                        &self.config.blob_root,
+                    )?;
+                    let (blob, base64_data, missing) = match blobs.read(&blob_id)? {
+                        BlobRead::Available { blob, bytes } => (
+                            blob,
+                            Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+                            false,
+                        ),
+                        BlobRead::Missing { blob } => (blob, None, true),
+                    };
+                    ServerMessage::Blob(BlobPayload {
+                        blob_id: blob.id,
+                        media_type: blob
+                            .content_type
+                            .unwrap_or_else(|| "application/octet-stream".into()),
+                        size: blob.size,
+                        base64_data,
+                        missing,
+                    })
+                }
+                None => protocol_error(ProtocolErrorCode::NotFound, "blob not found"),
+            },
             ClientRequest::SubmitMessage(_)
             | ClientRequest::EditQueuedMessage(_)
             | ClientRequest::DeleteQueuedMessage(_)
