@@ -1013,7 +1013,11 @@ export function ModelConfigDialog({
               {supportedParameters.has('responseJsonSchema') ? (
                 <label className="grid gap-1" htmlFor="provider-response-json-schema">
                   <span className="font-medium">{t('provider.responseJsonSchema')}</span>
-                  <Textarea id="provider-response-json-schema" rows={3} {...register('responseJsonSchema')} />
+                  <Textarea
+                    id="provider-response-json-schema"
+                    rows={3}
+                    {...register('responseJsonSchema')}
+                  />
                 </label>
               ) : null}
               {supportedParameters.has('toolConfig') ? (
@@ -1025,7 +1029,11 @@ export function ModelConfigDialog({
               {supportedParameters.has('safetySettings') ? (
                 <label className="grid gap-1" htmlFor="provider-safety-settings">
                   <span className="font-medium">{t('provider.safetySettings')}</span>
-                  <Textarea id="provider-safety-settings" rows={3} {...register('safetySettings')} />
+                  <Textarea
+                    id="provider-safety-settings"
+                    rows={3}
+                    {...register('safetySettings')}
+                  />
                 </label>
               ) : null}
               {supportedParameters.has('cachedContent') ? (
@@ -1359,7 +1367,8 @@ function providerOptionDefaultsFromProfile(profile: ProviderConfig | null | unde
     thinkingDisplay: typeof thinking?.display === 'string' ? thinking.display : '',
     thinkingType: typeof thinking?.type === 'string' ? thinking.type : '',
     storeResponse: body.store === true,
-    thinkingLevel: typeof thinkingConfig?.thinkingLevel === 'string' ? thinkingConfig.thinkingLevel : '',
+    thinkingLevel:
+      typeof thinkingConfig?.thinkingLevel === 'string' ? thinkingConfig.thinkingLevel : '',
     toolConfig: jsonText(body.toolConfig),
     topK,
     topP,

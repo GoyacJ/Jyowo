@@ -139,6 +139,7 @@ pub(super) fn install_subagent_runner_for_run(
             event_store,
             workspace_root: workspace_root.to_path_buf(),
             team_attribution: team_attribution.clone(),
+            daemon_runner: None,
         },
     );
     harness_agent_runtime::install_subagent_runner_capability(
@@ -158,6 +159,14 @@ pub(super) fn subagent_tool_should_be_enabled(
         Some(options) => harness_agent_runtime::should_install_subagent_runner(options),
         None => harness_has_runner,
     }
+}
+
+#[cfg(feature = "agents-subagent")]
+pub(super) fn should_install_default_subagent_runner(
+    harness_has_runner: bool,
+    agent_tool_policy: &harness_contracts::AgentToolPolicy,
+) -> bool {
+    !harness_has_runner && harness_agent_runtime::should_install_subagent_runner(agent_tool_policy)
 }
 
 #[cfg(feature = "agents-team")]
@@ -1041,6 +1050,19 @@ mod tests {
                     if capability == AGENT_TEAM_RUNNER_CAPABILITY
             ));
         });
+    }
+
+    #[cfg(feature = "agents-subagent")]
+    #[test]
+    fn preinstalled_subagent_runner_is_not_replaced_by_run_policy() {
+        assert!(!should_install_default_subagent_runner(
+            true,
+            &agent_tool_policy(),
+        ));
+        assert!(should_install_default_subagent_runner(
+            false,
+            &agent_tool_policy(),
+        ));
     }
 
     #[test]

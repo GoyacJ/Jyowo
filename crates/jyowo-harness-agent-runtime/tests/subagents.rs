@@ -18,7 +18,10 @@ use harness_permission::{
     NoopDecisionPersistence, PermissionAuthority, PermissionBroker, PermissionContext,
     PermissionError, PermissionRequest, PersistedDecision,
 };
-use harness_subagent::SubagentPermissionBridge;
+use harness_subagent::{
+    ParentContext, SubagentError, SubagentHandle, SubagentPermissionBridge, SubagentRunner,
+    SubagentSpec,
+};
 
 fn sample_subagent_tool_policy() -> AgentToolPolicy {
     AgentToolPolicy {
@@ -184,8 +187,39 @@ impl harness_subagent::SubagentEngineFactory for NoopEngineFactory {
     }
 }
 
+struct DaemonRunner;
+
+#[async_trait]
+impl SubagentRunner for DaemonRunner {
+    async fn spawn(
+        &self,
+        _spec: SubagentSpec,
+        _input: harness_contracts::TurnInput,
+        _parent_ctx: ParentContext,
+    ) -> Result<SubagentHandle, SubagentError> {
+        unreachable!("assembly must not execute the injected runner")
+    }
+}
+
 #[test]
-fn assemble_subagent_runner_builds_default_runner_with_policy() {
+fn assemble_subagent_runner_prefers_injected_daemon_runner() {
+    let workspace = tempfile::tempdir().unwrap();
+    let store: Arc<InMemoryEventStore> = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let expected: Arc<dyn SubagentRunner> = Arc::new(DaemonRunner);
+    let runner = assemble_subagent_runner(SubagentRunnerAssemblyInput {
+        agent_tool_policy: sample_subagent_tool_policy(),
+        engine_factory: Arc::new(NoopEngineFactory),
+        event_store: store,
+        workspace_root: workspace.path().to_path_buf(),
+        team_attribution: None,
+        daemon_runner: Some(Arc::clone(&expected)),
+    });
+
+    assert!(Arc::ptr_eq(&runner, &expected));
+}
+
+#[tokio::test]
+async fn assemble_subagent_runner_without_injection_builds_default_runner() {
     let workspace = tempfile::tempdir().unwrap();
     let store: Arc<InMemoryEventStore> = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
     let options = sample_subagent_tool_policy();
@@ -195,8 +229,31 @@ fn assemble_subagent_runner_builds_default_runner_with_policy() {
         event_store: store,
         workspace_root: workspace.path().to_path_buf(),
         team_attribution: None,
+        daemon_runner: None,
     });
-    assert!(Arc::strong_count(&runner) >= 1);
-    let policy = delegation_policy_from_run_options(&options);
-    assert_eq!(policy.max_concurrent_children, 2);
+    let announcement = runner
+        .spawn(
+            SubagentSpec::minimal("reviewer", "inspect"),
+            harness_contracts::TurnInput {
+                message: harness_contracts::Message {
+                    id: harness_contracts::MessageId::new(),
+                    role: harness_contracts::MessageRole::User,
+                    parts: vec![harness_contracts::MessagePart::Text("inspect".to_owned())],
+                    created_at: harness_contracts::now(),
+                },
+                metadata: serde_json::Value::Null,
+            },
+            ParentContext::for_test(0),
+        )
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+
+    assert_eq!(announcement.summary, "noop");
+    assert_eq!(
+        delegation_policy_from_run_options(&options).max_concurrent_children,
+        2
+    );
 }

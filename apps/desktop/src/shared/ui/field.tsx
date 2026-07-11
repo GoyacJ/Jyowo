@@ -2,7 +2,7 @@ import type { HTMLAttributes, LabelHTMLAttributes, ReactNode } from 'react'
 
 import { cn } from '@/shared/lib/utils'
 
-export function Field({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+function Field({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return <div className={cn('space-y-2', className)} data-slot="field" {...props} />
 }
 
@@ -11,7 +11,7 @@ type FieldLabelProps = LabelHTMLAttributes<HTMLLabelElement> & {
   htmlFor: string
 }
 
-export function FieldLabel({ children, className, htmlFor, ...props }: FieldLabelProps) {
+function FieldLabel({ children, className, htmlFor, ...props }: FieldLabelProps) {
   return (
     <label
       className={cn('block font-medium text-sm tracking-normal', className)}

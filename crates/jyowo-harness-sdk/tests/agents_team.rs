@@ -1110,6 +1110,7 @@ impl TestTool {
                 },
                 provider_restriction: ProviderRestriction::All,
                 origin: ToolOrigin::Builtin,
+                metadata: Default::default(),
                 search_hint: None,
                 service_binding: None,
             },

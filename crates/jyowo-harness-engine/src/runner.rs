@@ -6,7 +6,7 @@ use harness_contracts::{
 };
 use std::time::Duration;
 
-use crate::CancellationToken;
+use crate::{CancellationToken, RunControlHandle};
 
 pub type EngineError = harness_contracts::EngineError;
 pub type EventStream = harness_journal::EventStream;
@@ -53,6 +53,7 @@ pub struct RunContext {
     pub interactivity: InteractivityLevel,
     pub budget_limits: Option<RunBudgetLimits>,
     pub cancellation: CancellationToken,
+    pub run_control: Option<RunControlHandle>,
     pub config_snapshot_id: SnapshotId,
     pub effective_config_hash: ConfigHash,
     pub started_from_scope_set: Vec<String>,
@@ -88,6 +89,7 @@ impl RunContext {
             interactivity: InteractivityLevel::NoInteractive,
             budget_limits: None,
             cancellation: CancellationToken::new(),
+            run_control: None,
             config_snapshot_id: SnapshotId::from_u128(0),
             effective_config_hash: ConfigHash([0; 32]),
             started_from_scope_set: Vec::new(),
@@ -102,6 +104,12 @@ impl RunContext {
     #[must_use]
     pub fn with_cancellation(mut self, cancellation: CancellationToken) -> Self {
         self.cancellation = cancellation;
+        self
+    }
+
+    #[must_use]
+    pub fn with_run_control(mut self, run_control: RunControlHandle) -> Self {
+        self.run_control = Some(run_control);
         self
     }
 

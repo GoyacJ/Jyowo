@@ -1,76 +1,34 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 describe('conversation production boundaries', () => {
-  it('keeps the production workspace off retired local fixtures and artifacts feature imports', () => {
-    const source = readFileSync(
-      join(process.cwd(), 'src/features/conversation/ConversationWorkspace.tsx'),
-      'utf8',
-    )
-    const retiredFixtureModule = ['prototype', 'data'].join('-')
-    const artifactsFeatureAlias = ['@/features', 'artifacts'].join('/')
-    const oldRenderSources = [
-      ['Conversation', 'Message'].join(''),
-      ['Progress', 'Block'].join(''),
-      ['Artifact', 'Summary'].join(''),
-    ]
-
-    expect(source).not.toContain(retiredFixtureModule)
-    expect(source).not.toContain(artifactsFeatureAlias)
-    for (const oldRenderSource of oldRenderSources) {
-      expect(source).not.toContain(oldRenderSource)
-    }
-  })
-
-  it('keeps retired mock runtime names out of production conversation sources', () => {
-    const files = [
+  it('keeps the retired conversation workspace and event stream out of the desktop bundle', () => {
+    const retiredModules = [
       'src/features/conversation/ConversationWorkspace.tsx',
-      'src/features/conversation/use-conversation.ts',
-      'src/shared/tauri/default-client.ts',
-    ]
-    const source = files.map((file) => readFileSync(join(process.cwd(), file), 'utf8')).join('\n')
-    const retiredNames = ['mockConversationRuntime', 'mock-conversation-runtime', 'mock-client']
-
-    for (const retiredName of retiredNames) {
-      expect(source).not.toContain(retiredName)
-    }
-  })
-
-  it('keeps the conversation canvas on projected turns instead of raw event blocks', () => {
-    const files = [
-      'src/features/conversation/timeline/pending-tool-permission.ts',
-      'src/features/conversation/timeline/conversation-timeline-selectors.ts',
+      'src/features/conversation/timeline/conversation-timeline-source.ts',
       'src/features/conversation/timeline/conversation-timeline-store.ts',
+      'src/features/conversation/timeline/conversation-timeline-selectors.ts',
+      'src/features/conversation/timeline/use-conversation-event-stream.ts',
       'src/features/conversation/timeline/use-conversation-timeline.ts',
-      'src/features/conversation/timeline/conversation-timeline.tsx',
     ]
-    const source = files.map((file) => readFileSync(join(process.cwd(), file), 'utf8')).join('\n')
 
-    expect(source).not.toContain('RunEvent')
-    expect(source).not.toContain('PermissionRequestBlock')
-    expect(source).not.toContain("kind: 'permissionRequest'")
-    expect(source).not.toContain('Tool error withheld from conversation timeline')
-    expect(source).not.toContain('get_conversation.messages')
-    expect(source).toContain('ConversationTurn')
-    expect(source).toContain('pageConversationWorktree')
+    for (const retiredModule of retiredModules) {
+      expect(existsSync(join(process.cwd(), retiredModule)), retiredModule).toBe(false)
+    }
   })
 
-  it('keeps production timeline APIs named as turns instead of blocks', () => {
-    const files = [
-      'src/shared/state/ui-store.ts',
-      'src/features/conversation/timeline/conversation-timeline.tsx',
-      'src/features/conversation/timeline/conversation-turn-row.tsx',
-      'src/features/conversation/timeline/conversation-timeline-selectors.ts',
-      'src/features/conversation/timeline/use-conversation-timeline.ts',
-      'src/features/conversation/ConversationWorkspace.tsx',
-    ]
-    const source = files.map((file) => readFileSync(join(process.cwd(), file), 'utf8')).join('\n')
+  it('keeps legacy conversation timeline commands out of the desktop client', () => {
+    const commands = readFileSync(join(process.cwd(), 'src/shared/tauri/commands.ts'), 'utf8')
 
-    expect(source).not.toContain('ConversationBlockRow')
-    expect(source).not.toContain('blocks?: ConversationTurn[]')
-    expect(source).not.toContain('pendingPermissionBlocks')
-    expect(source).not.toContain('blockId')
-    expect(source).not.toContain('conversation-block-')
+    for (const retiredCommand of [
+      'pageConversationTimeline',
+      'pageConversationWorktree',
+      'resolvePermission',
+      'subscribeConversationEvents',
+      'unsubscribeConversationEvents',
+    ]) {
+      expect(commands, retiredCommand).not.toContain(retiredCommand)
+    }
   })
 })

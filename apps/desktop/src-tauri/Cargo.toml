@@ -29,13 +29,14 @@ image = { workspace = true }
 async-trait = { workspace = true }
 jyowo-harness-contracts = { path = "../../../crates/jyowo-harness-contracts" }
 jyowo-harness-execution = { path = "../../../crates/jyowo-harness-execution" }
+jyowo-harness-fs = { path = "../../../crates/jyowo-harness-fs" }
 jyowo-harness-observability = { path = "../../../crates/jyowo-harness-observability" }
 jyowo-harness-permission = { path = "../../../crates/jyowo-harness-permission", features = ["integrity"] }
 jyowo-harness-plugin = { path = "../../../crates/jyowo-harness-plugin" }
 jyowo-harness-provider-state = { path = "../../../crates/jyowo-harness-provider-state" }
 jyowo-harness-sandbox = { path = "../../../crates/jyowo-harness-sandbox", features = ["local-sandbox", "docker"] }
 jyowo-harness-memory = { path = "../../../crates/jyowo-harness-memory" }
-jyowo-harness-journal = { path = "../../../crates/jyowo-harness-journal", features = ["sqlite"] }
+jyowo-harness-journal = { path = "../../../crates/jyowo-harness-journal", features = ["in-memory", "sqlite"] }
 jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false, features = ["stream-permission", "rule-engine-permission", "integrity", "jsonl-store", "sqlite-store", "blob-file", "local-sandbox", "mcp-http", "mcp-stdio", "memory-provider-registry", "provider-anthropic", "provider-bedrock", "provider-codex", "provider-deepseek", "provider-doubao", "provider-gemini", "provider-km", "provider-local-llama", "provider-minimax", "minimax-tools", "gemini-tools", "seedance-tools", "provider-openai", "provider-openrouter", "provider-qwen", "provider-zhipu", "zhipu-tools", "observability-redactor", "agents-subagent", "agents-team"] }
 jyowo-harness-model = { path = "../../../crates/jyowo-harness-model", features = ["openrouter", "deepseek", "bedrock"] }
 jyowo-harness-tool = { path = "../../../crates/jyowo-harness-tool", default-features = false, features = ["builtin-toolset", "minimax-tools", "gemini-tools", "seedance-tools", "zhipu-tools"] }
@@ -44,7 +45,7 @@ log = { workspace = true }
 parking_lot = "0.12.5"
 oxideav-avif = { workspace = true }
 reqwest = { workspace = true }
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["process"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { version = "2.11.2", features = [] }

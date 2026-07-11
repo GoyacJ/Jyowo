@@ -10,7 +10,8 @@ const webUrl = `http://127.0.0.1:${webPort}`
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: /storybook\.spec\.ts/,
+  testIgnore:
+    /(conversation-evidence-storybook|model-settings-storybook|task-workspace-visual|task-workspace-accessibility)\.spec\.ts/,
   fullyParallel: true,
   reporter: [['list']],
   use: {

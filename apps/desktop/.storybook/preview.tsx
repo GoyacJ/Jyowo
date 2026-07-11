@@ -24,6 +24,11 @@ const preview: Preview = {
       </AppProviders>
     ),
   ],
+  parameters: {
+    a11y: { test: 'error' },
+    controls: { expanded: true },
+    layout: 'fullscreen',
+  },
 }
 
 export default preview

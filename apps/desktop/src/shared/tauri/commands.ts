@@ -222,7 +222,7 @@ const runtimeToolSummarySchema = z
     serviceBinding: runtimeToolServiceBindingSchema.nullable(),
   })
   .strict()
-export const listRuntimeToolsResponseSchema = z
+const listRuntimeToolsResponseSchema = z
   .object({
     generation: z.number().int().nonnegative(),
     tools: z.array(runtimeToolSummarySchema),
@@ -469,24 +469,6 @@ const cancelRunResponseSchema = z
   })
   .strict()
 
-const resolvePermissionRequestSchema = z
-  .object({
-    conversationId: z.string().min(1),
-    decision: z.enum(['approve', 'deny']),
-    optionId: z.string().min(1),
-    requestId: z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/),
-    confirmationText: z.string().min(1).optional(),
-  })
-  .strict()
-
-const resolvePermissionResponseSchema = z
-  .object({
-    decision: z.enum(['approve', 'deny']),
-    requestId: z.string().min(1),
-    status: z.literal('resolved'),
-  })
-  .strict()
-
 const evidenceRedactionStateSchema = z.enum(['clean', 'redacted', 'withheld'])
 
 // ── Evidence fetch schemas ──
@@ -642,22 +624,6 @@ const conversationCursorSchema = z
   .object({
     eventId: z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/),
     conversationSequence: z.number().int().nonnegative(),
-  })
-  .strict()
-
-const pageConversationTimelineRequestSchema = z
-  .object({
-    afterCursor: conversationCursorSchema.optional(),
-    conversationId: z.string().min(1),
-    limit: z.number().int().positive().max(200).optional(),
-  })
-  .strict()
-
-const pageConversationTimelineResponseSchema = z
-  .object({
-    events: runEventsSchema,
-    cursor: conversationCursorSchema.optional(),
-    gap: z.boolean(),
   })
   .strict()
 
@@ -1320,16 +1286,7 @@ const conversationTurnSchema = z
   })
   .strict()
 
-const pageConversationWorktreeRequestSchema = z
-  .object({
-    conversationId: z.string().min(1),
-    pageCursor: conversationTurnCursorSchema.optional(),
-    direction: z.enum(['before', 'after']).optional(),
-    limit: z.number().int().positive().max(200).optional(),
-  })
-  .strict()
-
-const pageConversationWorktreeResponseSchema = z
+const conversationWorktreePageSchema = z
   .object({
     turns: z.array(conversationTurnSchema),
     pageCursor: conversationTurnCursorSchema.optional(),
@@ -1452,14 +1409,7 @@ const getConversationInspectorItemResponseSchema = z
   })
   .strict()
 
-const subscribeConversationEventsRequestSchema = z
-  .object({
-    afterCursor: conversationCursorSchema.optional(),
-    conversationId: z.string().min(1),
-  })
-  .strict()
-
-const subscribeConversationEventsResponseSchema = z
+const conversationEventSubscriptionSchema = z
   .object({
     subscriptionId: z.string().min(1),
     conversationId: z.string().min(1),
@@ -1469,20 +1419,7 @@ const subscribeConversationEventsResponseSchema = z
   })
   .strict()
 
-const unsubscribeConversationEventsRequestSchema = z
-  .object({
-    subscriptionId: z.string().min(1),
-  })
-  .strict()
-
-const unsubscribeConversationEventsResponseSchema = z
-  .object({
-    subscriptionId: z.string().min(1),
-    status: z.enum(['unsubscribed', 'alreadyClosed']),
-  })
-  .strict()
-
-const conversationEventBatchPayloadSchema = z
+const conversationEventBatchSchema = z
   .object({
     subscriptionId: z.string().min(1),
     conversationId: z.string().min(1),
@@ -4388,19 +4325,18 @@ export type CreateAttachmentFromPathResponse = z.infer<
 >
 export type ListReferenceCandidatesResponse = z.infer<typeof listReferenceCandidatesResponseSchema>
 export type CancelRunResponse = z.infer<typeof cancelRunResponseSchema>
-export type ResolvePermissionRequest = z.infer<typeof resolvePermissionRequestSchema>
-export type ResolvePermissionResponse = z.infer<typeof resolvePermissionResponseSchema>
+export type ResolvePermissionRequest = {
+  confirmationText?: string
+  conversationId: string
+  decision: 'approve' | 'deny'
+  optionId: string
+  requestId: string
+}
 export type ListActivityRequest = z.infer<typeof listActivityRequestSchema>
 export type ListActivityResponse = z.infer<typeof listActivityResponseSchema>
 export type ReplayTimelineRequest = z.infer<typeof replayTimelineRequestSchema>
 export type ReplayTimelineResponse = z.infer<typeof replayTimelineResponseSchema>
-export type ConversationCursor = z.infer<typeof conversationCursorSchema>
-type PageConversationTimelineRequest = z.infer<typeof pageConversationTimelineRequestSchema>
-export type PageConversationTimelineResponse = z.infer<
-  typeof pageConversationTimelineResponseSchema
->
 export type ConversationEventRef = z.infer<typeof conversationEventRefSchema>
-export type ConversationTurnCursor = z.infer<typeof conversationTurnCursorSchema>
 export type TextSegment = z.infer<typeof textSegmentSchema>
 export type DecisionOption = z.infer<typeof decisionOptionSchema>
 export type DecisionRequestState = z.infer<typeof decisionRequestStateSchema>
@@ -4421,24 +4357,17 @@ export type ErrorSegment = z.infer<typeof errorSegmentSchema>
 export type AssistantSegment = z.infer<typeof assistantSegmentSchema>
 export type AssistantWork = z.infer<typeof assistantWorkSchema>
 export type ConversationTurn = z.infer<typeof conversationTurnSchema>
-type PageConversationWorktreeRequest = z.infer<typeof pageConversationWorktreeRequestSchema>
-export type PageConversationWorktreeResponse = z.infer<
-  typeof pageConversationWorktreeResponseSchema
->
+export type PageConversationWorktreeResponse = z.infer<typeof conversationWorktreePageSchema>
 export type ConversationInspectorSelection = z.infer<typeof conversationInspectorSelectionSchema>
 export type ConversationInspectorItem = z.infer<typeof conversationInspectorItemSchema>
 type GetConversationInspectorItemRequest = z.infer<typeof getConversationInspectorItemRequestSchema>
 export type GetConversationInspectorItemResponse = z.infer<
   typeof getConversationInspectorItemResponseSchema
 >
-type SubscribeConversationEventsRequest = z.infer<typeof subscribeConversationEventsRequestSchema>
 export type SubscribeConversationEventsResponse = z.infer<
-  typeof subscribeConversationEventsResponseSchema
+  typeof conversationEventSubscriptionSchema
 >
-export type UnsubscribeConversationEventsResponse = z.infer<
-  typeof unsubscribeConversationEventsResponseSchema
->
-export type ConversationEventBatchPayload = z.infer<typeof conversationEventBatchPayloadSchema>
+export type ConversationEventBatchPayload = z.infer<typeof conversationEventBatchSchema>
 export type ExportSupportBundleRequest = z.infer<typeof exportSupportBundleRequestSchema>
 export type ExportSupportBundleResponse = z.infer<typeof exportSupportBundleResponseSchema>
 export type ListArtifactsResponse = z.infer<typeof listArtifactsResponseSchema>
@@ -4746,12 +4675,6 @@ export interface CommandClient {
     conversationId: string,
   ) => Promise<DeleteConversationResponse>
   moveProject: (path: string, direction: MoveProjectDirection) => Promise<ListProjectsResponse>
-  pageConversationTimeline: (
-    request: PageConversationTimelineRequest,
-  ) => Promise<PageConversationTimelineResponse>
-  pageConversationWorktree: (
-    request: PageConversationWorktreeRequest,
-  ) => Promise<PageConversationWorktreeResponse>
   getConversationInspectorItem: (
     request: GetConversationInspectorItemRequest,
   ) => Promise<GetConversationInspectorItemResponse>
@@ -4770,7 +4693,6 @@ export interface CommandClient {
   ) => Promise<ListSkillCatalogEntriesResponse>
   listSkillCatalogSources: () => Promise<ListSkillCatalogSourcesResponse>
   listSkills: () => Promise<ListSkillsResponse>
-  resolvePermission: (request: ResolvePermissionRequest) => Promise<ResolvePermissionResponse>
   getConversationCommandOutput: (
     request: GetConversationCommandOutputRequest,
   ) => Promise<GetConversationCommandOutputResponse>
@@ -4831,12 +4753,6 @@ export interface CommandClient {
     request: SendBackgroundAgentInputRequest,
   ) => Promise<BackgroundAgentActionResponse>
   startRun: (request: StartRunRequest) => Promise<StartRunResponse>
-  subscribeConversationEvents: (
-    request: SubscribeConversationEventsRequest,
-  ) => Promise<SubscribeConversationEventsResponse>
-  listenConversationEventBatches: (
-    onBatch: (batch: ConversationEventBatchPayload) => void,
-  ) => Promise<() => void>
   subscribeMcpDiagnostics: (
     request: SubscribeMcpDiagnosticsRequest,
   ) => Promise<SubscribeMcpDiagnosticsResponse>
@@ -4844,9 +4760,6 @@ export interface CommandClient {
     onBatch: (batch: McpDiagnosticBatchPayload) => void,
   ) => Promise<() => void>
   unsubscribeMcpDiagnostics: (subscriptionId: string) => Promise<UnsubscribeMcpDiagnosticsResponse>
-  unsubscribeConversationEvents: (
-    subscriptionId: string,
-  ) => Promise<UnsubscribeConversationEventsResponse>
   updateMemoryItem: (request: UpdateMemoryItemRequest) => Promise<UpdateMemoryItemResponse>
   updateMemorySettings: (
     request: UpdateMemorySettingsRequest,
@@ -5190,24 +5103,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, getSkillCatalogFileRequestSchema, request)
       return parsePayload(command, getSkillCatalogFileResponseSchema, await invoke(command, args))
     },
-    async pageConversationTimeline(request) {
-      const command = 'page_conversation_timeline'
-      const args = parseArgs(command, pageConversationTimelineRequestSchema, request)
-      return parsePayload(
-        command,
-        pageConversationTimelineResponseSchema,
-        await invoke(command, args),
-      )
-    },
-    async pageConversationWorktree(request) {
-      const command = 'page_conversation_worktree'
-      const args = parseArgs(command, pageConversationWorktreeRequestSchema, request)
-      return parsePayload(
-        command,
-        pageConversationWorktreeResponseSchema,
-        await invoke(command, args),
-      )
-    },
     async getConversationInspectorItem(request) {
       const command = 'get_conversation_inspector_item'
       const args = parseArgs(command, getConversationInspectorItemRequestSchema, request)
@@ -5523,11 +5418,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'list_agent_profiles'
       return parsePayload(command, listAgentProfilesResponseSchema, await invoke(command))
     },
-    async resolvePermission(request) {
-      const command = 'resolve_permission'
-      const args = parseArgs(command, resolvePermissionRequestSchema, request)
-      return parsePayload(command, resolvePermissionResponseSchema, await invoke(command, args))
-    },
     async getConversationCommandOutput(request) {
       const command = 'get_conversation_command_output'
       const args = parseArgs(command, getConversationCommandOutputRequestSchema, request)
@@ -5741,28 +5631,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, startRunRequestSchema, request)
       return parsePayload(command, startRunResponseSchema, await invoke(command, args))
     },
-    async subscribeConversationEvents(request) {
-      const command = 'subscribe_conversation_events'
-      const args = parseArgs(command, subscribeConversationEventsRequestSchema, request)
-      return parsePayload(
-        command,
-        subscribeConversationEventsResponseSchema,
-        await invoke(command, args),
-      )
-    },
-    async listenConversationEventBatches(onBatch) {
-      const unlisten = await tauriListen<unknown>('conversation_event_batch', (event) => {
-        onBatch(
-          parsePayload(
-            'conversation_event_batch',
-            conversationEventBatchPayloadSchema,
-            event.payload,
-          ),
-        )
-      })
-
-      return unlisten
-    },
     async subscribeMcpDiagnostics(request) {
       const command = 'subscribe_mcp_diagnostics'
       const args = parseArgs(command, subscribeMcpDiagnosticsRequestSchema, request)
@@ -5789,17 +5657,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       return parsePayload(
         command,
         unsubscribeMcpDiagnosticsResponseSchema,
-        await invoke(command, args),
-      )
-    },
-    async unsubscribeConversationEvents(subscriptionId) {
-      const command = 'unsubscribe_conversation_events'
-      const args = parseArgs(command, unsubscribeConversationEventsRequestSchema, {
-        subscriptionId,
-      })
-      return parsePayload(
-        command,
-        unsubscribeConversationEventsResponseSchema,
         await invoke(command, args),
       )
     },
@@ -5996,13 +5853,6 @@ export function cancelRun(
   client: CommandClient = tauriCommandClient,
 ): Promise<CancelRunResponse> {
   return client.cancelRun(runId)
-}
-
-export function resolvePermission(
-  request: ResolvePermissionRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<ResolvePermissionResponse> {
-  return client.resolvePermission(request)
 }
 
 export function runEvalCase(
@@ -6568,13 +6418,6 @@ export function addProject(
   return client.addProject(path)
 }
 
-export function switchProject(
-  path: string,
-  client: CommandClient = tauriCommandClient,
-): Promise<SwitchProjectResponse> {
-  return client.switchProject(path)
-}
-
 export function moveProject(
   path: string,
   direction: MoveProjectDirection,
@@ -6653,13 +6496,6 @@ export function getReplayTimeline(
   client: CommandClient = tauriCommandClient,
 ): Promise<ReplayTimelineResponse> {
   return client.getReplayTimeline(request)
-}
-
-export function pageConversationWorktree(
-  request: PageConversationWorktreeRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<PageConversationWorktreeResponse> {
-  return client.pageConversationWorktree(request)
 }
 
 export function getConversationInspectorItem(

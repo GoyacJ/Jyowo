@@ -18,6 +18,7 @@
         "height": 800,
         "minWidth": 960,
         "minHeight": 640,
+        "visible": false,
         "center": true,
         "resizable": true,
         "fullscreen": false
@@ -33,7 +34,7 @@
     "createUpdaterArtifacts": true,
     "targets": "all",
     "externalBin": [
-      "binaries/jyowo-agent-supervisor"
+      "binaries/jyowo-harness-daemon"
     ],
     "icon": [
       "icons/32x32.png",

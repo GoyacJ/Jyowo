@@ -9,7 +9,6 @@ use super::constants::*;
 #[allow(unused_imports)]
 use super::contracts::*;
 #[allow(unused_imports)]
-use super::conversations::*;
 #[allow(unused_imports)]
 use super::error::*;
 #[allow(unused_imports)]
@@ -48,8 +47,8 @@ pub async fn list_mcp_servers_with_runtime_state(
         servers.insert(record.id.clone(), summary);
     }
 
-    if let Some(harness) = state.harness() {
-        if let Some(config) = harness.mcp_config() {
+    if let Some(settings_runtime) = state.settings_runtime() {
+        if let Some(config) = settings_runtime.mcp_config() {
             for server_id in config.registry.server_ids().await {
                 if let Some(summary) =
                     mcp_server_summary_from_registry(&config.registry, &server_id).await
@@ -117,20 +116,24 @@ async fn save_mcp_server_record_with_runtime_state(
     let _ = mcp_server_spec_from_record(&record, mcp_workdir_root_for_state(state))?;
     state.mcp_server_store.save_record(&record)?;
 
-    let Some(harness) = state.harness() else {
+    let Some(settings_runtime) = state.settings_runtime() else {
         return Ok(SaveMcpServerResponse {
             server: mcp_server_summary_from_record(&record),
         });
     };
-    remove_mcp_server_from_harness(&harness, &record.id).await?;
+    remove_mcp_server_from_settings_runtime(&settings_runtime, &record.id).await?;
     if !record.enabled {
         return Ok(SaveMcpServerResponse {
             server: mcp_server_summary_from_record(&record),
         });
     }
-    let server =
-        register_mcp_record_with_harness(&record, &harness, state.default_conversation_id, state)
-            .await?;
+    let server = register_mcp_record_with_settings_runtime(
+        &record,
+        &settings_runtime,
+        state.default_conversation_id,
+        state,
+    )
+    .await?;
 
     Ok(SaveMcpServerResponse { server })
 }
@@ -339,8 +342,8 @@ pub async fn delete_mcp_server_with_runtime_state(
     ensure_mcp_server_id(&request.id)?;
     let id = request.id.trim();
     state.mcp_server_store.delete_record(id)?;
-    if let Some(harness) = state.harness() {
-        remove_mcp_server_from_harness(&harness, id).await?;
+    if let Some(settings_runtime) = state.settings_runtime() {
+        remove_mcp_server_from_settings_runtime(&settings_runtime, id).await?;
     }
 
     Ok(DeleteMcpServerResponse {
@@ -367,22 +370,26 @@ pub async fn set_mcp_server_enabled_with_runtime_state(
     }
     state.mcp_server_store.save_record(&record)?;
 
-    let Some(harness) = state.harness() else {
+    let Some(settings_runtime) = state.settings_runtime() else {
         return Ok(SetMcpServerEnabledResponse {
             server: mcp_server_summary_from_record(&record),
         });
     };
 
-    remove_mcp_server_from_harness(&harness, &record.id).await?;
+    remove_mcp_server_from_settings_runtime(&settings_runtime, &record.id).await?;
     if !record.enabled {
         return Ok(SetMcpServerEnabledResponse {
             server: mcp_server_summary_from_record(&record),
         });
     }
 
-    let server =
-        register_mcp_record_with_harness(&record, &harness, state.default_conversation_id, state)
-            .await?;
+    let server = register_mcp_record_with_settings_runtime(
+        &record,
+        &settings_runtime,
+        state.default_conversation_id,
+        state,
+    )
+    .await?;
     Ok(SetMcpServerEnabledResponse { server })
 }
 
@@ -400,22 +407,26 @@ pub async fn restart_mcp_server_with_runtime_state(
         .ok_or_else(|| not_found(format!("mcp server not found: {id}")))?;
     ensure_mcp_server_record(&record)?;
 
-    let Some(harness) = state.harness() else {
+    let Some(settings_runtime) = state.settings_runtime() else {
         return Ok(RestartMcpServerResponse {
             server: mcp_server_summary_from_record(&record),
         });
     };
 
-    remove_mcp_server_from_harness(&harness, &record.id).await?;
+    remove_mcp_server_from_settings_runtime(&settings_runtime, &record.id).await?;
     if !record.enabled {
         return Ok(RestartMcpServerResponse {
             server: mcp_server_summary_from_record(&record),
         });
     }
 
-    let server =
-        register_mcp_record_with_harness(&record, &harness, state.default_conversation_id, state)
-            .await?;
+    let server = register_mcp_record_with_settings_runtime(
+        &record,
+        &settings_runtime,
+        state.default_conversation_id,
+        state,
+    )
+    .await?;
     Ok(RestartMcpServerResponse { server })
 }
 
@@ -654,13 +665,13 @@ pub(crate) async fn mcp_config_from_records(
     })
 }
 
-pub(crate) async fn register_mcp_record_with_harness(
+pub(crate) async fn register_mcp_record_with_settings_runtime(
     record: &McpServerConfigRecord,
-    harness: &Harness,
+    settings_runtime: &DesktopSettingsRuntime,
     default_session_id: SessionId,
     state: &DesktopRuntimeState,
 ) -> Result<McpServerSummaryPayload, CommandErrorPayload> {
-    let Some(config) = harness.mcp_config() else {
+    let Some(config) = settings_runtime.mcp_config() else {
         return Ok(mcp_server_summary_from_record(record));
     };
     let server_id = register_mcp_record_with_registry(
@@ -669,7 +680,7 @@ pub(crate) async fn register_mcp_record_with_harness(
         default_session_id,
         AgentId::new(),
         Arc::clone(&state.mcp_diagnostic_store),
-        harness.authorization_service(),
+        settings_runtime.authorization_service(),
         mcp_workdir_root_for_state(state),
         InteractivityLevel::FullyInteractive,
         false,
@@ -682,7 +693,7 @@ pub(crate) async fn register_mcp_record_with_harness(
     ) {
         if let Err(error) = config
             .registry
-            .inject_tools_into(harness.tool_registry(), &server_id)
+            .inject_tools_into(settings_runtime.tool_registry(), &server_id)
             .await
         {
             config
@@ -854,18 +865,18 @@ fn mcp_authorization_context(
     })
 }
 
-pub(crate) async fn remove_mcp_server_from_harness(
-    harness: &Harness,
+pub(crate) async fn remove_mcp_server_from_settings_runtime(
+    settings_runtime: &DesktopSettingsRuntime,
     id: &str,
 ) -> Result<(), CommandErrorPayload> {
-    let Some(config) = harness.mcp_config() else {
+    let Some(config) = settings_runtime.mcp_config() else {
         return Ok(());
     };
     let server_id = McpServerId(id.to_owned());
     if let Some(tool_names) = config.registry.injected_tool_names(&server_id).await {
         for tool_name in tool_names {
-            if harness.tool_registry().get(&tool_name).is_some() {
-                harness
+            if settings_runtime.tool_registry().get(&tool_name).is_some() {
+                settings_runtime
                     .tool_registry()
                     .deregister(&tool_name)
                     .map_err(|error| runtime_operation_failed(error.to_string()))?;

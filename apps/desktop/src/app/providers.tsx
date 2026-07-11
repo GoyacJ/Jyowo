@@ -1,18 +1,26 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
-
+import type { DaemonClient } from '@/shared/daemon/client'
 import { AppI18nProvider } from '@/shared/i18n/i18n'
 import { readUiPreferences, writeUiPreferences } from '@/shared/local-store/ui-preferences-store'
 import { useUiStore } from '@/shared/state/ui-store'
 import type { CommandClient } from '@/shared/tauri/commands'
-import { CommandClientProvider } from '@/shared/tauri/react'
+import { createDefaultDaemonClient } from '@/shared/tauri/default-client'
+import { CommandClientProvider, DaemonClientProvider } from '@/shared/tauri/react'
 
 export interface AppProvidersProps {
   children: ReactNode
   commandClient: CommandClient
+  daemonClient?: DaemonClient
   queryClient?: QueryClient
 }
+
+const PREFERENCE_HYDRATION_TIMEOUT_MS = 1_500
+const WINDOW_SHOW_RETRY_DELAY_MS = 250
+const WINDOW_SHOW_ATTEMPT_TIMEOUT_MS = 1_000
+const WINDOW_SHOW_MAX_ATTEMPTS = 3
 
 function createQueryClient() {
   return new QueryClient({
@@ -27,6 +35,78 @@ function createQueryClient() {
 
 function getSystemPrefersDark() {
   return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+}
+
+function applyTheme(theme: 'dark' | 'light' | 'system', systemPrefersDark: boolean) {
+  const resolvedTheme = theme === 'system' ? (systemPrefersDark ? 'dark' : 'light') : theme
+
+  document.documentElement.classList.toggle('dark', resolvedTheme === 'dark')
+  document.documentElement.dataset.theme = theme
+  const themeColor = getComputedStyle(document.documentElement)
+    .getPropertyValue('--background')
+    .trim()
+  if (themeColor) {
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', themeColor)
+  }
+}
+
+function showTauriWindowAfterTheme() {
+  if (!('__TAURI_INTERNALS__' in window)) return () => undefined
+
+  let attempt = 0
+  let cancelled = false
+  let attemptTimeout: number | undefined
+  let retryTimeout: number | undefined
+
+  const clearAttemptTimeout = () => {
+    if (attemptTimeout === undefined) return
+    window.clearTimeout(attemptTimeout)
+    attemptTimeout = undefined
+  }
+
+  const scheduleRetry = () => {
+    if (cancelled || attempt >= WINDOW_SHOW_MAX_ATTEMPTS) return
+    retryTimeout = window.setTimeout(runAttempt, WINDOW_SHOW_RETRY_DELAY_MS)
+  }
+
+  const runAttempt = () => {
+    if (cancelled) return
+
+    attempt += 1
+    let settled = false
+    attemptTimeout = window.setTimeout(() => {
+      if (cancelled || settled) return
+      settled = true
+      attemptTimeout = undefined
+      scheduleRetry()
+    }, WINDOW_SHOW_ATTEMPT_TIMEOUT_MS)
+
+    void Promise.resolve()
+      .then(() => getCurrentWindow().show())
+      .then(
+        () => {
+          if (cancelled || settled) return
+          settled = true
+          clearAttemptTimeout()
+        },
+        () => {
+          if (cancelled || settled) return
+          settled = true
+          clearAttemptTimeout()
+          scheduleRetry()
+        },
+      )
+  }
+
+  runAttempt()
+
+  return () => {
+    cancelled = true
+    clearAttemptTimeout()
+    if (retryTimeout !== undefined) {
+      window.clearTimeout(retryTimeout)
+    }
+  }
 }
 
 function ThemeProvider({ children }: { children: ReactNode }) {
@@ -59,16 +139,7 @@ function ThemeProvider({ children }: { children: ReactNode }) {
   }, [theme])
 
   useEffect(() => {
-    const resolvedTheme = theme === 'system' ? (systemPrefersDark ? 'dark' : 'light') : theme
-
-    document.documentElement.classList.toggle('dark', resolvedTheme === 'dark')
-    document.documentElement.dataset.theme = theme
-    const themeColor = getComputedStyle(document.documentElement)
-      .getPropertyValue('--background')
-      .trim()
-    if (themeColor) {
-      document.querySelector('meta[name="theme-color"]')?.setAttribute('content', themeColor)
-    }
+    applyTheme(theme, systemPrefersDark)
   }, [systemPrefersDark, theme])
 
   return children
@@ -78,13 +149,23 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
   const theme = useUiStore((state) => state.theme)
   const locale = useUiStore((state) => state.locale)
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed)
+  const taskWorkbenchMode = useUiStore((state) => state.taskWorkbenchMode)
   const setTheme = useUiStore((state) => state.setTheme)
   const setLocale = useUiStore((state) => state.setLocale)
   const setSidebarCollapsed = useUiStore((state) => state.setSidebarCollapsed)
+  const setTaskWorkbenchMode = useUiStore((state) => state.setTaskWorkbenchMode)
   const [hydrated, setHydrated] = useState(false)
 
   useEffect(() => {
     let cancelled = false
+    let revealStarted = false
+    let cancelReveal: (() => void) | undefined
+    const revealWindow = () => {
+      if (cancelled || revealStarted) return
+      revealStarted = true
+      cancelReveal = showTauriWindowAfterTheme()
+    }
+    const revealTimeout = window.setTimeout(revealWindow, PREFERENCE_HYDRATION_TIMEOUT_MS)
 
     void readUiPreferences()
       .then((preferences) => {
@@ -95,7 +176,10 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
         setTheme(preferences.theme)
         setLocale(preferences.locale)
         setSidebarCollapsed(preferences.sidebarCollapsed)
+        setTaskWorkbenchMode(preferences.taskWorkbenchMode)
+        applyTheme(preferences.theme, getSystemPrefersDark())
         setHydrated(true)
+        revealWindow()
       })
       .catch(() => {
         if (cancelled) {
@@ -104,38 +188,49 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
 
         // Local UI preferences are non-security settings, so store failures should not block app rendering.
         setHydrated(true)
+        revealWindow()
       })
 
     return () => {
       cancelled = true
+      window.clearTimeout(revealTimeout)
+      cancelReveal?.()
     }
-  }, [setLocale, setSidebarCollapsed, setTheme])
+  }, [setLocale, setSidebarCollapsed, setTaskWorkbenchMode, setTheme])
 
   useEffect(() => {
     if (!hydrated) {
       return
     }
 
-    void writeUiPreferences({ locale, sidebarCollapsed, theme }).catch(() => {
+    void writeUiPreferences({ locale, sidebarCollapsed, taskWorkbenchMode, theme }).catch(() => {
       // Local UI preferences are non-security settings; the app can keep running without persistence.
     })
-  }, [hydrated, locale, sidebarCollapsed, theme])
+  }, [hydrated, locale, sidebarCollapsed, taskWorkbenchMode, theme])
 
   return children
 }
 
-export function AppProviders({ children, commandClient, queryClient }: AppProvidersProps) {
+export function AppProviders({
+  children,
+  commandClient,
+  daemonClient,
+  queryClient,
+}: AppProvidersProps) {
   const [defaultQueryClient] = useState(createQueryClient)
+  const [defaultDaemonClient] = useState(createDefaultDaemonClient)
 
   return (
-    <CommandClientProvider client={commandClient}>
-      <QueryClientProvider client={queryClient ?? defaultQueryClient}>
-        <UiPreferencesProvider>
-          <AppI18nProvider>
-            <ThemeProvider>{children}</ThemeProvider>
-          </AppI18nProvider>
-        </UiPreferencesProvider>
-      </QueryClientProvider>
-    </CommandClientProvider>
+    <DaemonClientProvider client={daemonClient ?? defaultDaemonClient}>
+      <CommandClientProvider client={commandClient}>
+        <QueryClientProvider client={queryClient ?? defaultQueryClient}>
+          <UiPreferencesProvider>
+            <AppI18nProvider>
+              <ThemeProvider>{children}</ThemeProvider>
+            </AppI18nProvider>
+          </UiPreferencesProvider>
+        </QueryClientProvider>
+      </CommandClientProvider>
+    </DaemonClientProvider>
   )
 }

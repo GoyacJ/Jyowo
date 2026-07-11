@@ -826,8 +826,7 @@ describe('ModelConfigDialog', () => {
     })
     fireEvent.change(within(dialog).getByLabelText('Safety settings'), {
       target: {
-        value:
-          '[{"category":"HARM_CATEGORY_DANGEROUS_CONTENT","threshold":"BLOCK_ONLY_HIGH"}]',
+        value: '[{"category":"HARM_CATEGORY_DANGEROUS_CONTENT","threshold":"BLOCK_ONLY_HIGH"}]',
       },
     })
     fireEvent.change(within(dialog).getByLabelText('Cached content'), {

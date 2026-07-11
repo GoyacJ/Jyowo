@@ -86,22 +86,6 @@ async fn memory_commands_list_inspect_update_delete_and_export_visible_items() {
             .and_then(serde_json::Value::as_str),
         Some(expected_content_hash.as_str())
     );
-    let events = state
-        .harness()
-        .expect("runtime harness should exist")
-        .event_store()
-        .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
-        .await
-        .expect("memory export audit events should be readable")
-        .collect::<Vec<_>>()
-        .await;
-    assert!(events.iter().any(|event| {
-        matches!(event, Event::MemoryExported(exported)
-            if exported.item_count == 1
-                && exported.content_hashes.len() == 1
-                && exported.bytes_exported > 0)
-    }));
-
     let raw_export = export_memory_items_with_runtime_state(
         ExportMemoryItemsRequest {
             session_id: None,
@@ -221,9 +205,9 @@ async fn no_workspace_memory_export_uses_global_runtime_exports() {
         .join("global-conversations");
     let conversation_cwd = runtime_root.join("workdir").join(session_id.to_string());
     std::fs::create_dir_all(&conversation_cwd).unwrap();
-    let harness = Arc::new(
-        Harness::builder()
-            .with_options(test_harness_options(&conversation_cwd))
+    let settings_runtime: Arc<DesktopSettingsRuntime> = Arc::new(
+        DesktopSettingsRuntime::builder()
+            .with_options(test_settings_options(&conversation_cwd))
             .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -234,16 +218,15 @@ async fn no_workspace_memory_export_uses_global_runtime_exports() {
             .with_memory_provider_arc(Arc::new(RawExportMemoryProvider::new(provider.clone())))
             .build()
             .await
-            .expect("harness should build with memory provider"),
+            .expect("settings runtime should build with memory provider")
+            .into(),
     );
-    let state =
-        DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_global_conversation(
-            runtime_root,
-            session_id,
-            harness,
-            stream_permission_runtime,
-        )
-        .expect("state should use the harness permission broker");
+    let state = DesktopRuntimeState::with_settings_runtime_for_global_conversation(
+        runtime_root,
+        session_id,
+        settings_runtime,
+    )
+    .expect("state should use the settings runtime");
     provider
         .upsert(test_memory_record(session_id, "Global conversation memory"))
         .await

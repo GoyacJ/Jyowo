@@ -14,7 +14,6 @@ import { createTestCommandClientState } from './state'
 
 export { agentOrchestrationBackgroundAgentsResponse } from './agents'
 export type { TestCommandClientOptions } from './base'
-export { agentOrchestrationProjectedWorktreePage } from './conversation'
 export { testJyowoProject } from './settings'
 
 export function createTestCommandClient(options: TestCommandClientOptions = {}): CommandClient {

@@ -22,6 +22,7 @@ pub struct SubagentRunnerAssemblyInput {
     pub event_store: Arc<dyn EventStore>,
     pub workspace_root: PathBuf,
     pub team_attribution: Option<SubagentTeamAttribution>,
+    pub daemon_runner: Option<Arc<dyn SubagentRunner>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +51,9 @@ pub fn delegation_policy_from_run_options(options: &AgentToolPolicy) -> Delegati
 
 #[must_use]
 pub fn assemble_subagent_runner(input: SubagentRunnerAssemblyInput) -> Arc<dyn SubagentRunner> {
+    if let Some(runner) = input.daemon_runner {
+        return runner;
+    }
     let policy = delegation_policy_from_run_options(&input.agent_tool_policy);
     Arc::new(
         DefaultSubagentRunner::new_with_engine_factory(

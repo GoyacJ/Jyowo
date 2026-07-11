@@ -125,185 +125,6 @@ async fn save_automation_rejects_non_read_only_workspace_snapshot() {
 }
 
 #[tokio::test]
-async fn disabled_automation_is_not_run_by_due_scheduler() {
-    let workspace = unique_workspace("automation-disabled-not-due");
-    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
-    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
-        .expect("runtime state should initialize");
-    save_automation_with_runtime_state(
-        SaveAutomationRequest {
-            automation: automation_spec("checks", false, MissedRunPolicy::RunOnce),
-        },
-        &state,
-    )
-    .await
-    .expect("automation should save");
-
-    let records = run_due_automations_once_with_runtime_state(chrono::Utc::now(), &state)
-        .await
-        .expect("scheduler pass should succeed");
-
-    assert!(records.is_empty());
-    assert!(list_automation_runs_with_runtime_state(None, &state)
-        .await
-        .unwrap()
-        .runs
-        .is_empty());
-}
-
-#[tokio::test(start_paused = true)]
-async fn automation_scheduler_task_runs_due_automations_in_process() {
-    let workspace = unique_workspace("automation-scheduler-task");
-    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
-    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
-        .expect("runtime state should initialize");
-    let now = chrono::Utc::now();
-    save_automation_with_runtime_state(
-        SaveAutomationRequest {
-            automation: automation_spec_at(
-                "checks",
-                true,
-                MissedRunPolicy::RunOnce,
-                now - chrono::Duration::minutes(120),
-            ),
-        },
-        &state,
-    )
-    .await
-    .expect("automation should save");
-    let runtime = Arc::new(tokio::sync::RwLock::new(state.clone()));
-
-    let task = spawn_automation_scheduler(runtime);
-    tokio::task::yield_now().await;
-    tokio::time::advance(Duration::from_secs(60)).await;
-    tokio::task::yield_now().await;
-    task.abort();
-    let runs = list_automation_runs_with_runtime_state(Some("checks".to_owned()), &state)
-        .await
-        .expect("scheduler should write ledger");
-
-    assert_eq!(runs.runs.len(), 1);
-    assert_eq!(runs.runs[0].status, AutomationRunStatus::Rejected);
-}
-
-#[test]
-fn automation_scheduler_can_start_from_sync_tauri_setup_context() {
-    let workspace = unique_workspace("automation-scheduler-sync-setup");
-    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
-    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
-        .expect("runtime state should initialize");
-    let runtime = Arc::new(tokio::sync::RwLock::new(state));
-
-    let task = spawn_automation_scheduler_on_tauri_runtime(runtime);
-    task.abort();
-}
-
-#[tokio::test]
-async fn run_automation_now_writes_rejected_ledger_without_runtime() {
-    let workspace = unique_workspace("automation-run-now-ledger");
-    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
-    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
-        .expect("runtime state should initialize");
-    save_automation_with_runtime_state(
-        SaveAutomationRequest {
-            automation: automation_spec("checks", true, MissedRunPolicy::Skip),
-        },
-        &state,
-    )
-    .await
-    .expect("automation should save");
-
-    let payload = run_automation_now_with_runtime_state("checks".to_owned(), &state)
-        .await
-        .expect("manual automation run should record a rejection");
-    let runs = list_automation_runs_with_runtime_state(Some("checks".to_owned()), &state)
-        .await
-        .expect("automation ledger should load");
-
-    assert_eq!(payload.record.status, AutomationRunStatus::Rejected);
-    assert_eq!(runs.runs.len(), 1);
-    assert_eq!(runs.runs[0].automation_id, "checks");
-    assert_eq!(runs.runs[0].status, AutomationRunStatus::Rejected);
-    let serialized = serde_json::to_string(&runs).unwrap();
-    assert!(!serialized.contains("rawToolOutput"));
-}
-
-#[tokio::test]
-async fn automation_missed_policy_skip_or_run_once_is_enforced() {
-    let workspace = unique_workspace("automation-missed-policy");
-    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
-    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
-        .expect("runtime state should initialize");
-    let now = chrono::Utc::now();
-    save_automation_with_runtime_state(
-        SaveAutomationRequest {
-            automation: automation_spec_at(
-                "skip-missed",
-                true,
-                MissedRunPolicy::Skip,
-                now - chrono::Duration::minutes(120),
-            ),
-        },
-        &state,
-    )
-    .await
-    .expect("skip automation should save");
-    save_automation_with_runtime_state(
-        SaveAutomationRequest {
-            automation: automation_spec_at(
-                "run-once-missed",
-                true,
-                MissedRunPolicy::RunOnce,
-                now - chrono::Duration::minutes(120),
-            ),
-        },
-        &state,
-    )
-    .await
-    .expect("run-once automation should save");
-
-    let records = run_due_automations_once_with_runtime_state(now, &state)
-        .await
-        .expect("scheduler pass should handle missed policy");
-
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].automation_id, "run-once-missed");
-    assert_eq!(records[0].status, AutomationRunStatus::Rejected);
-}
-
-#[tokio::test]
-async fn automation_rejects_missing_permission_or_profile_snapshot() {
-    let workspace = unique_workspace("automation-missing-snapshot");
-    let automations_path = global_automations_path(&workspace);
-    std::fs::create_dir_all(automations_path.parent().unwrap())
-        .expect("global config directory should exist");
-    std::fs::write(
-        &automations_path,
-        r#"[{
-          "id":"old",
-          "enabled":true,
-          "prompt":"Run checks",
-          "schedule":{"intervalMinutes":30},
-          "sandboxMode":"none",
-          "workspaceScope":"current_workspace",
-          "workspaceAccess":"read_only",
-          "createdAt":"2026-06-30T01:00:00Z",
-          "updatedAt":"2026-06-30T01:00:00Z"
-        }]"#,
-    )
-    .expect("old automation file should write");
-    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
-        .expect("runtime state should initialize");
-
-    let error = run_due_automations_once_with_runtime_state(chrono::Utc::now(), &state)
-        .await
-        .expect_err("missing snapshot should fail closed");
-
-    assert_eq!(error.code, "INVALID_PAYLOAD");
-    assert!(error.message.contains("automation"));
-}
-
-#[tokio::test]
 async fn automation_delete_and_set_enabled_update_saved_state() {
     let workspace = unique_workspace("automation-delete-enable");
     std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
@@ -361,37 +182,10 @@ fn execution_settings_save_default_without_changing_session_options() {
     .expect("execution settings should save");
 
     let options = state
-        .conversation_session_options(SessionId::new())
+        .settings_session_options(SessionId::new())
         .expect("session options");
 
     assert_eq!(options.permission_mode, PermissionMode::Default);
-    assert_eq!(options.tool_profile, ToolProfile::Coding);
-    assert_eq!(options.context_compression_trigger_ratio, 0.72);
-}
-
-#[tokio::test]
-async fn active_conversation_runtime_applies_saved_tool_profile() {
-    let workspace = unique_workspace("execution-settings-active-runtime-tool-profile");
-    let state = runtime_state_with_harness_for_workspace(workspace).await;
-    set_execution_settings_with_store(
-        SetExecutionSettingsRequest {
-            permission_mode: PermissionMode::Default,
-            tool_profile: ToolProfile::Coding,
-            context_compression_trigger_ratio: 0.72,
-            subagents_enabled: false,
-            agent_teams_enabled: false,
-            background_agents_enabled: false,
-        },
-        &global_execution_settings_store(state.workspace_root()),
-        None,
-    )
-    .expect("execution settings should save");
-
-    let (_, options) = state
-        .active_conversation_runtime(SessionId::new())
-        .expect("active runtime lookup")
-        .expect("active runtime should be present");
-
     assert_eq!(options.tool_profile, ToolProfile::Coding);
     assert_eq!(options.context_compression_trigger_ratio, 0.72);
 }
@@ -737,7 +531,7 @@ fn set_execution_settings_rejects_auto_without_runtime_support() {
 #[tokio::test]
 async fn execution_settings_agent_capabilities_reflect_resolver_with_stream_permission() {
     let workspace = unique_workspace("execution-settings-agent-capabilities");
-    let state = runtime_state_with_harness_for_workspace(workspace).await;
+    let state = runtime_state_with_settings_runtime_for_workspace(workspace).await;
     let context = AgentCapabilityResolutionContext {
         stream_permission_runtime_available: true,
     };

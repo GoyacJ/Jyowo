@@ -2,238 +2,7 @@
 #![allow(unused_imports)]
 
 use super::*;
-use harness_contracts::{NetworkAccess, ToolActionPlan, ToolExecutionChannel};
 use harness_sandbox::{NetworkPolicySupport, WorkspacePolicySupport};
-use harness_tool::{action_plan_from_permission_check, AuthorizedToolInput};
-
-pub(crate) fn permission_request() -> PermissionRequest {
-    permission_request_with_subject(PermissionSubject::CommandExec {
-        command: "pwd".to_owned(),
-        argv: vec!["pwd".to_owned()],
-        cwd: None,
-        fingerprint: None,
-    })
-}
-
-pub(crate) struct NeedsPermissionTool {
-    pub(crate) descriptor: ToolDescriptor,
-}
-
-impl Default for NeedsPermissionTool {
-    fn default() -> Self {
-        Self::named("NeedsPermission", "NeedsPermission")
-    }
-}
-
-impl NeedsPermissionTool {
-    pub(crate) fn named(name: &str, display_name: &str) -> Self {
-        Self {
-            descriptor: ToolDescriptor {
-                name: name.to_owned(),
-                display_name: display_name.to_owned(),
-                description: "Requests command permission for desktop tests.".to_owned(),
-                category: "test".to_owned(),
-                group: ToolGroup::Custom("test".to_owned()),
-                version: "0.1.0".to_owned(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "command": { "type": "string" }
-                    },
-                    "required": ["command"]
-                }),
-                output_schema: None,
-                dynamic_schema: false,
-                properties: ToolProperties {
-                    is_concurrency_safe: true,
-                    is_read_only: false,
-                    is_destructive: false,
-                    long_running: None,
-                    defer_policy: DeferPolicy::AlwaysLoad,
-                },
-                trust_level: TrustLevel::UserControlled,
-                required_capabilities: Vec::new(),
-                budget: ResultBudget {
-                    metric: BudgetMetric::Chars,
-                    limit: 30_000,
-                    on_overflow: OverflowAction::Offload,
-                    preview_head_chars: 2_000,
-                    preview_tail_chars: 2_000,
-                },
-                provider_restriction: ProviderRestriction::All,
-                origin: jyowo_harness_sdk::ext::ToolOrigin::Builtin,
-                search_hint: None,
-                service_binding: None,
-                metadata: Default::default(),
-            },
-        }
-    }
-}
-
-#[async_trait]
-impl Tool for NeedsPermissionTool {
-    fn descriptor(&self) -> &ToolDescriptor {
-        &self.descriptor
-    }
-
-    async fn validate(&self, _input: &Value, _ctx: &ToolContext) -> Result<(), ValidationError> {
-        Ok(())
-    }
-
-    async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
-        let command = input
-            .get("command")
-            .and_then(Value::as_str)
-            .unwrap_or("needs-permission")
-            .to_owned();
-
-        action_plan_from_permission_check(
-            self.descriptor(),
-            input,
-            ctx,
-            PermissionCheck::AskUser {
-                subject: PermissionSubject::CommandExec {
-                    command: command.clone(),
-                    argv: vec![command.clone()],
-                    cwd: None,
-                    fingerprint: None,
-                },
-                scope: DecisionScope::ExactCommand { command, cwd: None },
-            },
-            Vec::new(),
-            WorkspaceAccess::None,
-            NetworkAccess::None,
-            ToolExecutionChannel::DirectAuthorizedRust,
-        )
-    }
-
-    async fn execute_authorized(
-        &self,
-        _authorized: AuthorizedToolInput,
-        _ctx: ToolContext,
-    ) -> Result<ToolStream, ToolError> {
-        Ok(Box::pin(stream::iter(vec![ToolEvent::Final(
-            ToolResult::Text("done".to_owned()),
-        )])))
-    }
-}
-
-struct TestBackgroundAgentStarter {
-    workspace_root: PathBuf,
-    event_store: Arc<dyn EventStore>,
-}
-
-impl harness_contracts::BackgroundAgentStarterCap for TestBackgroundAgentStarter {
-    fn start_background_agent(
-        &self,
-        request: harness_contracts::BackgroundAgentToolStartRequest,
-    ) -> futures::future::BoxFuture<
-        'static,
-        Result<harness_contracts::BackgroundAgentToolStartResponse, ToolError>,
-    > {
-        let workspace_root = self.workspace_root.clone();
-        let event_store = Arc::clone(&self.event_store);
-        Box::pin(async move {
-            let store = Arc::new(
-                agent_runtime_store_for_workspace(&workspace_root)
-                    .map_err(|error| ToolError::Internal(error.to_string()))?,
-            );
-            let redactor = Arc::new(DefaultRedactor::default());
-            let manager = jyowo_harness_sdk::BackgroundAgentManager::new(
-                store,
-                event_store,
-                request.tenant_id,
-                request.conversation_id,
-                redactor.clone(),
-            );
-            let mut safe_input =
-                harness_contracts::ConversationTurnInput::ask(request.goal.clone());
-            safe_input.prompt = redactor.redact(&request.goal, &RedactRules::default());
-            let mut agent_tool_policy = request.agent_tool_policy.clone();
-            agent_tool_policy.background_agents = AgentUsePolicy::Off;
-            let record = manager
-                .start(jyowo_harness_sdk::BackgroundAgentStartRequest {
-                    background_agent_id: None,
-                    conversation_id: request.conversation_id,
-                    title: request.title.clone(),
-                    payload_json: json!({
-                        "conversationId": request.conversation_id.to_string(),
-                        "parentRunId": request.parent_run_id.to_string(),
-                        "toolUseId": request.tool_use_id.to_string(),
-                        "source": "background_agent_tool",
-                        "supervisorExecution": {
-                            "status": "queued",
-                            "session": request.session,
-                            "input": safe_input,
-                            "modelConfigId": request.model_config_id,
-                            "permissionMode": request.permission_mode,
-                            "agentToolPolicy": agent_tool_policy,
-                        },
-                    })
-                    .to_string(),
-                })
-                .await
-                .map_err(|error| ToolError::Internal(error.to_string()))?;
-            Ok(harness_contracts::BackgroundAgentToolStartResponse {
-                background_agent_id: record.background_agent_id,
-                conversation_id: request.conversation_id,
-                parent_run_id: request.parent_run_id,
-                title: record.title,
-                status: "started".to_owned(),
-            })
-        })
-    }
-}
-
-pub(crate) fn permission_request_with_subject(subject: PermissionSubject) -> PermissionRequest {
-    let tenant_id = TenantId::SHARED;
-    let session_id = SessionId::new();
-
-    PermissionRequest {
-        request_id: RequestId::new(),
-        tenant_id,
-        session_id,
-        tool_use_id: ToolUseId::new(),
-        tool_name: "shell".to_owned(),
-        subject,
-        severity: Severity::Low,
-        scope_hint: DecisionScope::ToolName("shell".to_owned()),
-        action_plan_hash: harness_contracts::ActionPlanHash::default(),
-        decision_options: Vec::new(),
-        confirmation_expected: None,
-        created_at: now(),
-    }
-}
-
-pub(crate) fn permission_context() -> PermissionContext {
-    permission_context_with_run_id(None)
-}
-
-pub(crate) fn permission_context_with_run_id(run_id: Option<RunId>) -> PermissionContext {
-    PermissionContext {
-        permission_mode: PermissionMode::Default,
-        previous_mode: None,
-        session_id: SessionId::new(),
-        tenant_id: TenantId::SHARED,
-        run_id,
-        interactivity: InteractivityLevel::FullyInteractive,
-        timeout_policy: None,
-        fallback_policy: FallbackPolicy::AskUser,
-        hook_overrides: Vec::new(),
-    }
-}
-
-pub(crate) fn permission_context_for_request(
-    request: &PermissionRequest,
-    run_id: Option<RunId>,
-) -> PermissionContext {
-    PermissionContext {
-        session_id: request.session_id,
-        tenant_id: request.tenant_id,
-        run_id,
-        ..permission_context_with_run_id(run_id)
-    }
-}
 
 pub(crate) fn test_memory_record(session_id: SessionId, content: &str) -> MemoryRecord {
     MemoryRecord {
@@ -315,72 +84,22 @@ impl MemoryProvider for RawExportMemoryProvider {
     }
 }
 
-pub(crate) async fn wait_for_pending_permission(
-    state: &DesktopRuntimeState,
-    request_id: RequestId,
-) -> jyowo_harness_sdk::ext::PendingPermissionRequest {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-    loop {
-        if let Some(pending) = state
-            .pending_permission_requests()
-            .into_iter()
-            .find(|pending| pending.request.request_id == request_id)
-        {
-            return pending;
-        }
-
-        if tokio::time::Instant::now() >= deadline {
-            panic!("permission request should become pending");
-        }
-
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-}
-
-pub(crate) async fn wait_for_pending_permission_for_session(
-    state: &DesktopRuntimeState,
-    session_id: SessionId,
-) -> jyowo_harness_sdk::ext::PendingPermissionRequest {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-    loop {
-        if let Some(pending) = state
-            .pending_permission_requests()
-            .into_iter()
-            .find(|pending| pending.request.session_id == session_id)
-        {
-            return pending;
-        }
-
-        if tokio::time::Instant::now() >= deadline {
-            panic!("permission request should become pending for session");
-        }
-
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-}
-
 pub(crate) fn permission_option_id_for_decision(
     pending: &jyowo_harness_sdk::ext::PendingPermissionRequest,
     decision: Decision,
-) -> String {
+) -> PermissionOptionId {
     pending
         .decision_options
         .iter()
         .find(|option| option.decision == decision)
-        .map(|option| option.option_id.to_string())
+        .map(|option| option.option_id.clone())
         .expect("pending permission should expose the requested decision option")
 }
 
 pub(crate) fn approve_permission_option_id(
     pending: &jyowo_harness_sdk::ext::PendingPermissionRequest,
-) -> String {
+) -> PermissionOptionId {
     permission_option_id_for_decision(pending, Decision::AllowOnce)
-}
-
-pub(crate) fn deny_permission_option_id(
-    pending: &jyowo_harness_sdk::ext::PendingPermissionRequest,
-) -> String {
-    permission_option_id_for_decision(pending, Decision::DenyOnce)
 }
 
 pub(crate) async fn run_with_mcp_transport_approval<T>(
@@ -395,7 +114,7 @@ where
     let command_task = tokio::spawn(command);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
     let pending = loop {
-        if let Some(pending) = state
+        if let Some(pending) = settings_permission_resolver(state)
             .pending_permission_requests()
             .into_iter()
             .find(|pending| {
@@ -421,60 +140,34 @@ where
         tokio::time::sleep(Duration::from_millis(1)).await;
     };
 
-    resolve_permission_with_runtime_state(
-        ResolvePermissionRequest {
-            conversation_id: pending.request.session_id.to_string(),
-            decision: PermissionDecision::Approve,
-            option_id: approve_permission_option_id(&pending),
-            request_id: pending.request.request_id.to_string(),
-            confirmation_text: None,
-        },
-        state,
-    )
-    .await?;
+    settings_permission_resolver(state)
+        .resolve_option_for(
+            pending.request.request_id,
+            pending.request.tenant_id,
+            pending.request.session_id,
+            approve_permission_option_id(&pending),
+            Decision::AllowOnce,
+            None,
+        )
+        .await
+        .map_err(|error| CommandErrorPayload {
+            code: "RUNTIME_OPERATION_FAILED",
+            message: error.to_string(),
+        })?;
 
     command_task
         .await
         .expect("mcp command task should complete without panicking")
 }
 
-pub(crate) async fn wait_for_pending_mcp_transport_permission(
+fn settings_permission_resolver(
     state: &DesktopRuntimeState,
-) -> jyowo_harness_sdk::ext::PendingPermissionRequest {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-    loop {
-        if let Some(pending) = state
-            .pending_permission_requests()
-            .into_iter()
-            .find(|pending| {
-                matches!(
-                    &pending.request.subject,
-                    PermissionSubject::Custom { kind, .. } if kind == "mcp_transport"
-                )
-            })
-        {
-            return pending;
-        }
-
-        if tokio::time::Instant::now() >= deadline {
-            panic!("mcp transport permission request should become pending");
-        }
-
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-}
-
-pub(crate) async fn open_conversation_session(state: &DesktopRuntimeState, session_id: SessionId) {
+) -> jyowo_harness_sdk::ext::ResolverHandle {
     state
-        .harness()
-        .expect("runtime state should retain the configured harness")
-        .open_or_create_conversation_session(
-            state
-                .conversation_session_options(session_id)
-                .expect("session options"),
-        )
-        .await
-        .expect("conversation session should open");
+        .settings_runtime()
+        .expect("settings runtime should be available")
+        .permission_resolver_handle()
+        .expect("settings permission resolver should be available")
 }
 
 #[derive(Debug, Default)]
@@ -545,119 +238,7 @@ impl jyowo_harness_sdk::ext::SandboxBackend for AllowExecPreflightSandbox {
     }
 }
 
-pub(crate) fn test_run_started_event(session_id: SessionId, run_id: RunId) -> RunStartedEvent {
-    RunStartedEvent {
-        correlation_id: CorrelationId::new(),
-        effective_config_hash: ConfigHash([0; 32]),
-        input: TurnInput {
-            message: Message {
-                created_at: now(),
-                id: MessageId::new(),
-                parts: vec![MessagePart::Text("Test run".to_owned())],
-                role: MessageRole::User,
-            },
-            metadata: json!({}),
-        },
-        parent_run_id: None,
-        permission_mode: PermissionMode::Default,
-        model: test_run_model_snapshot(),
-        run_id,
-        session_id,
-        snapshot_id: SnapshotId::new(),
-        started_at: now(),
-        tenant_id: TenantId::SINGLE,
-    }
-}
-
-pub(crate) fn test_run_model_snapshot() -> RunModelSnapshot {
-    RunModelSnapshot {
-        model_config_id: None,
-        provider_id: "test".to_owned(),
-        model_id: "test-model".to_owned(),
-        display_name: "Test Model".to_owned(),
-        protocol: ModelProtocol::Messages,
-        context_window: 128_000,
-        max_output_tokens: 8_192,
-        conversation_capability: ConversationModelCapability::default(),
-    }
-}
-
-pub(crate) fn test_tool_use_requested_event(
-    run_id: RunId,
-    tool_use_id: ToolUseId,
-    tool_name: &str,
-) -> ToolUseRequestedEvent {
-    ToolUseRequestedEvent {
-        at: now(),
-        causation_id: EventId::new(),
-        input: json!({ "toolName": tool_name }),
-        properties: ToolProperties {
-            is_concurrency_safe: true,
-            is_destructive: false,
-            is_read_only: false,
-            long_running: None,
-            defer_policy: DeferPolicy::AlwaysLoad,
-        },
-        run_id,
-        tool_name: tool_name.to_owned(),
-        tool_use_id,
-    }
-}
-
-pub(crate) fn test_permission_requested_event(
-    session_id: SessionId,
-    run_id: RunId,
-    tool_use_id: ToolUseId,
-    request_id: RequestId,
-    tool_name: &str,
-) -> PermissionRequestedEvent {
-    PermissionRequestedEvent {
-        at: now(),
-        causation_id: EventId::new(),
-        fingerprint: None,
-        interactivity: InteractivityLevel::FullyInteractive,
-        auto_resolved: false,
-        actor_source: PermissionActorSource::ParentRun,
-        action_plan_hash: Default::default(),
-        review: Default::default(),
-        effective_mode: Default::default(),
-        sandbox_policy: Default::default(),
-        presented_options: vec![PermissionDecisionOption {
-            option_id: PermissionOptionId::new(),
-            decision: Decision::AllowOnce,
-            scope: DecisionScope::Any,
-            lifetime: DecisionLifetime::Once,
-            matcher_summary: DecisionMatcherSummary {
-                kind: DecisionMatcherKind::Any,
-                label: "allow once".to_owned(),
-            },
-            label: "Allow once".to_owned(),
-            requires_confirmation: false,
-            action_plan_hash: ActionPlanHash::default(),
-            fingerprint: None,
-        }],
-        request_id,
-        run_id,
-        scope_hint: DecisionScope::ToolName(tool_name.to_owned()),
-        session_id,
-        severity: Severity::Low,
-        subject: PermissionSubject::CommandExec {
-            argv: vec![tool_name.to_owned()],
-            command: tool_name.to_owned(),
-            cwd: None,
-            fingerprint: None,
-        },
-        tenant_id: TenantId::SINGLE,
-        tool_name: tool_name.to_owned(),
-        tool_use_id,
-    }
-}
-
-pub(crate) async fn runtime_state_with_harness() -> DesktopRuntimeState {
-    runtime_state_with_harness_for_workspace(unique_workspace("harness")).await
-}
-
-pub(crate) async fn runtime_state_with_harness_for_workspace(
+pub(crate) async fn runtime_state_with_settings_runtime_for_workspace(
     workspace: PathBuf,
 ) -> DesktopRuntimeState {
     std::fs::create_dir_all(&workspace).unwrap();
@@ -667,109 +248,28 @@ pub(crate) async fn runtime_state_with_harness_for_workspace(
         heartbeat_interval: None,
         max_pending: 16,
     }));
-    let blob_store: Arc<dyn BlobStore> = Arc::new(
-        FileBlobStore::open(workspace.join(".jyowo").join("runtime").join("blobs"))
-            .expect("test blob store should open"),
-    );
-    let evidence_registry = Arc::new(
-        SqliteEvidenceRefRegistry::open(
-            workspace
-                .join(".jyowo")
-                .join("runtime")
-                .join("conversation-read-model.sqlite"),
-        )
-        .await
-        .expect("test evidence registry should open"),
-    );
-    let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
-    let event_store_for_evidence = Arc::clone(&event_store) as Arc<dyn harness_journal::EventStore>;
-    let evidence_ref_store = Arc::new(EvidenceRefStore::new_with_event_store(
-        evidence_registry,
-        Arc::clone(&blob_store),
-        event_store_for_evidence,
-    ));
-    let harness = Arc::new(
-        Harness::builder()
-            .with_options(test_harness_options(&workspace))
+    let settings_runtime: Arc<DesktopSettingsRuntime> = Arc::new(
+        DesktopSettingsRuntime::builder()
+            .with_options(test_settings_options(&workspace))
             .with_model(TestModelProvider::default())
-            .with_store(event_store)
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
-            .with_blob_store_arc(blob_store)
-            .with_evidence_ref_store_arc(evidence_ref_store)
             .with_stream_permission_broker_arc(
                 stream_permission_runtime.broker(),
                 stream_permission_runtime.resolver_handle(),
             )
             .build()
             .await
-            .expect("harness should build with stream permission runtime"),
+            .expect("settings runtime should build with stream permission runtime")
+            .into(),
     );
 
-    let mut state = DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
-        workspace,
-        harness,
-        stream_permission_runtime,
-    )
-    .expect("state should use the harness permission broker");
+    let mut state =
+        DesktopRuntimeState::with_settings_runtime_for_workspace(workspace, settings_runtime)
+            .expect("state should use the settings permission broker");
     let state_workspace = state.workspace_root().to_path_buf();
     use_test_provider_settings_store(&mut state, &state_workspace);
     state
-}
-
-pub(crate) async fn runtime_state_with_harness_for_global_conversation(
-    runtime_root: PathBuf,
-    conversation_id: SessionId,
-) -> DesktopRuntimeState {
-    std::fs::create_dir_all(&runtime_root).unwrap();
-    let conversation_cwd = runtime_root
-        .join("workdir")
-        .join(conversation_id.to_string());
-    std::fs::create_dir_all(&conversation_cwd).unwrap();
-    write_test_provider_settings(&conversation_cwd);
-    let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
-        default_timeout: Some(Duration::from_secs(5)),
-        heartbeat_interval: None,
-        max_pending: 16,
-    }));
-    let blob_store: Arc<dyn BlobStore> = Arc::new(
-        FileBlobStore::open(runtime_root.join("blobs")).expect("test blob store should open"),
-    );
-    let evidence_registry = Arc::new(
-        SqliteEvidenceRefRegistry::open(runtime_root.join("conversation-read-model.sqlite"))
-            .await
-            .expect("test evidence registry should open"),
-    );
-    let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
-    let event_store_for_evidence = Arc::clone(&event_store) as Arc<dyn harness_journal::EventStore>;
-    let evidence_ref_store = Arc::new(EvidenceRefStore::new_with_event_store(
-        evidence_registry,
-        Arc::clone(&blob_store),
-        event_store_for_evidence,
-    ));
-    let harness = Arc::new(
-        Harness::builder()
-            .with_options(test_harness_options(&conversation_cwd))
-            .with_model(TestModelProvider::default())
-            .with_store(event_store)
-            .with_sandbox(NoopSandbox::new())
-            .with_blob_store_arc(blob_store)
-            .with_evidence_ref_store_arc(evidence_ref_store)
-            .with_stream_permission_broker_arc(
-                stream_permission_runtime.broker(),
-                stream_permission_runtime.resolver_handle(),
-            )
-            .build()
-            .await
-            .expect("harness should build with stream permission runtime"),
-    );
-
-    DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_global_conversation(
-        runtime_root,
-        conversation_id,
-        harness,
-        stream_permission_runtime,
-    )
-    .expect("state should use the harness permission broker")
 }
 
 pub(crate) async fn runtime_state_with_memory_provider(
@@ -783,9 +283,9 @@ pub(crate) async fn runtime_state_with_memory_provider(
         heartbeat_interval: None,
         max_pending: 16,
     }));
-    let harness = Arc::new(
-        Harness::builder()
-            .with_options(test_harness_options(&workspace))
+    let settings_runtime: Arc<DesktopSettingsRuntime> = Arc::new(
+        DesktopSettingsRuntime::builder()
+            .with_options(test_settings_options(&workspace))
             .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(NoopSandbox::new())
@@ -796,15 +296,13 @@ pub(crate) async fn runtime_state_with_memory_provider(
             .with_memory_provider_arc(provider)
             .build()
             .await
-            .expect("harness should build with memory provider"),
+            .expect("harness should build with memory provider")
+            .into(),
     );
 
-    let mut state = DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
-        workspace,
-        harness,
-        stream_permission_runtime,
-    )
-    .expect("state should use the harness permission broker");
+    let mut state =
+        DesktopRuntimeState::with_settings_runtime_for_workspace(workspace, settings_runtime)
+            .expect("state should use the harness permission broker");
     let state_workspace = state.workspace_root().to_path_buf();
     use_test_provider_settings_store(&mut state, &state_workspace);
     state
@@ -834,9 +332,9 @@ pub(crate) async fn runtime_state_with_mcp_registry_for_workspace(
         heartbeat_interval: None,
         max_pending: 16,
     }));
-    let harness = Arc::new(
-        Harness::builder()
-            .with_options(test_harness_options(&workspace))
+    let settings_runtime: Arc<DesktopSettingsRuntime> = Arc::new(
+        DesktopSettingsRuntime::builder()
+            .with_options(test_settings_options(&workspace))
             .with_model(TestModelProvider::default())
             .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
             .with_sandbox(AllowExecPreflightSandbox)
@@ -850,83 +348,20 @@ pub(crate) async fn runtime_state_with_mcp_registry_for_workspace(
             })
             .build()
             .await
-            .expect("harness should build with MCP registry"),
+            .expect("harness should build with MCP registry")
+            .into(),
     );
 
-    let mut state = DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
-        workspace,
-        harness,
-        stream_permission_runtime,
-    )
-    .expect("state should use the harness permission broker");
+    let mut state =
+        DesktopRuntimeState::with_settings_runtime_for_workspace(workspace, settings_runtime)
+            .expect("state should use the harness permission broker");
     let state_workspace = state.workspace_root().to_path_buf();
     use_test_provider_settings_store(&mut state, &state_workspace);
     state.set_mcp_server_store_for_test(Arc::new(RecordingMcpServerStore::default()));
     state
 }
 
-pub(crate) async fn runtime_state_with_scripted_model(
-    responses: Vec<ScriptedResponse>,
-) -> DesktopRuntimeState {
-    runtime_state_with_scripted_model_for_workspace(unique_workspace("scripted-model"), responses)
-        .await
-}
-
-pub(crate) async fn runtime_state_with_scripted_model_for_workspace(
-    workspace: PathBuf,
-    responses: Vec<ScriptedResponse>,
-) -> DesktopRuntimeState {
-    std::fs::create_dir_all(&workspace).unwrap();
-    write_test_provider_settings(&workspace);
-    let event_store =
-        Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))) as Arc<dyn EventStore>;
-    let background_agent_starter: Arc<dyn harness_contracts::BackgroundAgentStarterCap> =
-        Arc::new(TestBackgroundAgentStarter {
-            workspace_root: workspace.clone(),
-            event_store: Arc::clone(&event_store),
-        });
-    let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
-        default_timeout: Some(Duration::from_secs(5)),
-        heartbeat_interval: None,
-        max_pending: 16,
-    }));
-    let harness = Arc::new(
-        Harness::builder()
-            .with_options(test_harness_options(&workspace))
-            .with_model_arc(Arc::new(ScriptedProvider::new(responses)))
-            .with_store_arc(event_store)
-            .with_sandbox(NoopSandbox::new())
-            .with_capability(
-                ToolCapability::Custom("jyowo.background_agent.starter".to_owned()),
-                background_agent_starter,
-            )
-            .with_stream_permission_broker_arc(
-                stream_permission_runtime.broker(),
-                stream_permission_runtime.resolver_handle(),
-            )
-            .with_tool_registry(
-                ToolRegistry::builder()
-                    .with_tool(Box::<NeedsPermissionTool>::default())
-                    .build()
-                    .expect("test tool registry should build"),
-            )
-            .build()
-            .await
-            .expect("harness should build with stream permission runtime"),
-    );
-
-    let mut state = DesktopRuntimeState::with_harness_and_stream_permission_runtime_for_workspace(
-        workspace,
-        harness,
-        stream_permission_runtime,
-    )
-    .expect("state should use the harness permission broker");
-    let state_workspace = state.workspace_root().to_path_buf();
-    use_test_provider_settings_store(&mut state, &state_workspace);
-    state
-}
-
-pub(crate) fn test_harness_options(workspace: &Path) -> HarnessOptions {
+pub(crate) fn test_settings_options(workspace: &Path) -> HarnessOptions {
     let mut options = HarnessOptions::default();
     options.workspace_root = workspace.to_path_buf();
     options.model_id = "test-model".to_owned();
@@ -939,14 +374,6 @@ pub(crate) fn unique_workspace(name: &str) -> PathBuf {
         std::process::id(),
         SessionId::new()
     ))
-}
-
-pub(crate) fn agent_runtime_store_for_workspace(
-    workspace_root: &Path,
-) -> Result<jyowo_harness_sdk::AgentRuntimeStore, jyowo_harness_sdk::AgentRuntimeStoreError> {
-    jyowo_harness_sdk::AgentRuntimeStore::open_runtime_dir(
-        workspace_root.join(".jyowo").join("runtime"),
-    )
 }
 
 pub(crate) fn provider_settings_store_for_workspace(
@@ -1006,15 +433,6 @@ pub(crate) fn test_storage_layout_for_workspace(
     )
 }
 
-pub(crate) fn test_attachment_blob_ref(size: u64, content_type: &str) -> AttachmentBlobRefPayload {
-    AttachmentBlobRefPayload {
-        id: "01J00000000000000000000000".to_owned(),
-        size,
-        content_hash: [1; 32],
-        content_type: Some(content_type.to_owned()),
-    }
-}
-
 pub(crate) fn skill_markdown(name: &str, description: &str) -> String {
     format!("---\nname: {name}\ndescription: {description}\n---\nSkill body for {name}.\n")
 }
@@ -1042,8 +460,8 @@ pub(crate) fn write_skill_package(
 }
 
 pub(crate) fn register_test_skill(state: &DesktopRuntimeState, name: &str, description: &str) {
-    let harness = state
-        .harness()
+    let settings_runtime = state
+        .settings_runtime()
         .expect("runtime state should include harness");
     let skill = parse_skill_markdown(
         &skill_markdown(name, description),
@@ -1052,48 +470,10 @@ pub(crate) fn register_test_skill(state: &DesktopRuntimeState, name: &str, descr
         SkillPlatform::Macos,
     )
     .expect("test skill should parse");
-    harness
+    settings_runtime
         .skill_registry()
         .register_batch(vec![skill])
         .expect("test skill should register");
-}
-
-pub(crate) fn register_test_tool(state: &DesktopRuntimeState, name: &str, display_name: &str) {
-    let harness = state
-        .harness()
-        .expect("runtime state should include harness");
-    harness
-        .tool_registry()
-        .register(Box::new(NeedsPermissionTool::named(name, display_name)))
-        .expect("test tool should register");
-}
-
-pub(crate) struct EnvVarGuard {
-    key: &'static str,
-    previous: Option<std::ffi::OsString>,
-}
-
-impl EnvVarGuard {
-    pub(crate) fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
-        let previous = std::env::var_os(key);
-        std::env::set_var(key, value);
-        Self { key, previous }
-    }
-
-    pub(crate) fn remove(key: &'static str) -> Self {
-        let previous = std::env::var_os(key);
-        std::env::remove_var(key);
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(value) => std::env::set_var(self.key, value),
-            None => std::env::remove_var(self.key),
-        }
-    }
 }
 
 pub(crate) fn stdio_mcp_fixture_script() -> String {
@@ -1195,5 +575,33 @@ impl McpServerStore for RecordingMcpServerStore {
             *record = None;
         }
         Ok(())
+    }
+}
+
+pub(crate) struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    pub(crate) fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+
+    pub(crate) fn remove(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
     }
 }

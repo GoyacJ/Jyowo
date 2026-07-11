@@ -46,7 +46,7 @@ test('ci workflow runs fast gates on pull requests', () => {
   assert.match(ciJob('policy-fast'), /if:\s*github\.event_name == 'pull_request'/)
   assert.match(
     ciJob('policy-fast'),
-    /pnpm check:release-version && pnpm check:release-workflow && pnpm check:tauri-updater && pnpm check:agent-orchestration-no-fakes && pnpm check:agent-supervisor-sidecar/,
+    /pnpm check:release-version && pnpm check:release-workflow && pnpm check:tauri-updater && pnpm check:agent-orchestration-no-fakes && pnpm check:daemon-sidecar/,
   )
   assert.match(ciJob('test-architecture'), /if:\s*github\.event_name == 'pull_request'[\s\S]*pnpm check:test-architecture/)
   assert.match(ciJob('frontend-fast'), /if:\s*github\.event_name == 'pull_request'[\s\S]*pnpm check:frontend:fast/)

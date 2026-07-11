@@ -21,6 +21,7 @@ pub mod harness;
 pub mod options;
 pub mod prelude;
 pub mod session;
+mod settings_runtime;
 pub mod skill_config;
 pub mod skill_pack_loader;
 mod system_prompt;
@@ -57,11 +58,11 @@ pub use harness_agent_runtime::{
     BackgroundAgentManager, BackgroundAgentRecord, BackgroundAgentStartRequest,
     BackgroundAgentTransitionError,
 };
+pub use harness_engine::{RunControl, RunControlHandle, TurnOutcome};
 #[cfg(feature = "sqlite-store")]
 pub use harness_journal::SqliteEvidenceRefRegistry;
 pub use harness_journal::{
-    AuditFilter, AuditOrder, AuditPage, AuditQuery, AuditRecord, AuditScope,
-    ConversationTurnPageDirection, EvidenceRefStore,
+    AuditFilter, AuditOrder, AuditPage, AuditQuery, AuditRecord, AuditScope, EvidenceRefStore,
 };
 pub use harness_session::{BootstrapFileSpec, Workspace, WorkspaceBootstrap, WorkspaceSpec};
 pub use harness_skill::{parse_skill_markdown, SkillSource};
@@ -70,6 +71,7 @@ pub use options::{
     ParsedHarnessOptions,
 };
 pub use session::{EventStream, RunContext, Session, SessionHandle, SessionOptions};
+pub use settings_runtime::DesktopSettingsRuntime;
 pub use skill_config::{
     validate_required_skill_config, SkillConfigError, SkillConfigSnapshot,
     SkillConfigSnapshotResolver,

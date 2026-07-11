@@ -182,32 +182,8 @@ async fn kimi_batch_api_supports_official_endpoints() {
         )
         .mount(&server)
         .await;
-    Mock::given(method("GET"))
-        .and(path("/v1/batches"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "object": "list",
-            "data": [batch_json("batch-123", "completed")]
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/v1/batches/batch-123"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(batch_json("batch-123", "completed")),
-        )
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/batches/batch-123/cancel"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(batch_json("batch-123", "cancelling")),
-        )
-        .mount(&server)
-        .await;
-
-    let provider = provider(&server);
     assert_eq!(
-        provider
+        provider(&server)
             .create_batch(
                 "file-batch",
                 "/v1/chat/completions",
@@ -220,8 +196,18 @@ async fn kimi_batch_api_supports_official_endpoints() {
             .id,
         "batch-123"
     );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/batches"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list",
+            "data": [batch_json("batch-123", "completed")]
+        })))
+        .mount(&server)
+        .await;
     assert_eq!(
-        provider
+        provider(&server)
             .list_batches(None, None, &InferContext::for_test())
             .await
             .expect("batch list should parse")
@@ -229,16 +215,34 @@ async fn kimi_batch_api_supports_official_endpoints() {
             .len(),
         1
     );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/batches/batch-123"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(batch_json("batch-123", "completed")),
+        )
+        .mount(&server)
+        .await;
     assert_eq!(
-        provider
+        provider(&server)
             .retrieve_batch("batch-123", &InferContext::for_test())
             .await
             .expect("batch retrieve should parse")
             .status,
         "completed"
     );
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/batches/batch-123/cancel"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(batch_json("batch-123", "cancelling")),
+        )
+        .mount(&server)
+        .await;
     assert_eq!(
-        provider
+        provider(&server)
             .cancel_batch("batch-123", &InferContext::for_test())
             .await
             .expect("batch cancel should parse")

@@ -1,6 +1,6 @@
 import { Send, X } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type {
@@ -32,6 +32,7 @@ export type ComposerMode =
   | { kind: 'ready' }
   | { kind: 'submitting' }
   | { kind: 'running-disabled'; canCancel?: boolean }
+  | { kind: 'queue' }
   | { kind: 'clarification-reply' }
   | { kind: 'review-comment' }
   | { kind: 'retry' }
@@ -39,6 +40,7 @@ export type ComposerMode =
 
 type ComposerProps = {
   conversationId?: string
+  draftKey?: string
   onSubmit: (draft: ComposerSubmitPayload) => Promise<void> | void
   mode?: ComposerMode
   pending?: boolean
@@ -65,6 +67,8 @@ type ComposerProps = {
   memoryMode?: MemoryThreadMode
   memoryModeDisabled?: boolean
   onMemoryModeChange?: (mode: MemoryThreadMode) => void
+  submitAriaLabel?: string
+  submitLabel?: string
 }
 
 const attachmentInputModalities: AttachmentInputModality[] = ['image', 'video', 'file']
@@ -81,6 +85,7 @@ const emptyReferenceCandidates: ListReferenceCandidatesResponse = {
 
 export function Composer({
   conversationId,
+  draftKey,
   onSubmit,
   mode,
   pending = false,
@@ -104,25 +109,54 @@ export function Composer({
   memoryMode,
   memoryModeDisabled = false,
   onMemoryModeChange,
+  submitAriaLabel,
+  submitLabel,
 }: ComposerProps) {
   const { t } = useTranslation(['common', 'conversation'])
-  const [draft, setDraft] = useState<ComposerDraft>(() =>
-    conversationId ? getDraft(conversationId) : getEmptyDraft(),
-  )
+  const draftScope = draftKey ?? conversationId
+  const [draftState, setDraftState] = useState<{ draft: ComposerDraft; scope?: string }>(() => ({
+    draft: draftScope ? getDraft(draftScope) : getEmptyDraft(),
+    scope: draftScope,
+  }))
+  const draft =
+    draftState.scope === draftScope
+      ? draftState.draft
+      : draftScope
+        ? getDraft(draftScope)
+        : getEmptyDraft()
+  const draftRef = useRef(draft)
+  draftRef.current = draft
+  const setDraft = (update: React.SetStateAction<ComposerDraft>) => {
+    setDraftState((current) => {
+      const currentDraft =
+        current.scope === draftScope
+          ? current.draft
+          : draftScope
+            ? getDraft(draftScope)
+            : getEmptyDraft()
+      const nextDraft = typeof update === 'function' ? update(currentDraft) : update
+      draftRef.current = nextDraft
+      return {
+        draft: nextDraft,
+        scope: draftScope,
+      }
+    })
+  }
   useEffect(() => {
-    if (conversationId) {
-      saveDraft(conversationId, draft)
+    if (draftScope) {
+      saveDraft(draftScope, draft)
     }
-  }, [conversationId, draft])
+  }, [draft, draftScope])
   const [composerError, setComposerError] = useState<string | null>(null)
   const [localPermissionMode, setLocalPermissionMode] = useState<PermissionMode>('default')
   const selectedPermissionMode = permissionMode ?? localPermissionMode
   const selectedModelConfigId = modelConfigId ?? ''
   const selectedSubmitModelConfigId = submitModelConfigId ?? selectedModelConfigId
   const effectiveMode = mode ?? fallbackComposerMode(pending, disabled)
-  const isDisabled =
-    disabled || effectiveMode.kind === 'submitting' || effectiveMode.kind === 'running-disabled'
-  const canSubmit = draft.text.trim().length > 0 && !isDisabled
+  const editorDisabled =
+    disabled || effectiveMode.kind === 'running-disabled' || (mode === undefined && pending)
+  const submitDisabled = editorDisabled || effectiveMode.kind === 'submitting'
+  const canSubmit = draft.text.trim().length > 0 && !submitDisabled
   const visibleError = composerError ?? errorMessage
   const canCancelRun =
     effectiveMode.kind === 'running-disabled' &&
@@ -148,8 +182,9 @@ export function Composer({
   )
 
   async function submitDraft() {
+    const submittedDraft = draft
     const submittedText = draft.text.trim()
-    if (!submittedText || isDisabled) {
+    if (!submittedText || submitDisabled) {
       return
     }
 
@@ -165,8 +200,24 @@ export function Composer({
 
     try {
       await onSubmit(payload)
-      setDraft(getEmptyDraft())
-      if (conversationId) clearDraft(conversationId)
+      if (draftRef.current === submittedDraft) {
+        setDraft(getEmptyDraft())
+        if (draftScope) clearDraft(draftScope)
+      } else {
+        const submittedAttachmentIds = new Set(
+          submittedDraft.attachments.map((attachment) => attachment.id),
+        )
+        const submittedReferenceKeys = new Set(submittedDraft.contextReferences.map(referenceKey))
+        setDraft((current) => ({
+          attachments: current.attachments.filter(
+            (attachment) => !submittedAttachmentIds.has(attachment.id),
+          ),
+          contextReferences: current.contextReferences.filter(
+            (reference) => !submittedReferenceKeys.has(referenceKey(reference)),
+          ),
+          text: current.text === submittedDraft.text ? '' : current.text,
+        }))
+      }
       setComposerError(null)
     } catch {
       // The parent owns the submitted error message. Keeping draft state is the important part here.
@@ -177,7 +228,7 @@ export function Composer({
     if (
       !onPickAttachmentPath ||
       !onCreateAttachmentFromPath ||
-      isDisabled ||
+      editorDisabled ||
       !supportsAttachments
     ) {
       return
@@ -399,7 +450,7 @@ export function Composer({
           {onRetry && errorMessage ? (
             <button
               className="rounded-md border border-destructive/30 px-2 py-1 text-xs font-medium hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={isDisabled}
+              disabled={submitDisabled}
               onClick={onRetry}
               type="button"
             >
@@ -410,7 +461,7 @@ export function Composer({
       ) : null}
 
       <ComposerEditor
-        disabled={isDisabled}
+        disabled={editorDisabled}
         onChange={handleTextChange}
         onKeyCommand={handleEditorKeyCommand}
         onSubmit={() => {
@@ -427,7 +478,7 @@ export function Composer({
       />
       <ReferenceCombobox
         activeIndex={referenceActiveIndex}
-        disabled={isDisabled}
+        disabled={editorDisabled}
         groups={referenceGroupItems}
         label={t('conversation:composer.referenceObject')}
         loadingLabel={t('conversation:composer.loadingReferences')}
@@ -446,7 +497,7 @@ export function Composer({
 
       <ComposerContextChips
         draft={draft}
-        disabled={isDisabled}
+        disabled={editorDisabled}
         onRemoveAttachment={(id) =>
           setDraft((currentDraft) => ({
             ...currentDraft,
@@ -463,9 +514,9 @@ export function Composer({
         }
       />
 
-      <div className="mt-1 flex items-center justify-between">
+      <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
         <ComposerToolbar
-          disabled={isDisabled}
+          disabled={editorDisabled}
           supportsAttachments={supportsAttachments}
           onAttachFile={handleAttachFile}
           modelConfigDisabled={modelConfigDisabled}
@@ -511,12 +562,13 @@ export function Composer({
             </button>
           ) : null}
           <button
-            aria-label={t('conversation:composer.sendMessage')}
-            className="rounded-md bg-primary p-2 text-primary-foreground shadow-sm transition-[background-color,color,box-shadow,filter,transform] duration-200 hover:brightness-[1.05] hover:shadow-md active:scale-95 disabled:scale-100 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none disabled:pointer-events-none"
+            aria-label={submitAriaLabel ?? t('conversation:composer.sendMessage')}
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary p-2 text-primary-foreground shadow-sm transition-[background-color,color,box-shadow,filter,transform] duration-200 hover:brightness-[1.05] hover:shadow-md active:scale-95 disabled:scale-100 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none disabled:pointer-events-none"
             disabled={!canSubmit}
             type="submit"
           >
             <Send className="size-4" />
+            {submitLabel ? <span className="pr-0.5 font-medium text-xs">{submitLabel}</span> : null}
           </button>
         </div>
       </div>

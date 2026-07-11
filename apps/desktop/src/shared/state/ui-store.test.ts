@@ -1,10 +1,16 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { createUiStore } from './ui-store'
 
 describe('ui-store', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
   it('stores local UI state only', () => {
     const store = createUiStore()
+
+    expect(store.getState().theme).toBe('system')
 
     store.getState().setSidebarCollapsed(true)
     store.getState().setContextPanelCollapsed(true)
@@ -59,6 +65,14 @@ describe('ui-store', () => {
     store.getState().setActiveRun({ conversationId: 'conversation-001', runId: 'run-001' })
 
     expect(store.getState().contextPanelCollapsed).toBe(true)
+  })
+
+  it('uses the synchronous theme preference applied before React mounts', () => {
+    localStorage.setItem('jyowo-ui-theme', 'light')
+
+    const store = createUiStore()
+
+    expect(store.getState().theme).toBe('light')
   })
 
   it('tracks timeline scroll requests by turn anchor id', () => {

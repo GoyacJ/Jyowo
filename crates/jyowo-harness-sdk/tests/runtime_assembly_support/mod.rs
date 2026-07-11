@@ -888,6 +888,7 @@ impl SdkPluginTool {
                 budget: default_result_budget(),
                 provider_restriction: ProviderRestriction::All,
                 origin: ToolOrigin::Builtin,
+                metadata: Default::default(),
                 search_hint: None,
                 service_binding: None,
             },

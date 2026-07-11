@@ -1,0 +1,1521 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DaemonProtocol",
+  "type": "object",
+  "properties": {
+    "client": {
+      "$ref": "#/$defs/ClientFrame"
+    },
+    "server": {
+      "$ref": "#/$defs/ServerFrame"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "client",
+    "server"
+  ],
+  "$defs": {
+    "ClientFrame": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "request": {
+          "$ref": "#/$defs/ClientRequest"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[\\x20-\\x7E]+$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "requestId",
+        "protocolVersion",
+        "request"
+      ]
+    },
+    "ClientRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "clientId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "clientVersion": {
+              "type": "string"
+            },
+            "connectionToken": {
+              "type": "string"
+            },
+            "lastAcknowledgedOffset": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "handshake"
+            },
+            "userInstanceId": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "clientId",
+            "clientVersion",
+            "userInstanceId",
+            "connectionToken",
+            "lastAcknowledgedOffset"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "metadata": {
+              "$ref": "#/$defs/CommandMetadata"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "create_task"
+            },
+            "workspace": {
+              "$ref": "#/$defs/WorkspaceSelection"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "metadata",
+            "title",
+            "workspace"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "attachments": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TypedUlid"
+              }
+            },
+            "content": {
+              "type": "string"
+            },
+            "contextReferences": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "metadata": {
+              "$ref": "#/$defs/CommandMetadata"
+            },
+            "modelConfigId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "permissionMode": {
+              "$ref": "#/$defs/PermissionMode",
+              "default": "default"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "submit_message"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "metadata",
+            "taskId",
+            "content",
+            "attachments",
+            "contextReferences"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "attachments": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TypedUlid"
+              }
+            },
+            "content": {
+              "type": "string"
+            },
+            "contextReferences": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "expectedRevision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "metadata": {
+              "$ref": "#/$defs/CommandMetadata"
+            },
+            "queueItemId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "edit_queued_message"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "metadata",
+            "taskId",
+            "queueItemId",
+            "expectedRevision",
+            "content",
+            "attachments",
+            "contextReferences"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "expectedRevision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "metadata": {
+              "$ref": "#/$defs/CommandMetadata"
+            },
+            "queueItemId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "delete_queued_message"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "metadata",
+            "taskId",
+            "queueItemId",
+            "expectedRevision"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "expectedRevision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "metadata": {
+              "$ref": "#/$defs/CommandMetadata"
+            },
+            "mode": {
+              "$ref": "#/$defs/PromotionMode"
+            },
+            "queueItemId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "promote_queued_message"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "metadata",
+            "taskId",
+            "queueItemId",
+            "expectedRevision",
+            "mode"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "metadata": {
+              "$ref": "#/$defs/CommandMetadata"
+            },
+            "mode": {
+              "$ref": "#/$defs/StopMode"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "stop_run"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "metadata",
+            "taskId",
+            "mode"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "indeterminateTools": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/IndeterminateToolDecision"
+              }
+            },
+            "metadata": {
+              "$ref": "#/$defs/CommandMetadata"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "continue_task"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "metadata",
+            "taskId",
+            "indeterminateTools"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "metadata": {
+              "$ref": "#/$defs/CommandMetadata"
+            },
+            "optionId": {
+              "type": "string"
+            },
+            "permissionRequestId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "requestRevision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "resolve_permission"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "metadata",
+            "taskId",
+            "permissionRequestId",
+            "requestRevision",
+            "optionId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "afterOffset": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "subscribe_events"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "afterOffset"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "load_task"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "taskId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "list_tasks"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "base64Data": {
+              "type": "string"
+            },
+            "mediaType": {
+              "type": "string"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "stage_blob"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "taskId",
+            "mediaType",
+            "base64Data"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "blobId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "read_blob"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "blobId"
+          ]
+        }
+      ]
+    },
+    "CommandMetadata": {
+      "type": "object",
+      "properties": {
+        "commandId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "expectedStreamVersion": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "idempotencyKey": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "commandId",
+        "idempotencyKey",
+        "expectedStreamVersion"
+      ]
+    },
+    "CommandRejectionReason": {
+      "type": "string",
+      "enum": [
+        "invalid_command",
+        "wrong_expected_version",
+        "stale_queue_revision",
+        "invalid_transition",
+        "permission_expired",
+        "workspace_conflict",
+        "not_found"
+      ]
+    },
+    "DaemonPermissionKind": {
+      "type": "string",
+      "enum": [
+        "command",
+        "filesystem",
+        "network",
+        "mcp",
+        "automation"
+      ]
+    },
+    "EventSource": {
+      "type": "object",
+      "properties": {
+        "actorId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "clientId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/EventSourceKind"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ]
+    },
+    "EventSourceKind": {
+      "type": "string",
+      "enum": [
+        "user",
+        "assistant",
+        "engine",
+        "tool",
+        "permission_broker",
+        "supervisor",
+        "subagent",
+        "recovery"
+      ]
+    },
+    "IndeterminateToolDecision": {
+      "type": "object",
+      "properties": {
+        "resolution": {
+          "$ref": "#/$defs/IndeterminateToolResolution"
+        },
+        "toolUseId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "toolUseId",
+        "resolution"
+      ]
+    },
+    "IndeterminateToolResolution": {
+      "type": "string",
+      "enum": [
+        "treat_as_failed",
+        "execute_again"
+      ]
+    },
+    "PermissionMode": {
+      "type": "string",
+      "enum": [
+        "default",
+        "plan",
+        "accept_edits",
+        "bypass_permissions",
+        "dont_ask",
+        "auto"
+      ]
+    },
+    "PermissionOption": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "optionId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "optionId",
+        "label"
+      ]
+    },
+    "PermissionProjection": {
+      "type": "object",
+      "properties": {
+        "details": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PermissionRequestDetails"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requestId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "route": {
+          "$ref": "#/$defs/PermissionRoute"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "requestId",
+        "revision",
+        "route"
+      ]
+    },
+    "PermissionRequestDetails": {
+      "type": "object",
+      "properties": {
+        "actionPlanHash": {
+          "type": "string"
+        },
+        "actorSource": true,
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "kind": {
+          "$ref": "#/$defs/DaemonPermissionKind"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PermissionOption"
+          }
+        },
+        "preview": {
+          "type": "string"
+        },
+        "sandboxPolicyHash": {
+          "type": "string"
+        },
+        "segmentId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "subject": true,
+        "workspace": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "segmentId",
+        "actionPlanHash",
+        "sandboxPolicyHash",
+        "workspace",
+        "subject",
+        "actorSource",
+        "options",
+        "preview",
+        "expiresAt"
+      ]
+    },
+    "PermissionRoute": {
+      "type": "string",
+      "enum": [
+        "foreground_task",
+        "saved_policy"
+      ]
+    },
+    "PromotionMode": {
+      "type": "string",
+      "enum": [
+        "safe_point",
+        "force_stop"
+      ]
+    },
+    "ProtocolErrorCode": {
+      "type": "string",
+      "enum": [
+        "invalid_frame",
+        "frame_too_large",
+        "protocol_mismatch",
+        "authentication_failed",
+        "not_found",
+        "internal"
+      ]
+    },
+    "QueueItemProjection": {
+      "type": "object",
+      "properties": {
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TypedUlid"
+          }
+        },
+        "consumedBy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "content": {
+          "type": "string"
+        },
+        "contextReferences": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "createdGlobalOffset": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "queueItemId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "state": {
+          "$ref": "#/$defs/QueueItemState"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "queueItemId",
+        "state",
+        "revision",
+        "content",
+        "attachments",
+        "contextReferences",
+        "createdAt",
+        "createdGlobalOffset"
+      ]
+    },
+    "QueueItemState": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "promoting",
+        "consumed",
+        "deleted"
+      ]
+    },
+    "RunProjection": {
+      "type": "object",
+      "properties": {
+        "endedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "default": null
+        },
+        "incompleteOutput": {
+          "type": "boolean"
+        },
+        "promotionMode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PromotionMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "segmentId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "state": {
+          "$ref": "#/$defs/RunState"
+        },
+        "terminalReason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunTerminalReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "segmentId",
+        "state",
+        "startedAt",
+        "incompleteOutput"
+      ]
+    },
+    "RunState": {
+      "type": "string",
+      "enum": [
+        "running",
+        "waiting_permission",
+        "yielding",
+        "interrupted",
+        "failed",
+        "completed"
+      ]
+    },
+    "RunTerminalReason": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "superseded",
+        "forced_interruption",
+        "interrupted_by_restart",
+        "cancelled",
+        "failed"
+      ]
+    },
+    "ServerFrame": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/ServerMessage"
+        },
+        "protocolVersion": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "requestId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "message"
+      ]
+    },
+    "ServerMessage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "daemonVersion": {
+              "type": "string"
+            },
+            "latestGlobalOffset": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "handshake"
+            },
+            "userInstanceId": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "daemonVersion",
+            "userInstanceId",
+            "latestGlobalOffset"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "commandId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "committedOffset": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "streamVersion": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "command_accepted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "commandId",
+            "taskId",
+            "streamVersion",
+            "committedOffset"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "commandId": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TypedUlid"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "currentStreamVersion": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "latestQueueItem": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/QueueItemProjection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reason": {
+              "$ref": "#/$defs/CommandRejectionReason"
+            },
+            "taskId": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TypedUlid"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "command_rejected"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "projection": {
+              "$ref": "#/$defs/TaskProjection"
+            },
+            "snapshotOffset": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "timeline": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TimelineItemProjection"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "task_snapshot"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "projection",
+            "snapshotOffset",
+            "timeline"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "tasks": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TaskProjection"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "task_list"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "tasks"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "afterOffset": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "events": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TaskEventEnvelope"
+              }
+            },
+            "gap": {
+              "type": "boolean"
+            },
+            "latestOffset": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "event_batch"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "afterOffset",
+            "latestOffset",
+            "gap",
+            "events"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "base64Data": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "blobId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "contentHash": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0
+              },
+              "maxItems": 32,
+              "minItems": 32
+            },
+            "mediaType": {
+              "type": "string"
+            },
+            "missing": {
+              "type": "boolean"
+            },
+            "size": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "blob"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "blobId",
+            "mediaType",
+            "size",
+            "contentHash",
+            "missing"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ProtocolErrorCode"
+            },
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "error"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "code",
+            "message"
+          ]
+        }
+      ]
+    },
+    "StopMode": {
+      "type": "string",
+      "enum": [
+        "safe_point",
+        "force"
+      ]
+    },
+    "SubagentActorState": {
+      "type": "string",
+      "enum": [
+        "starting",
+        "running",
+        "yielding",
+        "background",
+        "completed",
+        "cancelled",
+        "failed"
+      ]
+    },
+    "SubagentParentProjection": {
+      "type": "object",
+      "properties": {
+        "delegationId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "parentSegmentId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "parentTaskId": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "parentTaskId",
+        "parentSegmentId",
+        "delegationId"
+      ]
+    },
+    "SubagentProjection": {
+      "type": "object",
+      "properties": {
+        "actorId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "childTaskId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "contextCursor": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "delegationId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "endedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "default": null
+        },
+        "parentSegmentId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "parentTaskId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "segmentId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "state": {
+          "$ref": "#/$defs/SubagentActorState"
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspaceLeaseId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "childTaskId",
+        "actorId",
+        "segmentId",
+        "parentTaskId",
+        "parentSegmentId",
+        "delegationId",
+        "contextCursor",
+        "state",
+        "detached",
+        "startedAt"
+      ]
+    },
+    "TaskEventEnvelope": {
+      "type": "object",
+      "properties": {
+        "eventId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "eventType": {
+          "type": "string"
+        },
+        "globalOffset": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "payload": true,
+        "recordedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "source": {
+          "$ref": "#/$defs/EventSource"
+        },
+        "streamSequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "taskId": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "globalOffset",
+        "taskId",
+        "streamSequence",
+        "eventId",
+        "eventType",
+        "schemaVersion",
+        "recordedAt",
+        "source",
+        "payload"
+      ]
+    },
+    "TaskProjection": {
+      "type": "object",
+      "properties": {
+        "actorId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "archived": {
+          "type": "boolean"
+        },
+        "contextCursor": {
+          "type": "integer",
+          "format": "uint64",
+          "default": 0,
+          "minimum": 0
+        },
+        "currentRun": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastGlobalOffset": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubagentParentProjection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pendingPermission": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PermissionProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "queue": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QueueItemProjection"
+          }
+        },
+        "state": {
+          "$ref": "#/$defs/TaskState"
+        },
+        "streamVersion": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "subagents": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SubagentProjection"
+          }
+        },
+        "taskId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "title": {
+          "type": "string"
+        },
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceSelection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "taskId",
+        "title",
+        "state",
+        "archived",
+        "streamVersion",
+        "lastGlobalOffset",
+        "queue"
+      ]
+    },
+    "TaskState": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "running",
+        "waiting_permission",
+        "yielding",
+        "interrupted",
+        "failed",
+        "completed"
+      ]
+    },
+    "TimelineEventKind": {
+      "type": "string",
+      "enum": [
+        "user_message",
+        "assistant_text",
+        "tool_activity",
+        "command",
+        "diff",
+        "image",
+        "permission",
+        "compaction",
+        "subagent",
+        "notice",
+        "error"
+      ]
+    },
+    "TimelineItemProjection": {
+      "type": "object",
+      "properties": {
+        "blobId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "globalOffset": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "id": {
+          "type": "string"
+        },
+        "incomplete": {
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/TimelineEventKind"
+        },
+        "runSegmentId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "globalOffset",
+        "summary",
+        "incomplete"
+      ]
+    },
+    "TypedUlid": {
+      "type": "string",
+      "format": "ulid"
+    },
+    "WorkspaceMode": {
+      "type": "string",
+      "enum": [
+        "current",
+        "managed_worktree"
+      ]
+    },
+    "WorkspaceSelection": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/WorkspaceMode"
+        },
+        "root": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "root"
+      ]
+    }
+  }
+}

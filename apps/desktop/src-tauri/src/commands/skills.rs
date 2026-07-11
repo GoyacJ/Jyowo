@@ -9,7 +9,6 @@ use super::constants::*;
 #[allow(unused_imports)]
 use super::contracts::*;
 #[allow(unused_imports)]
-use super::conversations::*;
 #[allow(unused_imports)]
 use super::error::*;
 #[allow(unused_imports)]
@@ -36,8 +35,8 @@ pub async fn list_skills_with_runtime_state(
 ) -> Result<ListSkillsResponse, CommandErrorPayload> {
     let records = state.skill_store.load_records()?;
     let runtime = state
-        .harness()
-        .map(|harness| harness.list_runtime_skills())
+        .settings_runtime()
+        .map(|settings_runtime| settings_runtime.list_runtime_skills())
         .unwrap_or_default();
     let enabled_ids = enabled_skill_ids_for_state(state)?;
     Ok(ListSkillsResponse {
@@ -462,9 +461,9 @@ pub(crate) fn active_skill_names(
         .filter(|record| enabled_ids.contains(&record.id))
         .map(|record| record.name)
         .collect::<HashSet<_>>();
-    if let Some(harness) = state.harness() {
+    if let Some(settings_runtime) = state.settings_runtime() {
         names.extend(
-            harness
+            settings_runtime
                 .list_runtime_skills()
                 .into_iter()
                 .map(|skill| skill.name),
@@ -498,7 +497,7 @@ pub(crate) async fn install_skill_package_with_progress(
         &InstallSkillFromCatalogRequest,
     )>,
 ) -> Result<ImportSkillResponse, CommandErrorPayload> {
-    let harness = state.harness().ok_or_else(|| {
+    let settings_runtime = state.settings_runtime().ok_or_else(|| {
         runtime_unavailable("Importing skills requires the runtime skill facade.")
     })?;
     if let Some((emitter, request)) = progress_context {
@@ -509,7 +508,7 @@ pub(crate) async fn install_skill_package_with_progress(
         read_regular_file_no_follow(&entry_path, "skill entry file", MAX_SKILL_MARKDOWN_BYTES)?;
     let markdown = String::from_utf8(bytes)
         .map_err(|_| invalid_payload("skill entry file must be valid UTF-8".to_owned()))?;
-    let validated = harness
+    let validated = settings_runtime
         .validate_workspace_skill_markdown(&markdown, Some(entry_path))
         .await
         .map_err(|error| invalid_payload(error.to_string()))?;
@@ -523,7 +522,7 @@ pub(crate) async fn install_skill_package_with_progress(
     if records
         .iter()
         .any(|record| enabled_ids.contains(&record.id) && record.name == validated.summary.name)
-        || harness
+        || settings_runtime
             .list_runtime_skills()
             .iter()
             .any(|skill| skill.name == validated.summary.name)
@@ -558,7 +557,7 @@ pub(crate) async fn install_skill_package_with_progress(
         .skill_store
         .write_skill_package(&record.id, true, &source_path)?;
     let copied_markdown = state.skill_store.read_skill_entry_file(&record)?;
-    let copied_validation = harness
+    let copied_validation = settings_runtime
         .validate_workspace_skill_markdown(&copied_markdown, None)
         .await
         .map_err(|error| {
@@ -572,7 +571,7 @@ pub(crate) async fn install_skill_package_with_progress(
     if records
         .iter()
         .any(|existing| enabled_ids.contains(&existing.id) && existing.name == record.name)
-        || harness
+        || settings_runtime
             .list_runtime_skills()
             .iter()
             .any(|skill| skill.name == record.name)
@@ -602,11 +601,11 @@ pub(crate) async fn install_skill_package_with_progress(
     if let Some((emitter, request)) = progress_context {
         emit_skill_catalog_install_progress(emitter, request, "reloading", 95, None);
     }
-    if let Err(error) = reload_managed_skills(state, &harness).await {
+    if let Err(error) = reload_managed_skills(state, &settings_runtime).await {
         let _ = state.skill_store.delete_skill_package(&record.id);
         let _ = state.skill_store.save_records(&previous_records);
         let _ = save_skill_selection_for_state(state, &previous_selection);
-        let _ = reload_managed_skills(state, &harness).await;
+        let _ = reload_managed_skills(state, &settings_runtime).await;
         return Err(error);
     }
 
@@ -614,7 +613,7 @@ pub(crate) async fn install_skill_package_with_progress(
         skill: managed_skill_summary(
             &record,
             true,
-            runtime_status_for_name(&harness, &record.name),
+            runtime_status_for_name(&settings_runtime, &record.name),
         ),
     })
 }
@@ -627,13 +626,13 @@ pub async fn get_skill_detail_with_runtime_state(
     let records = state.skill_store.load_records()?;
     let record = records.iter().find(|record| record.id == request.id);
     let enabled_ids = enabled_skill_ids_for_state(state)?;
-    let harness = state.harness();
+    let settings_runtime = state.settings_runtime();
 
     let Some(record) = record else {
-        let harness = harness
+        let settings_runtime = settings_runtime
             .as_ref()
             .ok_or_else(|| invalid_payload("skill not found".to_owned()))?;
-        let view = harness
+        let view = settings_runtime
             .view_runtime_skill(&request.id, false)
             .ok_or_else(|| invalid_payload("skill not found".to_owned()))?;
         return Ok(GetSkillDetailResponse {
@@ -647,9 +646,9 @@ pub async fn get_skill_detail_with_runtime_state(
     };
 
     let enabled = enabled_ids.contains(&record.id);
-    let runtime_view = harness.as_ref().and_then(|harness| {
+    let runtime_view = settings_runtime.as_ref().and_then(|settings_runtime| {
         enabled
-            .then(|| harness.view_runtime_skill(&record.name, false))
+            .then(|| settings_runtime.view_runtime_skill(&record.name, false))
             .flatten()
     });
     let files = state.skill_store.list_skill_package_files(record)?;
@@ -703,7 +702,7 @@ pub async fn set_skill_enabled_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<SetSkillEnabledResponse, CommandErrorPayload> {
     ensure_skill_id(&request.id)?;
-    let harness = state.harness().ok_or_else(|| {
+    let settings_runtime = state.settings_runtime().ok_or_else(|| {
         runtime_unavailable("Changing skill state requires the runtime skill facade.")
     })?;
     let mut records = state.skill_store.load_records()?;
@@ -721,7 +720,7 @@ pub async fn set_skill_enabled_with_runtime_state(
                 enabled_ids.contains(&candidate.id)
                     && candidate.name == record_name
                     && candidate.id != request.id
-            }) || harness
+            }) || settings_runtime
                 .list_runtime_skills()
                 .iter()
                 .any(|skill| skill.name == record_name))
@@ -762,13 +761,13 @@ pub async fn set_skill_enabled_with_runtime_state(
             let _ = state.skill_store.save_records(&previous_records);
             return Err(error);
         }
-        if let Err(error) = reload_managed_skills(state, &harness).await {
+        if let Err(error) = reload_managed_skills(state, &settings_runtime).await {
             let _ = save_skill_selection_for_state(state, &previous_selection);
             let _ = state
                 .skill_store
                 .move_skill_package(&request.id, currently_enabled);
             let _ = state.skill_store.save_records(&previous_records);
-            let _ = reload_managed_skills(state, &harness).await;
+            let _ = reload_managed_skills(state, &settings_runtime).await;
             return Err(error);
         }
     }
@@ -779,7 +778,7 @@ pub async fn set_skill_enabled_with_runtime_state(
             request.enabled,
             request
                 .enabled
-                .then(|| runtime_status_for_name(&harness, &record.name))
+                .then(|| runtime_status_for_name(&settings_runtime, &record.name))
                 .flatten(),
         ),
     })
@@ -790,8 +789,8 @@ pub async fn delete_skill_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<DeleteSkillResponse, CommandErrorPayload> {
     ensure_skill_id(&request.id)?;
-    let harness = state
-        .harness()
+    let settings_runtime = state
+        .settings_runtime()
         .ok_or_else(|| runtime_unavailable("Deleting skills requires the runtime skill facade."))?;
     let mut records = state.skill_store.load_records()?;
     let previous_selection = load_skill_selection_for_state(state)?;
@@ -811,16 +810,16 @@ pub async fn delete_skill_with_runtime_state(
         let _ = save_skill_selection_for_state(state, &previous_selection);
         return Err(error);
     }
-    if let Err(error) = reload_managed_skills(state, &harness).await {
+    if let Err(error) = reload_managed_skills(state, &settings_runtime).await {
         let _ = state.skill_store.save_records(&previous_records);
         let _ = save_skill_selection_for_state(state, &previous_selection);
-        let _ = reload_managed_skills(state, &harness).await;
+        let _ = reload_managed_skills(state, &settings_runtime).await;
         return Err(error);
     }
     if let Err(error) = state.skill_store.delete_skill_package(&request.id) {
         let _ = state.skill_store.save_records(&previous_records);
         let _ = save_skill_selection_for_state(state, &previous_selection);
-        let _ = reload_managed_skills(state, &harness).await;
+        let _ = reload_managed_skills(state, &settings_runtime).await;
         return Err(error);
     }
     Ok(DeleteSkillResponse {
@@ -831,14 +830,14 @@ pub async fn delete_skill_with_runtime_state(
 
 pub(crate) async fn reload_managed_skills(
     state: &DesktopRuntimeState,
-    harness: &Harness,
+    settings_runtime: &DesktopSettingsRuntime,
 ) -> Result<(), CommandErrorPayload> {
     if let Some(global_config) = &state.global_config_store {
         let global_skill_store = DesktopSkillStore::global(global_config.layout().clone());
         let global_allowed = global_config
             .load_global_skill_selection_if_present()?
             .map(|selection| selection.enabled.into_iter().collect());
-        harness
+        settings_runtime
             .reload_user_managed_skills_with_allowed_package_ids(
                 global_skill_store.enabled_dir(),
                 global_allowed,

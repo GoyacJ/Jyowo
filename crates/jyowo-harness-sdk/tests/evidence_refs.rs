@@ -5,9 +5,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use harness_contracts::{
     ArtifactCreatedEvent, ArtifactRevisionId, ArtifactSource, ArtifactStatus, BlobId, BlobMeta,
-    BlobRef, BlobRetention, BlobStore, ConversationEventRef, ConversationInspectorItem,
-    ConversationInspectorSelection, Event, EvidenceRedactionState, EvidenceRefId, EvidenceRefKind,
-    RunId, SessionId, TenantId,
+    BlobRef, BlobRetention, BlobStore, ConversationEventRef, Event, EvidenceRedactionState,
+    EvidenceRefId, EvidenceRefKind, RunId, SessionId, TenantId,
 };
 use harness_journal::evidence::{
     EvidenceRefRecord, EvidenceRefSource, EvidenceRefStore, InMemoryEvidenceRefRegistry,
@@ -317,101 +316,4 @@ async fn artifact_content_refs_ignore_events_with_mismatched_session_id() {
         .expect("artifact evidence refs list");
 
     assert!(refs.is_empty());
-}
-
-#[tokio::test]
-async fn artifact_inspector_registers_content_ref_without_prior_worktree_read() {
-    let workspace = unique_workspace("sdk-evidence-inspector-artifact");
-    std::fs::create_dir_all(&workspace).expect("workspace exists");
-    let session_id = SessionId::new();
-    let revision_id = ArtifactRevisionId::new();
-    let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
-    let blob_store = Arc::new(InMemoryBlobStore::default());
-    let evidence_store = Arc::new(EvidenceRefStore::new(
-        Arc::new(InMemoryEvidenceRefRegistry::new()),
-        blob_store.clone(),
-    ));
-    let bytes = Bytes::from_static(b"inspector artifact body");
-    let content_hash = *blake3::hash(&bytes).as_bytes();
-    let blob_ref = blob_store
-        .put(
-            TenantId::SINGLE,
-            bytes.clone(),
-            BlobMeta {
-                content_type: Some("text/plain".to_owned()),
-                size: bytes.len() as u64,
-                content_hash,
-                created_at: chrono::Utc::now(),
-                retention: BlobRetention::SessionScoped(session_id),
-            },
-        )
-        .await
-        .expect("blob writes");
-    let mut options = jyowo_harness_sdk::HarnessOptions::default();
-    options.workspace_root = workspace.clone();
-    options.model_id = "test-model".to_owned();
-    let harness = Harness::builder()
-        .with_options(options)
-        .with_model(TestModelProvider::default())
-        .with_store(event_store.clone())
-        .with_sandbox(NoopSandbox::new())
-        .with_blob_store_arc(blob_store)
-        .with_evidence_ref_store_arc(evidence_store)
-        .build()
-        .await
-        .expect("harness builds");
-    harness
-        .open_or_create_conversation_session(
-            SessionOptions::new(workspace).with_session_id(session_id),
-        )
-        .await
-        .expect("session opens");
-    event_store
-        .append(
-            TenantId::SINGLE,
-            session_id,
-            &[Event::ArtifactCreated(ArtifactCreatedEvent {
-                revision_id: revision_id.clone(),
-                artifact_id: "artifact-inspector".to_owned(),
-                at: chrono::Utc::now(),
-                blob_ref: Some(blob_ref),
-                content_hash: Some(content_hash.to_vec()),
-                kind: "document".to_owned(),
-                preview: Some("Inspector artifact".to_owned()),
-                run_id: RunId::new(),
-                session_id,
-                source: ArtifactSource::Assistant,
-                source_message_id: None,
-                source_tool_use_id: None,
-                status: ArtifactStatus::Ready,
-                title: "Inspector artifact".to_owned(),
-            })],
-        )
-        .await
-        .expect("event appends");
-
-    let inspector = harness
-        .get_conversation_inspector_item(
-            &session_id.to_string(),
-            ConversationInspectorSelection::ArtifactRevision {
-                artifact_id: Some("artifact-inspector".to_owned()),
-                revision_id: revision_id.to_string(),
-            },
-        )
-        .await
-        .expect("inspector loads");
-
-    let content_ref = match inspector.item {
-        ConversationInspectorItem::Artifact { segment } => segment
-            .revision
-            .content_ref
-            .expect("artifact inspector revision should expose content ref"),
-        other => panic!("expected artifact inspector item, got {other:?}"),
-    };
-    let content = harness
-        .read_artifact_revision_content(TenantId::SINGLE, &session_id.to_string(), &content_ref)
-        .await
-        .expect("artifact content evidence reads");
-
-    assert_eq!(content.bytes, bytes);
 }

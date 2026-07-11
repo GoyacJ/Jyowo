@@ -63,6 +63,8 @@ pub(crate) struct BuilderExtras {
     pub(crate) permission_authority: Option<Arc<PermissionAuthority>>,
     pub(crate) authorization_service: Option<Arc<harness_execution::AuthorizationService>>,
     pub(crate) cap_registry: Option<CapabilityRegistry>,
+    #[cfg(feature = "agents-subagent")]
+    pub(crate) subagent_engine_factory: Option<Arc<harness_engine::EngineBoundSubagentFactory>>,
     pub(crate) provider_capability_routes:
         Option<Arc<parking_lot::RwLock<ProviderCapabilityRouteSettings>>>,
     pub(crate) provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
@@ -491,6 +493,16 @@ impl<M, S, SB> HarnessBuilder<M, S, SB> {
         let runner_cap = harness_subagent::SubagentRunnerCapAdapter::from_runner(runner);
         registry.install::<dyn SubagentRunnerCap>(ToolCapability::SubagentRunner, runner_cap);
         self.extras.cap_registry = Some(registry);
+        self
+    }
+
+    #[cfg(feature = "agents-subagent")]
+    #[must_use]
+    pub fn with_subagent_engine_factory(
+        mut self,
+        factory: Arc<harness_engine::EngineBoundSubagentFactory>,
+    ) -> Self {
+        self.extras.subagent_engine_factory = Some(factory);
         self
     }
 }

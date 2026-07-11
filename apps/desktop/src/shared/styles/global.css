@@ -7,6 +7,11 @@
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-row-muted: var(--row-muted);
+  --color-user-bubble: var(--user-bubble);
+  --color-artifact: var(--artifact);
+  --color-selection: var(--selection);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
   --color-sidebar: var(--sidebar);
@@ -30,6 +35,19 @@
   --color-warning-foreground: var(--warning-foreground);
   --color-info: var(--info);
   --color-info-foreground: var(--info-foreground);
+  --color-state-ready: var(--state-ready);
+  --color-state-idle: var(--state-idle);
+  --color-state-running: var(--state-running);
+  --color-state-queued: var(--state-queued);
+  --color-state-waiting: var(--state-waiting);
+  --color-state-interrupted: var(--state-interrupted);
+  --color-state-failed: var(--state-failed);
+  --color-state-completed: var(--state-completed);
+  --color-state-archived: var(--state-archived);
+  --color-state-promoting: var(--state-promoting);
+  --color-state-consumed: var(--state-consumed);
+  --color-state-deleted: var(--state-deleted);
+  --color-state-yielding: var(--state-yielding);
 
   /* Domain colors */
   --color-code-background: var(--code-background);
@@ -58,11 +76,16 @@
   --background: #f8f9fa;
   --foreground: #1e293b;
   --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --row-muted: #f1f5f9;
+  --user-bubble: #eef2ff;
+  --artifact: #ffffff;
+  --selection: #e0e7ff;
   --popover: #ffffff;
   --popover-foreground: #1e293b;
   --sidebar: #f1f5f9;
   --muted: #f1f5f9;
-  --muted-foreground: #64748b;
+  --muted-foreground: #59697f;
   --border: #e2e8f0;
   --input: #cbd5e1;
   --ring: #4f46e5;
@@ -81,6 +104,19 @@
   --warning-foreground: #ffffff;
   --info: #06b6d4;
   --info-foreground: #ffffff;
+  --state-ready: #64748b;
+  --state-idle: #64748b;
+  --state-running: #2563eb;
+  --state-queued: #7c3aed;
+  --state-waiting: #b45309;
+  --state-interrupted: #9a3412;
+  --state-failed: #dc2626;
+  --state-completed: #047857;
+  --state-archived: #64748b;
+  --state-promoting: #6d28d9;
+  --state-consumed: #047857;
+  --state-deleted: #64748b;
+  --state-yielding: #0369a1;
   --badge: #e0f2fe;
   --badge-foreground: #0284c7;
   --code-background: #f1f5f9;
@@ -122,6 +158,11 @@
   --background: #09090b;
   --foreground: #f4f4f5;
   --surface: #18181b;
+  --surface-raised: #202023;
+  --row-muted: #27272a;
+  --user-bubble: #27272f;
+  --artifact: #151518;
+  --selection: #312e1f;
   --popover: #18181b;
   --popover-foreground: #f4f4f5;
   --sidebar: #0f0f11;
@@ -145,6 +186,19 @@
   --warning-foreground: #09090b;
   --info: #38bdf8;
   --info-foreground: #09090b;
+  --state-ready: #a1a1aa;
+  --state-idle: #a1a1aa;
+  --state-running: #60a5fa;
+  --state-queued: #c4b5fd;
+  --state-waiting: #fbbf24;
+  --state-interrupted: #fb923c;
+  --state-failed: #f87171;
+  --state-completed: #34d399;
+  --state-archived: #a1a1aa;
+  --state-promoting: #c4b5fd;
+  --state-consumed: #34d399;
+  --state-deleted: #a1a1aa;
+  --state-yielding: #38bdf8;
   --badge: #2e2310;
   --badge-foreground: #fbbf24;
   --code-background: #18181b;
@@ -193,6 +247,11 @@ select {
   font-family: inherit;
 }
 
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 #root {
   min-height: 100vh;
 }
@@ -237,6 +296,34 @@ select {
   container-type: inline-size;
 }
 
+.task-workspace-container {
+  container-name: task-workspace;
+  container-type: inline-size;
+}
+
+@container task-workspace (min-width: 1000px) {
+  .task-workspace-layout {
+    flex-direction: row;
+    overflow: hidden;
+  }
+
+  .task-reading-column {
+    min-width: 600px;
+    flex-shrink: 1;
+  }
+
+  .task-workbench-panel {
+    min-height: 0;
+    width: 400px;
+    border-top: 0;
+    border-left-width: 1px;
+  }
+
+  .task-workbench-panel[data-mode='collaboration'] {
+    width: min(48%, calc(100% - 600px));
+  }
+}
+
 .model-matrix-table-wrap {
   display: none;
   overflow-x: auto;
@@ -277,6 +364,17 @@ select {
 }
 .dark .glass-effect {
   background-color: color-mix(in srgb, var(--background) 65%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* 页面切换淡入上升微动效 */

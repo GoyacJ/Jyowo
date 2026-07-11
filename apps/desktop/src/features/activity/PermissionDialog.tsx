@@ -6,7 +6,7 @@ import { Button } from '@/shared/ui/button'
 type PermissionRisk = 'critical' | 'high' | 'low' | 'medium'
 type PermissionState = 'approved' | 'denied' | 'pending'
 
-export type PermissionRequestDetails = {
+export type ActivityPermissionDetails = {
   command?: PermissionCommandDetails
   decisionScope?: string
   diffSummary?: string
@@ -32,7 +32,7 @@ type PermissionCommandDetails = {
 type PermissionDialogProps = {
   onApprove?: (permissionId: string) => void
   onDeny?: (permissionId: string) => void
-  permission: PermissionRequestDetails
+  permission: ActivityPermissionDetails
   resolving?: boolean
 }
 

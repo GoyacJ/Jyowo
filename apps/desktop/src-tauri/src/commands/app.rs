@@ -7,7 +7,6 @@ use super::constants::*;
 #[allow(unused_imports)]
 use super::contracts::*;
 #[allow(unused_imports)]
-use super::conversations::*;
 #[allow(unused_imports)]
 use super::error::*;
 #[allow(unused_imports)]
@@ -44,7 +43,7 @@ pub fn get_app_info_payload() -> AppInfoPayload {
 
 #[must_use]
 pub fn harness_healthcheck_payload() -> HarnessHealthcheckPayload {
-    let _sdk_marker = std::any::TypeId::of::<jyowo_harness_sdk::Harness>();
+    let _sdk_marker = std::any::TypeId::of::<jyowo_harness_sdk::DesktopSettingsRuntime>();
 
     HarnessHealthcheckPayload {
         status: "available",

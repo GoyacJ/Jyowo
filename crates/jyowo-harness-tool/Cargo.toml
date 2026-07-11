@@ -77,5 +77,6 @@ url = { workspace = true }
 
 [dev-dependencies]
 jyowo-harness-execution = { path = "../jyowo-harness-execution" }
+jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox", features = ["local"] }
 tempfile = { workspace = true }
 wiremock = "0.6.5"

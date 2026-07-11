@@ -1,7 +1,6 @@
 #![allow(unused_imports)]
 
 use super::automation_support::*;
-use super::preview_support::*;
 use super::provider_route_support::*;
 use super::provider_support::*;
 use super::support::*;
@@ -878,7 +877,7 @@ async fn provider_config_api_key_reveal_token_is_single_use_and_scoped_to_config
             ],
         })
         .unwrap();
-    let state = runtime_state_with_harness_for_workspace(workspace).await;
+    let state = runtime_state_with_settings_runtime_for_workspace(workspace).await;
 
     let reveal = request_provider_config_api_key_reveal_with_runtime_state(
         RequestProviderConfigApiKeyRevealRequest {
@@ -995,7 +994,7 @@ async fn provider_config_api_key_reveal_token_expires() {
             }],
         })
         .unwrap();
-    let state = runtime_state_with_harness_for_workspace(workspace).await;
+    let state = runtime_state_with_settings_runtime_for_workspace(workspace).await;
 
     let reveal = request_provider_config_api_key_reveal_with_runtime_state(
         RequestProviderConfigApiKeyRevealRequest {
@@ -1044,7 +1043,7 @@ async fn provider_config_api_key_reveal_token_rejects_config_key_changed_after_i
             }],
         })
         .unwrap();
-    let state = runtime_state_with_harness_for_workspace(workspace).await;
+    let state = runtime_state_with_settings_runtime_for_workspace(workspace).await;
 
     let reveal = request_provider_config_api_key_reveal_with_runtime_state(
         RequestProviderConfigApiKeyRevealRequest {
@@ -1109,7 +1108,7 @@ async fn save_provider_settings_with_runtime_state_invalidates_pending_reveal_to
             }],
         })
         .unwrap();
-    let state = runtime_state_with_harness_for_workspace(workspace).await;
+    let state = runtime_state_with_settings_runtime_for_workspace(workspace).await;
 
     let reveal = request_provider_config_api_key_reveal_with_runtime_state(
         RequestProviderConfigApiKeyRevealRequest {

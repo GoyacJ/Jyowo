@@ -184,7 +184,7 @@ async fn assert_streaming_provider<P>(
     assert_eq!(body["stream_options"]["include_usage"], true);
     assert_eq!(body["messages"][0]["role"], "user");
     assert_eq!(body["messages"][0]["content"], "hello");
-    if matches!(provider.provider_id(), "minimax" | "qwen" | "km") {
+    if matches!(provider.provider_id(), "doubao" | "minimax" | "qwen" | "km") {
         assert_eq!(body["max_completion_tokens"], 64);
         assert!(body.get("max_tokens").is_none());
     } else {
@@ -1149,7 +1149,7 @@ provider_test!(
     "doubao",
     DOUBAO_API_KEY_ENV,
     "DOUBAO_API_KEY",
-    "doubao-seed-1.6",
+    "doubao-1-5-pro-32k-250115",
     "/chat/completions"
 );
 provider_test!(

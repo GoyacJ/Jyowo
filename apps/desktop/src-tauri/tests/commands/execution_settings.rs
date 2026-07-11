@@ -1,7 +1,6 @@
 #![allow(unused_imports)]
 
 use super::automation_support::*;
-use super::preview_support::*;
 use super::provider_route_support::*;
 use super::provider_support::*;
 use super::support::*;
@@ -38,37 +37,10 @@ fn execution_settings_save_default_without_changing_session_options() {
     .expect("execution settings should save");
 
     let options = state
-        .conversation_session_options(SessionId::new())
+        .settings_session_options(SessionId::new())
         .expect("session options");
 
     assert_eq!(options.permission_mode, PermissionMode::Default);
-    assert_eq!(options.tool_profile, ToolProfile::Coding);
-    assert_eq!(options.context_compression_trigger_ratio, 0.72);
-}
-
-#[tokio::test]
-async fn active_conversation_runtime_applies_saved_tool_profile() {
-    let workspace = unique_workspace("execution-settings-active-runtime-tool-profile");
-    let state = runtime_state_with_harness_for_workspace(workspace).await;
-    set_execution_settings_with_store(
-        SetExecutionSettingsRequest {
-            permission_mode: PermissionMode::Default,
-            tool_profile: ToolProfile::Coding,
-            context_compression_trigger_ratio: 0.72,
-            subagents_enabled: false,
-            agent_teams_enabled: false,
-            background_agents_enabled: false,
-        },
-        &global_execution_settings_store(state.workspace_root()),
-        None,
-    )
-    .expect("execution settings should save");
-
-    let (_, options) = state
-        .active_conversation_runtime(SessionId::new())
-        .expect("active runtime lookup")
-        .expect("active runtime should be present");
-
     assert_eq!(options.tool_profile, ToolProfile::Coding);
     assert_eq!(options.context_compression_trigger_ratio, 0.72);
 }

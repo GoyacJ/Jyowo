@@ -99,7 +99,7 @@ impl Tool for FileEditTool {
                 check,
                 vec![ActionResource::FileWrite {
                     path,
-                    content_hash: content_hash(new_text(input).unwrap_or_default()),
+                    content_hash: edit_operation_hash(input)?,
                 }],
                 WorkspaceAccess::ReadWrite {
                     allowed_writable_subpaths: Vec::new(),
@@ -125,7 +125,7 @@ impl Tool for FileEditTool {
             },
             vec![ActionResource::FileWrite {
                 path,
-                content_hash: content_hash(new_text(input).unwrap_or_default()),
+                content_hash: edit_operation_hash(input)?,
             }],
             WorkspaceAccess::ReadWrite {
                 allowed_writable_subpaths: Vec::new(),
@@ -142,6 +142,7 @@ impl Tool for FileEditTool {
     ) -> Result<ToolStream, ToolError> {
         let path = authorized_file_path(&authorized, AuthorizedFileResourceKind::Write)?;
         let input = authorized.raw_input();
+        verify_edit_operation_hash(&authorized, input)?;
         let old = old_text(input).map_err(validation_error)?;
         let new = new_text(input).map_err(validation_error)?;
         let replace_all = input
@@ -192,6 +193,29 @@ fn new_text(input: &Value) -> Result<&str, ValidationError> {
         .ok_or_else(|| ValidationError::from("new is required"))
 }
 
-fn content_hash(content: &str) -> String {
-    blake3::hash(content.as_bytes()).to_hex().to_string()
+fn edit_operation_hash(input: &Value) -> Result<String, ToolError> {
+    let encoded =
+        serde_json::to_vec(input).map_err(|error| ToolError::Message(error.to_string()))?;
+    Ok(blake3::hash(&encoded).to_hex().to_string())
+}
+
+fn verify_edit_operation_hash(
+    authorized: &AuthorizedToolInput,
+    input: &Value,
+) -> Result<(), ToolError> {
+    let expected = authorized
+        .action_plan()
+        .resources
+        .iter()
+        .find_map(|resource| match resource {
+            ActionResource::FileWrite { content_hash, .. } => Some(content_hash.as_str()),
+            _ => None,
+        })
+        .ok_or_else(|| ToolError::PermissionDenied("authorized edit hash missing".into()))?;
+    if edit_operation_hash(input)? != expected {
+        return Err(ToolError::PermissionDenied(
+            "authorized edit hash does not match tool input".into(),
+        ));
+    }
+    Ok(())
 }

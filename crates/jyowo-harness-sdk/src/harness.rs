@@ -47,11 +47,6 @@ use harness_contracts::{
     ToolCapability, ToolProfile, ToolRuntimeStatus, ToolSearchMode, TrustLevel, TurnInput,
     WorkspaceAccess, RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
 };
-#[cfg(feature = "sqlite-store")]
-use harness_contracts::{
-    ConversationSnapshot, ConversationSummary, ConversationTimelinePage, ConversationTurnCursor,
-    ConversationWorktreePage,
-};
 #[cfg(feature = "stream-permission")]
 use harness_contracts::{PermissionOptionId, RequestId};
 #[cfg(any(feature = "agents-team", feature = "agents-subagent"))]
@@ -59,7 +54,8 @@ use harness_contracts::{
     ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
 };
 use harness_engine::{
-    CancellationToken, Engine, EngineRunner, InterruptCause, RunContext, SessionHandle,
+    CancellationToken, Engine, EngineRunner, InterruptCause, RunContext, RunControlHandle,
+    SessionHandle,
 };
 #[cfg(feature = "steering-queue")]
 use harness_engine::{SteeringDrain, SteeringMerge};
@@ -72,10 +68,6 @@ use harness_hook::{
     NotificationKind, ReplayMode, SsrfGuardPolicy, SubagentSpecView, ToolDescriptorView,
     WorkingDir,
 };
-#[cfg(feature = "sqlite-store")]
-use harness_journal::ConversationTurnPageDirection;
-#[cfg(feature = "sqlite-store")]
-use harness_journal::SqliteConversationReadModelStore;
 use harness_journal::{
     AppendMetadata, AuditPage, AuditQuery, AuditStore, EventEnvelope, EventStore, EventStoreAudit,
     EventStoreOffloadedBlobAuthorizer, EvidenceRefRecord, EvidenceRefSource, PrunePolicy,
@@ -133,8 +125,6 @@ use harness_tool::{
 use harness_tool::{PermissionCheck, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-#[cfg(feature = "sqlite-store")]
-use tokio::sync::OnceCell;
 
 #[cfg(feature = "memory-builtin")]
 use crate::builder::BuiltinMemoryConfig;
@@ -168,11 +158,12 @@ mod limits;
 mod mcp_server;
 mod memory;
 #[cfg(feature = "memory-provider-registry")]
+pub use memory::MemoryExportFile;
+#[cfg(feature = "memory-provider-registry")]
 mod memory_preview;
 mod metrics;
 mod permissions;
 mod plugins;
-mod read_model;
 mod redaction;
 mod run_state;
 mod sampling;
@@ -226,8 +217,6 @@ struct HarnessInner {
     options: HarnessOptions,
     model: Arc<dyn ModelProvider>,
     event_store: Arc<dyn EventStore>,
-    #[cfg(feature = "sqlite-store")]
-    conversation_read_model: OnceCell<Arc<SqliteConversationReadModelStore>>,
     sandbox: Arc<dyn SandboxBackend>,
     permission_broker: Arc<dyn PermissionBroker>,
     #[cfg(feature = "stream-permission")]
@@ -258,6 +247,8 @@ struct HarnessInner {
     model_middlewares: Vec<Arc<dyn InferMiddleware>>,
     rule_providers: Vec<Arc<dyn RuleProvider>>,
     cap_registry: Arc<CapabilityRegistry>,
+    #[cfg(feature = "agents-subagent")]
+    subagent_engine_factory: Option<Arc<harness_engine::EngineBoundSubagentFactory>>,
     #[cfg(feature = "tool-search")]
     tool_search_scorer: Option<Arc<dyn harness_tool_search::ToolSearchScorer>>,
     enabled_features: HashSet<String>,
@@ -445,6 +436,7 @@ fn event_projects_to_conversation_timeline(event: &Event) -> bool {
             | Event::ArtifactUpdated(_)
             | Event::ToolUseRequested(_)
             | Event::ToolUseApproved(_)
+            | Event::ToolUseStarted(_)
             | Event::ToolUseDenied(_)
             | Event::ToolUseCompleted(_)
             | Event::ToolUseFailed(_)
@@ -1402,8 +1394,6 @@ impl Harness {
                 options: builder.options,
                 model: builder.model.0,
                 event_store: builder.store.0,
-                #[cfg(feature = "sqlite-store")]
-                conversation_read_model: OnceCell::new(),
                 sandbox: builder.sandbox.0,
                 permission_broker,
                 #[cfg(feature = "stream-permission")]
@@ -1434,6 +1424,8 @@ impl Harness {
                 model_middlewares: extras.model_middlewares,
                 rule_providers: extras.rule_providers,
                 cap_registry,
+                #[cfg(feature = "agents-subagent")]
+                subagent_engine_factory: extras.subagent_engine_factory.take(),
                 #[cfg(feature = "tool-search")]
                 tool_search_scorer: extras.tool_search_scorer.take(),
                 enabled_features: Self::enabled_feature_set(),

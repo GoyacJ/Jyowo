@@ -15,6 +15,7 @@ pub const OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";
 #[derive(Clone)]
 pub struct OpenAiProvider {
     client: OpenAiProtocolClient,
+    protocol: ModelProtocol,
 }
 
 impl OpenAiProvider {
@@ -23,7 +24,17 @@ impl OpenAiProvider {
             client: OpenAiProtocolClient::from_api_key(api_key, DEFAULT_BASE_URL)
                 .with_provider_id(PROVIDER_ID)
                 .with_responses_path("/v1/responses"),
+            protocol: ModelProtocol::Responses,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_chat_completions(mut self) -> Self {
+        self.client = self
+            .client
+            .with_chat_completions_path("/v1/chat/completions");
+        self.protocol = ModelProtocol::ChatCompletions;
+        self
     }
 
     #[must_use]
@@ -60,7 +71,7 @@ impl ModelProvider for OpenAiProvider {
     }
 
     fn default_protocol(&self) -> ModelProtocol {
-        ModelProtocol::Responses
+        self.protocol
     }
 
     fn prompt_cache_style(&self) -> PromptCacheStyle {

@@ -9,8 +9,6 @@
 pub mod audit;
 pub mod blob;
 #[cfg(feature = "sqlite")]
-pub mod conversation_read_model;
-pub mod conversation_worktree_projector;
 pub mod evidence;
 #[cfg(feature = "jsonl")]
 pub mod jsonl;
@@ -22,6 +20,24 @@ pub mod snapshot;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 pub mod store;
+#[cfg(all(feature = "sqlite", feature = "blob-file"))]
+pub mod task_blob;
+#[cfg(all(test, feature = "sqlite"))]
+mod task_commands_tests;
+#[cfg(feature = "sqlite")]
+mod task_event;
+#[cfg(feature = "sqlite")]
+pub mod task_event_adapter;
+#[cfg(feature = "sqlite")]
+pub mod task_projection;
+#[cfg(all(test, feature = "sqlite"))]
+mod task_projection_tests;
+#[cfg(feature = "sqlite")]
+mod task_schema;
+#[cfg(feature = "sqlite")]
+pub mod task_store;
+#[cfg(all(test, feature = "sqlite"))]
+mod task_store_tests;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod version;
@@ -29,8 +45,6 @@ pub mod version;
 pub use audit::*;
 pub use blob::*;
 #[cfg(feature = "sqlite")]
-pub use conversation_read_model::*;
-pub use conversation_worktree_projector::*;
 pub use evidence::*;
 #[cfg(feature = "jsonl")]
 pub use jsonl::*;
@@ -42,6 +56,16 @@ pub use snapshot::*;
 #[cfg(feature = "sqlite")]
 pub use sqlite::*;
 pub use store::*;
+#[cfg(all(feature = "sqlite", feature = "blob-file"))]
+pub use task_blob::*;
+#[cfg(feature = "sqlite")]
+pub use task_event::NewTaskEvent;
+#[cfg(feature = "sqlite")]
+pub use task_event_adapter::*;
+#[cfg(feature = "sqlite")]
+pub use task_projection::*;
+#[cfg(feature = "sqlite")]
+pub use task_store::*;
 #[cfg(any(test, feature = "testing"))]
 pub use testing::*;
 pub use version::*;

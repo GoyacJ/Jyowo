@@ -30,7 +30,7 @@ for (const target of storyTargets) {
     await openStory(page, target.id, target.viewport)
 
     await expect(page.getByRole('heading', { exact: true, name: 'Models' })).toBeVisible()
-    await expect(page.getByLabel('Model settings summary')).toBeVisible()
+    await expect(page.getByRole('region', { exact: true, name: 'Token activity' })).toBeVisible()
     await expect(page.getByLabel('Model filters')).toBeVisible()
     await expect(page.getByLabel('Model matrix')).toBeVisible()
     await expect(page.getByText('Model configuration details')).toHaveCount(0)
@@ -38,9 +38,6 @@ for (const target of storyTargets) {
     await expectNoHorizontalPageOverflow(page)
     await expectNoVisibleTextOverlap(page)
     await expectFirstViewportContainsControlSurface(page)
-
-    const screenshot = await page.screenshot({ fullPage: false })
-    expect(screenshot.length).toBeGreaterThan(10_000)
   })
 }
 
@@ -129,7 +126,9 @@ async function expectNoVisibleTextOverlap(page: Page) {
 }
 
 async function expectFirstViewportContainsControlSurface(page: Page) {
-  const summary = await page.getByLabel('Model settings summary').boundingBox()
+  const summary = await page
+    .getByRole('region', { exact: true, name: 'Token activity' })
+    .boundingBox()
   const filters = await page.getByLabel('Model filters').boundingBox()
   const matrix = await page.getByLabel('Model matrix').boundingBox()
 

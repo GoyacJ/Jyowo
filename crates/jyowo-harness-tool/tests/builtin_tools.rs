@@ -11,8 +11,9 @@ use harness_contracts::{
 use harness_tool::{
     builtin::{
         brokered_platform_runtime_capability, ArtifactTool, BrokeredPlatformRuntimeCap,
-        BrokeredPlatformRuntimeRequest, BrowserUseTool, FileEditTool, GitStageTool, GitStatusTool,
-        GlobTool, GrepTool, ImageGenerationTool, ListDirTool, TaskStopTool, TodoTool, WebFetchTool,
+        BrokeredPlatformRuntimeRequest, BrowserUseTool, FileEditTool, GitPullTool, GitPushTool,
+        GitStageTool, GitStatusTool, GlobTool, GrepTool, ImageGenerationTool, ListDirTool,
+        TaskStopTool, TodoTool, WebFetchTool,
     },
     AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset, InterruptToken, Tool,
     ToolContext, ToolRegistry,
@@ -199,10 +200,7 @@ async fn git_status_plan_is_read_only_fixed_command() {
     ));
     assert_eq!(plan.workspace_access, WorkspaceAccess::ReadOnly);
     assert_eq!(plan.network_access, NetworkAccess::None);
-    assert_eq!(
-        plan.execution_channel,
-        ToolExecutionChannel::DirectAuthorizedRust
-    );
+    assert_eq!(plan.execution_channel, ToolExecutionChannel::ProcessSandbox);
     assert!(matches!(
         plan.resources.as_slice(),
         [ActionResource::Command {
@@ -258,10 +256,7 @@ async fn git_stage_plan_requires_exact_command_permission() {
         } if paths.is_empty()
     ));
     assert_eq!(plan.network_access, NetworkAccess::None);
-    assert_eq!(
-        plan.execution_channel,
-        ToolExecutionChannel::DirectAuthorizedRust
-    );
+    assert_eq!(plan.execution_channel, ToolExecutionChannel::ProcessSandbox);
     assert!(matches!(
         plan.resources.as_slice(),
         [ActionResource::Command {
@@ -278,6 +273,60 @@ async fn git_stage_plan_requires_exact_command_permission() {
             ]
             && cwd == workspace.path()
     ));
+}
+
+#[tokio::test]
+async fn git_remote_plans_allow_network_in_the_process_sandbox() {
+    let workspace = tempfile::tempdir().unwrap();
+    let ctx = tool_ctx_at(workspace.path(), CapabilityRegistry::default());
+
+    for tool in [
+        &GitPullTool::default() as &dyn Tool,
+        &GitPushTool::default() as &dyn Tool,
+    ] {
+        let plan = tool.plan(&json!({}), &ctx).await.unwrap();
+
+        assert_eq!(plan.network_access, NetworkAccess::Unrestricted);
+        assert_eq!(plan.sandbox_policy.network, NetworkAccess::Unrestricted);
+        assert_eq!(plan.execution_channel, ToolExecutionChannel::ProcessSandbox);
+    }
+}
+
+#[tokio::test]
+async fn git_remote_execution_uses_the_authorized_network_policy_fingerprint() {
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let isolation = harness_sandbox::LocalIsolation::for_current_platform();
+    if matches!(
+        isolation,
+        harness_sandbox::LocalIsolation::None | harness_sandbox::LocalIsolation::JobObject
+    ) {
+        return;
+    }
+
+    let workspace = tempfile::tempdir().unwrap();
+    std::process::Command::new("git")
+        .arg("init")
+        .current_dir(workspace.path())
+        .output()
+        .unwrap();
+    let canonical_workspace = std::fs::canonicalize(workspace.path()).unwrap();
+    let tool = GitPullTool::default();
+    let mut ctx = tool_ctx_at(&canonical_workspace, CapabilityRegistry::default());
+    ctx.sandbox = Some(Arc::new(
+        harness_sandbox::LocalSandbox::new(&canonical_workspace).with_isolation(isolation),
+    ));
+    let input = json!({});
+    let plan = tool.plan(&input, &ctx).await.unwrap();
+    let authorized = AuthorizedToolInput::new(input, plan.clone(), ticket_for(&plan)).unwrap();
+
+    let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
+    while stream.next().await.is_some() {}
 }
 
 #[tokio::test]
@@ -298,9 +347,20 @@ async fn git_execute_uses_authorized_command_resource_not_raw_input() {
         .unwrap();
     std::fs::write(workspace.path().join("a.txt"), "a").unwrap();
     std::fs::write(workspace.path().join("b.txt"), "b").unwrap();
+    let canonical_workspace = std::fs::canonicalize(workspace.path()).unwrap();
 
     let tool = GitStageTool::default();
-    let ctx = tool_ctx_at(workspace.path(), CapabilityRegistry::default());
+    let isolation = harness_sandbox::LocalIsolation::for_current_platform();
+    if matches!(
+        isolation,
+        harness_sandbox::LocalIsolation::None | harness_sandbox::LocalIsolation::JobObject
+    ) {
+        return;
+    }
+    let mut ctx = tool_ctx_at(&canonical_workspace, CapabilityRegistry::default());
+    ctx.sandbox = Some(Arc::new(
+        harness_sandbox::LocalSandbox::new(&canonical_workspace).with_isolation(isolation),
+    ));
     let plan = tool
         .plan(&json!({ "paths": ["a.txt"] }), &ctx)
         .await
@@ -312,10 +372,17 @@ async fn git_execute_uses_authorized_command_resource_not_raw_input() {
     )
     .unwrap();
     let mut stream = tool.execute_authorized(authorized, ctx).await.unwrap();
-    match stream.next().await {
-        Some(harness_tool::ToolEvent::Final(_)) => {}
-        other => panic!("expected final result, got {other:?}"),
+    let mut final_result = None;
+    while let Some(event) = stream.next().await {
+        if let harness_tool::ToolEvent::Final(result) = event {
+            final_result = Some(result);
+            break;
+        }
     }
+    let Some(ToolResult::Structured(final_result)) = final_result else {
+        panic!("expected structured final git result");
+    };
+    assert_eq!(final_result["success"], true, "result={final_result}");
 
     let staged = std::process::Command::new("git")
         .args(["diff", "--cached", "--name-only"])

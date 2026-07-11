@@ -13,6 +13,32 @@ pub(super) struct SessionEngine {
 }
 
 impl Harness {
+    #[cfg(feature = "agents-subagent")]
+    pub async fn prepare_external_subagent_engine(
+        &self,
+        options: SessionOptions,
+        mut run_options: ConversationRunOptions,
+    ) -> Result<(), HarnessError> {
+        let factory = self.inner.subagent_engine_factory.as_ref().ok_or_else(|| {
+            HarnessError::Other("external subagent engine factory is missing".to_owned())
+        })?;
+        let options = self.effective_sdk_session_options(options)?;
+        if !self.inner.options.tool_search_enabled {
+            run_options.tool_search = ToolSearchMode::Disabled;
+        }
+        let prompt_inputs = self.load_effective_prompt_inputs(&options)?;
+        #[cfg(feature = "memory-provider-registry")]
+        let session_engine = self
+            .engine_for_session(&options, &run_options, &prompt_inputs, None, None, None)
+            .await?;
+        #[cfg(not(feature = "memory-provider-registry"))]
+        let session_engine = self
+            .engine_for_session(&options, &run_options, &prompt_inputs, None, None)
+            .await?;
+        factory.bind_latest_external_engine(session_engine.engine);
+        Ok(())
+    }
+
     pub async fn create_session(&self, options: SessionOptions) -> Result<Session, HarnessError> {
         let mut options = self.effective_session_options(options)?;
         if !self.inner.options.tool_search_enabled {
@@ -88,6 +114,7 @@ impl Harness {
             .with_event_store(event_store)
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
                 engine: session_engine.engine,
+                controlled_run: None,
                 active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
                 active_conversation_sessions: Arc::clone(&self.inner.active_conversation_sessions),
                 process_registry: self.run_scoped_process_registry(),
@@ -193,27 +220,6 @@ impl Harness {
         Ok(created.tenant_id == tenant_id && created.session_id == session_id)
     }
 
-    #[cfg(feature = "sqlite-store")]
-    pub(super) async fn is_conversation_session_stream_page(
-        &self,
-        tenant_id: TenantId,
-        session_id: SessionId,
-    ) -> Result<bool, HarnessError> {
-        let page = self
-            .inner
-            .event_store
-            .page_session_envelopes(tenant_id, session_id, None, 1)
-            .await
-            .map_err(HarnessError::Journal)?;
-        let Some(envelope) = page.envelopes.first() else {
-            return Ok(false);
-        };
-        let Event::SessionCreated(created) = &envelope.payload else {
-            return Ok(false);
-        };
-        Ok(created.tenant_id == tenant_id && created.session_id == session_id)
-    }
-
     pub(super) fn enforce_sdk_session_options_hash(
         &self,
         options: &SessionOptions,
@@ -284,6 +290,7 @@ impl Harness {
         options: SessionOptions,
         run_options: &ConversationRunOptions,
         projection: SessionProjection,
+        controlled_run: Option<(RunId, RunControlHandle)>,
     ) -> Result<Session, HarnessError> {
         let limit_permit = self.inner.session_limits.try_acquire()?;
         let prompt_inputs = self.load_effective_prompt_inputs(&options)?;
@@ -351,6 +358,7 @@ impl Harness {
             .with_event_store(event_store)
             .with_turn_runner(Arc::new(EngineSessionTurnRunner {
                 engine: session_engine.engine,
+                controlled_run,
                 active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
                 active_conversation_sessions: Arc::clone(&self.inner.active_conversation_sessions),
                 process_registry: self.run_scoped_process_registry(),
@@ -665,7 +673,10 @@ impl Harness {
         let mut subagent_assembly = None;
         #[cfg(feature = "agents-subagent")]
         if let Some(agent_tool_policy) = run_options.agent_tool_policy.as_ref() {
-            if harness_agent_runtime::should_install_subagent_runner(agent_tool_policy) {
+            if super::tool_pool::should_install_default_subagent_runner(
+                harness_has_subagent_runner,
+                agent_tool_policy,
+            ) {
                 subagent_assembly = Some(super::tool_pool::install_subagent_runner_for_run(
                     &mut cap_registry,
                     agent_tool_policy,
@@ -771,6 +782,12 @@ impl Harness {
                         "subagent engine factory already bound to parent engine".to_owned(),
                     )
                 })?;
+        }
+        #[cfg(feature = "agents-subagent")]
+        if enable_subagent_tool {
+            if let Some(factory) = &self.inner.subagent_engine_factory {
+                factory.bind_latest_external_engine(engine.clone());
+            }
         }
         Ok(SessionEngine {
             engine,
@@ -1128,6 +1145,12 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
                 ctx.started_from_scope_set,
             )
             .with_context_seed(ctx.context_seed.clone());
+        let run_ctx = match self.controlled_run.as_ref() {
+            Some((run_id, run_control)) if *run_id == ctx.run_id => {
+                run_ctx.with_run_control(run_control.clone())
+            }
+            _ => run_ctx,
+        };
         #[cfg(feature = "memory-provider-registry")]
         let run_ctx = run_ctx.with_memory_thread_settings(ctx.memory_thread_settings.clone());
         let run_ctx = if let Some(model) = ctx.model.clone() {

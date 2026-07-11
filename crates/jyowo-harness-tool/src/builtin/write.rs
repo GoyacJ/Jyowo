@@ -126,6 +126,7 @@ impl Tool for FileWriteTool {
     ) -> Result<ToolStream, ToolError> {
         let path = authorized_file_path(&authorized, AuthorizedFileResourceKind::Write)?;
         let content = content(authorized.raw_input()).map_err(validation_error)?;
+        verify_content_hash(&authorized, content)?;
         std::fs::write(&path, content).map_err(|error| ToolError::Message(error.to_string()))?;
         Ok(Box::pin(stream::iter([ToolEvent::Final(
             ToolResult::Structured(json!({
@@ -149,4 +150,22 @@ fn content(input: &Value) -> Result<&str, ValidationError> {
 
 fn content_hash(content: &str) -> String {
     blake3::hash(content.as_bytes()).to_hex().to_string()
+}
+
+fn verify_content_hash(authorized: &AuthorizedToolInput, content: &str) -> Result<(), ToolError> {
+    let expected = authorized
+        .action_plan()
+        .resources
+        .iter()
+        .find_map(|resource| match resource {
+            ActionResource::FileWrite { content_hash, .. } => Some(content_hash.as_str()),
+            _ => None,
+        })
+        .ok_or_else(|| ToolError::PermissionDenied("authorized content hash missing".into()))?;
+    if content_hash(content) != expected {
+        return Err(ToolError::PermissionDenied(
+            "authorized content hash does not match tool input".into(),
+        ));
+    }
+    Ok(())
 }

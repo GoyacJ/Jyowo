@@ -12,9 +12,7 @@ import type {
   ListProjectConversationGroupsResponse,
   PageConversationWorktreeResponse,
   ProcessStep,
-  ResolvePermissionResponse,
   StartRunResponse,
-  UnsubscribeConversationEventsResponse,
 } from '@/shared/tauri/commands'
 
 import { resolveResponseOverride, wait } from './base'
@@ -158,16 +156,10 @@ type ConversationCommandKeys =
   | 'getConversationCommandOutput'
   | 'getConversationDiffPatch'
   | 'getConversationInspectorItem'
-  | 'listenConversationEventBatches'
   | 'listActivity'
   | 'listConversations'
   | 'listProjectConversationGroups'
-  | 'pageConversationTimeline'
-  | 'pageConversationWorktree'
-  | 'resolvePermission'
   | 'startRun'
-  | 'subscribeConversationEvents'
-  | 'unsubscribeConversationEvents'
 
 export function createConversationCommandHandlers(
   state: TestCommandClientState,
@@ -349,16 +341,6 @@ export function createConversationCommandHandlers(
         request,
       )
     },
-    async listenConversationEventBatches(onBatch) {
-      await wait(state.options.delayMs)
-      state.batchListener = onBatch
-      return () => {
-        if (state.batchListener === onBatch) {
-          state.batchListener = null
-          state.clearPendingBatches()
-        }
-      }
-    },
     async listActivity() {
       await wait(state.options.delayMs)
       return state.options.listActivity ?? fixtureListActivity
@@ -371,43 +353,6 @@ export function createConversationCommandHandlers(
       await wait(state.options.delayMs)
       return state.projectConversationGroups
     },
-    async pageConversationTimeline(request) {
-      await wait(state.options.delayMs)
-      const page = state.options.conversationTimelinePage ?? {
-        events: [],
-        cursor: undefined,
-        gap: false,
-      }
-      if (!request.afterCursor) {
-        return page
-      }
-
-      const afterSequence = request.afterCursor.conversationSequence
-      return {
-        ...page,
-        events: page.events.filter((event) => event.conversationSequence > afterSequence),
-      }
-    },
-    async pageConversationWorktree(request) {
-      await wait(state.options.delayMs)
-      const page =
-        state.options.conversationWorktreePage ??
-        state.worktreePagesByConversation.get(request.conversationId) ??
-        emptyWorktreePage()
-      if (!request.pageCursor) {
-        return page
-      }
-
-      const pageCursor = request.pageCursor
-      return {
-        ...page,
-        turns: page.turns.filter((turn) =>
-          request.direction === 'before'
-            ? turn.position < pageCursor.position
-            : turn.position > pageCursor.position,
-        ),
-      }
-    },
     async getConversationInspectorItem(request) {
       await wait(state.options.delayMs)
       const page =
@@ -419,37 +364,6 @@ export function createConversationCommandHandlers(
         inspectorItemFromWorktreePage(page, request.selection),
         request,
       )
-    },
-    async resolvePermission(request) {
-      await wait(state.options.delayMs)
-      await state.completionBatchFlushed
-      emitFixtureConversationBatch(
-        state.fixtureEventState,
-        state.activeSubscription,
-        [
-          fixtureTimelineEvent(
-            'permission.resolved',
-            {
-              actionPlanHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-              autoResolved: false,
-              decision: request.decision,
-              decisionId: 'decision-fixture-001',
-              requestId: request.requestId,
-            },
-            {
-              conversationSequence: 10,
-              id: 'evt-fixture-permission-resolved',
-              sequence: 10,
-              source: 'policy',
-            },
-          ),
-        ],
-        120,
-      )
-      return {
-        ...request,
-        status: 'resolved',
-      } satisfies ResolvePermissionResponse
     },
     async startRun(request) {
       await wait(state.options.delayMs)
@@ -619,28 +533,6 @@ export function createConversationCommandHandlers(
         100,
       )
       return { runId: 'run-001', status: 'started' } satisfies StartRunResponse
-    },
-    async subscribeConversationEvents(request) {
-      await wait(state.options.delayMs)
-      state.subscriptionCounter += 1
-      state.activeSubscription = state.options.subscribeConversationEvents ?? {
-        subscriptionId: `subscription-fixture-${state.subscriptionCounter}`,
-        conversationId: request.conversationId,
-        replayEvents: [],
-        gap: false,
-      }
-      return state.activeSubscription
-    },
-    async unsubscribeConversationEvents(subscriptionId) {
-      await wait(state.options.delayMs)
-      if (state.activeSubscription?.subscriptionId === subscriptionId) {
-        state.activeSubscription = null
-        state.clearPendingBatches()
-      }
-      return {
-        subscriptionId,
-        status: 'unsubscribed',
-      } satisfies UnsubscribeConversationEventsResponse
     },
   }
 }

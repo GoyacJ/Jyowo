@@ -368,20 +368,7 @@ impl Harness {
         let journal_session_exists = self
             .conversation_session_has_journal_events(options.tenant_id, options.session_id)
             .await?;
-        #[cfg(feature = "sqlite-store")]
-        let (read_model, read_model_has_session) = {
-            let read_model = self.conversation_read_model().await?;
-            let exists = read_model
-                .summary(options.tenant_id, options.session_id)
-                .await
-                .map_err(HarnessError::Journal)?
-                .is_some();
-            (read_model, exists)
-        };
-        #[cfg(not(feature = "sqlite-store"))]
-        let read_model_has_session = false;
-
-        if !journal_session_exists && !read_model_has_session {
+        if !journal_session_exists {
             return Ok(false);
         }
 
@@ -400,23 +387,12 @@ impl Harness {
                 .map_err(HarnessError::Journal)?;
         }
 
-        #[cfg_attr(not(feature = "sqlite-store"), allow(unused_mut))]
-        let mut deleted = self
+        let deleted = self
             .inner
             .event_store
             .delete_session(options.tenant_id, options.session_id)
             .await
             .map_err(HarnessError::Journal)?;
-        #[cfg(feature = "sqlite-store")]
-        {
-            if deleted || read_model_has_session {
-                read_model
-                    .reset_session(options.tenant_id, options.session_id)
-                    .await
-                    .map_err(HarnessError::Journal)?;
-                deleted = true;
-            }
-        }
         if !deleted {
             return Ok(false);
         }
@@ -446,6 +422,24 @@ impl Harness {
         &self,
         request: ConversationTurnRequest,
     ) -> Result<ConversationTurnReceipt, HarnessError> {
+        self.submit_conversation_turn_inner(request, None).await
+    }
+
+    pub async fn submit_conversation_turn_with_run_control(
+        &self,
+        request: ConversationTurnRequest,
+        run_id: RunId,
+        run_control: RunControlHandle,
+    ) -> Result<ConversationTurnReceipt, HarnessError> {
+        self.submit_conversation_turn_inner(request, Some((run_id, run_control)))
+            .await
+    }
+
+    async fn submit_conversation_turn_inner(
+        &self,
+        request: ConversationTurnRequest,
+        controlled_run: Option<(RunId, RunControlHandle)>,
+    ) -> Result<ConversationTurnReceipt, HarnessError> {
         if request.input.prompt.trim().is_empty() {
             return Err(HarnessError::Session(SessionError::Message(
                 "prompt must not be empty".to_owned(),
@@ -468,7 +462,10 @@ impl Harness {
                 "cannot submit turn to ended session".to_owned(),
             )));
         }
-        let run_id = RunId::new();
+        let (run_id, run_control) = match controlled_run {
+            Some((run_id, run_control)) => (run_id, Some(run_control)),
+            None => (RunId::new(), None),
+        };
         let _active_session = ActiveConversationSessionGuard::register(
             Arc::clone(&self.inner.active_conversation_sessions),
             options.tenant_id,
@@ -489,7 +486,12 @@ impl Harness {
             &model_snapshot.conversation_capability.input_modalities,
         );
         let session = self
-            .resume_sdk_session_from_projection(options.clone(), &run_options, projection)
+            .resume_sdk_session_from_projection(
+                options.clone(),
+                &run_options,
+                projection,
+                run_control.map(|run_control| (run_id, run_control)),
+            )
             .await?;
         for patch in hydrated.memory_patches {
             session

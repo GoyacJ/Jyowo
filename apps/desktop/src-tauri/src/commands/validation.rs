@@ -9,7 +9,6 @@ use super::constants::*;
 #[allow(unused_imports)]
 use super::contracts::*;
 #[allow(unused_imports)]
-use super::conversations::*;
 #[allow(unused_imports)]
 use super::error::*;
 #[allow(unused_imports)]
@@ -66,122 +65,6 @@ pub(crate) fn ensure_optional(
     Ok(())
 }
 
-pub(crate) fn validate_context_reference_payloads(
-    references: Option<&[ContextReferencePayload]>,
-) -> Result<(), CommandErrorPayload> {
-    if let Some(references) = references {
-        for reference in references {
-            match reference {
-                ContextReferencePayload::WorkspaceFile { path, label } => {
-                    ensure_non_empty("contextReferences.path", path)?;
-                    ensure_non_empty("contextReferences.label", label)?;
-                }
-                ContextReferencePayload::Artifact { id, label }
-                | ContextReferencePayload::Conversation { id, label }
-                | ContextReferencePayload::Memory { id, label }
-                | ContextReferencePayload::Skill { id, label }
-                | ContextReferencePayload::Tool { id, label }
-                | ContextReferencePayload::McpServer { id, label } => {
-                    ensure_non_empty("contextReferences.id", id)?;
-                    ensure_non_empty("contextReferences.label", label)?;
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-pub(crate) fn validate_attachment_reference_payloads(
-    attachments: Option<&[AttachmentReferencePayload]>,
-) -> Result<(), CommandErrorPayload> {
-    if let Some(attachments) = attachments {
-        let mut total_size = 0_u64;
-        for attachment in attachments {
-            ensure_attachment_id(&attachment.id)?;
-            ensure_non_empty("attachments.name", &attachment.name)?;
-            ensure_non_empty("attachments.mimeType", &attachment.mime_type)?;
-            if attachment.size_bytes > MAX_ATTACHMENT_BYTES {
-                return Err(invalid_payload(format!(
-                    "attachment must be at most {} MB",
-                    MAX_ATTACHMENT_BYTES / 1024 / 1024
-                )));
-            }
-            total_size = total_size.saturating_add(attachment.size_bytes);
-        }
-        if total_size > MAX_TOTAL_ATTACHMENT_BYTES {
-            return Err(invalid_payload(format!(
-                "attachments must total at most {} MB",
-                MAX_TOTAL_ATTACHMENT_BYTES / 1024 / 1024
-            )));
-        }
-    }
-
-    Ok(())
-}
-
-pub(crate) fn ensure_attachment_id(value: &str) -> Result<(), CommandErrorPayload> {
-    const PREFIX: &str = "attachment-";
-
-    ensure_non_empty("attachments.id", value)?;
-    let Some(hex) = value.strip_prefix(PREFIX) else {
-        return Err(invalid_payload(
-            "attachments.id must be a generated attachment id".to_owned(),
-        ));
-    };
-    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(invalid_payload(
-            "attachments.id must be a generated attachment id".to_owned(),
-        ));
-    }
-
-    Ok(())
-}
-
-pub(crate) async fn build_conversation_turn_input(
-    request: &StartRunRequest,
-    state: &DesktopRuntimeState,
-) -> Result<ConversationTurnInput, CommandErrorPayload> {
-    validate_context_reference_payloads(request.context_references.as_deref())?;
-    validate_attachment_reference_payloads(request.attachments.as_deref())?;
-    let session_id = parse_session_id(&request.conversation_id)?;
-
-    Ok(ConversationTurnInput {
-        prompt: request.prompt.clone(),
-        client_message_id: request.client_message_id.clone(),
-        context_references: validate_context_references(
-            request.context_references.as_deref().unwrap_or_default(),
-            session_id,
-            state,
-        )
-        .await?,
-        attachments: validate_attachment_references(
-            request.attachments.as_deref().unwrap_or_default(),
-            state.runtime_root(),
-            state
-                .project_workspace_root()
-                .is_none()
-                .then_some(session_id),
-        )?,
-    })
-}
-
-pub(crate) fn resolve_start_run_permission_mode(
-    requested: Option<PermissionMode>,
-    state: &DesktopRuntimeState,
-) -> Result<PermissionMode, CommandErrorPayload> {
-    if let Some(permission_mode) = requested {
-        ensure_start_run_permission_mode(permission_mode)?;
-    }
-    let permission_mode = effective_execution_settings_permission_mode(
-        state
-            .effective_execution_settings(requested)?
-            .permission_mode,
-    );
-    ensure_start_run_permission_mode(permission_mode)?;
-    Ok(permission_mode)
-}
-
 pub(crate) fn effective_execution_settings_permission_mode(
     permission_mode: PermissionMode,
 ) -> PermissionMode {
@@ -192,7 +75,7 @@ pub(crate) fn effective_execution_settings_permission_mode(
     }
 }
 
-pub(crate) fn ensure_start_run_permission_mode(
+fn ensure_automation_permission_mode(
     permission_mode: PermissionMode,
 ) -> Result<(), CommandErrorPayload> {
     match permission_mode {
@@ -227,7 +110,7 @@ pub(crate) fn ensure_automation_spec(
             "automation schedule intervalMinutes must be greater than zero".to_owned(),
         ));
     }
-    ensure_start_run_permission_mode(automation.permission_mode)?;
+    ensure_automation_permission_mode(automation.permission_mode)?;
     ensure_automation_tool_profile(&automation.tool_profile)?;
     match automation.workspace_scope {
         AutomationWorkspaceScope::CurrentWorkspace => {}
@@ -336,227 +219,6 @@ pub(crate) fn ensure_automation_id(id: &str) -> Result<(), CommandErrorPayload> 
     Ok(())
 }
 
-pub(crate) async fn validate_context_references(
-    references: &[ContextReferencePayload],
-    session_id: SessionId,
-    state: &DesktopRuntimeState,
-) -> Result<Vec<ConversationContextReference>, CommandErrorPayload> {
-    let mut validated = Vec::with_capacity(references.len());
-
-    for reference in references {
-        validated.push(match reference {
-            ContextReferencePayload::WorkspaceFile { path, label } => {
-                let Some(workspace_root) = state.project_workspace_root() else {
-                    return Err(invalid_payload(
-                        "workspace file references require an active project workspace".to_owned(),
-                    ));
-                };
-                let absolute_path = workspace_root.join(path);
-                let canonical_path = absolute_path.canonicalize().map_err(|error| {
-                    invalid_payload(format!("workspace file reference is invalid: {error}"))
-                })?;
-                let relative_path = workspace_relative_path(&canonical_path, workspace_root)
-                    .ok_or_else(|| {
-                        invalid_payload(
-                            "workspace file reference must stay inside the workspace".to_owned(),
-                        )
-                    })?;
-                ConversationContextReference::WorkspaceFile {
-                    path: relative_path,
-                    label: label.clone(),
-                }
-            }
-            ContextReferencePayload::Artifact { id, label } => {
-                ensure_artifact_exists(id, session_id, state).await?;
-                ConversationContextReference::Artifact {
-                    id: id.clone(),
-                    label: label.clone(),
-                }
-            }
-            ContextReferencePayload::Conversation { id, label } => {
-                ensure_conversation_exists(id, state).await?;
-                ConversationContextReference::Conversation {
-                    id: id.clone(),
-                    label: label.clone(),
-                }
-            }
-            ContextReferencePayload::Memory { id, label } => {
-                ensure_memory_exists(id, state).await?;
-                ConversationContextReference::Memory {
-                    id: id.clone(),
-                    label: label.clone(),
-                    resolved_content: None,
-                }
-            }
-            ContextReferencePayload::Skill { id, label } => {
-                ensure_skill_exists(id, state).await?;
-                ConversationContextReference::Skill {
-                    id: id.clone(),
-                    label: label.clone(),
-                }
-            }
-            ContextReferencePayload::Tool { id, label } => {
-                ensure_tool_exists(id, state)?;
-                ConversationContextReference::Tool {
-                    id: id.clone(),
-                    label: label.clone(),
-                }
-            }
-            ContextReferencePayload::McpServer { id, label } => {
-                ensure_mcp_server_exists(id, state).await?;
-                ConversationContextReference::McpServer {
-                    id: id.clone(),
-                    label: label.clone(),
-                }
-            }
-        });
-    }
-
-    Ok(validated)
-}
-
-pub(crate) fn validate_attachment_references(
-    attachments: &[AttachmentReferencePayload],
-    runtime_root: &Path,
-    no_workspace_session_id: Option<SessionId>,
-) -> Result<Vec<ConversationAttachmentReference>, CommandErrorPayload> {
-    let mut validated = Vec::with_capacity(attachments.len());
-
-    for attachment in attachments {
-        if let Some(session_id) = no_workspace_session_id {
-            if !no_workspace_attachment_belongs_to_conversation(
-                runtime_root,
-                session_id,
-                &attachment.id,
-            )? {
-                return Err(invalid_payload(
-                    "attachment reference does not belong to conversation".to_owned(),
-                ));
-            }
-        }
-        let record = read_attachment_record(runtime_root, &attachment.id)?;
-        if record.attachment != *attachment {
-            return Err(invalid_payload(
-                "attachment reference does not match stored metadata".to_owned(),
-            ));
-        }
-        validated.push(ConversationAttachmentReference {
-            id: attachment.id.clone(),
-            name: attachment.name.clone(),
-            mime_type: attachment.mime_type.clone(),
-            size_bytes: attachment.size_bytes,
-            blob_ref: record.blob_ref.clone(),
-        });
-    }
-
-    Ok(validated)
-}
-
-pub(crate) fn attachment_blob_ref_payload(blob_ref: &BlobRef) -> AttachmentBlobRefPayload {
-    AttachmentBlobRefPayload {
-        id: blob_ref.id.to_string(),
-        size: blob_ref.size,
-        content_hash: blob_ref.content_hash,
-        content_type: blob_ref.content_type.clone(),
-    }
-}
-
-pub(crate) async fn ensure_artifact_exists(
-    id: &str,
-    session_id: SessionId,
-    state: &DesktopRuntimeState,
-) -> Result<(), CommandErrorPayload> {
-    let artifacts = list_artifacts_with_runtime_state(
-        ListArtifactsRequest {
-            conversation_id: session_id.to_string(),
-        },
-        state,
-    )
-    .await?;
-    if artifacts.artifacts.iter().any(|artifact| artifact.id == id) {
-        Ok(())
-    } else {
-        Err(invalid_payload(
-            "artifact reference does not exist".to_owned(),
-        ))
-    }
-}
-
-pub(crate) async fn ensure_conversation_exists(
-    id: &str,
-    state: &DesktopRuntimeState,
-) -> Result<(), CommandErrorPayload> {
-    let conversations = list_conversations_with_runtime_state(state).await;
-    if conversations
-        .conversations
-        .iter()
-        .any(|conversation| conversation.id == id)
-    {
-        Ok(())
-    } else {
-        Err(invalid_payload(
-            "conversation reference does not exist".to_owned(),
-        ))
-    }
-}
-
-pub(crate) async fn ensure_memory_exists(
-    id: &str,
-    state: &DesktopRuntimeState,
-) -> Result<(), CommandErrorPayload> {
-    let memories = list_memory_items_with_runtime_state(state).await?;
-    if memories.items.iter().any(|memory| memory.id == id) {
-        Ok(())
-    } else {
-        Err(invalid_payload(
-            "memory reference does not exist".to_owned(),
-        ))
-    }
-}
-
-pub(crate) async fn ensure_skill_exists(
-    id: &str,
-    state: &DesktopRuntimeState,
-) -> Result<(), CommandErrorPayload> {
-    let skills = list_skills_with_runtime_state(state).await?;
-    if skills.skills.iter().any(|skill| skill.id == id) {
-        Ok(())
-    } else {
-        Err(invalid_payload("skill reference does not exist".to_owned()))
-    }
-}
-
-pub(crate) fn ensure_tool_exists(
-    id: &str,
-    state: &DesktopRuntimeState,
-) -> Result<(), CommandErrorPayload> {
-    let Some(harness) = state.harness() else {
-        return Err(runtime_unavailable(
-            "Validating tool references requires the runtime tool registry.",
-        ));
-    };
-
-    if harness.tool_registry().snapshot().descriptor(id).is_some() {
-        Ok(())
-    } else {
-        Err(invalid_payload("tool reference does not exist".to_owned()))
-    }
-}
-
-pub(crate) async fn ensure_mcp_server_exists(
-    id: &str,
-    state: &DesktopRuntimeState,
-) -> Result<(), CommandErrorPayload> {
-    let servers = list_mcp_servers_with_runtime_state(state).await?;
-    if servers.servers.iter().any(|server| server.id == id) {
-        Ok(())
-    } else {
-        Err(invalid_payload(
-            "mcp server reference does not exist".to_owned(),
-        ))
-    }
-}
-
 pub(crate) fn ensure_eval_case_id(value: &str) -> Result<(), CommandErrorPayload> {
     ensure_non_empty("caseId", value)?;
     if value.len() > 64 {
@@ -571,30 +233,6 @@ pub(crate) fn ensure_eval_case_id(value: &str) -> Result<(), CommandErrorPayload
         return Err(invalid_payload(
             "caseId may only contain ASCII letters, digits, dots, underscores, and hyphens"
                 .to_owned(),
-        ));
-    }
-
-    Ok(())
-}
-
-pub(crate) fn require_conversation_id_for_replay(
-    value: Option<&str>,
-) -> Result<(), CommandErrorPayload> {
-    if value.is_none() {
-        return Err(invalid_payload(
-            "conversationId is required for replay and support bundle export".to_owned(),
-        ));
-    }
-
-    Ok(())
-}
-
-pub(crate) fn require_conversation_id_for_activity(
-    value: Option<&str>,
-) -> Result<(), CommandErrorPayload> {
-    if value.is_none() {
-        return Err(invalid_payload(
-            "conversationId is required for activity listing".to_owned(),
         ));
     }
 

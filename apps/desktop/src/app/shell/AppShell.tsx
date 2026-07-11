@@ -2,7 +2,9 @@ import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { Command as CommandIcon } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useStore } from 'zustand'
 import { ActivityRail } from '@/features/activity/ActivityRail'
+import { taskStoreFor } from '@/features/tasks/use-task'
 import { OPEN_COMMAND_PALETTE_EVENT } from '@/features/workspace/CommandPalette'
 import { SidebarNav } from '@/features/workspace/SidebarNav'
 import { useUiStore } from '@/shared/state/ui-store'
@@ -20,9 +22,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
-  const selectedConversationId =
-    typeof currentSearch.conversationId === 'string' ? currentSearch.conversationId : undefined
-  const selectedActiveRun = selectActiveRun(activeRunsByConversation, selectedConversationId)
+  const selectedTaskId = typeof currentSearch.taskId === 'string' ? currentSearch.taskId : undefined
+  const selectedActiveRun = selectOnlyActiveRun(activeRunsByConversation)
   const sidebarWidth = sidebarCollapsed || compactSidebar ? '48px' : '300px'
 
   function openSettings() {
@@ -61,28 +62,31 @@ export function AppShell({ children }: { children: ReactNode }) {
           </main>
         </div>
       </div>
-      <ActivityRail activeRunId={selectedActiveRun?.runId} onOpenSettings={openSettings} />
+      {pathname === '/' && selectedTaskId ? (
+        <SelectedTaskActivityRail onOpenSettings={openSettings} taskId={selectedTaskId} />
+      ) : (
+        <ActivityRail activeRunId={selectedActiveRun?.runId} onOpenSettings={openSettings} />
+      )}
     </div>
   )
 }
 
-function selectActiveRun(
-  activeRunsByConversation: Record<string, string>,
-  selectedConversationId: string | undefined,
-) {
-  if (selectedConversationId) {
-    const runId = activeRunsByConversation[selectedConversationId]
+function SelectedTaskActivityRail({
+  onOpenSettings,
+  taskId,
+}: {
+  onOpenSettings: () => void
+  taskId: string
+}) {
+  const activeRunId = useStore(
+    taskStoreFor(taskId),
+    (state) => state.snapshot?.projection.currentRun?.segmentId,
+  )
 
-    if (runId) {
-      return {
-        conversationId: selectedConversationId,
-        runId,
-      }
-    }
+  return <ActivityRail activeRunId={activeRunId} onOpenSettings={onOpenSettings} />
+}
 
-    return undefined
-  }
-
+function selectOnlyActiveRun(activeRunsByConversation: Record<string, string>) {
   const activeRuns = Object.entries(activeRunsByConversation)
 
   if (activeRuns.length !== 1) {

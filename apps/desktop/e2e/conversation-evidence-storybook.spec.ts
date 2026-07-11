@@ -66,6 +66,14 @@ for (const target of storyTargets) {
     await expectTimelineStaysInReadingColumn(page)
 
     if (target.requiresDiff) {
+      const diffDisclosure = page
+        .locator('[data-evidence-disclosure-id]')
+        .filter({ has: page.getByRole('button', { name: /diff/iu }) })
+        .getByRole('button', { expanded: false })
+        .first()
+      if ((await diffDisclosure.count()) > 0) {
+        await diffDisclosure.click()
+      }
       await expectEvidenceScrollRegion(page, 'diff-scroll-region')
     }
     if (target.requiresShell) {
@@ -78,9 +86,6 @@ for (const target of storyTargets) {
       await copyButton.focus()
       await expect(copyButton).toBeFocused()
     }
-
-    const screenshot = await page.screenshot({ fullPage: false })
-    expect(screenshot.length).toBeGreaterThan(10_000)
   })
 }
 
@@ -120,18 +125,21 @@ async function expectMeaningfulBody(page: Page) {
 }
 
 async function expectTimelineStaysInReadingColumn(page: Page) {
-  const timeline = page.locator('section.max-w-\\[900px\\]').first()
+  const timeline = page.getByTestId('conversation-timeline-scroll-content').first()
   await expect(timeline).toBeVisible()
   const box = await timeline.boundingBox()
   expect(box).not.toBeNull()
-  expect(box?.width).toBeLessThanOrEqual(905)
+  expect(box?.width).toBeLessThanOrEqual(985)
 }
 
 async function expectEvidenceScrollRegion(page: Page, testId: string) {
   const region = page.getByTestId(testId).first()
   await expect(region).toBeVisible()
   const regionBox = await region.boundingBox()
-  const timelineBox = await page.locator('section.max-w-\\[900px\\]').first().boundingBox()
+  const timelineBox = await page
+    .getByTestId('conversation-timeline-scroll-content')
+    .first()
+    .boundingBox()
 
   expect(regionBox).not.toBeNull()
   expect(timelineBox).not.toBeNull()

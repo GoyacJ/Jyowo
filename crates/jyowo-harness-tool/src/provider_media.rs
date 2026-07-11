@@ -1,7 +1,7 @@
 //! Shared provider media download policy and validation helpers.
 //!
-//! Pure validation compiles unconditionally. HTTP download uses `reqwest` behind
-//! `minimax-tools`, `gemini-tools`, or `seedance-tools`.
+//! Pure validation compiles unconditionally. Provider downloads are routed
+//! through the tool network broker.
 
 #[cfg(any(
     feature = "minimax-tools",
@@ -363,105 +363,6 @@ pub trait ProviderMediaDownloader: Send + Sync {
         max_bytes: u64,
         modality: ModelModality,
     ) -> Result<ProviderMediaBytes, ToolError>;
-}
-
-#[cfg(all(
-    test,
-    any(
-        feature = "minimax-tools",
-        feature = "gemini-tools",
-        feature = "seedance-tools"
-    )
-))]
-pub struct ReqwestProviderMediaDownloader;
-
-#[cfg(all(
-    test,
-    any(
-        feature = "minimax-tools",
-        feature = "gemini-tools",
-        feature = "seedance-tools"
-    )
-))]
-#[async_trait::async_trait]
-impl ProviderMediaDownloader for ReqwestProviderMediaDownloader {
-    async fn download(
-        &self,
-        url: &Url,
-        max_bytes: u64,
-        modality: ModelModality,
-    ) -> Result<ProviderMediaBytes, ToolError> {
-        use futures::StreamExt as _;
-
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|error| {
-                ToolError::Message(format!("provider media download setup failed: {error}"))
-            })?;
-        let response = client
-            .get(url.clone())
-            .send()
-            .await
-            .map_err(|_| ToolError::Message("provider media download failed".to_owned()))?;
-        if !response.status().is_success() {
-            return Err(ToolError::Message(
-                "provider media download failed".to_owned(),
-            ));
-        }
-        if !response
-            .headers()
-            .contains_key(reqwest::header::CONTENT_LENGTH)
-        {
-            return Err(ToolError::Message(
-                "provider media download returned unknown content length".to_owned(),
-            ));
-        }
-        let mime_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| safe_mime_for_modality(value, modality))
-            .map(ToOwned::to_owned)
-            .ok_or_else(|| {
-                ToolError::Message(
-                    "provider media download returned unsupported content type".to_owned(),
-                )
-            })?;
-        let content_length = response.content_length().unwrap_or(0);
-        if content_length == 0 {
-            return Err(ToolError::Message(
-                "provider media download returned empty content length".to_owned(),
-            ));
-        }
-        if content_length > max_bytes {
-            return Err(ToolError::ResultTooLarge {
-                original: content_length,
-                limit: max_bytes,
-                metric: BudgetMetric::Bytes,
-            });
-        }
-        let mut bytes = Vec::with_capacity(content_length.min(max_bytes) as usize);
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk
-                .map_err(|_| ToolError::Message("provider media download failed".to_owned()))?;
-            let next_len = u64::try_from(bytes.len())
-                .unwrap_or(u64::MAX)
-                .saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
-            if next_len > max_bytes {
-                return Err(ToolError::ResultTooLarge {
-                    original: next_len,
-                    limit: max_bytes,
-                    metric: BudgetMetric::Bytes,
-                });
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        let mime_type = validate_media_bytes(&bytes, modality, Some(&mime_type))?;
-        Ok(ProviderMediaBytes { bytes, mime_type })
-    }
 }
 
 /// Broker-backed provider media downloader.

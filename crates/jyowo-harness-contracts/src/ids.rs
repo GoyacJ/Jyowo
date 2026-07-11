@@ -34,6 +34,9 @@ impl<Scope> TypedUlid<Scope> {
     }
 
     pub fn parse(s: &str) -> Result<Self, IdParseError> {
+        if !matches!(s.as_bytes().first(), Some(b'0'..=b'7')) {
+            return Err(IdParseError("ULID exceeds 128 bits".into()));
+        }
         Ulid::from_string(s)
             .map(|inner| Self {
                 inner,
@@ -142,6 +145,14 @@ macro_rules! define_scopes {
 }
 
 define_scopes! {
+    TaskScope => TaskId,
+    RunSegmentScope => RunSegmentId,
+    QueueItemScope => QueueItemId,
+    CommandScope => CommandId,
+    ClientScope => ClientId,
+    ActorScope => ActorId,
+    WorkspaceLeaseScope => WorkspaceLeaseId,
+    CheckpointScope => CheckpointId,
     SessionScope => SessionId,
     RunScope => RunId,
     MessageScope => MessageId,

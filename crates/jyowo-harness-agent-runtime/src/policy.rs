@@ -1,15 +1,9 @@
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
-use std::path::Path;
-use std::time::Duration;
-
-use chrono::{DateTime, Utc};
 use harness_contracts::{
     validate_agent_tool_policy, AgentCapabilityKind, AgentCapabilityUnavailableReason,
     AgentOrchestrationValidationError, AgentToolPolicy, AgentUsePolicy,
     AgentWorkspaceIsolationMode,
 };
-use serde::Deserialize;
+use std::path::Path;
 
 use crate::isolation::{WorkspaceIsolationError, WorkspaceIsolationManager};
 use crate::profiles::AgentProfileRegistry;
@@ -26,6 +20,7 @@ pub const MAX_ALLOWED_TEAM_MEMBERS: u32 = 16;
 pub struct AgentCapabilityEnvironment {
     pub subagents_compiled: bool,
     pub agent_teams_compiled: bool,
+    pub background_agents_compiled: bool,
     pub stream_permission_runtime_available: bool,
 }
 
@@ -131,7 +126,6 @@ impl AgentCapabilityResolver {
         let profile_registry_status = profile_registry_status(workspace_root);
         let background_registry_open = background_registry_open(workspace_root);
         let restart_recovery_ok = restart_recovery_ok(workspace_root);
-        let background_supervisor_available = background_supervisor_available(workspace_root);
         let write_isolation_status = write_isolation_status(workspace_root);
 
         let subagents_available = environment.subagents_compiled
@@ -191,17 +185,15 @@ impl AgentCapabilityResolver {
             );
         }
 
-        let background_agents_available = background_registry_open
-            && background_supervisor_available
+        let background_agents_available = environment.background_agents_compiled
+            && background_registry_open
             && restart_recovery_ok
             && environment.stream_permission_runtime_available;
 
-        if !background_supervisor_available {
-            unavailable_reasons.push(
-                AgentCapabilityUnavailableReason::BackgroundSupervisorUnavailable {
-                    message: "background agent supervisor is unavailable".to_owned(),
-                },
-            );
+        if !environment.background_agents_compiled {
+            unavailable_reasons.push(AgentCapabilityUnavailableReason::NotCompiled {
+                capability: AgentCapabilityKind::BackgroundAgents,
+            });
         }
         if background_registry_open && !environment.stream_permission_runtime_available {
             unavailable_reasons.push(
@@ -291,30 +283,11 @@ struct WorkspaceIsolationStatus {
     message: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AgentSupervisorLockFile {
-    status: String,
-    workspace_id: String,
-    token_hash: String,
-    token_epoch: u64,
-    control_addr: String,
-    heartbeat_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AgentSupervisorTokenFile {
-    token: String,
-    token_hash: String,
-    token_epoch: u64,
-    workspace_id: String,
-}
-
 pub fn default_agent_capability_environment() -> AgentCapabilityEnvironment {
     AgentCapabilityEnvironment {
         subagents_compiled: cfg!(feature = "agents-subagent"),
         agent_teams_compiled: cfg!(feature = "agents-team"),
+        background_agents_compiled: false,
         stream_permission_runtime_available: false,
     }
 }
@@ -478,103 +451,6 @@ fn restart_recovery_ok(workspace_root: &Path) -> bool {
             .unwrap_or(false),
         Err(_) => false,
     }
-}
-
-fn background_supervisor_available(workspace_root: &Path) -> bool {
-    for attempt in 0..3 {
-        if background_supervisor_available_once(workspace_root) {
-            return true;
-        }
-        if attempt < 2 {
-            std::thread::sleep(Duration::from_millis(25));
-        }
-    }
-    false
-}
-
-fn background_supervisor_available_once(workspace_root: &Path) -> bool {
-    let lock_path = workspace_root.join(".jyowo/runtime/agent-supervisor.lock");
-    let token_path = workspace_root.join(".jyowo/runtime/agent-supervisor.token");
-    if !lock_path.is_file() {
-        return false;
-    }
-    if !token_path.is_file() {
-        return false;
-    }
-
-    let Ok(contents) = std::fs::read_to_string(&lock_path) else {
-        return false;
-    };
-    let Ok(lock) = serde_json::from_str::<AgentSupervisorLockFile>(&contents) else {
-        return false;
-    };
-    let Ok(token_contents) = std::fs::read_to_string(&token_path) else {
-        return false;
-    };
-    let Ok(token) = serde_json::from_str::<AgentSupervisorTokenFile>(&token_contents) else {
-        return false;
-    };
-    if lock.status != "running" {
-        return false;
-    }
-    let expected_workspace_id = workspace_id(workspace_root);
-    if token.workspace_id != lock.workspace_id
-        || token.token_epoch != lock.token_epoch
-        || token.token_hash != lock.token_hash
-        || blake3::hash(token.token.as_bytes()).to_hex().to_string() != lock.token_hash
-        || lock.workspace_id != expected_workspace_id
-    {
-        return false;
-    }
-    let Ok(age) = (Utc::now() - lock.heartbeat_at).to_std() else {
-        return false;
-    };
-    age <= Duration::from_secs(10) && supervisor_control_channel_live(&lock, &token)
-}
-
-fn supervisor_control_channel_live(
-    lock: &AgentSupervisorLockFile,
-    token: &AgentSupervisorTokenFile,
-) -> bool {
-    let Ok(control_addr) = lock.control_addr.parse::<SocketAddr>() else {
-        return false;
-    };
-    if !control_addr.ip().is_loopback() {
-        return false;
-    }
-    let timeout = Duration::from_millis(750);
-    let Ok(mut stream) = TcpStream::connect_timeout(&control_addr, timeout) else {
-        return false;
-    };
-    if stream.set_read_timeout(Some(timeout)).is_err()
-        || stream.set_write_timeout(Some(timeout)).is_err()
-    {
-        return false;
-    }
-    let Ok(request) = serde_json::to_vec(&serde_json::json!({
-        "token": token.token,
-        "request": "status",
-    })) else {
-        return false;
-    };
-    if stream.write_all(&request).is_err() {
-        return false;
-    }
-    let mut buffer = [0_u8; 8192];
-    let Ok(read) = stream.read(&mut buffer) else {
-        return false;
-    };
-    let Ok(response) = serde_json::from_slice::<serde_json::Value>(&buffer[..read]) else {
-        return false;
-    };
-    response.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
-        && response.get("status").and_then(serde_json::Value::as_str) == Some("running")
-}
-
-fn workspace_id(workspace_root: &Path) -> String {
-    blake3::hash(format!("project:{}", workspace_root.display()).as_bytes())
-        .to_hex()
-        .to_string()
 }
 
 fn team_runtime_policy_available() -> bool {

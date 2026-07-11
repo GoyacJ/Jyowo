@@ -34,6 +34,8 @@ pub enum RegistrationError {
     InvalidDescriptor(String),
     #[error("tool not found: {0}")]
     NotFound(String),
+    #[error("tool registry changed while tools were being wrapped")]
+    ConcurrentMutation,
 }
 
 #[derive(Clone)]
@@ -70,6 +72,55 @@ impl ToolRegistry {
 
     pub fn register(&self, tool: Box<dyn Tool>) -> Result<(), RegistrationError> {
         self.register_with_journal_authority(tool, ToolJournalAuthority::None)
+    }
+
+    pub fn wrap_tools<F>(&self, mut wrap: F) -> Result<(), RegistrationError>
+    where
+        F: FnMut(Arc<dyn Tool>) -> Arc<dyn Tool>,
+    {
+        let (generation, tools) = {
+            let inner = self.inner.read();
+            let tools = inner
+                .tools
+                .iter()
+                .map(|(name, registered)| {
+                    (
+                        name.clone(),
+                        Arc::clone(&registered.tool),
+                        Arc::clone(&registered.descriptor),
+                    )
+                })
+                .collect::<Vec<_>>();
+            (inner.generation, tools)
+        };
+        let replacements = tools
+            .into_iter()
+            .map(|(name, tool, descriptor)| {
+                let wrapped = wrap(tool);
+                if wrapped.descriptor() != descriptor.as_ref() {
+                    return Err(RegistrationError::InvalidDescriptor(format!(
+                        "wrapped tool {name} changed its descriptor"
+                    )));
+                }
+                Ok((name, wrapped))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if replacements.is_empty() {
+            return Ok(());
+        }
+        let mut inner = self.inner.write();
+        if inner.generation != generation {
+            return Err(RegistrationError::ConcurrentMutation);
+        }
+        for (name, wrapped) in replacements {
+            inner
+                .tools
+                .get_mut(&name)
+                .ok_or(RegistrationError::ConcurrentMutation)?
+                .tool = wrapped;
+        }
+        inner.generation += 1;
+        Ok(())
     }
 
     pub(crate) fn register_with_journal_authority(

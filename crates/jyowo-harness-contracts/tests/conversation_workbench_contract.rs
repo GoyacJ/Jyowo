@@ -280,7 +280,10 @@ fn tool_attempt_has_expanded_fields() {
         duration_ms: Some(1200),
         retry_of: None,
         failure_phase: None,
+        failure_kind: None,
         failure_summary: None,
+        result_kind: None,
+        truncated: None,
         permission: None,
         event_refs: vec![],
     };

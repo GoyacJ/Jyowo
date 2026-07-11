@@ -2,13 +2,13 @@ import { assertNever } from '@/shared/events/assert-never'
 import type { RunEvent } from '@/shared/events/run-event-schema'
 
 import type { ActivityRailItem } from './ActivityItem'
-import type { PermissionRequestDetails } from './PermissionDialog'
+import type { ActivityPermissionDetails } from './PermissionDialog'
 import type { RawJsonDetails } from './RawJsonView'
 
 export type RunEventViewModel = {
   activityItem: ActivityRailItem
   details?: {
-    permissions?: PermissionRequestDetails[]
+    permissions?: ActivityPermissionDetails[]
   }
   order: {
     runId: string
@@ -20,7 +20,7 @@ export type RunEventViewModel = {
 
 export function toRunEventViewModels(events: RunEvent[]): RunEventViewModel[] {
   const viewModels = events.map(toRunEventViewModel)
-  const pendingPermissions = new Map<string, PermissionRequestDetails>()
+  const pendingPermissions = new Map<string, ActivityPermissionDetails>()
 
   viewModels.forEach((viewModel) => {
     const permission = viewModel.details?.permissions?.[0]

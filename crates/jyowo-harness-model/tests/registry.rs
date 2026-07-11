@@ -1,7 +1,7 @@
 use chrono::NaiveDate;
 #[cfg(feature = "zhipu")]
 use harness_model::ModelLifecycle;
-#[cfg(feature = "minimax")]
+#[cfg(any(feature = "doubao", feature = "minimax"))]
 use harness_model::ModelProtocol;
 #[cfg(any(
     feature = "doubao",
@@ -1204,7 +1204,11 @@ fn expected_runtime_semantics(
         "minimax" => ModelRuntimeSemantics::openai_chat_minimax(),
         "zhipu" => ModelRuntimeSemantics::openai_chat_zhipu(),
         "qwen" => ModelRuntimeSemantics::openai_responses_default(),
-        "doubao" | "local-llama" | "openrouter" => ModelRuntimeSemantics::openai_chat_plain(),
+        "doubao" if descriptor.protocol == ModelProtocol::Responses => {
+            ModelRuntimeSemantics::openai_responses_default()
+        }
+        "doubao" => ModelRuntimeSemantics::openai_chat_doubao(),
+        "local-llama" | "openrouter" => ModelRuntimeSemantics::openai_chat_plain(),
         provider_id => {
             panic!("missing explicit runtime semantics expectation for provider {provider_id}")
         }

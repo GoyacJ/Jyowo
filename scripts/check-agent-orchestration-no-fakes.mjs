@@ -113,8 +113,7 @@ const EXCLUDED_FILE_SUFFIXES = ['.test.ts', '.test.tsx', '.test.mjs']
 const SCOPED_RELATIVE_PATHS = [
   'apps/desktop/src-tauri/src/commands',
   'apps/desktop/src-tauri/src/lib.rs',
-  'apps/desktop/src-tauri/src/agent_supervisor.rs',
-  'apps/desktop/src-tauri/src/bin/jyowo-agent-supervisor.rs',
+  'apps/desktop/src-tauri/src/daemon_client.rs',
   'apps/desktop/src-tauri/build.rs',
   'apps/desktop/src-tauri/capabilities/default.json',
   'apps/desktop/src-tauri/tauri.conf.json',
@@ -128,8 +127,6 @@ const SCOPED_RELATIVE_PATHS = [
   'apps/desktop/src/features/conversation/timeline/conversation-timeline-selectors.ts',
   'apps/desktop/src/features/background-agents',
   'crates/jyowo-harness-contracts',
-  'crates/jyowo-harness-journal/src/conversation_worktree_projector.rs',
-  'crates/jyowo-harness-journal/src/conversation_read_model.rs',
   'crates/jyowo-harness-agent-runtime',
   'crates/jyowo-harness-execution',
   'crates/jyowo-harness-permission',
@@ -137,8 +134,15 @@ const SCOPED_RELATIVE_PATHS = [
   'crates/jyowo-harness-sdk',
   'crates/jyowo-harness-subagent',
   'crates/jyowo-harness-team',
-  'scripts/build-agent-supervisor-sidecar.mjs',
+  'scripts/build-daemon-sidecar.mjs',
   'package.json',
+]
+
+const DAEMON_ARCHITECTURE_SCOPED_PATHS = [
+  'apps/desktop/src-tauri/src',
+  'crates/jyowo-harness-agent-runtime/src',
+  'crates/jyowo-harness-daemon/src',
+  'apps/desktop/src',
 ]
 
 /**
@@ -149,6 +153,10 @@ const SCOPED_RELATIVE_PATHS = [
 export function scanAgentOrchestrationNoFakes(repoRoot, options = {}) {
   const scopedPaths = options.scopedPaths ?? SCOPED_RELATIVE_PATHS
   const files = collectScopedFiles(repoRoot, scopedPaths)
+  const architectureFiles = collectScopedFiles(
+    repoRoot,
+    options.scopedPaths ?? DAEMON_ARCHITECTURE_SCOPED_PATHS,
+  )
   /** @type {Violation[]} */
   const violations = []
 
@@ -164,10 +172,157 @@ export function scanAgentOrchestrationNoFakes(repoRoot, options = {}) {
     violations.push(...scanTemporaryAvailabilityAllowlists(rel, lines))
     violations.push(...scanNoopAgentCommands(rel, content, lines))
     violations.push(...scanFrontendOnlyAgentCapabilityState(rel, lines))
-      violations.push(...scanAuthorizationSpecificPatterns(rel, lines))
+    violations.push(...scanAuthorizationSpecificPatterns(rel, lines))
   }
 
+  for (const absolutePath of architectureFiles) {
+    const rel = relative(repoRoot, absolutePath).replaceAll('\\', '/')
+    if (isExcludedProductionFile(rel)) continue
+    const content = productionSource(rel, readFileSync(absolutePath, 'utf8'))
+    violations.push(...scanDaemonArchitectureFile(rel, content))
+  }
+  violations.push(...scanTaskSqlitePathCount(repoRoot, architectureFiles))
+
   return { ok: violations.length === 0, violations }
+}
+
+function scanDaemonArchitectureFile(rel, content) {
+  /** @type {Violation[]} */
+  const violations = []
+  const lines = content.split(/\r?\n/)
+
+  if (rel.startsWith('apps/desktop/src-tauri/src/')) {
+    const useStatementPattern = /^[ \t]*use\b[\s\S]*?;/gm
+    for (const match of content.matchAll(useStatementPattern)) {
+      if (!/\b(?:Harness|TaskStore|TaskActor|RunCoordinator)\b/.test(match[0])) continue
+      violations.push({
+        file: rel,
+        line: content.slice(0, match.index).split(/\r?\n/).length,
+        rule: 'tauri-runtime-owner-import',
+        excerpt: match[0].replace(/\s+/g, ' ').trim(),
+      })
+    }
+
+    const legacyHarnessOwnerPattern =
+      /\b(?:build_desktop_harness|replace_harness)\b|\.harness\s*\(/g
+    for (const match of content.matchAll(legacyHarnessOwnerPattern)) {
+      violations.push({
+        file: rel,
+        line: content.slice(0, match.index).split(/\r?\n/).length,
+        rule: 'tauri-legacy-harness-owner-name',
+        excerpt: match[0],
+      })
+    }
+  }
+
+  if (rel.startsWith('crates/jyowo-harness-daemon/src/')) {
+    const legacyStorePattern =
+      /agent-runtime\.sqlite|\bConversationReadModel\b|\bconversation_read_model\b|\bJsonlEventStore\b/
+    const loopbackPattern = /\bTcpListener\b|\bTcpStream\b|\bcontrol_addr\b/
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]
+      if (isCommentOnlyLine(line)) continue
+      if (legacyStorePattern.test(line)) {
+        violations.push({
+          file: rel,
+          line: index + 1,
+          rule: 'daemon-legacy-store',
+          excerpt: line.trim(),
+        })
+      }
+      if (loopbackPattern.test(line)) {
+        violations.push({
+          file: rel,
+          line: index + 1,
+          rule: 'daemon-loopback-control',
+          excerpt: line.trim(),
+        })
+      }
+    }
+    const rawBlobPath = /ClientRequest::ReadBlob\s*\{[^}]*\bpath\b/s.exec(content)
+    if (rawBlobPath) {
+      const line = content.slice(0, rawBlobPath.index).split(/\r?\n/).length
+      violations.push({
+        file: rel,
+        line,
+        rule: 'daemon-client-blob-path',
+        excerpt: rawBlobPath[0].replace(/\s+/g, ' ').trim(),
+      })
+    }
+  }
+
+  if (rel.startsWith('crates/jyowo-harness-agent-runtime/src/')) {
+    const legacySupervisorPattern = /\bAgentSupervisor\b|agent-supervisor\.(?:lock|token)/
+    const loopbackPattern = /\bTcpListener\b|\bTcpStream\b|\bcontrol_addr\b/
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]
+      if (isCommentOnlyLine(line)) continue
+      if (legacySupervisorPattern.test(line)) {
+        violations.push({
+          file: rel,
+          line: index + 1,
+          rule: 'agent-runtime-legacy-supervisor',
+          excerpt: line.trim(),
+        })
+      }
+      if (loopbackPattern.test(line)) {
+        violations.push({
+          file: rel,
+          line: index + 1,
+          rule: 'agent-runtime-loopback-control',
+          excerpt: line.trim(),
+        })
+      }
+    }
+  }
+
+  if (
+    rel.startsWith('apps/desktop/src/') &&
+    !rel.startsWith('apps/desktop/src/generated/') &&
+    !rel.startsWith('apps/desktop/src/shared/daemon/')
+  ) {
+    const handwrittenEvent =
+      /\b(?:type|interface)\s+[A-Za-z0-9_]*DaemonEvent[A-Za-z0-9_]*\b|\b(?:const|let|var)\s+daemonEvent[A-Za-z0-9_]*Schema\b/.exec(
+        content,
+      )
+    if (handwrittenEvent) {
+      const line = content.slice(0, handwrittenEvent.index).split(/\r?\n/).length
+      violations.push({
+        file: rel,
+        line,
+        rule: 'frontend-daemon-event-union',
+        excerpt: handwrittenEvent[0],
+      })
+    }
+  }
+
+  return violations
+}
+
+function scanTaskSqlitePathCount(repoRoot, architectureFiles) {
+  const occurrences = []
+  for (const absolutePath of architectureFiles) {
+    const rel = relative(repoRoot, absolutePath).replaceAll('\\', '/')
+    if (!rel.startsWith('crates/jyowo-harness-daemon/src/')) continue
+    const content = productionSource(rel, readFileSync(absolutePath, 'utf8'))
+    const lines = content.split(/\r?\n/)
+    for (let index = 0; index < lines.length; index += 1) {
+      if (/TaskStore::open\([^\n]*["']tasks\.sqlite["']/.test(lines[index])) {
+        occurrences.push({ file: rel, line: index + 1, excerpt: lines[index].trim() })
+      }
+    }
+  }
+  if (occurrences.length <= 1) return []
+  return occurrences.slice(1).map((occurrence) => ({
+    ...occurrence,
+    rule: 'multiple-task-sqlite-paths',
+  }))
+}
+
+function productionSource(rel, content) {
+  if (!rel.endsWith('.rs')) return content
+  const testModule = content.search(/^\s*#\[cfg\(test\)\]\s*\n\s*mod\s+/m)
+  return testModule === -1 ? content : content.slice(0, testModule)
 }
 
 /**

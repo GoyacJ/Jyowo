@@ -71,6 +71,7 @@ const uiPreferencesSmoke: UiPreferences = {
   theme: 'system',
   locale: 'zh-CN',
   sidebarCollapsed: false,
+  taskWorkbenchMode: 'closed',
   chatComposerHeight: 160,
   contextPanelWidth: 320,
 }
