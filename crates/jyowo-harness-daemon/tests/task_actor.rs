@@ -113,7 +113,11 @@ impl ControlledFactory {
 }
 
 impl RunCoordinatorFactory for ControlledFactory {
-    fn spawn_idempotent(&self, request: StartSegmentRequest) -> RunningSegment {
+    fn spawn_idempotent(
+        &self,
+        request: StartSegmentRequest,
+        _workspace_tools: harness_daemon::WorkspaceToolDispatcher,
+    ) -> RunningSegment {
         let gate = self
             .state
             .lock()

@@ -23,7 +23,8 @@ pub use background::{
 };
 pub use isolation::{
     CreateWorkspaceIsolationLeaseRequest, GitDiscovery, WorkspaceIsolationCleanupResult,
-    WorkspaceIsolationError, WorkspaceIsolationManager, AGENT_WORKTREES_DIR_NAME,
+    WorkspaceIsolationError, WorkspaceIsolationManager, WorkspaceLeaseRepository,
+    AGENT_WORKTREES_DIR_NAME,
 };
 pub use policy::{
     default_agent_capability_environment, AgentCapabilitiesInput, AgentCapabilityEnvironment,

@@ -429,11 +429,21 @@ fn reduce_task(
         }
         TaskEvent::SubagentSpawned { .. } => {}
         TaskEvent::Engine { .. } => {}
-        TaskEvent::WorkspaceAcquired { lease } => {
+        TaskEvent::WorkspacePreparing { lease }
+        | TaskEvent::WorkspaceAcquired { lease }
+        | TaskEvent::WorkspaceCleanupPending { lease } => {
             if lease.task_id != envelope.task_id {
                 return integrity("workspace lease belongs to another task");
             }
         }
+        TaskEvent::WorkspaceWaiting { lease } => {
+            if lease.task_id != envelope.task_id {
+                return integrity("waiting workspace lease belongs to another task");
+            }
+        }
+        TaskEvent::WorkspaceReleased { .. } => {}
+        TaskEvent::WorkspaceCleanupBlocked { .. } => {}
+        TaskEvent::WorkspaceOverrideApplied { .. } => {}
     }
 
     projection.stream_version = envelope.stream_sequence;
@@ -656,7 +666,9 @@ fn project_entity_tables(
                 &subagent,
             )?;
         }
-        TaskEvent::WorkspaceAcquired { lease } => {
+        TaskEvent::WorkspacePreparing { lease }
+        | TaskEvent::WorkspaceAcquired { lease }
+        | TaskEvent::WorkspaceCleanupPending { lease } => {
             upsert_entity(
                 transaction,
                 "workspace_projection",
@@ -666,6 +678,19 @@ fn project_entity_tables(
                 lease,
             )?;
         }
+        TaskEvent::WorkspaceWaiting { lease }
+        | TaskEvent::WorkspaceReleased { lease, .. }
+        | TaskEvent::WorkspaceCleanupBlocked { lease, .. } => {
+            upsert_entity(
+                transaction,
+                "workspace_projection",
+                "workspace_lease_id",
+                envelope,
+                &lease.lease_id.to_string(),
+                lease,
+            )?;
+        }
+        TaskEvent::WorkspaceOverrideApplied { .. } => {}
         TaskEvent::TaskCreated { .. }
         | TaskEvent::TaskTitleChanged { .. }
         | TaskEvent::TaskArchived { .. }
@@ -848,6 +873,42 @@ fn project_timeline(
         TaskEvent::WorkspaceAcquired { .. } => (
             TimelineEventKind::Notice,
             "Workspace acquired".into(),
+            None,
+            false,
+        ),
+        TaskEvent::WorkspacePreparing { .. } => (
+            TimelineEventKind::Notice,
+            "Workspace preparing".into(),
+            None,
+            false,
+        ),
+        TaskEvent::WorkspaceWaiting { .. } => (
+            TimelineEventKind::Notice,
+            "Workspace lease waiting".into(),
+            None,
+            false,
+        ),
+        TaskEvent::WorkspaceReleased { .. } => (
+            TimelineEventKind::Notice,
+            "Workspace released".into(),
+            None,
+            false,
+        ),
+        TaskEvent::WorkspaceCleanupBlocked { .. } => (
+            TimelineEventKind::Notice,
+            "Workspace cleanup blocked".into(),
+            None,
+            false,
+        ),
+        TaskEvent::WorkspaceCleanupPending { .. } => (
+            TimelineEventKind::Notice,
+            "Workspace cleanup pending".into(),
+            None,
+            false,
+        ),
+        TaskEvent::WorkspaceOverrideApplied { .. } => (
+            TimelineEventKind::Notice,
+            "Workspace write override applied".into(),
             None,
             false,
         ),

@@ -4,11 +4,11 @@ use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    ActorId, BlobId, BlobRef, CausationId, ConversationAttachmentReference, CorrelationId, Event,
-    EventSource, EventSourceKind, IndeterminateToolDecision, MessageContent, MessagePart,
-    PermissionProjection, QueueItemId, ReferenceKind, RequestId, RunId, RunSegmentId,
+    ActorId, BlobId, BlobRef, CausationId, CommandId, ConversationAttachmentReference,
+    CorrelationId, Event, EventSource, EventSourceKind, IndeterminateToolDecision, MessageContent,
+    MessagePart, PermissionProjection, QueueItemId, ReferenceKind, RequestId, RunId, RunSegmentId,
     RunTerminalReason, SessionId, TenantId, ToolResult, ToolResultPart, ToolUseId,
-    WorkspaceLeaseProjection,
+    WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceLeaseState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -124,8 +124,33 @@ pub(crate) enum TaskEvent {
         actor_id: ActorId,
         started_at: DateTime<Utc>,
     },
+    WorkspacePreparing {
+        lease: WorkspaceLeaseProjection,
+    },
     WorkspaceAcquired {
         lease: WorkspaceLeaseProjection,
+    },
+    WorkspaceWaiting {
+        lease: WorkspaceLeaseProjection,
+    },
+    WorkspaceReleased {
+        lease: WorkspaceLeaseProjection,
+        reason: String,
+        released_at: DateTime<Utc>,
+    },
+    WorkspaceCleanupBlocked {
+        lease: WorkspaceLeaseProjection,
+        blocked_at: DateTime<Utc>,
+    },
+    WorkspaceCleanupPending {
+        lease: WorkspaceLeaseProjection,
+    },
+    WorkspaceOverrideApplied {
+        command_id: CommandId,
+        lease_id: WorkspaceLeaseId,
+        canonical_path: String,
+        reason: String,
+        applied_at: DateTime<Utc>,
     },
     Engine {
         event_type: String,
@@ -279,6 +304,31 @@ struct PermissionInvalidatedPayload {
 struct SubagentSpawnedPayload {
     actor_id: ActorId,
     started_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkspaceReleasedPayload {
+    lease: WorkspaceLeaseProjection,
+    reason: String,
+    released_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkspaceCleanupBlockedPayload {
+    lease: WorkspaceLeaseProjection,
+    blocked_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkspaceOverrideAppliedPayload {
+    command_id: CommandId,
+    lease_id: WorkspaceLeaseId,
+    canonical_path: String,
+    reason: String,
+    applied_at: DateTime<Utc>,
 }
 
 impl NewTaskEvent {
@@ -558,6 +608,71 @@ impl NewTaskEvent {
     pub const fn workspace_acquired(lease: WorkspaceLeaseProjection) -> Self {
         Self {
             event: TaskEvent::WorkspaceAcquired { lease },
+        }
+    }
+
+    #[must_use]
+    pub const fn workspace_preparing(lease: WorkspaceLeaseProjection) -> Self {
+        Self {
+            event: TaskEvent::WorkspacePreparing { lease },
+        }
+    }
+
+    #[must_use]
+    pub const fn workspace_waiting(lease: WorkspaceLeaseProjection) -> Self {
+        Self {
+            event: TaskEvent::WorkspaceWaiting { lease },
+        }
+    }
+
+    #[must_use]
+    pub fn workspace_released(
+        lease: WorkspaceLeaseProjection,
+        reason: impl Into<String>,
+        released_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            event: TaskEvent::WorkspaceReleased {
+                lease,
+                reason: reason.into(),
+                released_at,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn workspace_cleanup_blocked(
+        lease: WorkspaceLeaseProjection,
+        blocked_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            event: TaskEvent::WorkspaceCleanupBlocked { lease, blocked_at },
+        }
+    }
+
+    #[must_use]
+    pub const fn workspace_cleanup_pending(lease: WorkspaceLeaseProjection) -> Self {
+        Self {
+            event: TaskEvent::WorkspaceCleanupPending { lease },
+        }
+    }
+
+    #[must_use]
+    pub fn workspace_override_applied(
+        command_id: CommandId,
+        lease_id: WorkspaceLeaseId,
+        canonical_path: impl Into<String>,
+        reason: impl Into<String>,
+        applied_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            event: TaskEvent::WorkspaceOverrideApplied {
+                command_id,
+                lease_id,
+                canonical_path: canonical_path.into(),
+                reason: reason.into(),
+                applied_at,
+            },
         }
     }
 
@@ -937,9 +1052,43 @@ impl TaskEvent {
                     started_at: value.started_at,
                 })
             }
+            "workspace.preparing" => Ok(Self::WorkspacePreparing {
+                lease: serde_json::from_value(payload)?,
+            }),
             "workspace.acquired" => Ok(Self::WorkspaceAcquired {
                 lease: serde_json::from_value(payload)?,
             }),
+            "workspace.waiting" => Ok(Self::WorkspaceWaiting {
+                lease: serde_json::from_value(payload)?,
+            }),
+            "workspace.released" => {
+                let value: WorkspaceReleasedPayload = serde_json::from_value(payload)?;
+                Ok(Self::WorkspaceReleased {
+                    lease: value.lease,
+                    reason: value.reason,
+                    released_at: value.released_at,
+                })
+            }
+            "workspace.cleanup_blocked" => {
+                let value: WorkspaceCleanupBlockedPayload = serde_json::from_value(payload)?;
+                Ok(Self::WorkspaceCleanupBlocked {
+                    lease: value.lease,
+                    blocked_at: value.blocked_at,
+                })
+            }
+            "workspace.cleanup_pending" => Ok(Self::WorkspaceCleanupPending {
+                lease: serde_json::from_value(payload)?,
+            }),
+            "workspace.override_applied" => {
+                let value: WorkspaceOverrideAppliedPayload = serde_json::from_value(payload)?;
+                Ok(Self::WorkspaceOverrideApplied {
+                    command_id: value.command_id,
+                    lease_id: value.lease_id,
+                    canonical_path: value.canonical_path,
+                    reason: value.reason,
+                    applied_at: value.applied_at,
+                })
+            }
             event_type if event_type.starts_with("engine.") => {
                 let value: EngineEventPayload = serde_json::from_value(payload)?;
                 let actual = engine_event_type(&value.event)?;
@@ -987,7 +1136,13 @@ impl TaskEvent {
             Self::PermissionResolved { .. } => "permission.resolved",
             Self::PermissionInvalidated { .. } => "permission.invalidated",
             Self::SubagentSpawned { .. } => "subagent.spawned",
+            Self::WorkspacePreparing { .. } => "workspace.preparing",
             Self::WorkspaceAcquired { .. } => "workspace.acquired",
+            Self::WorkspaceWaiting { .. } => "workspace.waiting",
+            Self::WorkspaceReleased { .. } => "workspace.released",
+            Self::WorkspaceCleanupBlocked { .. } => "workspace.cleanup_blocked",
+            Self::WorkspaceCleanupPending { .. } => "workspace.cleanup_pending",
+            Self::WorkspaceOverrideApplied { .. } => "workspace.override_applied",
             Self::Engine { event_type, .. } => event_type,
         }
     }
@@ -1145,7 +1300,38 @@ impl TaskEvent {
                 actor_id: *actor_id,
                 started_at: *started_at,
             })?,
+            Self::WorkspacePreparing { lease } => serde_json::to_value(lease)?,
             Self::WorkspaceAcquired { lease } => serde_json::to_value(lease)?,
+            Self::WorkspaceWaiting { lease } => serde_json::to_value(lease)?,
+            Self::WorkspaceReleased {
+                lease,
+                reason,
+                released_at,
+            } => serde_json::to_value(WorkspaceReleasedPayload {
+                lease: lease.clone(),
+                reason: reason.clone(),
+                released_at: *released_at,
+            })?,
+            Self::WorkspaceCleanupBlocked { lease, blocked_at } => {
+                serde_json::to_value(WorkspaceCleanupBlockedPayload {
+                    lease: lease.clone(),
+                    blocked_at: *blocked_at,
+                })?
+            }
+            Self::WorkspaceCleanupPending { lease } => serde_json::to_value(lease)?,
+            Self::WorkspaceOverrideApplied {
+                command_id,
+                lease_id,
+                canonical_path,
+                reason,
+                applied_at,
+            } => serde_json::to_value(WorkspaceOverrideAppliedPayload {
+                command_id: *command_id,
+                lease_id: *lease_id,
+                canonical_path: canonical_path.clone(),
+                reason: reason.clone(),
+                applied_at: *applied_at,
+            })?,
             Self::Engine { payload, .. } => serde_json::to_value(payload)?,
         })
     }
@@ -1208,10 +1394,17 @@ impl TaskEvent {
                     | EventSourceKind::Supervisor
                     | EventSourceKind::Recovery
             ),
-            Self::SubagentSpawned { .. } | Self::WorkspaceAcquired { .. } => matches!(
+            Self::SubagentSpawned { .. }
+            | Self::WorkspacePreparing { .. }
+            | Self::WorkspaceAcquired { .. }
+            | Self::WorkspaceWaiting { .. }
+            | Self::WorkspaceReleased { .. }
+            | Self::WorkspaceCleanupBlocked { .. }
+            | Self::WorkspaceCleanupPending { .. } => matches!(
                 source.kind,
                 EventSourceKind::Supervisor | EventSourceKind::Recovery
             ),
+            Self::WorkspaceOverrideApplied { .. } => source.kind == EventSourceKind::User,
             Self::Engine { .. } => source.kind == EventSourceKind::Engine,
         };
         if !allowed {
@@ -1318,6 +1511,45 @@ impl TaskEvent {
             Self::PermissionInvalidated { reason, .. } if reason.len() > 256 => {
                 return Err(TaskStoreError::InvalidInput(
                     "permission invalidation reason exceeds 256 bytes".into(),
+                ));
+            }
+            Self::WorkspacePreparing { lease } if lease.state != WorkspaceLeaseState::Preparing => {
+                return Err(TaskStoreError::InvalidInput(
+                    "workspace.preparing requires preparing state".into(),
+                ));
+            }
+            Self::WorkspaceWaiting { lease } if lease.state != WorkspaceLeaseState::Waiting => {
+                return Err(TaskStoreError::InvalidInput(
+                    "workspace.waiting requires waiting state".into(),
+                ));
+            }
+            Self::WorkspaceAcquired { lease } if lease.state != WorkspaceLeaseState::Active => {
+                return Err(TaskStoreError::InvalidInput(
+                    "workspace.acquired requires active state".into(),
+                ));
+            }
+            Self::WorkspaceCleanupPending { lease }
+                if lease.state != WorkspaceLeaseState::CleanupPending =>
+            {
+                return Err(TaskStoreError::InvalidInput(
+                    "workspace.cleanup_pending requires cleanup_pending state".into(),
+                ));
+            }
+            Self::WorkspaceCleanupBlocked { lease, .. }
+                if lease.state != WorkspaceLeaseState::CleanupBlocked =>
+            {
+                return Err(TaskStoreError::InvalidInput(
+                    "workspace.cleanup_blocked requires cleanup_blocked state".into(),
+                ));
+            }
+            Self::WorkspaceReleased { lease, .. }
+                if !matches!(
+                    lease.state,
+                    WorkspaceLeaseState::Released | WorkspaceLeaseState::Expired
+                ) =>
+            {
+                return Err(TaskStoreError::InvalidInput(
+                    "workspace.released requires released or expired state".into(),
                 ));
             }
             _ => {}

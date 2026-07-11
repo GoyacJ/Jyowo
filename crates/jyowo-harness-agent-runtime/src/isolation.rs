@@ -1,11 +1,17 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use chrono::Utc;
 use harness_contracts::{AgentWorkspaceIsolationMode, RunId};
 use thiserror::Error;
 
 use crate::store::{AgentRuntimeStore, AgentRuntimeStoreError, WorkspaceIsolationLease};
+
+use harness_journal::{
+    AcquireTaskWorkspaceLease, ReleaseTaskWorkspaceLeaseOutcome, TaskStore,
+    TaskWorkspaceAcquireOutcome, TaskWorkspaceLease,
+};
 
 pub const AGENT_WORKTREES_DIR_NAME: &str = "agent-worktrees";
 
@@ -43,18 +49,91 @@ pub enum WorkspaceIsolationError {
     Unavailable { message: String },
     #[error("workspace isolation lease not found: {lease_id}")]
     LeaseNotFound { lease_id: String },
+    #[error("workspace lease repository error: {message}")]
+    Repository { message: String },
+}
+
+pub trait WorkspaceLeaseRepository: Send + Sync {
+    fn acquire(
+        &self,
+        request: AcquireTaskWorkspaceLease,
+    ) -> Result<TaskWorkspaceAcquireOutcome, WorkspaceIsolationError>;
+
+    fn release(
+        &self,
+        lease_id: harness_contracts::WorkspaceLeaseId,
+        reason: &str,
+    ) -> Result<ReleaseTaskWorkspaceLeaseOutcome, WorkspaceIsolationError>;
+
+    fn active_for_root(
+        &self,
+        canonical_root: &str,
+    ) -> Result<Vec<TaskWorkspaceLease>, WorkspaceIsolationError>;
+}
+
+impl WorkspaceLeaseRepository for TaskStore {
+    fn acquire(
+        &self,
+        request: AcquireTaskWorkspaceLease,
+    ) -> Result<TaskWorkspaceAcquireOutcome, WorkspaceIsolationError> {
+        self.acquire_workspace_lease(request)
+            .map_err(repository_error)
+    }
+
+    fn release(
+        &self,
+        lease_id: harness_contracts::WorkspaceLeaseId,
+        reason: &str,
+    ) -> Result<ReleaseTaskWorkspaceLeaseOutcome, WorkspaceIsolationError> {
+        self.release_workspace_lease(lease_id, reason)
+            .map_err(repository_error)
+    }
+
+    fn active_for_root(
+        &self,
+        canonical_root: &str,
+    ) -> Result<Vec<TaskWorkspaceLease>, WorkspaceIsolationError> {
+        self.active_workspace_leases(canonical_root)
+            .map_err(repository_error)
+    }
+}
+
+fn repository_error(error: harness_journal::TaskStoreError) -> WorkspaceIsolationError {
+    WorkspaceIsolationError::Repository {
+        message: error.to_string(),
+    }
+}
+
+pub(crate) trait WorkspaceIsolationLeaseStore: Send + Sync {
+    fn insert(&self, lease: &WorkspaceIsolationLease) -> Result<(), AgentRuntimeStoreError>;
+    fn get(
+        &self,
+        lease_id: &str,
+    ) -> Result<Option<WorkspaceIsolationLease>, AgentRuntimeStoreError>;
+    fn list_active(&self) -> Result<Vec<WorkspaceIsolationLease>, AgentRuntimeStoreError>;
+    fn find_active_by_branch(
+        &self,
+        branch: &str,
+    ) -> Result<Option<WorkspaceIsolationLease>, AgentRuntimeStoreError>;
+    fn update_status(
+        &self,
+        lease_id: &str,
+        status: &str,
+        updated_at: &str,
+    ) -> Result<(), AgentRuntimeStoreError>;
 }
 
 pub struct WorkspaceIsolationManager {
     workspace_root: PathBuf,
-    store: AgentRuntimeStore,
+    store: Arc<dyn WorkspaceIsolationLeaseStore>,
 }
 
 impl WorkspaceIsolationManager {
     pub fn open(workspace_root: impl AsRef<Path>) -> Result<Self, WorkspaceIsolationError> {
         let workspace_root = workspace_root.as_ref().to_path_buf();
-        let store =
-            AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))?;
+        let store: Arc<dyn WorkspaceIsolationLeaseStore> = Arc::new(
+            AgentRuntimeStore::open_runtime_dir(workspace_root.join(".jyowo").join("runtime"))?,
+        );
         std::fs::create_dir_all(Self::worktrees_dir(&workspace_root)).map_err(|error| {
             WorkspaceIsolationError::Unavailable {
                 message: format!("failed to create agent worktrees directory: {error}"),
@@ -144,11 +223,7 @@ impl WorkspaceIsolationManager {
                 let discovery = self.git_discovery();
                 let base_commit = discovery.head_commit()?;
                 let branch = format!("jyowo/agent-{}", request.agent_id);
-                if self
-                    .store
-                    .find_active_workspace_isolation_lease_by_branch(&branch)?
-                    .is_some()
-                {
+                if self.store.find_active_by_branch(&branch)?.is_some() {
                     return Err(WorkspaceIsolationError::DuplicateBranchLease { branch });
                 }
                 discovery.create_worktree(&worktree_path, &branch, &base_commit)?;
@@ -168,7 +243,7 @@ impl WorkspaceIsolationManager {
             created_at: now.clone(),
             updated_at: now,
         };
-        self.store.insert_workspace_isolation_lease(&lease)?;
+        self.store.insert(&lease)?;
         Ok(lease)
     }
 
@@ -176,20 +251,20 @@ impl WorkspaceIsolationManager {
         &self,
         lease_id: &str,
     ) -> Result<Option<WorkspaceIsolationLease>, WorkspaceIsolationError> {
-        Ok(self.store.get_workspace_isolation_lease(lease_id)?)
+        Ok(self.store.get(lease_id)?)
     }
 
     pub fn list_active_leases(
         &self,
     ) -> Result<Vec<WorkspaceIsolationLease>, WorkspaceIsolationError> {
-        Ok(self.store.list_active_workspace_isolation_leases()?)
+        Ok(self.store.list_active()?)
     }
 
     pub fn cleanup_lease(
         &self,
         lease_id: &str,
     ) -> Result<WorkspaceIsolationCleanupResult, WorkspaceIsolationError> {
-        let Some(lease) = self.store.get_workspace_isolation_lease(lease_id)? else {
+        let Some(lease) = self.store.get(lease_id)? else {
             return Err(WorkspaceIsolationError::LeaseNotFound {
                 lease_id: lease_id.to_owned(),
             });
@@ -218,11 +293,8 @@ impl WorkspaceIsolationManager {
                 write_directory_patch_marker(&worktree_path, &patch_path)?;
             }
             let now = Utc::now().to_rfc3339();
-            self.store.update_workspace_isolation_lease_status(
-                lease_id,
-                LEASE_STATUS_CLEANUP_BLOCKED,
-                &now,
-            )?;
+            self.store
+                .update_status(lease_id, LEASE_STATUS_CLEANUP_BLOCKED, &now)?;
             return Ok(WorkspaceIsolationCleanupResult::CleanupBlocked { patch_path });
         }
 
@@ -238,11 +310,8 @@ impl WorkspaceIsolationManager {
         }
 
         let now = Utc::now().to_rfc3339();
-        self.store.update_workspace_isolation_lease_status(
-            lease_id,
-            LEASE_STATUS_RELEASED,
-            &now,
-        )?;
+        self.store
+            .update_status(lease_id, LEASE_STATUS_RELEASED, &now)?;
         Ok(WorkspaceIsolationCleanupResult::Released)
     }
 }
@@ -280,6 +349,12 @@ impl<'a> GitDiscovery<'a> {
 
     pub fn is_worktree_dirty(&self) -> Result<bool, WorkspaceIsolationError> {
         self.is_tracked_dirty(self.workspace_root)
+    }
+
+    pub fn status_porcelain(&self) -> Result<String, WorkspaceIsolationError> {
+        Ok(run_git_in(self.workspace_root, ["status", "--porcelain"])?
+            .trim_end()
+            .to_owned())
     }
 
     fn is_tracked_dirty(&self, path: &Path) -> Result<bool, WorkspaceIsolationError> {
@@ -333,6 +408,70 @@ impl<'a> GitDiscovery<'a> {
         Ok(())
     }
 
+    pub fn validate_registered_worktree(
+        &self,
+        path: &Path,
+        branch: &str,
+        baseline_commit: &str,
+    ) -> Result<bool, WorkspaceIsolationError> {
+        if !path.is_dir() {
+            return Ok(false);
+        }
+        if !git_output_matches(path, ["rev-parse", "--is-inside-work-tree"], "true")?
+            || !git_output_matches(path, ["rev-parse", "HEAD"], baseline_commit)?
+            || !git_output_matches(path, ["rev-parse", "--abbrev-ref", "HEAD"], branch)?
+        {
+            return Ok(false);
+        }
+        let source_common = resolve_git_path(self.workspace_root, "--git-common-dir")?;
+        let worktree_common = resolve_git_path(path, "--git-common-dir")?;
+        let top_level = PathBuf::from(
+            run_git_in(path, ["rev-parse", "--show-toplevel"])?
+                .trim()
+                .to_owned(),
+        )
+        .canonicalize()
+        .map_err(|error| WorkspaceIsolationError::Unavailable {
+            message: format!("failed to canonicalize worktree top-level: {error}"),
+        })?;
+        Ok(source_common == worktree_common
+            && top_level
+                == path
+                    .canonicalize()
+                    .map_err(|error| WorkspaceIsolationError::Unavailable {
+                        message: format!("failed to canonicalize worktree: {error}"),
+                    })?)
+    }
+
+    pub fn discard_partial_worktree(
+        &self,
+        path: &Path,
+        branch: Option<&str>,
+    ) -> Result<(), WorkspaceIsolationError> {
+        if path.exists() {
+            if self.remove_worktree(path, branch).is_ok() {
+                return Ok(());
+            }
+            let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+                WorkspaceIsolationError::Unavailable {
+                    message: format!("failed to inspect partial worktree: {error}"),
+                }
+            })?;
+            if metadata.file_type().is_symlink() || metadata.is_file() {
+                std::fs::remove_file(path)
+            } else {
+                std::fs::remove_dir_all(path)
+            }
+            .map_err(|error| WorkspaceIsolationError::Unavailable {
+                message: format!("failed to remove partial worktree: {error}"),
+            })?;
+        }
+        if let Some(branch) = branch {
+            let _ = run_git(self.workspace_root, ["branch", "-D", branch]);
+        }
+        Ok(())
+    }
+
     pub fn remove_worktree(
         &self,
         path: &Path,
@@ -353,10 +492,38 @@ impl<'a> GitDiscovery<'a> {
         path: &Path,
         patch_path: &Path,
     ) -> Result<(), WorkspaceIsolationError> {
-        let patch = run_git_in(path, ["diff", "HEAD"])?;
-        std::fs::write(patch_path, patch).map_err(|error| WorkspaceIsolationError::Unavailable {
-            message: format!("failed to write patch artifact: {error}"),
+        run_git_in(path, ["add", "--intent-to-add", "--all"])?;
+        let patch = run_git_in(path, ["diff", "--binary", "HEAD"])?;
+        harness_fs::write_bytes_file_atomic(patch_path, patch.as_bytes(), true).map_err(|error| {
+            WorkspaceIsolationError::Unavailable {
+                message: format!("failed to write patch artifact: {error}"),
+            }
         })
+    }
+}
+
+fn resolve_git_path(root: &Path, argument: &str) -> Result<PathBuf, WorkspaceIsolationError> {
+    let raw = PathBuf::from(run_git_in(root, ["rev-parse", argument])?.trim());
+    let path = if raw.is_absolute() {
+        raw
+    } else {
+        root.join(raw)
+    };
+    path.canonicalize()
+        .map_err(|error| WorkspaceIsolationError::Unavailable {
+            message: format!("failed to canonicalize git path: {error}"),
+        })
+}
+
+fn git_output_matches(
+    root: &Path,
+    args: impl IntoIterator<Item = impl AsRef<str>>,
+    expected: &str,
+) -> Result<bool, WorkspaceIsolationError> {
+    match run_git_in(root, args) {
+        Ok(output) => Ok(output.trim() == expected),
+        Err(WorkspaceIsolationError::Git(_)) => Ok(false),
+        Err(error) => Err(error),
     }
 }
 

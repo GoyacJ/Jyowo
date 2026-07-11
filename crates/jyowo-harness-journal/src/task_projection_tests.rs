@@ -7,7 +7,7 @@ use chrono::{TimeZone, Utc};
 use harness_contracts::{
     ActorId, BlobId, CheckpointId, ClientId, CommandId, PermissionProjection, PermissionRoute,
     QueueItemId, QueueItemState, RequestId, RunSegmentId, RunState, RunTerminalReason, TaskId,
-    TaskState, WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceMode,
+    TaskState, WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceLeaseState, WorkspaceMode,
 };
 use rusqlite::params;
 use serde_json::json;
@@ -110,10 +110,19 @@ fn typed_events_reduce_complete_task_run_queue_and_permission_state() {
         NewTaskEvent::workspace_acquired(WorkspaceLeaseProjection {
             lease_id,
             task_id,
+            actor_id,
             mode: WorkspaceMode::ManagedWorktree,
             canonical_root: "/workspace".into(),
             worktree_path: Some("/workspace/.worktrees/task".into()),
+            branch: Some("jyowo/task".into()),
             writable: true,
+            state: WorkspaceLeaseState::Active,
+            requested_at: started_at,
+            acquired_at: Some(started_at),
+            expires_at: None,
+            baseline_commit: Some("abc".into()),
+            baseline_status: String::new(),
+            patch_path: None,
         }),
     );
 
@@ -243,10 +252,19 @@ fn typed_events_reduce_complete_task_run_queue_and_permission_state() {
             NewTaskEvent::workspace_acquired(WorkspaceLeaseProjection {
                 lease_id,
                 task_id,
+                actor_id,
                 mode: WorkspaceMode::ManagedWorktree,
                 canonical_root: "/other".into(),
                 worktree_path: None,
+                branch: None,
                 writable: false,
+                state: WorkspaceLeaseState::Active,
+                requested_at: next_started_at,
+                acquired_at: Some(next_started_at),
+                expires_at: None,
+                baseline_commit: None,
+                baseline_status: String::new(),
+                patch_path: None,
             }),
         ),
     ] {

@@ -286,6 +286,18 @@ pub enum WorkspaceMode {
     ManagedWorktree,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceLeaseState {
+    Preparing,
+    Waiting,
+    Active,
+    CleanupPending,
+    CleanupBlocked,
+    Released,
+    Expired,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkspaceSelection {
@@ -451,10 +463,19 @@ pub struct TimelineItemProjection {
 pub struct WorkspaceLeaseProjection {
     pub lease_id: WorkspaceLeaseId,
     pub task_id: TaskId,
+    pub actor_id: ActorId,
     pub mode: WorkspaceMode,
     pub canonical_root: String,
     pub worktree_path: Option<String>,
+    pub branch: Option<String>,
     pub writable: bool,
+    pub state: WorkspaceLeaseState,
+    pub requested_at: DateTime<Utc>,
+    pub acquired_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub baseline_commit: Option<String>,
+    pub baseline_status: String,
+    pub patch_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

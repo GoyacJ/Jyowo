@@ -109,7 +109,11 @@ impl SteeringFactory {
 }
 
 impl RunCoordinatorFactory for SteeringFactory {
-    fn spawn_idempotent(&self, request: StartSegmentRequest) -> RunningSegment {
+    fn spawn_idempotent(
+        &self,
+        request: StartSegmentRequest,
+        _workspace_tools: harness_daemon::WorkspaceToolDispatcher,
+    ) -> RunningSegment {
         let control = RunControlHandle::new();
         let (events, receiver) = mpsc::unbounded_channel();
         let mut state = self.state.lock().unwrap();

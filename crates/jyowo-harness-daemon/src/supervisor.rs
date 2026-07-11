@@ -16,12 +16,17 @@ use tokio::sync::{broadcast, mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 
 use crate::task_actor::{run_task_actor, TaskActorError};
-use crate::{RecoveryService, RunCoordinatorFactory, TaskActorMessage, ValidatedTaskCommand};
+use crate::{
+    RecoveryService, RunCoordinatorFactory, TaskActorMessage, ValidatedTaskCommand,
+    WorkspaceBoundRunCoordinatorFactory, WorkspaceCoordinator, WorkspaceCoordinatorError,
+    WorkspaceToolDispatcher,
+};
 
 const SUPERVISOR_REQUEST_CAPACITY: usize = 64;
 const TASK_ACTOR_MAILBOX_CAPACITY: usize = 64;
 const PENDING_START_RETRY_BASE_DELAY: Duration = Duration::from_millis(25);
 const PENDING_START_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
+const WORKSPACE_EXPIRY_INTERVAL: Duration = Duration::from_secs(1);
 
 fn bounded_command_channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
     mpsc::channel(capacity)
@@ -60,6 +65,8 @@ pub enum SupervisorError {
     SubagentQuotaClosed,
     #[error("startup recovery failed: {0}")]
     StartupRecovery(#[from] TaskStoreError),
+    #[error("workspace coordination failed: {0}")]
+    Workspace(#[from] WorkspaceCoordinatorError),
 }
 
 pub struct Supervisor {
@@ -81,9 +88,20 @@ impl Supervisor {
         let (requests, receiver) = bounded_command_channel(SUPERVISOR_REQUEST_CAPACITY);
         let (events, _) = broadcast::channel(64);
         let subagent_quota = Arc::new(Semaphore::new(quotas.subagents));
+        let managed_root = store
+            .database_path()
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("managed-worktrees");
+        let workspace = Arc::new(WorkspaceCoordinator::new(Arc::clone(&store), managed_root)?);
+        let factory = Arc::new(WorkspaceBoundRunCoordinatorFactory::new(
+            factory,
+            WorkspaceToolDispatcher::new(Arc::clone(&workspace)),
+        ));
         let task = tokio::spawn(run_supervisor(
             store,
             factory,
+            workspace,
             Arc::new(Semaphore::new(quotas.foreground_runs)),
             receiver,
             events.clone(),
@@ -180,7 +198,8 @@ struct ActorSlot {
 
 async fn run_supervisor(
     store: Arc<TaskStore>,
-    factory: Arc<dyn RunCoordinatorFactory>,
+    factory: Arc<WorkspaceBoundRunCoordinatorFactory>,
+    workspace: Arc<WorkspaceCoordinator>,
     foreground_runs: Arc<Semaphore>,
     mut requests: mpsc::Receiver<SupervisorRequest>,
     events: broadcast::Sender<SupervisorEvent>,
@@ -190,9 +209,14 @@ async fn run_supervisor(
     let mut pending_start_retries =
         HashMap::<TaskId, (harness_contracts::RunSegmentId, u32)>::new();
     let mut next_generation = 1_u64;
+    let mut workspace_expiry = tokio::time::interval(WORKSPACE_EXPIRY_INTERVAL);
+    workspace_expiry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
+            _ = workspace_expiry.tick() => {
+                let _ = workspace.expire_stale(Utc::now());
+            }
             request = requests.recv() => {
                 let Some(request) = request else { break };
                 match request {
@@ -243,6 +267,9 @@ async fn run_supervisor(
                 let exited_current_generation =
                     remove_actor_generation(&mut actors, exit.task_id, exit.generation);
                 if exit.failed {
+                    if exited_current_generation {
+                        let _ = workspace.release_task_leases(exit.task_id);
+                    }
                     let pending_start_retry_segment = exit.active_segment.filter(|segment_id| {
                         pending_segment_start_requires_retry(
                             store.pending_segment_start(exit.task_id, *segment_id),
@@ -318,7 +345,7 @@ fn spawn_actor(
     task_id: TaskId,
     generation: u64,
     store: Arc<TaskStore>,
-    factory: Arc<dyn RunCoordinatorFactory>,
+    factory: Arc<WorkspaceBoundRunCoordinatorFactory>,
     foreground_runs: Arc<Semaphore>,
     pending_start_retry_segment: Option<harness_contracts::RunSegmentId>,
     startup_delay: Duration,
@@ -450,13 +477,21 @@ fn require_committed_failure(outcome: CommandOutcome) -> Result<(), TaskStoreErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_contracts::{QueueItemId, QueueItemState, RunSegmentId, RunTerminalReason};
+    use harness_contracts::{
+        ActorId, QueueItemId, QueueItemState, RunSegmentId, RunTerminalReason, WorkspaceLeaseId,
+        WorkspaceMode,
+    };
+    use harness_journal::{AcquireTaskWorkspaceLease, TaskWorkspaceLeaseState};
     use std::time::Duration;
 
     struct IdleFactory;
 
     impl RunCoordinatorFactory for IdleFactory {
-        fn spawn_idempotent(&self, _request: crate::StartSegmentRequest) -> crate::RunningSegment {
+        fn spawn_idempotent(
+            &self,
+            _request: crate::StartSegmentRequest,
+            _workspace_tools: crate::WorkspaceToolDispatcher,
+        ) -> crate::RunningSegment {
             let (_sender, receiver) = tokio::sync::mpsc::unbounded_channel();
             crate::RunningSegment::new(receiver)
         }
@@ -564,6 +599,62 @@ mod tests {
             .unwrap();
         assert!(matches!(outcome, CommandOutcome::Rejected { .. }));
         assert_eq!(supervisor.resident_actor_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn supervisor_expires_stale_workspace_leases_without_ui_traffic() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+        let task_id = TaskId::new();
+        store
+            .transact_command(
+                AcceptedCommand {
+                    command_id: CommandId::new(),
+                    task_id,
+                    idempotency_key: "workspace-expiry-task".into(),
+                    expected_stream_version: 0,
+                    authority: TaskStore::supervisor_authority(),
+                    payload: json!({ "type": "fixture" }),
+                },
+                |_| Ok(vec![NewTaskEvent::task_created("workspace expiry")]),
+            )
+            .unwrap();
+        let lease_id = WorkspaceLeaseId::new();
+        store
+            .acquire_workspace_lease(AcquireTaskWorkspaceLease {
+                lease_id,
+                task_id,
+                actor_id: ActorId::new(),
+                mode: WorkspaceMode::Current,
+                canonical_root: root.path().to_str().unwrap().to_owned(),
+                worktree_path: None,
+                branch: None,
+                writable: true,
+                requested_at: Utc::now(),
+                expires_at: Some(Utc::now() - chrono::Duration::seconds(1)),
+                baseline_commit: None,
+                baseline_status: String::new(),
+            })
+            .unwrap();
+        let _supervisor = Supervisor::start(
+            Arc::clone(&store),
+            Arc::new(IdleFactory),
+            SupervisorQuotas::new(1, 1),
+        )
+        .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if store.workspace_lease(lease_id).unwrap().unwrap().state
+                    == TaskWorkspaceLeaseState::Expired
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[test]

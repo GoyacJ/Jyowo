@@ -5,6 +5,7 @@ use harness_contracts::BackgroundAgentState;
 use rusqlite::Connection;
 use thiserror::Error;
 
+use crate::isolation::WorkspaceIsolationLeaseStore;
 use crate::schema;
 
 pub const AGENT_RUNTIME_DB_FILENAME: &str = "agent-runtime.sqlite";
@@ -744,6 +745,39 @@ impl AgentRuntimeStore {
             }
             Ok(messages)
         })
+    }
+}
+
+impl WorkspaceIsolationLeaseStore for AgentRuntimeStore {
+    fn insert(&self, lease: &WorkspaceIsolationLease) -> Result<(), AgentRuntimeStoreError> {
+        self.insert_workspace_isolation_lease(lease)
+    }
+
+    fn get(
+        &self,
+        lease_id: &str,
+    ) -> Result<Option<WorkspaceIsolationLease>, AgentRuntimeStoreError> {
+        self.get_workspace_isolation_lease(lease_id)
+    }
+
+    fn list_active(&self) -> Result<Vec<WorkspaceIsolationLease>, AgentRuntimeStoreError> {
+        self.list_active_workspace_isolation_leases()
+    }
+
+    fn find_active_by_branch(
+        &self,
+        branch: &str,
+    ) -> Result<Option<WorkspaceIsolationLease>, AgentRuntimeStoreError> {
+        self.find_active_workspace_isolation_lease_by_branch(branch)
+    }
+
+    fn update_status(
+        &self,
+        lease_id: &str,
+        status: &str,
+        updated_at: &str,
+    ) -> Result<(), AgentRuntimeStoreError> {
+        self.update_workspace_isolation_lease_status(lease_id, status, updated_at)
     }
 }
 

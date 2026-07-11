@@ -1,9 +1,65 @@
+use std::{future::Future, sync::Arc};
+
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    IndeterminateToolDecision, RunSegmentId, RunTerminalReason, TaskId, ToolUseId,
+    IndeterminateToolDecision, RunSegmentId, RunTerminalReason, TaskId, ToolUseId, WorkspaceLeaseId,
 };
 use harness_engine::{RunControlHandle, TurnOutcome};
 use tokio::sync::mpsc;
+
+use crate::{WorkspaceCoordinator, WorkspaceCoordinatorError, WorkspaceToolAuthorization};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceToolAction {
+    ReadPath(std::path::PathBuf),
+    WritePath(std::path::PathBuf),
+    Command { cwd: std::path::PathBuf },
+}
+
+impl WorkspaceToolAction {
+    #[must_use]
+    pub fn path(&self) -> &std::path::Path {
+        match self {
+            Self::ReadPath(path) | Self::WritePath(path) => path,
+            Self::Command { cwd } => cwd,
+        }
+    }
+
+    #[must_use]
+    pub const fn requires_write(&self) -> bool {
+        match self {
+            Self::ReadPath(_) => false,
+            Self::WritePath(_) => true,
+            Self::Command { .. } => true,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct WorkspaceToolDispatcher {
+    coordinator: Arc<WorkspaceCoordinator>,
+}
+
+impl WorkspaceToolDispatcher {
+    #[must_use]
+    pub fn new(coordinator: Arc<WorkspaceCoordinator>) -> Self {
+        Self { coordinator }
+    }
+
+    pub async fn dispatch<T, F>(
+        &self,
+        lease_id: WorkspaceLeaseId,
+        action: WorkspaceToolAction,
+        execute: impl FnOnce(WorkspaceToolAuthorization) -> F,
+    ) -> Result<T, WorkspaceCoordinatorError>
+    where
+        F: Future<Output = T>,
+    {
+        self.coordinator
+            .dispatch_tool(lease_id, action, execute)
+            .await
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartSegmentRequest {
@@ -112,7 +168,34 @@ pub trait RunCoordinatorFactory: Send + Sync + 'static {
     /// The daemon may call this again after a process crash before its outbox acknowledgement
     /// commits. Implementations must resume or reconnect the same logical segment without
     /// applying `indeterminate_tools` or starting tool execution more than once.
-    fn spawn_idempotent(&self, request: StartSegmentRequest) -> RunningSegment;
+    fn spawn_idempotent(
+        &self,
+        request: StartSegmentRequest,
+        workspace_tools: WorkspaceToolDispatcher,
+    ) -> RunningSegment;
+}
+
+pub(crate) struct WorkspaceBoundRunCoordinatorFactory {
+    inner: Arc<dyn RunCoordinatorFactory>,
+    workspace_tools: WorkspaceToolDispatcher,
+}
+
+impl WorkspaceBoundRunCoordinatorFactory {
+    #[must_use]
+    pub(crate) fn new(
+        inner: Arc<dyn RunCoordinatorFactory>,
+        workspace_tools: WorkspaceToolDispatcher,
+    ) -> Self {
+        Self {
+            inner,
+            workspace_tools,
+        }
+    }
+
+    pub(crate) fn spawn_idempotent(&self, request: StartSegmentRequest) -> RunningSegment {
+        self.inner
+            .spawn_idempotent(request, self.workspace_tools.clone())
+    }
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@ use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     decide_consume_next, decide_queue, CheckpointService, CheckpointState, QueueCommand,
-    RunCoordinatorEvent, RunCoordinatorFactory, StartSegmentRequest,
+    RunCoordinatorEvent, StartSegmentRequest, WorkspaceBoundRunCoordinatorFactory,
 };
 
 #[derive(Debug)]
@@ -86,7 +86,7 @@ struct ActiveSegment {
 pub(crate) async fn run_task_actor(
     task_id: TaskId,
     store: Arc<TaskStore>,
-    factory: Arc<dyn RunCoordinatorFactory>,
+    factory: Arc<WorkspaceBoundRunCoordinatorFactory>,
     foreground_runs: Arc<Semaphore>,
     active_segment_state: Arc<Mutex<Option<RunSegmentId>>>,
     pending_start_retry_segment: Option<RunSegmentId>,
@@ -185,7 +185,7 @@ pub(crate) async fn run_task_actor(
 async fn handle_command(
     task_id: TaskId,
     store: &TaskStore,
-    factory: &Arc<dyn RunCoordinatorFactory>,
+    factory: &Arc<WorkspaceBoundRunCoordinatorFactory>,
     foreground_runs: &Arc<Semaphore>,
     active_segment_state: &Mutex<Option<RunSegmentId>>,
     mailbox: &mpsc::Sender<TaskActorMessage>,
@@ -380,7 +380,7 @@ async fn handle_command(
 fn handle_start_segment(
     task_id: TaskId,
     store: &TaskStore,
-    factory: &Arc<dyn RunCoordinatorFactory>,
+    factory: &Arc<WorkspaceBoundRunCoordinatorFactory>,
     foreground_runs: &Arc<Semaphore>,
     active_segment_state: &Mutex<Option<RunSegmentId>>,
     mailbox: &mpsc::Sender<TaskActorMessage>,
@@ -557,7 +557,7 @@ fn command_store_error(
 fn handle_run_event(
     task_id: TaskId,
     store: &TaskStore,
-    factory: &Arc<dyn RunCoordinatorFactory>,
+    factory: &Arc<WorkspaceBoundRunCoordinatorFactory>,
     active_segment_state: &Mutex<Option<RunSegmentId>>,
     mailbox: &mpsc::Sender<TaskActorMessage>,
     active: &mut Option<ActiveSegment>,
@@ -843,7 +843,7 @@ fn schedule_consume_next(foreground_runs: Arc<Semaphore>, mailbox: mpsc::Sender<
 fn handle_start_next_queued(
     task_id: TaskId,
     store: &TaskStore,
-    factory: &Arc<dyn RunCoordinatorFactory>,
+    factory: &Arc<WorkspaceBoundRunCoordinatorFactory>,
     active_segment_state: &Mutex<Option<RunSegmentId>>,
     mailbox: &mpsc::Sender<TaskActorMessage>,
     active: &mut Option<ActiveSegment>,

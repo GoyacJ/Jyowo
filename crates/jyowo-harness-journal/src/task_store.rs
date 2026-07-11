@@ -3,9 +3,7 @@
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "blob-file")]
 use std::fs::File;
-use std::path::Path;
-#[cfg(feature = "blob-file")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
@@ -14,7 +12,8 @@ use fs2::FileExt;
 use harness_contracts::{
     now, ActorId, BlobId, CheckpointId, ClientId, CommandId, Event, EventId, EventSource,
     EventSourceKind, IdParseError, IndeterminateToolDecision, QueueItemProjection, RunSegmentId,
-    SessionId, TaskEventEnvelope, TaskId, TaskProjection, TenantId, ToolUseId,
+    SessionId, TaskEventEnvelope, TaskId, TaskProjection, TenantId, ToolUseId, WorkspaceLeaseId,
+    WorkspaceLeaseProjection, WorkspaceLeaseState, WorkspaceMode,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -149,15 +148,86 @@ pub struct ContextSummary {
     pub created_at: DateTime<Utc>,
 }
 
+pub type TaskWorkspaceLeaseState = WorkspaceLeaseState;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskWorkspaceLease {
+    pub lease_id: WorkspaceLeaseId,
+    pub task_id: TaskId,
+    pub actor_id: ActorId,
+    pub mode: WorkspaceMode,
+    pub canonical_root: String,
+    pub worktree_path: Option<String>,
+    pub branch: Option<String>,
+    pub writable: bool,
+    pub state: TaskWorkspaceLeaseState,
+    pub requested_at: DateTime<Utc>,
+    pub acquired_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub baseline_commit: Option<String>,
+    pub baseline_status: String,
+    pub patch_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcquireTaskWorkspaceLease {
+    pub lease_id: WorkspaceLeaseId,
+    pub task_id: TaskId,
+    pub actor_id: ActorId,
+    pub mode: WorkspaceMode,
+    pub canonical_root: String,
+    pub worktree_path: Option<String>,
+    pub branch: Option<String>,
+    pub writable: bool,
+    pub requested_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub baseline_commit: Option<String>,
+    pub baseline_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskWorkspaceAcquireOutcome {
+    Acquired(TaskWorkspaceLease),
+    Waiting(TaskWorkspaceLease),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseTaskWorkspaceLeaseOutcome {
+    pub released: TaskWorkspaceLease,
+    pub acquired: Vec<TaskWorkspaceLease>,
+}
+
 pub struct TaskStore {
+    database_path: PathBuf,
     connection: Mutex<Connection>,
     projector: Arc<dyn TaskProjector>,
+    workspace_dispatches: Mutex<HashMap<WorkspaceLeaseId, usize>>,
     #[cfg(feature = "blob-file")]
     blob_operation_locks: [Mutex<()>; BLOB_OPERATION_LOCK_COUNT],
     #[cfg(feature = "blob-file")]
     database_identity: String,
     #[cfg(feature = "blob-file")]
     blob_root_lock: Mutex<Option<std::fs::File>>,
+}
+
+pub struct WorkspaceDispatchGuard<'a> {
+    store: &'a TaskStore,
+    lease_id: WorkspaceLeaseId,
+}
+
+impl Drop for WorkspaceDispatchGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut dispatches) = self.store.workspace_dispatches.lock() {
+            let remove = dispatches.get_mut(&self.lease_id).is_some_and(|count| {
+                *count = count.saturating_sub(1);
+                *count == 0
+            });
+            if remove {
+                dispatches.remove(&self.lease_id);
+            }
+        }
+    }
 }
 
 #[cfg(feature = "blob-file")]
@@ -189,13 +259,15 @@ impl TaskStore {
             std::fs::create_dir_all(parent)?;
         }
         let path = crate::app_controlled_path(path)?;
-        let connection = Connection::open(path)?;
+        let connection = Connection::open(&path)?;
         initialize_task_schema(&connection)?;
         #[cfg(feature = "blob-file")]
         let database_identity = load_or_create_blob_store_identity(&connection)?;
         Ok(Self {
+            database_path: path,
             connection: Mutex::new(connection),
             projector,
+            workspace_dispatches: Mutex::new(HashMap::new()),
             #[cfg(feature = "blob-file")]
             blob_operation_locks: std::array::from_fn(|_| Mutex::new(())),
             #[cfg(feature = "blob-file")]
@@ -203,6 +275,11 @@ impl TaskStore {
             #[cfg(feature = "blob-file")]
             blob_root_lock: Mutex::new(None),
         })
+    }
+
+    #[must_use]
+    pub fn database_path(&self) -> &Path {
+        &self.database_path
     }
 
     #[must_use]
@@ -481,6 +558,604 @@ impl TaskStore {
             |row| row.get(0),
         )?;
         nonnegative_integer(version)
+    }
+
+    pub fn acquire_workspace_lease(
+        &self,
+        request: AcquireTaskWorkspaceLease,
+    ) -> Result<TaskWorkspaceAcquireOutcome, TaskStoreError> {
+        if request.canonical_root.trim().is_empty() {
+            return Err(TaskStoreError::InvalidInput(
+                "workspace canonical root must not be empty".into(),
+            ));
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let actual = stream_version_in_transaction(&transaction, request.task_id)?;
+        if actual == 0 {
+            return Err(TaskStoreError::InvalidInput(format!(
+                "workspace lease task {} does not exist",
+                request.task_id
+            )));
+        }
+
+        let has_conflict = if request.mode == WorkspaceMode::Current {
+            transaction.query_row(
+                "SELECT
+                    EXISTS(
+                        SELECT 1 FROM workspace_leases
+                        WHERE canonical_root = ?1
+                          AND mode = 'current'
+                          AND state = 'active'
+                          AND (?2 = 1 OR writable = 1)
+                    )
+                    OR (
+                        ?2 = 0 AND EXISTS(
+                            SELECT 1 FROM workspace_leases
+                            WHERE canonical_root = ?1
+                              AND mode = 'current'
+                              AND state = 'waiting'
+                              AND writable = 1
+                        )
+                    )",
+                params![request.canonical_root, i64::from(request.writable)],
+                |row| row.get::<_, i64>(0),
+            )? != 0
+        } else {
+            false
+        };
+        let state = if has_conflict {
+            TaskWorkspaceLeaseState::Waiting
+        } else {
+            TaskWorkspaceLeaseState::Active
+        };
+        let acquired_at =
+            (state == TaskWorkspaceLeaseState::Active).then_some(request.requested_at);
+        let lease = TaskWorkspaceLease {
+            lease_id: request.lease_id,
+            task_id: request.task_id,
+            actor_id: request.actor_id,
+            mode: request.mode,
+            canonical_root: request.canonical_root,
+            worktree_path: request.worktree_path,
+            branch: request.branch,
+            writable: request.writable,
+            state,
+            requested_at: request.requested_at,
+            acquired_at,
+            expires_at: request.expires_at,
+            baseline_commit: request.baseline_commit,
+            baseline_status: request.baseline_status,
+            patch_path: None,
+        };
+        let lease_json = serde_json::to_string(&lease)?;
+        transaction.execute(
+            "INSERT INTO workspace_leases (
+                workspace_lease_id, task_id, canonical_root, mode, writable, state,
+                acquired_at, expires_at, lease_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                lease.lease_id.to_string(),
+                lease.task_id.to_string(),
+                lease.canonical_root,
+                workspace_mode_wire(&lease.mode),
+                i64::from(lease.writable),
+                workspace_lease_state_wire(lease.state),
+                lease.acquired_at.map(|value| value.to_rfc3339()),
+                lease.expires_at.map(|value| value.to_rfc3339()),
+                lease_json,
+            ],
+        )?;
+
+        let projection = workspace_lease_projection(&lease);
+        let event = if state == TaskWorkspaceLeaseState::Active {
+            NewTaskEvent::workspace_acquired(projection)
+        } else {
+            NewTaskEvent::workspace_waiting(projection)
+        };
+        let committed = append_in_transaction(
+            &transaction,
+            lease.task_id,
+            actual,
+            TaskStore::supervisor_authority().source(),
+            vec![event],
+        )?;
+        for event in &committed {
+            self.projector.apply(&transaction, event)?;
+        }
+        transaction.commit()?;
+        Ok(if state == TaskWorkspaceLeaseState::Active {
+            TaskWorkspaceAcquireOutcome::Acquired(lease)
+        } else {
+            TaskWorkspaceAcquireOutcome::Waiting(lease)
+        })
+    }
+
+    pub fn prepare_managed_workspace_lease(
+        &self,
+        request: AcquireTaskWorkspaceLease,
+    ) -> Result<TaskWorkspaceLease, TaskStoreError> {
+        if request.mode != WorkspaceMode::ManagedWorktree {
+            return Err(TaskStoreError::InvalidInput(
+                "only managed worktrees use the preparing transition".into(),
+            ));
+        }
+        if request.canonical_root.trim().is_empty() || request.worktree_path.is_none() {
+            return Err(TaskStoreError::InvalidInput(
+                "managed workspace preparation requires root and worktree path".into(),
+            ));
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if stream_version_in_transaction(&transaction, request.task_id)? == 0 {
+            return Err(TaskStoreError::InvalidInput(format!(
+                "workspace lease task {} does not exist",
+                request.task_id
+            )));
+        }
+        let lease = TaskWorkspaceLease {
+            lease_id: request.lease_id,
+            task_id: request.task_id,
+            actor_id: request.actor_id,
+            mode: request.mode,
+            canonical_root: request.canonical_root,
+            worktree_path: request.worktree_path,
+            branch: request.branch,
+            writable: request.writable,
+            state: TaskWorkspaceLeaseState::Preparing,
+            requested_at: request.requested_at,
+            acquired_at: None,
+            expires_at: request.expires_at,
+            baseline_commit: request.baseline_commit,
+            baseline_status: request.baseline_status,
+            patch_path: None,
+        };
+        transaction.execute(
+            "INSERT INTO workspace_leases (
+                workspace_lease_id, task_id, canonical_root, mode, writable, state,
+                acquired_at, expires_at, lease_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)",
+            params![
+                lease.lease_id.to_string(),
+                lease.task_id.to_string(),
+                lease.canonical_root,
+                workspace_mode_wire(&lease.mode),
+                i64::from(lease.writable),
+                workspace_lease_state_wire(lease.state),
+                lease.expires_at.map(|value| value.to_rfc3339()),
+                serde_json::to_string(&lease)?,
+            ],
+        )?;
+        append_and_project_workspace_events(
+            &transaction,
+            self.projector.as_ref(),
+            lease.task_id,
+            vec![NewTaskEvent::workspace_preparing(
+                workspace_lease_projection(&lease),
+            )],
+        )?;
+        transaction.commit()?;
+        Ok(lease)
+    }
+
+    pub fn activate_managed_workspace_lease(
+        &self,
+        lease_id: WorkspaceLeaseId,
+    ) -> Result<TaskWorkspaceLease, TaskStoreError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut lease = workspace_lease_in_transaction(&transaction, lease_id)?;
+        if lease.state == TaskWorkspaceLeaseState::Active {
+            return Ok(lease);
+        }
+        if lease.state != TaskWorkspaceLeaseState::Preparing {
+            return Err(TaskStoreError::InvalidInput(format!(
+                "workspace lease {lease_id} is not preparing"
+            )));
+        }
+        lease.state = TaskWorkspaceLeaseState::Active;
+        lease.acquired_at = Some(now());
+        update_workspace_lease_in_transaction(&transaction, &lease)?;
+        append_and_project_workspace_events(
+            &transaction,
+            self.projector.as_ref(),
+            lease.task_id,
+            vec![NewTaskEvent::workspace_acquired(
+                workspace_lease_projection(&lease),
+            )],
+        )?;
+        transaction.commit()?;
+        Ok(lease)
+    }
+
+    pub fn mark_workspace_cleanup_pending(
+        &self,
+        lease_id: WorkspaceLeaseId,
+    ) -> Result<TaskWorkspaceLease, TaskStoreError> {
+        let dispatches = self
+            .workspace_dispatches
+            .lock()
+            .map_err(|_| TaskStoreError::LockPoisoned)?;
+        if dispatches.get(&lease_id).copied().unwrap_or_default() > 0 {
+            return Err(TaskStoreError::InvalidInput(format!(
+                "workspace lease {lease_id} has an in-flight dispatch"
+            )));
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut lease = workspace_lease_in_transaction(&transaction, lease_id)?;
+        if lease.state == TaskWorkspaceLeaseState::CleanupPending {
+            return Ok(lease);
+        }
+        if !matches!(
+            lease.state,
+            TaskWorkspaceLeaseState::Active
+                | TaskWorkspaceLeaseState::Preparing
+                | TaskWorkspaceLeaseState::Expired
+                | TaskWorkspaceLeaseState::CleanupBlocked
+        ) || lease.mode != WorkspaceMode::ManagedWorktree
+        {
+            return Err(TaskStoreError::InvalidInput(format!(
+                "workspace lease {lease_id} cannot enter cleanup pending"
+            )));
+        }
+        lease.state = TaskWorkspaceLeaseState::CleanupPending;
+        update_workspace_lease_in_transaction(&transaction, &lease)?;
+        append_and_project_workspace_events(
+            &transaction,
+            self.projector.as_ref(),
+            lease.task_id,
+            vec![NewTaskEvent::workspace_cleanup_pending(
+                workspace_lease_projection(&lease),
+            )],
+        )?;
+        transaction.commit()?;
+        drop(dispatches);
+        Ok(lease)
+    }
+
+    pub fn recoverable_managed_workspace_leases(
+        &self,
+    ) -> Result<Vec<TaskWorkspaceLease>, TaskStoreError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT lease_json FROM workspace_leases
+             WHERE mode = 'managed_worktree'
+               AND state IN ('preparing', 'expired', 'cleanup_pending')
+             ORDER BY rowid ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| {
+            let json = row?;
+            serde_json::from_str(&json).map_err(TaskStoreError::from)
+        })
+        .collect()
+    }
+
+    pub fn nonterminal_workspace_leases_for_task(
+        &self,
+        task_id: TaskId,
+    ) -> Result<Vec<TaskWorkspaceLease>, TaskStoreError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT lease_json FROM workspace_leases
+             WHERE task_id = ?1
+               AND state IN ('preparing', 'waiting', 'active', 'cleanup_pending', 'cleanup_blocked')
+             ORDER BY rowid ASC",
+        )?;
+        let rows = statement.query_map([task_id.to_string()], |row| row.get::<_, String>(0))?;
+        rows.map(|row| {
+            let json = row?;
+            serde_json::from_str(&json).map_err(TaskStoreError::from)
+        })
+        .collect()
+    }
+
+    pub fn active_workspace_leases(
+        &self,
+        canonical_root: &str,
+    ) -> Result<Vec<TaskWorkspaceLease>, TaskStoreError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT lease_json FROM workspace_leases
+             WHERE canonical_root = ?1 AND state = 'active'
+             ORDER BY acquired_at ASC, workspace_lease_id ASC",
+        )?;
+        let rows = statement.query_map([canonical_root], |row| row.get::<_, String>(0))?;
+        rows.map(|row| {
+            let json = row?;
+            serde_json::from_str(&json).map_err(TaskStoreError::from)
+        })
+        .collect()
+    }
+
+    pub fn workspace_lease(
+        &self,
+        lease_id: WorkspaceLeaseId,
+    ) -> Result<Option<TaskWorkspaceLease>, TaskStoreError> {
+        let connection = self.lock()?;
+        let lease_json = connection
+            .query_row(
+                "SELECT lease_json FROM workspace_leases WHERE workspace_lease_id = ?1",
+                [lease_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        lease_json
+            .map(|json| serde_json::from_str(&json).map_err(TaskStoreError::from))
+            .transpose()
+    }
+
+    pub fn begin_workspace_dispatch(
+        &self,
+        lease_id: WorkspaceLeaseId,
+    ) -> Result<WorkspaceDispatchGuard<'_>, TaskStoreError> {
+        let mut dispatches = self
+            .workspace_dispatches
+            .lock()
+            .map_err(|_| TaskStoreError::LockPoisoned)?;
+        let lease = self.workspace_lease(lease_id)?.ok_or_else(|| {
+            TaskStoreError::InvalidInput(format!("workspace lease {lease_id} does not exist"))
+        })?;
+        if lease.state != TaskWorkspaceLeaseState::Active {
+            return Err(TaskStoreError::InvalidInput(format!(
+                "workspace lease {lease_id} is not active"
+            )));
+        }
+        *dispatches.entry(lease_id).or_default() += 1;
+        Ok(WorkspaceDispatchGuard {
+            store: self,
+            lease_id,
+        })
+    }
+
+    pub fn mark_workspace_cleanup_blocked(
+        &self,
+        lease_id: WorkspaceLeaseId,
+        patch_path: &str,
+    ) -> Result<TaskWorkspaceLease, TaskStoreError> {
+        if patch_path.trim().is_empty() {
+            return Err(TaskStoreError::InvalidInput(
+                "workspace cleanup patch path must not be empty".into(),
+            ));
+        }
+        let dispatches = self
+            .workspace_dispatches
+            .lock()
+            .map_err(|_| TaskStoreError::LockPoisoned)?;
+        if dispatches.get(&lease_id).copied().unwrap_or_default() > 0 {
+            return Err(TaskStoreError::InvalidInput(format!(
+                "workspace lease {lease_id} has an in-flight dispatch"
+            )));
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let lease_json = transaction
+            .query_row(
+                "SELECT lease_json FROM workspace_leases WHERE workspace_lease_id = ?1",
+                [lease_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                TaskStoreError::InvalidInput(format!("workspace lease {lease_id} does not exist"))
+            })?;
+        let mut lease: TaskWorkspaceLease = serde_json::from_str(&lease_json)?;
+        if lease.state == TaskWorkspaceLeaseState::CleanupBlocked
+            && lease.mode == WorkspaceMode::ManagedWorktree
+        {
+            return Ok(lease);
+        }
+        if !matches!(
+            lease.state,
+            TaskWorkspaceLeaseState::Active | TaskWorkspaceLeaseState::CleanupPending
+        ) || lease.mode != WorkspaceMode::ManagedWorktree
+        {
+            return Err(TaskStoreError::InvalidInput(format!(
+                "workspace lease {lease_id} is not an active managed worktree"
+            )));
+        }
+        lease.state = TaskWorkspaceLeaseState::CleanupBlocked;
+        lease.patch_path = Some(patch_path.to_owned());
+        update_workspace_lease_in_transaction(&transaction, &lease)?;
+        append_and_project_workspace_events(
+            &transaction,
+            self.projector.as_ref(),
+            lease.task_id,
+            vec![NewTaskEvent::workspace_cleanup_blocked(
+                workspace_lease_projection(&lease),
+                now(),
+            )],
+        )?;
+        transaction.commit()?;
+        drop(dispatches);
+        Ok(lease)
+    }
+
+    pub fn release_workspace_lease(
+        &self,
+        lease_id: WorkspaceLeaseId,
+        reason: &str,
+    ) -> Result<ReleaseTaskWorkspaceLeaseOutcome, TaskStoreError> {
+        self.transition_workspace_lease(lease_id, reason, TaskWorkspaceLeaseState::Released)
+    }
+
+    pub fn expire_workspace_leases(
+        &self,
+        at: DateTime<Utc>,
+    ) -> Result<Vec<ReleaseTaskWorkspaceLeaseOutcome>, TaskStoreError> {
+        let expired_ids = {
+            let connection = self.lock()?;
+            let mut statement = connection.prepare(
+                "SELECT lease_json FROM workspace_leases
+                 WHERE state IN ('active', 'waiting', 'preparing') AND expires_at IS NOT NULL
+                 ORDER BY expires_at ASC, rowid ASC",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut expired_ids = Vec::new();
+            for row in rows {
+                let lease: TaskWorkspaceLease = serde_json::from_str(&row?)?;
+                if lease.expires_at.is_some_and(|expires_at| expires_at <= at) {
+                    expired_ids.push(lease.lease_id);
+                }
+            }
+            expired_ids
+        };
+        let mut outcomes = Vec::new();
+        for lease_id in expired_ids {
+            let Some(lease) = self.workspace_lease(lease_id)? else {
+                continue;
+            };
+            if matches!(
+                lease.state,
+                TaskWorkspaceLeaseState::Active
+                    | TaskWorkspaceLeaseState::Waiting
+                    | TaskWorkspaceLeaseState::Preparing
+            ) && lease.expires_at.is_some_and(|expires_at| expires_at <= at)
+            {
+                match self.transition_workspace_lease(
+                    lease_id,
+                    "owner_expired",
+                    TaskWorkspaceLeaseState::Expired,
+                ) {
+                    Ok(outcome) => outcomes.push(outcome),
+                    Err(TaskStoreError::InvalidInput(message))
+                        if message.contains("in-flight dispatch") => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Ok(outcomes)
+    }
+
+    fn transition_workspace_lease(
+        &self,
+        lease_id: WorkspaceLeaseId,
+        reason: &str,
+        terminal_state: TaskWorkspaceLeaseState,
+    ) -> Result<ReleaseTaskWorkspaceLeaseOutcome, TaskStoreError> {
+        if reason.trim().is_empty() {
+            return Err(TaskStoreError::InvalidInput(
+                "workspace release reason must not be empty".into(),
+            ));
+        }
+        let dispatches = self
+            .workspace_dispatches
+            .lock()
+            .map_err(|_| TaskStoreError::LockPoisoned)?;
+        if dispatches.get(&lease_id).copied().unwrap_or_default() > 0 {
+            return Err(TaskStoreError::InvalidInput(format!(
+                "workspace lease {lease_id} has an in-flight dispatch"
+            )));
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let lease_json = transaction
+            .query_row(
+                "SELECT lease_json FROM workspace_leases WHERE workspace_lease_id = ?1",
+                [lease_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                TaskStoreError::InvalidInput(format!("workspace lease {lease_id} does not exist"))
+            })?;
+        let mut released: TaskWorkspaceLease = serde_json::from_str(&lease_json)?;
+        if !matches!(
+            released.state,
+            TaskWorkspaceLeaseState::Active
+                | TaskWorkspaceLeaseState::Waiting
+                | TaskWorkspaceLeaseState::Preparing
+                | TaskWorkspaceLeaseState::CleanupPending
+        ) {
+            return Err(TaskStoreError::InvalidInput(format!(
+                "workspace lease {lease_id} is not active"
+            )));
+        }
+        if !matches!(
+            terminal_state,
+            TaskWorkspaceLeaseState::Released | TaskWorkspaceLeaseState::Expired
+        ) {
+            return Err(TaskStoreError::InvalidInput(
+                "workspace terminal transition must release or expire the lease".into(),
+            ));
+        }
+        released.state = terminal_state;
+        update_workspace_lease_in_transaction(&transaction, &released)?;
+        let released_at = now();
+        append_and_project_workspace_events(
+            &transaction,
+            self.projector.as_ref(),
+            released.task_id,
+            vec![NewTaskEvent::workspace_released(
+                workspace_lease_projection(&released),
+                reason,
+                released_at,
+            )],
+        )?;
+
+        let mut waiters = transaction.prepare(
+            "SELECT lease_json FROM workspace_leases
+             WHERE canonical_root = ?1 AND mode = 'current' AND state = 'waiting'
+             ORDER BY rowid ASC",
+        )?;
+        let waiting_json = waiters
+            .query_map([released.canonical_root.as_str()], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(waiters);
+
+        let mut acquired = Vec::new();
+        for json in waiting_json {
+            let mut waiting: TaskWorkspaceLease = serde_json::from_str(&json)?;
+            if waiting
+                .expires_at
+                .is_some_and(|expires_at| expires_at <= released_at)
+            {
+                waiting.state = TaskWorkspaceLeaseState::Expired;
+                update_workspace_lease_in_transaction(&transaction, &waiting)?;
+                append_and_project_workspace_events(
+                    &transaction,
+                    self.projector.as_ref(),
+                    waiting.task_id,
+                    vec![NewTaskEvent::workspace_released(
+                        workspace_lease_projection(&waiting),
+                        "owner_expired",
+                        released_at,
+                    )],
+                )?;
+                continue;
+            }
+            let active =
+                active_workspace_leases_in_transaction(&transaction, &waiting.canonical_root)?;
+            let blocked = if waiting.writable {
+                !active.is_empty()
+            } else {
+                active.iter().any(|lease| lease.writable)
+            };
+            if blocked {
+                break;
+            }
+            waiting.state = TaskWorkspaceLeaseState::Active;
+            waiting.acquired_at = Some(released_at);
+            update_workspace_lease_in_transaction(&transaction, &waiting)?;
+            append_and_project_workspace_events(
+                &transaction,
+                self.projector.as_ref(),
+                waiting.task_id,
+                vec![NewTaskEvent::workspace_acquired(
+                    workspace_lease_projection(&waiting),
+                )],
+            )?;
+            acquired.push(waiting.clone());
+            if waiting.writable {
+                break;
+            }
+        }
+        transaction.commit()?;
+        drop(dispatches);
+        Ok(ReleaseTaskWorkspaceLeaseOutcome { released, acquired })
     }
 
     pub fn pending_segment_start(
@@ -3018,6 +3693,126 @@ pub enum TaskStoreError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Filesystem(#[from] harness_fs::FsError),
+}
+
+fn workspace_mode_wire(mode: &WorkspaceMode) -> &'static str {
+    match mode {
+        WorkspaceMode::Current => "current",
+        WorkspaceMode::ManagedWorktree => "managed_worktree",
+    }
+}
+
+fn workspace_lease_state_wire(state: TaskWorkspaceLeaseState) -> &'static str {
+    match state {
+        TaskWorkspaceLeaseState::Preparing => "preparing",
+        TaskWorkspaceLeaseState::Waiting => "waiting",
+        TaskWorkspaceLeaseState::Active => "active",
+        TaskWorkspaceLeaseState::CleanupPending => "cleanup_pending",
+        TaskWorkspaceLeaseState::CleanupBlocked => "cleanup_blocked",
+        TaskWorkspaceLeaseState::Released => "released",
+        TaskWorkspaceLeaseState::Expired => "expired",
+    }
+}
+
+fn workspace_lease_projection(lease: &TaskWorkspaceLease) -> WorkspaceLeaseProjection {
+    WorkspaceLeaseProjection {
+        lease_id: lease.lease_id,
+        task_id: lease.task_id,
+        actor_id: lease.actor_id,
+        mode: lease.mode.clone(),
+        canonical_root: lease.canonical_root.clone(),
+        worktree_path: lease.worktree_path.clone(),
+        branch: lease.branch.clone(),
+        writable: lease.writable,
+        state: lease.state,
+        requested_at: lease.requested_at,
+        acquired_at: lease.acquired_at,
+        expires_at: lease.expires_at,
+        baseline_commit: lease.baseline_commit.clone(),
+        baseline_status: lease.baseline_status.clone(),
+        patch_path: lease.patch_path.clone(),
+    }
+}
+
+fn update_workspace_lease_in_transaction(
+    transaction: &Transaction<'_>,
+    lease: &TaskWorkspaceLease,
+) -> Result<(), TaskStoreError> {
+    let changed = transaction.execute(
+        "UPDATE workspace_leases
+         SET state = ?2, acquired_at = ?3, expires_at = ?4, lease_json = ?5
+         WHERE workspace_lease_id = ?1",
+        params![
+            lease.lease_id.to_string(),
+            workspace_lease_state_wire(lease.state),
+            lease.acquired_at.map(|value| value.to_rfc3339()),
+            lease.expires_at.map(|value| value.to_rfc3339()),
+            serde_json::to_string(lease)?,
+        ],
+    )?;
+    if changed != 1 {
+        return Err(TaskStoreError::ProjectionIntegrity(format!(
+            "workspace lease {} disappeared during transition",
+            lease.lease_id
+        )));
+    }
+    Ok(())
+}
+
+fn workspace_lease_in_transaction(
+    transaction: &Transaction<'_>,
+    lease_id: WorkspaceLeaseId,
+) -> Result<TaskWorkspaceLease, TaskStoreError> {
+    let json = transaction
+        .query_row(
+            "SELECT lease_json FROM workspace_leases WHERE workspace_lease_id = ?1",
+            [lease_id.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            TaskStoreError::InvalidInput(format!("workspace lease {lease_id} does not exist"))
+        })?;
+    Ok(serde_json::from_str(&json)?)
+}
+
+fn active_workspace_leases_in_transaction(
+    transaction: &Transaction<'_>,
+    canonical_root: &str,
+) -> Result<Vec<TaskWorkspaceLease>, TaskStoreError> {
+    let mut statement = transaction.prepare(
+        "SELECT lease_json FROM workspace_leases
+         WHERE canonical_root = ?1 AND state = 'active'
+         ORDER BY acquired_at ASC, workspace_lease_id ASC",
+    )?;
+    let rows = statement.query_map([canonical_root], |row| row.get::<_, String>(0))?;
+    rows.map(|row| {
+        let json = row?;
+        serde_json::from_str(&json).map_err(TaskStoreError::from)
+    })
+    .collect()
+}
+
+fn append_and_project_workspace_events(
+    transaction: &Transaction<'_>,
+    projector: &dyn TaskProjector,
+    task_id: TaskId,
+    events: Vec<NewTaskEvent>,
+) -> Result<Vec<TaskEventEnvelope>, TaskStoreError> {
+    let expected_version = stream_version_in_transaction(transaction, task_id)?;
+    let authority = TaskStore::supervisor_authority();
+    let committed = append_in_transaction(
+        transaction,
+        task_id,
+        expected_version,
+        authority.source(),
+        events,
+    )?;
+    for event in &committed {
+        projector.apply(transaction, event)?;
+    }
+    roll_forward_safe_checkpoint_in_transaction(transaction, task_id, &committed)?;
+    Ok(committed)
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ mod recovery;
 mod run_coordinator;
 mod supervisor;
 mod task_actor;
+mod workspace;
 
 pub use checkpoint::*;
 pub use queue::*;
@@ -15,3 +16,4 @@ pub use recovery::*;
 pub use run_coordinator::*;
 pub use supervisor::*;
 pub use task_actor::*;
+pub use workspace::*;

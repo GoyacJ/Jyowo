@@ -21,7 +21,7 @@ agents-team = ["agents-subagent", "dep:jyowo-harness-team"]
 [dependencies]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
 jyowo-harness-fs = { path = "../jyowo-harness-fs" }
-jyowo-harness-journal = { path = "../jyowo-harness-journal" }
+jyowo-harness-journal = { path = "../jyowo-harness-journal", features = ["sqlite"] }
 jyowo-harness-subagent = { path = "../jyowo-harness-subagent", optional = true }
 jyowo-harness-team = { path = "../jyowo-harness-team", optional = true }
 async-trait = { workspace = true }

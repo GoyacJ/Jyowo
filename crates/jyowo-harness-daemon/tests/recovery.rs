@@ -1671,7 +1671,11 @@ struct RecordingFactory {
 }
 
 impl RunCoordinatorFactory for RecordingFactory {
-    fn spawn_idempotent(&self, request: StartSegmentRequest) -> RunningSegment {
+    fn spawn_idempotent(
+        &self,
+        request: StartSegmentRequest,
+        _workspace_tools: harness_daemon::WorkspaceToolDispatcher,
+    ) -> RunningSegment {
         self.requests.lock().unwrap().push(request);
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         self.senders.lock().unwrap().push(sender);
@@ -1687,7 +1691,11 @@ struct PanicThreeTimesFactory {
 }
 
 impl RunCoordinatorFactory for PanicThreeTimesFactory {
-    fn spawn_idempotent(&self, _request: StartSegmentRequest) -> RunningSegment {
+    fn spawn_idempotent(
+        &self,
+        _request: StartSegmentRequest,
+        _workspace_tools: harness_daemon::WorkspaceToolDispatcher,
+    ) -> RunningSegment {
         let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
         if attempt == 0 {
             self.first_attempt.notify_one();
