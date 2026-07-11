@@ -4,15 +4,17 @@ use std::io::{self, Write};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::stream::BoxStream;
+use futures::stream::{self, BoxStream};
 use harness_contracts::{
-    Event, EventId, ForkReason, JournalError, JournalOffset, Redactor, SessionId, TaskId, TenantId,
+    Event, EventId, ForkReason, JournalError, JournalOffset, Redactor, SessionId,
+    TaskEventEnvelope, TaskId, TenantId,
 };
 
+use crate::task_event::TaskEvent;
 use crate::{
-    journal_error, AppendMetadata, EventEnvelope, EventStore, JournalRedaction, PrunePolicy,
-    PruneReport, SessionFilter, SessionSnapshot, SessionSummary, TaskStore,
-    MAX_EVENTS_PER_TRANSACTION, MAX_TOTAL_EVENT_BYTES_PER_TRANSACTION,
+    apply_cursor, apply_event_id_cursor, journal_error, AppendMetadata, EventEnvelope, EventStore,
+    JournalRedaction, PrunePolicy, PruneReport, SessionFilter, SessionSnapshot, SessionSummary,
+    TaskStore, MAX_EVENTS_PER_TRANSACTION, MAX_TOTAL_EVENT_BYTES_PER_TRANSACTION,
 };
 
 pub struct TaskEventStoreAdapter {
@@ -94,6 +96,70 @@ impl TaskEventStoreAdapter {
             "{operation} is not supported by the append-only task engine adapter"
         ))
     }
+
+    async fn load_envelopes(&self) -> Result<Vec<EventEnvelope>, JournalError> {
+        let store = Arc::clone(&self.store);
+        let task_id = self.task_id;
+        let tenant_id = self.tenant_id;
+        let session_id = self.session_id;
+        tokio::task::spawn_blocking(move || {
+            let mut after_stream_sequence = 0;
+            let mut envelopes = Vec::new();
+            loop {
+                let page = store
+                    .task_events_after(task_id, after_stream_sequence, usize::MAX)
+                    .map_err(journal_error)?;
+                let Some(last) = page.last() else {
+                    break;
+                };
+                after_stream_sequence = last.stream_sequence;
+                for envelope in page {
+                    if let Some(envelope) = decode_engine_envelope(envelope, tenant_id, session_id)?
+                    {
+                        envelopes.push(envelope);
+                    }
+                }
+            }
+            Ok(envelopes)
+        })
+        .await
+        .map_err(journal_error)?
+    }
+}
+
+fn decode_engine_envelope(
+    envelope: TaskEventEnvelope,
+    tenant_id: TenantId,
+    session_id: SessionId,
+) -> Result<Option<EventEnvelope>, JournalError> {
+    if !envelope.event_type.starts_with("engine.") {
+        return Ok(None);
+    }
+    let event_id = envelope.event_id;
+    let recorded_at = envelope.recorded_at;
+    let event = TaskEvent::decode(
+        &envelope.event_type,
+        envelope.schema_version,
+        envelope.payload,
+    )
+    .map_err(journal_error)?;
+    let TaskEvent::Engine { payload, .. } = event else {
+        return Ok(None);
+    };
+    if payload.tenant_id != tenant_id || payload.session_id != session_id {
+        return Ok(None);
+    }
+    Ok(Some(EventEnvelope {
+        offset: JournalOffset(payload.journal_offset),
+        event_id,
+        session_id: payload.session_id,
+        tenant_id: payload.tenant_id,
+        run_id: payload.run_id,
+        correlation_id: payload.correlation_id,
+        causation_id: payload.causation_id,
+        recorded_at,
+        payload: payload.event,
+    }))
 }
 
 fn encode_event_batch(events: &[Event]) -> Result<Vec<u8>, JournalError> {
@@ -187,20 +253,27 @@ impl EventStore for TaskEventStoreAdapter {
 
     async fn read_envelopes(
         &self,
-        _tenant: TenantId,
-        _session_id: SessionId,
-        _cursor: crate::ReplayCursor,
+        tenant: TenantId,
+        session_id: SessionId,
+        cursor: crate::ReplayCursor,
     ) -> Result<BoxStream<'static, EventEnvelope>, JournalError> {
-        Err(Self::unsupported("read_envelopes"))
+        self.validate_scope(tenant, session_id)?;
+        let mut envelopes = self.load_envelopes().await?;
+        apply_cursor(&mut envelopes, cursor);
+        Ok(Box::pin(stream::iter(envelopes)))
     }
 
     async fn query_after(
         &self,
-        _tenant: TenantId,
-        _after: Option<EventId>,
-        _limit: usize,
+        tenant: TenantId,
+        after: Option<EventId>,
+        limit: usize,
     ) -> Result<Vec<EventEnvelope>, JournalError> {
-        Err(Self::unsupported("query_after"))
+        self.validate_scope(tenant, self.session_id)?;
+        let mut envelopes = self.load_envelopes().await?;
+        apply_event_id_cursor(&mut envelopes, after)?;
+        envelopes.truncate(limit);
+        Ok(envelopes)
     }
 
     async fn snapshot(

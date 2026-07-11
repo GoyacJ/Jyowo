@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use futures::StreamExt;
 use harness_contracts::{
     now, BlobId, BlobRef, BudgetMetric, CausationId, ClientId, CommandId, ConfigHash,
     ConversationAttachmentReference, ConversationModelCapability, CorrelationId, EndReason, Event,
@@ -10,7 +11,7 @@ use harness_contracts::{
     TenantId, ToolResultOffloadedEvent, ToolUseId, TurnInput, UnexpectedErrorEvent,
 };
 use harness_journal::{
-    AcceptedCommand, AppendMetadata, EventStore, NewTaskEvent, TaskBlobStore,
+    AcceptedCommand, AppendMetadata, EventStore, NewTaskEvent, ReplayCursor, TaskBlobStore,
     TaskEventStoreAdapter, TaskStore,
 };
 use serde_json::json;
@@ -78,6 +79,69 @@ async fn engine_events_share_the_task_log_and_preserve_run_metadata() {
         );
         assert_eq!(event.payload["event"]["run_id"], runs[index].to_string());
     }
+
+    drop((adapter, store));
+    cleanup(&database_path);
+}
+
+#[tokio::test]
+async fn adapter_replays_engine_envelopes_from_the_unified_task_log() {
+    let database_path = temp_path("adapter-replay");
+    let store = Arc::new(TaskStore::open(&database_path).unwrap());
+    let task_id = TaskId::new();
+    create_task(&store, task_id);
+    let session_id = SessionId::new();
+    let adapter = TaskEventStoreAdapter::new(
+        Arc::clone(&store),
+        task_id,
+        TenantId::SINGLE,
+        session_id,
+        Arc::new(NoopRedactor),
+    );
+    let events = [RunId::new(), RunId::new()].map(|run_id| {
+        Event::RunEnded(RunEndedEvent {
+            run_id,
+            reason: EndReason::Completed,
+            usage: None,
+            ended_at: now(),
+        })
+    });
+    adapter
+        .append(TenantId::SINGLE, session_id, &events)
+        .await
+        .unwrap();
+
+    let replayed = adapter
+        .read_envelopes(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert_eq!(replayed.len(), 2);
+    assert_eq!(replayed[0].offset, JournalOffset(0));
+    assert_eq!(replayed[1].offset, JournalOffset(1));
+    assert_eq!(replayed[0].payload, events[0]);
+    assert_eq!(replayed[1].payload, events[1]);
+
+    let after_first = adapter
+        .read_envelopes(
+            TenantId::SINGLE,
+            session_id,
+            ReplayCursor::FromOffset(JournalOffset(0)),
+        )
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert_eq!(after_first.len(), 1);
+    assert_eq!(after_first[0].payload, events[1]);
+
+    let queried = adapter
+        .query_after(TenantId::SINGLE, Some(replayed[0].event_id), 10)
+        .await
+        .unwrap();
+    assert_eq!(queried.len(), 1);
+    assert_eq!(queried[0].payload, events[1]);
 
     drop((adapter, store));
     cleanup(&database_path);
