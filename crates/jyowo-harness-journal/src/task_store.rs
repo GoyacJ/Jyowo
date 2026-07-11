@@ -11,11 +11,11 @@ use chrono::{DateTime, Utc};
 use fs2::FileExt;
 use harness_contracts::{
     now, ActorId, BlobId, CheckpointId, ClientId, CommandId, Event, EventId, EventSource,
-    EventSourceKind, IdParseError, IndeterminateToolDecision, QueueItemProjection, RedactRules,
-    Redactor, RunSegmentId, RunState, RunTerminalReason, SessionId, SubagentActorState, SubagentId,
-    SubagentParentProjection, SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection,
-    TenantId, TimelineItemProjection, ToolUseId, WorkspaceLeaseId, WorkspaceLeaseProjection,
-    WorkspaceLeaseState, WorkspaceMode,
+    EventSourceKind, IdParseError, IndeterminateToolDecision, PermissionMode, QueueItemId,
+    QueueItemProjection, RedactRules, Redactor, RunSegmentId, RunState, RunTerminalReason,
+    SessionId, SubagentActorState, SubagentId, SubagentParentProjection, SubagentProjection,
+    TaskEventEnvelope, TaskId, TaskProjection, TenantId, TimelineItemProjection, ToolUseId,
+    WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceLeaseState, WorkspaceMode,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -54,6 +54,16 @@ const BLOB_ROOT_LOCK_FILE: &str = ".jyowo-task-store.lock";
 pub struct EventAuthority {
     source: EventSource,
     principal_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SegmentRunInput {
+    pub queue_item_id: QueueItemId,
+    pub content: String,
+    pub attachments: Vec<BlobId>,
+    pub context_references: Vec<String>,
+    pub model_config_id: Option<String>,
+    pub permission_mode: PermissionMode,
 }
 
 impl EventAuthority {
@@ -2487,6 +2497,80 @@ impl TaskStore {
             Ok(projection)
         })
         .transpose()
+    }
+
+    pub fn queue_item_for_segment(
+        &self,
+        task_id: TaskId,
+        segment_id: RunSegmentId,
+    ) -> Result<Option<SegmentRunInput>, TaskStoreError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT queue_item_id, projection_json
+             FROM queue_projection
+             WHERE task_id = ?1
+               AND json_extract(projection_json, '$.consumedBy') = ?2
+             ORDER BY queue_item_id ASC
+             LIMIT 2",
+        )?;
+        let mut rows = statement.query(params![task_id.to_string(), segment_id.to_string()])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let stored_queue_item_id = row.get::<_, String>(0)?;
+        let projection_json = row.get::<_, String>(1)?;
+        if rows.next()?.is_some() {
+            return Err(TaskStoreError::ProjectionIntegrity(format!(
+                "run segment {segment_id} consumed more than one queue item"
+            )));
+        }
+        let projection: QueueItemProjection = serde_json::from_str(&projection_json)?;
+        if projection.queue_item_id.to_string() != stored_queue_item_id
+            || projection.consumed_by != Some(segment_id)
+        {
+            return Err(TaskStoreError::ProjectionIntegrity(format!(
+                "run segment {segment_id} queue projection identity is inconsistent"
+            )));
+        }
+        let payload_json = connection
+            .query_row(
+                "SELECT payload_json
+                 FROM event_log
+                 WHERE task_id = ?1
+                   AND event_type = 'message.queued'
+                   AND json_extract(payload_json, '$.queueItemId') = ?2
+                 ORDER BY stream_sequence ASC
+                 LIMIT 1",
+                params![task_id.to_string(), stored_queue_item_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                TaskStoreError::ProjectionIntegrity(format!(
+                    "queue item {} has no canonical message.queued event",
+                    projection.queue_item_id
+                ))
+            })?;
+        let payload: Value = serde_json::from_str(&payload_json)?;
+        let model_config_id = payload
+            .get("modelConfigId")
+            .filter(|value| !value.is_null())
+            .map(|value| serde_json::from_value::<String>(value.clone()))
+            .transpose()?;
+        let permission_mode = payload
+            .get("permissionMode")
+            .cloned()
+            .map(serde_json::from_value::<PermissionMode>)
+            .transpose()?
+            .unwrap_or_default();
+        Ok(Some(SegmentRunInput {
+            queue_item_id: projection.queue_item_id,
+            content: projection.content,
+            attachments: projection.attachments,
+            context_references: projection.context_references,
+            model_config_id,
+            permission_mode,
+        }))
     }
 
     pub fn latest_queue_revision(&self, task_id: TaskId) -> Result<u64, TaskStoreError> {
