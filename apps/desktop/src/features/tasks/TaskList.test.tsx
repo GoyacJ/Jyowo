@@ -5,115 +5,209 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { TaskProjection, TaskState } from '@/generated/daemon-protocol'
+import type { ListProjectsResponse } from '@/shared/tauri/commands'
 
-import { TaskList } from './TaskList'
+import { groupSidebarTasks, TaskList } from './TaskList'
 
-describe('TaskList', () => {
-  it('shows daemon task states with text and groups archived tasks separately', () => {
-    render(
-      <TaskList
-        activeTaskId={taskId(1)}
-        onCreateTask={vi.fn()}
-        onSelectTask={vi.fn()}
-        tasks={[
-          projection(1, 'running'),
-          projection(2, 'idle', { queueCount: 2 }),
-          projection(3, 'waiting_permission'),
-          projection(4, 'interrupted'),
-          projection(5, 'failed'),
-          projection(6, 'completed'),
-          projection(7, 'completed', { archived: true }),
-          projection(8, 'running', { archived: true }),
-        ]}
-      />,
+const defaultRoot = '/home/me/.jyowo/workspaces/default'
+const projects: ListProjectsResponse['projects'] = [
+  { lastOpenedAt: '2026-07-12T00:00:00Z', name: 'Alpha', path: '/repo/alpha' },
+  { lastOpenedAt: '2026-07-11T00:00:00Z', name: 'Beta', path: '/repo/beta' },
+]
+
+describe('groupSidebarTasks', () => {
+  it('places pinned tasks only in pinned and groups remaining tasks by canonical root', () => {
+    const groups = groupSidebarTasks(
+      [
+        projection(1, 'completed', { pinned: true, root: '/repo/alpha' }),
+        projection(2, 'completed', { root: '/repo/alpha' }),
+        projection(3, 'completed', { root: defaultRoot }),
+        projection(4, 'completed', { root: '/unknown/root' }),
+      ],
+      projects,
+      defaultRoot,
     )
 
-    const active = screen.getByRole('region', { name: 'Active tasks' })
-    expect(within(active).getByText('Running')).toBeInTheDocument()
-    expect(within(active).getByText('2 queued')).toBeInTheDocument()
-    expect(within(active).getByText('Waiting permission')).toBeInTheDocument()
-    const recent = screen.getByRole('region', { name: 'Recent tasks' })
-    expect(within(recent).getByText('Interrupted')).toBeInTheDocument()
-    expect(within(recent).getByText('Failed')).toBeInTheDocument()
-    expect(within(recent).getByText('Completed')).toBeInTheDocument()
-    const archived = screen.getByRole('region', { name: 'Archived tasks' })
-    expect(archived).toHaveTextContent('Task 7')
-    expect(archived).toHaveTextContent('Task 8')
-    expect(active).not.toHaveTextContent('Task 8')
-  })
-
-  it('selects a task and exposes task creation', () => {
-    const onCreateTask = vi.fn()
-    const onSelectTask = vi.fn()
-    render(
-      <TaskList
-        onCreateTask={onCreateTask}
-        onSelectTask={onSelectTask}
-        tasks={[projection(1, 'completed')]}
-      />,
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: /Task 1/ }))
-    expect(onSelectTask).toHaveBeenCalledWith(taskId(1))
-    fireEvent.click(screen.getByRole('button', { name: 'New task' }))
-    expect(onCreateTask).toHaveBeenCalledOnce()
-  })
-
-  it('reaches task creation and task selection from the keyboard', async () => {
-    const user = userEvent.setup()
-    const onCreateTask = vi.fn()
-    const onSelectTask = vi.fn()
-    render(
-      <TaskList
-        onCreateTask={onCreateTask}
-        onSelectTask={onSelectTask}
-        tasks={[projection(1, 'completed')]}
-      />,
-    )
-
-    await user.tab()
-    expect(screen.getByRole('button', { name: 'New task' })).toHaveFocus()
-    await user.keyboard('{Enter}')
-    expect(onCreateTask).toHaveBeenCalledOnce()
-
-    await user.tab()
-    expect(screen.getByRole('button', { name: /Task 1/ })).toHaveFocus()
-    await user.keyboard('{Enter}')
-    expect(onSelectTask).toHaveBeenCalledWith(taskId(1))
-  })
-
-  it('uses the idle state token for a ready task', () => {
-    render(
-      <TaskList onCreateTask={vi.fn()} onSelectTask={vi.fn()} tasks={[projection(1, 'idle')]} />,
-    )
-
-    const task = screen.getByRole('button', { name: /Task 1/ })
-    expect(task.querySelector('svg')).toHaveClass('text-state-idle')
+    expect(groups.pinned.map((task) => task.taskId)).toEqual([taskId(1)])
+    expect(groups.projects[0]?.tasks.map((task) => task.taskId)).toEqual([taskId(2)])
+    expect(groups.projects[1]?.tasks).toEqual([])
+    expect(groups.conversations.map((task) => task.taskId)).toEqual([taskId(4), taskId(3)])
   })
 })
+
+describe('TaskList', () => {
+  it('renders three independently collapsible sections and project rows', () => {
+    const onToggleSection = vi.fn()
+    const onToggleProject = vi.fn()
+    renderTaskList({ onToggleProject, onToggleSection })
+
+    const pinned = screen.getByRole('button', { name: 'Pinned' })
+    const projectSection = screen.getByRole('button', { name: 'Projects' })
+    const conversations = screen.getByRole('button', { name: 'Conversations' })
+    expect(pinned).toHaveAttribute('aria-expanded', 'true')
+    expect(projectSection).toHaveAttribute('aria-expanded', 'true')
+    expect(conversations).toHaveAttribute('aria-expanded', 'false')
+
+    fireEvent.click(pinned)
+    fireEvent.click(projectSection)
+    fireEvent.click(conversations)
+    expect(onToggleSection).toHaveBeenNthCalledWith(1, 'pinned', false)
+    expect(onToggleSection).toHaveBeenNthCalledWith(2, 'projects', false)
+    expect(onToggleSection).toHaveBeenNthCalledWith(3, 'conversations', true)
+
+    const alpha = screen.getByRole('button', { name: 'Alpha' })
+    expect(alpha).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(alpha)
+    expect(onToggleProject).toHaveBeenCalledWith('/repo/alpha', false)
+  })
+
+  it('keeps pinned tasks out of project and conversation lists', () => {
+    renderTaskList()
+
+    const pinned = screen.getByRole('region', { name: 'Pinned' })
+    expect(within(pinned).getByText('Task 1')).toBeInTheDocument()
+    const alpha = screen.getByRole('region', { name: 'Alpha conversations' })
+    expect(within(alpha).getByText('Task 2')).toBeInTheDocument()
+    expect(within(alpha).queryByText('Task 1')).not.toBeInTheDocument()
+  })
+
+  it('creates conversations globally and inside a project', () => {
+    const onCreateConversation = vi.fn()
+    renderTaskList({ onCreateConversation })
+
+    fireEvent.click(screen.getByRole('button', { name: 'New conversation' }))
+    expect(onCreateConversation).toHaveBeenCalledWith(defaultRoot)
+    fireEvent.click(screen.getByRole('button', { name: 'New conversation in Alpha' }))
+    expect(onCreateConversation).toHaveBeenCalledWith('/repo/alpha')
+  })
+
+  it('exposes project addition from the projects section', () => {
+    const onAddProject = vi.fn()
+    renderTaskList({ onAddProject })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add project' }))
+    expect(onAddProject).toHaveBeenCalledOnce()
+  })
+
+  it('invokes task menu actions including validated rename and confirmation actions', async () => {
+    const user = userEvent.setup()
+    const onSetTaskPinned = vi.fn()
+    const onRenameTask = vi.fn()
+    const onSetTaskArchived = vi.fn()
+    const onRemoveTask = vi.fn()
+    renderTaskList({ onRemoveTask, onRenameTask, onSetTaskArchived, onSetTaskPinned })
+
+    await user.click(screen.getByRole('button', { name: 'Task 2 actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Pin' }))
+    expect(onSetTaskPinned).toHaveBeenCalledWith(expect.objectContaining({ taskId: taskId(2) }), true)
+
+    await user.click(screen.getByRole('button', { name: 'Task 2 actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Rename' }))
+    const taskName = screen.getByRole('textbox', { name: 'Conversation name' })
+    await user.clear(taskName)
+    await user.type(taskName, 'Renamed conversation')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(onRenameTask).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: taskId(2) }),
+      'Renamed conversation',
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Task 2 actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Archive' }))
+    await user.click(screen.getByRole('button', { name: 'Archive conversation' }))
+    expect(onSetTaskArchived).toHaveBeenCalledWith(expect.objectContaining({ taskId: taskId(2) }), true)
+
+    await user.click(screen.getByRole('button', { name: 'Task 2 actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Remove' }))
+    await user.click(screen.getByRole('button', { name: 'Remove conversation' }))
+    expect(onRemoveTask).toHaveBeenCalledWith(expect.objectContaining({ taskId: taskId(2) }))
+  })
+
+  it('invokes project menu actions and disables unavailable moves', async () => {
+    const user = userEvent.setup()
+    const onRenameProject = vi.fn()
+    const onMoveProject = vi.fn()
+    const onRemoveProject = vi.fn()
+    renderTaskList({ onMoveProject, onRemoveProject, onRenameProject })
+
+    await user.click(screen.getByRole('button', { name: 'Alpha actions' }))
+    expect(screen.getByRole('menuitem', { name: 'Move up' })).toHaveAttribute('data-disabled')
+    await user.click(screen.getByRole('menuitem', { name: 'Move down' }))
+    expect(onMoveProject).toHaveBeenCalledWith('/repo/alpha', 'down')
+
+    await user.click(screen.getByRole('button', { name: 'Alpha actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Rename' }))
+    const projectName = screen.getByRole('textbox', { name: 'Project name' })
+    await user.clear(projectName)
+    await user.type(projectName, 'Alpha renamed')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(onRenameProject).toHaveBeenCalledWith('/repo/alpha', 'Alpha renamed')
+
+    await user.click(screen.getByRole('button', { name: 'Alpha actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Remove project' }))
+    await user.click(screen.getByRole('button', { name: 'Remove project' }))
+    expect(onRemoveProject).toHaveBeenCalledWith('/repo/alpha')
+  })
+
+  it('keeps loading and empty sections navigable', () => {
+    renderTaskList({ loading: true, projects: [], tasks: [] })
+    expect(screen.getByRole('button', { name: 'New conversation' })).toBeEnabled()
+    expect(screen.getByRole('status')).toHaveTextContent('Loading conversations')
+    expect(screen.getByRole('button', { name: 'Pinned' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Projects' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Conversations' })).toBeInTheDocument()
+  })
+})
+
+type TaskListOverrides = Partial<React.ComponentProps<typeof TaskList>>
+
+function renderTaskList(overrides: TaskListOverrides = {}) {
+  const tasks = [
+    projection(1, 'completed', { pinned: true, root: '/repo/alpha' }),
+    projection(2, 'completed', { root: '/repo/alpha' }),
+    projection(3, 'idle', { root: defaultRoot }),
+  ]
+  return render(
+    <TaskList
+      activeTaskId={taskId(2)}
+      defaultRoot={defaultRoot}
+      expandedProjects={{ '/repo/alpha': true, '/repo/beta': false }}
+      onAddProject={vi.fn()}
+      onCreateConversation={vi.fn()}
+      onMoveProject={vi.fn()}
+      onRemoveProject={vi.fn()}
+      onRemoveTask={vi.fn()}
+      onRenameProject={vi.fn()}
+      onRenameTask={vi.fn()}
+      onSelectTask={vi.fn()}
+      onSetTaskArchived={vi.fn()}
+      onSetTaskPinned={vi.fn()}
+      onToggleProject={vi.fn()}
+      onToggleSection={vi.fn()}
+      projects={projects}
+      sections={{ conversations: false, pinned: true, projects: true }}
+      tasks={tasks}
+      {...overrides}
+    />,
+  )
+}
 
 function projection(
   index: number,
   state: TaskState,
-  options: { archived?: boolean; queueCount?: number } = {},
+  options: { archived?: boolean; pinned?: boolean; root?: string } = {},
 ): TaskProjection {
   return {
     archived: options.archived ?? false,
     lastGlobalOffset: index,
-    queue: Array.from({ length: options.queueCount ?? 0 }, (_, queueIndex) => ({
-      attachments: [],
-      content: `Queue ${queueIndex}`,
-      contextReferences: [],
-      createdAt: '2026-07-11T00:00:00Z',
-      createdGlobalOffset: index + queueIndex,
-      queueItemId: taskId(20 + queueIndex),
-      revision: 1,
-      state: 'queued' as const,
-    })),
+    pinned: options.pinned ?? false,
+    queue: [],
+    removed: false,
     state,
     streamVersion: index,
     taskId: taskId(index),
     title: `Task ${index}`,
+    workspace: options.root ? { mode: 'current', root: options.root } : null,
   }
 }
 
