@@ -43,6 +43,55 @@ fn execution_defaults_require_subagents_for_dependent_capabilities() {
 }
 
 #[test]
+fn agent_team_starter_contract_carries_immutable_run_snapshot() {
+    let run_id = harness_contracts::RunId::new();
+    let session_id = harness_contracts::SessionId::new();
+    let tool_use_id = harness_contracts::ToolUseId::new();
+    let policy = harness_contracts::AgentToolPolicy {
+        subagents: harness_contracts::AgentUsePolicy::Allowed,
+        agent_team: harness_contracts::AgentUsePolicy::Allowed,
+        team_config: Some(harness_contracts::AgentTeamRunConfig {
+            topology: harness_contracts::AgentTeamTopology::CoordinatorWorker,
+            lead_profile_id: "reviewer".to_owned(),
+            member_profile_ids: vec!["worker".to_owned()],
+            max_turns_per_goal: 3,
+            shared_memory_policy: harness_contracts::AgentTeamSharedMemoryPolicy::SummariesOnly,
+        }),
+        background_agents: harness_contracts::AgentUsePolicy::Off,
+        workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
+        max_depth: 2,
+        max_concurrent_subagents: 4,
+        max_team_members: 4,
+    };
+    let request = harness_contracts::AgentTeamToolStartRequest {
+        tenant_id: harness_contracts::TenantId::SINGLE,
+        conversation_id: session_id,
+        parent_run_id: run_id,
+        tool_use_id,
+        goal: "review the change".to_owned(),
+        topology: harness_contracts::AgentTeamTopology::CoordinatorWorker,
+        max_turns_per_goal: 3,
+        agent_tool_policy: policy.clone(),
+        session: harness_contracts::AgentTeamToolSessionSnapshot {
+            tenant_id: harness_contracts::TenantId::SINGLE,
+            session_id,
+            tool_search: harness_contracts::ToolSearchMode::Disabled,
+            tool_profile: harness_contracts::ToolProfile::Full,
+            permission_mode: harness_contracts::PermissionMode::Default,
+            interactivity: harness_contracts::InteractivityLevel::FullyInteractive,
+            team_id: None,
+            max_iterations: 16,
+            context_compression_trigger_ratio: 0.8,
+        },
+    };
+
+    assert_eq!(request.parent_run_id, run_id);
+    assert_eq!(request.tool_use_id, tool_use_id);
+    assert_eq!(request.agent_tool_policy, policy);
+    assert_eq!(request.session.session_id, session_id);
+}
+
+#[test]
 fn capability_unavailable_not_compiled_roundtrips() {
     let reason = AgentCapabilityUnavailableReason::NotCompiled {
         capability: AgentCapabilityKind::Subagents,

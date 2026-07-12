@@ -521,8 +521,6 @@ impl Harness {
             })?;
         }
         let mut cap_registry = (*self.inner.cap_registry).clone();
-        #[cfg(feature = "agents-team")]
-        super::tool_pool::install_agent_runtime_root_capability(&mut cap_registry, options);
         if let Some(blob_store) = &self.inner.blob_store {
             cap_registry.install::<dyn harness_contracts::BlobReaderCap>(
                 ToolCapability::BlobReader,
@@ -628,13 +626,23 @@ impl Harness {
             if agent_tool_policy.agent_team == harness_contracts::AgentUsePolicy::Allowed
                 && self.tenant_allows_tool("agent_team")
             {
+                let session_snapshot = harness_contracts::AgentTeamToolSessionSnapshot {
+                    tenant_id: options.tenant_id,
+                    session_id: options.session_id,
+                    tool_search: run_options.tool_search.clone(),
+                    tool_profile: run_options.tool_profile.clone(),
+                    permission_mode: run_options.permission_mode,
+                    interactivity: run_options.interactivity,
+                    team_id: options.team_id,
+                    max_iterations: run_options.max_iterations,
+                    context_compression_trigger_ratio: run_options
+                        .context_compression_trigger_ratio,
+                };
                 super::tool_pool::install_agent_team_tool_for_run(
-                    self.clone(),
-                    &mut cap_registry,
+                    &cap_registry,
                     &mut tools,
                     agent_tool_policy,
-                    options.workspace_bootstrap.clone(),
-                    options.agent_profiles.clone(),
+                    session_snapshot,
                 );
             }
         }
