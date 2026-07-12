@@ -115,6 +115,20 @@ pub async fn list_agent_profiles(state: State<'_, RuntimeState>) -> Result<Vec<S
   assert.equal(result.ok, true)
 })
 
+test('fails fully qualified task runtime assembly in Tauri', () => {
+  const { root, relativePath } = writeFixture({
+    relativePath: 'apps/desktop/src-tauri/src/runtime.rs',
+    content: 'let harness = jyowo_harness_sdk::Harness::builder();',
+  })
+
+  const result = scanAgentOrchestrationNoFakes(root, { scopedPaths: [relativePath] })
+
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.violations.some((violation) => violation.rule === 'tauri-task-runtime-assembly'),
+  )
+})
+
 test('does not fail unrelated placeholder outside scoped production surfaces', () => {
   const { root, relativePath } = writeFixture({
     relativePath: 'apps/desktop/src/features/settings/AboutSettings.tsx',

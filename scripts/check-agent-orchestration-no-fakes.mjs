@@ -120,12 +120,8 @@ const SCOPED_RELATIVE_PATHS = [
   'apps/desktop/src/shared/tauri/commands.ts',
   'apps/desktop/src/features/settings/ExecutionSettings.tsx',
   'apps/desktop/src/features/conversation/Composer.tsx',
-  'apps/desktop/src/features/conversation/use-conversation.ts',
-  'apps/desktop/src/features/conversation/use-agent-profiles.ts',
-  'apps/desktop/src/features/conversation/ConversationWorkspace.tsx',
-  'apps/desktop/src/features/conversation/AgentActivitySegment.tsx',
-  'apps/desktop/src/features/conversation/timeline/conversation-timeline-selectors.ts',
   'apps/desktop/src/features/background-agents',
+  'apps/desktop/src/features/tasks',
   'crates/jyowo-harness-contracts',
   'crates/jyowo-harness-agent-runtime',
   'crates/jyowo-harness-execution',
@@ -210,6 +206,17 @@ function scanDaemonArchitectureFile(rel, content) {
         file: rel,
         line: content.slice(0, match.index).split(/\r?\n/).length,
         rule: 'tauri-legacy-harness-owner-name',
+        excerpt: match[0],
+      })
+    }
+
+    const taskRuntimeAssemblyPattern =
+      /\b(?:jyowo_harness_sdk::)?Harness::builder\s*\(/g
+    for (const match of content.matchAll(taskRuntimeAssemblyPattern)) {
+      violations.push({
+        file: rel,
+        line: content.slice(0, match.index).split(/\r?\n/).length,
+        rule: 'tauri-task-runtime-assembly',
         excerpt: match[0],
       })
     }
