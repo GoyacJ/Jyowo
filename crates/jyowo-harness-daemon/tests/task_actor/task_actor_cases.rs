@@ -1,6 +1,75 @@
 use super::*;
 
 #[tokio::test]
+async fn first_submit_acquires_foreground_workspace() {
+    let (store, root) = test_store();
+    let workspace_root = root.path().join("workspace");
+    std::fs::create_dir(&workspace_root).unwrap();
+    let task_id = create_task_in_workspace(&store, "workspace submit", &workspace_root);
+    let factory = Arc::new(ControlledFactory::default());
+    let supervisor = Supervisor::start(
+        Arc::clone(&store),
+        factory.clone(),
+        SupervisorQuotas::new(1, 1),
+    )
+    .unwrap();
+
+    let outcome = supervisor
+        .dispatch(task_id, submit_message_command(&store, task_id))
+        .await
+        .unwrap();
+    assert!(
+        matches!(outcome, CommandOutcome::Accepted { .. }),
+        "{outcome:?}"
+    );
+    wait_for_start_count(&factory, task_id, 1).await;
+
+    let projection = store.task_projection(task_id).unwrap().unwrap();
+    let lease = store
+        .nonterminal_workspace_leases_for_task(task_id)
+        .unwrap()
+        .into_iter()
+        .find(|lease| lease.state == harness_contracts::WorkspaceLeaseState::Active)
+        .expect("first submit acquires a workspace lease");
+    assert_eq!(
+        factory.requests(task_id)[0].input.workspace_lease_id,
+        Some(lease.lease_id)
+    );
+    assert_eq!(projection.state, TaskState::Running);
+}
+
+#[tokio::test]
+async fn missing_workspace_rejects_submit_before_run_start() {
+    let (store, root) = test_store();
+    let missing_root = root.path().join("missing-workspace");
+    let task_id = create_task_in_workspace(&store, "missing workspace", &missing_root);
+    let factory = Arc::new(ControlledFactory::default());
+    let supervisor = Supervisor::start(
+        Arc::clone(&store),
+        factory.clone(),
+        SupervisorQuotas::new(1, 1),
+    )
+    .unwrap();
+
+    let outcome = supervisor
+        .dispatch(task_id, submit_message_command(&store, task_id))
+        .await
+        .unwrap();
+
+    assert!(matches!(outcome, CommandOutcome::Rejected { .. }));
+    assert_eq!(factory.start_count(task_id), 0);
+    assert!(store
+        .nonterminal_workspace_leases_for_task(task_id)
+        .unwrap()
+        .is_empty());
+    let projection = store.task_projection(task_id).unwrap().unwrap();
+    assert_eq!(projection.state, TaskState::Idle);
+    assert!(projection.current_run.is_none());
+    assert!(projection.queue.is_empty());
+    assert_eq!(projection.stream_version, 1);
+}
+
+#[tokio::test]
 async fn one_task_has_one_foreground_run_while_another_task_runs_in_parallel() {
     let (store, _root) = test_store();
     let task_a = create_task(&store, "task A");

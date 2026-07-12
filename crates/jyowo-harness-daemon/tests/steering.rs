@@ -6,7 +6,7 @@ use chrono::Utc;
 use harness_contracts::{
     ClientId, CommandId, Event, NoopRedactor, PermissionProjection, PermissionRoute, PromotionMode,
     QueueItemId, QueueItemState, RequestId, RunId, RunSegmentId, RunState, RunTerminalReason,
-    SessionId, TaskId, TaskState, TenantId, ToolUseId, ToolUseStartedEvent,
+    SessionId, TaskId, TaskState, TenantId, ToolUseId, ToolUseStartedEvent, WorkspaceMode,
 };
 use harness_daemon::{
     QueueCommand, RunCoordinatorEvent, RunCoordinatorFactory, RunningSegment, StartSegmentRequest,
@@ -901,9 +901,22 @@ async fn wait_for_new_segment(
 
 fn create_task(store: &TaskStore) -> TaskId {
     let task_id = TaskId::new();
+    let workspace_root = store
+        .database_path()
+        .parent()
+        .unwrap()
+        .join("workspaces")
+        .join(task_id.to_string());
+    std::fs::create_dir_all(&workspace_root).unwrap();
     let outcome = store
         .transact_command(command(task_id, 0, json!({ "create": true })), |_| {
-            Ok(vec![NewTaskEvent::task_created("steering")])
+            Ok(vec![NewTaskEvent::task_created_in_workspace(
+                "steering",
+                harness_contracts::WorkspaceSelection {
+                    mode: WorkspaceMode::Current,
+                    root: workspace_root.to_string_lossy().into_owned(),
+                },
+            )])
         })
         .unwrap();
     assert!(accepted(outcome));

@@ -10,7 +10,7 @@ use harness_contracts::{
     IndeterminateToolResolution, NoopRedactor, PermissionMode, PermissionProjection,
     PermissionRoute, QueueItemId, QueueItemState, RequestId, RunId, RunSegmentId, RunState,
     RunTerminalReason, SessionId, TaskId, TenantId, ToolProperties, ToolResult,
-    ToolUseCompletedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseStartedEvent,
+    ToolUseCompletedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseStartedEvent, WorkspaceMode,
 };
 use harness_daemon::{
     CheckpointService, CheckpointState, RecoveryService, RunCoordinatorFactory, RunningSegment,
@@ -162,4 +162,20 @@ fn test_store() -> (Arc<TaskStore>, tempfile::TempDir) {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
     (store, root)
+}
+
+fn task_created_in_test_workspace(
+    root: &std::path::Path,
+    task_id: TaskId,
+    title: &str,
+) -> NewTaskEvent {
+    let workspace_root = root.join("workspaces").join(task_id.to_string());
+    std::fs::create_dir_all(&workspace_root).unwrap();
+    NewTaskEvent::task_created_in_workspace(
+        title,
+        harness_contracts::WorkspaceSelection {
+            mode: WorkspaceMode::Current,
+            root: workspace_root.to_string_lossy().into_owned(),
+        },
+    )
 }

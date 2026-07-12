@@ -107,6 +107,7 @@ fn handshake_for_client(token: &str, client_id: ClientId) -> ClientFrame {
 }
 
 fn create(request_id: &str, command_id: CommandId, key: &str) -> ClientFrame {
+    std::fs::create_dir_all("/tmp/workspace").unwrap();
     frame(
         request_id,
         ClientRequest::CreateTask(CreateTaskCommand {

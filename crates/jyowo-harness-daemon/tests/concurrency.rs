@@ -177,13 +177,13 @@ async fn twenty_task_actors_share_one_global_foreground_quota() {
     assert_eq!(factory_snapshot.started_task_ids, accepted_task_ids);
     assert_eq!(
         store.latest_global_offset().unwrap(),
-        (task_ids.len() + FOREGROUND_QUOTA) as u64
+        (task_ids.len() * 2 + FOREGROUND_QUOTA) as u64
     );
     assert!(accepted_task_ids.iter().all(|task_id| {
         store
             .task_projection(*task_id)
             .unwrap()
-            .is_some_and(|task| task.state == TaskState::Running && task.stream_version == 2)
+            .is_some_and(|task| task.state == TaskState::Running && task.stream_version == 3)
     }));
     assert_eq!(
         store
@@ -323,6 +323,13 @@ fn race_rename(
 
 fn create_task(store: &TaskStore, title: &str) -> TaskId {
     let task_id = TaskId::new();
+    let workspace_root = store
+        .database_path()
+        .parent()
+        .unwrap()
+        .join("workspaces")
+        .join(task_id.to_string());
+    std::fs::create_dir_all(&workspace_root).unwrap();
     let outcome = store
         .transact_command(
             AcceptedCommand {
@@ -333,7 +340,15 @@ fn create_task(store: &TaskStore, title: &str) -> TaskId {
                 authority: TaskStore::user_authority(ClientId::new()),
                 payload: json!({ "type": "create_task", "title": title }),
             },
-            |_| Ok(vec![NewTaskEvent::task_created(title)]),
+            |_| {
+                Ok(vec![NewTaskEvent::task_created_in_workspace(
+                    title,
+                    harness_contracts::WorkspaceSelection {
+                        mode: WorkspaceMode::Current,
+                        root: workspace_root.to_string_lossy().into_owned(),
+                    },
+                )])
+            },
         )
         .unwrap();
     assert!(matches!(outcome, CommandOutcome::Accepted { .. }));

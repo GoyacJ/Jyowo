@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use chrono::Utc;
 use harness_contracts::{
-    BlobId, ClientId, CommandId, QueueItemId, QueueItemState, RequestId, RunSegmentId, RunState,
-    RunTerminalReason, TaskId, TaskState,
+    BlobId, ClientId, CommandId, PermissionMode, QueueItemId, QueueItemState, RequestId,
+    RunSegmentId, RunState, RunTerminalReason, TaskId, TaskState, WorkspaceMode,
 };
 use harness_daemon::{
     DaemonPermissionKind, PermissionOption, PermissionRequestDraft, QueueCommand,
@@ -178,13 +178,61 @@ fn test_store() -> (Arc<TaskStore>, tempfile::TempDir) {
 
 fn create_task(store: &TaskStore, title: &str) -> TaskId {
     let task_id = TaskId::new();
+    let workspace_root = store
+        .database_path()
+        .parent()
+        .unwrap()
+        .join("workspaces")
+        .join(task_id.to_string());
+    std::fs::create_dir_all(&workspace_root).unwrap();
     let outcome = store
         .transact_command(command(task_id, 0, json!({ "create": title })), |_| {
-            Ok(vec![NewTaskEvent::task_created(title)])
+            Ok(vec![NewTaskEvent::task_created_in_workspace(
+                title,
+                harness_contracts::WorkspaceSelection {
+                    mode: WorkspaceMode::Current,
+                    root: workspace_root.to_string_lossy().into_owned(),
+                },
+            )])
         })
         .unwrap();
     assert!(accepted(outcome));
     task_id
+}
+
+fn create_task_in_workspace(store: &TaskStore, title: &str, root: &std::path::Path) -> TaskId {
+    let task_id = TaskId::new();
+    let outcome = store
+        .transact_command(command(task_id, 0, json!({ "create": title })), |_| {
+            Ok(vec![NewTaskEvent::task_created_in_workspace(
+                title,
+                harness_contracts::WorkspaceSelection {
+                    mode: WorkspaceMode::Current,
+                    root: root.to_string_lossy().into_owned(),
+                },
+            )])
+        })
+        .unwrap();
+    assert!(accepted(outcome));
+    task_id
+}
+
+fn submit_message_command(store: &TaskStore, task_id: TaskId) -> ValidatedTaskCommand {
+    ValidatedTaskCommand::SubmitMessage {
+        command: command(
+            task_id,
+            store.stream_version(task_id).unwrap(),
+            json!({ "type": "submit_message" }),
+        ),
+        queue_item_id: QueueItemId::new(),
+        segment_id: RunSegmentId::new(),
+        content: "hello".into(),
+        attachments: Vec::new(),
+        context_references: Vec::new(),
+        model_config_id: None,
+        permission_mode: PermissionMode::Default,
+        submitted_at: Utc::now(),
+    }
 }
 
 fn start_command(

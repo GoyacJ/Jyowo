@@ -782,9 +782,22 @@ impl RunCoordinatorFactory for FaultRunFactory {
 
 fn create_task(store: &TaskStore, title: &str) -> TaskId {
     let task_id = TaskId::new();
+    let workspace_root = store
+        .database_path()
+        .parent()
+        .unwrap()
+        .join("workspaces")
+        .join(task_id.to_string());
+    std::fs::create_dir_all(&workspace_root).unwrap();
     let outcome = store
         .transact_command(create_task_command(task_id), |_| {
-            Ok(vec![NewTaskEvent::task_created(title)])
+            Ok(vec![NewTaskEvent::task_created_in_workspace(
+                title,
+                harness_contracts::WorkspaceSelection {
+                    mode: WorkspaceMode::Current,
+                    root: workspace_root.to_string_lossy().into_owned(),
+                },
+            )])
         })
         .unwrap();
     assert!(accepted(outcome));

@@ -288,7 +288,7 @@ fn subagent_state_change_advances_the_checkpoint_and_child_refs() {
 
 #[tokio::test]
 async fn continue_task_requires_all_indeterminate_tool_decisions_and_starts_a_new_segment() {
-    let (store, _root) = test_store();
+    let (store, root) = test_store();
     let task_id = TaskId::new();
     let interrupted_segment_id = RunSegmentId::new();
     append(
@@ -296,7 +296,7 @@ async fn continue_task_requires_all_indeterminate_tool_decisions_and_starts_a_ne
         task_id,
         0,
         vec![
-            NewTaskEvent::task_created("continue recovered task"),
+            task_created_in_test_workspace(root.path(), task_id, "continue recovered task"),
             NewTaskEvent::run_started(interrupted_segment_id, Utc::now()),
         ],
     );
@@ -426,7 +426,7 @@ async fn continue_task_requires_all_indeterminate_tool_decisions_and_starts_a_ne
 
 #[tokio::test]
 async fn continue_task_reuses_the_interrupted_segments_immutable_run_input() {
-    let (store, _root) = test_store();
+    let (store, root) = test_store();
     let task_id = TaskId::new();
     let queue_item_id = QueueItemId::new();
     let interrupted_segment_id = RunSegmentId::new();
@@ -434,7 +434,11 @@ async fn continue_task_reuses_the_interrupted_segments_immutable_run_input() {
         &store,
         task_id,
         0,
-        vec![NewTaskEvent::task_created("continue immutable input")],
+        vec![task_created_in_test_workspace(
+            root.path(),
+            task_id,
+            "continue immutable input",
+        )],
     );
     append(
         &store,

@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use chrono::Utc;
 use futures::FutureExt;
-use harness_contracts::{CommandId, NoopRedactor, Redactor, RunState, TaskId};
+use harness_contracts::{
+    ActorId, CommandId, NoopRedactor, Redactor, RunState, TaskId, WorkspaceLeaseState,
+};
 use harness_journal::{
     AcceptedCommand, CommandOutcome, CommandRejection, NewTaskEvent, PendingSegmentStart,
     TaskStore, TaskStoreError,
@@ -19,8 +21,10 @@ use crate::task_actor::{run_task_actor, TaskActorError};
 use crate::{
     PermissionBroker, PermissionBrokerError, PermissionDecisionInput, RecoveryService,
     RunCoordinatorFactory, SubagentStopMode, SubagentSupervisor, TaskActorMessage,
-    ValidatedTaskCommand, WorkspaceBoundRunCoordinatorFactory, WorkspaceCoordinator,
-    WorkspaceCoordinatorError, WorkspaceSubagentRunnerFactory, WorkspaceToolDispatcher,
+    ValidatedTaskCommand, WorkspaceAccess, WorkspaceAcquireOutcome,
+    WorkspaceBoundRunCoordinatorFactory, WorkspaceCoordinator, WorkspaceCoordinatorError,
+    WorkspaceExecutionKind, WorkspaceLeaseRequest, WorkspaceSubagentRunnerFactory,
+    WorkspaceToolDispatcher,
 };
 
 const SUPERVISOR_REQUEST_CAPACITY: usize = 64;
@@ -75,6 +79,8 @@ pub enum SupervisorError {
 pub struct Supervisor {
     requests: mpsc::Sender<SupervisorRequest>,
     events: broadcast::Sender<SupervisorEvent>,
+    store: Arc<TaskStore>,
+    workspace: Arc<WorkspaceCoordinator>,
     subagents: Arc<SubagentSupervisor>,
     permissions: Arc<PermissionBroker>,
     task: JoinHandle<()>,
@@ -178,9 +184,9 @@ impl Supervisor {
             Arc::clone(&subagents),
         ));
         let task = tokio::spawn(run_supervisor(
-            store,
+            Arc::clone(&store),
             factory,
-            workspace,
+            Arc::clone(&workspace),
             Arc::clone(&permissions),
             Arc::new(Semaphore::new(quotas.foreground_runs)),
             receiver,
@@ -189,6 +195,8 @@ impl Supervisor {
         Ok(Self {
             requests,
             events,
+            store,
+            workspace,
             subagents,
             permissions,
             task,
@@ -198,8 +206,13 @@ impl Supervisor {
     pub async fn dispatch(
         &self,
         task_id: TaskId,
-        command: ValidatedTaskCommand,
+        mut command: ValidatedTaskCommand,
     ) -> Result<CommandOutcome, SupervisorError> {
+        if let Err(message) =
+            ensure_foreground_workspace(&self.store, &self.workspace, task_id, &mut command)
+        {
+            return Ok(command.rejected(message));
+        }
         let (route_reply, route_response) = oneshot::channel();
         self.requests
             .send(SupervisorRequest::Route {
@@ -255,6 +268,100 @@ impl Supervisor {
             .await
             .expect("supervisor is running");
         response.await.expect("supervisor returns actor count")
+    }
+}
+
+fn ensure_foreground_workspace(
+    store: &TaskStore,
+    workspace: &WorkspaceCoordinator,
+    task_id: TaskId,
+    command: &mut ValidatedTaskCommand,
+) -> Result<(), String> {
+    let Some(projection) = store
+        .task_projection(task_id)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(());
+    };
+    let segment_command = matches!(
+        command,
+        ValidatedTaskCommand::SubmitMessage { .. }
+            | ValidatedTaskCommand::StartSegment { .. }
+            | ValidatedTaskCommand::ContinueTask { .. }
+    );
+    if !segment_command {
+        return Ok(());
+    }
+    let active_run = projection.current_run.as_ref().is_some_and(|run| {
+        matches!(
+            run.state,
+            RunState::Running | RunState::WaitingPermission | RunState::Yielding
+        )
+    });
+
+    let leases = store
+        .nonterminal_workspace_leases_for_task(task_id)
+        .map_err(|error| error.to_string())?;
+    if leases
+        .iter()
+        .any(|lease| lease.state == WorkspaceLeaseState::Active)
+    {
+        let expected = command.accepted_command().expected_stream_version;
+        if expected < projection.stream_version {
+            let next_event = store
+                .task_events_after(task_id, expected, 1)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .next();
+            if next_event
+                .as_ref()
+                .is_some_and(|event| event.event_type == "workspace.acquired")
+            {
+                command.accepted_command_mut().expected_stream_version = expected + 1;
+            }
+        }
+        return Ok(());
+    }
+    if active_run {
+        return Ok(());
+    }
+    if command.accepted_command().expected_stream_version != projection.stream_version {
+        return Ok(());
+    }
+    if leases
+        .iter()
+        .any(|lease| lease.state == WorkspaceLeaseState::Waiting)
+    {
+        return Err("workspace is busy".into());
+    }
+
+    let selection = projection
+        .workspace
+        .ok_or_else(|| "task workspace selection is missing".to_owned())?;
+    let actor_id = projection
+        .actor_id
+        .unwrap_or_else(|| ActorId::from_u128(u128::from_be_bytes(task_id.as_bytes())));
+    match workspace
+        .acquire(WorkspaceLeaseRequest {
+            task_id,
+            actor_id,
+            root: selection.root.into(),
+            mode: Some(selection.mode),
+            access: WorkspaceAccess::Write,
+            execution_kind: WorkspaceExecutionKind::Foreground,
+            expires_at: None,
+        })
+        .map_err(|error| error.to_string())?
+    {
+        WorkspaceAcquireOutcome::Acquired(_) => {
+            command.accepted_command_mut().expected_stream_version = store
+                .task_projection(task_id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "task does not exist".to_owned())?
+                .stream_version;
+            Ok(())
+        }
+        WorkspaceAcquireOutcome::Waiting(_) => Err("workspace is busy".into()),
     }
 }
 

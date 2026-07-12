@@ -593,13 +593,17 @@ fn startup_recovery_repairs_a_missing_checkpoint_after_the_interrupt_committed()
 
 #[tokio::test]
 async fn starting_a_segment_persists_its_committed_checkpoint() {
-    let (store, _root) = test_store();
+    let (store, root) = test_store();
     let task_id = TaskId::new();
     append(
         &store,
         task_id,
         0,
-        vec![NewTaskEvent::task_created("checkpoint started segment")],
+        vec![task_created_in_test_workspace(
+            root.path(),
+            task_id,
+            "checkpoint started segment",
+        )],
     );
     let segment_id = RunSegmentId::new();
     let supervisor = Supervisor::start(
@@ -648,7 +652,7 @@ async fn checkpoint_failure_rolls_back_run_start_before_coordinator_spawn() {
         task_id,
         0,
         vec![
-            NewTaskEvent::task_created("atomic run start"),
+            task_created_in_test_workspace(root.path(), task_id, "atomic run start"),
             NewTaskEvent::run_started(completed_segment_id, Utc::now()),
             NewTaskEvent::run_completed(
                 completed_segment_id,

@@ -81,14 +81,28 @@ pub(crate) enum TaskActorError {
 }
 
 impl ValidatedTaskCommand {
-    pub(crate) fn rejected(&self, message: impl Into<String>) -> CommandOutcome {
-        let command = match self {
+    pub(crate) fn accepted_command(&self) -> &AcceptedCommand {
+        match self {
             Self::SubmitMessage { command, .. }
             | Self::StartSegment { command, .. }
             | Self::ContinueTask { command, .. }
             | Self::StopRun { command, .. }
             | Self::Queue { command, .. } => command,
-        };
+        }
+    }
+
+    pub(crate) fn accepted_command_mut(&mut self) -> &mut AcceptedCommand {
+        match self {
+            Self::SubmitMessage { command, .. }
+            | Self::StartSegment { command, .. }
+            | Self::ContinueTask { command, .. }
+            | Self::StopRun { command, .. }
+            | Self::Queue { command, .. } => command,
+        }
+    }
+
+    pub(crate) fn rejected(&self, message: impl Into<String>) -> CommandOutcome {
+        let command = self.accepted_command();
         CommandOutcome::Rejected {
             command_id: command.command_id,
             task_id: command.task_id,
