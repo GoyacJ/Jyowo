@@ -16,6 +16,26 @@
     "server"
   ],
   "$defs": {
+    "AgentCapabilities": {
+      "type": "object",
+      "properties": {
+        "agentTeams": {
+          "type": "boolean"
+        },
+        "backgroundAgents": {
+          "type": "boolean"
+        },
+        "subagents": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "subagents",
+        "agentTeams",
+        "backgroundAgents"
+      ]
+    },
     "ClientFrame": {
       "type": "object",
       "properties": {
@@ -965,6 +985,9 @@
         {
           "type": "object",
           "properties": {
+            "agentCapabilities": {
+              "$ref": "#/$defs/AgentCapabilities"
+            },
             "daemonVersion": {
               "type": "string"
             },
@@ -986,7 +1009,8 @@
             "type",
             "daemonVersion",
             "userInstanceId",
-            "latestGlobalOffset"
+            "latestGlobalOffset",
+            "agentCapabilities"
           ]
         },
         {

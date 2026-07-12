@@ -5,8 +5,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use harness_contracts::{
-    BlobId, ClientFrame, ClientRequest, HandshakeResponse, ProtocolError, ProtocolErrorCode,
-    ServerFrame, ServerMessage, PROTOCOL_VERSION,
+    AgentCapabilities, BlobId, ClientFrame, ClientRequest, HandshakeResponse, ProtocolError,
+    ProtocolErrorCode, ServerFrame, ServerMessage, PROTOCOL_VERSION,
 };
 use jyowo_desktop_shell::daemon_client::{DaemonClient, DaemonClientConfig, DaemonClientError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -47,6 +47,7 @@ async fn serve_connection(listener: &UnixListener, expected_requests: usize) {
                 daemon_version: "0.1.0".into(),
                 user_instance_id: "user-a".into(),
                 latest_global_offset: 0,
+                agent_capabilities: AgentCapabilities::daemon_native(),
             }),
         },
     )
@@ -131,6 +132,7 @@ async fn requestless_protocol_error_completes_the_current_non_streaming_request(
                     daemon_version: "0.1.0".into(),
                     user_instance_id: "user-a".into(),
                     latest_global_offset: 0,
+                    agent_capabilities: AgentCapabilities::daemon_native(),
                 }),
             },
         )

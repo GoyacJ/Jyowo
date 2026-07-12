@@ -82,6 +82,22 @@ fn handshake_rejects_protocol_token_and_instance_mismatches() {
 }
 
 #[test]
+fn handshake_reports_daemon_agent_capabilities() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let mut connection = IpcConnection::new(store, config());
+
+    let response = connection.handle(handshake("token-a")).unwrap();
+    let ServerMessage::Handshake(response) = &response[0].message else {
+        panic!("expected handshake response");
+    };
+
+    assert!(response.agent_capabilities.subagents);
+    assert!(response.agent_capabilities.agent_teams);
+    assert!(response.agent_capabilities.background_agents);
+}
+
+#[test]
 fn ipc_rejects_request_ids_larger_than_the_response_envelope_reserve() {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
