@@ -2,9 +2,10 @@
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    ActorId, PromotionMode, QueueItemProjection, QueueItemState, RunProjection, RunState,
-    RunTerminalReason, SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection, TaskState,
-    TimelineEventKind, TimelineItemProjection,
+    ActorId, DeltaChunk, Event, MessageContent, MessagePart, PromotionMode, QueueItemProjection,
+    QueueItemState, RunProjection, RunState, RunTerminalReason, SubagentProjection,
+    TaskEventEnvelope, TaskId, TaskProjection, TaskState, TimelineEventKind,
+    TimelineItemProjection,
 };
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -822,6 +823,9 @@ fn project_timeline(
     event: &TaskEvent,
     reduced: &ReducedTask,
 ) -> Result<(), TaskStoreError> {
+    if let TaskEvent::Engine { payload, .. } = event {
+        return project_engine_timeline(transaction, envelope, &payload.event, reduced);
+    }
     if matches!(
         event,
         TaskEvent::MessageQueued { .. }
@@ -1061,15 +1065,7 @@ fn project_timeline(
             None,
             false,
         ),
-        TaskEvent::Engine { event_type, .. } => (
-            TimelineEventKind::Notice,
-            event_type
-                .strip_prefix("engine.")
-                .unwrap_or(event_type)
-                .replace('_', " "),
-            None,
-            false,
-        ),
+        TaskEvent::Engine { .. } => unreachable!("engine events are projected above"),
     };
     let blob_id = reduced
         .terminal_queue_item
@@ -1085,6 +1081,258 @@ fn project_timeline(
         blob_id,
         incomplete,
     };
+    insert_timeline_item(transaction, envelope, &timeline)
+}
+
+fn project_engine_timeline(
+    transaction: &Transaction<'_>,
+    envelope: &TaskEventEnvelope,
+    event: &Event,
+    reduced: &ReducedTask,
+) -> Result<(), TaskStoreError> {
+    let run_segment_id = reduced
+        .projection
+        .current_run
+        .as_ref()
+        .map(|run| run.segment_id);
+    let item = match event {
+        Event::AssistantDeltaProduced(delta) => {
+            let DeltaChunk::Text(text) = &delta.delta else {
+                return Ok(());
+            };
+            if text.is_empty() {
+                return Ok(());
+            }
+            TimelineItemProjection {
+                id: envelope.event_id.to_string(),
+                kind: TimelineEventKind::AssistantText,
+                global_offset: envelope.global_offset,
+                run_segment_id,
+                semantic_group_id: Some(delta.message_id.to_string()),
+                summary: text.clone(),
+                blob_id: None,
+                incomplete: true,
+            }
+        }
+        Event::AssistantMessageCompleted(completed) => {
+            let semantic_group_id = completed.message_id.to_string();
+            if complete_assistant_group(transaction, envelope.task_id, &semantic_group_id)? {
+                return Ok(());
+            }
+            let Some(text) = message_content_text(&completed.content) else {
+                return Ok(());
+            };
+            if text.is_empty() {
+                return Ok(());
+            }
+            TimelineItemProjection {
+                id: envelope.event_id.to_string(),
+                kind: TimelineEventKind::AssistantText,
+                global_offset: envelope.global_offset,
+                run_segment_id,
+                semantic_group_id: Some(semantic_group_id),
+                summary: text,
+                blob_id: None,
+                incomplete: false,
+            }
+        }
+        Event::AssistantNotice(notice) => engine_timeline_item(
+            envelope,
+            TimelineEventKind::Notice,
+            run_segment_id,
+            notice.body.as_str().to_owned(),
+            None,
+            false,
+        ),
+        Event::AssistantReviewRequested(review) => engine_timeline_item(
+            envelope,
+            TimelineEventKind::Notice,
+            run_segment_id,
+            review.title.as_str().to_owned(),
+            None,
+            false,
+        ),
+        Event::AssistantClarificationRequested(clarification) => engine_timeline_item(
+            envelope,
+            TimelineEventKind::Notice,
+            run_segment_id,
+            clarification.prompt.as_str().to_owned(),
+            None,
+            false,
+        ),
+        Event::ArtifactCreated(artifact) => engine_timeline_item(
+            envelope,
+            artifact_timeline_kind(&artifact.kind),
+            run_segment_id,
+            artifact.title.clone(),
+            artifact.blob_ref.as_ref().map(|blob| blob.id),
+            false,
+        ),
+        Event::ArtifactUpdated(artifact) => engine_timeline_item(
+            envelope,
+            artifact
+                .kind
+                .as_deref()
+                .map(artifact_timeline_kind)
+                .unwrap_or(TimelineEventKind::Diff),
+            run_segment_id,
+            artifact
+                .title
+                .clone()
+                .unwrap_or_else(|| "Artifact updated".into()),
+            artifact.blob_ref.as_ref().map(|blob| blob.id),
+            false,
+        ),
+        Event::ToolUseRequested(tool) => engine_timeline_item(
+            envelope,
+            TimelineEventKind::ToolActivity,
+            run_segment_id,
+            format!("Using {}", tool.tool_name),
+            None,
+            true,
+        ),
+        Event::ToolUseStarted(_) => engine_timeline_item(
+            envelope,
+            TimelineEventKind::ToolActivity,
+            run_segment_id,
+            "Tool started".into(),
+            None,
+            true,
+        ),
+        Event::ToolUseDenied(_) => engine_timeline_item(
+            envelope,
+            TimelineEventKind::ToolActivity,
+            run_segment_id,
+            "Tool denied".into(),
+            None,
+            false,
+        ),
+        Event::ToolUseCompleted(_) => engine_timeline_item(
+            envelope,
+            TimelineEventKind::ToolActivity,
+            run_segment_id,
+            "Tool completed".into(),
+            None,
+            false,
+        ),
+        Event::ToolUseFailed(failed) => engine_timeline_item(
+            envelope,
+            TimelineEventKind::Error,
+            run_segment_id,
+            bounded_summary(&failed.error.message),
+            None,
+            true,
+        ),
+        Event::CompactionApplied(_) => engine_timeline_item(
+            envelope,
+            TimelineEventKind::Compaction,
+            run_segment_id,
+            "Context compacted".into(),
+            None,
+            false,
+        ),
+        Event::UnexpectedError(error) => engine_timeline_item(
+            envelope,
+            TimelineEventKind::Error,
+            run_segment_id,
+            bounded_summary(&error.error),
+            None,
+            true,
+        ),
+        _ => return Ok(()),
+    };
+    insert_timeline_item(transaction, envelope, &item)
+}
+
+fn engine_timeline_item(
+    envelope: &TaskEventEnvelope,
+    kind: TimelineEventKind,
+    run_segment_id: Option<harness_contracts::RunSegmentId>,
+    summary: String,
+    blob_id: Option<harness_contracts::BlobId>,
+    incomplete: bool,
+) -> TimelineItemProjection {
+    TimelineItemProjection {
+        id: envelope.event_id.to_string(),
+        kind,
+        global_offset: envelope.global_offset,
+        run_segment_id,
+        semantic_group_id: None,
+        summary,
+        blob_id,
+        incomplete,
+    }
+}
+
+fn artifact_timeline_kind(kind: &str) -> TimelineEventKind {
+    match kind.to_ascii_lowercase().as_str() {
+        "image" | "screenshot" => TimelineEventKind::Image,
+        "command" | "terminal" => TimelineEventKind::Command,
+        _ => TimelineEventKind::Diff,
+    }
+}
+
+fn message_content_text(content: &MessageContent) -> Option<String> {
+    match content {
+        MessageContent::Text(text) => Some(text.clone()),
+        MessageContent::Multimodal(parts) => {
+            let text = parts
+                .iter()
+                .filter_map(|part| match part {
+                    MessagePart::Text(text) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>();
+            (!text.is_empty()).then_some(text)
+        }
+        MessageContent::Structured(_) => None,
+    }
+}
+
+fn complete_assistant_group(
+    transaction: &Transaction<'_>,
+    task_id: TaskId,
+    semantic_group_id: &str,
+) -> Result<bool, TaskStoreError> {
+    let mut completed = {
+        let mut statement = transaction.prepare(
+            "SELECT projection_json FROM timeline_projection
+             WHERE task_id = ?1 ORDER BY global_offset DESC",
+        )?;
+        let rows = statement.query_map([task_id.to_string()], |row| row.get::<_, String>(0))?;
+        let mut found = None;
+        for row in rows {
+            let item: TimelineItemProjection = serde_json::from_str(&row?)?;
+            if item.kind == TimelineEventKind::AssistantText
+                && item.semantic_group_id.as_deref() == Some(semantic_group_id)
+            {
+                found = Some(item);
+                break;
+            }
+        }
+        found
+    };
+    let Some(item) = completed.as_mut() else {
+        return Ok(false);
+    };
+    item.incomplete = false;
+    transaction.execute(
+        "UPDATE timeline_projection SET projection_json = ?3
+         WHERE task_id = ?1 AND global_offset = ?2",
+        params![
+            task_id.to_string(),
+            sqlite_integer(item.global_offset)?,
+            serde_json::to_string(item)?,
+        ],
+    )?;
+    Ok(true)
+}
+
+fn insert_timeline_item(
+    transaction: &Transaction<'_>,
+    envelope: &TaskEventEnvelope,
+    timeline: &TimelineItemProjection,
+) -> Result<(), TaskStoreError> {
     transaction.execute(
         "INSERT INTO timeline_projection (task_id, global_offset, projection_json)
          VALUES (?1, ?2, ?3)
