@@ -1,5 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   act,
   fireEvent,
@@ -11,10 +12,18 @@ import {
 import { I18nextProvider } from 'react-i18next'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TaskEventEnvelope } from '@/generated/daemon-protocol'
+import type { DaemonClient } from '@/shared/daemon/client'
 import { createAppI18n } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
-import { TaskWorkspaceView, timelineItems } from './TaskWorkspace'
+import type { CommandClient } from '@/shared/tauri/commands'
+import { CommandClientProvider, DaemonClientProvider } from '@/shared/tauri/react'
+import { createTestCommandClient } from '@/testing/command-client'
+import { TaskWorkspace, TaskWorkspaceView, timelineItems } from './TaskWorkspace'
 import type { TaskSnapshot } from './task-store'
+
+const useTask = vi.hoisted(() => vi.fn())
+
+vi.mock('./use-task', () => ({ useTask }))
 
 function render(ui: React.ReactNode) {
   const i18n = createAppI18n('en-US')
@@ -23,9 +32,155 @@ function render(ui: React.ReactNode) {
   })
 }
 
+function renderTaskWorkspace(
+  commandClient: CommandClient,
+  daemonClient: Pick<DaemonClient, 'connect' | 'request'>,
+) {
+  const i18n = createAppI18n('en-US')
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  return testingLibraryRender(<TaskWorkspace taskId={snapshot.projection.taskId} />, {
+    wrapper: ({ children }) => (
+      <I18nextProvider i18n={i18n}>
+        <CommandClientProvider client={commandClient}>
+          <DaemonClientProvider client={daemonClient as DaemonClient}>
+            <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+          </DaemonClientProvider>
+        </CommandClientProvider>
+      </I18nextProvider>
+    ),
+  })
+}
+
 describe('TaskWorkspace', () => {
   beforeEach(() => {
+    useTask.mockReset()
     uiStore.setState({ taskWorkbenchMode: 'closed', taskWorkbenchSelection: null })
+  })
+
+  it('does not turn global desktop defaults into task runtime overrides', async () => {
+    const request = vi.fn().mockResolvedValue(acceptedCommand(3, 3))
+    const commandClient = createTestCommandClient({
+      executionSettings: {
+        agentCapabilities: {
+          agentTeamsAvailable: false,
+          agentTeamsEnabled: false,
+          backgroundAgentsAvailable: false,
+          backgroundAgentsEnabled: false,
+          subagentsAvailable: false,
+          subagentsEnabled: false,
+          unavailableReasons: [],
+        },
+        autoModeAvailable: true,
+        contextCompressionTriggerRatio: 0.8,
+        permissionMode: 'bypass_permissions',
+        scope: 'global',
+        toolProfile: 'full',
+      },
+    })
+    useTask.mockReturnValue({
+      connectionError: null,
+      connectionState: 'connected',
+      events: [],
+      snapshot: idleSnapshot,
+    })
+
+    renderTaskWorkspace(commandClient, {
+      connect: vi.fn().mockResolvedValue(undefined),
+      request,
+    })
+
+    await screen.findByRole('option', { name: /OpenAI/ })
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
+      target: { value: 'Use inherited project runtime settings' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+    const submitted = request.mock.calls[0]?.[0]
+    expect(submitted).not.toHaveProperty('modelConfigId')
+    expect(submitted).not.toHaveProperty('permissionMode')
+  })
+
+  it.each([
+    'global',
+    'project',
+  ] as const)('uses the resolved %s provider model capability while the task inherits it', async (selectionScope) => {
+    const providerSettings = await createTestCommandClient().listProviderSettings()
+    const defaultConfig = providerSettings.configs[0]
+    if (!defaultConfig) throw new Error('provider settings fixture requires a default config')
+    const textOnlyConfig = {
+      ...defaultConfig,
+      id: 'text-only-config',
+      isDefault: false,
+      modelDescriptor: {
+        ...defaultConfig.modelDescriptor,
+        conversationCapability: {
+          ...defaultConfig.modelDescriptor.conversationCapability,
+          inputModalities:
+            defaultConfig.modelDescriptor.conversationCapability.inputModalities.filter(
+              (modality) => modality === 'text',
+            ),
+        },
+      },
+    }
+    useTask.mockReturnValue({
+      connectionError: null,
+      connectionState: 'connected',
+      events: [],
+      snapshot: idleSnapshot,
+    })
+
+    renderTaskWorkspace(
+      createTestCommandClient({
+        providerSettingsList: {
+          ...providerSettings,
+          configs: [textOnlyConfig, defaultConfig],
+          selectionScope,
+        },
+      }),
+      {
+        connect: vi.fn().mockResolvedValue(undefined),
+        request: vi.fn(),
+      },
+    )
+
+    await screen.findByRole('option', { name: /\(default\)$/ })
+    expect(screen.getByRole('button', { name: 'Attach file' })).not.toBeDisabled()
+  })
+
+  it('submits runtime overrides after the user selects them', async () => {
+    const request = vi.fn().mockResolvedValue(acceptedCommand(3, 3))
+    useTask.mockReturnValue({
+      connectionError: null,
+      connectionState: 'connected',
+      events: [],
+      snapshot: idleSnapshot,
+    })
+    renderTaskWorkspace(createTestCommandClient(), {
+      connect: vi.fn().mockResolvedValue(undefined),
+      request,
+    })
+
+    const model = await screen.findByRole('combobox', { name: 'Model' })
+    fireEvent.change(model, { target: { value: 'provider-config-001' } })
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Permission mode: Request approval' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Auto approve/i }))
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
+      target: { value: 'Use explicit task runtime settings' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          modelConfigId: 'provider-config-001',
+          permissionMode: 'auto',
+          type: 'submit_message',
+        }),
+      ),
+    )
   })
 
   it('renders a centered readable timeline and connection state', () => {
@@ -475,6 +630,15 @@ const runningSnapshot: TaskSnapshot = {
       state: 'running',
     },
     state: 'running',
+  },
+  snapshotOffset: snapshot.snapshotOffset,
+  timeline: [],
+}
+
+const idleSnapshot: TaskSnapshot = {
+  projection: {
+    ...snapshot.projection,
+    state: 'idle',
   },
   snapshotOffset: snapshot.snapshotOffset,
   timeline: [],

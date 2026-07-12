@@ -39,10 +39,6 @@ export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
     queryFn: () => commandClient.listProviderSettings(),
     queryKey: ['task-model-configs'],
   }).data
-  const executionSettings = useQuery({
-    queryFn: () => commandClient.getExecutionSettings(),
-    queryKey: ['task-execution-settings'],
-  }).data
   const [modelOverride, setModelOverride] = useState<{ taskId: TypedUlid; value: string } | null>(
     null,
   )
@@ -51,15 +47,11 @@ export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
     value: PermissionMode
   } | null>(null)
   const configuredModels = providerSettings?.configs.filter((config) => config.hasApiKey) ?? []
-  const modelConfigId =
-    modelOverride?.taskId === taskId
-      ? modelOverride.value
-      : (providerSettings?.defaultConfigId ?? undefined)
-  const selectedModel = configuredModels.find((config) => config.id === modelConfigId)
+  const modelConfigId = modelOverride?.taskId === taskId ? modelOverride.value : undefined
+  const capabilityModelConfigId = modelConfigId ?? providerSettings?.defaultConfigId
+  const selectedModel = configuredModels.find((config) => config.id === capabilityModelConfigId)
   const permissionMode =
-    permissionOverride?.taskId === taskId
-      ? permissionOverride.value
-      : executionSettings?.permissionMode
+    permissionOverride?.taskId === taskId ? permissionOverride.value : undefined
   return (
     <TaskWorkspaceView
       client={daemonClient}
