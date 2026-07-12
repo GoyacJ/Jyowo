@@ -15,6 +15,7 @@ pub mod jsonrpc;
 pub mod metrics;
 #[cfg(feature = "oauth")]
 pub mod oauth;
+pub mod protocol;
 pub mod reconnect;
 pub mod registry;
 pub mod sampling;
@@ -33,6 +34,7 @@ pub use jsonrpc::*;
 pub use metrics::*;
 #[cfg(feature = "oauth")]
 pub use oauth::*;
+pub use protocol::*;
 pub use reconnect::*;
 pub use registry::*;
 pub use sampling::*;

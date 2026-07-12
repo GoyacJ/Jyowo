@@ -51,8 +51,9 @@ use harness_contracts::PermissionMode;
 ))]
 use crate::{
     elicitation_from_jsonrpc_error, handle_jsonrpc_elicitation_error, ElicitationHandler,
-    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpError, McpPrompt, McpPromptMessages,
-    McpResource, McpResourceContents, McpToolDescriptor, McpToolResult,
+    InitializeParams, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpClientCapabilities,
+    McpError, McpImplementation, McpPrompt, McpPromptMessages, McpResource, McpResourceContents,
+    McpToolDescriptor, McpToolResult, LATEST_PROTOCOL_VERSION,
 };
 
 #[cfg(feature = "http")]
@@ -170,16 +171,15 @@ pub(crate) fn initialized_notification() -> JsonRpcNotification {
     feature = "sse"
 ))]
 pub(crate) fn initialize_request(peer: &JsonRpcPeer) -> JsonRpcRequest {
+    let params = InitializeParams {
+        protocol_version: LATEST_PROTOCOL_VERSION.to_owned(),
+        capabilities: McpClientCapabilities::default(),
+        client_info: McpImplementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+        extra: serde_json::Map::new(),
+    };
     peer.request(
         "initialize",
-        Some(json!({
-            "protocolVersion": "2025-03-26",
-            "capabilities": {},
-            "clientInfo": {
-                "name": env!("CARGO_PKG_NAME"),
-                "version": env!("CARGO_PKG_VERSION"),
-            }
-        })),
+        Some(serde_json::to_value(params).expect("initialize params serialize")),
     )
 }
 

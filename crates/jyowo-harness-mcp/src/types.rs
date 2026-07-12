@@ -150,7 +150,8 @@ pub struct McpExpectedCapabilities {
     pub tools: bool,
     pub resources: bool,
     pub prompts: bool,
-    pub sampling: bool,
+    pub logging: bool,
+    pub completions: bool,
 }
 
 impl Default for McpExpectedCapabilities {
@@ -159,8 +160,31 @@ impl Default for McpExpectedCapabilities {
             tools: true,
             resources: false,
             prompts: false,
-            sampling: false,
+            logging: false,
+            completions: false,
         }
+    }
+}
+
+impl McpExpectedCapabilities {
+    pub(crate) fn missing_from(&self, offered: &crate::McpServerCapabilities) -> Vec<&'static str> {
+        let mut missing = Vec::new();
+        if self.tools && offered.tools.is_none() {
+            missing.push("tools");
+        }
+        if self.resources && offered.resources.is_none() {
+            missing.push("resources");
+        }
+        if self.prompts && offered.prompts.is_none() {
+            missing.push("prompts");
+        }
+        if self.logging && offered.logging.is_none() {
+            missing.push("logging");
+        }
+        if self.completions && offered.completions.is_none() {
+            missing.push("completions");
+        }
+        missing
     }
 }
 
