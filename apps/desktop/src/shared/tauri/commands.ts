@@ -1867,54 +1867,13 @@ const saveProviderSettingsResponseSchema = z
 
 const contextCompressionTriggerRatioSchema = z.number().min(0.5).max(0.95)
 const agentCapabilityKindSchema = z.enum(['subagents', 'agentTeams', 'backgroundAgents'])
-const agentCapabilityUnavailableReasonSchema = z.discriminatedUnion('type', [
-  z
-    .object({
-      capability: agentCapabilityKindSchema,
-      message: z.string(),
-      type: z.literal('daemonUnavailable'),
-    })
-    .strict(),
-  z
-    .object({
-      capability: agentCapabilityKindSchema,
-      type: z.literal('notCompiled'),
-    })
-    .strict(),
-  z
-    .object({
-      capability: agentCapabilityKindSchema,
-      message: z.string(),
-      type: z.literal('runtimeStoreUnavailable'),
-    })
-    .strict(),
-  z
-    .object({
-      capability: agentCapabilityKindSchema,
-      type: z.literal('permissionRuntimeUnavailable'),
-    })
-    .strict(),
-  z
-    .object({
-      capability: agentCapabilityKindSchema,
-      message: z.string(),
-      type: z.literal('invalidAgentProfiles'),
-    })
-    .strict(),
-  z
-    .object({
-      message: z.string(),
-      type: z.literal('backgroundSupervisorUnavailable'),
-    })
-    .strict(),
-  z
-    .object({
-      capability: agentCapabilityKindSchema,
-      message: z.string(),
-      type: z.literal('workspaceIsolationUnavailable'),
-    })
-    .strict(),
-])
+const agentCapabilityUnavailableReasonSchema = z
+  .object({
+    capability: agentCapabilityKindSchema,
+    message: z.string(),
+    type: z.literal('daemonUnavailable'),
+  })
+  .strict()
 const agentProfileScopeSchema = z.enum(['builtin', 'user', 'project'])
 const agentProfileSandboxInheritanceSchema = z.enum(['inherit_parent', 'narrow_only'])
 const agentProfileMemoryScopeSchema = z.enum(['none', 'read_only', 'read_write'])

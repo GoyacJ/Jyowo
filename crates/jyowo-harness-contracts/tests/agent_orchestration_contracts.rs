@@ -92,38 +92,14 @@ fn agent_team_starter_contract_carries_immutable_run_snapshot() {
 }
 
 #[test]
-fn capability_unavailable_not_compiled_roundtrips() {
-    let reason = AgentCapabilityUnavailableReason::NotCompiled {
+fn capability_unavailable_daemon_roundtrips() {
+    let reason = AgentCapabilityUnavailableReason::DaemonUnavailable {
         capability: AgentCapabilityKind::Subagents,
+        message: "task daemon is unavailable".to_owned(),
     };
     let value = serde_json::to_value(&reason).unwrap();
-    assert_eq!(value["type"], "notCompiled");
+    assert_eq!(value["type"], "daemonUnavailable");
     assert_eq!(value["capability"], "subagents");
-
-    let parsed: AgentCapabilityUnavailableReason = serde_json::from_value(value).unwrap();
-    assert_eq!(parsed, reason);
-}
-
-#[test]
-fn capability_unavailable_runtime_store_roundtrips() {
-    let reason = AgentCapabilityUnavailableReason::RuntimeStoreUnavailable {
-        capability: AgentCapabilityKind::AgentTeams,
-        message: "agent-runtime.sqlite open failed".to_owned(),
-    };
-    let value = serde_json::to_value(&reason).unwrap();
-    assert_eq!(value["type"], "runtimeStoreUnavailable");
-
-    let parsed: AgentCapabilityUnavailableReason = serde_json::from_value(value).unwrap();
-    assert_eq!(parsed, reason);
-}
-
-#[test]
-fn capability_unavailable_background_supervisor_roundtrips() {
-    let reason = AgentCapabilityUnavailableReason::BackgroundSupervisorUnavailable {
-        message: "sidecar not packaged".to_owned(),
-    };
-    let value = serde_json::to_value(&reason).unwrap();
-    assert_eq!(value["type"], "backgroundSupervisorUnavailable");
 
     let parsed: AgentCapabilityUnavailableReason = serde_json::from_value(value).unwrap();
     assert_eq!(parsed, reason);
@@ -297,8 +273,9 @@ fn agent_capabilities_payload_roundtrips() {
         subagents_available: true,
         agent_teams_available: false,
         background_agents_available: false,
-        unavailable_reasons: vec![AgentCapabilityUnavailableReason::NotCompiled {
+        unavailable_reasons: vec![AgentCapabilityUnavailableReason::DaemonUnavailable {
             capability: AgentCapabilityKind::BackgroundAgents,
+            message: "task daemon is unavailable".to_owned(),
         }],
     };
 

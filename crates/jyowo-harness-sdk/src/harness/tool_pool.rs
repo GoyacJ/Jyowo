@@ -828,8 +828,8 @@ mod tests {
     use super::*;
     use futures::StreamExt;
     use harness_contracts::{
-        ActionResource, CorrelationId, NoopRedactor, PermissionActorSource, ToolActionPlan,
-        ToolUseId,
+        ActionResource, AgentId, CorrelationId, NoopRedactor, PermissionActorSource,
+        ToolActionPlan, ToolUseId,
     };
     use harness_tool::{
         AuthorizationTicketClaims, AuthorizedTicketSummary, AuthorizedToolInput, InterruptToken,

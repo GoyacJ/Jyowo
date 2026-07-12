@@ -4,8 +4,11 @@ use std::sync::Arc;
 
 use crate::{
     Harness, HarnessBuilder, HarnessError, HarnessOptions, McpConfig, RuntimeSkillSummary,
-    RuntimeSkillView, SessionOptions, Unset,
+    RuntimeSkillView, Unset,
 };
+
+#[cfg(feature = "memory-provider-registry")]
+use crate::SessionOptions;
 
 /// Desktop-only facade for configuration, catalog, memory, and diagnostics APIs.
 ///

@@ -35,27 +35,6 @@ pub enum AgentCapabilityUnavailableReason {
         capability: AgentCapabilityKind,
         message: String,
     },
-    NotCompiled {
-        capability: AgentCapabilityKind,
-    },
-    RuntimeStoreUnavailable {
-        capability: AgentCapabilityKind,
-        message: String,
-    },
-    PermissionRuntimeUnavailable {
-        capability: AgentCapabilityKind,
-    },
-    InvalidAgentProfiles {
-        capability: AgentCapabilityKind,
-        message: String,
-    },
-    BackgroundSupervisorUnavailable {
-        message: String,
-    },
-    WorkspaceIsolationUnavailable {
-        capability: AgentCapabilityKind,
-        message: String,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

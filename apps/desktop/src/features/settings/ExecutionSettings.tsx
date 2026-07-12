@@ -433,10 +433,6 @@ function reasonMatchesCapability(
   reason: AgentCapabilityUnavailableReason,
   capability: (typeof agentCapabilityOptions)[number]['id'],
 ) {
-  if (reason.type === 'backgroundSupervisorUnavailable') {
-    return capability === 'backgroundAgents'
-  }
-
   return reason.capability === capability
 }
 
@@ -444,30 +440,7 @@ function formatUnavailableReason(
   reason: AgentCapabilityUnavailableReason,
   t: ReturnType<typeof useTranslation<'settings'>>['t'],
 ) {
-  switch (reason.type) {
-    case 'daemonUnavailable':
-      return t('execution.agentCapabilities.unavailable.daemonUnavailable', {
-        message: reason.message,
-      })
-    case 'notCompiled':
-      return t('execution.agentCapabilities.unavailable.notCompiled')
-    case 'runtimeStoreUnavailable':
-      return t('execution.agentCapabilities.unavailable.runtimeStoreUnavailable', {
-        message: reason.message,
-      })
-    case 'permissionRuntimeUnavailable':
-      return t('execution.agentCapabilities.unavailable.permissionRuntimeUnavailable')
-    case 'invalidAgentProfiles':
-      return t('execution.agentCapabilities.unavailable.invalidAgentProfiles', {
-        message: reason.message,
-      })
-    case 'backgroundSupervisorUnavailable':
-      return t('execution.agentCapabilities.unavailable.backgroundSupervisorUnavailable', {
-        message: reason.message,
-      })
-    case 'workspaceIsolationUnavailable':
-      return t('execution.agentCapabilities.unavailable.workspaceIsolationUnavailable', {
-        message: reason.message,
-      })
-  }
+  return t('execution.agentCapabilities.unavailable.daemonUnavailable', {
+    message: reason.message,
+  })
 }

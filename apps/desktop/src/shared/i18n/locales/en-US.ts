@@ -571,12 +571,6 @@ export const enUS = {
         },
         unavailable: {
           daemonUnavailable: 'Task daemon unavailable: {{message}}',
-          notCompiled: 'Capability is not compiled into this desktop build.',
-          runtimeStoreUnavailable: 'Runtime store unavailable: {{message}}',
-          permissionRuntimeUnavailable: 'Permission runtime unavailable.',
-          invalidAgentProfiles: 'Invalid agent profiles: {{message}}',
-          backgroundSupervisorUnavailable: 'Background supervisor unavailable: {{message}}',
-          workspaceIsolationUnavailable: 'Workspace isolation unavailable: {{message}}',
         },
       },
       mode: {

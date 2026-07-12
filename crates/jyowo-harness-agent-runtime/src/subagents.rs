@@ -11,9 +11,8 @@ use harness_subagent::{
     SubagentRunnerCapAdapter,
 };
 
-use crate::policy::MAX_ALLOWED_DEPTH;
-
 const DEFAULT_SUBAGENT_WATCHDOG_INTERVAL: Duration = Duration::from_secs(30);
+const MAX_ALLOWED_DEPTH: u8 = 8;
 
 #[derive(Clone)]
 pub struct SubagentRunnerAssemblyInput {

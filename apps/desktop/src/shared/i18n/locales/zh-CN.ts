@@ -568,12 +568,6 @@ export const zhCN = {
         },
         unavailable: {
           daemonUnavailable: '任务守护进程不可用：{{message}}',
-          notCompiled: '当前桌面版本未编译此能力。',
-          runtimeStoreUnavailable: '运行时存储不可用：{{message}}',
-          permissionRuntimeUnavailable: '权限运行时不可用。',
-          invalidAgentProfiles: '代理档案无效：{{message}}',
-          backgroundSupervisorUnavailable: '后台监督器不可用：{{message}}',
-          workspaceIsolationUnavailable: '工作区隔离不可用：{{message}}',
         },
       },
       mode: {

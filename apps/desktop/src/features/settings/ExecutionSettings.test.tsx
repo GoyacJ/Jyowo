@@ -280,8 +280,8 @@ describe('ExecutionSettings', () => {
           unavailableReasons: [
             {
               capability: 'subagents',
-              message: 'runtime store closed',
-              type: 'runtimeStoreUnavailable',
+              message: 'connection closed',
+              type: 'daemonUnavailable',
             },
           ],
         }),
@@ -289,7 +289,7 @@ describe('ExecutionSettings', () => {
     )
 
     expect(await screen.findByRole('switch', { name: 'Subagents' })).toBeDisabled()
-    expect(screen.getByText('Runtime store unavailable: runtime store closed')).toBeInTheDocument()
+    expect(screen.getByText('Task daemon unavailable: connection closed')).toBeInTheDocument()
   })
 
   it('saves agent switch changes through setExecutionSettings', async () => {

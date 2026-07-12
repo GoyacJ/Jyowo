@@ -13,8 +13,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 #[cfg(feature = "mcp-server-adapter")]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-#[cfg(feature = "agents-team")]
-use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
 use futures::StreamExt;
@@ -27,11 +25,6 @@ use harness_contracts::CacheImpact;
 use harness_contracts::MemdirFileTag;
 #[cfg(not(feature = "observability-redactor"))]
 use harness_contracts::RedactPatternKind;
-#[cfg(feature = "agents-team")]
-use harness_contracts::{
-    AgentId, BlobMeta, Recipient, TeamCreatedEvent, TeamMemberJoinedEvent, TeamTaskUpdatedEvent,
-    TeamTerminationReason, TopologyKind,
-};
 use harness_contracts::{
     BlobReaderCapAdapter, BlobRef, BlobRetention, BlobStore, BlobWriterCapAdapter,
     CapabilityRegistry, ContextPatchRequest, ContextPatchSinkCap, ConversationAttachmentReference,
@@ -104,8 +97,6 @@ use harness_plugin::{
 };
 use harness_provider_state::ProviderContinuationStore;
 use harness_sandbox::{ExecSpec, SandboxBackend, StdioSpec};
-#[cfg(feature = "agents-team")]
-use harness_session::WorkspaceBootstrap;
 use harness_session::{
     run_effective_config_hash, session_options_hash, Session, SessionOptions, SessionProjection,
     SessionTurnContext, SessionTurnRunner, SkillReloadCap, Workspace, WorkspaceRegistry,
@@ -169,24 +160,9 @@ mod run_state;
 mod sampling;
 mod session_runtime;
 mod skills;
-#[cfg(feature = "agents-team")]
-mod team_runtime;
 mod tool_pool;
 mod types;
 mod workspace;
-
-#[cfg(feature = "stream-permission")]
-pub use self::permissions::StreamPermissionRuntime;
-pub use self::sampling::HarnessSamplingProvider;
-pub use self::tool_pool::filter_unrouted_service_tools;
-pub use self::types::{
-    ConversationEventsPage, ConversationEventsPageRequest, ConversationRunOptions,
-    ConversationSession, ConversationSessionSummary, ConversationTurnReceipt,
-    ConversationTurnRequest, HarnessOptions, McpConfig, RuntimeSkillParameter, RuntimeSkillSummary,
-    RuntimeSkillView, TenantPolicy,
-};
-pub use self::workspace::WorkspaceCreateRequest;
-pub use crate::agent_runtime::AgentCapabilityResolutionContext;
 
 #[cfg(feature = "tool-search")]
 use self::events::sdk_hook_events;
@@ -197,6 +173,8 @@ use self::events::{
 use self::limits::SessionLimitState;
 use self::memory::record_memory_summary_event;
 use self::metrics::{SdkMcpEventSink, SdkMcpMetricsSink};
+#[cfg(feature = "stream-permission")]
+pub use self::permissions::StreamPermissionRuntime;
 use self::permissions::{permission_authority_runtime, PermissionAuthorityBroker};
 #[cfg(feature = "memory-provider-registry")]
 use self::redaction::default_hook_redactor;
@@ -205,9 +183,18 @@ use self::run_state::{
     ActiveConversationRun, ActiveConversationRunGuard, ActiveConversationSessionGuard,
     EngineSessionTurnRunner,
 };
+pub use self::sampling::HarnessSamplingProvider;
 use self::session_runtime::{sdk_session_not_found, snapshot_for_supported_model};
 use self::skills::SdkSkillReloadCap;
+pub use self::tool_pool::filter_unrouted_service_tools;
 use self::tool_pool::{apply_tenant_tool_filter, filter_unavailable_tools};
+pub use self::types::{
+    ConversationEventsPage, ConversationEventsPageRequest, ConversationRunOptions,
+    ConversationSession, ConversationSessionSummary, ConversationTurnReceipt,
+    ConversationTurnRequest, HarnessOptions, McpConfig, RuntimeSkillParameter, RuntimeSkillSummary,
+    RuntimeSkillView, TenantPolicy,
+};
+pub use self::workspace::WorkspaceCreateRequest;
 #[derive(Clone)]
 pub struct Harness {
     inner: Arc<HarnessInner>,
@@ -256,8 +243,6 @@ struct HarnessInner {
     workspace_registry: Arc<WorkspaceRegistry>,
     active_conversation_runs: Arc<parking_lot::Mutex<HashMap<RunId, ActiveConversationRun>>>,
     active_conversation_sessions: Arc<parking_lot::Mutex<HashMap<(TenantId, SessionId), RunId>>>,
-    #[cfg(feature = "agents-team")]
-    active_run_teams: Arc<parking_lot::Mutex<HashMap<RunId, Arc<crate::team::Team>>>>,
     deleted_conversation_sessions: Arc<parking_lot::Mutex<HashSet<(TenantId, SessionId)>>>,
     provider_capability_routes: Arc<parking_lot::RwLock<ProviderCapabilityRouteSettings>>,
     provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
@@ -1433,8 +1418,6 @@ impl Harness {
                 workspace_registry: Arc::new(WorkspaceRegistry::new()),
                 active_conversation_runs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
                 active_conversation_sessions: Arc::new(parking_lot::Mutex::new(HashMap::new())),
-                #[cfg(feature = "agents-team")]
-                active_run_teams: Arc::new(parking_lot::Mutex::new(HashMap::new())),
                 deleted_conversation_sessions: Arc::new(parking_lot::Mutex::new(HashSet::new())),
                 provider_capability_routes: extras
                     .provider_capability_routes

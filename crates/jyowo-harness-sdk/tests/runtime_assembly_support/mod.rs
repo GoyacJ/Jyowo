@@ -55,15 +55,13 @@ pub use harness_tool::{
     PermissionCheck, SchemaResolverContext, Tool, ToolContext, ToolEvent, ToolRegistry, ToolStream,
     ValidationError,
 };
-pub use jyowo_harness_sdk::{prelude::*, testing::*, AgentCapabilityResolutionContext};
+pub use jyowo_harness_sdk::{prelude::*, testing::*};
 pub use serde_json::{json, Value};
 pub use tokio::sync::Notify;
 
-mod agents;
 mod authorization;
 mod observability;
 mod runtime_context;
-pub use agents::*;
 pub use authorization::*;
 pub use observability::*;
 pub use runtime_context::*;

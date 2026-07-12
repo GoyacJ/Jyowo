@@ -3413,7 +3413,6 @@ dependencies = [
  "jyowo-harness-session",
  "jyowo-harness-skill",
  "jyowo-harness-subagent",
- "jyowo-harness-team",
  "jyowo-harness-tool",
  "jyowo-harness-tool-search",
  "parking_lot",
