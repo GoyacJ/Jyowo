@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
+    time::Duration,
 };
 
 use chrono::{DateTime, Utc};
@@ -22,6 +23,8 @@ use crate::{
     McpServerPattern, McpServerRef, McpServerScope, McpServerSpec, McpToolDescriptor,
     McpToolResult, McpToolWrapper, McpTransport, NoopMcpMetricsSink, RequiredEvaluation,
 };
+
+const CONNECTION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct McpRegistry {
@@ -428,12 +431,29 @@ impl McpRegistry {
     }
 
     pub async fn remove_server(&self, server_id: &McpServerId) -> Result<(), McpError> {
-        self.inner
+        let managed = self
+            .inner
             .write()
             .await
             .remove(server_id)
             .ok_or_else(|| McpError::ServerNotFound(server_id.0.clone()))?;
-        Ok(())
+        shutdown_connection(managed.connection).await
+    }
+
+    pub async fn shutdown_all(&self) -> Result<(), McpError> {
+        let connections = {
+            let mut inner = self.inner.write().await;
+            std::mem::take(&mut *inner)
+                .into_values()
+                .map(|managed| managed.connection)
+                .collect::<Vec<_>>()
+        };
+        let results =
+            futures::future::join_all(connections.into_iter().map(shutdown_connection)).await;
+        match results.into_iter().find_map(Result::err) {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     pub async fn remove_plugin_server(
@@ -441,18 +461,23 @@ impl McpRegistry {
         plugin_id: &PluginId,
         server_id: &McpServerId,
     ) -> Result<(), McpError> {
-        let mut inner = self.inner.write().await;
-        let Some(managed) = inner.get(server_id) else {
-            return Err(McpError::ServerNotFound(server_id.0.clone()));
+        let managed = {
+            let mut inner = self.inner.write().await;
+            let Some(managed) = inner.get(server_id) else {
+                return Err(McpError::ServerNotFound(server_id.0.clone()));
+            };
+            if !matches!(&managed.spec.source, McpServerSource::Plugin(owner) if owner == plugin_id)
+            {
+                return Err(McpError::Protocol(format!(
+                    "server {} is not owned by plugin {}",
+                    server_id.0, plugin_id.0
+                )));
+            }
+            inner
+                .remove(server_id)
+                .expect("owned plugin server was checked while holding write lock")
         };
-        if !matches!(&managed.spec.source, McpServerSource::Plugin(owner) if owner == plugin_id) {
-            return Err(McpError::Protocol(format!(
-                "server {} is not owned by plugin {}",
-                server_id.0, plugin_id.0
-            )));
-        }
-        inner.remove(server_id);
-        Ok(())
+        shutdown_connection(managed.connection).await
     }
 
     async fn insert_plugin_server(
@@ -460,18 +485,23 @@ impl McpRegistry {
         plugin_id: PluginId,
         server: ManagedMcpServer,
     ) -> Result<(), McpError> {
-        let mut inner = self.inner.write().await;
-        if let Some(existing) = inner.get(&server.spec.server_id) {
-            if !matches!(&existing.spec.source, McpServerSource::Plugin(owner) if owner == &plugin_id)
-            {
-                return Err(McpError::Protocol(format!(
-                    "server {} is already registered and is not owned by plugin {}",
-                    server.spec.server_id.0, plugin_id.0
-                )));
+        let replaced = {
+            let mut inner = self.inner.write().await;
+            if let Some(existing) = inner.get(&server.spec.server_id) {
+                if !matches!(&existing.spec.source, McpServerSource::Plugin(owner) if owner == &plugin_id)
+                {
+                    return Err(McpError::Protocol(format!(
+                        "server {} is already registered and is not owned by plugin {}",
+                        server.spec.server_id.0, plugin_id.0
+                    )));
+                }
             }
+            inner.insert(server.spec.server_id.clone(), server)
+        };
+        match replaced {
+            Some(replaced) => shutdown_connection(replaced.connection).await,
+            None => Ok(()),
         }
-        inner.insert(server.spec.server_id.clone(), server);
-        Ok(())
     }
 
     pub async fn inject_tools_into(
@@ -961,6 +991,16 @@ impl McpRegistry {
             }
         }
         Ok(latest)
+    }
+}
+
+async fn shutdown_connection(connection: Arc<dyn McpConnection>) -> Result<(), McpError> {
+    let connection_id = connection.connection_id().to_owned();
+    match tokio::time::timeout(CONNECTION_SHUTDOWN_TIMEOUT, connection.shutdown()).await {
+        Ok(result) => result,
+        Err(_) => Err(McpError::Connection(format!(
+            "MCP connection shutdown timed out: {connection_id}"
+        ))),
     }
 }
 

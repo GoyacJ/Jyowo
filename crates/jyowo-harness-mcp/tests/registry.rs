@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 use async_trait::async_trait;
 use futures::{channel::mpsc, SinkExt};
@@ -137,6 +143,144 @@ async fn remove_plugin_server_does_not_remove_non_owner_server() {
 
     assert!(matches!(error, McpError::Protocol(message) if message.contains("owned by plugin")));
     assert!(registry.server_spec(&server_id()).await.is_some());
+}
+
+#[tokio::test]
+async fn remove_plugin_server_shuts_owned_connection_down() {
+    let connection = Arc::new(ShutdownTrackingConnection::default());
+    let registry = McpRegistry::new();
+    let plugin_id = PluginId("plugin-owner@1.0.0".into());
+    registry
+        .add_ready_plugin_server(
+            plugin_id.clone(),
+            TrustLevel::UserControlled,
+            spec(McpServerSource::Workspace),
+            connection.clone(),
+        )
+        .await
+        .expect("plugin server");
+
+    registry
+        .remove_plugin_server(&plugin_id, &server_id())
+        .await
+        .expect("remove owned plugin server");
+
+    assert!(connection.shutdown.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn replacing_same_owner_plugin_server_shuts_old_connection_down() {
+    let old_connection = Arc::new(ShutdownTrackingConnection::default());
+    let new_connection = Arc::new(ShutdownTrackingConnection::default());
+    let registry = McpRegistry::new();
+    let plugin_id = PluginId("plugin-owner@1.0.0".into());
+    registry
+        .add_ready_plugin_server(
+            plugin_id.clone(),
+            TrustLevel::UserControlled,
+            spec(McpServerSource::Workspace),
+            old_connection.clone(),
+        )
+        .await
+        .expect("old plugin server");
+
+    registry
+        .add_ready_plugin_server(
+            plugin_id,
+            TrustLevel::UserControlled,
+            spec(McpServerSource::Workspace),
+            new_connection,
+        )
+        .await
+        .expect("replace plugin server");
+
+    assert!(old_connection.shutdown.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn remove_server_shuts_connection_down() {
+    let connection = Arc::new(ShutdownTrackingConnection::default());
+    let registry = McpRegistry::new();
+    registry
+        .add_ready_server(
+            spec(McpServerSource::Workspace),
+            McpServerScope::Global,
+            connection.clone(),
+        )
+        .await
+        .expect("server");
+
+    registry
+        .remove_server(&server_id())
+        .await
+        .expect("remove server");
+
+    assert!(connection.shutdown.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn registry_shutdown_all_closes_every_connection() {
+    let first = Arc::new(ShutdownTrackingConnection::default());
+    let second = Arc::new(ShutdownTrackingConnection::default());
+    let registry = McpRegistry::new();
+    registry
+        .add_ready_server(
+            spec(McpServerSource::Workspace),
+            McpServerScope::Global,
+            first.clone(),
+        )
+        .await
+        .expect("first server");
+    let mut second_spec = spec(McpServerSource::Workspace);
+    second_spec.server_id = McpServerId("second".to_owned());
+    registry
+        .add_ready_server(second_spec, McpServerScope::Global, second.clone())
+        .await
+        .expect("second server");
+
+    registry.shutdown_all().await.expect("shutdown registry");
+
+    assert!(first.shutdown.load(Ordering::SeqCst));
+    assert!(second.shutdown.load(Ordering::SeqCst));
+    assert!(registry.server_ids().await.is_empty());
+}
+
+#[tokio::test]
+async fn registry_shutdown_all_times_out_pending_connection_without_blocking_others() {
+    let pending = Arc::new(PendingShutdownConnection);
+    let closed = Arc::new(ShutdownTrackingConnection::default());
+    let registry = McpRegistry::new();
+    let mut pending_spec = spec(McpServerSource::Workspace);
+    pending_spec.server_id = McpServerId("pending".to_owned());
+    registry
+        .add_ready_server(pending_spec, McpServerScope::Global, pending)
+        .await
+        .expect("pending server");
+    let mut closed_spec = spec(McpServerSource::Workspace);
+    closed_spec.server_id = McpServerId("quick".to_owned());
+    registry
+        .add_ready_server(closed_spec, McpServerScope::Global, closed.clone())
+        .await
+        .expect("quick server");
+
+    let shutdown = tokio::spawn(async move { registry.shutdown_all().await });
+
+    tokio::time::timeout(std::time::Duration::from_millis(250), async {
+        while !closed.shutdown.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("ready connection shutdown must run concurrently");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), shutdown)
+        .await
+        .expect("registry shutdown must have a bounded timeout")
+        .expect("shutdown task");
+    assert!(matches!(
+        result,
+        Err(McpError::Connection(message))
+            if message.contains("shutdown timed out") && message.contains("pending-shutdown")
+    ));
 }
 
 #[tokio::test]
@@ -343,6 +487,60 @@ impl McpConnection for NotifyingTools {
     }
 
     async fn shutdown(&self) -> Result<(), McpError> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct ShutdownTrackingConnection {
+    shutdown: AtomicBool,
+}
+
+struct PendingShutdownConnection;
+
+#[async_trait]
+impl McpConnection for PendingShutdownConnection {
+    fn connection_id(&self) -> &'static str {
+        "pending-shutdown"
+    }
+
+    async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
+        Ok(Vec::new())
+    }
+
+    async fn call_tool(&self, _name: &str, _args: Value) -> Result<McpToolResult, McpError> {
+        Ok(McpToolResult::text("ok"))
+    }
+
+    async fn subscribe_changes(&self) -> Result<ListChangedEvent, McpError> {
+        Ok(Box::pin(futures::stream::empty()))
+    }
+
+    async fn shutdown(&self) -> Result<(), McpError> {
+        futures::future::pending().await
+    }
+}
+
+#[async_trait]
+impl McpConnection for ShutdownTrackingConnection {
+    fn connection_id(&self) -> &'static str {
+        "shutdown-tracking"
+    }
+
+    async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
+        Ok(Vec::new())
+    }
+
+    async fn call_tool(&self, _name: &str, _args: Value) -> Result<McpToolResult, McpError> {
+        Ok(McpToolResult::text("ok"))
+    }
+
+    async fn subscribe_changes(&self) -> Result<ListChangedEvent, McpError> {
+        Ok(Box::pin(futures::stream::empty()))
+    }
+
+    async fn shutdown(&self) -> Result<(), McpError> {
+        self.shutdown.store(true, Ordering::SeqCst);
         Ok(())
     }
 }

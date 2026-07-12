@@ -2,6 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    process::Command,
     sync::Arc,
     time::Duration,
 };
@@ -350,6 +351,200 @@ done
         "done"
     );
     let _ = std::fs::remove_file(&marker);
+}
+
+#[tokio::test]
+async fn stdio_shutdown_times_out_blocked_notification_and_kills_child() {
+    let script = r#"
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"0.1.0"}}}'
+      break
+      ;;
+  esac
+done
+exec sleep 60
+"#;
+    let spec = McpServerSpec::new(
+        McpServerId("blocked-shutdown".into()),
+        "blocked shutdown fixture",
+        TransportChoice::Stdio {
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), script.into()],
+            env: StdioEnv::default(),
+            policy: StdioPolicy {
+                stderr_line_max_bytes: 4096,
+                redact_stderr: true,
+                graceful_kill_after: Duration::from_millis(100),
+                working_dir: None,
+            },
+        },
+        McpServerSource::Workspace,
+    );
+
+    let connection = McpClient::new(Arc::new(StdioTransport::new()))
+        .connect_with_context(spec, support::authorized_connect_context())
+        .await
+        .expect("stdio connects");
+    let blocked_connection = Arc::clone(&connection);
+    let blocked_write = tokio::spawn(async move {
+        blocked_connection
+            .cancel_tool_call("1", Some("x".repeat(1024 * 1024)))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !blocked_write.is_finished(),
+        "fixture must block a notification write"
+    );
+
+    let shutdown_result = tokio::time::timeout(Duration::from_secs(1), connection.shutdown()).await;
+    blocked_write.abort();
+    let _ = blocked_write.await;
+    drop(connection);
+
+    assert!(
+        shutdown_result.is_ok(),
+        "shutdown notification must not block child termination"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stdio_connection_drop_kills_child() {
+    let marker =
+        std::env::temp_dir().join(format!("jyowo-stdio-drop-child-{}", std::process::id()));
+    let _ = std::fs::remove_file(&marker);
+    let script = format!(
+        r#"
+printf '%s' "$$" > "{}"
+IFS= read -r line
+printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-03-26","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"fixture","version":"0.1.0"}}}}}}'
+exec sleep 60
+"#,
+        marker.display()
+    );
+    let spec = McpServerSpec::new(
+        McpServerId("drop-child".into()),
+        "drop child fixture",
+        TransportChoice::Stdio {
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), script],
+            env: StdioEnv::default(),
+            policy: StdioPolicy::default(),
+        },
+        McpServerSource::Workspace,
+    );
+
+    let connection = McpClient::new(Arc::new(StdioTransport::new()))
+        .connect_with_context(spec, support::authorized_connect_context())
+        .await
+        .expect("stdio connects");
+    let pid = read_fixture_pid(&marker).await;
+
+    drop(connection);
+
+    let exited = wait_for_process_exit(pid).await;
+    if !exited {
+        kill_fixture_process(pid);
+    }
+    let _ = std::fs::remove_file(&marker);
+    assert!(
+        exited,
+        "stdio child must exit when its connection is dropped"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stdio_connect_failure_kills_spawned_child() {
+    let marker = std::env::temp_dir().join(format!(
+        "jyowo-stdio-connect-failure-child-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&marker);
+    let script = format!(
+        r#"
+printf '%s' "$$" > "{}"
+IFS= read -r line
+printf '%s\n' 'not-json'
+exec sleep 60
+"#,
+        marker.display()
+    );
+    let spec = McpServerSpec::new(
+        McpServerId("connect-failure-child".into()),
+        "connect failure child fixture",
+        TransportChoice::Stdio {
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), script],
+            env: StdioEnv::default(),
+            policy: StdioPolicy::default(),
+        },
+        McpServerSource::Workspace,
+    );
+
+    let connection_result = McpClient::new(Arc::new(StdioTransport::new()))
+        .connect_with_context(spec, support::authorized_connect_context())
+        .await;
+    assert!(
+        connection_result.is_err(),
+        "invalid initialize response must fail the connection"
+    );
+    let pid = read_fixture_pid(&marker).await;
+
+    let exited = wait_for_process_exit(pid).await;
+    if !exited {
+        kill_fixture_process(pid);
+    }
+    let _ = std::fs::remove_file(&marker);
+    assert!(
+        exited,
+        "spawned stdio child must exit when connection setup fails"
+    );
+}
+
+#[cfg(unix)]
+async fn read_fixture_pid(marker: &std::path::Path) -> u32 {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Ok(value) = std::fs::read_to_string(marker) {
+                break value.parse().expect("fixture pid");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("fixture pid marker")
+}
+
+#[cfg(unix)]
+async fn wait_for_process_exit(pid: u32) -> bool {
+    for _ in 0..50 {
+        if !fixture_process_is_running(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    !fixture_process_is_running(pid)
+}
+
+#[cfg(unix)]
+fn fixture_process_is_running(pid: u32) -> bool {
+    Command::new("/bin/kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(unix)]
+fn kill_fixture_process(pid: u32) {
+    let _ = Command::new("/bin/kill")
+        .args(["-KILL", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 #[derive(Default)]

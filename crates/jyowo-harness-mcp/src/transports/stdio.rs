@@ -131,7 +131,8 @@ impl McpTransport for StdioTransport {
             .envs(resolved_env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
         if let Some(working_dir) = policy.working_dir.clone() {
             command_builder.current_dir(working_dir);
         }
@@ -512,9 +513,11 @@ impl McpConnection for StdioConnection {
     }
 
     async fn shutdown(&self) -> Result<(), McpError> {
-        let _ = self
-            .send_notification(JsonRpcNotification::new("shutdown", None))
-            .await;
+        let _ = tokio::time::timeout(
+            self.policy.graceful_kill_after,
+            self.send_notification(JsonRpcNotification::new("shutdown", None)),
+        )
+        .await;
         if let Some(mut child) = self.child.lock().await.take() {
             match tokio::time::timeout(self.policy.graceful_kill_after, child.wait()).await {
                 Ok(_) => {}
