@@ -97,6 +97,13 @@ struct AcquiredWorkspaceGuard {
     armed: bool,
 }
 
+struct StartedChild {
+    child_task_id: TaskId,
+    start_tx: oneshot::Sender<()>,
+    finished_rx: oneshot::Receiver<Result<SubagentHandle, SubagentError>>,
+    caller_guard: SpawnCallerGuard,
+}
+
 impl AcquiredWorkspaceGuard {
     fn new(
         workspace: Arc<WorkspaceCoordinator>,
@@ -275,6 +282,40 @@ impl SubagentSupervisor {
             .map_err(|_| SubagentError::ConcurrentLimitExceeded)
     }
 
+    pub async fn start_detached(
+        self: &Arc<Self>,
+        binding: SubagentParentBinding,
+        spec: SubagentSpec,
+        input: harness_contracts::TurnInput,
+        parent_ctx: ParentContext,
+    ) -> Result<TaskId, SubagentError> {
+        let StartedChild {
+            child_task_id,
+            start_tx,
+            finished_rx,
+            mut caller_guard,
+        } = self.start_bound(binding, spec, input, parent_ctx).await?;
+        if let Err(detach_error) =
+            self.continue_in_background(binding.parent_task_id, child_task_id)
+        {
+            drop(start_tx);
+            self.cancel_attached_child(child_task_id);
+            let cleanup_result = finished_rx.await;
+            caller_guard.disarm();
+            return match cleanup_result {
+                Ok(_) => Err(detach_error),
+                Err(_) => Err(SubagentError::Engine(format!(
+                    "{detach_error}; subagent finalizer stopped during detach cleanup"
+                ))),
+            };
+        }
+        caller_guard.disarm();
+        start_tx
+            .send(())
+            .map_err(|_| SubagentError::Engine("detached subagent failed to start".into()))?;
+        Ok(child_task_id)
+    }
+
     async fn spawn_bound(
         self: &Arc<Self>,
         binding: SubagentParentBinding,
@@ -282,6 +323,27 @@ impl SubagentSupervisor {
         input: harness_contracts::TurnInput,
         parent_ctx: ParentContext,
     ) -> Result<SubagentHandle, SubagentError> {
+        let StartedChild {
+            start_tx,
+            finished_rx,
+            mut caller_guard,
+            ..
+        } = self.start_bound(binding, spec, input, parent_ctx).await?;
+        let _ = start_tx.send(());
+        let finished = finished_rx.await.map_err(|_| {
+            SubagentError::Engine("subagent finalizer stopped before returning a result".into())
+        })?;
+        caller_guard.disarm();
+        finished
+    }
+
+    async fn start_bound(
+        self: &Arc<Self>,
+        binding: SubagentParentBinding,
+        spec: SubagentSpec,
+        input: harness_contracts::TurnInput,
+        parent_ctx: ParentContext,
+    ) -> Result<StartedChild, SubagentError> {
         let child_depth = binding.depth.max(parent_ctx.depth).saturating_add(1);
         if child_depth > self.max_depth {
             return Err(SubagentError::DepthExceeded {
@@ -512,17 +574,17 @@ impl SubagentSupervisor {
             let _ = finished_tx.send(finished);
         });
         workspace_guard.disarm();
-        let mut caller_guard = SpawnCallerGuard {
+        let caller_guard = SpawnCallerGuard {
             supervisor: Arc::clone(self),
             child_task_id,
             armed: true,
         };
-        let _ = start_tx.send(());
-        let finished = finished_rx.await.map_err(|_| {
-            SubagentError::Engine("subagent finalizer stopped before returning a result".into())
-        })?;
-        caller_guard.disarm();
-        finished
+        Ok(StartedChild {
+            child_task_id,
+            start_tx,
+            finished_rx,
+            caller_guard,
+        })
     }
 
     async fn finish_child(
