@@ -7,13 +7,14 @@ use harness_contracts::{
     SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection, TaskState, TimelineEventKind,
     TimelineItemProjection,
 };
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
 use crate::task_event::{EngineEventPayload, TaskEvent};
 use crate::TaskStoreError;
 
 const MAX_TIMELINE_SUMMARY_CHARS: usize = 4096;
+const LEGACY_CHILD_ATTACHMENT_MIGRATION: &str = "legacy_child_attachment_projection_v1";
 pub const MAX_ACTIVE_QUEUE_ITEMS: usize = 64;
 
 struct ReducedTask {
@@ -32,6 +33,97 @@ pub trait TaskProjector: Send + Sync {
 
 #[derive(Debug, Default)]
 pub struct SynchronousTaskProjector;
+
+pub(crate) fn migrate_legacy_child_attachment_projections(
+    connection: &mut Connection,
+) -> Result<(), TaskStoreError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let already_applied = transaction
+        .query_row(
+            "SELECT 1 FROM task_store_migrations WHERE migration_name = ?1",
+            [LEGACY_CHILD_ATTACHMENT_MIGRATION],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if already_applied {
+        transaction.commit()?;
+        return Ok(());
+    }
+
+    let legacy_rows = {
+        let mut statement = transaction.prepare(
+            "SELECT projection.task_id,
+                    projection.last_global_offset,
+                    projection.projection_json,
+                    EXISTS(
+                        SELECT 1
+                        FROM event_log AS event
+                        WHERE event.task_id = projection.task_id
+                          AND event.event_type = 'subagent.backgrounded'
+                          AND json_extract(event.payload_json, '$.detached') = 1
+                    )
+             FROM task_projection AS projection
+             WHERE json_type(projection.projection_json, '$.parent') = 'object'
+               AND json_type(projection.projection_json, '$.parent.attachment') IS NULL",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, bool>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+
+    for (task_id, last_global_offset, original, detached) in legacy_rows {
+        let mut projection: serde_json::Value = serde_json::from_str(&original)?;
+        let parent = projection
+            .get_mut("parent")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| {
+                TaskStoreError::ProjectionIntegrity(format!(
+                    "task {task_id} legacy child projection has no parent object"
+                ))
+            })?;
+        parent.insert(
+            "attachment".into(),
+            serde_json::Value::String(if detached { "detached" } else { "attached" }.into()),
+        );
+        let projection = serde_json::to_string(&projection)?;
+        let offset =
+            u64::try_from(last_global_offset).map_err(|_| TaskStoreError::IntegerOutOfRange)?;
+        let projection_digest = task_projection_digest(offset, &projection);
+        let updated = transaction.execute(
+            "UPDATE task_projection
+             SET projection_json = ?4, projection_digest = ?5
+             WHERE task_id = ?1 AND last_global_offset = ?2 AND projection_json = ?3",
+            params![
+                task_id,
+                last_global_offset,
+                original,
+                projection,
+                projection_digest
+            ],
+        )?;
+        if updated != 1 {
+            return Err(TaskStoreError::ProjectionIntegrity(
+                "legacy child attachment projection changed during migration".into(),
+            ));
+        }
+    }
+
+    transaction.execute(
+        "INSERT INTO task_store_migrations (migration_name, applied) VALUES (?1, 1)",
+        [LEGACY_CHILD_ATTACHMENT_MIGRATION],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
 
 impl TaskProjector for SynchronousTaskProjector {
     fn apply(

@@ -74,6 +74,11 @@ CREATE INDEX IF NOT EXISTS idx_engine_run_history
     )
     WHERE event_type GLOB 'engine.*';
 
+CREATE TABLE IF NOT EXISTS task_store_migrations (
+    migration_name TEXT PRIMARY KEY,
+    applied INTEGER NOT NULL CHECK(applied = 1)
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS command_inbox (
     command_id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,

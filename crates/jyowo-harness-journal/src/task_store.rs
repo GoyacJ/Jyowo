@@ -25,9 +25,9 @@ use thiserror::Error;
 
 use crate::task_event::{NewTaskEvent, TaskBlobReference, TaskEvent, MAX_EVENT_PAYLOAD_BYTES};
 use crate::task_projection::{
-    empty_task_projection, load_task_projection, load_task_projection_row, projection_counts,
-    projection_snapshot, ProjectionCounts, SynchronousTaskProjector, TaskProjector,
-    PROJECTION_TABLES,
+    empty_task_projection, load_task_projection, load_task_projection_row,
+    migrate_legacy_child_attachment_projections, projection_counts, projection_snapshot,
+    ProjectionCounts, SynchronousTaskProjector, TaskProjector, PROJECTION_TABLES,
 };
 use crate::task_schema::initialize_task_schema;
 
@@ -1092,8 +1092,9 @@ impl TaskStore {
             std::fs::create_dir_all(parent)?;
         }
         let path = crate::app_controlled_path(path)?;
-        let connection = Connection::open(&path)?;
+        let mut connection = Connection::open(&path)?;
         initialize_task_schema(&connection)?;
+        migrate_legacy_child_attachment_projections(&mut connection)?;
         #[cfg(feature = "blob-file")]
         let database_identity = load_or_create_blob_store_identity(&connection)?;
         Ok(Self {

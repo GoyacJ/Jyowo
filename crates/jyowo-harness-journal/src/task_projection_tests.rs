@@ -1374,29 +1374,7 @@ fn rebuild_defaults_legacy_child_link_to_attached_then_applies_detached_state() 
             params![child_task_id.to_string(), payload.to_string()],
         )
         .unwrap();
-    let (last_global_offset, projection): (i64, String) = connection
-        .query_row(
-            "SELECT last_global_offset, projection_json FROM task_projection WHERE task_id = ?1",
-            [child_task_id.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    let mut projection: serde_json::Value = serde_json::from_str(&projection).unwrap();
-    projection["parent"]
-        .as_object_mut()
-        .unwrap()
-        .remove("attachment");
-    let projection = projection.to_string();
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(&u64::try_from(last_global_offset).unwrap().to_be_bytes());
-    hasher.update(projection.as_bytes());
-    let projection_digest = hasher.finalize().to_hex().to_string();
-    connection
-        .execute(
-            "UPDATE task_projection SET projection_json = ?2, projection_digest = ?3 WHERE task_id = ?1",
-            params![child_task_id.to_string(), projection, projection_digest],
-        )
-        .unwrap();
+    remove_parent_attachment(&connection, child_task_id);
     drop(connection);
 
     let store = TaskStore::open(&path).unwrap();
@@ -1408,6 +1386,84 @@ fn rebuild_defaults_legacy_child_link_to_attached_then_applies_detached_state() 
     assert_eq!(child.parent.unwrap().attachment, ChildAttachment::Detached);
 
     drop(store);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn open_migrates_terminal_legacy_child_attachment_projections_once() {
+    let root = temp_root("legacy-terminal-child-attachment");
+    let path = root.join("tasks.db");
+    let legacy_detached_task_id = TaskId::new();
+    let legacy_attached_task_id = TaskId::new();
+    let current_detached_task_id = TaskId::new();
+    let store = TaskStore::open(&path).unwrap();
+
+    seed_terminal_child(&store, legacy_detached_task_id, true);
+    seed_terminal_child(&store, legacy_attached_task_id, false);
+    seed_terminal_child(&store, current_detached_task_id, true);
+    drop(store);
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS task_store_migrations (
+                migration_name TEXT PRIMARY KEY,
+                applied INTEGER NOT NULL CHECK(applied = 1)
+            ) STRICT;
+            DELETE FROM task_store_migrations
+            WHERE migration_name = 'legacy_child_attachment_projection_v1';",
+        )
+        .unwrap();
+    remove_parent_attachment(&connection, legacy_detached_task_id);
+    remove_parent_attachment(&connection, legacy_attached_task_id);
+    let current_projection_before = projection_row(&connection, current_detached_task_id);
+    drop(connection);
+
+    let store = TaskStore::open(&path).unwrap();
+    let legacy_detached = store
+        .task_projection(legacy_detached_task_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(legacy_detached.state, TaskState::Completed);
+    assert_eq!(
+        legacy_detached.parent.unwrap().attachment,
+        ChildAttachment::Detached
+    );
+    let legacy_attached = store
+        .task_projection(legacy_attached_task_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(legacy_attached.state, TaskState::Completed);
+    assert_eq!(
+        legacy_attached.parent.unwrap().attachment,
+        ChildAttachment::Attached
+    );
+    assert_eq!(
+        store
+            .task_projection(current_detached_task_id)
+            .unwrap()
+            .unwrap()
+            .parent
+            .unwrap()
+            .attachment,
+        ChildAttachment::Detached
+    );
+    drop(store);
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        projection_row(&connection, current_detached_task_id),
+        current_projection_before
+    );
+    let rows_after_first_open = projection_rows(&connection);
+    drop(connection);
+
+    let store = TaskStore::open(&path).unwrap();
+    drop(store);
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(projection_rows(&connection), rows_after_first_open);
+    drop(connection);
+
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1465,6 +1521,133 @@ fn active_queue_is_bounded_and_rebuild_repairs_projection_corruption() {
 
     drop(store);
     let _ = std::fs::remove_dir_all(root);
+}
+
+fn seed_terminal_child(store: &TaskStore, child_task_id: TaskId, detached: bool) {
+    let parent_task_id = TaskId::new();
+    let actor_id = ActorId::new();
+    let segment_id = RunSegmentId::new();
+    let parent_segment_id = RunSegmentId::new();
+    let delegation_id = SubagentId::new();
+    let started_at = Utc::now();
+    let mut child = SubagentProjection {
+        child_task_id,
+        actor_id,
+        segment_id,
+        parent_task_id,
+        parent_segment_id,
+        delegation_id,
+        context_cursor: 0,
+        workspace_lease_id: None,
+        state: SubagentActorState::Running,
+        detached: false,
+        summary: None,
+        started_at,
+        ended_at: None,
+    };
+
+    transact(
+        store,
+        child_task_id,
+        0,
+        supervisor_source(),
+        NewTaskEvent::task_created("terminal child"),
+    );
+    transact_events(
+        store,
+        child_task_id,
+        1,
+        supervisor_source(),
+        vec![
+            NewTaskEvent::subagent_linked(
+                actor_id,
+                0,
+                SubagentParentProjection {
+                    parent_task_id,
+                    parent_segment_id,
+                    delegation_id,
+                    attachment: ChildAttachment::Attached,
+                },
+            ),
+            NewTaskEvent::run_started(segment_id, started_at),
+        ],
+    );
+    let mut stream_version = 3;
+    if detached {
+        child.state = SubagentActorState::Background;
+        child.detached = true;
+        transact(
+            store,
+            child_task_id,
+            stream_version,
+            supervisor_source(),
+            NewTaskEvent::subagent_backgrounded(child.clone()),
+        );
+        stream_version += 1;
+    }
+    child.state = SubagentActorState::Completed;
+    child.summary = Some("done".into());
+    child.ended_at = Some(started_at);
+    transact(
+        store,
+        child_task_id,
+        stream_version,
+        supervisor_source(),
+        NewTaskEvent::subagent_terminal(child),
+    );
+    transact(
+        store,
+        child_task_id,
+        stream_version + 1,
+        supervisor_source(),
+        NewTaskEvent::run_completed(segment_id, started_at, RunTerminalReason::Completed, false),
+    );
+}
+
+fn remove_parent_attachment(connection: &rusqlite::Connection, task_id: TaskId) {
+    let (last_global_offset, projection) = projection_row(connection, task_id);
+    let mut projection: serde_json::Value = serde_json::from_str(&projection).unwrap();
+    projection["parent"]
+        .as_object_mut()
+        .unwrap()
+        .remove("attachment");
+    let projection = projection.to_string();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&u64::try_from(last_global_offset).unwrap().to_be_bytes());
+    hasher.update(projection.as_bytes());
+    let projection_digest = hasher.finalize().to_hex().to_string();
+    connection
+        .execute(
+            "UPDATE task_projection SET projection_json = ?2, projection_digest = ?3 WHERE task_id = ?1",
+            params![task_id.to_string(), projection, projection_digest],
+        )
+        .unwrap();
+}
+
+fn projection_row(connection: &rusqlite::Connection, task_id: TaskId) -> (i64, String) {
+    connection
+        .query_row(
+            "SELECT last_global_offset, projection_json FROM task_projection WHERE task_id = ?1",
+            [task_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+}
+
+fn projection_rows(connection: &rusqlite::Connection) -> Vec<(String, i64, String, String)> {
+    let mut statement = connection
+        .prepare(
+            "SELECT task_id, last_global_offset, projection_json, projection_digest
+             FROM task_projection ORDER BY task_id",
+        )
+        .unwrap();
+    statement
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
 }
 
 #[test]
