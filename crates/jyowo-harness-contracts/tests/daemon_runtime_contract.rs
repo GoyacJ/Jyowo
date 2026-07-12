@@ -252,5 +252,7 @@ fn child_parent_projection_carries_explicit_attachment() {
         "parentSegmentId": harness_contracts::RunSegmentId::new(),
         "delegationId": harness_contracts::SubagentId::new()
     });
-    assert!(serde_json::from_value::<SubagentParentProjection>(missing_attachment).is_err());
+    let legacy: SubagentParentProjection =
+        serde_json::from_value(missing_attachment).expect("legacy parent projection parses");
+    assert_eq!(legacy.attachment, ChildAttachment::Attached);
 }

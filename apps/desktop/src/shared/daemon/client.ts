@@ -9,10 +9,9 @@ import type {
 } from '@/generated/daemon-protocol'
 import type { AttachmentReference, ListReferenceCandidatesResponse } from '@/shared/tauri/commands'
 
-import { parseClientFrame, parseServerFrame } from './protocol'
+import { DAEMON_PROTOCOL_VERSION, parseClientFrame, parseServerFrame } from './protocol'
 import { createTaskCommandMetadata, requireAcceptedCommand } from './task-command'
 
-const PROTOCOL_VERSION = 1
 const DAEMON_EVENT_NAME = 'jyowo://daemon-events'
 
 type BridgeOwnedRequest =
@@ -86,7 +85,7 @@ export function createDaemonClient(
 
   async function request(request: DaemonRequest) {
     const frame = parseClientFrame({
-      protocolVersion: PROTOCOL_VERSION,
+      protocolVersion: DAEMON_PROTOCOL_VERSION,
       request,
       requestId: nextRequestId(),
     })
@@ -183,7 +182,7 @@ export function createDaemonClient(
     },
     async readBlob(blobId) {
       parseClientFrame({
-        protocolVersion: PROTOCOL_VERSION,
+        protocolVersion: DAEMON_PROTOCOL_VERSION,
         request: { blobId, type: 'read_blob' },
         requestId: nextRequestId(),
       })
@@ -239,7 +238,7 @@ export function createDaemonClient(
     async subscribe(afterOffset, onFrame, onProtocolError = () => undefined) {
       const subscriptionId = nextRequestId()
       parseClientFrame({
-        protocolVersion: PROTOCOL_VERSION,
+        protocolVersion: DAEMON_PROTOCOL_VERSION,
         request: { afterOffset, type: 'subscribe_events' },
         requestId: subscriptionId,
       })

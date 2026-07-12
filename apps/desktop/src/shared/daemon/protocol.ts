@@ -3,6 +3,8 @@ import addFormats from 'ajv-formats'
 import type { ClientFrame, ServerFrame } from '@/generated/daemon-protocol'
 import schema from '@/generated/daemon-protocol.schema.json'
 
+export const DAEMON_PROTOCOL_VERSION = 2
+
 const ajv = new Ajv2020({
   allErrors: true,
   strict: true,
@@ -36,12 +38,18 @@ export function parseServerFrame(value: unknown): ServerFrame {
   if (!validateServerFrame(value)) {
     throw validationError('server', validateServerFrame.errors)
   }
+  if ((value as ServerFrame).protocolVersion !== DAEMON_PROTOCOL_VERSION) {
+    throw new Error('Invalid daemon server frame: /protocolVersion must match this client')
+  }
   return value as ServerFrame
 }
 
 export function parseClientFrame(value: unknown): ClientFrame {
   if (!validateClientFrame(value)) {
     throw validationError('client', validateClientFrame.errors)
+  }
+  if ((value as ClientFrame).protocolVersion !== DAEMON_PROTOCOL_VERSION) {
+    throw new Error('Invalid daemon client frame: /protocolVersion must match this client')
   }
   return value as ClientFrame
 }

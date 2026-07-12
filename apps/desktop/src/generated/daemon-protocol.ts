@@ -474,11 +474,6 @@ export type RunTerminalReason =
   | 'failed'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "ChildAttachment".
- */
-export type ChildAttachment = 'attached' | 'detached'
-/**
- * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "DaemonPermissionKind".
  */
 export type DaemonPermissionKind = 'command' | 'filesystem' | 'network' | 'mcp' | 'automation'
@@ -586,6 +581,11 @@ export type ProtocolErrorCode =
   | 'authentication_failed'
   | 'not_found'
   | 'internal'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "ChildAttachment".
+ */
+export type ChildAttachment = 'attached' | 'detached'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "MissedRunPolicy".
@@ -728,7 +728,7 @@ export interface RunProjection {
  * via the `definition` "SubagentParentProjection".
  */
 export interface SubagentParentProjection {
-  attachment: ChildAttachment
+  attachment?: 'attached' | 'detached'
   delegationId: TypedUlid
   parentSegmentId: TypedUlid
   parentTaskId: TypedUlid

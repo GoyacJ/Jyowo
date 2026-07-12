@@ -2232,7 +2232,8 @@
       "type": "object",
       "properties": {
         "attachment": {
-          "$ref": "#/$defs/ChildAttachment"
+          "$ref": "#/$defs/ChildAttachment",
+          "default": "attached"
         },
         "delegationId": {
           "$ref": "#/$defs/TypedUlid"
@@ -2248,8 +2249,7 @@
       "required": [
         "parentTaskId",
         "parentSegmentId",
-        "delegationId",
-        "attachment"
+        "delegationId"
       ]
     },
     "SubagentProjection": {

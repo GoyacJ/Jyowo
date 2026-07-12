@@ -204,7 +204,7 @@ describe('SidebarNav task navigation', () => {
 
     onFrame?.({
       message: { afterOffset: 1, events: [], gap: false, latestOffset: 2, type: 'event_batch' },
-      protocolVersion: 1,
+      protocolVersion: 2,
     })
 
     await waitFor(() => expect(listTasks).toHaveBeenCalledTimes(2))
@@ -284,5 +284,5 @@ function acceptedMessage() {
 }
 
 function acceptedFrame() {
-  return { message: acceptedMessage(), protocolVersion: 1 }
+  return { message: acceptedMessage(), protocolVersion: 2 }
 }

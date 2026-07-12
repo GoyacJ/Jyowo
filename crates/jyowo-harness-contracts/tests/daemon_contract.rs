@@ -6,7 +6,7 @@ use serde_json::json;
 
 #[test]
 fn daemon_protocol_exports_one_versioned_schema() {
-    assert_eq!(PROTOCOL_VERSION, 1);
+    assert_eq!(PROTOCOL_VERSION, 2);
 
     let value = serde_json::to_value(daemon_protocol_schema()).expect("serialize daemon schema");
     let text = serde_json::to_string(&value).expect("render daemon schema");

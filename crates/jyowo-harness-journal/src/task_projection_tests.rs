@@ -8,11 +8,12 @@ use crate::{
 use chrono::{TimeZone, Utc};
 use harness_contracts::{
     ActorId, AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, BlobId, CheckpointId,
-    ClientId, CommandId, DeltaChunk, EndReason, Event, MessageContent, MessageId, NoopRedactor,
-    PermissionProjection, PermissionRoute, QueueItemId, QueueItemState, RequestId, RunEndedEvent,
-    RunId, RunSegmentId, RunState, RunTerminalReason, SessionId, StopReason, TaskId, TaskState,
-    TenantId, UsageSnapshot, WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceLeaseState,
-    WorkspaceMode,
+    ChildAttachment, ClientId, CommandId, DeltaChunk, EndReason, Event, MessageContent, MessageId,
+    NoopRedactor, PermissionProjection, PermissionRoute, QueueItemId, QueueItemState, RequestId,
+    RunEndedEvent, RunId, RunSegmentId, RunState, RunTerminalReason, SessionId, StopReason,
+    SubagentActorState, SubagentId, SubagentParentProjection, SubagentProjection, TaskId,
+    TaskState, TenantId, UsageSnapshot, WorkspaceLeaseId, WorkspaceLeaseProjection,
+    WorkspaceLeaseState, WorkspaceMode,
 };
 use rusqlite::params;
 use serde_json::json;
@@ -1290,6 +1291,124 @@ fn typed_event_boundary_rejects_unknown_events_and_invalid_entity_ids() {
         ),
         Err(TaskStoreError::InvalidInput(_))
     ));
+}
+
+#[test]
+fn rebuild_defaults_legacy_child_link_to_attached_then_applies_detached_state() {
+    let root = temp_root("legacy-child-attachment");
+    let path = root.join("tasks.db");
+    let child_task_id = TaskId::new();
+    let parent_task_id = TaskId::new();
+    let actor_id = ActorId::new();
+    let segment_id = RunSegmentId::new();
+    let parent_segment_id = RunSegmentId::new();
+    let delegation_id = SubagentId::new();
+    let started_at = Utc::now();
+    let store = TaskStore::open(&path).unwrap();
+
+    transact(
+        &store,
+        child_task_id,
+        0,
+        supervisor_source(),
+        NewTaskEvent::task_created("legacy child"),
+    );
+    transact_events(
+        &store,
+        child_task_id,
+        1,
+        supervisor_source(),
+        vec![
+            NewTaskEvent::subagent_linked(
+                actor_id,
+                0,
+                SubagentParentProjection {
+                    parent_task_id,
+                    parent_segment_id,
+                    delegation_id,
+                    attachment: ChildAttachment::Attached,
+                },
+            ),
+            NewTaskEvent::run_started(segment_id, started_at),
+        ],
+    );
+    transact(
+        &store,
+        child_task_id,
+        3,
+        supervisor_source(),
+        NewTaskEvent::subagent_backgrounded(SubagentProjection {
+            child_task_id,
+            actor_id,
+            segment_id,
+            parent_task_id,
+            parent_segment_id,
+            delegation_id,
+            context_cursor: 0,
+            workspace_lease_id: None,
+            state: SubagentActorState::Background,
+            detached: true,
+            summary: None,
+            started_at,
+            ended_at: None,
+        }),
+    );
+    drop(store);
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let payload: String = connection
+        .query_row(
+            "SELECT payload_json FROM event_log WHERE task_id = ?1 AND event_type = 'subagent.linked'",
+            [child_task_id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    payload["parent"]
+        .as_object_mut()
+        .unwrap()
+        .remove("attachment");
+    connection
+        .execute(
+            "UPDATE event_log SET payload_json = ?2 WHERE task_id = ?1 AND event_type = 'subagent.linked'",
+            params![child_task_id.to_string(), payload.to_string()],
+        )
+        .unwrap();
+    let (last_global_offset, projection): (i64, String) = connection
+        .query_row(
+            "SELECT last_global_offset, projection_json FROM task_projection WHERE task_id = ?1",
+            [child_task_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let mut projection: serde_json::Value = serde_json::from_str(&projection).unwrap();
+    projection["parent"]
+        .as_object_mut()
+        .unwrap()
+        .remove("attachment");
+    let projection = projection.to_string();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&u64::try_from(last_global_offset).unwrap().to_be_bytes());
+    hasher.update(projection.as_bytes());
+    let projection_digest = hasher.finalize().to_hex().to_string();
+    connection
+        .execute(
+            "UPDATE task_projection SET projection_json = ?2, projection_digest = ?3 WHERE task_id = ?1",
+            params![child_task_id.to_string(), projection, projection_digest],
+        )
+        .unwrap();
+    drop(connection);
+
+    let store = TaskStore::open(&path).unwrap();
+    let child = store.task_projection(child_task_id).unwrap().unwrap();
+    assert_eq!(child.parent.unwrap().attachment, ChildAttachment::Attached);
+
+    store.rebuild_projections().unwrap();
+    let child = store.task_projection(child_task_id).unwrap().unwrap();
+    assert_eq!(child.parent.unwrap().attachment, ChildAttachment::Detached);
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

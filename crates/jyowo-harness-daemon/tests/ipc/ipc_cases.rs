@@ -82,6 +82,25 @@ fn handshake_rejects_protocol_token_and_instance_mismatches() {
 }
 
 #[test]
+fn protocol_v2_client_rejects_a_protocol_v1_daemon_connection() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let mut connection = IpcConnection::new(store, config());
+    let mut legacy = handshake("token-a");
+    legacy.protocol_version = 1;
+
+    let response = connection.handle(legacy).unwrap();
+
+    let ServerMessage::Error(error) = &response[0].message else {
+        panic!("protocol v1 handshake must be rejected");
+    };
+    assert_eq!(
+        error.code,
+        harness_contracts::ProtocolErrorCode::ProtocolMismatch
+    );
+}
+
+#[test]
 fn handshake_reports_daemon_agent_capabilities() {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());

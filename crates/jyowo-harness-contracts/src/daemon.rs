@@ -12,7 +12,7 @@ use crate::{
     QueueItemId, RequestId, RunSegmentId, SubagentId, TaskId, WorkspaceLeaseId,
 };
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Maximum JSON body accepted by the length-prefixed local daemon transport.
 pub const MAX_DAEMON_FRAME_BYTES: usize = 8 * 1024 * 1024;
@@ -684,12 +684,14 @@ pub struct SubagentParentProjection {
     pub parent_task_id: TaskId,
     pub parent_segment_id: RunSegmentId,
     pub delegation_id: SubagentId,
+    #[serde(default)]
     pub attachment: ChildAttachment,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ChildAttachment {
+    #[default]
     Attached,
     Detached,
 }

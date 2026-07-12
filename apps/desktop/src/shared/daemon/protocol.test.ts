@@ -6,7 +6,7 @@ import { parseClientFrame, parseServerFrame } from './protocol'
 
 const completeSubmitMessageFrame: ClientFrame = {
   requestId: 'req-typed-command',
-  protocolVersion: 1,
+  protocolVersion: 2,
   request: {
     type: 'submit_message',
     metadata: {
@@ -22,10 +22,23 @@ const completeSubmitMessageFrame: ClientFrame = {
 }
 
 describe('daemon protocol validation', () => {
+  it('rejects protocol v1 client and server frames', () => {
+    expect(() =>
+      parseClientFrame({ ...completeSubmitMessageFrame, protocolVersion: 1 }),
+    ).toThrow('Invalid daemon client frame')
+    expect(() =>
+      parseServerFrame({
+        requestId: null,
+        protocolVersion: 1,
+        message: { type: 'event_batch', afterOffset: 0, latestOffset: 0, gap: false, events: [] },
+      }),
+    ).toThrow('Invalid daemon server frame')
+  })
+
   it('accepts a generated event batch frame', () => {
     const frame = parseServerFrame({
       requestId: null,
-      protocolVersion: 1,
+      protocolVersion: 2,
       message: {
         type: 'event_batch',
         afterOffset: 40,
@@ -66,7 +79,7 @@ describe('daemon protocol validation', () => {
     expect(() =>
       parseServerFrame({
         requestId: null,
-        protocolVersion: 1,
+        protocolVersion: 2,
         message: { type: 'future_event' },
       }),
     ).toThrow('Invalid daemon server frame')
@@ -85,7 +98,7 @@ describe('daemon protocol validation', () => {
     expect(() =>
       parseClientFrame({
         requestId: 'req-1',
-        protocolVersion: 1,
+        protocolVersion: 2,
         request: {
           type: 'read_blob',
           blobId: '00000000000000000000000001',
@@ -99,7 +112,7 @@ describe('daemon protocol validation', () => {
     expect(() =>
       parseClientFrame({
         requestId: 'req-1',
-        protocolVersion: 1,
+        protocolVersion: 2,
         request: {
           type: 'read_blob',
           blobId: '/tmp/secret',
@@ -112,7 +125,7 @@ describe('daemon protocol validation', () => {
     expect(() =>
       parseClientFrame({
         requestId: 'req-1',
-        protocolVersion: 1,
+        protocolVersion: 2,
         request: {
           type: 'read_blob',
           blobId: '80000000000000000000000000',
@@ -125,7 +138,7 @@ describe('daemon protocol validation', () => {
     expect(() =>
       parseServerFrame({
         requestId: null,
-        protocolVersion: 1,
+        protocolVersion: 2,
         message: {
           type: 'event_batch',
           afterOffset: 40,
@@ -169,7 +182,7 @@ describe('daemon protocol validation', () => {
 function eventBatchFrame(recordedAt: string) {
   return {
     requestId: null,
-    protocolVersion: 1,
+    protocolVersion: 2,
     message: {
       type: 'event_batch',
       afterOffset: 40,
