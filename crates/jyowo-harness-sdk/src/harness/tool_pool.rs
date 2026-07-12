@@ -169,9 +169,6 @@ pub(super) fn should_install_default_subagent_runner(
     !harness_has_runner && harness_agent_runtime::should_install_subagent_runner(agent_tool_policy)
 }
 
-#[cfg(feature = "agents-subagent")]
-pub(crate) const BACKGROUND_AGENT_STARTER_CAPABILITY: &str = "jyowo.background_agent.starter";
-
 #[cfg(feature = "agents-team")]
 pub(super) fn install_agent_team_tool_for_run(
     cap_registry: &CapabilityRegistry,
@@ -205,7 +202,8 @@ pub(super) fn install_background_agent_tool_for_run(
     if agent_tool_policy.background_agents != harness_contracts::AgentUsePolicy::Allowed {
         return;
     }
-    let capability = ToolCapability::Custom(BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned());
+    let capability =
+        ToolCapability::Custom(harness_contracts::BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned());
     if !cap_registry.contains(&capability) {
         return;
     }
@@ -273,7 +271,7 @@ impl BackgroundAgentTool {
                 },
                 trust_level: harness_contracts::TrustLevel::AdminTrusted,
                 required_capabilities: vec![ToolCapability::Custom(
-                    BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned(),
+                    harness_contracts::BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned(),
                 )],
                 budget: harness_contracts::ResultBudget {
                     metric: harness_contracts::BudgetMetric::Chars,
@@ -363,7 +361,9 @@ impl Tool for BackgroundAgentTool {
             .unwrap_or_else(|| goal.lines().next().unwrap_or("Background agent"))
             .to_owned();
         let starter = ctx.capability::<dyn harness_contracts::BackgroundAgentStarterCap>(
-            ToolCapability::Custom(BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned()),
+            ToolCapability::Custom(
+                harness_contracts::BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned(),
+            ),
         )?;
         let response = starter
             .start_background_agent(harness_contracts::BackgroundAgentToolStartRequest {
@@ -986,7 +986,9 @@ mod tests {
             let captured = Arc::new(Mutex::new(None));
             let mut cap_registry = CapabilityRegistry::default();
             cap_registry.install::<dyn harness_contracts::BackgroundAgentStarterCap>(
-                ToolCapability::Custom(BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned()),
+                ToolCapability::Custom(
+                    harness_contracts::BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned(),
+                ),
                 Arc::new(CapturingBackgroundAgentStarter {
                     captured: Arc::clone(&captured),
                 }),
@@ -1066,7 +1068,7 @@ mod tests {
             assert!(matches!(
                 error,
                 ToolError::CapabilityMissing(ToolCapability::Custom(ref capability))
-                    if capability == BACKGROUND_AGENT_STARTER_CAPABILITY
+                    if capability == harness_contracts::BACKGROUND_AGENT_STARTER_CAPABILITY
             ));
         });
     }

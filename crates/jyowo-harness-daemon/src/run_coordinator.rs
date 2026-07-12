@@ -11,9 +11,15 @@ use harness_subagent::SubagentRunner;
 use tokio::sync::mpsc;
 
 use crate::{
-    SubagentParentBinding, SubagentStopMode, SubagentSupervisor, WorkspaceCoordinator,
-    WorkspaceCoordinatorError, WorkspaceToolAuthorization,
+    DaemonAgentStarter, SubagentParentBinding, SubagentStopMode, SubagentSupervisor,
+    WorkspaceCoordinator, WorkspaceCoordinatorError, WorkspaceToolAuthorization,
 };
+
+#[derive(Clone)]
+pub struct AgentStarterCapabilities {
+    pub background: Arc<dyn harness_contracts::BackgroundAgentStarterCap>,
+    pub team: Arc<dyn harness_contracts::AgentTeamStarterCap>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceToolAction {
@@ -199,6 +205,7 @@ pub trait RunCoordinatorFactory: Send + Sync + 'static {
         request: StartSegmentRequest,
         workspace_tools: WorkspaceToolDispatcher,
         subagent_runner: Arc<dyn SubagentRunner>,
+        agent_starters: AgentStarterCapabilities,
     ) -> RunningSegment;
 }
 
@@ -237,14 +244,36 @@ impl WorkspaceBoundRunCoordinatorFactory {
                     request.task_id.as_bytes(),
                 ))
             });
-        let subagent_runner = self.subagents.bind(SubagentParentBinding {
+        let binding = SubagentParentBinding {
             parent_task_id: request.task_id,
             parent_segment_id: request.segment_id,
             parent_actor_id,
             depth: 0,
-        });
-        self.inner
-            .spawn_idempotent(request, self.workspace_tools.clone(), subagent_runner)
+        };
+        let subagent_runner = self.subagents.bind(binding);
+        let blob_root = self
+            .store
+            .database_path()
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("blobs");
+        let starter = Arc::new(DaemonAgentStarter::new(
+            Arc::clone(&self.store),
+            Arc::clone(&self.subagents),
+            binding,
+            blob_root,
+        ));
+        let agent_starters = AgentStarterCapabilities {
+            background: Arc::clone(&starter)
+                as Arc<dyn harness_contracts::BackgroundAgentStarterCap>,
+            team: starter as Arc<dyn harness_contracts::AgentTeamStarterCap>,
+        };
+        self.inner.spawn_idempotent(
+            request,
+            self.workspace_tools.clone(),
+            subagent_runner,
+            agent_starters,
+        )
     }
 
     pub(crate) fn request_parent_stop(

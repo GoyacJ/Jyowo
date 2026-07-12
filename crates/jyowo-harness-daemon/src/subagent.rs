@@ -99,9 +99,18 @@ struct AcquiredWorkspaceGuard {
 
 struct StartedChild {
     child_task_id: TaskId,
+    actor_id: ActorId,
+    session_id: SessionId,
     start_tx: oneshot::Sender<()>,
     finished_rx: oneshot::Receiver<Result<SubagentHandle, SubagentError>>,
     caller_guard: SpawnCallerGuard,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DetachedChild {
+    pub child_task_id: TaskId,
+    pub actor_id: ActorId,
+    pub session_id: SessionId,
 }
 
 impl AcquiredWorkspaceGuard {
@@ -289,8 +298,22 @@ impl SubagentSupervisor {
         input: harness_contracts::TurnInput,
         parent_ctx: ParentContext,
     ) -> Result<TaskId, SubagentError> {
+        self.start_detached_child(binding, spec, input, parent_ctx)
+            .await
+            .map(|child| child.child_task_id)
+    }
+
+    pub(crate) async fn start_detached_child(
+        self: &Arc<Self>,
+        binding: SubagentParentBinding,
+        spec: SubagentSpec,
+        input: harness_contracts::TurnInput,
+        parent_ctx: ParentContext,
+    ) -> Result<DetachedChild, SubagentError> {
         let StartedChild {
             child_task_id,
+            actor_id,
+            session_id,
             start_tx,
             finished_rx,
             mut caller_guard,
@@ -313,7 +336,39 @@ impl SubagentSupervisor {
         start_tx
             .send(())
             .map_err(|_| SubagentError::Engine("detached subagent failed to start".into()))?;
-        Ok(child_task_id)
+        Ok(DetachedChild {
+            child_task_id,
+            actor_id,
+            session_id,
+        })
+    }
+
+    pub(crate) fn cancel_child(
+        &self,
+        parent_task_id: TaskId,
+        child_task_id: TaskId,
+    ) -> Result<(), SubagentError> {
+        let child = self
+            .active
+            .lock()
+            .map_err(|_| SubagentError::Engine("subagent registry lock poisoned".into()))?
+            .get(&child_task_id)
+            .filter(|child| child.projection.parent_task_id == parent_task_id)
+            .cloned()
+            .ok_or_else(|| SubagentError::Engine("active child is not linked to parent".into()))?;
+        let projected = self.apply_lifecycle(
+            &child.projection,
+            SubagentLifecycleAuthority::Supervisor,
+            SubagentLifecycleTransition::Cancelled { ended_at: now() },
+        )?;
+        if let Ok(mut active) = self.active.lock() {
+            if let Some(active_child) = active.get_mut(&child_task_id) {
+                active_child.projection = projected;
+            }
+        }
+        child.control.cancel();
+        child.abort.abort();
+        Ok(())
     }
 
     async fn spawn_bound(
@@ -581,6 +636,8 @@ impl SubagentSupervisor {
         };
         Ok(StartedChild {
             child_task_id,
+            actor_id,
+            session_id: child_session_id,
             start_tx,
             finished_rx,
             caller_guard,

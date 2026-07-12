@@ -755,6 +755,7 @@ mod tests {
             _request: crate::StartSegmentRequest,
             _workspace_tools: crate::WorkspaceToolDispatcher,
             _subagent_runner: Arc<dyn harness_subagent::SubagentRunner>,
+            _agent_starters: crate::AgentStarterCapabilities,
         ) -> crate::RunningSegment {
             let (_sender, receiver) = tokio::sync::mpsc::unbounded_channel();
             crate::RunningSegment::new(receiver)

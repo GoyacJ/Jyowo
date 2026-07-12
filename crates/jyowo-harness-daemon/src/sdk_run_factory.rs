@@ -44,10 +44,10 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
-    HarnessPermissionBroker, PermissionBroker, PermissionRuntimeAuthority, ProviderConfigResolver,
-    RunCoordinatorEvent, RunCoordinatorFactory, RunningSegment, StartSegmentRequest,
-    WorkspaceSubagentRunContext, WorkspaceSubagentRunnerFactory, WorkspaceToolAction,
-    WorkspaceToolDispatcher,
+    AgentStarterCapabilities, HarnessPermissionBroker, PermissionBroker,
+    PermissionRuntimeAuthority, ProviderConfigResolver, RunCoordinatorEvent, RunCoordinatorFactory,
+    RunningSegment, StartSegmentRequest, WorkspaceSubagentRunContext,
+    WorkspaceSubagentRunnerFactory, WorkspaceToolAction, WorkspaceToolDispatcher,
 };
 
 #[derive(Clone)]
@@ -347,6 +347,7 @@ impl SdkRunCoordinatorFactory {
         request: StartSegmentRequest,
         workspace_tools: WorkspaceToolDispatcher,
         subagent_runner: Arc<dyn SubagentRunner>,
+        agent_starters: AgentStarterCapabilities,
         subagent_engines: Arc<SdkSubagentEngineRegistry>,
         control: RunControlHandle,
     ) -> Result<(), SdkRunFactoryError> {
@@ -452,6 +453,26 @@ impl SdkRunCoordinatorFactory {
             .with_memory_database_path(memory_database_path);
         let harness_builder = if subagents_enabled {
             harness_builder.with_subagent_runner(subagent_runner)
+        } else {
+            harness_builder
+        };
+        let harness_builder = if agent_tool_policy.background_agents == AgentUsePolicy::Allowed {
+            harness_builder.with_capability::<dyn harness_contracts::BackgroundAgentStarterCap>(
+                harness_contracts::ToolCapability::Custom(
+                    harness_contracts::BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned(),
+                ),
+                agent_starters.background,
+            )
+        } else {
+            harness_builder
+        };
+        let harness_builder = if agent_tool_policy.agent_team == AgentUsePolicy::Allowed {
+            harness_builder.with_capability::<dyn harness_contracts::AgentTeamStarterCap>(
+                harness_contracts::ToolCapability::Custom(
+                    harness_contracts::AGENT_TEAM_STARTER_CAPABILITY.to_owned(),
+                ),
+                agent_starters.team,
+            )
         } else {
             harness_builder
         };
@@ -1044,6 +1065,7 @@ impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
         request: StartSegmentRequest,
         workspace_tools: WorkspaceToolDispatcher,
         subagent_runner: Arc<dyn SubagentRunner>,
+        agent_starters: AgentStarterCapabilities,
     ) -> RunningSegment {
         let key = (request.task_id, request.segment_id);
         let request_digest = segment_request_digest(&request);
@@ -1130,6 +1152,7 @@ impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
                     request,
                     workspace_tools,
                     subagent_runner,
+                    agent_starters,
                     subagent_engines,
                     control,
                 )
@@ -1559,12 +1582,57 @@ mod tests {
     use serde_json::json;
 
     use crate::{
-        PermissionBroker, ProviderConfigResolver, RunCoordinatorEvent, RunCoordinatorFactory,
-        SdkRunCoordinatorFactory, SdkSubagentEngineRegistry, SdkWorkspaceSubagentRunnerFactory,
-        StartSegmentRequest, SubagentParentBinding, SubagentSupervisor, WorkspaceAccess,
-        WorkspaceAcquireOutcome, WorkspaceCoordinator, WorkspaceExecutionKind,
-        WorkspaceLeaseRequest, WorkspaceSubagentRunnerFactory, WorkspaceToolDispatcher,
+        AgentStarterCapabilities, PermissionBroker, ProviderConfigResolver, RunCoordinatorEvent,
+        RunCoordinatorFactory, SdkRunCoordinatorFactory, SdkSubagentEngineRegistry,
+        SdkWorkspaceSubagentRunnerFactory, StartSegmentRequest, SubagentParentBinding,
+        SubagentSupervisor, WorkspaceAccess, WorkspaceAcquireOutcome, WorkspaceCoordinator,
+        WorkspaceExecutionKind, WorkspaceLeaseRequest, WorkspaceSubagentRunnerFactory,
+        WorkspaceToolDispatcher,
     };
+
+    struct UnusedAgentStarter;
+
+    impl harness_contracts::BackgroundAgentStarterCap for UnusedAgentStarter {
+        fn start_background_agent(
+            &self,
+            _request: harness_contracts::BackgroundAgentToolStartRequest,
+        ) -> futures::future::BoxFuture<
+            'static,
+            Result<
+                harness_contracts::BackgroundAgentToolStartResponse,
+                harness_contracts::ToolError,
+            >,
+        > {
+            Box::pin(async {
+                Err(harness_contracts::ToolError::Internal(
+                    "unexpected background starter execution".to_owned(),
+                ))
+            })
+        }
+    }
+
+    impl harness_contracts::AgentTeamStarterCap for UnusedAgentStarter {
+        fn start_agent_team(
+            &self,
+            _request: harness_contracts::AgentTeamToolStartRequest,
+        ) -> futures::future::BoxFuture<
+            'static,
+            Result<harness_contracts::AgentTeamToolStartResponse, harness_contracts::ToolError>,
+        > {
+            Box::pin(async {
+                Err(harness_contracts::ToolError::Internal(
+                    "unexpected team starter execution".to_owned(),
+                ))
+            })
+        }
+    }
+
+    fn unused_agent_starters() -> AgentStarterCapabilities {
+        AgentStarterCapabilities {
+            background: Arc::new(UnusedAgentStarter),
+            team: Arc::new(UnusedAgentStarter),
+        }
+    }
 
     #[tokio::test]
     async fn production_subagent_factory_executes_the_child_only_in_its_task_scope() {
@@ -1771,6 +1839,7 @@ mod tests {
             request,
             fixture.workspace_tools.clone(),
             Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
         );
 
         assert!(matches!(
@@ -1907,11 +1976,13 @@ mod tests {
             request.clone(),
             fixture.workspace_tools.clone(),
             Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
         );
         let second = fixture.factory.spawn_idempotent(
             request,
             fixture.workspace_tools.clone(),
             Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
         );
         let first_control = first.control();
         let second_control = second.control();
@@ -1935,6 +2006,7 @@ mod tests {
             request,
             fixture.workspace_tools.clone(),
             Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
         );
 
         assert!(running.into_events().recv().await.is_some());
@@ -1965,6 +2037,7 @@ mod tests {
                 request.clone(),
                 fixture.workspace_tools.clone(),
                 Arc::new(UnusedSubagentRunner),
+                unused_agent_starters(),
             )
             .into_events();
 
@@ -2053,12 +2126,14 @@ mod tests {
             request.clone(),
             fixture.workspace_tools.clone(),
             Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
         );
         assert!(first.into_events().recv().await.is_some());
         let replay = fixture.factory.spawn_idempotent(
             request,
             fixture.workspace_tools.clone(),
             Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
         );
         assert!(replay.into_events().recv().await.is_some());
 
@@ -2384,6 +2459,7 @@ mod tests {
             fixture.request(Some("missing")),
             fixture.workspace_tools.clone(),
             Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
         );
 
         assert!(matches!(
@@ -2406,6 +2482,7 @@ mod tests {
             request,
             fixture.workspace_tools.clone(),
             Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
         );
         running.control().request(RunControl::ForceStop);
         let mut events = running.into_events();

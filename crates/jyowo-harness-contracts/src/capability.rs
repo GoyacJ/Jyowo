@@ -307,6 +307,8 @@ pub struct SubagentCapAnnouncement {
     pub transcript_ref: Option<TranscriptRef>,
 }
 
+pub const BACKGROUND_AGENT_STARTER_CAPABILITY: &str = "jyowo.background_agent.starter";
+
 pub trait BackgroundAgentStarterCap: Send + Sync + 'static {
     fn start_background_agent(
         &self,

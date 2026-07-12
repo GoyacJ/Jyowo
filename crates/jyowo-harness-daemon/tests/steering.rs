@@ -119,6 +119,7 @@ impl RunCoordinatorFactory for SteeringFactory {
         request: StartSegmentRequest,
         _workspace_tools: harness_daemon::WorkspaceToolDispatcher,
         _subagent_runner: Arc<dyn harness_subagent::SubagentRunner>,
+        _agent_starters: harness_daemon::AgentStarterCapabilities,
     ) -> RunningSegment {
         let control = RunControlHandle::new();
         let (events, receiver) = mpsc::unbounded_channel();
