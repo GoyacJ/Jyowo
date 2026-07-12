@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
     pin::Pin,
     sync::{
@@ -7,48 +7,378 @@ use std::{
         Arc, Mutex,
     },
     task::{Context, Poll},
+    time::Duration,
 };
 
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::{future::BoxFuture, stream, FutureExt, Stream, StreamExt};
 use harness_contracts::{
-    ActionResource, AgentTeamRunConfig, AgentTeamSharedMemoryPolicy, AgentTeamTopology,
-    AgentToolPolicy, AgentUsePolicy, AgentWorkspaceIsolationMode, ConversationAttachmentReference,
-    ConversationContextReference, ConversationTurnInput, Event, ExecutionDefaultsRecord,
-    IndeterminateToolResolution, ModelError, PromotionMode, QueueItemState, Redactor, RunSegmentId,
-    RunTerminalReason, StopReason, TaskId, TenantId, ToolActionPlan, ToolDescriptor, ToolError,
-    ToolErrorPayload, ToolResult, ToolUseFailedEvent, ToolUseId, UsageSnapshot,
-    WorkspaceAccess as ToolWorkspaceAccess, WorkspaceLeaseId, WorkspaceLeaseState, WorkspaceMode,
+    ActionResource, AgentId, AgentTeamRunConfig, AgentTeamSharedMemoryPolicy, AgentTeamTopology,
+    AgentToolPolicy, AgentUsePolicy, AgentWorkspaceIsolationMode, CapabilityRegistry,
+    ConversationAttachmentReference, ConversationContextReference, ConversationTurnInput, Event,
+    ExecutionDefaultsRecord, FallbackPolicy, IndeterminateToolResolution, InteractivityLevel,
+    McpServerId, McpServerScope, ModelError, PermissionMode, PromotionMode, QueueItemState,
+    Redactor, RunId, RunSegmentId, RunTerminalReason, StopReason, TaskId, TenantId, ToolActionPlan,
+    ToolCapability, ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolUseFailedEvent,
+    ToolUseId, UsageSnapshot, WorkspaceAccess as ToolWorkspaceAccess, WorkspaceLeaseId,
+    WorkspaceLeaseState, WorkspaceMode,
 };
 use harness_engine::{EngineBoundSubagentFactory, RunControlHandle, TurnOutcome};
+use harness_execution::{
+    AuthorizationEventSink, AuthorizationService, ExecutionPreflightRegistry,
+    ReqwestToolNetworkBroker, TicketLedger,
+};
 use harness_journal::{
     AppendMetadata, EventStore, ReplayCursor, SegmentExecutionClaim, SegmentExecutionTerminal,
     TaskBlobStore, TaskEventStoreAdapter, TaskStore,
 };
-use harness_sandbox::{LocalIsolation, LocalSandbox};
+use harness_mcp::{
+    HttpTransport, McpAuthorizationContext, McpConnectContext, McpRegistry, McpServerSpec,
+    McpTransport, NoopMcpEventSink, StdioEnv, StdioPolicy, StdioTransport, TransportChoice,
+};
+use harness_permission::{NoopDecisionPersistence, PermissionAuthority};
+use harness_sandbox::{LocalIsolation, LocalSandbox, SandboxBackend};
 use harness_subagent::{
     ChildRunOutcome, ChildRunRequest, DefaultSubagentRunner, DelegationPolicy,
     SubagentEngineFactory, SubagentError, SubagentRunner,
 };
+use harness_tool::{ToolNetworkBrokerCap, ToolNetworkBrokerPreflightCap};
 use jyowo_harness_sdk::{
     ext::{
         AuthorizedToolInput, ContentDelta, HealthStatus, InferContext, ModelDescriptor,
         ModelProvider, ModelRequest, ModelStream, ModelStreamEvent, SchemaResolverContext, Tool,
         ToolContext, ToolRegistry, ToolStream, ValidationError,
     },
-    ConversationRunOptions, ConversationTurnRequest, Harness, SessionOptions,
+    ConversationRunOptions, ConversationTurnRequest, Harness, HarnessBuilder, McpConfig,
+    SessionOptions,
 };
 use serde_json::json;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
 
+use crate::runtime_config::RuntimeMcpTransport;
 use crate::{
     AgentStarterCapabilities, HarnessPermissionBroker, PermissionBroker,
-    PermissionRuntimeAuthority, ProviderConfigResolver, RunCoordinatorEvent, RunCoordinatorFactory,
-    RunningSegment, StartSegmentRequest, WorkspaceSubagentRunContext,
-    WorkspaceSubagentRunnerFactory, WorkspaceToolAction, WorkspaceToolDispatcher,
+    PermissionRuntimeAuthority, RunCoordinatorEvent, RunCoordinatorFactory, RunningSegment,
+    RuntimeConfigResolver, RuntimeConfigSnapshot, RuntimeMcpServerConfig, StartSegmentRequest,
+    WorkspaceSubagentRunContext, WorkspaceSubagentRunnerFactory, WorkspaceToolAction,
+    WorkspaceToolDispatcher,
 };
+
+struct DaemonAuthorizationEventSink {
+    event_store: Arc<dyn EventStore>,
+}
+
+#[async_trait]
+impl AuthorizationEventSink for DaemonAuthorizationEventSink {
+    async fn emit_batch(
+        &self,
+        tenant_id: TenantId,
+        session_id: harness_contracts::SessionId,
+        events: Vec<Event>,
+    ) -> Result<(), harness_execution::ExecutionError> {
+        self.event_store
+            .append(tenant_id, session_id, &events)
+            .await
+            .map(|_| ())
+            .map_err(|error| harness_execution::ExecutionError::EventSinkFailed {
+                reason: format!("journal append failed: {error}"),
+            })
+    }
+}
+
+struct DaemonAuthorizationRuntime {
+    authority: Arc<PermissionAuthority>,
+    service: Arc<AuthorizationService>,
+    network_broker: Arc<dyn ToolNetworkBrokerCap>,
+}
+
+fn daemon_authorization_runtime(
+    permission_broker: HarnessPermissionBroker,
+    sandbox: Arc<dyn SandboxBackend>,
+    event_store: Arc<dyn EventStore>,
+    redactor: Arc<dyn Redactor>,
+    provider_credential_resolver: Arc<dyn harness_contracts::ProviderCredentialResolverCap>,
+) -> Result<DaemonAuthorizationRuntime, SdkRunFactoryError> {
+    let policy_broker: Arc<dyn harness_permission::PermissionBroker> = Arc::new(permission_broker);
+    let authority = Arc::new(
+        PermissionAuthority::builder()
+            .with_policy_broker(policy_broker)
+            .with_transient_decision_store(Arc::new(NoopDecisionPersistence))
+            .build()
+            .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?,
+    );
+    let ticket_ledger = Arc::new(TicketLedger::default());
+    let concrete_network_broker = Arc::new(
+        ReqwestToolNetworkBroker::new_with_ticket_authority(
+            Duration::from_secs(120),
+            10 * 1024 * 1024,
+            redactor,
+            ticket_ledger.authority_key(),
+        )
+        .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?,
+    );
+    let network_broker: Arc<dyn ToolNetworkBrokerCap> = concrete_network_broker.clone();
+    let network_preflight: Arc<dyn ToolNetworkBrokerPreflightCap> = concrete_network_broker;
+    let mut capabilities = CapabilityRegistry::default();
+    capabilities.install(ToolCapability::NetworkBroker, Arc::clone(&network_broker));
+    capabilities.install(
+        ToolCapability::ProviderCredentialResolver,
+        provider_credential_resolver,
+    );
+    let preflight =
+        ExecutionPreflightRegistry::new(sandbox, Some(network_preflight), Arc::new(capabilities));
+    let service = Arc::new(AuthorizationService::new(
+        Arc::clone(&authority),
+        preflight,
+        Arc::new(DaemonAuthorizationEventSink { event_store }),
+        ticket_ledger,
+    ));
+    Ok(DaemonAuthorizationRuntime {
+        authority,
+        service,
+        network_broker,
+    })
+}
+
+fn apply_runtime_snapshot<M, S, SB>(
+    builder: HarnessBuilder<M, S, SB>,
+    snapshot: &RuntimeConfigSnapshot,
+    mcp_config: McpConfig,
+) -> HarnessBuilder<M, S, SB> {
+    builder
+        .with_mcp_config(mcp_config)
+        .with_plugin_registry(snapshot.plugin_registry.clone())
+        .with_skill_loader(snapshot.skill_loader.clone())
+        .with_skill_config_snapshot(snapshot.skill_config.clone())
+        .with_provider_capability_routes(snapshot.provider_routes.clone())
+        .with_capability::<dyn harness_contracts::ProviderCredentialResolverCap>(
+            harness_contracts::ToolCapability::ProviderCredentialResolver,
+            Arc::clone(&snapshot.provider_credential_resolver),
+        )
+}
+
+async fn mcp_config_from_runtime_snapshot(
+    snapshot: &RuntimeConfigSnapshot,
+    authorization_service: Arc<AuthorizationService>,
+    execution_root: &Path,
+    session_id: harness_contracts::SessionId,
+    run_id: RunId,
+    permission_mode: PermissionMode,
+) -> Result<McpConfig, SdkRunFactoryError> {
+    let registry = McpRegistry::new();
+    let mut server_ids_to_inject = Vec::new();
+    let agent_id = AgentId::new();
+
+    for record in snapshot.mcp_servers.iter().filter(|record| record.enabled) {
+        let (spec, transport) = mcp_server_runtime(record, execution_root)?;
+        let scope = match record.scope.as_str() {
+            "global" => McpServerScope::Global,
+            "session" => McpServerScope::Session(session_id),
+            "agent" => McpServerScope::Agent(agent_id),
+            _ => {
+                return Err(SdkRunFactoryError::RuntimeConfig(format!(
+                    "MCP server `{}` has an unsupported scope",
+                    record.id
+                )))
+            }
+        };
+        let server_id = spec.server_id.clone();
+        let authorization = McpAuthorizationContext {
+            authorization_service: Arc::clone(&authorization_service),
+            tenant_id: TenantId::SINGLE,
+            scope: scope.clone(),
+            session_id,
+            run_id,
+            permission_mode,
+            interactivity: InteractivityLevel::NoInteractive,
+            fallback_policy: FallbackPolicy::AskUser,
+            workspace_root: execution_root.to_owned(),
+        };
+        registry
+            .add_managed_server_with_context(
+                spec,
+                scope,
+                transport,
+                Arc::new(NoopMcpEventSink),
+                McpConnectContext::default()
+                    .with_permission_mode(permission_mode)
+                    .with_authorization(authorization),
+            )
+            .await
+            .map_err(|_| {
+                SdkRunFactoryError::RuntimeConfig(format!(
+                    "MCP server `{}` failed to connect",
+                    record.id
+                ))
+            })?;
+        server_ids_to_inject.push(server_id);
+    }
+
+    Ok(McpConfig {
+        registry,
+        server_ids_to_inject,
+    })
+}
+
+fn mcp_server_runtime(
+    record: &RuntimeMcpServerConfig,
+    workspace_root: &Path,
+) -> Result<(McpServerSpec, Arc<dyn McpTransport>), SdkRunFactoryError> {
+    let (transport_choice, transport): (TransportChoice, Arc<dyn McpTransport>) = match &record
+        .transport
+    {
+        RuntimeMcpTransport::Stdio {
+            command,
+            args,
+            env,
+            inherit_env,
+            working_dir,
+        } => {
+            if command.trim().is_empty() {
+                return Err(SdkRunFactoryError::RuntimeConfig(format!(
+                    "MCP server `{}` has an empty stdio command",
+                    record.id
+                )));
+            }
+            let mut policy = StdioPolicy::default();
+            policy.working_dir = Some(mcp_stdio_working_dir(
+                working_dir.as_deref(),
+                workspace_root,
+                &record.id,
+            )?);
+            let extra = env
+                .iter()
+                .map(|entry| (entry.key.clone(), entry.value.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let inherit = effective_stdio_inherit_env(command, inherit_env)
+                .into_iter()
+                .collect::<BTreeSet<_>>();
+            let env = if inherit.is_empty() {
+                StdioEnv::Empty { extra }
+            } else {
+                StdioEnv::Allowlist { inherit, extra }
+            };
+            (
+                TransportChoice::Stdio {
+                    command: command.clone(),
+                    args: args.clone(),
+                    env,
+                    policy,
+                },
+                Arc::new(StdioTransport::new()),
+            )
+        }
+        RuntimeMcpTransport::Http {
+            url,
+            bearer_token_env_var,
+            headers,
+            headers_from_env,
+        } => {
+            if url.trim().is_empty() {
+                return Err(SdkRunFactoryError::RuntimeConfig(format!(
+                    "MCP server `{}` has an empty HTTP URL",
+                    record.id
+                )));
+            }
+            let mut resolved_headers = headers
+                .iter()
+                .map(|entry| (entry.key.trim().to_owned(), entry.value.clone()))
+                .collect::<BTreeMap<_, _>>();
+            for header in headers_from_env {
+                let value = std::env::var(&header.env_var).map_err(|_| {
+                    SdkRunFactoryError::RuntimeConfig(format!(
+                        "MCP server `{}` requires unavailable header environment variable `{}`",
+                        record.id, header.env_var
+                    ))
+                })?;
+                resolved_headers.insert(header.key.trim().to_owned(), value);
+            }
+            if let Some(env_var) = bearer_token_env_var {
+                let token = std::env::var(env_var).map_err(|_| {
+                        SdkRunFactoryError::RuntimeConfig(format!(
+                            "MCP server `{}` requires unavailable bearer environment variable `{env_var}`",
+                            record.id
+                        ))
+                    })?;
+                resolved_headers.insert("Authorization".to_owned(), format!("Bearer {token}"));
+            }
+            (
+                TransportChoice::Http {
+                    url: url.clone(),
+                    headers: resolved_headers,
+                },
+                Arc::new(HttpTransport::new()),
+            )
+        }
+        RuntimeMcpTransport::InProcess => {
+            return Err(SdkRunFactoryError::RuntimeConfig(format!(
+                "MCP server `{}` cannot use the in-process transport in the daemon",
+                record.id
+            )))
+        }
+    };
+    Ok((
+        McpServerSpec::new(
+            McpServerId(record.id.clone()),
+            record.display_name.clone(),
+            transport_choice,
+            record.source.clone(),
+        ),
+        transport,
+    ))
+}
+
+fn effective_stdio_inherit_env(command: &str, configured: &[String]) -> Vec<String> {
+    if !configured.is_empty() {
+        return configured.to_vec();
+    }
+    let command_name = Path::new(command)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(command);
+    if matches!(command_name, "npx" | "npm" | "pnpm" | "yarn" | "bun") {
+        ["PATH", "HOME", "USER", "TMPDIR"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+fn mcp_stdio_working_dir(
+    configured: Option<&str>,
+    workspace_root: &Path,
+    server_id: &str,
+) -> Result<PathBuf, SdkRunFactoryError> {
+    let Some(configured) = configured else {
+        return Ok(workspace_root.to_owned());
+    };
+    if configured.trim().is_empty() {
+        return Err(SdkRunFactoryError::RuntimeConfig(format!(
+            "MCP server `{server_id}` has an empty working directory"
+        )));
+    }
+    let path = PathBuf::from(configured);
+    let candidate = if path.is_absolute() {
+        path
+    } else {
+        workspace_root.join(path)
+    };
+    let canonical = candidate.canonicalize().map_err(|_| {
+        SdkRunFactoryError::RuntimeConfig(format!(
+            "MCP server `{server_id}` has an invalid working directory"
+        ))
+    })?;
+    if !canonical.starts_with(workspace_root) {
+        return Err(SdkRunFactoryError::RuntimeConfig(format!(
+            "MCP server `{server_id}` working directory escapes the workspace"
+        )));
+    }
+    Ok(canonical)
+}
 
 #[derive(Clone)]
 struct SharedSegment {
@@ -59,7 +389,7 @@ struct SharedSegment {
 /// Production daemon adapter that executes task segments through the public SDK facade.
 pub struct SdkRunCoordinatorFactory {
     store: Arc<TaskStore>,
-    provider_configs: ProviderConfigResolver,
+    runtime_configs: RuntimeConfigResolver,
     blob_root: PathBuf,
     permissions: Arc<PermissionBroker>,
     redactor: Arc<dyn Redactor>,
@@ -122,13 +452,9 @@ impl Drop for SdkSubagentEngineBinding {
 
 struct SdkSubagentRuntimeTemplate {
     store: Arc<TaskStore>,
-    provider: Arc<dyn ModelProvider>,
-    config_id: String,
-    model_id: String,
-    protocol: harness_contracts::ModelProtocol,
-    model_options: harness_contracts::ModelRequestOptions,
+    runtime_config: RuntimeConfigSnapshot,
     permissions: Arc<PermissionBroker>,
-    memory_database_path: PathBuf,
+    redactor: Arc<dyn Redactor>,
     workspace_tools: WorkspaceToolDispatcher,
     agent_tool_policy: AgentToolPolicy,
 }
@@ -244,34 +570,69 @@ impl SubagentEngineFactory for SdkIsolatedSubagentEngineFactory {
                 ),
             },
         );
+        let sandbox: Arc<dyn SandboxBackend> =
+            Arc::new(LocalSandbox::new(&workspace_root).with_isolation(isolation));
+        let authorization = daemon_authorization_runtime(
+            permission_broker,
+            Arc::clone(&sandbox),
+            Arc::clone(&self.context.event_store),
+            Arc::clone(&self.runtime.redactor),
+            Arc::clone(&self.runtime.runtime_config.provider_credential_resolver),
+        )
+        .map_err(|error| SubagentError::Engine(error.to_string()))?;
+        let mcp_config = mcp_config_from_runtime_snapshot(
+            &self.runtime.runtime_config,
+            Arc::clone(&authorization.service),
+            &workspace_root,
+            self.context.session_id,
+            request.child_run_id,
+            request.spec.permission_mode,
+        )
+        .await
+        .map_err(|error| SubagentError::Engine(error.to_string()))?;
+        let provider = &self.runtime.runtime_config.provider;
+        let execution_defaults = &self.runtime.runtime_config.execution_defaults;
         let engine_factory = Arc::new(EngineBoundSubagentFactory::default());
-        let harness = Harness::builder()
+        let harness_builder = Harness::builder()
             .with_workspace_root(&workspace_root)
-            .with_model_arc(Arc::clone(&self.runtime.provider))
+            .with_model_arc(Arc::clone(&provider.provider))
             .with_store_arc(Arc::clone(&self.context.event_store))
-            .with_sandbox(LocalSandbox::new(&workspace_root).with_isolation(isolation))
+            .with_sandbox_arc(sandbox)
             .with_tool_registry(tool_registry)
-            .with_model_id(&self.runtime.model_id)
-            .with_permission_broker(permission_broker)
-            .with_memory_database_path(&self.runtime.memory_database_path)
+            .with_model_id(&provider.model_id)
+            .with_permission_authority_arc(authorization.authority)
+            .with_authorization_service_arc(authorization.service)
+            .with_capability::<dyn ToolNetworkBrokerCap>(
+                ToolCapability::NetworkBroker,
+                authorization.network_broker,
+            )
+            .with_memory_database_path(&self.runtime.runtime_config.memory_database_path)
             .with_subagent_runner(Arc::clone(&self.context.subagent_runner))
-            .with_subagent_engine_factory(Arc::clone(&engine_factory))
-            .build()
-            .await
-            .map_err(|error| SubagentError::Engine(error.to_string()))?;
+            .with_subagent_engine_factory(Arc::clone(&engine_factory));
+        let harness =
+            apply_runtime_snapshot(harness_builder, &self.runtime.runtime_config, mcp_config)
+                .build()
+                .await
+                .map_err(|error| SubagentError::Engine(error.to_string()))?;
         let options = SessionOptions::new(&workspace_root)
+            .with_project_workspace_root(&self.runtime.runtime_config.workspace_root)
             .with_tenant_id(self.context.tenant_id)
             .with_session_id(self.context.session_id)
-            .with_model_id(&self.runtime.model_id)
-            .with_protocol(self.runtime.protocol)
-            .with_model_options(self.runtime.model_options.clone())
+            .with_tool_profile(execution_defaults.tool_profile.clone())
+            .with_model_id(&provider.model_id)
+            .with_protocol(provider.protocol)
+            .with_model_options(provider.model_options.clone())
+            .with_agent_profiles(self.runtime.runtime_config.agent_profiles.clone())
+            .with_context_compression_trigger_ratio(
+                execution_defaults.context_compression_trigger_ratio,
+            )
             .with_permission_mode(request.spec.permission_mode);
         let mut run_options = ConversationRunOptions::from_session_options(&options)
-            .with_model_config_id(&self.runtime.config_id)
-            .with_model_id(&self.runtime.model_id)
-            .with_protocol(self.runtime.protocol)
+            .with_model_config_id(&provider.config_id)
+            .with_model_id(&provider.model_id)
+            .with_protocol(provider.protocol)
             .with_permission_mode(request.spec.permission_mode)
-            .with_model_options(self.runtime.model_options.clone());
+            .with_model_options(provider.model_options.clone());
         run_options.agent_tool_policy = Some(self.runtime.agent_tool_policy.clone());
         harness
             .prepare_external_subagent_engine(options, run_options)
@@ -285,14 +646,14 @@ impl SdkRunCoordinatorFactory {
     #[must_use]
     pub fn new(
         store: Arc<TaskStore>,
-        provider_configs: ProviderConfigResolver,
+        runtime_configs: RuntimeConfigResolver,
         blob_root: impl Into<PathBuf>,
         permissions: Arc<PermissionBroker>,
         redactor: Arc<dyn Redactor>,
     ) -> Self {
         Self::new_with_subagent_engines(
             store,
-            provider_configs,
+            runtime_configs,
             blob_root,
             permissions,
             redactor,
@@ -303,7 +664,7 @@ impl SdkRunCoordinatorFactory {
     #[must_use]
     pub fn new_with_subagent_engines(
         store: Arc<TaskStore>,
-        provider_configs: ProviderConfigResolver,
+        runtime_configs: RuntimeConfigResolver,
         blob_root: impl Into<PathBuf>,
         permissions: Arc<PermissionBroker>,
         redactor: Arc<dyn Redactor>,
@@ -311,7 +672,7 @@ impl SdkRunCoordinatorFactory {
     ) -> Self {
         Self {
             store,
-            provider_configs,
+            runtime_configs,
             blob_root: blob_root.into(),
             permissions,
             redactor,
@@ -340,7 +701,7 @@ impl SdkRunCoordinatorFactory {
 
     async fn execute_segment(
         store: Arc<TaskStore>,
-        provider_configs: ProviderConfigResolver,
+        runtime_configs: RuntimeConfigResolver,
         blob_root: PathBuf,
         permissions: Arc<PermissionBroker>,
         redactor: Arc<dyn Redactor>,
@@ -378,12 +739,11 @@ impl SdkRunCoordinatorFactory {
         );
         let replay_calls =
             apply_indeterminate_tool_decisions(event_store.as_ref(), &request).await?;
-        let provider = provider_configs
-            .resolve(request.input.model_config_id.as_deref())
-            .map_err(|error| SdkRunFactoryError::Provider(error.to_string()))?;
-        let execution_defaults = provider_configs
-            .resolve_execution_defaults()
-            .map_err(|error| SdkRunFactoryError::ExecutionDefaults(error.to_string()))?;
+        let runtime_config = runtime_configs
+            .resolve(&workspace_root, request.input.model_config_id.as_deref())
+            .map_err(|error| SdkRunFactoryError::RuntimeConfig(error.to_string()))?;
+        let provider = &runtime_config.provider;
+        let execution_defaults = &runtime_config.execution_defaults;
         let model: Arc<dyn ModelProvider> = if replay_calls.is_empty() {
             Arc::clone(&provider.provider)
         } else {
@@ -419,9 +779,27 @@ impl SdkRunCoordinatorFactory {
                 ),
             },
         );
+        let sandbox: Arc<dyn SandboxBackend> =
+            Arc::new(LocalSandbox::new(&workspace_root).with_isolation(isolation));
+        let authorization = daemon_authorization_runtime(
+            permission_broker,
+            Arc::clone(&sandbox),
+            Arc::clone(&event_store),
+            Arc::clone(&redactor),
+            Arc::clone(&runtime_config.provider_credential_resolver),
+        )?;
+        let mcp_config = mcp_config_from_runtime_snapshot(
+            &runtime_config,
+            Arc::clone(&authorization.service),
+            &workspace_root,
+            request.input.session_id,
+            request.input.run_id,
+            request.input.permission_mode,
+        )
+        .await?;
         let agent_tool_policy = daemon_agent_tool_policy(&execution_defaults)?;
         let subagents_enabled = agent_tool_policy.subagents == AgentUsePolicy::Allowed;
-        let memory_database_path = blob_root.join("runtime").join("memory.sqlite3");
+        let memory_database_path = runtime_config.memory_database_path.clone();
         std::fs::create_dir_all(
             memory_database_path
                 .parent()
@@ -433,13 +811,9 @@ impl SdkRunCoordinatorFactory {
                 request.segment_id,
                 Arc::new(SdkSubagentRuntimeTemplate {
                     store: Arc::clone(&store),
-                    provider: Arc::clone(&provider.provider),
-                    config_id: provider.config_id.clone(),
-                    model_id: provider.model_id.clone(),
-                    protocol: provider.protocol,
-                    model_options: provider.model_options.clone(),
+                    runtime_config: runtime_config.clone(),
                     permissions: Arc::clone(&permissions),
-                    memory_database_path: memory_database_path.clone(),
+                    redactor: Arc::clone(&redactor),
                     workspace_tools: workspace_tools.clone(),
                     agent_tool_policy: agent_tool_policy.clone(),
                 }),
@@ -449,10 +823,15 @@ impl SdkRunCoordinatorFactory {
             .with_workspace_root(&workspace_root)
             .with_model_arc(model)
             .with_store_arc(event_store)
-            .with_sandbox(LocalSandbox::new(&workspace_root).with_isolation(isolation))
+            .with_sandbox_arc(sandbox)
             .with_tool_registry(tool_registry)
             .with_model_id(&provider.model_id)
-            .with_permission_broker(permission_broker)
+            .with_permission_authority_arc(authorization.authority)
+            .with_authorization_service_arc(authorization.service)
+            .with_capability::<dyn ToolNetworkBrokerCap>(
+                ToolCapability::NetworkBroker,
+                authorization.network_broker,
+            )
             .with_memory_database_path(memory_database_path);
         let harness_builder = if subagents_enabled {
             harness_builder.with_subagent_runner(subagent_runner)
@@ -479,17 +858,23 @@ impl SdkRunCoordinatorFactory {
         } else {
             harness_builder
         };
-        let harness = harness_builder
+        let harness = apply_runtime_snapshot(harness_builder, &runtime_config, mcp_config)
             .build()
             .await
             .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?;
 
         let session_options = SessionOptions::new(&workspace_root)
+            .with_project_workspace_root(&runtime_config.workspace_root)
             .with_tenant_id(TenantId::SINGLE)
             .with_session_id(request.input.session_id)
+            .with_tool_profile(execution_defaults.tool_profile.clone())
             .with_model_id(&provider.model_id)
             .with_protocol(provider.protocol)
             .with_model_options(provider.model_options.clone())
+            .with_agent_profiles(runtime_config.agent_profiles.clone())
+            .with_context_compression_trigger_ratio(
+                execution_defaults.context_compression_trigger_ratio,
+            )
             .with_permission_mode(request.input.permission_mode);
         harness
             .open_or_create_conversation_session(session_options.clone())
@@ -514,11 +899,11 @@ impl SdkRunCoordinatorFactory {
             &request.input.attachments,
         )?;
         let mut run_options = ConversationRunOptions::from_session_options(&session_options)
-            .with_model_config_id(provider.config_id)
-            .with_model_id(provider.model_id)
+            .with_model_config_id(provider.config_id.clone())
+            .with_model_id(provider.model_id.clone())
             .with_protocol(provider.protocol)
             .with_permission_mode(request.input.permission_mode)
-            .with_model_options(provider.model_options);
+            .with_model_options(provider.model_options.clone());
         run_options.agent_tool_policy = Some(agent_tool_policy);
         harness
             .submit_conversation_turn_with_run_control(
@@ -1154,7 +1539,7 @@ impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
         };
         if let Some((control, terminal_sender)) = start {
             let store = Arc::clone(&self.store);
-            let provider_configs = self.provider_configs.clone();
+            let runtime_configs = self.runtime_configs.clone();
             let blob_root = self.blob_root.clone();
             let permissions = Arc::clone(&self.permissions);
             let redactor = Arc::clone(&self.redactor);
@@ -1167,7 +1552,7 @@ impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
                 let execution_control = control.clone();
                 let result = Self::execute_segment(
                     Arc::clone(&store),
-                    provider_configs,
+                    runtime_configs,
                     blob_root,
                     permissions,
                     redactor,
@@ -1551,8 +1936,8 @@ enum SdkRunFactoryError {
     ManagedWorkspacePathMissing,
     #[error("workspace validation failed: {0}")]
     Workspace(String),
-    #[error("provider configuration failed: {0}")]
-    Provider(String),
+    #[error("runtime configuration failed: {0}")]
+    RuntimeConfig(String),
     #[error("execution defaults failed: {0}")]
     ExecutionDefaults(String),
     #[error("attachment could not be loaded: {0}")]
@@ -1604,8 +1989,8 @@ mod tests {
     use serde_json::json;
 
     use crate::{
-        AgentStarterCapabilities, PermissionBroker, ProviderConfigResolver, RunCoordinatorEvent,
-        RunCoordinatorFactory, SdkRunCoordinatorFactory, SdkSubagentEngineRegistry,
+        AgentStarterCapabilities, PermissionBroker, RunCoordinatorEvent, RunCoordinatorFactory,
+        RuntimeConfigResolver, SdkRunCoordinatorFactory, SdkSubagentEngineRegistry,
         SdkWorkspaceSubagentRunnerFactory, StartSegmentRequest, SubagentParentBinding,
         SubagentSupervisor, WorkspaceAccess, WorkspaceAcquireOutcome, WorkspaceCoordinator,
         WorkspaceExecutionKind, WorkspaceLeaseRequest, WorkspaceSubagentRunnerFactory,
@@ -1657,10 +2042,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn foreground_and_subagent_harnesses_receive_the_same_runtime_snapshot() {
+        let fixture = Fixture::new();
+        fixture.write_provider_config();
+        let snapshot = crate::RuntimeConfigResolver::new(fixture._root.path().join("config"))
+            .resolve(&fixture.workspace_root, None)
+            .expect("runtime snapshot");
+        let build_harness = || {
+            super::apply_runtime_snapshot(
+                jyowo_harness_sdk::Harness::builder()
+                    .with_workspace_root(&fixture.workspace_root)
+                    .with_model(TestModelProvider::default())
+                    .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+                    .with_sandbox(NoopSandbox::new()),
+                &snapshot,
+                jyowo_harness_sdk::McpConfig::default(),
+            )
+        };
+
+        let foreground = build_harness().build().await.expect("foreground harness");
+        let subagent = build_harness().build().await.expect("subagent harness");
+
+        for harness in [&foreground, &subagent] {
+            assert!(harness.mcp_config().is_some());
+            assert!(harness.plugin_registry().is_some());
+            assert_eq!(
+                *harness.provider_capability_routes().read(),
+                snapshot.provider_routes
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn production_subagent_factory_executes_the_child_only_in_its_task_scope() {
         use harness_contracts::{AgentToolPolicy, AgentUsePolicy, AgentWorkspaceIsolationMode};
 
         let fixture = Fixture::new();
+        fixture.write_provider_config();
         initialize_git_repository(&fixture.workspace_root);
         let parent_segment_id = RunSegmentId::new();
         let parent_actor_id = fixture
@@ -1705,18 +2123,21 @@ mod tests {
                 },
                 ModelStreamEvent::MessageStop,
             ]));
+        let mut runtime_config = RuntimeConfigResolver::new(fixture._root.path().join("config"))
+            .resolve(&fixture.workspace_root, None)
+            .expect("runtime config");
+        runtime_config.provider.provider = provider;
+        runtime_config.provider.config_id = "test".into();
+        runtime_config.provider.model_id = "test-model".into();
+        runtime_config.provider.protocol = ModelProtocol::Messages;
         let registry = Arc::new(SdkSubagentEngineRegistry::default());
         let _binding = registry.bind(
             parent_segment_id,
             Arc::new(super::SdkSubagentRuntimeTemplate {
                 store: Arc::clone(&fixture.store),
-                provider,
-                config_id: "test".into(),
-                model_id: "test-model".into(),
-                protocol: ModelProtocol::Messages,
-                model_options: Default::default(),
+                runtime_config,
                 permissions: Arc::clone(&fixture.factory.permissions),
-                memory_database_path: fixture._root.path().join("memory.sqlite3"),
+                redactor: Arc::new(NoopRedactor),
                 workspace_tools: fixture.workspace_tools.clone(),
                 agent_tool_policy: AgentToolPolicy {
                     subagents: AgentUsePolicy::Allowed,
@@ -3270,7 +3691,7 @@ mod tests {
             let permissions = Arc::new(PermissionBroker::new(Arc::clone(&store), redactor.clone()));
             let factory = SdkRunCoordinatorFactory::new(
                 Arc::clone(&store),
-                ProviderConfigResolver::new(root.path().join("config")),
+                RuntimeConfigResolver::new(root.path().join("config")),
                 root.path().join("blobs"),
                 permissions,
                 redactor,

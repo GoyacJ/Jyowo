@@ -17,14 +17,19 @@ workspace = true
 jyowo-harness-agent-runtime = { path = "../jyowo-harness-agent-runtime" }
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
 jyowo-harness-engine = { path = "../jyowo-harness-engine" }
+jyowo-harness-execution = { path = "../jyowo-harness-execution" }
 jyowo-harness-fs = { path = "../jyowo-harness-fs" }
 jyowo-harness-journal = { path = "../jyowo-harness-journal", features = ["sqlite", "blob-file"] }
 jyowo-harness-model = { path = "../jyowo-harness-model", features = ["all-providers"] }
+jyowo-harness-mcp = { path = "../jyowo-harness-mcp", features = ["stdio", "http"] }
 jyowo-harness-observability = { path = "../jyowo-harness-observability" }
+jyowo-harness-permission = { path = "../jyowo-harness-permission" }
+jyowo-harness-plugin = { path = "../jyowo-harness-plugin" }
 jyowo-harness-provider-state = { path = "../jyowo-harness-provider-state" }
-jyowo-harness-sdk = { path = "../jyowo-harness-sdk", features = ["agents-subagent", "memory-provider-registry"] }
+jyowo-harness-sdk = { path = "../jyowo-harness-sdk", features = ["agents-subagent", "memory-provider-registry", "mcp-http"] }
 jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox", features = ["local"] }
 jyowo-harness-subagent = { path = "../jyowo-harness-subagent" }
+jyowo-harness-tool = { path = "../jyowo-harness-tool" }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 blake3 = { workspace = true }

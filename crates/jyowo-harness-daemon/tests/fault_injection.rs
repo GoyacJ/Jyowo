@@ -30,10 +30,11 @@ use harness_contracts::{
 };
 use harness_daemon::{
     encode_frame, DaemonActivity, IpcServerConfig, LocalIpcServer, PermissionBroker,
-    ProviderConfigResolver, RecoveryService, RunCoordinatorEvent, RunCoordinatorFactory,
-    RunningSegment, SdkRunCoordinatorFactory, StartSegmentRequest, Supervisor, SupervisorQuotas,
-    ValidatedTaskCommand, WorkspaceAccess, WorkspaceAcquireOutcome, WorkspaceCoordinator,
-    WorkspaceExecutionKind, WorkspaceLeaseRequest, WorkspaceSubagentRunnerFactory,
+    RecoveryService, RunCoordinatorEvent, RunCoordinatorFactory, RunningSegment,
+    RuntimeConfigResolver, SdkRunCoordinatorFactory, StartSegmentRequest, Supervisor,
+    SupervisorQuotas, ValidatedTaskCommand, WorkspaceAccess, WorkspaceAcquireOutcome,
+    WorkspaceCoordinator, WorkspaceExecutionKind, WorkspaceLeaseRequest,
+    WorkspaceSubagentRunnerFactory,
 };
 use harness_engine::{RunControlHandle, TurnOutcome};
 use harness_journal::{
@@ -537,7 +538,7 @@ async fn provider_retry_repeats_only_the_model_request_after_a_completed_tool() 
     let permissions = Arc::new(PermissionBroker::new(Arc::clone(&store), redactor.clone()));
     let factory = Arc::new(SdkRunCoordinatorFactory::new(
         Arc::clone(&store),
-        ProviderConfigResolver::new(config),
+        RuntimeConfigResolver::new(config),
         root.path().join("blobs"),
         Arc::clone(&permissions),
         Arc::clone(&redactor) as Arc<dyn harness_contracts::Redactor>,

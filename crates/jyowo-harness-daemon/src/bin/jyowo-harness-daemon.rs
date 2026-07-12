@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use harness_contracts::{Redactor, RunState, PROTOCOL_VERSION};
 use harness_daemon::{
-    IpcServerConfig, LocalIpcServer, PermissionBroker, ProviderConfigResolver, RecoveryService,
+    IpcServerConfig, LocalIpcServer, PermissionBroker, RecoveryService, RuntimeConfigResolver,
     RuntimeGuard, SdkRunCoordinatorFactory, SdkSubagentEngineRegistry,
     SdkWorkspaceSubagentRunnerFactory, Supervisor, SupervisorQuotas,
     WorkspaceSubagentRunnerFactory,
@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let subagent_engines = Arc::new(SdkSubagentEngineRegistry::default());
     let run_factory = Arc::new(SdkRunCoordinatorFactory::new_with_subagent_engines(
         Arc::clone(&store),
-        ProviderConfigResolver::new(config_root()),
+        RuntimeConfigResolver::new(config_root()),
         blob_root,
         Arc::clone(&permissions),
         Arc::clone(&redactor),

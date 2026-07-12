@@ -538,12 +538,18 @@ fn daemon_paths(app: &AppHandle) -> Result<DaemonPaths, String> {
 }
 
 fn launch_sidecar(app: &AppHandle, paths: &DaemonPaths) -> Result<(), String> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let global_config_dir = daemon_global_config_dir(&home)?;
     let command = app
         .shell()
         .sidecar(DAEMON_SIDECAR_NAME)
         .map_err(|error| error.to_string())?
         .env("JYOWO_DAEMON_RUNTIME_DIR", &paths.runtime_root)
-        .env("JYOWO_USER_INSTANCE_ID", &paths.user_instance_id);
+        .env("JYOWO_USER_INSTANCE_ID", &paths.user_instance_id)
+        .env("JYOWO_CONFIG_DIR", global_config_dir);
     let (mut events, child) = command.spawn().map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn(async move {
         let _child_guard = child;
@@ -554,6 +560,22 @@ fn launch_sidecar(app: &AppHandle, paths: &DaemonPaths) -> Result<(), String> {
         }
     });
     Ok(())
+}
+
+fn daemon_global_config_dir(home: &Path) -> Result<PathBuf, String> {
+    let config_dir = home.join(".jyowo").join("config");
+    std::fs::create_dir_all(&config_dir).map_err(|error| {
+        format!(
+            "failed to create daemon global config directory {}: {error}",
+            config_dir.display()
+        )
+    })?;
+    config_dir.canonicalize().map_err(|error| {
+        format!(
+            "failed to canonicalize daemon global config directory {}: {error}",
+            config_dir.display()
+        )
+    })
 }
 
 async fn wait_until_ready(client: &DaemonClient) -> Result<ServerFrame, String> {
@@ -575,6 +597,19 @@ mod tests {
     use std::future::pending;
 
     use super::*;
+
+    #[test]
+    fn daemon_global_config_directory_is_created_and_canonical() {
+        let home = tempfile::tempdir().unwrap();
+
+        let config = daemon_global_config_dir(home.path()).unwrap();
+
+        assert_eq!(
+            config,
+            home.path().join(".jyowo/config").canonicalize().unwrap()
+        );
+        assert!(config.is_dir());
+    }
 
     #[test]
     fn staged_attachment_request_contains_bytes_and_never_the_source_path() {

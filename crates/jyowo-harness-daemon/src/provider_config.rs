@@ -141,6 +141,7 @@ impl ProviderConfigResolver {
 }
 
 /// Provider and model metadata selected for one immutable run input.
+#[derive(Clone)]
 pub struct ResolvedProviderConfig {
     pub config_id: String,
     pub provider: Arc<dyn ModelProvider>,
