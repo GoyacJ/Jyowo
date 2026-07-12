@@ -98,14 +98,17 @@ Create fixtures under a temporary home and workspace. Assert:
 - project provider routes override the same operation ID and inherit other global routes;
 - project agent profile selection is resolved from global profile definitions;
 - malformed configured records return redacted typed errors;
-- the selected memory path is workspace-scoped.
+- the selected memory path is stable per canonical workspace, isolated between workspaces, and rooted in daemon-private storage;
+- tasks without a workspace resolve the daemon-global memory database;
+- replacing a workspace runtime path before or after directory creation cannot redirect SQLite or WAL writes.
 
 Use the wished-for API:
 
 ```rust
 let resolver = RuntimeConfigResolver::new(global_root);
 let snapshot = resolver.resolve(&workspace_root, Some("model-config"))?;
-assert_eq!(snapshot.memory_database_path, workspace_root.join(".jyowo/runtime/memory/memory.sqlite3"));
+assert!(snapshot.memory_database_path.starts_with(global_home.join("runtime/workspaces")));
+assert!(!snapshot.memory_database_path.starts_with(&workspace_root));
 ```
 
 **Step 2: Run tests and verify RED**
@@ -184,7 +187,7 @@ Expected: missing service/protocol client behavior.
 
 **Step 3: Implement the daemon service and remove the second owner**
 
-Resolve the database path through `RuntimeConfigResolver`. Implement existing memory list/get/update/delete/candidate/settings operations against that provider. Route protocol requests in `ipc/server.rs`. Remove `DesktopSettingsRuntime` memory access and its memory database initialization.
+Resolve workspace and no-workspace database paths through `RuntimeConfigResolver`, using the same daemon-private workspace-key mapping as task execution. Implement existing memory list/get/update/delete/candidate/settings operations against that provider. Route protocol requests in `ipc/server.rs`. Remove `DesktopSettingsRuntime` memory access and its memory database initialization.
 
 **Step 4: Verify GREEN**
 

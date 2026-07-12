@@ -39,14 +39,14 @@ Runtime snapshots are immutable for one run. Settings changes affect the next ru
 
 ## Memory
 
-The daemon owns memory databases used by task runs and the Memory management API.
+The daemon owns memory databases used by task runs and the Memory management API. Memory files stay under the daemon's Jyowo home instead of under an untrusted workspace.
 
-- Workspace tasks use `<workspace>/.jyowo/runtime/memory/memory.sqlite3`.
+- Workspace tasks use `~/.jyowo/runtime/workspaces/<blake3(canonical-workspace)>/memory/memory.sqlite3`.
 - Tasks without a workspace use `~/.jyowo/runtime/memory/memory.sqlite3`.
 
 Memory management requests are added to the daemon protocol. Tauri memory commands become thin daemon bridges or are removed in favor of the shared daemon client. The desktop settings runtime must not open a second memory database.
 
-Paths are canonicalized and checked for symlink escapes before use. Existing daemon-private memory is not migrated because the deleted conversation runtime has no compatibility requirement.
+The workspace key is derived from the canonical workspace path, so accepted canonical-equivalent paths share one database and different workspaces remain isolated. Directory creation is anchored at the canonical Jyowo home and rejects symlink components. Replacing `<workspace>/.jyowo/runtime` cannot redirect SQLite or its WAL files. This prevents an untrusted workspace from choosing the daemon write target; it is not an isolation boundary against the same user replacing files inside the daemon's own home. Existing workspace or deleted conversation runtime memory is not migrated because there is no compatibility requirement.
 
 ## Background Agents and Task Listing
 

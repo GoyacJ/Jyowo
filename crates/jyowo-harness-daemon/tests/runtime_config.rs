@@ -10,7 +10,7 @@ use harness_contracts::{
     ProviderSecretsRecord, ProviderSelectionRecord, SkillSelectionRecord, ToolProfile, TrustLevel,
 };
 use harness_daemon::{RuntimeConfigError, RuntimeConfigResolver};
-use harness_plugin::{PluginCapabilities, PluginManifest, PluginName};
+use harness_plugin::{PluginCapabilities, PluginLifecycleState, PluginManifest, PluginName};
 use serde::Serialize;
 use tempfile::TempDir;
 
@@ -161,7 +161,7 @@ fn project_skill_and_plugin_selections_disable_unselected_global_packages() {
 }
 
 #[test]
-fn project_agent_profile_selection_resolves_global_definition_and_workspace_memory() {
+fn project_agent_profile_selection_resolves_global_definition_and_daemon_private_memory() {
     let fixture = RuntimeFixture::new();
     fixture.write_global_provider_files();
     fixture.write_global("agent-profiles.json", &[agent_profile("custom-reviewer")]);
@@ -182,13 +182,64 @@ fn project_agent_profile_selection_resolves_global_definition_and_workspace_memo
         .agent_profiles
         .iter()
         .any(|profile| profile.id == "custom-reviewer"));
+    let workspace = fixture
+        .workspace()
+        .canonicalize()
+        .expect("canonical workspace");
+    let workspace_key = blake3::hash(workspace.as_os_str().as_encoded_bytes())
+        .to_hex()
+        .to_string();
     assert_eq!(
         snapshot.memory_database_path,
         fixture
-            .workspace()
+            .home
             .canonicalize()
-            .expect("canonical workspace")
-            .join(".jyowo/runtime/memory/memory.sqlite3")
+            .expect("canonical Jyowo home")
+            .join("runtime/workspaces")
+            .join(workspace_key)
+            .join("memory/memory.sqlite3")
+    );
+    assert!(!snapshot.memory_database_path.starts_with(&workspace));
+}
+
+#[test]
+fn canonical_workspace_memory_path_is_stable_and_workspace_scoped() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    let second_workspace = fixture.root.path().join("second-workspace");
+    fs::create_dir_all(second_workspace.join(".jyowo/config")).expect("second workspace");
+    let resolver = RuntimeConfigResolver::new(fixture.config_root());
+
+    let first = resolver
+        .resolve(fixture.workspace(), None)
+        .expect("first workspace snapshot");
+    let same = resolver
+        .resolve(&fixture.workspace.join("."), None)
+        .expect("same canonical workspace snapshot");
+    let second = resolver
+        .resolve(&second_workspace, None)
+        .expect("second workspace snapshot");
+
+    assert_eq!(first.memory_database_path, same.memory_database_path);
+    assert_ne!(first.memory_database_path, second.memory_database_path);
+}
+
+#[test]
+fn runtime_without_workspace_uses_daemon_global_memory_path() {
+    let fixture = RuntimeFixture::new();
+    let resolver = RuntimeConfigResolver::new(fixture.config_root());
+
+    let path = resolver
+        .resolve_memory_database_path(None)
+        .expect("global memory path");
+
+    assert_eq!(
+        path,
+        fixture
+            .home
+            .canonicalize()
+            .expect("canonical Jyowo home")
+            .join("runtime/memory/memory.sqlite3")
     );
 }
 
@@ -344,6 +395,32 @@ async fn plugin_manifest_is_frozen_when_runtime_snapshot_is_resolved() {
 }
 
 #[cfg(unix)]
+#[tokio::test]
+async fn global_sidecar_plugin_uses_the_production_runtime_loader() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_global_sidecar_plugin("global-sidecar");
+    let plugin_id = harness_contracts::PluginId("global-sidecar@0.1.0".to_owned());
+
+    let snapshot = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("resolve runtime snapshot");
+    let registry = snapshot
+        .materialize_plugin_registry()
+        .expect("materialize plugin registry");
+    registry.discover().await.expect("discover global sidecar");
+    registry
+        .activate(&plugin_id)
+        .await
+        .expect("activate global sidecar");
+
+    assert_eq!(
+        registry.state(&plugin_id),
+        Some(PluginLifecycleState::Activated)
+    );
+}
+
+#[cfg(unix)]
 #[test]
 fn workspace_symlink_is_rejected_instead_of_reading_replaced_project_config() {
     use std::os::unix::fs::symlink;
@@ -362,7 +439,7 @@ fn workspace_symlink_is_rejected_instead_of_reading_replaced_project_config() {
 
 #[cfg(unix)]
 #[test]
-fn runtime_directory_symlink_escape_is_rejected() {
+fn preexisting_workspace_runtime_symlink_cannot_redirect_daemon_memory() {
     use std::os::unix::fs::symlink;
 
     let fixture = RuntimeFixture::new();
@@ -371,16 +448,24 @@ fn runtime_directory_symlink_escape_is_rejected() {
     fs::create_dir_all(&external).expect("external runtime");
     symlink(&external, fixture.workspace.join(".jyowo/runtime")).expect("runtime symlink");
 
-    let error = RuntimeConfigResolver::new(fixture.config_root())
+    let snapshot = RuntimeConfigResolver::new(fixture.config_root())
         .resolve(fixture.workspace(), None)
-        .expect_err("runtime symlink escape must fail closed");
+        .expect("workspace runtime path is not daemon storage");
+    snapshot
+        .ensure_memory_parent()
+        .expect("create daemon-private memory parent");
+    rusqlite::Connection::open(&snapshot.memory_database_path)
+        .expect("open daemon-private workspace memory database")
+        .execute_batch("CREATE TABLE proof (value INTEGER);")
+        .expect("write daemon-private workspace memory database");
 
-    assert!(matches!(error, RuntimeConfigError::ConfigSymlink { .. }));
+    assert!(snapshot.memory_database_path.exists());
+    assert!(!external.join("memory/memory.sqlite3").exists());
 }
 
 #[cfg(unix)]
 #[test]
-fn runtime_directory_symlink_swap_is_rejected_before_memory_directory_creation() {
+fn workspace_runtime_symlink_swap_does_not_redirect_daemon_memory_creation() {
     use std::os::unix::fs::symlink;
 
     let fixture = RuntimeFixture::new();
@@ -392,12 +477,43 @@ fn runtime_directory_symlink_swap_is_rejected_before_memory_directory_creation()
     fs::create_dir_all(&external).expect("external runtime");
     symlink(&external, fixture.workspace.join(".jyowo/runtime")).expect("runtime symlink");
 
-    let error = snapshot
+    snapshot
         .ensure_memory_parent()
-        .expect_err("runtime symlink swap must fail before directory creation");
+        .expect("daemon memory parent must not traverse the workspace runtime path");
+    rusqlite::Connection::open(&snapshot.memory_database_path)
+        .expect("open daemon-private workspace memory database")
+        .execute_batch("CREATE TABLE proof (value INTEGER);")
+        .expect("write daemon-private workspace memory database");
 
-    assert!(matches!(error, RuntimeConfigError::ConfigSymlink { .. }));
+    assert!(snapshot.memory_database_path.exists());
     assert!(!external.join("memory").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_runtime_swap_after_memory_parent_creation_cannot_redirect_sqlite_open() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    let snapshot = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("resolve runtime snapshot");
+    snapshot
+        .ensure_memory_parent()
+        .expect("create daemon-private memory parent");
+    let external = fixture.root.path().join("external-after-create");
+    fs::create_dir_all(&external).expect("external runtime");
+    symlink(&external, fixture.workspace.join(".jyowo/runtime")).expect("runtime symlink");
+
+    rusqlite::Connection::open(&snapshot.memory_database_path)
+        .expect("open daemon-private workspace memory database")
+        .execute_batch("CREATE TABLE proof (value INTEGER);")
+        .expect("write daemon-private workspace memory database");
+
+    assert!(snapshot.memory_database_path.exists());
+    assert!(!external.join("memory.sqlite3").exists());
+    assert!(!external.join("memory/memory.sqlite3").exists());
 }
 
 #[cfg(unix)]
@@ -574,6 +690,43 @@ impl RuntimeFixture {
                 }]
             }),
         );
+    }
+
+    #[cfg(unix)]
+    fn write_global_sidecar_plugin(&self, name: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        self.write_global_plugin(name, "global sidecar plugin");
+        let binary = self
+            .home
+            .join("plugins/packages")
+            .join(name)
+            .join(format!("jyowo-plugin-{name}"));
+        fs::write(
+            &binary,
+            r#"#!/bin/sh
+if [ "$1" = "--harness-runtime" ]; then
+request=$(cat)
+case "$request" in
+  *\"method\":\"activate\"*)
+    printf '{"jsonrpc":"2.0","id":1,"result":{"registered_tools":[],"registered_hooks":[],"registered_skills":[],"registered_mcp":[],"occupied_slots":[]}}'
+    exit 0
+    ;;
+  *\"method\":\"deactivate\"*)
+    printf '{"jsonrpc":"2.0","id":1,"result":null}'
+    exit 0
+    ;;
+esac
+fi
+exit 2
+"#,
+        )
+        .expect("global plugin sidecar");
+        let mut permissions = fs::metadata(&binary)
+            .expect("global plugin sidecar metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(binary, permissions).expect("global plugin sidecar executable");
     }
 
     fn write_global_plugin_manifest(&self, name: &str, description: &str) {

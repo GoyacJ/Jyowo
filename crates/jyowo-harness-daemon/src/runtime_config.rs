@@ -8,15 +8,17 @@ use std::{
 use harness_contracts::{
     validate_agent_profile, validate_provider_capability_route, AgentProfile,
     AgentProfileSelectionRecord, ExecutionDefaultsRecord, ExecutionOverridesRecord,
-    McpServerSource, PluginId, PluginSelectionRecord, ProviderCapabilityRoute,
+    LocalIsolationTag, McpServerSource, PluginId, PluginSelectionRecord, ProviderCapabilityRoute,
     ProviderCapabilityRouteSettings, ProviderCredential, ProviderCredentialResolveContext,
     ProviderCredentialResolverCap, ProviderProfileDefinition, ProviderSecretEntry,
-    ProviderSecretsRecord, ProviderSelectionRecord, SkillSelectionRecord, ToolError,
+    ProviderSecretsRecord, ProviderSelectionRecord, SandboxMode, SkillSelectionRecord, ToolError,
 };
 use harness_plugin::{
-    DiscoverySource, FileManifestLoader, ManifestLoadReport, ManifestLoaderError, PluginConfig,
-    PluginManifestLoader, PluginName, PluginRegistry, PluginRuntimeLoader,
+    CargoExtensionRuntimeLoader, DiscoverySource, FileManifestLoader, ManifestLoadReport,
+    ManifestLoaderError, ManifestOrigin, Plugin, PluginConfig, PluginManifest,
+    PluginManifestLoader, PluginName, PluginRegistry, PluginRuntimeLoader, RuntimeLoaderError,
 };
+use harness_sandbox::{LocalIsolation, LocalSandbox};
 use jyowo_harness_sdk::{
     builtin_agent_profiles,
     ext::{DirectorySourceKind, SkillLoader, SkillSourceConfig},
@@ -51,6 +53,32 @@ impl RuntimeConfigResolver {
         Self {
             global_config_root: global_config_root.into(),
         }
+    }
+
+    pub fn resolve_memory_database_path(
+        &self,
+        workspace_root: Option<&Path>,
+    ) -> Result<PathBuf, RuntimeConfigError> {
+        let global_config_root =
+            self.global_config_root
+                .canonicalize()
+                .map_err(|source| RuntimeConfigError::Read {
+                    kind: "global config root",
+                    path: self.global_config_root.clone(),
+                    source,
+                })?;
+        let global_home =
+            global_config_root
+                .parent()
+                .ok_or_else(|| RuntimeConfigError::Invalid {
+                    kind: "global config root",
+                    reason: "config root has no Jyowo home parent".to_owned(),
+                })?;
+        let workspace_root = workspace_root.map(canonical_workspace_root).transpose()?;
+        Ok(daemon_memory_database_path(
+            global_home,
+            workspace_root.as_deref(),
+        ))
     }
 
     pub fn resolve(
@@ -265,7 +293,8 @@ impl RuntimeConfigResolver {
             allow_project_plugins,
             agent_profiles,
             default_agent_profile_id,
-            memory_database_path: workspace_root.join(".jyowo/runtime/memory/memory.sqlite3"),
+            memory_database_path: daemon_memory_database_path(global_home, Some(&workspace_root)),
+            memory_storage_root: global_home.to_owned(),
             provider_credential_resolver: Arc::new(DaemonProviderCredentialResolver {
                 credentials,
                 routes: provider_routes,
@@ -291,6 +320,7 @@ pub struct RuntimeConfigSnapshot {
     pub agent_profiles: Vec<AgentProfile>,
     pub default_agent_profile_id: Option<String>,
     pub memory_database_path: PathBuf,
+    memory_storage_root: PathBuf,
     pub provider_credential_resolver: Arc<dyn ProviderCredentialResolverCap>,
 }
 
@@ -324,21 +354,40 @@ impl RuntimeConfigSnapshot {
     }
 
     pub fn ensure_memory_parent(&self) -> Result<(), RuntimeConfigError> {
+        let parent =
+            self.memory_database_path
+                .parent()
+                .ok_or_else(|| RuntimeConfigError::Invalid {
+                    kind: "runtime memory directory",
+                    reason: "memory database path has no parent".to_owned(),
+                })?;
+        let relative = parent
+            .strip_prefix(&self.memory_storage_root)
+            .map_err(|_| RuntimeConfigError::Invalid {
+                kind: "runtime memory directory",
+                reason: "memory database path escaped daemon storage root".to_owned(),
+            })?;
         ensure_secure_directory_chain(
-            &self.workspace_root,
-            Path::new(".jyowo/runtime/memory"),
+            &self.memory_storage_root,
+            relative,
             "runtime memory directory",
         )?;
         Ok(())
     }
+}
 
-    #[cfg(test)]
-    pub(crate) fn with_plugin_runtime_loader(
-        mut self,
-        loader: Arc<dyn PluginRuntimeLoader>,
-    ) -> Self {
-        self.plugin_snapshot.runtime_loaders.push(loader);
-        self
+fn daemon_memory_database_path(global_home: &Path, workspace_root: Option<&Path>) -> PathBuf {
+    let runtime_root = global_home.join("runtime");
+    match workspace_root {
+        Some(workspace_root) => {
+            let workspace_key =
+                blake3::hash(workspace_root.as_os_str().as_encoded_bytes()).to_hex();
+            runtime_root
+                .join("workspaces")
+                .join(workspace_key.as_str())
+                .join("memory/memory.sqlite3")
+        }
+        None => runtime_root.join("memory/memory.sqlite3"),
     }
 }
 
@@ -374,6 +423,60 @@ impl RuntimePluginSnapshot {
             builder = builder.with_runtime_loader(Arc::clone(loader));
         }
         builder.build()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DaemonPluginRuntimeLoader {
+    global_packages_root: PathBuf,
+    workspace_packages_root: PathBuf,
+    workspace_root: PathBuf,
+}
+
+impl DaemonPluginRuntimeLoader {
+    fn sandbox_root(&self, origin: &ManifestOrigin) -> Option<PathBuf> {
+        let ManifestOrigin::CargoExtension { binary, .. } = origin else {
+            return None;
+        };
+        if binary.starts_with(&self.workspace_packages_root) {
+            return Some(self.workspace_root.clone());
+        }
+        if binary.starts_with(&self.global_packages_root) {
+            return binary.parent().map(Path::to_path_buf);
+        }
+        None
+    }
+}
+
+#[async_trait::async_trait]
+impl PluginRuntimeLoader for DaemonPluginRuntimeLoader {
+    fn can_load(&self, _manifest: &PluginManifest, origin: &ManifestOrigin) -> bool {
+        self.sandbox_root(origin).is_some()
+    }
+
+    async fn load(
+        &self,
+        manifest: &PluginManifest,
+        origin: &ManifestOrigin,
+    ) -> Result<Arc<dyn Plugin>, RuntimeLoaderError> {
+        let sandbox_root = self.sandbox_root(origin).ok_or_else(|| {
+            RuntimeLoaderError::UnsupportedOrigin("sidecar path is outside plugin roots".to_owned())
+        })?;
+        let isolation = LocalIsolation::for_current_platform();
+        let mode = SandboxMode::OsLevel(match isolation {
+            LocalIsolation::None => LocalIsolationTag::None,
+            LocalIsolation::Bubblewrap => LocalIsolationTag::Bubblewrap,
+            LocalIsolation::Seatbelt => LocalIsolationTag::Seatbelt,
+            LocalIsolation::JobObject => LocalIsolationTag::JobObject,
+        });
+        CargoExtensionRuntimeLoader::new()
+            .with_sandbox(
+                Arc::new(LocalSandbox::new(sandbox_root).with_isolation(isolation)),
+                mode,
+                self.workspace_root.clone(),
+            )
+            .load(manifest, origin)
+            .await
     }
 }
 
@@ -604,7 +707,6 @@ fn reject_symlink_if_present(path: &Path, kind: &'static str) -> Result<(), Runt
 
 fn validate_runtime_path_roots(workspace_root: &Path) -> Result<(), RuntimeConfigError> {
     for (relative, kind) in [
-        (".jyowo/runtime/memory", "runtime memory directory"),
         (".jyowo/skills/packages", "project skill packages"),
         (".jyowo/plugins/packages", "project plugin packages"),
     ] {
@@ -1063,7 +1165,11 @@ fn build_plugin_snapshot(
     Ok(RuntimePluginSnapshot {
         config,
         sources,
-        runtime_loaders: Vec::new(),
+        runtime_loaders: vec![Arc::new(DaemonPluginRuntimeLoader {
+            global_packages_root: global_home.join("plugins/packages"),
+            workspace_packages_root: workspace_root.join(".jyowo/plugins/packages"),
+            workspace_root: workspace_root.to_owned(),
+        })],
     })
 }
 

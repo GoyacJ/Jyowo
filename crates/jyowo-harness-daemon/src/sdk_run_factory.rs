@@ -1978,8 +1978,7 @@ mod tests {
     };
     use harness_model::TestModelProvider;
     use harness_plugin::{
-        Plugin, PluginActivationContext, PluginActivationResult, PluginCapabilities, PluginError,
-        PluginLifecycleState, PluginManifest, PluginName, StaticLinkRuntimeLoader,
+        PluginCapabilities, PluginLifecycleState, PluginManifest, PluginName, ToolManifestEntry,
     };
     use harness_sandbox::LocalIsolation;
     use harness_subagent::{
@@ -2044,46 +2043,16 @@ mod tests {
         }
     }
 
-    struct SnapshotRuntimePlugin {
-        manifest: PluginManifest,
-    }
-
-    #[async_trait]
-    impl Plugin for SnapshotRuntimePlugin {
-        fn manifest(&self) -> &PluginManifest {
-            &self.manifest
-        }
-
-        async fn activate(
-            &self,
-            _ctx: PluginActivationContext,
-        ) -> Result<PluginActivationResult, PluginError> {
-            Ok(PluginActivationResult::default())
-        }
-
-        async fn deactivate(&self) -> Result<(), PluginError> {
-            Ok(())
-        }
-    }
-
+    #[cfg(unix)]
     #[tokio::test]
     async fn foreground_and_subagent_harnesses_receive_the_same_runtime_snapshot() {
         let fixture = Fixture::new();
         fixture.write_provider_config();
-        let manifest = fixture.write_plugin("snapshot-plugin");
+        let manifest = fixture.write_sidecar_plugin("snapshot-plugin", "snapshot-tool");
         let plugin_id = manifest.plugin_id();
-        let runtime_manifest = manifest.clone();
         let snapshot = crate::RuntimeConfigResolver::new(fixture._root.path().join("config"))
             .resolve(&fixture.workspace_root, None)
-            .expect("runtime snapshot")
-            .with_plugin_runtime_loader(Arc::new(StaticLinkRuntimeLoader::new().with_factory(
-                plugin_id.clone(),
-                move || {
-                    Arc::new(SnapshotRuntimePlugin {
-                        manifest: runtime_manifest.clone(),
-                    })
-                },
-            )));
+            .expect("runtime snapshot");
         let build_harness = || {
             super::apply_runtime_snapshot(
                 jyowo_harness_sdk::Harness::builder()
@@ -2123,7 +2092,9 @@ mod tests {
             foreground_registry.state(&plugin_id),
             Some(PluginLifecycleState::Activated)
         );
+        assert!(foreground.tool_registry().get("snapshot-tool").is_some());
         assert_eq!(subagent_registry.state(&plugin_id), None);
+        assert!(subagent.tool_registry().get("snapshot-tool").is_none());
 
         subagent_registry
             .discover()
@@ -2137,6 +2108,7 @@ mod tests {
             subagent_registry.state(&plugin_id),
             Some(PluginLifecycleState::Activated)
         );
+        assert!(subagent.tool_registry().get("snapshot-tool").is_some());
     }
 
     #[tokio::test]
@@ -3799,8 +3771,11 @@ mod tests {
             );
         }
 
-        fn write_plugin(&self, name: &str) -> PluginManifest {
-            let package = self._root.path().join("plugins/packages").join(name);
+        fn write_sidecar_plugin(&self, name: &str, tool_name: &str) -> PluginManifest {
+            let package = self
+                .workspace_root
+                .join(".jyowo/plugins/packages")
+                .join(name);
             std::fs::create_dir_all(&package).expect("plugin package");
             let manifest = PluginManifest {
                 name: PluginName::new(name).expect("plugin name"),
@@ -3810,16 +3785,54 @@ mod tests {
                 authors: Vec::new(),
                 repository: None,
                 signature: None,
-                capabilities: PluginCapabilities::default(),
+                capabilities: PluginCapabilities {
+                    tools: vec![ToolManifestEntry {
+                        name: tool_name.to_owned(),
+                        destructive: false,
+                        input_schema: serde_json::json!({ "type": "object" }),
+                    }],
+                    ..PluginCapabilities::default()
+                },
                 dependencies: Vec::new(),
                 min_harness_version: semver::VersionReq::parse(">=0.0.0")
                     .expect("version requirement"),
             };
             write_json(&package.join("plugin.json"), &manifest);
+            let binary = package.join(format!("jyowo-plugin-{name}"));
+            std::fs::write(
+                &binary,
+                r#"#!/bin/sh
+if [ "$1" = "--harness-runtime" ]; then
+request=$(cat)
+case "$request" in
+  *\"method\":\"activate\"*)
+    printf '{"jsonrpc":"2.0","id":1,"result":{"registered_tools":[],"registered_hooks":[],"registered_skills":[],"registered_mcp":[],"occupied_slots":[]}}'
+    exit 0
+    ;;
+  *\"method\":\"deactivate\"*)
+    printf '{"jsonrpc":"2.0","id":1,"result":null}'
+    exit 0
+    ;;
+esac
+fi
+exit 2
+"#,
+            )
+            .expect("plugin sidecar");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                let mut permissions = std::fs::metadata(&binary)
+                    .expect("plugin sidecar metadata")
+                    .permissions();
+                permissions.set_mode(0o755);
+                std::fs::set_permissions(&binary, permissions).expect("plugin sidecar executable");
+            }
             write_json(
-                &self._root.path().join("plugins/index.json"),
+                &self.workspace_root.join(".jyowo/plugins/index.json"),
                 &serde_json::json!({
-                    "allowProjectPlugins": false,
+                    "allowProjectPlugins": true,
                     "records": [{
                         "pluginId": manifest.plugin_id().0,
                         "name": name,
@@ -3833,6 +3846,15 @@ mod tests {
                         "config": {}
                     }]
                 }),
+            );
+            std::fs::create_dir_all(self.workspace_root.join(".jyowo/config"))
+                .expect("project config directory");
+            write_json(
+                &self.workspace_root.join(".jyowo/config/plugins.json"),
+                &harness_contracts::PluginSelectionRecord {
+                    allow_project_plugins: true,
+                    enabled: vec![manifest.plugin_id().0.clone()],
+                },
             );
             manifest
         }
