@@ -674,7 +674,27 @@ impl Serialize for McpContent {
                 annotations,
                 meta,
             ),
-            Self::Unknown(value) => value.clone(),
+            Self::Unknown(value) => {
+                let object = value.as_object().ok_or_else(|| {
+                    serde::ser::Error::custom("unknown MCP content must be a JSON object")
+                })?;
+                let kind = object
+                    .get("type")
+                    .ok_or_else(|| serde::ser::Error::custom("unknown MCP content missing type"))?
+                    .as_str()
+                    .ok_or_else(|| {
+                        serde::ser::Error::custom("unknown MCP content type must be a string")
+                    })?;
+                if matches!(
+                    kind,
+                    "text" | "image" | "audio" | "resource_link" | "resource"
+                ) {
+                    return Err(serde::ser::Error::custom(format!(
+                        "known MCP content type {kind:?} must use its typed variant"
+                    )));
+                }
+                value.clone()
+            }
         };
         value.serialize(serializer)
     }
@@ -686,9 +706,15 @@ impl<'de> Deserialize<'de> for McpContent {
         D: Deserializer<'de>,
     {
         let value = Value::deserialize(deserializer)?;
-        let Some(kind) = value.get("type").and_then(Value::as_str).map(str::to_owned) else {
-            return Ok(Self::Unknown(value));
-        };
+        let object = value
+            .as_object()
+            .ok_or_else(|| D::Error::custom("MCP content must be a JSON object"))?;
+        let kind = object
+            .get("type")
+            .ok_or_else(|| D::Error::custom("MCP content missing type"))?
+            .as_str()
+            .ok_or_else(|| D::Error::custom("MCP content type must be a string"))?
+            .to_owned();
         match kind.as_str() {
             "text" => {
                 let fields: ContentFields =
@@ -951,9 +977,15 @@ pub struct McpPromptArgument {
 pub struct McpPromptMessages {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub messages: Vec<Value>,
+    pub messages: Vec<McpPromptMessage>,
     #[serde(rename = "_meta", default, skip_serializing_if = "BTreeMap::is_empty")]
     pub meta: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpPromptMessage {
+    pub role: McpRole,
+    pub content: McpContent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

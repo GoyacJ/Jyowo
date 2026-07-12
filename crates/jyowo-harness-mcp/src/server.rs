@@ -16,8 +16,8 @@ use futures::SinkExt;
 use futures::StreamExt;
 use harness_contracts::{
     ManifestOriginRef, McpPromptOperation, McpResourceOperation, McpServerId, McpServerSource,
-    MessagePart, Severity, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolResult,
-    ToolUseId,
+    MessagePart, ReferenceKind, Severity, TenantId, ToolActionPlan, ToolDescriptor, ToolError,
+    ToolResult, ToolResultPart, ToolUseId,
 };
 use harness_execution::{AuthorizationContext, ExecutionError};
 use harness_tool::{AuthorizedToolInput, ToolContext, ToolEvent, ToolRegistry};
@@ -2192,10 +2192,110 @@ fn tool_result_to_mcp(result: ToolResult) -> McpToolResult {
     match result {
         ToolResult::Text(text) => McpToolResult::text(text),
         ToolResult::Structured(value) => structured_result(value),
-        other => {
-            let value = serde_json::to_value(other).unwrap_or_else(|_| json!({}));
-            structured_result(value)
+        ToolResult::Blob {
+            content_type,
+            blob_ref,
+        } => McpToolResult::text(format!(
+            "Blob content ({content_type}, {} bytes)",
+            blob_ref.size
+        )),
+        ToolResult::Mixed(parts) => {
+            let mut content = Vec::new();
+            let mut structured = Vec::new();
+            for part in parts {
+                let mapped = tool_result_part_to_mcp(part);
+                content.extend(mapped.content);
+                if let Some(value) = mapped.structured_content {
+                    structured.push(value);
+                }
+            }
+            McpToolResult {
+                content,
+                structured_content: combine_structured(structured),
+                is_error: false,
+                meta: BTreeMap::new(),
+            }
         }
+        _ => McpToolResult::text("Unsupported tool result"),
+    }
+}
+
+fn tool_result_part_to_mcp(part: ToolResultPart) -> McpToolResult {
+    match part {
+        ToolResultPart::Text { text } | ToolResultPart::Code { text, .. } => {
+            McpToolResult::text(text)
+        }
+        ToolResultPart::Structured { value, .. } => structured_result(value),
+        ToolResultPart::Blob {
+            content_type,
+            blob_ref,
+            summary,
+        } => {
+            McpToolResult::text(summary.unwrap_or_else(|| {
+                format!("Blob content ({content_type}, {} bytes)", blob_ref.size)
+            }))
+        }
+        ToolResultPart::Reference {
+            reference_kind: ReferenceKind::Url { url },
+            title,
+            summary,
+        } => McpToolResult {
+            content: vec![McpContent::ResourceLink {
+                resource: Box::new(McpResource {
+                    uri: url.clone(),
+                    name: title.clone().unwrap_or(url),
+                    title,
+                    description: summary,
+                    mime_type: None,
+                    icons: None,
+                    annotations: None,
+                    size: None,
+                    meta: BTreeMap::new(),
+                }),
+            }],
+            structured_content: None,
+            is_error: false,
+            meta: BTreeMap::new(),
+        },
+        ToolResultPart::Reference { title, summary, .. } => McpToolResult::text(
+            summary
+                .or(title)
+                .unwrap_or_else(|| "Tool result reference".to_owned()),
+        ),
+        ToolResultPart::Table {
+            headers,
+            rows,
+            caption,
+        } => {
+            let mut table = serde_json::Map::from_iter([
+                ("headers".to_owned(), json!(headers)),
+                ("rows".to_owned(), json!(rows)),
+            ]);
+            if let Some(caption) = caption {
+                table.insert("caption".to_owned(), Value::String(caption));
+            }
+            structured_result(Value::Object(table))
+        }
+        ToolResultPart::Progress {
+            stage,
+            ratio,
+            detail,
+        } => {
+            let mut text = detail.unwrap_or(stage);
+            if let Some(ratio) = ratio {
+                text.push_str(&format!(" ({:.0}%)", ratio * 100.0));
+            }
+            McpToolResult::text(text)
+        }
+        ToolResultPart::Error {
+            code,
+            message,
+            retriable,
+        } => McpToolResult::text(format!("{message} (code: {code}, retriable: {retriable})")),
+        ToolResultPart::Artifact { title, preview, .. } => {
+            McpToolResult::text(preview.unwrap_or(title))
+        }
+        _ => McpToolResult::text("Unsupported tool result part"),
     }
 }
 
@@ -2208,15 +2308,19 @@ fn message_part_to_mcp(part: MessagePart) -> McpToolResult {
 }
 
 fn structured_result(value: Value) -> McpToolResult {
-    let structured = structured_object(value);
-    McpToolResult {
-        content: vec![McpContent::text(
-            serde_json::to_string_pretty(&structured)
-                .unwrap_or_else(|_| Value::Object(structured.clone()).to_string()),
-        )],
-        structured_content: Some(structured),
-        is_error: false,
-        meta: BTreeMap::new(),
+    match value {
+        Value::Object(structured) => McpToolResult {
+            content: vec![McpContent::text(
+                serde_json::to_string_pretty(&structured)
+                    .unwrap_or_else(|_| Value::Object(structured.clone()).to_string()),
+            )],
+            structured_content: Some(structured),
+            is_error: false,
+            meta: BTreeMap::new(),
+        },
+        value => McpToolResult::text(
+            serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+        ),
     }
 }
 

@@ -6,16 +6,18 @@ use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
     BudgetMetric, CapabilityRegistry, DecisionScope, DeferPolicy, NetworkAccess, OverflowAction,
-    PermissionSubject, ProviderRestriction, ResultBudget, SemverString, SessionId, TenantId,
-    ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin,
-    ToolProperties, ToolResult, ToolResultPart, ToolUseId, TrustLevel, WorkspaceAccess,
+    PermissionSubject, ProviderRestriction, ResultBudget, SemverString, SessionId, Severity,
+    TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
+    ToolOrigin, ToolProperties, ToolResult, ToolResultPart, ToolUseId, TrustLevel, WorkspaceAccess,
 };
 use harness_mcp::{
     JsonRpcRequest, JsonRpcResponse, McpServerAdapter, McpToolResult, StaticToolContextFactory,
+    ToolCallAuthorizer,
 };
 use harness_tool::{
-    action_plan_from_permission_check, AuthorizedToolInput, BuiltinToolset, InterruptToken,
-    PermissionCheck, Tool, ToolContext, ToolEvent, ToolRegistry, ToolStream, ValidationError,
+    action_plan_from_permission_check, AuthorizationTicketClaims, AuthorizedTicketSummary,
+    AuthorizedToolInput, BuiltinToolset, InterruptToken, PermissionCheck, TicketLedger, Tool,
+    ToolContext, ToolEvent, ToolRegistry, ToolStream, ValidationError,
 };
 use serde_json::{json, Value};
 
@@ -56,6 +58,10 @@ async fn server_calls_tool_and_maps_results() {
         test_tool("echo", Behavior::Text("hello".into())),
         test_tool("json", Behavior::Structured(json!({ "ok": true }))),
         test_tool(
+            "scalar",
+            Behavior::Structured(json!(["not", "an", "object"])),
+        ),
+        test_tool(
             "mixed",
             Behavior::Mixed(vec![
                 ToolResultPart::Text {
@@ -83,8 +89,21 @@ async fn server_calls_tool_and_maps_results() {
     assert!(text_content(&structured).contains("\"ok\": true"));
 
     let mixed = call_tool(&server, "mixed", json!({})).await;
-    assert_eq!(mixed.content.len(), 1);
-    assert!(mixed.structured_content.is_some());
+    assert!(matches!(
+        mixed.content.first(),
+        Some(harness_mcp::McpContent::Text { text, .. }) if text == "head"
+    ));
+    assert_eq!(
+        mixed.structured_content,
+        json!({ "n": 1 }).as_object().cloned()
+    );
+    let mixed_json = serde_json::to_string(&mixed).unwrap();
+    assert!(!mixed_json.contains("\"mixed\""));
+    assert!(!mixed_json.contains("\"kind\""));
+
+    let scalar = call_tool(&server, "scalar", json!({})).await;
+    assert!(scalar.structured_content.is_none());
+    assert!(text_content(&scalar).contains("not"));
 }
 
 #[tokio::test]
@@ -107,8 +126,11 @@ async fn server_maps_typed_artifact_tool_results() {
 
     let result = call_tool(&server, "artifact", json!({})).await;
     assert_eq!(result.content.len(), 1);
-    assert!(result.structured_content.is_some());
+    assert!(result.structured_content.is_none());
     assert!(text_content(&result).contains("Generated image"));
+    let result_json = serde_json::to_string(&result).unwrap();
+    assert!(!result_json.contains("artifact_kind"));
+    assert!(!result_json.contains("blob_ref"));
 }
 
 #[tokio::test]
@@ -188,8 +210,50 @@ fn adapter_with(tools: Vec<TestTool>) -> McpServerAdapter {
         .expect("registry");
     McpServerAdapter::builder(registry)
         .with_tool_context_factory(StaticToolContextFactory::new(tool_context()))
+        .with_tool_authorizer(TestToolCallAuthorizer)
         .build()
         .expect("server adapter")
+}
+
+struct TestToolCallAuthorizer;
+
+#[async_trait]
+impl ToolCallAuthorizer for TestToolCallAuthorizer {
+    async fn authorize_tool_call(
+        &self,
+        raw_input: Value,
+        action_plan: ToolActionPlan,
+        _context: &ToolContext,
+    ) -> Result<AuthorizedToolInput, ToolError> {
+        if action_plan.severity != Severity::Info {
+            let reason = if action_plan.severity == Severity::High {
+                "dangerous pattern approval is unavailable in this test"
+            } else {
+                "permission approval is unavailable in this test"
+            };
+            return Err(ToolError::PermissionDenied(reason.to_owned()));
+        }
+        let ticket = ticket_for(&action_plan);
+        AuthorizedToolInput::new(raw_input, action_plan, ticket)
+    }
+}
+
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    let ledger = TicketLedger::default();
+    let claims = AuthorizationTicketClaims {
+        tenant_id: TenantId::SINGLE,
+        session_id: SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+    };
+    let ticket = ledger
+        .mint(claims.clone(), chrono::Utc::now())
+        .expect("test ticket should mint");
+    ledger
+        .consume(ticket.id, &claims, chrono::Utc::now())
+        .expect("test ticket should consume")
 }
 
 async fn call_tool(server: &McpServerAdapter, name: &str, arguments: Value) -> McpToolResult {

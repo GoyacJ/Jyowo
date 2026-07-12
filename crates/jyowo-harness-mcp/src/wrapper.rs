@@ -18,7 +18,10 @@ use harness_tool::{
     action_plan_from_permission_check, AuthorizedToolInput, PermissionCheck, Tool, ToolContext,
     ToolEvent, ToolProgress, ToolStream, ValidationError,
 };
-use serde::Serialize;
+use serde::{
+    ser::{SerializeMap, SerializeSeq},
+    Serialize, Serializer,
+};
 use serde_json::Value;
 
 use crate::{
@@ -384,29 +387,32 @@ fn to_tool_error(error: McpError) -> ToolError {
 }
 
 fn into_tool_result(result: McpToolResult) -> ToolResult {
+    // Harness ToolResult has no non-model metadata channel. MCP `_meta` is
+    // protocol-private, so it must not be projected into model-visible output.
     let mut parts = Vec::new();
     for content in result.content {
         match content {
             McpContent::Text {
                 text,
                 annotations,
-                meta,
+                meta: _,
             } => {
                 parts.push(ToolResultPart::Text { text: text.clone() });
-                if annotations.is_some() || !meta.is_empty() {
+                if annotations.is_some() {
                     parts.push(ToolResultPart::Structured {
-                        value: serde_json::to_value(McpContent::Text {
+                        value: serde_json::to_value(ModelVisibleContent(&McpContent::Text {
                             text,
                             annotations,
-                            meta,
-                        })
+                            meta: BTreeMap::new(),
+                        }))
                         .expect("MCP text content serializes"),
                         schema_ref: None,
                     });
                 }
             }
             other => parts.push(ToolResultPart::Structured {
-                value: serde_json::to_value(other).expect("MCP content serializes"),
+                value: serde_json::to_value(ModelVisibleContent(&other))
+                    .expect("MCP content serializes"),
                 schema_ref: None,
             }),
         }
@@ -417,13 +423,6 @@ fn into_tool_result(result: McpToolResult) -> ToolResult {
             schema_ref: None,
         });
     }
-    if !result.meta.is_empty() {
-        parts.push(ToolResultPart::Structured {
-            value: serde_json::json!({ "_meta": result.meta }),
-            schema_ref: None,
-        });
-    }
-
     match parts.as_slice() {
         [ToolResultPart::Text { text }] => ToolResult::Text(text.clone()),
         [ToolResultPart::Structured { value, .. }] => ToolResult::Structured(value.clone()),
@@ -446,9 +445,8 @@ fn result_error_message(result: &McpToolResult) -> String {
         .unwrap_or("mcp tool returned an error");
     let summary = truncate_utf8(summary, MAX_SUMMARY_BYTES, " [truncated]");
     let details_value = McpToolErrorDetails {
-        content: &result.content,
+        content: ModelVisibleContents(&result.content),
         structured_content: result.structured_content.as_ref(),
-        meta: &result.meta,
     };
     let details_budget = MAX_ERROR_MESSAGE_BYTES
         .saturating_sub(summary.len())
@@ -468,20 +466,17 @@ fn result_error_message(result: &McpToolResult) -> String {
         .map(|content| truncate_utf8(content_type_name(content), 32, "..."))
         .collect();
     let preview_budget = details_budget.saturating_sub(2_560) / 6;
-    let (content_preview, _) = json_prefix(&result.content, preview_budget);
+    let (content_preview, _) = json_prefix(&ModelVisibleContents(&result.content), preview_budget);
     let structured_content_preview = result
         .structured_content
         .as_ref()
         .map(|content| json_prefix(content, preview_budget).0);
-    let meta_preview =
-        (!result.meta.is_empty()).then(|| json_prefix(&result.meta, preview_budget).0);
     let truncated = serde_json::to_string(&TruncatedMcpToolErrorDetails {
         truncated: true,
         content_types,
         content_types_truncated: result.content.len() > 8,
         content_preview,
         structured_content_preview,
-        meta_preview,
     })
     .expect("truncated MCP tool error details serialize");
     debug_assert!(truncated.len() <= details_budget);
@@ -490,11 +485,9 @@ fn result_error_message(result: &McpToolResult) -> String {
 
 #[derive(Serialize)]
 struct McpToolErrorDetails<'a> {
-    content: &'a [McpContent],
+    content: ModelVisibleContents<'a>,
     #[serde(rename = "structuredContent", skip_serializing_if = "Option::is_none")]
     structured_content: Option<&'a serde_json::Map<String, Value>>,
-    #[serde(rename = "_meta", skip_serializing_if = "BTreeMap::is_empty")]
-    meta: &'a BTreeMap<String, Value>,
 }
 
 #[derive(Serialize)]
@@ -514,8 +507,180 @@ struct TruncatedMcpToolErrorDetails {
         skip_serializing_if = "Option::is_none"
     )]
     structured_content_preview: Option<String>,
-    #[serde(rename = "_metaPreview", skip_serializing_if = "Option::is_none")]
-    meta_preview: Option<String>,
+}
+
+struct ModelVisibleContents<'a>(&'a [McpContent]);
+
+impl Serialize for ModelVisibleContents<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for content in self.0 {
+            sequence.serialize_element(&ModelVisibleContent(content))?;
+        }
+        sequence.end()
+    }
+}
+
+struct ModelVisibleContent<'a>(&'a McpContent);
+
+impl Serialize for ModelVisibleContent<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self.0 {
+            McpContent::Text {
+                text, annotations, ..
+            } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("type", "text")?;
+                map.serialize_entry("text", text)?;
+                if let Some(annotations) = annotations {
+                    map.serialize_entry("annotations", annotations)?;
+                }
+                map.end()
+            }
+            McpContent::Image {
+                data,
+                mime_type,
+                annotations,
+                ..
+            } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("type", "image")?;
+                map.serialize_entry("data", data)?;
+                map.serialize_entry("mimeType", mime_type)?;
+                if let Some(annotations) = annotations {
+                    map.serialize_entry("annotations", annotations)?;
+                }
+                map.end()
+            }
+            McpContent::Audio {
+                data,
+                mime_type,
+                annotations,
+                ..
+            } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("type", "audio")?;
+                map.serialize_entry("data", data)?;
+                map.serialize_entry("mimeType", mime_type)?;
+                if let Some(annotations) = annotations {
+                    map.serialize_entry("annotations", annotations)?;
+                }
+                map.end()
+            }
+            McpContent::ResourceLink { resource } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("type", "resource_link")?;
+                map.serialize_entry("uri", &resource.uri)?;
+                map.serialize_entry("name", &resource.name)?;
+                if let Some(title) = &resource.title {
+                    map.serialize_entry("title", title)?;
+                }
+                if let Some(description) = &resource.description {
+                    map.serialize_entry("description", description)?;
+                }
+                if let Some(mime_type) = &resource.mime_type {
+                    map.serialize_entry("mimeType", mime_type)?;
+                }
+                if let Some(icons) = &resource.icons {
+                    map.serialize_entry("icons", icons)?;
+                }
+                if let Some(annotations) = &resource.annotations {
+                    map.serialize_entry("annotations", annotations)?;
+                }
+                if let Some(size) = resource.size {
+                    map.serialize_entry("size", &size)?;
+                }
+                map.end()
+            }
+            McpContent::Resource {
+                resource,
+                annotations,
+                ..
+            } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("type", "resource")?;
+                map.serialize_entry("resource", &ModelVisibleResourceContents(resource))?;
+                if let Some(annotations) = annotations {
+                    map.serialize_entry("annotations", annotations)?;
+                }
+                map.end()
+            }
+            McpContent::Unknown(value) => ModelVisibleValue(value).serialize(serializer),
+        }
+    }
+}
+
+struct ModelVisibleResourceContents<'a>(&'a crate::McpResourceContents);
+
+impl Serialize for ModelVisibleResourceContents<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(None)?;
+        match self.0 {
+            crate::McpResourceContents::Text {
+                uri,
+                mime_type,
+                text,
+                ..
+            } => {
+                map.serialize_entry("uri", uri)?;
+                if let Some(mime_type) = mime_type {
+                    map.serialize_entry("mimeType", mime_type)?;
+                }
+                map.serialize_entry("text", text)?;
+            }
+            crate::McpResourceContents::Blob {
+                uri,
+                mime_type,
+                blob,
+                ..
+            } => {
+                map.serialize_entry("uri", uri)?;
+                if let Some(mime_type) = mime_type {
+                    map.serialize_entry("mimeType", mime_type)?;
+                }
+                map.serialize_entry("blob", blob)?;
+            }
+        }
+        map.end()
+    }
+}
+
+struct ModelVisibleValue<'a>(&'a Value);
+
+impl Serialize for ModelVisibleValue<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self.0 {
+            Value::Object(object) => {
+                let mut map = serializer.serialize_map(None)?;
+                for (key, value) in object {
+                    if key != "_meta" {
+                        map.serialize_entry(key, &ModelVisibleValue(value))?;
+                    }
+                }
+                map.end()
+            }
+            Value::Array(values) => {
+                let mut sequence = serializer.serialize_seq(Some(values.len()))?;
+                for value in values {
+                    sequence.serialize_element(&ModelVisibleValue(value))?;
+                }
+                sequence.end()
+            }
+            value => value.serialize(serializer),
+        }
+    }
 }
 
 fn content_type_name(content: &McpContent) -> &str {
@@ -638,14 +803,37 @@ mod tests {
     use serde_json::json;
 
     use super::{into_tool_result, result_error_message, validate_input_schema};
-    use crate::{McpContent, McpToolResult};
+    use crate::{McpAnnotations, McpContent, McpResourceContents, McpToolResult};
 
     #[test]
-    fn wrapper_preserves_structured_unknown_and_result_metadata_with_text_fallback() {
+    fn wrapper_preserves_model_content_but_drops_protocol_metadata() {
         let result = into_tool_result(McpToolResult {
             content: vec![
-                McpContent::text("fallback"),
-                McpContent::Unknown(json!({ "type": "vendor", "raw": true })),
+                McpContent::Text {
+                    text: "fallback".to_owned(),
+                    annotations: Some(McpAnnotations {
+                        audience: None,
+                        priority: Some(0.8),
+                        last_modified: None,
+                    }),
+                    meta: BTreeMap::from([("textSecret".to_owned(), json!("hidden"))]),
+                },
+                McpContent::Unknown(json!({
+                    "type": "vendor",
+                    "raw": true,
+                    "_meta": { "contentSecret": "hidden" },
+                    "nested": { "_meta": { "nestedSecret": "hidden" }, "value": 7 }
+                })),
+                McpContent::Resource {
+                    resource: McpResourceContents::Text {
+                        uri: "file:///tmp/report.txt".to_owned(),
+                        mime_type: Some("text/plain".to_owned()),
+                        text: "report".to_owned(),
+                        meta: BTreeMap::from([("resourceSecret".to_owned(), json!("hidden"))]),
+                    },
+                    annotations: None,
+                    meta: BTreeMap::from([("blockSecret".to_owned(), json!("hidden"))]),
+                },
             ],
             structured_content: Some(
                 json!({ "answer": 42 })
@@ -668,10 +856,13 @@ mod tests {
             part,
             ToolResultPart::Structured { value, .. } if value == &json!({ "answer": 42 })
         )));
-        assert!(parts.iter().any(|part| matches!(
-            part,
-            ToolResultPart::Structured { value, .. } if value == &json!({ "_meta": { "trace": "abc" } })
-        )));
+        let model_visible = serde_json::to_string(&parts).unwrap();
+        assert!(!model_visible.contains("_meta"));
+        assert!(!model_visible.contains("trace"));
+        assert!(!model_visible.contains("Secret"));
+        assert!(model_visible.contains("annotations"));
+        assert!(model_visible.contains("nested"));
+        assert!(model_visible.contains("resource"));
     }
 
     #[test]
@@ -679,7 +870,11 @@ mod tests {
         let result = McpToolResult {
             content: vec![
                 McpContent::text("upstream failed"),
-                McpContent::Unknown(json!({ "type": "vendor_error", "code": 17 })),
+                McpContent::Unknown(json!({
+                    "type": "vendor_error",
+                    "code": 17,
+                    "_meta": { "contentSecret": "hidden" }
+                })),
             ],
             structured_content: Some(json!({ "reason": "quota" }).as_object().unwrap().clone()),
             is_error: true,
@@ -699,8 +894,7 @@ mod tests {
                     { "type": "text", "text": "upstream failed" },
                     { "type": "vendor_error", "code": 17 }
                 ],
-                "structuredContent": { "reason": "quota" },
-                "_meta": { "trace": "abc" }
+                "structuredContent": { "reason": "quota" }
             })
         );
 
@@ -738,7 +932,8 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("reason"));
-        assert!(details["_metaPreview"].as_str().unwrap().contains("trace"));
+        assert!(details.get("_metaPreview").is_none());
+        assert!(!oversized_message.contains("trace"));
     }
 
     #[test]

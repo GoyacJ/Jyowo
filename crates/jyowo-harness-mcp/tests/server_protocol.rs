@@ -11,12 +11,13 @@ use harness_contracts::{
 };
 use harness_mcp::{
     ExposedCapability, HarnessMcpBackend, HarnessMcpServer, IsolationMode, JsonRpcRequest,
-    JsonRpcResponse, McpMetric, McpMetricOutcome, McpMetricsSink, McpPrompt, McpPromptMessages,
-    McpReadResourceResult, McpResource, McpResourceContents, McpServerAdapter, McpServerAuditEvent,
-    McpServerAuditSink, McpServerAuth, McpServerAuthValidator, McpServerError, McpServerPolicy,
-    McpServerRateLimit, McpServerRequestContext, NoopMcpEventSink, PromptProvider,
-    ResourceProvider, SamplingJsonRpcHandler, SamplingPolicy, SamplingProvider, SamplingRequest,
-    SamplingResponse, StaticToolContextFactory, TenantMapping, TenantResolver, ToolContextFactory,
+    JsonRpcResponse, McpContent, McpMetric, McpMetricOutcome, McpMetricsSink, McpPrompt,
+    McpPromptMessage, McpPromptMessages, McpReadResourceResult, McpResource, McpResourceContents,
+    McpRole, McpServerAdapter, McpServerAuditEvent, McpServerAuditSink, McpServerAuth,
+    McpServerAuthValidator, McpServerError, McpServerPolicy, McpServerRateLimit,
+    McpServerRequestContext, NoopMcpEventSink, PromptProvider, ResourceProvider,
+    SamplingJsonRpcHandler, SamplingPolicy, SamplingProvider, SamplingRequest, SamplingResponse,
+    StaticToolContextFactory, TenantMapping, TenantResolver, ToolContextFactory,
     MCP_SAMPLING_DENIED_CODE,
 };
 use harness_tool::{
@@ -1599,13 +1600,10 @@ impl PromptProvider for StaticResources {
             .unwrap_or("session");
         Ok(McpPromptMessages {
             description: None,
-            messages: vec![json!({
-                "role": "user",
-                "content": {
-                    "type": "text",
-                    "text": format!("triage {focus}")
-                }
-            })],
+            messages: vec![McpPromptMessage {
+                role: McpRole::User,
+                content: McpContent::text(format!("triage {focus}")),
+            }],
             meta: Default::default(),
         })
     }

@@ -33,14 +33,17 @@ async fn list_tools_all_collects_multiple_pages_and_empty_continuation_pages() {
 
 #[tokio::test]
 async fn list_tools_all_rejects_a_repeated_cursor() {
+    const SECRET_CURSOR: &str = "opaque-secret-cursor-token";
     let connection = PagedConnection::new(vec![
-        page(&["one"], Some("same")),
-        page(&["two"], Some("same")),
+        page(&["one"], Some(SECRET_CURSOR)),
+        page(&["two"], Some(SECRET_CURSOR)),
     ]);
 
     let error = connection.list_tools_all().await.unwrap_err();
+    let message = error.to_string();
 
-    assert!(error.to_string().contains("repeated cursor"));
+    assert!(message.contains("repeated cursor"));
+    assert!(!message.contains(SECRET_CURSOR));
 }
 
 #[tokio::test]

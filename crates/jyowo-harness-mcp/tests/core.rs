@@ -645,7 +645,8 @@ async fn mcp_tool_wrapper_preserves_protocol_details_on_error_events() {
 
     assert!(message.contains("\"structuredContent\":{\"reason\":\"quota\"}"));
     assert!(message.contains("\"type\":\"vendor_error\""));
-    assert!(message.contains("\"_meta\":{\"trace\":\"abc\"}"));
+    assert!(!message.contains("_meta"));
+    assert!(!message.contains("trace"));
 }
 
 #[tokio::test]

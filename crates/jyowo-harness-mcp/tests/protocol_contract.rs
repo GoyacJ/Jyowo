@@ -1,6 +1,6 @@
 use harness_mcp::{
-    InitializeParams, InitializeResult, McpContent, McpMessage, McpPrompt, McpResource,
-    McpResourceContents, McpToolDescriptor, McpToolResult, LATEST_PROTOCOL_VERSION,
+    InitializeParams, InitializeResult, McpContent, McpMessage, McpPrompt, McpPromptMessages,
+    McpResource, McpResourceContents, McpToolDescriptor, McpToolResult, LATEST_PROTOCOL_VERSION,
 };
 use serde_json::json;
 
@@ -344,6 +344,80 @@ fn structured_content_rejects_non_object_json_values() {
         });
 
         assert!(serde_json::from_value::<McpToolResult>(fixture).is_err());
+    }
+}
+
+#[test]
+fn unknown_content_requires_an_object_with_an_unknown_string_type() {
+    for invalid in [
+        json!(null),
+        json!(true),
+        json!(42),
+        json!("text"),
+        json!([]),
+        json!({}),
+        json!({ "type": null }),
+        json!({ "type": 42 }),
+    ] {
+        assert!(
+            serde_json::from_value::<McpContent>(invalid.clone()).is_err(),
+            "invalid content was accepted: {invalid}"
+        );
+        assert!(
+            serde_json::to_value(McpContent::Unknown(invalid.clone())).is_err(),
+            "invalid unknown content was serialized: {invalid}"
+        );
+    }
+
+    assert!(serde_json::to_value(McpContent::Unknown(json!({
+        "type": "text",
+        "text": "wrong variant"
+    })))
+    .is_err());
+
+    let fixture = json!({ "type": "vendor_chart", "series": [18, 19] });
+    let content: McpContent = serde_json::from_value(fixture.clone()).unwrap();
+    assert!(matches!(content, McpContent::Unknown(_)));
+    assert_eq!(serde_json::to_value(content).unwrap(), fixture);
+}
+
+#[test]
+fn official_prompt_messages_round_trip_with_typed_roles_and_content() {
+    let fixture = json!({
+        "description": "Summarize the report",
+        "messages": [
+            {
+                "role": "user",
+                "content": { "type": "text", "text": "Read the report" }
+            },
+            {
+                "role": "assistant",
+                "content": {
+                    "type": "resource",
+                    "resource": {
+                        "uri": "file:///tmp/report.txt",
+                        "mimeType": "text/plain",
+                        "text": "Quarterly results"
+                    }
+                }
+            }
+        ],
+        "_meta": { "requestId": "prompt-1" }
+    });
+
+    let prompt: McpPromptMessages = serde_json::from_value(fixture.clone()).unwrap();
+    assert_eq!(serde_json::to_value(prompt).unwrap(), fixture);
+
+    for invalid_message in [
+        json!({ "role": "system", "content": { "type": "text", "text": "no" } }),
+        json!({ "role": "user" }),
+        json!({ "role": "user", "content": "plain text" }),
+    ] {
+        let invalid = json!({ "messages": [invalid_message] });
+        assert!(
+            serde_json::from_value::<McpPromptMessages>(invalid.clone()).is_err(),
+            "invalid prompt message was accepted: {invalid}"
+        );
     }
 }
 

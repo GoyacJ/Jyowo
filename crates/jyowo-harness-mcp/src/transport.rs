@@ -329,9 +329,9 @@ fn ensure_fresh_cursor(seen: &mut BTreeSet<String>, cursor: &str) -> Result<(), 
     if seen.insert(cursor.to_owned()) {
         return Ok(());
     }
-    Err(McpError::InvalidResponse(format!(
-        "MCP pagination returned repeated cursor {cursor:?}"
-    )))
+    Err(McpError::InvalidResponse(
+        "MCP pagination returned a repeated cursor".to_owned(),
+    ))
 }
 
 fn page_limit_error(limit: usize) -> McpError {
