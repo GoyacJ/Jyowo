@@ -14,6 +14,7 @@ import { useCommandClient, useDaemonClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
 
 import { CommandPalette, type CommandPaletteAction } from './CommandPalette'
+
 const TASKS_QUERY_KEY = ['daemon-tasks'] as const
 const WORKSPACES_QUERY_KEY = ['sidebar-workspaces'] as const
 
@@ -191,9 +192,7 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
         className={cn('flex h-12 items-center', isCompact ? 'justify-center' : 'justify-end px-2')}
       >
         <Button
-          aria-label={
-            sidebarCollapsed ? t('actions.expandSidebar') : t('actions.collapseSidebar')
-          }
+          aria-label={sidebarCollapsed ? t('actions.expandSidebar') : t('actions.collapseSidebar')}
           className="size-8"
           onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
           size="icon"

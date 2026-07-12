@@ -99,7 +99,10 @@ describe('TaskList', () => {
 
     await user.click(screen.getByRole('button', { name: 'Task 2 actions' }))
     await user.click(screen.getByRole('menuitem', { name: 'Pin' }))
-    expect(onSetTaskPinned).toHaveBeenCalledWith(expect.objectContaining({ taskId: taskId(2) }), true)
+    expect(onSetTaskPinned).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: taskId(2) }),
+      true,
+    )
 
     await user.click(screen.getByRole('button', { name: 'Task 2 actions' }))
     await user.click(screen.getByRole('menuitem', { name: 'Rename' }))
@@ -115,7 +118,10 @@ describe('TaskList', () => {
     await user.click(screen.getByRole('button', { name: 'Task 2 actions' }))
     await user.click(screen.getByRole('menuitem', { name: 'Archive' }))
     await user.click(screen.getByRole('button', { name: 'Archive conversation' }))
-    expect(onSetTaskArchived).toHaveBeenCalledWith(expect.objectContaining({ taskId: taskId(2) }), true)
+    expect(onSetTaskArchived).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: taskId(2) }),
+      true,
+    )
 
     await user.click(screen.getByRole('button', { name: 'Task 2 actions' }))
     await user.click(screen.getByRole('menuitem', { name: 'Remove' }))

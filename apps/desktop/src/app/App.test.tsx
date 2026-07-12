@@ -241,7 +241,9 @@ describe('App', () => {
       />,
     )
 
-    expect(await screen.findByRole('heading', { name: 'Choose a conversation' })).toBeInTheDocument()
+    expect(
+      await screen.findByRole('heading', { name: 'Choose a conversation' }),
+    ).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'New conversation' })).toBeInTheDocument()
   })
 
