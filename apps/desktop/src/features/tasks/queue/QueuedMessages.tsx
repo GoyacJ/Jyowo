@@ -71,9 +71,9 @@ export function QueuedMessages({
     const added = activeItems.filter((item) => !announcedQueueIds.current.has(item.queueItemId))
     announcedQueueIds.current = nextIds
     if (added.length > 0) {
-      setAnnouncement(`${added.length} queued message${added.length === 1 ? '' : 's'} added`)
+      setAnnouncement(t('queue.added', { count: added.length }))
     }
-  }, [activeItems])
+  }, [activeItems, t])
 
   if (activeItems.length === 0) return null
 

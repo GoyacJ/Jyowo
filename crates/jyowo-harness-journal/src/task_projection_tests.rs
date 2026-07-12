@@ -1,16 +1,519 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::{
-    AcceptedCommand, EventAuthority, NewTaskEvent, ProjectionCounts, TaskStore, TaskStoreError,
+    AcceptedCommand, AppendMetadata, EventAuthority, EventStore, NewTaskEvent, ProjectionCounts,
+    TaskEventStoreAdapter, TaskStore, TaskStoreError,
 };
 use chrono::{TimeZone, Utc};
 use harness_contracts::{
-    ActorId, BlobId, CheckpointId, ClientId, CommandId, PermissionProjection, PermissionRoute,
-    QueueItemId, QueueItemState, RequestId, RunSegmentId, RunState, RunTerminalReason, TaskId,
-    TaskState, WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceLeaseState, WorkspaceMode,
+    ActorId, AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, BlobId, CheckpointId,
+    ClientId, CommandId, DeltaChunk, EndReason, Event, MessageContent, MessageId, NoopRedactor,
+    PermissionProjection, PermissionRoute, QueueItemId, QueueItemState, RequestId, RunEndedEvent,
+    RunId, RunSegmentId, RunState, RunTerminalReason, SessionId, StopReason, TaskId, TaskState,
+    TenantId, UsageSnapshot, WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceLeaseState,
+    WorkspaceMode,
 };
 use rusqlite::params;
 use serde_json::json;
+
+#[test]
+fn engine_assistant_events_project_text_without_internal_lifecycle_notices() {
+    let root = temp_root("engine-assistant-timeline");
+    let path = root.join("tasks.db");
+    let store = Arc::new(TaskStore::open(&path).unwrap());
+    let task_id = TaskId::new();
+    let segment_id = RunSegmentId::new();
+    let run_id = RunId::new();
+    let session_id = SessionId::new();
+    let message_id = MessageId::new();
+    let completion_only_id = MessageId::new();
+    let at = Utc.with_ymd_and_hms(2026, 7, 12, 1, 2, 3).unwrap();
+
+    transact(
+        &store,
+        task_id,
+        0,
+        user_source(),
+        NewTaskEvent::task_created("Engine output"),
+    );
+    transact(
+        &store,
+        task_id,
+        1,
+        supervisor_source(),
+        NewTaskEvent::run_started(segment_id, at),
+    );
+    store
+        .append_engine_events(
+            task_id,
+            TenantId::SINGLE,
+            session_id,
+            Some(segment_id),
+            AppendMetadata {
+                run_id: Some(run_id),
+                ..AppendMetadata::default()
+            },
+            Some(0),
+            &[
+                Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                    run_id,
+                    message_id,
+                    delta: DeltaChunk::Text("First ".into()),
+                    at,
+                }),
+                Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                    run_id,
+                    message_id,
+                    delta: DeltaChunk::Text("answer".into()),
+                    at,
+                }),
+                Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {
+                    run_id,
+                    message_id,
+                    content: MessageContent::Text("First answer".into()),
+                    tool_uses: Vec::new(),
+                    usage: UsageSnapshot::default(),
+                    pricing_snapshot_id: None,
+                    stop_reason: StopReason::EndTurn,
+                    at,
+                }),
+                Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {
+                    run_id,
+                    message_id: completion_only_id,
+                    content: MessageContent::Text("Completion fallback".into()),
+                    tool_uses: Vec::new(),
+                    usage: UsageSnapshot::default(),
+                    pricing_snapshot_id: None,
+                    stop_reason: StopReason::EndTurn,
+                    at,
+                }),
+                Event::RunEnded(RunEndedEvent {
+                    run_id,
+                    reason: EndReason::Completed,
+                    usage: Some(UsageSnapshot::default()),
+                    ended_at: at,
+                }),
+            ],
+        )
+        .unwrap();
+
+    let projected = timeline(&path, task_id)
+        .into_iter()
+        .filter(|item| item.kind == harness_contracts::TimelineEventKind::AssistantText)
+        .collect::<Vec<_>>();
+    assert_eq!(projected.len(), 3);
+    assert_eq!(
+        projected
+            .iter()
+            .map(|item| item.summary.as_str())
+            .collect::<Vec<_>>(),
+        vec!["First ", "answer", "Completion fallback"]
+    );
+    assert!(projected
+        .iter()
+        .all(|item| item.run_segment_id == Some(segment_id)));
+    assert_eq!(
+        projected
+            .iter()
+            .map(|item| item.semantic_group_id.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            Some(message_id.to_string()),
+            Some(message_id.to_string()),
+            Some(completion_only_id.to_string()),
+        ]
+    );
+    assert_eq!(
+        projected
+            .iter()
+            .map(|item| item.incomplete)
+            .collect::<Vec<_>>(),
+        vec![true, false, false]
+    );
+    assert!(!timeline(&path, task_id)
+        .iter()
+        .any(|item| item.summary == "run ended"));
+
+    let before_rebuild = timeline(&path, task_id);
+    store.rebuild_projections().unwrap();
+    assert_eq!(timeline(&path, task_id), before_rebuild);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn rebuild_preserves_legacy_engine_timeline_without_explicit_segment_binding() {
+    let root = temp_root("legacy-engine-segment-fallback");
+    let path = root.join("tasks.db");
+    let store = Arc::new(TaskStore::open(&path).unwrap());
+    let task_id = TaskId::new();
+    let segment_id = RunSegmentId::new();
+    let run_id = RunId::new();
+    let session_id = SessionId::new();
+    let message_id = MessageId::new();
+    let at = Utc.with_ymd_and_hms(2026, 7, 12, 1, 2, 3).unwrap();
+    let adapter = TaskEventStoreAdapter::new(
+        Arc::clone(&store),
+        task_id,
+        TenantId::SINGLE,
+        session_id,
+        Arc::new(NoopRedactor),
+    );
+
+    transact(
+        &store,
+        task_id,
+        0,
+        user_source(),
+        NewTaskEvent::task_created("Legacy engine output"),
+    );
+    transact(
+        &store,
+        task_id,
+        1,
+        supervisor_source(),
+        NewTaskEvent::run_started(segment_id, at),
+    );
+    adapter
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                run_id,
+                message_id,
+                delta: DeltaChunk::Text("Legacy answer".into()),
+                at,
+            })],
+        )
+        .await
+        .unwrap();
+
+    let projected = timeline(&path, task_id);
+    assert!(projected.iter().any(|item| {
+        item.summary == "Legacy answer" && item.run_segment_id == Some(segment_id)
+    }));
+
+    store.rebuild_projections().unwrap();
+    assert_eq!(timeline(&path, task_id), projected);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn rebuild_maps_late_legacy_engine_events_to_the_completed_run_segment() {
+    let root = temp_root("late-legacy-engine-completed-run");
+    let path = root.join("tasks.db");
+    let store = Arc::new(TaskStore::open(&path).unwrap());
+    let task_id = TaskId::new();
+    let segment_id = RunSegmentId::new();
+    let run_id = RunId::new();
+    let session_id = SessionId::new();
+    let at = Utc.with_ymd_and_hms(2026, 7, 12, 1, 2, 3).unwrap();
+    let adapter = TaskEventStoreAdapter::new(
+        Arc::clone(&store),
+        task_id,
+        TenantId::SINGLE,
+        session_id,
+        Arc::new(NoopRedactor),
+    );
+
+    transact(
+        &store,
+        task_id,
+        0,
+        user_source(),
+        NewTaskEvent::task_created("Late legacy output"),
+    );
+    transact(
+        &store,
+        task_id,
+        1,
+        supervisor_source(),
+        NewTaskEvent::run_started(segment_id, at),
+    );
+    adapter
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                run_id,
+                message_id: MessageId::new(),
+                delta: DeltaChunk::Text("Before completion".into()),
+                at,
+            })],
+        )
+        .await
+        .unwrap();
+    transact(
+        &store,
+        task_id,
+        3,
+        supervisor_source(),
+        NewTaskEvent::run_completed(segment_id, at, RunTerminalReason::Completed, false),
+    );
+    adapter
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                run_id,
+                message_id: MessageId::new(),
+                delta: DeltaChunk::Text("After completion".into()),
+                at,
+            })],
+        )
+        .await
+        .unwrap();
+
+    store.rebuild_projections().unwrap();
+    let projected = timeline(&path, task_id)
+        .into_iter()
+        .filter(|item| item.kind == harness_contracts::TimelineEventKind::AssistantText)
+        .map(|item| (item.summary, item.run_segment_id))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        projected,
+        vec![
+            ("Before completion".into(), Some(segment_id)),
+            ("After completion".into(), Some(segment_id)),
+        ]
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn rebuild_does_not_map_late_legacy_engine_events_to_the_next_run_segment() {
+    let root = temp_root("late-legacy-engine-next-run");
+    let path = root.join("tasks.db");
+    let store = Arc::new(TaskStore::open(&path).unwrap());
+    let task_id = TaskId::new();
+    let first_segment_id = RunSegmentId::new();
+    let second_segment_id = RunSegmentId::new();
+    let first_run_id = RunId::new();
+    let second_run_id = RunId::new();
+    let session_id = SessionId::new();
+    let at = Utc.with_ymd_and_hms(2026, 7, 12, 1, 2, 3).unwrap();
+    let adapter = TaskEventStoreAdapter::new(
+        Arc::clone(&store),
+        task_id,
+        TenantId::SINGLE,
+        session_id,
+        Arc::new(NoopRedactor),
+    );
+
+    transact(
+        &store,
+        task_id,
+        0,
+        user_source(),
+        NewTaskEvent::task_created("Late output after next run"),
+    );
+    transact(
+        &store,
+        task_id,
+        1,
+        supervisor_source(),
+        NewTaskEvent::run_started(first_segment_id, at),
+    );
+    adapter
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                run_id: first_run_id,
+                message_id: MessageId::new(),
+                delta: DeltaChunk::Text("First run".into()),
+                at,
+            })],
+        )
+        .await
+        .unwrap();
+    transact(
+        &store,
+        task_id,
+        3,
+        supervisor_source(),
+        NewTaskEvent::run_completed(first_segment_id, at, RunTerminalReason::Completed, false),
+    );
+    transact(
+        &store,
+        task_id,
+        4,
+        supervisor_source(),
+        NewTaskEvent::run_started(second_segment_id, at),
+    );
+    adapter
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                run_id: second_run_id,
+                message_id: MessageId::new(),
+                delta: DeltaChunk::Text("Second run".into()),
+                at,
+            })],
+        )
+        .await
+        .unwrap();
+    adapter
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                run_id: first_run_id,
+                message_id: MessageId::new(),
+                delta: DeltaChunk::Text("Late first run".into()),
+                at,
+            })],
+        )
+        .await
+        .unwrap();
+
+    store.rebuild_projections().unwrap();
+    let projected = timeline(&path, task_id)
+        .into_iter()
+        .filter(|item| item.kind == harness_contracts::TimelineEventKind::AssistantText)
+        .map(|item| (item.summary, item.run_segment_id))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        projected,
+        vec![
+            ("First run".into(), Some(first_segment_id)),
+            ("Second run".into(), Some(second_segment_id)),
+            ("Late first run".into(), Some(first_segment_id)),
+        ]
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn engine_assistant_projection_uses_bound_segment_for_late_and_reused_message_events() {
+    let root = temp_root("engine-assistant-segment-binding");
+    let path = root.join("tasks.db");
+    let store = TaskStore::open(&path).unwrap();
+    let task_id = TaskId::new();
+    let first_segment_id = RunSegmentId::new();
+    let second_segment_id = RunSegmentId::new();
+    let first_run_id = RunId::new();
+    let second_run_id = RunId::new();
+    let session_id = SessionId::new();
+    let message_id = MessageId::new();
+    let at = Utc.with_ymd_and_hms(2026, 7, 12, 1, 2, 3).unwrap();
+
+    transact(
+        &store,
+        task_id,
+        0,
+        user_source(),
+        NewTaskEvent::task_created("Segment-bound output"),
+    );
+    transact(
+        &store,
+        task_id,
+        1,
+        supervisor_source(),
+        NewTaskEvent::run_started(first_segment_id, at),
+    );
+    store
+        .append_engine_events(
+            task_id,
+            TenantId::SINGLE,
+            session_id,
+            Some(first_segment_id),
+            AppendMetadata {
+                run_id: Some(first_run_id),
+                ..AppendMetadata::default()
+            },
+            Some(0),
+            &[Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                run_id: first_run_id,
+                message_id,
+                delta: DeltaChunk::Text("First run".into()),
+                at,
+            })],
+        )
+        .unwrap();
+    transact(
+        &store,
+        task_id,
+        3,
+        supervisor_source(),
+        NewTaskEvent::run_completed(first_segment_id, at, RunTerminalReason::Completed, false),
+    );
+    transact(
+        &store,
+        task_id,
+        4,
+        supervisor_source(),
+        NewTaskEvent::run_started(second_segment_id, at),
+    );
+    store
+        .append_engine_events(
+            task_id,
+            TenantId::SINGLE,
+            session_id,
+            Some(second_segment_id),
+            AppendMetadata {
+                run_id: Some(second_run_id),
+                ..AppendMetadata::default()
+            },
+            Some(1),
+            &[Event::AssistantMessageCompleted(
+                AssistantMessageCompletedEvent {
+                    run_id: second_run_id,
+                    message_id,
+                    content: MessageContent::Text("Second run".into()),
+                    tool_uses: Vec::new(),
+                    usage: UsageSnapshot::default(),
+                    pricing_snapshot_id: None,
+                    stop_reason: StopReason::EndTurn,
+                    at,
+                },
+            )],
+        )
+        .unwrap();
+    store
+        .append_engine_events(
+            task_id,
+            TenantId::SINGLE,
+            session_id,
+            Some(first_segment_id),
+            AppendMetadata {
+                run_id: Some(first_run_id),
+                ..AppendMetadata::default()
+            },
+            Some(2),
+            &[Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                run_id: first_run_id,
+                message_id,
+                delta: DeltaChunk::Text(" late".into()),
+                at,
+            })],
+        )
+        .unwrap();
+
+    let projected = timeline(&path, task_id)
+        .into_iter()
+        .filter(|item| item.kind == harness_contracts::TimelineEventKind::AssistantText)
+        .map(|item| (item.summary, item.run_segment_id, item.incomplete))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        projected,
+        vec![
+            ("First run".into(), Some(first_segment_id), true),
+            ("Second run".into(), Some(second_segment_id), false),
+            (" late".into(), Some(first_segment_id), true),
+        ]
+    );
+
+    let before_rebuild = timeline(&path, task_id);
+    store.rebuild_projections().unwrap();
+    assert_eq!(timeline(&path, task_id), before_rebuild);
+    let _ = std::fs::remove_dir_all(root);
+}
 
 #[test]
 fn typed_events_reduce_complete_task_run_queue_and_permission_state() {

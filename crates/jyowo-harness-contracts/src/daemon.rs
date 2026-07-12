@@ -15,6 +15,12 @@ pub const PROTOCOL_VERSION: u16 = 1;
 /// Maximum JSON body accepted by the length-prefixed local daemon transport.
 pub const MAX_DAEMON_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
+/// Maximum serialized `events` array body in one task audit page.
+///
+/// The four-KiB reserve covers the response envelope, maximum request ID,
+/// task ID, cursor, and JSON syntax within [`MAX_DAEMON_FRAME_BYTES`].
+pub const MAX_DAEMON_TASK_EVENT_PAGE_BYTES: usize = MAX_DAEMON_FRAME_BYTES - 4 * 1024;
+
 /// Maximum printable ASCII request ID size reserved in every daemon response envelope.
 pub const MAX_DAEMON_REQUEST_ID_BYTES: usize = 128;
 
@@ -58,11 +64,22 @@ pub enum ClientRequest {
     StopRun(StopRunCommand),
     ContinueTask(ContinueTaskCommand),
     ResolvePermission(ResolvePermissionCommand),
-    SubscribeEvents { after_offset: u64 },
-    LoadTask { task_id: TaskId },
+    SubscribeEvents {
+        after_offset: u64,
+    },
+    LoadTask {
+        task_id: TaskId,
+    },
+    LoadTaskEvents {
+        task_id: TaskId,
+        before_global_offset: Option<u64>,
+        limit: u16,
+    },
     ListTasks,
     StageBlob(StageBlobCommand),
-    ReadBlob { blob_id: BlobId },
+    ReadBlob {
+        blob_id: BlobId,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -80,6 +97,7 @@ pub enum ServerMessage {
     CommandAccepted(CommandAccepted),
     CommandRejected(CommandRejected),
     TaskSnapshot(TaskSnapshot),
+    TaskEventPage(TaskEventPage),
     TaskList { tasks: Vec<TaskProjection> },
     EventBatch(TaskEventBatch),
     Blob(BlobPayload),
@@ -507,6 +525,14 @@ pub struct TaskSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskEventPage {
+    pub task_id: TaskId,
+    pub events: Vec<TaskEventEnvelope>,
+    pub next_before_offset: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskProjection {
     pub task_id: TaskId,
     pub title: String,
@@ -637,6 +663,8 @@ pub struct TimelineItemProjection {
     pub kind: TimelineEventKind,
     pub global_offset: u64,
     pub run_segment_id: Option<RunSegmentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_group_id: Option<String>,
     pub summary: String,
     pub blob_id: Option<BlobId>,
     pub incomplete: bool,

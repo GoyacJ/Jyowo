@@ -1,7 +1,9 @@
+import { useTranslation } from 'react-i18next'
 import type { SubagentProjection } from '@/generated/daemon-protocol'
 
 export function SubagentsPanel({ subagents }: { subagents: SubagentProjection[] }) {
-  if (subagents.length === 0) return <Empty>No subagents are linked to this task.</Empty>
+  const { t } = useTranslation('tasks')
+  if (subagents.length === 0) return <Empty>{t('workbench.empty.agents')}</Empty>
   return (
     <ul className="divide-y divide-border/70">
       {subagents.map((agent) => (
@@ -9,7 +11,7 @@ export function SubagentsPanel({ subagents }: { subagents: SubagentProjection[] 
           <div className="flex items-center justify-between gap-3">
             <span className="truncate text-sm">{agent.summary ?? agent.childTaskId}</span>
             <span className="shrink-0 text-muted-foreground text-xs">
-              {agent.state.replace('_', ' ')}
+              {t(`workbench.agentState.${agent.state}`)}
             </span>
           </div>
           <p className="truncate font-mono text-[11px] text-muted-foreground">

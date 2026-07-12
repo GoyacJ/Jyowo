@@ -1,5 +1,6 @@
 import { ChevronDown } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import type { TimelineItemProjection } from '@/generated/daemon-protocol'
 
@@ -16,6 +17,7 @@ export function ArtifactContainer({
   onOpen?: () => void
   openLabel?: string
 }) {
+  const { t } = useTranslation('tasks')
   return (
     <section
       className="overflow-hidden rounded-xl border border-border/80 bg-artifact"
@@ -24,7 +26,7 @@ export function ArtifactContainer({
       <div className="flex min-h-9 items-center justify-between gap-3 border-border/70 border-b px-3 text-muted-foreground text-xs">
         <span className="font-medium text-foreground">{label}</span>
         <span className="flex items-center gap-2">
-          {item.incomplete ? <span>Incomplete</span> : null}
+          {item.incomplete ? <span>{t('timeline.incomplete')}</span> : null}
           {onOpen ? (
             <button
               aria-label={openLabel}
@@ -32,7 +34,7 @@ export function ArtifactContainer({
               onClick={onOpen}
               type="button"
             >
-              Open
+              {t('timeline.open')}
             </button>
           ) : null}
         </span>
@@ -44,12 +46,12 @@ export function ArtifactContainer({
             aria-hidden="true"
             className="size-3 transition-transform group-open:rotate-180"
           />
-          Details
+          {t('timeline.details')}
         </summary>
         <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono">
-          <dt>Offset</dt>
+          <dt>{t('timeline.offset')}</dt>
           <dd>{item.globalOffset}</dd>
-          <dt>Event</dt>
+          <dt>{t('timeline.event')}</dt>
           <dd className="truncate">{item.id}</dd>
         </dl>
       </details>

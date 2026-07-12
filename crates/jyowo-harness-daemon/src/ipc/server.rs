@@ -6,8 +6,8 @@ use base64::Engine as _;
 use harness_contracts::{
     AgentCapabilities, BlobPayload, ClientFrame, ClientId, ClientRequest, CommandAccepted,
     CommandRejected, CommandRejectionReason, HandshakeResponse, ProtocolError, ProtocolErrorCode,
-    QueueItemId, RunSegmentId, ServerFrame, ServerMessage, TaskEventBatch, TaskId, TaskSnapshot,
-    PROTOCOL_VERSION,
+    QueueItemId, RunSegmentId, ServerFrame, ServerMessage, TaskEventBatch, TaskEventPage, TaskId,
+    TaskSnapshot, PROTOCOL_VERSION,
 };
 use harness_journal::{
     AcceptedCommand, BlobRead, CommandOutcome, CommandRejection, NewTaskEvent, TaskBlobStore,
@@ -237,6 +237,25 @@ impl IpcConnection {
                     None | Some(_) => protocol_error(ProtocolErrorCode::NotFound, "task not found"),
                 }
             }
+            ClientRequest::LoadTaskEvents {
+                task_id,
+                before_global_offset,
+                limit,
+            } => match self.store.task_projection(task_id)? {
+                Some(projection) if !projection.removed => {
+                    let (events, next_before_offset) = self.store.task_event_page_before(
+                        task_id,
+                        before_global_offset,
+                        usize::from(limit),
+                    )?;
+                    ServerMessage::TaskEventPage(TaskEventPage {
+                        task_id,
+                        events,
+                        next_before_offset,
+                    })
+                }
+                None | Some(_) => protocol_error(ProtocolErrorCode::NotFound, "task not found"),
+            },
             ClientRequest::StageBlob(command) => {
                 if self.store.task_projection(command.task_id)?.is_none() {
                     protocol_error(ProtocolErrorCode::NotFound, "task not found")

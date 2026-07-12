@@ -524,13 +524,16 @@ impl SubagentSupervisor {
                 SubagentError::Engine("managed child lease has no worktree path".into())
             })?;
         let child_session_id = SessionId::new();
-        let child_event_store: Arc<dyn EventStore> = Arc::new(TaskEventStoreAdapter::new(
-            Arc::clone(&self.store),
-            child_task_id,
-            parent_ctx.tenant_id,
-            child_session_id,
-            Arc::clone(&self.redactor),
-        ));
+        let child_event_store: Arc<dyn EventStore> = Arc::new(
+            TaskEventStoreAdapter::new(
+                Arc::clone(&self.store),
+                child_task_id,
+                parent_ctx.tenant_id,
+                child_session_id,
+                Arc::clone(&self.redactor),
+            )
+            .with_run_segment_id(segment_id),
+        );
         let delegate_result = catch_unwind(AssertUnwindSafe(|| {
             self.runner_factory.create(WorkspaceSubagentRunContext {
                 workspace_root: execution_root.to_path_buf(),

@@ -17,24 +17,24 @@ test('renderer bridge resumes a recovered task without replaying committed offse
   await page.goto(`/?taskId=${taskId}`)
 
   await expect(page.getByRole('heading', { name: 'Daemon recovery before restart' })).toBeVisible()
-  await expect(page.getByText('Connected', { exact: true })).toBeVisible()
+  await expect(page.getByText('已连接', { exact: true })).toBeVisible()
   await expect(committedEvent(page)).toBeVisible()
 
-  await page.getByRole('button', { name: 'Open Changes' }).click()
+  await page.getByRole('button', { name: '打开更改' }).click()
   await expect(page.getByText('renderer bridge output loaded by blob id')).toBeVisible()
 
   await controlFixture(page, 'stop')
   await page.reload()
-  await expect(page.getByText('Task unavailable', { exact: true })).toBeVisible()
+  await expect(page.getByText('任务不可用', { exact: true })).toBeVisible()
 
   await controlFixture(page, 'restart')
   await page.reload()
 
   await expect(page.getByRole('heading', { name: 'Daemon recovery after restart' })).toBeVisible()
-  await expect(page.getByText('Connected', { exact: true })).toBeVisible()
+  await expect(page.getByText('已连接', { exact: true })).toBeVisible()
   await expect(committedEvent(page)).toBeVisible()
 
-  await page.getByRole('button', { name: 'Open Changes' }).click()
+  await page.getByRole('button', { name: '打开更改' }).click()
   await expect(page.getByText('renderer bridge output loaded by blob id')).toBeVisible()
 
   const telemetry = await fixtureTelemetry(page)

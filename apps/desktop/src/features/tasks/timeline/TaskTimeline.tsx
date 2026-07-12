@@ -1,10 +1,12 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { useTranslation } from 'react-i18next'
 import { useConversationScrollAnchor } from '@/features/conversation/timeline/use-conversation-scroll-anchor'
 import type { RunProjection, TimelineItemProjection } from '@/generated/daemon-protocol'
 import { Button } from '@/shared/ui/button'
 
 import { RunSegment } from './RunSegment'
 import { TimelineEvent } from './TimelineEvent'
+import { timelineSummary } from './timeline-summary'
 
 const estimatedBlockHeightPx = 240
 const segmentChunkSize = 16
@@ -34,12 +36,13 @@ export function TaskTimeline({
   items: TimelineItemProjection[]
   onSelectItem?: (item: TimelineItemProjection) => void
 }) {
+  const { t } = useTranslation('tasks')
   const orderedItems = [...items].sort(
     (left, right) => left.globalOffset - right.globalOffset || left.id.localeCompare(right.id),
   )
   const latest = orderedItems.at(-1)
   const first = orderedItems.at(0)
-  const blocks = createBlocks(orderedItems)
+  const blocks = createBlocks(coalesceAssistantItems(orderedItems))
   const { endRef, jumpToLatest, onScroll, showJumpToLatest, viewportRef } =
     useConversationScrollAnchor(latest ? `${latest.id}:${latest.incomplete}` : null, {
       prependAnchorKey: first?.id,
@@ -68,7 +71,9 @@ export function TaskTimeline({
   return (
     <div className="relative min-h-0 flex-1">
       <p aria-live="polite" className="sr-only" role="status">
-        {latest ? `Task update: ${latest.summary}` : 'Task has no activity yet'}
+        {latest
+          ? t('timeline.update', { summary: timelineSummary(latest, t) })
+          : t('timeline.noActivity')}
       </p>
       <div
         className="h-full overflow-y-auto overscroll-contain px-1 pb-28"
@@ -130,7 +135,7 @@ export function TaskTimeline({
           type="button"
           variant="outline"
         >
-          Jump to latest
+          {t('timeline.jumpToLatest')}
         </Button>
       ) : null}
     </div>
@@ -155,8 +160,9 @@ function createBlocks(items: TimelineItemProjection[]): TimelineBlock[] {
       segmentItems.push(items[index] as TimelineItemProjection)
       index += 1
     }
-    for (let start = 0; start < segmentItems.length; start += segmentChunkSize) {
-      const chunk = segmentItems.slice(start, start + segmentChunkSize)
+    for (let start = 0; start < segmentItems.length; ) {
+      const end = Math.min(start + segmentChunkSize, segmentItems.length)
+      const chunk = segmentItems.slice(start, end)
       blocks.push({
         items: chunk,
         key: `${segmentId}:${chunk[0]?.globalOffset}`,
@@ -165,9 +171,29 @@ function createBlocks(items: TimelineItemProjection[]): TimelineBlock[] {
         showHeader: start === 0,
         statusItems: segmentItems,
       })
+      start = end
     }
   }
   return blocks
+}
+
+function coalesceAssistantItems(items: TimelineItemProjection[]) {
+  const coalesced: TimelineItemProjection[] = []
+  for (const item of items) {
+    const previous = coalesced.at(-1)
+    if (
+      item.kind === 'assistant_text' &&
+      previous?.kind === 'assistant_text' &&
+      item.runSegmentId === previous.runSegmentId &&
+      item.semanticGroupId === previous.semanticGroupId
+    ) {
+      previous.summary += item.summary
+      previous.incomplete = item.incomplete
+      continue
+    }
+    coalesced.push({ ...item })
+  }
+  return coalesced
 }
 
 function TimelineBlockView({

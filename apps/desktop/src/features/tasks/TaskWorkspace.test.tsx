@@ -1,11 +1,27 @@
 import '@testing-library/jest-dom/vitest'
 
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import {
+  act,
+  fireEvent,
+  screen,
+  render as testingLibraryRender,
+  waitFor,
+  within,
+} from '@testing-library/react'
+import { I18nextProvider } from 'react-i18next'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TaskEventEnvelope } from '@/generated/daemon-protocol'
+import { createAppI18n } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
 import { TaskWorkspaceView, timelineItems } from './TaskWorkspace'
 import type { TaskSnapshot } from './task-store'
+
+function render(ui: React.ReactNode) {
+  const i18n = createAppI18n('en-US')
+  return testingLibraryRender(ui, {
+    wrapper: ({ children }) => <I18nextProvider i18n={i18n}>{children}</I18nextProvider>,
+  })
+}
 
 describe('TaskWorkspace', () => {
   beforeEach(() => {
@@ -18,6 +34,18 @@ describe('TaskWorkspace', () => {
     expect(screen.getByRole('heading', { name: 'Repair scheduler recovery' })).toBeInTheDocument()
     expect(screen.getByTestId('task-reading-column')).toHaveClass('max-w-[820px]')
     expect(screen.getByText('Connected')).toBeInTheDocument()
+  })
+
+  it('localizes visible task state and connection chrome in Chinese', () => {
+    render(
+      <I18nextProvider i18n={createAppI18n('zh-CN')}>
+        <TaskWorkspaceView connectionState="connected" snapshot={snapshot} />
+      </I18nextProvider>,
+    )
+
+    expect(screen.getByText('已连接')).toBeInTheDocument()
+    expect(screen.getByText('已完成')).toBeInTheDocument()
+    expect(screen.queryByText('Connected')).not.toBeInTheDocument()
   })
 
   it('renders an unavailable state without partial task content', () => {
@@ -169,16 +197,20 @@ describe('TaskWorkspace', () => {
       },
     }
     render(
-      <TaskWorkspaceView
-        client={{ connect: vi.fn(), request }}
-        connectionState="connected"
-        snapshot={permissionSnapshot}
-      />,
+      <I18nextProvider i18n={createAppI18n('zh-CN')}>
+        <TaskWorkspaceView
+          client={{ connect: vi.fn(), request }}
+          connectionState="connected"
+          snapshot={permissionSnapshot}
+        />
+      </I18nextProvider>,
     )
 
-    expect(screen.getByRole('status', { name: 'Pending permission request' })).toHaveTextContent(
-      'Permission request: Run cargo test',
+    expect(screen.getByRole('status', { name: '待处理的权限请求' })).toHaveTextContent(
+      '权限请求：Run cargo test',
     )
+    expect(screen.getByText('需要权限')).toBeInTheDocument()
+    expect(screen.getByText('等待权限')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
 
     await waitFor(() => expect(request).toHaveBeenCalledOnce())
@@ -207,15 +239,17 @@ describe('TaskWorkspace', () => {
     }
 
     render(
-      <TaskWorkspaceView
-        client={{ connect: vi.fn(), request: vi.fn() }}
-        connectionState="connected"
-        snapshot={permissionSnapshot}
-      />,
+      <I18nextProvider i18n={createAppI18n('zh-CN')}>
+        <TaskWorkspaceView
+          client={{ connect: vi.fn(), request: vi.fn() }}
+          connectionState="connected"
+          snapshot={permissionSnapshot}
+        />
+      </I18nextProvider>,
     )
 
-    expect(screen.getByRole('alert')).toHaveTextContent('Permission details unavailable')
-    expect(screen.getByRole('alert')).toHaveTextContent('Restart or recover the task')
+    expect(screen.getByRole('alert')).toHaveTextContent('权限详情不可用')
+    expect(screen.getByRole('alert')).toHaveTextContent('请重启或恢复任务')
     expect(screen.queryByRole('button', { name: 'Allow once' })).not.toBeInTheDocument()
   })
 

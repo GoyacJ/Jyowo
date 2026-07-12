@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
 use harness_contracts::{
-    Event, EventId, ForkReason, JournalError, JournalOffset, Redactor, SessionId,
+    Event, EventId, ForkReason, JournalError, JournalOffset, Redactor, RunSegmentId, SessionId,
     TaskEventEnvelope, TaskId, TenantId,
 };
 
@@ -22,6 +22,7 @@ pub struct TaskEventStoreAdapter {
     task_id: TaskId,
     tenant_id: TenantId,
     session_id: SessionId,
+    run_segment_id: Option<RunSegmentId>,
     redaction: JournalRedaction,
 }
 
@@ -38,8 +39,15 @@ impl TaskEventStoreAdapter {
             task_id,
             tenant_id,
             session_id,
+            run_segment_id: None,
             redaction: JournalRedaction::new(redactor),
         }
+    }
+
+    #[must_use]
+    pub fn with_run_segment_id(mut self, run_segment_id: RunSegmentId) -> Self {
+        self.run_segment_id = Some(run_segment_id);
+        self
     }
 
     fn validate_scope(
@@ -67,6 +75,7 @@ impl TaskEventStoreAdapter {
         let encoded_events = encode_event_batch(events)?;
         let store = Arc::clone(&self.store);
         let task_id = self.task_id;
+        let run_segment_id = self.run_segment_id;
         let redaction = self.redaction.clone();
         let result = tokio::task::spawn_blocking(move || {
             let events: Vec<Event> =
@@ -80,6 +89,7 @@ impl TaskEventStoreAdapter {
                     task_id,
                     tenant_id,
                     session_id,
+                    run_segment_id,
                     metadata,
                     expected_next_offset.map(|offset| offset.0),
                     &events,

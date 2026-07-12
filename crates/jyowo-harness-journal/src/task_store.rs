@@ -16,7 +16,7 @@ use harness_contracts::{
     RunTerminalReason, SessionId, SubagentActorState, SubagentId, SubagentParentProjection,
     SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection, TenantId,
     TimelineItemProjection, ToolUseId, WorkspaceLeaseId, WorkspaceLeaseProjection,
-    WorkspaceLeaseState, WorkspaceMode, WorkspaceSelection,
+    WorkspaceLeaseState, WorkspaceMode, WorkspaceSelection, MAX_DAEMON_TASK_EVENT_PAGE_BYTES,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -2376,6 +2376,77 @@ impl TaskStore {
         .collect()
     }
 
+    pub fn task_event_page_before(
+        &self,
+        task_id: TaskId,
+        before_global_offset: Option<u64>,
+        limit: usize,
+    ) -> Result<(Vec<TaskEventEnvelope>, Option<u64>), TaskStoreError> {
+        let before = before_global_offset
+            .map(|offset| i64::try_from(offset).unwrap_or(i64::MAX))
+            .unwrap_or(i64::MAX);
+        let page_size = limit.clamp(1, MAX_READ_PAGE_SIZE);
+        let query_limit =
+            i64::try_from(page_size + 1).map_err(|_| TaskStoreError::IntegerOutOfRange)?;
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT global_offset, task_id, stream_sequence, event_id, event_type,
+                    schema_version, recorded_at, source_json, payload_json
+             FROM event_log
+             WHERE task_id = ?1 AND global_offset < ?2
+             ORDER BY global_offset DESC
+             LIMIT ?3",
+        )?;
+        let rows =
+            statement.query_map(params![task_id.to_string(), before, query_limit], |row| {
+                Ok(StoredTaskEvent {
+                    global_offset: row.get(0)?,
+                    task_id: row.get(1)?,
+                    stream_sequence: row.get(2)?,
+                    event_id: row.get(3)?,
+                    event_type: row.get(4)?,
+                    schema_version: row.get(5)?,
+                    recorded_at: row.get(6)?,
+                    source_json: row.get(7)?,
+                    payload_json: row.get(8)?,
+                })
+            })?;
+        let events = rows
+            .map(|row| {
+                row.map_err(TaskStoreError::from)
+                    .and_then(StoredTaskEvent::decode)
+            })
+            .collect::<Result<Vec<_>, TaskStoreError>>()?;
+
+        let available_count = events.len();
+        let mut page = Vec::with_capacity(page_size.min(available_count));
+        let mut page_json_bytes = 2_usize;
+        for event in events.into_iter().take(page_size) {
+            let event_json_bytes = serde_json::to_vec(&event)?.len();
+            let separator_bytes = usize::from(!page.is_empty());
+            let next_page_json_bytes = page_json_bytes
+                .checked_add(separator_bytes)
+                .and_then(|bytes| bytes.checked_add(event_json_bytes))
+                .ok_or(TaskStoreError::IntegerOutOfRange)?;
+            if next_page_json_bytes > MAX_DAEMON_TASK_EVENT_PAGE_BYTES {
+                break;
+            }
+            page_json_bytes = next_page_json_bytes;
+            page.push(event);
+        }
+        if page.is_empty() && available_count > 0 {
+            return Err(TaskStoreError::ProjectionIntegrity(
+                "task event cannot fit the daemon audit page byte budget".into(),
+            ));
+        }
+        let has_more = page.len() < available_count;
+        let next_before_offset = has_more
+            .then(|| page.last().map(|event| event.global_offset))
+            .flatten();
+        page.reverse();
+        Ok((page, next_before_offset))
+    }
+
     pub fn run_terminal_reason(
         &self,
         task_id: TaskId,
@@ -2857,6 +2928,7 @@ impl TaskStore {
         task_id: TaskId,
         tenant_id: TenantId,
         session_id: SessionId,
+        run_segment_id: Option<RunSegmentId>,
         metadata: crate::AppendMetadata,
         expected_next_offset: Option<u64>,
         events: &[Event],
@@ -2907,6 +2979,7 @@ impl TaskStore {
                     tenant_id,
                     session_id,
                     journal_offset,
+                    run_segment_id,
                     metadata.run_id,
                     metadata.correlation_id,
                     metadata.causation_id,

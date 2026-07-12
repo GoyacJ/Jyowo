@@ -113,6 +113,12 @@ export type ClientRequest =
       type: 'load_task'
     }
   | {
+      beforeGlobalOffset?: number | null
+      limit: number
+      taskId: TypedUlid
+      type: 'load_task_events'
+    }
+  | {
       type: 'list_tasks'
     }
   | {
@@ -182,6 +188,12 @@ export type ServerMessage =
       snapshotOffset: number
       timeline: TimelineItemProjection[]
       type: 'task_snapshot'
+    }
+  | {
+      events: TaskEventEnvelope[]
+      nextBeforeOffset?: number | null
+      taskId: TypedUlid
+      type: 'task_event_page'
     }
   | {
       tasks: TaskProjection[]
@@ -549,6 +561,7 @@ export interface TimelineItemProjection {
   incomplete: boolean
   kind: TimelineEventKind
   runSegmentId?: TypedUlid | null
+  semanticGroupId?: string | null
   summary: string
 }
 /**

@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next'
+
 export function DiffPanel({
   loading,
   missing,
@@ -7,9 +9,10 @@ export function DiffPanel({
   missing: boolean
   text: string | null
 }) {
+  const { t } = useTranslation('tasks')
   return (
     <ArtifactText
-      empty="Select a change event to inspect its patch."
+      empty={t('workbench.empty.changes')}
       loading={loading}
       missing={missing}
       text={text}
@@ -28,8 +31,9 @@ export function ArtifactText({
   missing: boolean
   text: string | null
 }) {
-  if (loading) return <PanelState>Loading artifact…</PanelState>
-  if (missing) return <PanelState>Artifact is unavailable</PanelState>
+  const { t } = useTranslation('tasks')
+  if (loading) return <PanelState>{t('workbench.artifact.loading')}</PanelState>
+  if (missing) return <PanelState>{t('workbench.artifact.unavailable')}</PanelState>
   if (text === null) return <PanelState>{empty}</PanelState>
   return (
     <pre className="min-h-full overflow-auto whitespace-pre-wrap p-4 font-mono text-xs leading-6">

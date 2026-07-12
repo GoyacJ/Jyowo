@@ -63,6 +63,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_engine_session_offset
     )
     WHERE event_type GLOB 'engine.*';
 
+CREATE INDEX IF NOT EXISTS idx_engine_run_history
+    ON event_log(
+        task_id,
+        COALESCE(
+            json_extract(payload_json, '$.runId'),
+            json_extract(payload_json, '$.event.run_id')
+        ),
+        global_offset
+    )
+    WHERE event_type GLOB 'engine.*';
+
 CREATE TABLE IF NOT EXISTS command_inbox (
     command_id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,

@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import type { TaskEventEnvelope, TimelineItemProjection } from '@/generated/daemon-protocol'
 
 import { ArtifactText } from './DiffPanel'
@@ -16,10 +17,11 @@ export function SourcesPanel({
   text: string | null
   timeline: TimelineItemProjection[]
 }) {
+  const { t } = useTranslation('tasks')
   if (loading || missing || text !== null) {
     return (
       <ArtifactText
-        empty="Select a source event to inspect it."
+        empty={t('workbench.empty.source')}
         loading={loading}
         missing={missing}
         text={text}
@@ -32,7 +34,7 @@ export function SourcesPanel({
     (event) => event.source.kind === 'tool' || event.source.kind === 'assistant',
   )
   if (sourceEvents.length === 0) {
-    return <p className="p-4 text-muted-foreground text-sm">No source artifacts recorded.</p>
+    return <p className="p-4 text-muted-foreground text-sm">{t('workbench.empty.sources')}</p>
   }
   return (
     <ul className="divide-y divide-border/70">

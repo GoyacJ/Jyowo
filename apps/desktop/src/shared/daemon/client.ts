@@ -22,6 +22,7 @@ type BridgeOwnedRequest =
 
 type DaemonRequest = Exclude<ClientRequest, BridgeOwnedRequest>
 export type TaskSnapshot = Omit<Extract<ServerMessage, { type: 'task_snapshot' }>, 'type'>
+export type TaskEventPage = Omit<Extract<ServerMessage, { type: 'task_event_page' }>, 'type'>
 export type DaemonEventBatch = Extract<ServerMessage, { type: 'event_batch' }>
 export type DaemonSubscriptionHandler = (frame: ServerFrame) => void
 
@@ -43,6 +44,7 @@ export interface DaemonClient {
   connect: () => Promise<ServerFrame>
   request: (request: DaemonRequest) => Promise<ServerFrame>
   loadTask: (taskId: TypedUlid) => Promise<TaskSnapshot>
+  loadTaskEvents: (taskId: TypedUlid, beforeGlobalOffset?: number) => Promise<TaskEventPage>
   listTasks: () => Promise<Extract<ServerMessage, { type: 'task_list' }>>
   renameTask: (
     taskId: TypedUlid,
@@ -109,6 +111,25 @@ export function createDaemonClient(
       }
       const { projection, snapshotOffset, timeline } = frame.message
       return { projection, snapshotOffset, timeline }
+    },
+    async loadTaskEvents(taskId, beforeGlobalOffset) {
+      const frame = await request({
+        ...(beforeGlobalOffset === undefined ? {} : { beforeGlobalOffset }),
+        limit: 16,
+        taskId,
+        type: 'load_task_events',
+      })
+      if (frame.message.type === 'error') {
+        throw new DaemonResponseError(frame.message.code, frame.message.message)
+      }
+      if (frame.message.type !== 'task_event_page') {
+        throw new Error(`Expected task_event_page, received ${frame.message.type}`)
+      }
+      if (frame.message.taskId !== taskId) {
+        throw new Error('Daemon returned audit events for another task')
+      }
+      const { events, nextBeforeOffset } = frame.message
+      return { events, nextBeforeOffset, taskId }
     },
     async listTasks() {
       const frame = await request({ type: 'list_tasks' })

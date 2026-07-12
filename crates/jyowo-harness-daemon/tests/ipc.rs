@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
 use harness_contracts::{
-    now, ClientFrame, ClientId, ClientRequest, CommandId, CommandMetadata, CommandRejectionReason,
-    ContinueTaskCommand, CreateTaskCommand, DaemonPermissionKind, HandshakeRequest,
-    PermissionOption, QueueItemId, RequestId, ResolvePermissionCommand, RunSegmentId, RunState,
-    RunTerminalReason, ServerMessage, StopMode, StopRunCommand, TaskState, ToolUseId,
-    WorkspaceMode, WorkspaceSelection, MAX_DAEMON_BLOB_BYTES, PROTOCOL_VERSION,
+    now, AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, ClientFrame, ClientId,
+    ClientRequest, CommandId, CommandMetadata, CommandRejectionReason, ContinueTaskCommand,
+    CreateTaskCommand, DaemonPermissionKind, DeltaChunk, EndReason, Event, HandshakeRequest,
+    MessageContent, MessageId, NoopRedactor, PermissionOption, QueueItemId, RequestId,
+    ResolvePermissionCommand, RunEndedEvent, RunId, RunSegmentId, RunState, RunTerminalReason,
+    ServerMessage, SessionId, StopMode, StopReason, StopRunCommand, TaskState, TenantId, ToolUseId,
+    UsageSnapshot, WorkspaceMode, WorkspaceSelection, MAX_DAEMON_BLOB_BYTES, PROTOCOL_VERSION,
 };
 use harness_daemon::{
     encode_frame, IpcConnection, IpcServerConfig, JsonFrameDecoder, LocalIpcServer,
@@ -13,7 +15,10 @@ use harness_daemon::{
     StartSegmentRequest, Supervisor, SupervisorQuotas, MAX_FRAME_BYTES,
 };
 use harness_engine::{RunControlHandle, SafePointDecision, TurnOutcome};
-use harness_journal::{AcceptedCommand, NewTaskEvent, TaskBlobStore, TaskStore};
+use harness_journal::{
+    AcceptedCommand, AppendMetadata, EventStore, NewTaskEvent, TaskBlobStore,
+    TaskEventStoreAdapter, TaskStore,
+};
 use serde_json::json;
 use std::sync::Mutex;
 

@@ -511,6 +511,38 @@
         {
           "type": "object",
           "properties": {
+            "beforeGlobalOffset": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "limit": {
+              "type": "integer",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "load_task_events"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "taskId",
+            "limit"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "type": {
               "type": "string",
               "const": "list_tasks"
@@ -1134,6 +1166,38 @@
         {
           "type": "object",
           "properties": {
+            "events": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TaskEventEnvelope"
+              }
+            },
+            "nextBeforeOffset": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "task_event_page"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "taskId",
+            "events"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "tasks": {
               "type": "array",
               "items": {
@@ -1603,6 +1667,12 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "semanticGroupId": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "summary": {
