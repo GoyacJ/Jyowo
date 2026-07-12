@@ -539,6 +539,7 @@ export interface TimelineItemProjection {
   incomplete: boolean
   kind: TimelineEventKind
   runSegmentId?: TypedUlid | null
+  semanticGroupId?: string | null
   summary: string
 }
 /**

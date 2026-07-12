@@ -1,6 +1,6 @@
 use harness_contracts::{
-    daemon_protocol_schema, ClientFrame, ClientRequest, ServerFrame, TaskProjection, WorkspaceMode,
-    PROTOCOL_VERSION,
+    daemon_protocol_schema, ClientFrame, ClientRequest, ServerFrame, TaskProjection,
+    TimelineItemProjection, WorkspaceMode, PROTOCOL_VERSION,
 };
 use serde_json::json;
 
@@ -36,6 +36,25 @@ fn daemon_protocol_exports_one_versioned_schema() {
     assert_eq!(value["request"]["type"], "subscribe_events");
     assert_eq!(value["request"]["afterOffset"], 42);
     assert!(value["request"].get("after_offset").is_none());
+}
+
+#[test]
+fn timeline_items_preserve_optional_semantic_group_identity() {
+    let value = json!({
+        "id": "00000000000000000000000001",
+        "kind": "assistant_text",
+        "globalOffset": 7,
+        "runSegmentId": "00000000000000000000000002",
+        "semanticGroupId": "00000000000000000000000003",
+        "summary": "streamed answer",
+        "blobId": null,
+        "incomplete": true
+    });
+
+    let item: TimelineItemProjection =
+        serde_json::from_value(value.clone()).expect("semantic timeline item parses");
+
+    assert_eq!(serde_json::to_value(item).unwrap(), value);
 }
 
 #[test]

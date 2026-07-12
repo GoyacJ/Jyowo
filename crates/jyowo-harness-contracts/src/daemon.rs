@@ -617,6 +617,8 @@ pub struct TimelineItemProjection {
     pub kind: TimelineEventKind,
     pub global_offset: u64,
     pub run_segment_id: Option<RunSegmentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_group_id: Option<String>,
     pub summary: String,
     pub blob_id: Option<BlobId>,
     pub incomplete: bool,

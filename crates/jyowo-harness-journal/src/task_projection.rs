@@ -1080,6 +1080,7 @@ fn project_timeline(
         kind,
         global_offset: envelope.global_offset,
         run_segment_id,
+        semantic_group_id: None,
         summary,
         blob_id,
         incomplete,
