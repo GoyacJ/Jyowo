@@ -14,8 +14,8 @@ use harness_contracts::{
     UpdateThreadMemorySettingsResponse,
 };
 use harness_memory::{
-    default_thread_settings, local::LocalMemoryProvider, MemoryInbox, MemoryListScope,
-    MemoryMetadata, MemoryPolicyEngine, MemoryRecallTraceCollector, MemoryRecord,
+    default_thread_settings, local::LocalMemoryProvider, MemoryCandidateMutationError, MemoryInbox,
+    MemoryListScope, MemoryMetadata, MemoryPolicyEngine, MemoryRecallTraceCollector, MemoryRecord,
     MemorySettingsStore, MemoryStore,
 };
 use thiserror::Error;
@@ -86,16 +86,7 @@ impl MemoryService {
                 action_plan_id,
                 ..
             } => {
-                if content.trim().is_empty() {
-                    return Err(MemoryServiceError::Invalid(
-                        "memory content must not be empty".to_owned(),
-                    ));
-                }
-                if content.len() > MAX_MEMORY_CONTENT_BYTES {
-                    return Err(MemoryServiceError::Invalid(format!(
-                        "memory content must not exceed {MAX_MEMORY_CONTENT_BYTES} bytes"
-                    )));
-                }
+                validate_memory_content(&content)?;
                 let provider = local_provider(&db_path, TenantId::SINGLE)?;
                 ensure_memory_visible(
                     &provider,
@@ -236,15 +227,26 @@ impl MemoryService {
                 let inbox = MemoryInbox::open(&db_path.to_string_lossy(), request.tenant_id)
                     .map_err(MemoryServiceError::Store)?;
                 let candidate = find_candidate(&inbox, request.candidate_id)?;
-                authorize_memory_write(
-                    &db_path,
-                    request.action_plan_id,
-                    candidate.evidence.clone(),
-                    &candidate.proposed_record.visibility,
-                )?;
+                let actor = management_actor(request.tenant_id, None);
+                match candidate.operation {
+                    harness_contracts::MemoryCandidateOperation::Create => {}
+                    harness_contracts::MemoryCandidateOperation::Update { memory_id } => {
+                        let provider = local_provider(&db_path, request.tenant_id)?;
+                        ensure_memory_visible(&provider, memory_id, &actor).await?;
+                    }
+                    harness_contracts::MemoryCandidateOperation::Delete { memory_id } => {
+                        let provider = local_provider(&db_path, request.tenant_id)?;
+                        ensure_memory_visible(&provider, memory_id, &actor).await?;
+                    }
+                }
                 let (candidate, memory_id) = inbox
-                    .promote_into_memory(request.candidate_id)
-                    .map_err(MemoryServiceError::Store)?;
+                    .promote_into_memory_for_actor(
+                        request.candidate_id,
+                        &actor,
+                        &MemoryActor::User { user_label: None },
+                        &manual_memory_permission(request.action_plan_id),
+                    )
+                    .map_err(map_candidate_mutation_error)?;
                 Ok(ServerMessage::MemoryCandidateApproved(
                     harness_contracts::ApproveMemoryCandidateResponse {
                         candidate,
@@ -268,6 +270,7 @@ impl MemoryService {
                 ))
             }
             ClientRequest::MergeMemoryCandidate { request, .. } => {
+                validate_memory_content(&request.merged_record.content)?;
                 if request.candidate_ids.len() < 2 {
                     return Err(MemoryServiceError::Invalid(
                         "at least two candidates are required".into(),
@@ -285,6 +288,7 @@ impl MemoryService {
                 }
                 let inbox = MemoryInbox::open(&db_path.to_string_lossy(), request.tenant_id)
                     .map_err(MemoryServiceError::Store)?;
+                let mut candidates = Vec::with_capacity(request.candidate_ids.len());
                 for id in &request.candidate_ids {
                     let candidate = find_candidate(&inbox, *id)?;
                     if candidate.state != MemoryCandidateState::Proposed {
@@ -292,13 +296,9 @@ impl MemoryService {
                             "candidate is not proposed: {id}"
                         )));
                     }
+                    candidates.push(candidate);
                 }
-                authorize_memory_write(
-                    &db_path,
-                    request.action_plan_id,
-                    request.evidence.clone(),
-                    &request.merged_record.visibility,
-                )?;
+                let evidence = authoritative_merge_evidence(&candidates, &request.evidence)?;
                 let now = Utc::now();
                 let record = MemoryRecord {
                     id: MemoryId::new(),
@@ -308,8 +308,8 @@ impl MemoryService {
                     content: request.merged_record.content,
                     metadata: MemoryMetadata {
                         tags: request.merged_record.metadata.tags,
-                        source: request.evidence.source.clone(),
-                        evidence: Some(request.evidence),
+                        source: evidence.source.clone(),
+                        evidence: Some(evidence),
                         confidence: request.merged_record.metadata.source_trust.clamp(0.0, 1.0)
                             as f32,
                         access_count: 0,
@@ -323,8 +323,13 @@ impl MemoryService {
                     updated_at: now,
                 };
                 let memory_id = inbox
-                    .merge_into_memory(&request.candidate_ids, &record)
-                    .map_err(MemoryServiceError::Store)?;
+                    .merge_into_memory(
+                        &request.candidate_ids,
+                        &record,
+                        &MemoryActor::User { user_label: None },
+                        &manual_memory_permission(request.action_plan_id),
+                    )
+                    .map_err(map_candidate_mutation_error)?;
                 Ok(ServerMessage::MemoryCandidatesMerged(
                     MergeMemoryCandidateResponse {
                         candidate_ids: request.candidate_ids,
@@ -434,6 +439,44 @@ impl MemoryService {
             )),
         }
     }
+}
+
+fn validate_memory_content(content: &str) -> Result<(), MemoryServiceError> {
+    if content.trim().is_empty() {
+        return Err(MemoryServiceError::Invalid(
+            "memory content must not be empty".to_owned(),
+        ));
+    }
+    if content.len() > MAX_MEMORY_CONTENT_BYTES {
+        return Err(MemoryServiceError::Invalid(format!(
+            "memory content must not exceed {MAX_MEMORY_CONTENT_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn authoritative_merge_evidence(
+    candidates: &[MemoryCandidate],
+    claimed: &MemoryEvidence,
+) -> Result<MemoryEvidence, MemoryServiceError> {
+    let authoritative = candidates
+        .first()
+        .map(|candidate| candidate.evidence.clone())
+        .ok_or_else(|| MemoryServiceError::Invalid("merge candidates are missing".to_owned()))?;
+    if candidates
+        .iter()
+        .any(|candidate| candidate.evidence != authoritative)
+    {
+        return Err(MemoryServiceError::Invalid(
+            "merge candidates must have identical authoritative evidence".to_owned(),
+        ));
+    }
+    if claimed != &authoritative {
+        return Err(MemoryServiceError::Invalid(
+            "merge evidence does not match authoritative candidate evidence".to_owned(),
+        ));
+    }
+    Ok(authoritative)
 }
 
 fn validate_global_settings(
@@ -564,6 +607,19 @@ fn authorize_policy_decision(decision: MemoryPolicyDecision) -> Result<(), Memor
     match decision {
         MemoryPolicyDecision::Allow => Ok(()),
         denied => Err(MemoryServiceError::PolicyDenied(format!("{denied:?}"))),
+    }
+}
+
+fn map_candidate_mutation_error(error: MemoryCandidateMutationError) -> MemoryServiceError {
+    match error {
+        MemoryCandidateMutationError::PolicyDenied(decision) => {
+            MemoryServiceError::PolicyDenied(format!("{decision:?}"))
+        }
+        MemoryCandidateMutationError::Invalid(error) => MemoryServiceError::Invalid(error),
+        MemoryCandidateMutationError::NotFound(_) => {
+            MemoryServiceError::NotFound("memory item".to_owned())
+        }
+        MemoryCandidateMutationError::Store(error) => MemoryServiceError::Store(error),
     }
 }
 

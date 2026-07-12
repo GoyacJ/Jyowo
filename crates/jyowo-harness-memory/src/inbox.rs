@@ -9,13 +9,32 @@ use std::sync::Mutex;
 
 use chrono::Utc;
 use harness_contracts::{
-    MemoryCandidate, MemoryCandidateId, MemoryCandidateOperation, MemoryCandidateState,
-    MemoryEvidence, MemoryId, MemoryKind, MemoryRecordDraft, MemorySource, TenantId,
+    MemoryActor, MemoryActorContext, MemoryCandidate, MemoryCandidateId, MemoryCandidateOperation,
+    MemoryCandidateState, MemoryEvidence, MemoryId, MemoryKind, MemoryPermissionContext,
+    MemoryPolicyDecision, MemoryRecordDraft, MemorySource, MemoryVisibility, SessionId, TenantId,
 };
 use rusqlite::{Connection, TransactionBehavior};
+use thiserror::Error;
 
 use crate::local::{schema, schema_init};
-use crate::{MemoryMetadata, MemoryRecord};
+use crate::settings::{read_global_settings, read_thread_settings};
+use crate::{
+    default_thread_settings, visibility_matches, MemoryMetadata, MemoryPolicyEngine, MemoryRecord,
+};
+
+const MAX_MEMORY_CONTENT_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Error)]
+pub enum MemoryCandidateMutationError {
+    #[error("candidate mutation denied by policy: {0:?}")]
+    PolicyDenied(MemoryPolicyDecision),
+    #[error("invalid candidate mutation: {0}")]
+    Invalid(String),
+    #[error("memory not found: {0}")]
+    NotFound(MemoryId),
+    #[error("{0}")]
+    Store(String),
+}
 
 /// SQLite-backed candidate inbox for a single tenant.
 #[derive(Debug)]
@@ -122,22 +141,42 @@ impl MemoryInbox {
     }
 
     /// Apply a proposed candidate and mark it promoted in one SQLite transaction.
-    pub fn promote_into_memory(
+    pub fn promote_into_memory_for_actor(
         &self,
         id: MemoryCandidateId,
-    ) -> Result<(MemoryCandidate, MemoryId), String> {
-        let mut conn = self.conn.lock().map_err(|e| format!("inbox lock: {e}"))?;
+        actor: &MemoryActorContext,
+        policy_actor: &MemoryActor,
+        permission: &MemoryPermissionContext,
+    ) -> Result<(MemoryCandidate, MemoryId), MemoryCandidateMutationError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| MemoryCandidateMutationError::Store(format!("inbox lock: {e}")))?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|e| format!("begin candidate promotion: {e}"))?;
-        let mut candidate = get_candidate(&tx, self.tenant_id, id)?;
-        ensure_candidate_state(&candidate, &[MemoryCandidateState::Proposed])?;
+            .map_err(|e| {
+                MemoryCandidateMutationError::Store(format!("begin candidate promotion: {e}"))
+            })?;
+        let mut candidate =
+            get_candidate(&tx, self.tenant_id, id).map_err(MemoryCandidateMutationError::Store)?;
+        ensure_candidate_state(&candidate, &[MemoryCandidateState::Proposed])
+            .map_err(MemoryCandidateMutationError::Store)?;
+        validate_candidate_content(&candidate)?;
+        let target_visibility = candidate_target_visibility_in_transaction(&tx, &candidate, actor)?;
+        authorize_candidate_in_transaction(
+            &tx,
+            &candidate,
+            policy_actor,
+            permission,
+            target_visibility.as_ref(),
+        )?;
         let memory_id = apply_candidate_in_transaction(&tx, &candidate)?;
         candidate.state = MemoryCandidateState::Promoted;
         candidate.updated_at = Utc::now();
-        upsert_candidate(&tx, &candidate)?;
-        tx.commit()
-            .map_err(|e| format!("commit candidate promotion: {e}"))?;
+        upsert_candidate(&tx, &candidate).map_err(MemoryCandidateMutationError::Store)?;
+        tx.commit().map_err(|e| {
+            MemoryCandidateMutationError::Store(format!("commit candidate promotion: {e}"))
+        })?;
         Ok((candidate, memory_id))
     }
 
@@ -159,31 +198,58 @@ impl MemoryInbox {
         &self,
         ids: &[MemoryCandidateId],
         record: &MemoryRecord,
-    ) -> Result<MemoryId, String> {
+        policy_actor: &MemoryActor,
+        permission: &MemoryPermissionContext,
+    ) -> Result<MemoryId, MemoryCandidateMutationError> {
         if record.tenant_id != self.tenant_id {
-            return Err(format!(
+            return Err(MemoryCandidateMutationError::Invalid(format!(
                 "tenant mismatch: inbox={} record={}",
                 self.tenant_id, record.tenant_id
-            ));
+            )));
         }
-        let mut conn = self.conn.lock().map_err(|e| format!("inbox lock: {e}"))?;
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| MemoryCandidateMutationError::Store(format!("inbox lock: {e}")))?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|e| format!("begin candidate merge: {e}"))?;
+            .map_err(|e| {
+                MemoryCandidateMutationError::Store(format!("begin candidate merge: {e}"))
+            })?;
         let mut candidates = Vec::with_capacity(ids.len());
         for id in ids {
-            let candidate = get_candidate(&tx, self.tenant_id, *id)?;
-            ensure_candidate_state(&candidate, &[MemoryCandidateState::Proposed])?;
+            let candidate = get_candidate(&tx, self.tenant_id, *id)
+                .map_err(MemoryCandidateMutationError::Store)?;
+            ensure_candidate_state(&candidate, &[MemoryCandidateState::Proposed])
+                .map_err(MemoryCandidateMutationError::Store)?;
             candidates.push(candidate);
         }
-        upsert_memory_record(&tx, record)?;
+        let evidence = authoritative_candidate_evidence(&candidates)?;
+        if record.metadata.evidence.as_ref() != Some(&evidence)
+            || record.metadata.source != evidence.source
+        {
+            return Err(MemoryCandidateMutationError::Invalid(
+                "merged record evidence does not match authoritative candidates".to_owned(),
+            ));
+        }
+        authorize_write_in_transaction(
+            &tx,
+            self.tenant_id,
+            evidence.session_id,
+            policy_actor,
+            &evidence,
+            permission,
+            &record.visibility,
+        )?;
+        upsert_memory_record(&tx, record).map_err(MemoryCandidateMutationError::Store)?;
         for candidate in &mut candidates {
             candidate.state = MemoryCandidateState::Merged;
             candidate.updated_at = Utc::now();
-            upsert_candidate(&tx, candidate)?;
+            upsert_candidate(&tx, candidate).map_err(MemoryCandidateMutationError::Store)?;
         }
-        tx.commit()
-            .map_err(|e| format!("commit candidate merge: {e}"))?;
+        tx.commit().map_err(|e| {
+            MemoryCandidateMutationError::Store(format!("commit candidate merge: {e}"))
+        })?;
         Ok(record.id)
     }
 
@@ -396,7 +462,7 @@ fn state_to_db(state: MemoryCandidateState) -> String {
 fn apply_candidate_in_transaction(
     conn: &Connection,
     candidate: &MemoryCandidate,
-) -> Result<MemoryId, String> {
+) -> Result<MemoryId, MemoryCandidateMutationError> {
     match candidate.operation {
         MemoryCandidateOperation::Create => {
             let now = Utc::now();
@@ -425,7 +491,7 @@ fn apply_candidate_in_transaction(
                 created_at: now,
                 updated_at: now,
             };
-            upsert_memory_record(conn, &record)?;
+            upsert_memory_record(conn, &record).map_err(MemoryCandidateMutationError::Store)?;
             Ok(record.id)
         }
         MemoryCandidateOperation::Update { memory_id } => {
@@ -449,17 +515,178 @@ fn apply_candidate_in_transaction(
                         candidate.tenant_id.to_string(),
                     ],
                 )
-                .map_err(|e| format!("update candidate memory: {e}"))?;
+                .map_err(|e| {
+                    MemoryCandidateMutationError::Store(format!("update candidate memory: {e}"))
+                })?;
             if affected == 0 {
-                return Err(format!("memory not found: {memory_id}"));
+                return Err(MemoryCandidateMutationError::NotFound(memory_id));
             }
-            mark_embedding_missing(conn, memory_id)?;
+            mark_embedding_missing(conn, memory_id).map_err(MemoryCandidateMutationError::Store)?;
             Ok(memory_id)
         }
         MemoryCandidateOperation::Delete { memory_id } => {
-            forget_memory_record(conn, candidate.tenant_id, memory_id)?;
+            forget_memory_record(conn, candidate.tenant_id, memory_id)
+                .map_err(MemoryCandidateMutationError::Store)?;
             Ok(memory_id)
         }
+    }
+}
+
+fn authorize_candidate_in_transaction(
+    conn: &Connection,
+    candidate: &MemoryCandidate,
+    actor: &MemoryActor,
+    permission: &MemoryPermissionContext,
+    target_visibility: Option<&MemoryVisibility>,
+) -> Result<(), MemoryCandidateMutationError> {
+    let decision = match candidate.operation {
+        MemoryCandidateOperation::Create | MemoryCandidateOperation::Update { .. } => {
+            return authorize_write_in_transaction(
+                conn,
+                candidate.tenant_id,
+                candidate.evidence.session_id,
+                actor,
+                &candidate.evidence,
+                permission,
+                target_visibility.unwrap_or(&candidate.proposed_record.visibility),
+            );
+        }
+        MemoryCandidateOperation::Delete { .. } => {
+            let (engine, thread) =
+                policy_in_transaction(conn, candidate.tenant_id, candidate.evidence.session_id)?;
+            engine.evaluate_delete(&thread, actor, permission)
+        }
+    };
+    match decision {
+        MemoryPolicyDecision::Allow => Ok(()),
+        denied => Err(MemoryCandidateMutationError::PolicyDenied(denied)),
+    }
+}
+
+fn validate_candidate_content(
+    candidate: &MemoryCandidate,
+) -> Result<(), MemoryCandidateMutationError> {
+    if matches!(candidate.operation, MemoryCandidateOperation::Delete { .. }) {
+        return Ok(());
+    }
+    let content = &candidate.proposed_record.content;
+    if content.trim().is_empty() {
+        return Err(MemoryCandidateMutationError::Invalid(
+            "memory content must not be empty".to_owned(),
+        ));
+    }
+    if content.len() > MAX_MEMORY_CONTENT_BYTES {
+        return Err(MemoryCandidateMutationError::Invalid(format!(
+            "memory content must not exceed {MAX_MEMORY_CONTENT_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn candidate_target_visibility_in_transaction(
+    conn: &Connection,
+    candidate: &MemoryCandidate,
+    actor: &MemoryActorContext,
+) -> Result<Option<MemoryVisibility>, MemoryCandidateMutationError> {
+    match candidate.operation {
+        MemoryCandidateOperation::Create => Ok(None),
+        MemoryCandidateOperation::Update { memory_id }
+        | MemoryCandidateOperation::Delete { memory_id } => {
+            read_visible_memory_visibility(conn, candidate.tenant_id, memory_id, actor).map(Some)
+        }
+    }
+}
+
+fn authorize_write_in_transaction(
+    conn: &Connection,
+    tenant_id: TenantId,
+    session_id: Option<SessionId>,
+    actor: &MemoryActor,
+    evidence: &MemoryEvidence,
+    permission: &MemoryPermissionContext,
+    visibility: &MemoryVisibility,
+) -> Result<(), MemoryCandidateMutationError> {
+    let (engine, thread) = policy_in_transaction(conn, tenant_id, session_id)?;
+    match engine.evaluate_write(&thread, actor, evidence, permission, visibility) {
+        MemoryPolicyDecision::Allow => Ok(()),
+        denied => Err(MemoryCandidateMutationError::PolicyDenied(denied)),
+    }
+}
+
+fn policy_in_transaction(
+    conn: &Connection,
+    tenant_id: TenantId,
+    session_id: Option<SessionId>,
+) -> Result<
+    (MemoryPolicyEngine, harness_contracts::MemoryThreadSettings),
+    MemoryCandidateMutationError,
+> {
+    let global =
+        read_global_settings(conn, tenant_id).map_err(MemoryCandidateMutationError::Store)?;
+    let thread = match session_id {
+        Some(session_id) => read_thread_settings(conn, tenant_id, session_id)
+            .map_err(MemoryCandidateMutationError::Store)?,
+        None => default_thread_settings(SessionId::new()),
+    };
+    Ok((MemoryPolicyEngine::new(global), thread))
+}
+
+fn authoritative_candidate_evidence(
+    candidates: &[MemoryCandidate],
+) -> Result<MemoryEvidence, MemoryCandidateMutationError> {
+    let evidence = candidates
+        .first()
+        .map(|candidate| candidate.evidence.clone())
+        .ok_or_else(|| {
+            MemoryCandidateMutationError::Invalid("merge candidates are missing".to_owned())
+        })?;
+    if candidates
+        .iter()
+        .any(|candidate| candidate.evidence != evidence)
+    {
+        return Err(MemoryCandidateMutationError::Invalid(
+            "merge candidates must have identical authoritative evidence".to_owned(),
+        ));
+    }
+    Ok(evidence)
+}
+
+fn read_visible_memory_visibility(
+    conn: &Connection,
+    tenant_id: TenantId,
+    memory_id: MemoryId,
+    actor: &MemoryActorContext,
+) -> Result<MemoryVisibility, MemoryCandidateMutationError> {
+    if actor.tenant_id != tenant_id {
+        return Err(MemoryCandidateMutationError::NotFound(memory_id));
+    }
+    let now = Utc::now().to_rfc3339();
+    let visibility_json: String = match conn.query_row(
+        &format!(
+            "SELECT visibility FROM {} WHERE id = ?1 AND tenant_id = ?2 \
+             AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?3)",
+            schema::TABLE_MEMORY_RECORDS
+        ),
+        rusqlite::params![memory_id.to_string(), tenant_id.to_string(), now],
+        |row| row.get(0),
+    ) {
+        Ok(visibility) => visibility,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            return Err(MemoryCandidateMutationError::NotFound(memory_id));
+        }
+        Err(error) => {
+            return Err(MemoryCandidateMutationError::Store(format!(
+                "read memory visibility: {error}"
+            )));
+        }
+    };
+    let visibility: MemoryVisibility = serde_json::from_str(&visibility_json).map_err(|e| {
+        MemoryCandidateMutationError::Store(format!("decode memory visibility: {e}"))
+    })?;
+    if visibility_matches(&visibility, actor) {
+        Ok(visibility)
+    } else {
+        Err(MemoryCandidateMutationError::NotFound(memory_id))
     }
 }
 

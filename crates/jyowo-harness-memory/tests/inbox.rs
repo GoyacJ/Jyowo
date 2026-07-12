@@ -1,7 +1,7 @@
 //! Tests for the memory candidate inbox.
 
 use harness_contracts::*;
-use harness_memory::inbox::MemoryInbox;
+use harness_memory::{inbox::MemoryInbox, MemorySettingsStore};
 
 fn make_draft(content: &str) -> MemoryRecordDraft {
     MemoryRecordDraft {
@@ -167,4 +167,135 @@ fn list_by_state_filters_correctly() {
             .len(),
         1
     );
+}
+
+#[test]
+fn candidate_promotion_rechecks_policy_in_its_write_transaction() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("memory.sqlite3");
+    let inbox = MemoryInbox::open(db_path.to_str().unwrap(), TenantId::SINGLE).unwrap();
+    let candidate = inbox
+        .propose(make_draft("policy protected"), make_evidence())
+        .unwrap();
+    let settings = MemorySettingsStore::open(db_path.to_str().unwrap()).unwrap();
+    let mut global = settings.get_global(TenantId::SINGLE).unwrap();
+    global.generate_memories = false;
+    settings.update_global(TenantId::SINGLE, global).unwrap();
+
+    let result = inbox.promote_into_memory_for_actor(
+        candidate.id,
+        &MemoryActorContext {
+            tenant_id: TenantId::SINGLE,
+            user_id: None,
+            team_id: None,
+            session_id: None,
+        },
+        &MemoryActor::User { user_label: None },
+        &MemoryPermissionContext {
+            explicit_user_instruction: true,
+            include_raw_content: false,
+            action_plan_id: None,
+            authorization_ticket_id: None,
+            non_interactive_policy_grant: false,
+        },
+    );
+
+    assert!(result.is_err());
+    assert_eq!(
+        inbox.list(None).unwrap()[0].state,
+        MemoryCandidateState::Proposed
+    );
+}
+
+#[test]
+fn candidate_merge_rechecks_policy_in_its_write_transaction() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("memory.sqlite3");
+    let inbox = MemoryInbox::open(db_path.to_str().unwrap(), TenantId::SINGLE).unwrap();
+    let evidence = make_evidence();
+    let first = inbox
+        .propose(make_draft("first"), evidence.clone())
+        .unwrap();
+    let second = inbox
+        .propose(make_draft("second"), evidence.clone())
+        .unwrap();
+    let settings = MemorySettingsStore::open(db_path.to_str().unwrap()).unwrap();
+    let mut global = settings.get_global(TenantId::SINGLE).unwrap();
+    global.generate_memories = false;
+    settings.update_global(TenantId::SINGLE, global).unwrap();
+
+    let result = inbox.merge_into_memory(
+        &[first.id, second.id],
+        &make_record("merged", evidence),
+        &MemoryActor::User { user_label: None },
+        &manual_permission(),
+    );
+
+    assert!(result.is_err());
+    assert!(inbox
+        .list(None)
+        .unwrap()
+        .iter()
+        .all(|candidate| candidate.state == MemoryCandidateState::Proposed));
+}
+
+#[test]
+fn candidate_merge_uses_transaction_candidates_as_evidence_authority() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("memory.sqlite3");
+    let inbox = MemoryInbox::open(db_path.to_str().unwrap(), TenantId::SINGLE).unwrap();
+    let evidence = make_evidence();
+    let first = inbox
+        .propose(make_draft("first"), evidence.clone())
+        .unwrap();
+    let second = inbox.propose(make_draft("second"), evidence).unwrap();
+
+    let result = inbox.merge_into_memory(
+        &[first.id, second.id],
+        &make_record("forged", make_evidence()),
+        &MemoryActor::User { user_label: None },
+        &manual_permission(),
+    );
+
+    assert!(result.is_err());
+    assert!(inbox
+        .list(None)
+        .unwrap()
+        .iter()
+        .all(|candidate| candidate.state == MemoryCandidateState::Proposed));
+}
+
+fn make_record(content: &str, evidence: MemoryEvidence) -> harness_memory::MemoryRecord {
+    let now = chrono::Utc::now();
+    harness_memory::MemoryRecord {
+        id: MemoryId::new(),
+        tenant_id: TenantId::SINGLE,
+        kind: MemoryKind::ProjectFact,
+        visibility: MemoryVisibility::Tenant,
+        content: content.to_owned(),
+        metadata: harness_memory::MemoryMetadata {
+            tags: Vec::new(),
+            source: evidence.source.clone(),
+            evidence: Some(evidence),
+            confidence: 0.5,
+            access_count: 0,
+            last_accessed_at: None,
+            recall_score: 0.0,
+            recall_score_breakdown: None,
+            ttl: None,
+            redacted_segments: 0,
+        },
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn manual_permission() -> MemoryPermissionContext {
+    MemoryPermissionContext {
+        explicit_user_instruction: true,
+        include_raw_content: false,
+        action_plan_id: None,
+        authorization_ticket_id: None,
+        non_interactive_policy_grant: false,
+    }
 }

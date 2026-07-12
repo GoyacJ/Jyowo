@@ -4,12 +4,12 @@ use harness_contracts::{
     ActionPlanId, ApproveMemoryCandidateRequest, ClientRequest, ContentHash,
     ExportMemoryItemsRequest, GetMemoryRecallTraceRequest, GetMemorySettingsRequest,
     GetModelRequestPreviewRequest, GetThreadMemorySettingsRequest, ListMemoryCandidatesRequest,
-    ListMemoryRecallTracesRequest, MemoryCandidateId, MemoryEvidence, MemoryEvidenceOrigin,
-    MemoryGlobalSettings, MemoryKind, MemoryModelRequestPreview, MemoryModelRequestPreviewSection,
-    MemoryRecordDraft, MemorySource, MemoryThreadMode, MemoryThreadSettings, MemoryTraceId,
-    MemoryVisibility, MergeMemoryCandidateRequest, RejectMemoryCandidateRequest, RunId,
-    ServerMessage, SessionId, TenantId, UpdateMemorySettingsRequest,
-    UpdateThreadMemorySettingsRequest,
+    ListMemoryRecallTracesRequest, MemoryCandidateId, MemoryCandidateOperation, MemoryEvidence,
+    MemoryEvidenceOrigin, MemoryGlobalSettings, MemoryKind, MemoryModelRequestPreview,
+    MemoryModelRequestPreviewSection, MemoryRecordDraft, MemorySource, MemoryThreadMode,
+    MemoryThreadSettings, MemoryTraceId, MemoryVisibility, MergeMemoryCandidateRequest,
+    RejectMemoryCandidateRequest, RunId, ServerMessage, SessionId, TenantId,
+    UpdateMemorySettingsRequest, UpdateThreadMemorySettingsRequest,
 };
 use harness_daemon::{MemoryService, MemoryServiceError, RuntimeConfigResolver};
 use harness_memory::{
@@ -605,6 +605,237 @@ async fn action_plan_context_does_not_bypass_memory_policy() {
         .expect("candidates remain")
         .iter()
         .all(|candidate| candidate.state == harness_contracts::MemoryCandidateState::Proposed));
+}
+
+#[tokio::test]
+async fn delete_candidate_approval_obeys_delete_policy_without_deleting_target() {
+    let fixture = Fixture::new();
+    let db_path = fixture
+        .service
+        .database_path(Some(&fixture.workspace))
+        .expect("workspace database");
+    let provider = LocalMemoryProvider::open(&db_path.to_string_lossy(), TenantId::SINGLE)
+        .expect("local provider");
+    let target = memory_record("delete target");
+    let target_id = target.id;
+    provider.upsert(target).await.expect("insert target");
+    let inbox = MemoryInbox::open(&db_path.to_string_lossy(), TenantId::SINGLE).expect("inbox");
+    let candidate = inbox
+        .propose_with_operation(
+            MemoryCandidateOperation::Delete {
+                memory_id: target_id,
+            },
+            candidate_draft("delete target"),
+            candidate_evidence(),
+        )
+        .expect("delete candidate");
+    MemorySettingsStore::open(&db_path.to_string_lossy())
+        .expect("settings store")
+        .update_global(
+            TenantId::SINGLE,
+            MemoryGlobalSettings {
+                use_memories: false,
+                generate_memories: true,
+                disable_generation_when_external_context_used: false,
+                retention_days: None,
+                max_memory_bytes: 1024,
+                max_recall_records_per_turn: 4,
+                max_recall_chars_per_turn: 2048,
+            },
+        )
+        .expect("write policy");
+
+    let result = fixture
+        .service
+        .handle(ClientRequest::ApproveMemoryCandidate {
+            workspace_root: Some(fixture.workspace_string()),
+            request: ApproveMemoryCandidateRequest {
+                tenant_id: TenantId::SINGLE,
+                candidate_id: candidate.id,
+                action_plan_id: None,
+            },
+        })
+        .await;
+
+    assert!(matches!(result, Err(MemoryServiceError::PolicyDenied(_))));
+    assert_eq!(
+        provider
+            .get(target_id)
+            .await
+            .expect("target remains")
+            .content,
+        "delete target"
+    );
+    assert_eq!(
+        inbox.list(None).expect("candidate remains")[0].state,
+        harness_contracts::MemoryCandidateState::Proposed
+    );
+}
+
+#[tokio::test]
+async fn candidate_approval_cannot_update_or_delete_an_invisible_target() {
+    let fixture = Fixture::new();
+    let db_path = fixture
+        .service
+        .database_path(Some(&fixture.workspace))
+        .expect("workspace database");
+    let provider = LocalMemoryProvider::open(&db_path.to_string_lossy(), TenantId::SINGLE)
+        .expect("local provider");
+    let private_session = SessionId::new();
+    let mut update_target = memory_record("private update target");
+    update_target.visibility = MemoryVisibility::Private {
+        session_id: private_session,
+    };
+    let update_target_id = update_target.id;
+    provider
+        .upsert(update_target)
+        .await
+        .expect("insert update target");
+    let mut delete_target = memory_record("private delete target");
+    delete_target.visibility = MemoryVisibility::Private {
+        session_id: private_session,
+    };
+    let delete_target_id = delete_target.id;
+    provider
+        .upsert(delete_target)
+        .await
+        .expect("insert delete target");
+    let inbox = MemoryInbox::open(&db_path.to_string_lossy(), TenantId::SINGLE).expect("inbox");
+    let update = inbox
+        .propose_with_operation(
+            MemoryCandidateOperation::Update {
+                memory_id: update_target_id,
+            },
+            candidate_draft("unauthorized update"),
+            candidate_evidence(),
+        )
+        .expect("update candidate");
+    let delete = inbox
+        .propose_with_operation(
+            MemoryCandidateOperation::Delete {
+                memory_id: delete_target_id,
+            },
+            candidate_draft("unauthorized delete"),
+            candidate_evidence(),
+        )
+        .expect("delete candidate");
+
+    for candidate_id in [update.id, delete.id] {
+        let result = fixture
+            .service
+            .handle(ClientRequest::ApproveMemoryCandidate {
+                workspace_root: Some(fixture.workspace_string()),
+                request: ApproveMemoryCandidateRequest {
+                    tenant_id: TenantId::SINGLE,
+                    candidate_id,
+                    action_plan_id: None,
+                },
+            })
+            .await;
+        assert!(matches!(result, Err(MemoryServiceError::NotFound(_))));
+    }
+
+    assert_eq!(
+        provider
+            .get(update_target_id)
+            .await
+            .expect("update target remains")
+            .content,
+        "private update target"
+    );
+    assert_eq!(
+        provider
+            .get(delete_target_id)
+            .await
+            .expect("delete target remains")
+            .content,
+        "private delete target"
+    );
+    assert!(inbox
+        .list(None)
+        .expect("candidates remain")
+        .iter()
+        .all(|candidate| candidate.state == harness_contracts::MemoryCandidateState::Proposed));
+}
+
+#[tokio::test]
+async fn candidate_merge_rejects_forged_evidence_without_writing_memory() {
+    let fixture = Fixture::new();
+    let db_path = fixture
+        .service
+        .database_path(Some(&fixture.workspace))
+        .expect("workspace database");
+    let inbox = MemoryInbox::open(&db_path.to_string_lossy(), TenantId::SINGLE).expect("inbox");
+    let authoritative = external_candidate_evidence();
+    let first = inbox
+        .propose(candidate_draft("external one"), authoritative.clone())
+        .expect("first candidate");
+    let second = inbox
+        .propose(candidate_draft("external two"), authoritative)
+        .expect("second candidate");
+    MemorySettingsStore::open(&db_path.to_string_lossy())
+        .expect("settings store")
+        .update_global(
+            TenantId::SINGLE,
+            MemoryGlobalSettings {
+                use_memories: true,
+                generate_memories: true,
+                disable_generation_when_external_context_used: true,
+                retention_days: None,
+                max_memory_bytes: 1024,
+                max_recall_records_per_turn: 4,
+                max_recall_chars_per_turn: 2048,
+            },
+        )
+        .expect("external context policy");
+
+    let result = fixture
+        .service
+        .handle(ClientRequest::MergeMemoryCandidate {
+            workspace_root: Some(fixture.workspace_string()),
+            request: MergeMemoryCandidateRequest {
+                tenant_id: TenantId::SINGLE,
+                candidate_ids: vec![first.id, second.id],
+                merged_record: candidate_draft("forged merge"),
+                evidence: candidate_evidence(),
+                action_plan_id: None,
+            },
+        })
+        .await;
+
+    assert!(matches!(result, Err(MemoryServiceError::Invalid(_))));
+    let provider = LocalMemoryProvider::open(&db_path.to_string_lossy(), TenantId::SINGLE)
+        .expect("local provider");
+    assert!(provider
+        .list(harness_memory::MemoryListScope::All)
+        .await
+        .expect("list memories")
+        .is_empty());
+    assert!(inbox
+        .list(None)
+        .expect("candidates remain")
+        .iter()
+        .all(|candidate| candidate.state == harness_contracts::MemoryCandidateState::Proposed));
+}
+
+#[tokio::test]
+async fn candidate_merge_rejects_empty_content_without_state_changes() {
+    assert_invalid_merge_content("   ").await;
+}
+
+#[tokio::test]
+async fn candidate_merge_rejects_oversized_content_without_state_changes() {
+    assert_invalid_merge_content(&"x".repeat(64 * 1024 + 1)).await;
+}
+
+#[tokio::test]
+async fn candidate_update_rejects_empty_content_without_state_changes() {
+    assert_invalid_candidate_update_content("   ").await;
+}
+
+#[tokio::test]
+async fn candidate_update_rejects_oversized_content_without_state_changes() {
+    assert_invalid_candidate_update_content(&"x".repeat(64 * 1024 + 1)).await;
 }
 
 #[tokio::test]
@@ -1236,4 +1467,111 @@ fn candidate_evidence() -> MemoryEvidence {
         message_id: None,
         tool_use_id: None,
     }
+}
+
+fn external_candidate_evidence() -> MemoryEvidence {
+    MemoryEvidence {
+        source: MemorySource::ExternalRetrieval,
+        origin: MemoryEvidenceOrigin::WebRetrieval {
+            url_hash: ContentHash([9; 32]),
+            fetch_tool_use_id: None,
+        },
+        content_hash: ContentHash([8; 32]),
+        session_id: None,
+        run_id: None,
+        message_id: None,
+        tool_use_id: None,
+    }
+}
+
+async fn assert_invalid_merge_content(content: &str) {
+    let fixture = Fixture::new();
+    let db_path = fixture
+        .service
+        .database_path(Some(&fixture.workspace))
+        .expect("workspace database");
+    let inbox = MemoryInbox::open(&db_path.to_string_lossy(), TenantId::SINGLE).expect("inbox");
+    let first = inbox
+        .propose(candidate_draft("first"), candidate_evidence())
+        .expect("first candidate");
+    let second = inbox
+        .propose(candidate_draft("second"), candidate_evidence())
+        .expect("second candidate");
+
+    let result = fixture
+        .service
+        .handle(ClientRequest::MergeMemoryCandidate {
+            workspace_root: Some(fixture.workspace_string()),
+            request: MergeMemoryCandidateRequest {
+                tenant_id: TenantId::SINGLE,
+                candidate_ids: vec![first.id, second.id],
+                merged_record: candidate_draft(content),
+                evidence: candidate_evidence(),
+                action_plan_id: None,
+            },
+        })
+        .await;
+
+    assert!(matches!(result, Err(MemoryServiceError::Invalid(_))));
+    let provider = LocalMemoryProvider::open(&db_path.to_string_lossy(), TenantId::SINGLE)
+        .expect("local provider");
+    assert!(provider
+        .list(harness_memory::MemoryListScope::All)
+        .await
+        .expect("list memories")
+        .is_empty());
+    assert!(inbox
+        .list(None)
+        .expect("candidates remain")
+        .iter()
+        .all(|candidate| candidate.state == harness_contracts::MemoryCandidateState::Proposed));
+}
+
+async fn assert_invalid_candidate_update_content(content: &str) {
+    let fixture = Fixture::new();
+    let db_path = fixture
+        .service
+        .database_path(Some(&fixture.workspace))
+        .expect("workspace database");
+    let provider = LocalMemoryProvider::open(&db_path.to_string_lossy(), TenantId::SINGLE)
+        .expect("local provider");
+    let target = memory_record("unchanged");
+    let target_id = target.id;
+    provider.upsert(target).await.expect("insert target");
+    let inbox = MemoryInbox::open(&db_path.to_string_lossy(), TenantId::SINGLE).expect("inbox");
+    let candidate = inbox
+        .propose_with_operation(
+            MemoryCandidateOperation::Update {
+                memory_id: target_id,
+            },
+            candidate_draft(content),
+            candidate_evidence(),
+        )
+        .expect("update candidate");
+
+    let result = fixture
+        .service
+        .handle(ClientRequest::ApproveMemoryCandidate {
+            workspace_root: Some(fixture.workspace_string()),
+            request: ApproveMemoryCandidateRequest {
+                tenant_id: TenantId::SINGLE,
+                candidate_id: candidate.id,
+                action_plan_id: None,
+            },
+        })
+        .await;
+
+    assert!(matches!(result, Err(MemoryServiceError::Invalid(_))));
+    assert_eq!(
+        provider
+            .get(target_id)
+            .await
+            .expect("target remains")
+            .content,
+        "unchanged"
+    );
+    assert_eq!(
+        inbox.list(None).expect("candidate remains")[0].state,
+        harness_contracts::MemoryCandidateState::Proposed
+    );
 }

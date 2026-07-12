@@ -39,17 +39,7 @@ impl MemorySettingsStore {
             .conn
             .lock()
             .map_err(|e| format!("settings lock: {e}"))?;
-        let result = conn.query_row(
-            "SELECT settings_json FROM memory_global_settings WHERE tenant_id = ?1",
-            rusqlite::params![tenant_id.to_string()],
-            decode_global_settings_row,
-        );
-
-        match result {
-            Ok(settings) => Ok(settings),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(default_global_settings()),
-            Err(error) => Err(format!("read global settings: {error}")),
-        }
+        read_global_settings(&conn, tenant_id)
     }
 
     pub fn update_global(
@@ -88,17 +78,7 @@ impl MemorySettingsStore {
             .conn
             .lock()
             .map_err(|e| format!("settings lock: {e}"))?;
-        let result = conn.query_row(
-            "SELECT settings_json FROM memory_thread_settings WHERE tenant_id = ?1 AND session_id = ?2",
-            rusqlite::params![tenant_id.to_string(), session_id.to_string()],
-            decode_thread_settings_row,
-        );
-
-        match result {
-            Ok(settings) => Ok(settings),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(default_thread_settings(session_id)),
-            Err(error) => Err(format!("read thread settings: {error}")),
-        }
+        read_thread_settings(&conn, tenant_id, session_id)
     }
 
     pub fn current_memory_bytes(&self, tenant_id: TenantId) -> Result<u64, String> {
@@ -156,6 +136,41 @@ impl MemorySettingsStore {
         )
         .map_err(|e| format!("delete thread settings: {e}"))?;
         Ok(())
+    }
+}
+
+pub(crate) fn read_global_settings(
+    conn: &Connection,
+    tenant_id: TenantId,
+) -> Result<MemoryGlobalSettings, String> {
+    let result = conn.query_row(
+        "SELECT settings_json FROM memory_global_settings WHERE tenant_id = ?1",
+        rusqlite::params![tenant_id.to_string()],
+        decode_global_settings_row,
+    );
+
+    match result {
+        Ok(settings) => Ok(settings),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(default_global_settings()),
+        Err(error) => Err(format!("read global settings: {error}")),
+    }
+}
+
+pub(crate) fn read_thread_settings(
+    conn: &Connection,
+    tenant_id: TenantId,
+    session_id: SessionId,
+) -> Result<MemoryThreadSettings, String> {
+    let result = conn.query_row(
+        "SELECT settings_json FROM memory_thread_settings WHERE tenant_id = ?1 AND session_id = ?2",
+        rusqlite::params![tenant_id.to_string(), session_id.to_string()],
+        decode_thread_settings_row,
+    );
+
+    match result {
+        Ok(settings) => Ok(settings),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(default_thread_settings(session_id)),
+        Err(error) => Err(format!("read thread settings: {error}")),
     }
 }
 
