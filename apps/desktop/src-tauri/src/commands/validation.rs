@@ -292,119 +292,15 @@ pub(crate) fn ensure_mcp_server_request(
 pub(crate) fn ensure_mcp_server_record(
     record: &McpServerConfigRecord,
 ) -> Result<(), CommandErrorPayload> {
-    ensure_mcp_server_record_identity(record)?;
-    ensure_mcp_server_scope(&record.scope)?;
-    ensure_mcp_server_transport(&record.transport)
+    harness_contracts::validate_persisted_mcp_server(record)
+        .map_err(|error| invalid_payload(error.to_string()))
 }
 
 pub(crate) fn ensure_mcp_server_record_identity(
     record: &McpServerConfigRecord,
 ) -> Result<(), CommandErrorPayload> {
-    ensure_non_empty("displayName", &record.display_name)?;
-    ensure_mcp_server_id(&record.id)
-}
-
-pub(crate) fn ensure_mcp_server_transport(
-    transport: &McpServerTransportConfig,
-) -> Result<(), CommandErrorPayload> {
-    match transport {
-        McpServerTransportConfig::Stdio {
-            command,
-            args,
-            env,
-            inherit_env,
-            working_dir,
-        } => {
-            ensure_non_empty("transport.command", command)?;
-            if args.iter().any(|arg| arg.trim().is_empty()) {
-                return Err(invalid_payload(
-                    "transport.args must not contain empty values".to_owned(),
-                ));
-            }
-            if args.len() > 64 {
-                return Err(invalid_payload(
-                    "transport.args must contain at most 64 values".to_owned(),
-                ));
-            }
-            if env.len() > 64 {
-                return Err(invalid_payload(
-                    "transport.env must contain at most 64 values".to_owned(),
-                ));
-            }
-            for item in env {
-                ensure_env_var_name("transport.env.key", &item.key)?;
-                ensure_max_bytes("transport.env.value", &item.value, 4096)?;
-                if mcp_env_key_looks_secret_bearing(&item.key) || looks_like_raw_secret(&item.value)
-                {
-                    return Err(invalid_payload(
-                        "transport.env must not contain secret-bearing values".to_owned(),
-                    ));
-                }
-            }
-            if inherit_env.len() > 128 {
-                return Err(invalid_payload(
-                    "transport.inheritEnv must contain at most 128 values".to_owned(),
-                ));
-            }
-            for item in inherit_env {
-                ensure_env_var_name("transport.inheritEnv", item)?;
-                if mcp_env_key_looks_secret_bearing(item) {
-                    return Err(invalid_payload(
-                        "transport.inheritEnv must not contain secret-bearing env names".to_owned(),
-                    ));
-                }
-            }
-            if let Some(working_dir) = working_dir {
-                ensure_non_empty("transport.workingDir", working_dir)?;
-                ensure_max_bytes("transport.workingDir", working_dir, 4096)?;
-            }
-        }
-        McpServerTransportConfig::Http {
-            url,
-            bearer_token_env_var,
-            headers,
-            headers_from_env,
-        } => {
-            ensure_mcp_http_url(url)?;
-            if let Some(env_var) = bearer_token_env_var {
-                ensure_env_var_name("transport.bearerTokenEnvVar", env_var)?;
-            }
-            if headers.len() > 64 || headers_from_env.len() > 64 {
-                return Err(invalid_payload(
-                    "transport.headers must contain at most 64 values".to_owned(),
-                ));
-            }
-            for header in headers {
-                ensure_http_header_name("transport.headers.key", &header.key)?;
-                ensure_max_bytes("transport.headers.value", &header.value, 8192)?;
-                if mcp_http_header_is_sensitive(&header.key)
-                    || looks_like_raw_secret(&header.value)
-                    || mcp_header_value_looks_secret_bearing(&header.value)
-                {
-                    return Err(invalid_payload(
-                        "transport.headers must not contain secret-bearing values".to_owned(),
-                    ));
-                }
-            }
-            for header in headers_from_env {
-                ensure_http_header_name("transport.headersFromEnv.key", &header.key)?;
-                ensure_env_var_name("transport.headersFromEnv.envVar", &header.env_var)?;
-                if mcp_http_header_is_sensitive(&header.key) {
-                    return Err(invalid_payload(
-                        "transport.headersFromEnv must not contain sensitive header names"
-                            .to_owned(),
-                    ));
-                }
-            }
-        }
-        McpServerTransportConfig::InProcess => {
-            return Err(invalid_payload(
-                "transport.kind must be stdio or http for workspace MCP servers".to_owned(),
-            ));
-        }
-    }
-
-    Ok(())
+    harness_contracts::validate_persisted_mcp_server_identity(record)
+        .map_err(|error| invalid_payload(error.to_string()))
 }
 
 pub(crate) fn ensure_save_mcp_server_transport(

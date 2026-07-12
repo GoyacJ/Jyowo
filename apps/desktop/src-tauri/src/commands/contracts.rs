@@ -28,6 +28,9 @@ use super::stores::*;
 #[allow(unused_imports)]
 use super::validation::*;
 use super::*;
+pub use harness_contracts::{
+    McpHeaderEnvRecord, McpNameValueRecord, McpServerConfigRecord, McpServerTransportConfig,
+};
 use harness_contracts::{
     ModelUsageActivity, ModelUsageActivityDay, ModelUsageBucket, ModelUsagePeriod,
     ModelUsageSummary, ModelUsageWindow, ProviderProbeErrorKind, ProviderProbeSnapshot,
@@ -575,22 +578,6 @@ impl std::fmt::Debug for SaveMcpServerRequest {
 
 #[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct McpNameValueRecord {
-    pub key: String,
-    pub value: String,
-}
-
-impl std::fmt::Debug for McpNameValueRecord {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("McpNameValueRecord")
-            .field("key", &self.key)
-            .field("value", &"[REDACTED]")
-            .finish()
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct McpNameValueSaveRecord {
     pub key: String,
     #[serde(default)]
@@ -607,39 +594,6 @@ impl std::fmt::Debug for McpNameValueSaveRecord {
             .field("preserve_existing", &self.preserve_existing)
             .finish()
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct McpHeaderEnvRecord {
-    pub key: String,
-    pub env_var: String,
-}
-
-#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, tag = "kind", rename_all = "camelCase")]
-pub enum McpServerTransportConfig {
-    Stdio {
-        command: String,
-        #[serde(default)]
-        args: Vec<String>,
-        #[serde(default)]
-        env: Vec<McpNameValueRecord>,
-        #[serde(default)]
-        inherit_env: Vec<String>,
-        #[serde(default)]
-        working_dir: Option<String>,
-    },
-    Http {
-        url: String,
-        #[serde(default)]
-        bearer_token_env_var: Option<String>,
-        #[serde(default)]
-        headers: Vec<McpNameValueRecord>,
-        #[serde(default)]
-        headers_from_env: Vec<McpHeaderEnvRecord>,
-    },
-    InProcess,
 }
 
 #[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -699,62 +653,6 @@ impl std::fmt::Debug for SaveMcpServerTransportConfig {
                 .finish(),
             Self::InProcess => f.write_str("InProcess"),
         }
-    }
-}
-
-impl std::fmt::Debug for McpServerTransportConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Stdio {
-                command,
-                args,
-                env,
-                inherit_env,
-                working_dir,
-            } => f
-                .debug_struct("Stdio")
-                .field("command", command)
-                .field("args", args)
-                .field("env", env)
-                .field("inherit_env", inherit_env)
-                .field("working_dir", working_dir)
-                .finish(),
-            Self::Http {
-                url,
-                bearer_token_env_var,
-                headers,
-                headers_from_env,
-            } => f
-                .debug_struct("Http")
-                .field("url", url)
-                .field("bearer_token_env_var", bearer_token_env_var)
-                .field("headers", headers)
-                .field("headers_from_env", headers_from_env)
-                .finish(),
-            Self::InProcess => f.write_str("InProcess"),
-        }
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct McpServerConfigRecord {
-    pub enabled: bool,
-    pub display_name: String,
-    pub id: String,
-    pub scope: String,
-    pub transport: McpServerTransportConfig,
-}
-
-impl std::fmt::Debug for McpServerConfigRecord {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("McpServerConfigRecord")
-            .field("enabled", &self.enabled)
-            .field("display_name", &self.display_name)
-            .field("id", &self.id)
-            .field("scope", &self.scope)
-            .field("transport", &self.transport)
-            .finish()
     }
 }
 

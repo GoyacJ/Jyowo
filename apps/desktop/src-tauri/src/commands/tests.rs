@@ -12,7 +12,6 @@ mod tests {
         record_skill_catalog_install_task_progress, skill_catalog_install_stage,
     };
     use crate::commands::stores::ensure_plugin_package_dir_name;
-    use crate::commands::validation::ensure_mcp_server_transport;
     use harness_contracts::{
         MemoryGlobalSettings, MemoryThreadMode, MemoryThreadSettings, PluginProductState,
         PluginSourceKind,
@@ -103,16 +102,17 @@ mod tests {
 
     #[test]
     fn mcp_stdio_inherit_env_rejects_secret_bearing_names() {
-        let error = ensure_mcp_server_transport(&McpServerTransportConfig::Stdio {
-            command: "npx".to_owned(),
-            args: vec!["@playwright/mcp@latest".to_owned()],
-            env: Vec::new(),
-            inherit_env: vec!["LINEAR_API_KEY".to_owned()],
-            working_dir: None,
-        })
-        .expect_err("secret-bearing inherited env names should be rejected");
+        let error =
+            harness_contracts::validate_persisted_mcp_transport(&McpServerTransportConfig::Stdio {
+                command: "npx".to_owned(),
+                args: vec!["@playwright/mcp@latest".to_owned()],
+                env: Vec::new(),
+                inherit_env: vec!["LINEAR_API_KEY".to_owned()],
+                working_dir: None,
+            })
+            .expect_err("secret-bearing inherited env names should be rejected");
 
-        assert_eq!(error.code, "INVALID_PAYLOAD");
+        assert_eq!(error, harness_contracts::PersistedMcpValidationError::Stdio);
     }
 
     #[test]

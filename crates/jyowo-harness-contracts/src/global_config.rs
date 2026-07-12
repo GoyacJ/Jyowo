@@ -294,6 +294,346 @@ pub struct McpPresetHeader {
     pub value: String,
 }
 
+/// Canonical persisted MCP server configuration.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct McpServerConfigRecord {
+    pub enabled: bool,
+    pub display_name: String,
+    pub id: String,
+    pub scope: String,
+    pub transport: McpServerTransportConfig,
+}
+
+impl std::fmt::Debug for McpServerConfigRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpServerConfigRecord")
+            .field("enabled", &self.enabled)
+            .field("display_name", &self.display_name)
+            .field("id", &self.id)
+            .field("scope", &self.scope)
+            .field("transport", &self.transport)
+            .finish()
+    }
+}
+
+/// A persisted MCP key/value pair whose value must remain redacted in diagnostics.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct McpNameValueRecord {
+    pub key: String,
+    pub value: String,
+}
+
+impl std::fmt::Debug for McpNameValueRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpNameValueRecord")
+            .field("key", &self.key)
+            .field("value", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// A persisted HTTP header resolved from an environment variable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct McpHeaderEnvRecord {
+    pub key: String,
+    pub env_var: String,
+}
+
+/// Canonical persisted MCP transport. In-process is deserializable for fail-closed
+/// migration of old files, but is rejected by [`validate_persisted_mcp_server`].
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "camelCase")]
+pub enum McpServerTransportConfig {
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: Vec<McpNameValueRecord>,
+        #[serde(default)]
+        inherit_env: Vec<String>,
+        #[serde(default)]
+        working_dir: Option<String>,
+    },
+    Http {
+        url: String,
+        #[serde(default)]
+        bearer_token_env_var: Option<String>,
+        #[serde(default)]
+        headers: Vec<McpNameValueRecord>,
+        #[serde(default)]
+        headers_from_env: Vec<McpHeaderEnvRecord>,
+    },
+    InProcess,
+}
+
+impl std::fmt::Debug for McpServerTransportConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stdio {
+                command,
+                args,
+                env,
+                inherit_env,
+                working_dir,
+            } => formatter
+                .debug_struct("Stdio")
+                .field("command", command)
+                .field("args", args)
+                .field("env", env)
+                .field("inherit_env", inherit_env)
+                .field("working_dir", working_dir)
+                .finish(),
+            Self::Http {
+                url,
+                bearer_token_env_var,
+                headers,
+                headers_from_env,
+            } => formatter
+                .debug_struct("Http")
+                .field("url", url)
+                .field("bearer_token_env_var", bearer_token_env_var)
+                .field("headers", headers)
+                .field("headers_from_env", headers_from_env)
+                .finish(),
+            Self::InProcess => formatter.write_str("InProcess"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PersistedMcpValidationError {
+    #[error("invalid persisted MCP server identity")]
+    Identity,
+    #[error("invalid persisted MCP server scope")]
+    Scope,
+    #[error("invalid persisted MCP stdio transport")]
+    Stdio,
+    #[error("invalid persisted MCP HTTP transport")]
+    Http,
+    #[error("persisted MCP server cannot use in-process transport")]
+    InProcess,
+}
+
+pub fn validate_persisted_mcp_server_identity(
+    record: &McpServerConfigRecord,
+) -> Result<(), PersistedMcpValidationError> {
+    if record.display_name.trim().is_empty()
+        || record.display_name.len() > 256
+        || !valid_mcp_server_id(&record.id)
+    {
+        return Err(PersistedMcpValidationError::Identity);
+    }
+    Ok(())
+}
+
+pub fn validate_persisted_mcp_server(
+    record: &McpServerConfigRecord,
+) -> Result<(), PersistedMcpValidationError> {
+    validate_persisted_mcp_server_identity(record)?;
+    if !matches!(record.scope.as_str(), "agent" | "global" | "session") {
+        return Err(PersistedMcpValidationError::Scope);
+    }
+    validate_persisted_mcp_transport(&record.transport)
+}
+
+pub fn validate_persisted_mcp_transport(
+    transport: &McpServerTransportConfig,
+) -> Result<(), PersistedMcpValidationError> {
+    match transport {
+        McpServerTransportConfig::Stdio {
+            command,
+            args,
+            env,
+            inherit_env,
+            working_dir,
+        } => {
+            if command.trim().is_empty()
+                || command.len() > 4096
+                || args.len() > 64
+                || args
+                    .iter()
+                    .any(|arg| arg.trim().is_empty() || arg.len() > 4096)
+                || env.len() > 64
+                || inherit_env.len() > 128
+            {
+                return Err(PersistedMcpValidationError::Stdio);
+            }
+            for item in env {
+                if !valid_env_var_name(&item.key)
+                    || item.value.len() > 4096
+                    || mcp_name_looks_secret_bearing(&item.key)
+                    || looks_like_raw_secret(&item.value)
+                {
+                    return Err(PersistedMcpValidationError::Stdio);
+                }
+            }
+            if inherit_env
+                .iter()
+                .any(|item| !valid_env_var_name(item) || mcp_name_looks_secret_bearing(item))
+            {
+                return Err(PersistedMcpValidationError::Stdio);
+            }
+            if working_dir.as_ref().is_some_and(|directory| {
+                directory.trim().is_empty() || directory.len() > 4096 || directory.contains('\0')
+            }) {
+                return Err(PersistedMcpValidationError::Stdio);
+            }
+        }
+        McpServerTransportConfig::Http {
+            url,
+            bearer_token_env_var,
+            headers,
+            headers_from_env,
+        } => {
+            let parsed = url::Url::parse(url).map_err(|_| PersistedMcpValidationError::Http)?;
+            if !matches!(parsed.scheme(), "http" | "https")
+                || parsed.host_str().is_none()
+                || !parsed.username().is_empty()
+                || parsed.password().is_some()
+                || bearer_token_env_var
+                    .as_ref()
+                    .is_some_and(|name| !valid_env_var_name(name))
+                || headers.len() > 64
+                || headers_from_env.len() > 64
+            {
+                return Err(PersistedMcpValidationError::Http);
+            }
+            if parsed.query_pairs().any(|(key, value)| {
+                mcp_name_looks_secret_bearing(&key) || looks_like_raw_secret(&value)
+            }) {
+                return Err(PersistedMcpValidationError::Http);
+            }
+            for header in headers {
+                if !valid_http_header_name(&header.key)
+                    || header.value.len() > 8192
+                    || mcp_http_header_is_sensitive(&header.key)
+                    || looks_like_raw_secret(&header.value)
+                    || mcp_header_value_looks_secret_bearing(&header.value)
+                {
+                    return Err(PersistedMcpValidationError::Http);
+                }
+            }
+            for header in headers_from_env {
+                if !valid_http_header_name(&header.key)
+                    || !valid_env_var_name(&header.env_var)
+                    || mcp_http_header_is_sensitive(&header.key)
+                {
+                    return Err(PersistedMcpValidationError::Http);
+                }
+            }
+        }
+        McpServerTransportConfig::InProcess => {
+            return Err(PersistedMcpValidationError::InProcess);
+        }
+    }
+    Ok(())
+}
+
+fn valid_mcp_server_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .enumerate()
+            .all(|(index, character)| match character {
+                'A'..='Z' | 'a'..='z' | '0'..='9' => true,
+                '.' | '-' | '_' if index > 0 => true,
+                _ => false,
+            })
+}
+
+fn valid_env_var_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars
+        .next()
+        .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
+        && chars.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+fn valid_http_header_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
+fn mcp_name_looks_secret_bearing(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase().replace('-', "_");
+    [
+        "auth",
+        "api_key",
+        "apikey",
+        "authorization",
+        "bearer",
+        "password",
+        "secret",
+        "token",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+fn mcp_http_header_is_sensitive(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "authorization" | "cookie" | "set-cookie" | "proxy-authorization"
+    )
+}
+
+fn mcp_header_value_looks_secret_bearing(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    normalized.starts_with("bearer ")
+        || normalized.starts_with("oauth ")
+        || normalized.contains(" token")
+        || normalized.contains("secret")
+        || normalized.contains("password")
+}
+
+fn looks_like_raw_secret(value: &str) -> bool {
+    let trimmed = value.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let known_prefix = [
+        "ghp_",
+        "github_pat_",
+        "glpat-",
+        "sk-",
+        "xoxb-",
+        "xoxp-",
+        "xoxa-",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix));
+    known_prefix
+        || (trimmed.len() >= 32
+            && trimmed.chars().all(|character| {
+                character.is_ascii_alphanumeric()
+                    || matches!(character, '_' | '-' | '.' | '=' | '/' | '+')
+            }))
+}
+
 /// Global skill enabled selection stored in `~/.jyowo/config/skills.json`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]

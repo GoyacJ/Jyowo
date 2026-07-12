@@ -3033,6 +3033,7 @@ dependencies = [
  "strum",
  "thiserror 2.0.18",
  "ulid",
+ "url",
 ]
 
 [[package]]
