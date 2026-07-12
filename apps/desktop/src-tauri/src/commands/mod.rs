@@ -104,6 +104,7 @@ mod plugins;
 mod projects;
 mod providers;
 mod runtime;
+mod runtime_tools;
 mod skills;
 pub mod stores;
 #[allow(dead_code)]
@@ -286,6 +287,7 @@ pub use runtime::{
     managed_runtime_state, runtime_state, runtime_state_async, runtime_state_for_workspace,
     runtime_state_with_provider_settings_store_for_test, ManagedDesktopRuntime,
 };
+pub use runtime_tools::*;
 pub use skills::{
     delete_skill_with_runtime_state, get_skill_catalog_entry_with_runtime_state,
     get_skill_catalog_file_with_runtime_state, get_skill_detail_with_runtime_state,

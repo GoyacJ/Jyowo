@@ -1450,7 +1450,6 @@ export const enUS = {
       searchPlaceholder: 'Search tools',
       loading: 'Loading runtime tools…',
       empty: 'No runtime tools found.',
-      error: 'Unable to load runtime tools.',
       columns: {
         tool: 'Tool',
         group: 'Group',

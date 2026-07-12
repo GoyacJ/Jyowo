@@ -326,7 +326,7 @@ fn active_tauri_runtime_manages_and_registers_the_daemon_bridge() {
 }
 
 #[test]
-fn active_tauri_handler_does_not_register_legacy_task_runtime_commands() {
+fn active_tauri_handler_keeps_settings_queries_outside_the_legacy_task_boundary() {
     let source = std::fs::read_to_string("src/lib.rs").unwrap();
     for command in [
         "commands::cancel_run",
@@ -335,15 +335,22 @@ fn active_tauri_handler_does_not_register_legacy_task_runtime_commands() {
         "commands::create_project_conversation",
         "commands::delete_conversation",
         "commands::get_conversation",
-        "commands::get_runtime_execution_status",
         "commands::harness_healthcheck",
         "commands::list_conversations",
-        "commands::list_runtime_tools",
         "commands::start_run",
     ] {
         assert!(
             !source.contains(command),
             "active handler still registers legacy runtime command {command}"
+        );
+    }
+    for command in [
+        "commands::get_runtime_execution_status",
+        "commands::list_runtime_tools",
+    ] {
+        assert!(
+            source.contains(command),
+            "active handler is missing settings query {command}"
         );
     }
 }

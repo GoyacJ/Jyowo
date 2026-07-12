@@ -98,6 +98,10 @@ mod provider_settings;
 mod provider_settings_store;
 #[path = "commands/provider_support.rs"]
 mod provider_support;
+#[path = "commands/runtime_execution_status.rs"]
+mod runtime_execution_status;
+#[path = "commands/runtime_tools.rs"]
+mod runtime_tools;
 #[path = "commands/skills.rs"]
 mod skills;
 #[path = "commands/support.rs"]

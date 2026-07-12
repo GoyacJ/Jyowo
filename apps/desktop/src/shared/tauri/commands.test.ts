@@ -513,6 +513,10 @@ describe('CommandClient', () => {
     expect(getCommandErrorMessage({ code: 'RUNTIME_OPERATION_FAILED' })).toBe(
       'Unknown command error',
     )
+    expect(getCommandErrorMessage('Command list_runtime_tools not found')).toBe(
+      'Command list_runtime_tools not found',
+    )
+    expect(getCommandErrorMessage('')).toBe('Unknown command error')
   })
 
   it('supports test clients outside the Tauri runtime', async () => {

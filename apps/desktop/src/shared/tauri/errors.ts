@@ -1,4 +1,8 @@
 export function getCommandErrorMessage(error: unknown): string {
+  if (typeof error === 'string' && error.length > 0) {
+    return error
+  }
+
   if (error instanceof Error) {
     return error.message
   }

@@ -1441,7 +1441,6 @@ export const zhCN = {
       searchPlaceholder: '搜索工具',
       loading: '正在加载运行时工具…',
       empty: '未找到运行时工具。',
-      error: '无法加载运行时工具。',
       columns: {
         tool: '工具',
         group: '分组',

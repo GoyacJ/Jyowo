@@ -39,6 +39,7 @@ import {
   type SkillSummary,
   setSkillEnabled,
 } from '@/shared/tauri/commands'
+import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { pickSkillPackagePath } from '@/shared/tauri/file-dialog'
 import { useCommandClient } from '@/shared/tauri/react'
 import { Badge } from '@/shared/ui/badge'
@@ -1813,7 +1814,7 @@ export function RuntimeToolsList() {
       {toolsQuery.isLoading ? (
         <p className="p-5 text-muted-foreground text-sm">{t('tools.loading')}</p>
       ) : toolsQuery.isError ? (
-        <p className="p-5 text-destructive text-sm">{t('tools.error')}</p>
+        <p className="p-5 text-destructive text-sm">{getCommandErrorMessage(toolsQuery.error)}</p>
       ) : filteredTools.length === 0 ? (
         <p className="p-5 text-muted-foreground text-sm">{t('tools.empty')}</p>
       ) : (

@@ -1,14 +1,19 @@
 import '@testing-library/jest-dom/vitest'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { AppI18nProvider } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
+import type { CommandClient } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
-import { createTestCommandClient, type TestCommandClientOptions } from '@/testing/command-client'
+import {
+  createRejectedTestCommandClient,
+  createTestCommandClient,
+  type TestCommandClientOptions,
+} from '@/testing/command-client'
 
 import { SettingsPage } from './SettingsPage'
 
@@ -39,7 +44,7 @@ const emptyProviderSettingsList = {
   configs: [],
 }
 
-function renderSettingsPage(options: TestCommandClientOptions = {}) {
+function renderSettingsPage(options: TestCommandClientOptions = {}, commandClient?: CommandClient) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -49,10 +54,13 @@ function renderSettingsPage(options: TestCommandClientOptions = {}) {
   function Wrapper({ children }: { children: ReactNode }) {
     return (
       <CommandClientProvider
-        client={createTestCommandClient({
-          providerSettingsList: emptyProviderSettingsList,
-          ...options,
-        })}
+        client={
+          commandClient ??
+          createTestCommandClient({
+            providerSettingsList: emptyProviderSettingsList,
+            ...options,
+          })
+        }
       >
         <QueryClientProvider client={queryClient}>
           <AppI18nProvider>{children}</AppI18nProvider>
@@ -269,6 +277,19 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('tab', { name: '工具' })).toHaveAttribute('aria-selected', 'true')
     expect(await screen.findByRole('heading', { name: '运行时工具' })).toBeInTheDocument()
     expect(await screen.findByText('GitStatus')).toBeInTheDocument()
+  })
+
+  it('renders backend errors in the tools tab', async () => {
+    window.history.replaceState(null, '', '/settings?tab=tools')
+
+    renderSettingsPage(
+      {},
+      createRejectedTestCommandClient('desktop settings runtime is not initialized'),
+    )
+
+    await waitFor(() => {
+      expect(screen.getAllByText('desktop settings runtime is not initialized')).toHaveLength(2)
+    })
   })
 
   it('owns the right pane scroll container', () => {
