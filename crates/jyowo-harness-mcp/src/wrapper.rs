@@ -588,7 +588,7 @@ impl Serialize for ModelVisibleContent<'_> {
                     map.serialize_entry("mimeType", mime_type)?;
                 }
                 if let Some(icons) = &resource.icons {
-                    map.serialize_entry("icons", icons)?;
+                    map.serialize_entry("icons", &ModelVisibleIcons(icons))?;
                 }
                 if let Some(annotations) = &resource.annotations {
                     map.serialize_entry("annotations", annotations)?;
@@ -617,6 +617,49 @@ impl Serialize for ModelVisibleContent<'_> {
 }
 
 struct ModelVisibleResourceContents<'a>(&'a crate::McpResourceContents);
+
+struct ModelVisibleIcons<'a>(&'a [crate::McpIcon]);
+
+impl Serialize for ModelVisibleIcons<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for icon in self.0 {
+            sequence.serialize_element(&ModelVisibleIcon(icon))?;
+        }
+        sequence.end()
+    }
+}
+
+struct ModelVisibleIcon<'a>(&'a crate::McpIcon);
+
+impl Serialize for ModelVisibleIcon<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let icon = self.0;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("src", &icon.src)?;
+        if let Some(mime_type) = &icon.mime_type {
+            map.serialize_entry("mimeType", mime_type)?;
+        }
+        if let Some(sizes) = &icon.sizes {
+            map.serialize_entry("sizes", sizes)?;
+        }
+        if let Some(theme) = &icon.theme {
+            map.serialize_entry("theme", theme)?;
+        }
+        for (key, value) in &icon.extra {
+            if key != "_meta" {
+                map.serialize_entry(key, &ModelVisibleValue(value))?;
+            }
+        }
+        map.end()
+    }
+}
 
 impl Serialize for ModelVisibleResourceContents<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -803,7 +846,9 @@ mod tests {
     use serde_json::json;
 
     use super::{into_tool_result, result_error_message, validate_input_schema};
-    use crate::{McpAnnotations, McpContent, McpResourceContents, McpToolResult};
+    use crate::{
+        McpAnnotations, McpContent, McpIcon, McpResource, McpResourceContents, McpToolResult,
+    };
 
     #[test]
     fn wrapper_preserves_model_content_but_drops_protocol_metadata() {
@@ -833,6 +878,34 @@ mod tests {
                     },
                     annotations: None,
                     meta: BTreeMap::from([("blockSecret".to_owned(), json!("hidden"))]),
+                },
+                McpContent::ResourceLink {
+                    resource: Box::new(McpResource {
+                        uri: "file:///tmp/icon.txt".to_owned(),
+                        name: "icon resource".to_owned(),
+                        title: None,
+                        description: None,
+                        mime_type: None,
+                        icons: Some(vec![McpIcon {
+                            src: "data:image/png;base64,AA==".to_owned(),
+                            mime_type: Some("image/png".to_owned()),
+                            sizes: None,
+                            theme: None,
+                            extra: json!({
+                                "_meta": { "iconSecret": "hidden" },
+                                "vendor": {
+                                    "visible": true,
+                                    "_meta": { "nestedIconSecret": "hidden" }
+                                }
+                            })
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                        }]),
+                        annotations: None,
+                        size: None,
+                        meta: BTreeMap::new(),
+                    }),
                 },
             ],
             structured_content: Some(
