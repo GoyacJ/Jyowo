@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import type {
   TaskEventEnvelope,
@@ -109,6 +110,7 @@ export function TaskWorkspaceView({
   permissionMode?: PermissionMode
   snapshot: TaskSnapshot | null
 }) {
+  const { t } = useTranslation('shell')
   const snapshotTaskId = snapshot?.projection.taskId ?? null
   const workbenchMode = useUiStore((state) => state.taskWorkbenchMode)
   const workbenchSelection = useUiStore((state) => state.taskWorkbenchSelection)
@@ -154,7 +156,7 @@ export function TaskWorkspaceView({
           className="max-w-md rounded-xl border border-destructive/30 bg-destructive/5 px-5 py-4 text-destructive text-sm"
           role="alert"
         >
-          {connectionError ?? 'The task stream could not be read.'}
+          {connectionError ?? t('sidebar.unavailable')}
         </div>
       </div>
     )
@@ -163,7 +165,9 @@ export function TaskWorkspaceView({
   if (!snapshot) {
     return (
       <div className="grid h-full place-items-center text-muted-foreground text-sm" role="status">
-        {connectionState === 'disconnected' ? 'Task unavailable' : 'Loading task…'}
+        {connectionState === 'disconnected'
+          ? t('sidebar.unavailable')
+          : t('sidebar.loadingConversation')}
       </div>
     )
   }

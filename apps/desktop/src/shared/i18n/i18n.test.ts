@@ -34,4 +34,18 @@ describe('i18n', () => {
     expect(i18n.t('settings:language.englishOnlyFallback')).toBe('Fallback-only English text')
     expect(i18n.t('settings:language.missingKey')).toBe('language.missingKey')
   })
+
+  it('uses conversation terminology for the task sidebar', () => {
+    const i18n = createAppI18n()
+
+    expect(i18n.t('shell:actions.newConversation')).toBe('新建会话')
+    expect(i18n.t('shell:sections.pinned')).toBe('置顶')
+    expect(i18n.t('shell:sections.projects')).toBe('项目')
+    expect(i18n.t('shell:sections.conversations')).toBe('会话')
+    expect(i18n.t('shell:sidebar.emptyTitle')).toBe('选择一个会话')
+
+    void i18n.changeLanguage('en-US')
+    expect(i18n.t('shell:actions.newConversation')).toBe('New conversation')
+    expect(i18n.t('shell:sidebar.emptyTitle')).toBe('Choose a conversation')
+  })
 })

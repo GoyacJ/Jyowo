@@ -106,14 +106,14 @@ describe('AppShell', () => {
     })
     expect(screen.getByRole('banner')).toBeInTheDocument()
     expect(screen.getByRole('complementary', { name: 'Workspace' })).toBeInTheDocument()
-    expect(screen.getByRole('navigation', { name: 'Tasks' })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Conversations' })).toBeInTheDocument()
     expect(screen.getByRole('main')).toContainElement(screen.getByText('Workbench content'))
     expect(screen.getByRole('region', { name: 'Status' })).toBeInTheDocument()
 
     const workspaceNavigation = screen.getByRole('complementary', { name: 'Workspace' })
     expect(workspaceNavigation).not.toHaveClass('hidden')
     expect(
-      within(workspaceNavigation).getByRole('button', { name: 'New task' }),
+      within(workspaceNavigation).getByRole('button', { name: 'New conversation' }),
     ).toBeInTheDocument()
     expect(
       within(workspaceNavigation).queryByRole('button', { name: 'Search' }),

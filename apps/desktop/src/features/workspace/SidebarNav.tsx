@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { TaskList } from '@/features/tasks/TaskList'
 import { createTaskCreationMetadata } from '@/features/tasks/task-command'
@@ -21,6 +22,7 @@ type SidebarNavProps = {
 }
 
 export function SidebarNav({ compact = false }: SidebarNavProps) {
+  const { t } = useTranslation('shell')
   const client = useDaemonClient()
   const commandClient = useCommandClient()
   const navigate = useNavigate()
@@ -58,7 +60,7 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
     mutationFn: async (root: string) => {
       const frame = await client.request({
         metadata: createTaskCreationMetadata(),
-        title: 'New conversation',
+        title: t('actions.newConversation'),
         type: 'create_task',
         workspace: { mode: 'current', root },
       })
@@ -189,7 +191,9 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
         className={cn('flex h-12 items-center', isCompact ? 'justify-center' : 'justify-end px-2')}
       >
         <Button
-          aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-label={
+            sidebarCollapsed ? t('actions.expandSidebar') : t('actions.collapseSidebar')
+          }
           className="size-8"
           onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
           size="icon"

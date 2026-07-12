@@ -19,6 +19,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { type FormEvent, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import type { TaskProjection, TypedUlid } from '@/generated/daemon-protocol'
 import { cn } from '@/shared/lib/utils'
@@ -123,13 +124,14 @@ export function TaskList({
   sections: SidebarSections
   tasks: TaskProjection[]
 }) {
+  const { t } = useTranslation('shell')
   const groups = groupSidebarTasks(tasks, projects, defaultRoot)
 
   return (
-    <nav aria-label="Tasks" className="flex min-h-0 flex-1 flex-col">
+    <nav aria-label={t('sidebar.navigationLabel')} className="flex min-h-0 flex-1 flex-col">
       <div className="px-2 pb-2">
         <button
-          aria-label="New conversation"
+          aria-label={t('actions.newConversation')}
           className={cn(
             'flex h-9 w-full items-center rounded-md border border-border bg-surface-raised text-sm transition-colors hover:bg-row-muted disabled:opacity-50',
             compact ? 'justify-center px-0' : 'gap-2 px-2.5',
@@ -143,27 +145,29 @@ export function TaskList({
           ) : (
             <Plus aria-hidden="true" className="size-4" />
           )}
-          {compact ? null : <span>{creating ? 'Creating…' : 'New conversation'}</span>}
+          {compact ? null : (
+            <span>{creating ? t('conversations.loading') : t('actions.newConversation')}</span>
+          )}
         </button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
         {loading ? (
           <p className="px-2 py-2 text-muted-foreground text-xs" role="status">
-            Loading conversations…
+            {t('sidebar.loading')}
           </p>
         ) : null}
 
         <SidebarSectionView
           compact={compact}
           expanded={sections.pinned}
-          label="Pinned"
+          label={t('sections.pinned')}
           onToggle={() => onToggleSection('pinned', !sections.pinned)}
         >
           <TaskRows
             activeTaskId={activeTaskId}
             compact={compact}
-            emptyLabel="No pinned conversations"
+            emptyLabel={t('sidebar.emptyPinned')}
             onRemoveTask={onRemoveTask}
             onRenameTask={onRenameTask}
             onSelectTask={onSelectTask}
@@ -176,7 +180,7 @@ export function TaskList({
         <SidebarSectionView
           action={
             <button
-              aria-label="Add project"
+              aria-label={t('sidebar.addProject')}
               className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
               onClick={() => onAddProject()}
               type="button"
@@ -186,12 +190,12 @@ export function TaskList({
           }
           compact={compact}
           expanded={sections.projects}
-          label="Projects"
+          label={t('sections.projects')}
           onToggle={() => onToggleSection('projects', !sections.projects)}
         >
           <div className="space-y-0.5">
             {groups.projects.length === 0 ? (
-              <EmptyRow compact={compact}>No projects</EmptyRow>
+              <EmptyRow compact={compact}>{t('sidebar.emptyProjects')}</EmptyRow>
             ) : (
               groups.projects.map(({ project, tasks: projectTasks }, index) => {
                 const expanded = expandedProjects[project.path] ?? true
@@ -225,13 +229,13 @@ export function TaskList({
         <SidebarSectionView
           compact={compact}
           expanded={sections.conversations}
-          label="Conversations"
+          label={t('sections.conversations')}
           onToggle={() => onToggleSection('conversations', !sections.conversations)}
         >
           <TaskRows
             activeTaskId={activeTaskId}
             compact={compact}
-            emptyLabel="No conversations"
+            emptyLabel={t('sidebar.emptyConversations')}
             onRemoveTask={onRemoveTask}
             onRenameTask={onRenameTask}
             onSelectTask={onSelectTask}
@@ -323,6 +327,7 @@ function ProjectRow({
   project: Project
   tasks: TaskProjection[]
 }) {
+  const { t } = useTranslation('shell')
   const [renameOpen, setRenameOpen] = useState(false)
   const [removeOpen, setRemoveOpen] = useState(false)
 
@@ -342,7 +347,7 @@ function ProjectRow({
           <TaskRows
             activeTaskId={activeTaskId}
             compact
-            emptyLabel="No conversations"
+            emptyLabel={t('sidebar.emptyConversations')}
             onRemoveTask={onRemoveTask}
             onRenameTask={onRenameTask}
             onSelectTask={onSelectTask}
@@ -374,7 +379,7 @@ function ProjectRow({
           <span className="truncate">{project.name}</span>
         </button>
         <button
-          aria-label={`New conversation in ${project.name}`}
+          aria-label={t('sidebar.newInProject', { name: project.name })}
           className="flex size-7 shrink-0 items-center justify-center rounded opacity-0 hover:bg-background group-hover:opacity-100 focus-visible:opacity-100"
           onClick={() => onCreateConversation(project.path)}
           type="button"
@@ -395,7 +400,7 @@ function ProjectRow({
           <TaskRows
             activeTaskId={activeTaskId}
             compact={false}
-            emptyLabel="No conversations"
+            emptyLabel={t('sidebar.emptyConversations')}
             onRemoveTask={onRemoveTask}
             onRenameTask={onRenameTask}
             onSelectTask={onSelectTask}
@@ -406,21 +411,21 @@ function ProjectRow({
         </section>
       ) : null}
       <RenameDialog
-        description="Choose the name shown for this project."
+        description={t('sidebar.renameProjectDescription')}
         initialValue={project.name}
-        label="Project name"
+        label={t('sidebar.projectName')}
         onOpenChange={setRenameOpen}
         onSave={(name) => onRenameProject(project.path, name)}
         open={renameOpen}
-        title="Rename project"
+        title={t('sidebar.renameProject')}
       />
       <ConfirmDialog
-        confirmLabel="Remove project"
-        description="The folder stays on disk. Its conversations move to Conversations."
+        confirmLabel={t('sidebar.removeProject')}
+        description={t('sidebar.removeProjectDescription')}
         onConfirm={() => onRemoveProject(project.path)}
         onOpenChange={setRemoveOpen}
         open={removeOpen}
-        title={`Remove ${project.name}?`}
+        title={t('sidebar.removeProjectTitle', { name: project.name })}
       />
     </div>
   )
@@ -441,11 +446,12 @@ function ProjectActions({
   onRename: () => void
   project: Project
 }) {
+  const { t } = useTranslation('shell')
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
-          aria-label={`${project.name} actions`}
+          aria-label={t('sidebar.actions', { name: project.name })}
           className="mr-0.5 flex size-7 shrink-0 items-center justify-center rounded opacity-0 hover:bg-background group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:bg-background data-[state=open]:opacity-100"
           type="button"
         >
@@ -454,17 +460,17 @@ function ProjectActions({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="right">
         <DropdownMenuItem onSelect={onRename}>
-          <Pencil aria-hidden="true" className="size-4" /> Rename
+          <Pencil aria-hidden="true" className="size-4" /> {t('sidebar.rename')}
         </DropdownMenuItem>
         <DropdownMenuItem disabled={first} onSelect={() => onMoveProject(project.path, 'up')}>
-          <ArrowUp aria-hidden="true" className="size-4" /> Move up
+          <ArrowUp aria-hidden="true" className="size-4" /> {t('sidebar.moveUp')}
         </DropdownMenuItem>
         <DropdownMenuItem disabled={last} onSelect={() => onMoveProject(project.path, 'down')}>
-          <ArrowDown aria-hidden="true" className="size-4" /> Move down
+          <ArrowDown aria-hidden="true" className="size-4" /> {t('sidebar.moveDown')}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={onRemove}>
-          <Trash2 aria-hidden="true" className="size-4" /> Remove project
+          <Trash2 aria-hidden="true" className="size-4" /> {t('sidebar.removeProject')}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -531,6 +537,7 @@ function TaskRow({
   onSetTaskPinned: (task: TaskProjection, pinned: boolean) => MaybePromise
   task: TaskProjection
 }) {
+  const { t } = useTranslation('shell')
   const [renameOpen, setRenameOpen] = useState(false)
   const [archiveOpen, setArchiveOpen] = useState(false)
   const [removeOpen, setRemoveOpen] = useState(false)
@@ -563,7 +570,7 @@ function TaskRow({
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
-                aria-label={`${task.title} actions`}
+                aria-label={t('sidebar.actions', { name: task.title })}
                 className="mr-0.5 flex size-7 shrink-0 items-center justify-center rounded opacity-0 hover:bg-background group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:bg-background data-[state=open]:opacity-100"
                 type="button"
               >
@@ -577,49 +584,49 @@ function TaskRow({
                 ) : (
                   <Pin aria-hidden="true" className="size-4" />
                 )}
-                {task.pinned ? 'Unpin' : 'Pin'}
+                {task.pinned ? t('sidebar.unpin') : t('sidebar.pin')}
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setRenameOpen(true)}>
-                <Pencil aria-hidden="true" className="size-4" /> Rename
+                <Pencil aria-hidden="true" className="size-4" /> {t('sidebar.rename')}
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setArchiveOpen(true)}>
-                <Archive aria-hidden="true" className="size-4" /> Archive
+                <Archive aria-hidden="true" className="size-4" /> {t('sidebar.archive')}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="text-destructive focus:text-destructive"
                 onSelect={() => setRemoveOpen(true)}
               >
-                <Trash2 aria-hidden="true" className="size-4" /> Remove
+                <Trash2 aria-hidden="true" className="size-4" /> {t('sidebar.remove')}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         )}
       </div>
       <RenameDialog
-        description="Choose a concise name for this conversation."
+        description={t('sidebar.renameConversationDescription')}
         initialValue={task.title}
-        label="Conversation name"
+        label={t('sidebar.conversationName')}
         onOpenChange={setRenameOpen}
         onSave={(title) => onRenameTask(task, title)}
         open={renameOpen}
-        title="Rename conversation"
+        title={t('sidebar.renameConversation')}
       />
       <ConfirmDialog
-        confirmLabel="Archive conversation"
-        description="The conversation will leave the sidebar but remain in local history."
+        confirmLabel={t('sidebar.archiveConversation')}
+        description={t('sidebar.archiveConversationDescription')}
         onConfirm={() => onSetTaskArchived(task, true)}
         onOpenChange={setArchiveOpen}
         open={archiveOpen}
-        title={`Archive ${task.title}?`}
+        title={t('sidebar.archiveConversationTitle', { name: task.title })}
       />
       <ConfirmDialog
-        confirmLabel="Remove conversation"
-        description="This removes the conversation from the sidebar and cannot be undone."
+        confirmLabel={t('sidebar.removeConversation')}
+        description={t('sidebar.removeConversationDescription')}
         onConfirm={() => onRemoveTask(task)}
         onOpenChange={setRemoveOpen}
         open={removeOpen}
-        title={`Remove ${task.title}?`}
+        title={t('sidebar.removeConversationTitle', { name: task.title })}
       />
     </li>
   )
@@ -642,6 +649,7 @@ function RenameDialog({
   open: boolean
   title: string
 }) {
+  const { t } = useTranslation('shell')
   const [value, setValue] = useState(initialValue)
   const trimmed = value.trim()
 
@@ -679,10 +687,10 @@ function RenameDialog({
           </label>
           <DialogFooter>
             <Button onClick={() => onOpenChange(false)} type="button" variant="ghost">
-              Cancel
+              {t('sidebar.cancel')}
             </Button>
             <Button disabled={!trimmed} type="submit">
-              Save
+              {t('sidebar.save')}
             </Button>
           </DialogFooter>
         </form>
@@ -706,6 +714,7 @@ function ConfirmDialog({
   open: boolean
   title: string
 }) {
+  const { t } = useTranslation('shell')
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent>
@@ -715,7 +724,7 @@ function ConfirmDialog({
         </DialogHeader>
         <DialogFooter>
           <Button onClick={() => onOpenChange(false)} type="button" variant="ghost">
-            Cancel
+            {t('sidebar.cancel')}
           </Button>
           <Button
             onClick={() => {
