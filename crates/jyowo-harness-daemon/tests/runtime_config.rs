@@ -7,9 +7,10 @@ use harness_contracts::{
     ProviderCapabilityRoute, ProviderCapabilityRouteSettings,
     ProviderProfileConversationCapability, ProviderProfileDefinition,
     ProviderProfileModelDescriptor, ProviderProfileModelLifecycle, ProviderSecretEntry,
-    ProviderSecretsRecord, ProviderSelectionRecord, SkillSelectionRecord, ToolProfile,
+    ProviderSecretsRecord, ProviderSelectionRecord, SkillSelectionRecord, ToolProfile, TrustLevel,
 };
 use harness_daemon::{RuntimeConfigError, RuntimeConfigResolver};
+use harness_plugin::{PluginCapabilities, PluginManifest, PluginName};
 use serde::Serialize;
 use tempfile::TempDir;
 
@@ -209,6 +210,139 @@ fn malformed_project_configuration_fails_closed_without_secret_leakage() {
     assert!(!message.contains("secret-value"));
 }
 
+#[test]
+fn empty_project_provider_selection_is_rejected_instead_of_inheriting_global() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_project(
+        "provider-selection.json",
+        &ProviderSelectionRecord {
+            default_config_id: Some("   ".into()),
+        },
+    );
+
+    let error = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("present invalid provider selection must fail closed");
+
+    assert!(matches!(error, RuntimeConfigError::Invalid { .. }));
+    assert!(error.to_string().contains("project provider selection"));
+}
+
+#[test]
+fn missing_project_provider_selection_id_is_rejected() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_project(
+        "provider-selection.json",
+        &ProviderSelectionRecord {
+            default_config_id: None,
+        },
+    );
+
+    let error = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("missing project provider id must fail closed");
+
+    assert!(matches!(error, RuntimeConfigError::Invalid { .. }));
+}
+
+#[test]
+fn empty_project_agent_profile_selection_is_rejected_instead_of_inheriting_default() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_project_raw(
+        "agent-profile-selection.json",
+        r#"{"defaultProfileId":"   "}"#,
+    );
+
+    let error = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("present invalid agent profile selection must fail closed");
+
+    assert!(matches!(error, RuntimeConfigError::Invalid { .. }));
+    assert!(error
+        .to_string()
+        .contains("project agent profile selection"));
+}
+
+#[test]
+fn missing_project_agent_profile_selection_id_is_rejected() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_project_raw("agent-profile-selection.json", r#"{}"#);
+
+    let error = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("missing project agent profile id must fail closed");
+
+    assert!(matches!(error, RuntimeConfigError::Invalid { .. }));
+}
+
+#[test]
+fn invalid_provider_capability_route_is_rejected_without_secret_leakage() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_project(
+        "provider-capability-routes.json",
+        &routes(&[("", "secret-provider-value", &["image.generate"])]),
+    );
+
+    let error = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("invalid route must fail closed");
+    let message = error.to_string();
+
+    assert!(matches!(error, RuntimeConfigError::Invalid { .. }));
+    assert!(message.contains("project provider capability routes"));
+    assert!(!message.contains("secret-provider-value"));
+}
+
+#[tokio::test]
+async fn skill_content_is_frozen_when_runtime_snapshot_is_resolved() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_project(
+        "skills.json",
+        &SkillSelectionRecord {
+            enabled: vec!["frozen-skill".into()],
+        },
+    );
+    fixture.write_project_skill("frozen-skill", "original skill body");
+
+    let snapshot = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("resolve runtime snapshot");
+    fixture.write_project_skill("frozen-skill", "mutated skill body");
+
+    let report = snapshot.skill_loader.load_all().await.expect("load skills");
+    assert_eq!(report.loaded.len(), 1);
+    assert_eq!(report.loaded[0].body.trim(), "original skill body");
+}
+
+#[tokio::test]
+async fn plugin_manifest_is_frozen_when_runtime_snapshot_is_resolved() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_global_plugin("frozen-plugin", "original description");
+
+    let snapshot = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("resolve runtime snapshot");
+    fixture.write_global_plugin_manifest("frozen-plugin", "mutated description");
+
+    let registry = snapshot
+        .materialize_plugin_registry()
+        .expect("materialize plugin registry");
+    let discovered = registry.discover().await.expect("discover plugins");
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(
+        discovered[0].record.manifest.description.as_deref(),
+        Some("original description")
+    );
+    assert_eq!(registry.snapshot().discovered.len(), 1);
+}
+
 #[cfg(unix)]
 #[test]
 fn workspace_symlink_is_rejected_instead_of_reading_replaced_project_config() {
@@ -224,6 +358,64 @@ fn workspace_symlink_is_rejected_instead_of_reading_replaced_project_config() {
         .expect_err("workspace symlink must fail closed");
 
     assert!(matches!(error, RuntimeConfigError::WorkspaceSymlink { .. }));
+}
+
+#[cfg(unix)]
+#[test]
+fn runtime_directory_symlink_escape_is_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    let external = fixture.root.path().join("external-runtime");
+    fs::create_dir_all(&external).expect("external runtime");
+    symlink(&external, fixture.workspace.join(".jyowo/runtime")).expect("runtime symlink");
+
+    let error = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("runtime symlink escape must fail closed");
+
+    assert!(matches!(error, RuntimeConfigError::ConfigSymlink { .. }));
+}
+
+#[cfg(unix)]
+#[test]
+fn runtime_directory_symlink_swap_is_rejected_before_memory_directory_creation() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    let snapshot = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("resolve runtime snapshot");
+    let external = fixture.root.path().join("external-runtime-after-resolve");
+    fs::create_dir_all(&external).expect("external runtime");
+    symlink(&external, fixture.workspace.join(".jyowo/runtime")).expect("runtime symlink");
+
+    let error = snapshot
+        .ensure_memory_parent()
+        .expect_err("runtime symlink swap must fail before directory creation");
+
+    assert!(matches!(error, RuntimeConfigError::ConfigSymlink { .. }));
+    assert!(!external.join("memory").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn plugin_directory_symlink_escape_is_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    let external = fixture.root.path().join("external-plugins");
+    fs::create_dir_all(&external).expect("external plugins");
+    symlink(&external, fixture.workspace.join(".jyowo/plugins")).expect("plugins symlink");
+
+    let error = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("plugin symlink escape must fail closed");
+
+    assert!(matches!(error, RuntimeConfigError::ConfigSymlink { .. }));
 }
 
 struct RuntimeFixture {
@@ -296,6 +488,64 @@ impl RuntimeFixture {
     fn write_project_raw(&self, file: &str, value: &str) {
         fs::write(self.workspace.join(".jyowo/config").join(file), value)
             .expect("write project raw");
+    }
+
+    fn write_project_skill(&self, package_id: &str, body: &str) {
+        let package = self
+            .workspace
+            .join(".jyowo/skills/packages")
+            .join(package_id);
+        fs::create_dir_all(&package).expect("project skill package");
+        fs::write(
+            package.join("SKILL.md"),
+            format!("---\nname: {package_id}\ndescription: frozen skill\n---\n{body}\n"),
+        )
+        .expect("write project skill");
+    }
+
+    fn write_global_plugin(&self, name: &str, description: &str) {
+        fs::create_dir_all(self.home.join("plugins/packages").join(name))
+            .expect("global plugin package");
+        self.write_global_plugin_manifest(name, description);
+        write_json(
+            &self.home.join("plugins/index.json"),
+            &serde_json::json!({
+                "allowProjectPlugins": false,
+                "records": [{
+                    "pluginId": format!("{name}@0.1.0"),
+                    "name": name,
+                    "version": "0.1.0",
+                    "enabled": true,
+                    "packageDir": name,
+                    "sourcePath": "fixture",
+                    "contentHash": "fixture",
+                    "importedAt": "2026-01-01T00:00:00Z",
+                    "updatedAt": "2026-01-01T00:00:00Z",
+                    "config": {}
+                }]
+            }),
+        );
+    }
+
+    fn write_global_plugin_manifest(&self, name: &str, description: &str) {
+        let package = self.home.join("plugins/packages").join(name);
+        fs::create_dir_all(&package).expect("global plugin package");
+        write_json(
+            &package.join("plugin.json"),
+            &PluginManifest {
+                name: PluginName::new(name).expect("plugin name"),
+                version: semver::Version::parse("0.1.0").expect("plugin version"),
+                trust_level: TrustLevel::UserControlled,
+                description: Some(description.into()),
+                authors: Vec::new(),
+                repository: None,
+                signature: None,
+                capabilities: PluginCapabilities::default(),
+                dependencies: Vec::new(),
+                min_harness_version: semver::VersionReq::parse(">=0.0.0")
+                    .expect("version requirement"),
+            },
+        );
     }
 }
 

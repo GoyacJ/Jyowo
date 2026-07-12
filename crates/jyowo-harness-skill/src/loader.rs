@@ -45,6 +45,9 @@ pub struct SkillValidator {
 
 #[derive(Debug, Clone)]
 pub enum SkillSourceConfig {
+    Preloaded {
+        skills: Vec<Skill>,
+    },
     BundledRecords {
         records: Vec<BundledSkillRecord>,
     },
@@ -88,6 +91,9 @@ pub struct LoadReport {
 
 #[derive(Debug, Clone)]
 enum PrefetchLoadUnit {
+    Preloaded {
+        skill: Skill,
+    },
     Bundled {
         record: BundledSkillRecord,
     },
@@ -237,6 +243,63 @@ impl SkillLoader {
         }
     }
 
+    /// Replaces directory-backed sources with parsed, immutable skill records.
+    ///
+    /// Call this at a configuration boundary when later consumers must observe
+    /// the exact directory contents that were resolved at that point in time.
+    pub fn freeze_directory_sources(mut self) -> Result<Self, SkillError> {
+        let mut frozen = Vec::with_capacity(self.sources.len());
+        for source in self.sources {
+            match source {
+                SkillSourceConfig::Directory { path, source_kind } => {
+                    if !path.exists() {
+                        continue;
+                    }
+                    let source = source_from_directory(path.clone(), &source_kind);
+                    let skills = directory_skill_paths(&path, true)?
+                        .into_iter()
+                        .map(|raw_path| {
+                            let markdown = std::fs::read_to_string(&raw_path)?;
+                            parse_skill_markdown(
+                                &markdown,
+                                source.clone(),
+                                Some(raw_path),
+                                self.runtime_platform,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, SkillError>>()?;
+                    frozen.push(SkillSourceConfig::Preloaded { skills });
+                }
+                SkillSourceConfig::DirectoryPackages {
+                    path,
+                    source_kind,
+                    allowed_package_ids,
+                } => {
+                    if !path.exists() {
+                        continue;
+                    }
+                    let source = source_from_directory(path.clone(), &source_kind);
+                    let skills = directory_package_skill_paths(&path, &allowed_package_ids)?
+                        .into_iter()
+                        .map(|raw_path| {
+                            let markdown = std::fs::read_to_string(&raw_path)?;
+                            parse_skill_markdown(
+                                &markdown,
+                                source.clone(),
+                                Some(raw_path),
+                                self.runtime_platform,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, SkillError>>()?;
+                    frozen.push(SkillSourceConfig::Preloaded { skills });
+                }
+                source => frozen.push(source),
+            }
+        }
+        self.sources = frozen;
+        Ok(self)
+    }
+
     #[must_use]
     pub fn validator(&self) -> SkillValidator {
         let mut validator = SkillValidator::default().with_runtime_platform(self.runtime_platform);
@@ -260,6 +323,23 @@ impl SkillLoader {
 
         for source in &self.sources {
             match source {
+                SkillSourceConfig::Preloaded { skills } => {
+                    for skill in skills {
+                        match self
+                            .validate_loaded_skill(skill.clone(), skill.raw_path.as_deref())
+                            .await
+                        {
+                            Ok(skill) => {
+                                self.emit_loaded(&skill).await;
+                                loaded.push(skill);
+                            }
+                            Err(rejection) => {
+                                self.emit_rejected(&rejection).await;
+                                rejected.push(rejection);
+                            }
+                        }
+                    }
+                }
                 SkillSourceConfig::BundledRecords { records } => {
                     for record in records {
                         let source = SkillSource::Bundled;
@@ -399,6 +479,29 @@ impl SkillLoader {
                 break;
             }
             match source {
+                SkillSourceConfig::Preloaded { skills } => {
+                    for skill in skills {
+                        if reached_limit(loaded.len(), limit) {
+                            break;
+                        }
+                        if !matches_hint(&skill.name, hints) {
+                            continue;
+                        }
+                        match self
+                            .validate_loaded_skill(skill.clone(), skill.raw_path.as_deref())
+                            .await
+                        {
+                            Ok(skill) => {
+                                self.emit_loaded(&skill).await;
+                                loaded.push(skill);
+                            }
+                            Err(rejection) => {
+                                self.emit_rejected(&rejection).await;
+                                rejected.push(rejection);
+                            }
+                        }
+                    }
+                }
                 SkillSourceConfig::BundledRecords { records } => {
                     for record in records {
                         if reached_limit(loaded.len(), limit) {
@@ -604,6 +707,18 @@ impl SkillLoader {
                 break;
             }
             match source {
+                SkillSourceConfig::Preloaded { skills } => {
+                    for skill in skills {
+                        if units.len() >= max_units {
+                            break;
+                        }
+                        if matches_hint(&skill.name, hints) {
+                            units.push(PrefetchLoadUnit::Preloaded {
+                                skill: skill.clone(),
+                            });
+                        }
+                    }
+                }
                 SkillSourceConfig::BundledRecords { records } => {
                     for record in records {
                         if units.len() >= max_units {
@@ -673,6 +788,14 @@ impl SkillLoader {
         hints: Option<&[String]>,
     ) -> Result<PrefetchUnitOutcome, SkillError> {
         match unit {
+            PrefetchLoadUnit::Preloaded { skill } => {
+                let skill = self
+                    .validate_loaded_skill(skill.clone(), skill.raw_path.as_deref())
+                    .await
+                    .map_err(skill_error_from_rejection)?;
+                self.emit_loaded(&skill).await;
+                Ok(PrefetchUnitOutcome::Loaded(skill))
+            }
             PrefetchLoadUnit::Bundled { record } => {
                 let skill = parse_skill_markdown(
                     &record.to_markdown(),

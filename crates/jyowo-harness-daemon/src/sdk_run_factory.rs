@@ -146,17 +146,17 @@ fn apply_runtime_snapshot<M, S, SB>(
     builder: HarnessBuilder<M, S, SB>,
     snapshot: &RuntimeConfigSnapshot,
     mcp_config: McpConfig,
-) -> HarnessBuilder<M, S, SB> {
-    builder
+) -> Result<HarnessBuilder<M, S, SB>, harness_plugin::PluginError> {
+    Ok(builder
         .with_mcp_config(mcp_config)
-        .with_plugin_registry(snapshot.plugin_registry.clone())
+        .with_plugin_registry(snapshot.materialize_plugin_registry()?)
         .with_skill_loader(snapshot.skill_loader.clone())
         .with_skill_config_snapshot(snapshot.skill_config.clone())
         .with_provider_capability_routes(snapshot.provider_routes.clone())
         .with_capability::<dyn harness_contracts::ProviderCredentialResolverCap>(
             harness_contracts::ToolCapability::ProviderCredentialResolver,
             Arc::clone(&snapshot.provider_credential_resolver),
-        )
+        ))
 }
 
 async fn mcp_config_from_runtime_snapshot(
@@ -611,6 +611,7 @@ impl SubagentEngineFactory for SdkIsolatedSubagentEngineFactory {
             .with_subagent_engine_factory(Arc::clone(&engine_factory));
         let harness =
             apply_runtime_snapshot(harness_builder, &self.runtime.runtime_config, mcp_config)
+                .map_err(|error| SubagentError::Engine(error.to_string()))?
                 .build()
                 .await
                 .map_err(|error| SubagentError::Engine(error.to_string()))?;
@@ -800,12 +801,9 @@ impl SdkRunCoordinatorFactory {
         let agent_tool_policy = daemon_agent_tool_policy(&execution_defaults)?;
         let subagents_enabled = agent_tool_policy.subagents == AgentUsePolicy::Allowed;
         let memory_database_path = runtime_config.memory_database_path.clone();
-        std::fs::create_dir_all(
-            memory_database_path
-                .parent()
-                .expect("daemon memory database path has a parent"),
-        )
-        .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?;
+        runtime_config
+            .ensure_memory_parent()
+            .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?;
         let _runtime_binding = subagents_enabled.then(|| {
             subagent_engines.bind(
                 request.segment_id,
@@ -859,6 +857,7 @@ impl SdkRunCoordinatorFactory {
             harness_builder
         };
         let harness = apply_runtime_snapshot(harness_builder, &runtime_config, mcp_config)
+            .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?
             .build()
             .await
             .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?;
@@ -1970,7 +1969,7 @@ mod tests {
         ProviderProfileModelDescriptor, ProviderProfileModelLifecycle, ProviderSecretEntry,
         ProviderSecretsRecord, ProviderSelectionRecord, QueueItemId, RunId, RunSegmentId,
         RunTerminalReason, SessionId, StopReason, TaskId, ToolProperties, ToolUseId,
-        ToolUseRequestedEvent, ToolUseStartedEvent, UsageSnapshot, WorkspaceMode,
+        ToolUseRequestedEvent, ToolUseStartedEvent, TrustLevel, UsageSnapshot, WorkspaceMode,
     };
     use harness_engine::{RunControl, TurnOutcome};
     use harness_journal::{
@@ -1978,6 +1977,10 @@ mod tests {
         TaskEventStoreAdapter, TaskStore,
     };
     use harness_model::TestModelProvider;
+    use harness_plugin::{
+        Plugin, PluginActivationContext, PluginActivationResult, PluginCapabilities, PluginError,
+        PluginLifecycleState, PluginManifest, PluginName, StaticLinkRuntimeLoader,
+    };
     use harness_sandbox::LocalIsolation;
     use harness_subagent::{
         ParentContext, SubagentError, SubagentHandle, SubagentRunner, SubagentSpec,
@@ -2041,13 +2044,46 @@ mod tests {
         }
     }
 
+    struct SnapshotRuntimePlugin {
+        manifest: PluginManifest,
+    }
+
+    #[async_trait]
+    impl Plugin for SnapshotRuntimePlugin {
+        fn manifest(&self) -> &PluginManifest {
+            &self.manifest
+        }
+
+        async fn activate(
+            &self,
+            _ctx: PluginActivationContext,
+        ) -> Result<PluginActivationResult, PluginError> {
+            Ok(PluginActivationResult::default())
+        }
+
+        async fn deactivate(&self) -> Result<(), PluginError> {
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn foreground_and_subagent_harnesses_receive_the_same_runtime_snapshot() {
         let fixture = Fixture::new();
         fixture.write_provider_config();
+        let manifest = fixture.write_plugin("snapshot-plugin");
+        let plugin_id = manifest.plugin_id();
+        let runtime_manifest = manifest.clone();
         let snapshot = crate::RuntimeConfigResolver::new(fixture._root.path().join("config"))
             .resolve(&fixture.workspace_root, None)
-            .expect("runtime snapshot");
+            .expect("runtime snapshot")
+            .with_plugin_runtime_loader(Arc::new(StaticLinkRuntimeLoader::new().with_factory(
+                plugin_id.clone(),
+                move || {
+                    Arc::new(SnapshotRuntimePlugin {
+                        manifest: runtime_manifest.clone(),
+                    })
+                },
+            )));
         let build_harness = || {
             super::apply_runtime_snapshot(
                 jyowo_harness_sdk::Harness::builder()
@@ -2058,6 +2094,7 @@ mod tests {
                 &snapshot,
                 jyowo_harness_sdk::McpConfig::default(),
             )
+            .expect("apply runtime snapshot")
         };
 
         let foreground = build_harness().build().await.expect("foreground harness");
@@ -2071,6 +2108,35 @@ mod tests {
                 snapshot.provider_routes
             );
         }
+
+        let foreground_registry = foreground.plugin_registry().expect("foreground registry");
+        let subagent_registry = subagent.plugin_registry().expect("subagent registry");
+        foreground_registry
+            .discover()
+            .await
+            .expect("discover foreground");
+        foreground_registry
+            .activate(&plugin_id)
+            .await
+            .expect("activate foreground");
+        assert_eq!(
+            foreground_registry.state(&plugin_id),
+            Some(PluginLifecycleState::Activated)
+        );
+        assert_eq!(subagent_registry.state(&plugin_id), None);
+
+        subagent_registry
+            .discover()
+            .await
+            .expect("discover subagent");
+        subagent_registry
+            .activate(&plugin_id)
+            .await
+            .expect("activate subagent");
+        assert_eq!(
+            subagent_registry.state(&plugin_id),
+            Some(PluginLifecycleState::Activated)
+        );
     }
 
     #[tokio::test]
@@ -3731,6 +3797,44 @@ mod tests {
                     default_config_id: Some("selected".into()),
                 },
             );
+        }
+
+        fn write_plugin(&self, name: &str) -> PluginManifest {
+            let package = self._root.path().join("plugins/packages").join(name);
+            std::fs::create_dir_all(&package).expect("plugin package");
+            let manifest = PluginManifest {
+                name: PluginName::new(name).expect("plugin name"),
+                version: semver::Version::parse("0.1.0").expect("plugin version"),
+                trust_level: TrustLevel::UserControlled,
+                description: Some("snapshot plugin".to_owned()),
+                authors: Vec::new(),
+                repository: None,
+                signature: None,
+                capabilities: PluginCapabilities::default(),
+                dependencies: Vec::new(),
+                min_harness_version: semver::VersionReq::parse(">=0.0.0")
+                    .expect("version requirement"),
+            };
+            write_json(&package.join("plugin.json"), &manifest);
+            write_json(
+                &self._root.path().join("plugins/index.json"),
+                &serde_json::json!({
+                    "allowProjectPlugins": false,
+                    "records": [{
+                        "pluginId": manifest.plugin_id().0,
+                        "name": name,
+                        "version": "0.1.0",
+                        "enabled": true,
+                        "packageDir": name,
+                        "sourcePath": "fixture",
+                        "contentHash": "fixture",
+                        "importedAt": "2026-01-01T00:00:00Z",
+                        "updatedAt": "2026-01-01T00:00:00Z",
+                        "config": {}
+                    }]
+                }),
+            );
+            manifest
         }
 
         fn request(&self, model_config_id: Option<&str>) -> StartSegmentRequest {

@@ -42,22 +42,8 @@ impl FileManifestLoader {
             Err(error) => Err(error),
         }
     }
-}
 
-#[async_trait]
-impl PluginManifestLoader for FileManifestLoader {
-    async fn enumerate(
-        &self,
-        source: &DiscoverySource,
-    ) -> Result<Vec<ManifestRecord>, ManifestLoaderError> {
-        let report = self.load_report(source).await?;
-        if let Some(failure) = report.failures.into_iter().next() {
-            return Err(ManifestLoaderError::Validation(failure));
-        }
-        Ok(report.records)
-    }
-
-    async fn load_report(
+    pub fn load_source_report(
         &self,
         source: &DiscoverySource,
     ) -> Result<ManifestLoadReport, ManifestLoaderError> {
@@ -99,6 +85,27 @@ impl PluginManifestLoader for FileManifestLoader {
         }
 
         Ok(ManifestLoadReport { records, failures })
+    }
+}
+
+#[async_trait]
+impl PluginManifestLoader for FileManifestLoader {
+    async fn enumerate(
+        &self,
+        source: &DiscoverySource,
+    ) -> Result<Vec<ManifestRecord>, ManifestLoaderError> {
+        let report = self.load_report(source).await?;
+        if let Some(failure) = report.failures.into_iter().next() {
+            return Err(ManifestLoaderError::Validation(failure));
+        }
+        Ok(report.records)
+    }
+
+    async fn load_report(
+        &self,
+        source: &DiscoverySource,
+    ) -> Result<ManifestLoadReport, ManifestLoaderError> {
+        self.load_source_report(source)
     }
 }
 

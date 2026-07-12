@@ -6,15 +6,16 @@ use std::{
 };
 
 use harness_contracts::{
-    validate_agent_profile, AgentProfile, AgentProfileSelectionRecord, ExecutionDefaultsRecord,
-    ExecutionOverridesRecord, McpServerSource, PluginId, PluginSelectionRecord,
-    ProviderCapabilityRoute, ProviderCapabilityRouteSettings, ProviderCredential,
-    ProviderCredentialResolveContext, ProviderCredentialResolverCap, ProviderProfileDefinition,
-    ProviderSecretEntry, ProviderSecretsRecord, ProviderSelectionRecord, SkillSelectionRecord,
-    ToolError,
+    validate_agent_profile, validate_provider_capability_route, AgentProfile,
+    AgentProfileSelectionRecord, ExecutionDefaultsRecord, ExecutionOverridesRecord,
+    McpServerSource, PluginId, PluginSelectionRecord, ProviderCapabilityRoute,
+    ProviderCapabilityRouteSettings, ProviderCredential, ProviderCredentialResolveContext,
+    ProviderCredentialResolverCap, ProviderProfileDefinition, ProviderSecretEntry,
+    ProviderSecretsRecord, ProviderSelectionRecord, SkillSelectionRecord, ToolError,
 };
 use harness_plugin::{
-    DiscoverySource, FileManifestLoader, PluginConfig, PluginName, PluginRegistry,
+    DiscoverySource, FileManifestLoader, ManifestLoadReport, ManifestLoaderError, PluginConfig,
+    PluginManifestLoader, PluginName, PluginRegistry, PluginRuntimeLoader,
 };
 use jyowo_harness_sdk::{
     builtin_agent_profiles,
@@ -62,6 +63,7 @@ impl RuntimeConfigResolver {
         let project_config_root = project_root.join("config");
         reject_symlink_if_present(&project_root, "project settings root")?;
         reject_symlink_if_present(&project_config_root, "project config root")?;
+        validate_runtime_path_roots(&workspace_root)?;
 
         let global_config_root =
             self.global_config_root
@@ -78,17 +80,34 @@ impl RuntimeConfigResolver {
                     kind: "global config root",
                     reason: "config root has no Jyowo home parent".to_owned(),
                 })?;
+        validate_existing_directory_chain(
+            global_home,
+            Path::new("skills/packages"),
+            "global skill packages",
+        )?;
+        validate_existing_directory_chain(
+            global_home,
+            Path::new("plugins/packages"),
+            "global plugin packages",
+        )?;
 
         let project_provider_selection = read_optional_json::<ProviderSelectionRecord>(
             &project_config_root.join(PROVIDER_SELECTION_FILE),
             "project provider selection",
         )?;
-        let selected_config_id = model_config_id.or_else(|| {
-            project_provider_selection
-                .as_ref()
-                .and_then(|selection| selection.default_config_id.as_deref())
-                .filter(|id| !id.trim().is_empty())
-        });
+        let project_selected_config_id = match &project_provider_selection {
+            Some(selection) => match selection.default_config_id.as_deref() {
+                Some(id) if !id.trim().is_empty() => Some(id),
+                _ => {
+                    return Err(RuntimeConfigError::Invalid {
+                        kind: "project provider selection",
+                        reason: "default config id is empty".to_owned(),
+                    });
+                }
+            },
+            None => None,
+        };
+        let selected_config_id = model_config_id.or(project_selected_config_id);
         let provider_resolver = ProviderConfigResolver::new(&global_config_root);
         let provider = provider_resolver.resolve(selected_config_id)?;
 
@@ -109,6 +128,10 @@ impl RuntimeConfigResolver {
             &project_config_root.join(PROVIDER_ROUTES_FILE),
             "project provider capability routes",
         )?;
+        validate_provider_routes(&global_routes, "global provider capability routes")?;
+        if let Some(routes) = &project_routes {
+            validate_provider_routes(routes, "project provider capability routes")?;
+        }
         let provider_routes = merge_provider_routes(global_routes, project_routes);
 
         let mut global_mcp = read_optional_json::<Vec<RuntimeMcpServerConfig>>(
@@ -148,7 +171,12 @@ impl RuntimeConfigResolver {
             &workspace_root,
             &global_skill_selection,
             project_skill_selection.as_ref(),
-        );
+        )
+        .freeze_directory_sources()
+        .map_err(|source| RuntimeConfigError::Invalid {
+            kind: "skill packages",
+            reason: source.to_string(),
+        })?;
 
         let global_plugin_records = read_optional_json::<PluginSettingsFile>(
             &global_home.join("plugins/index.json"),
@@ -169,7 +197,17 @@ impl RuntimeConfigResolver {
             &project_plugin_records,
             project_plugin_selection.as_ref(),
         );
-        let plugin_registry = build_plugin_registry(
+        validate_plugin_index_paths(
+            &global_home.join("plugins/packages"),
+            &global_plugin_records,
+            "global plugin index",
+        )?;
+        validate_plugin_index_paths(
+            &workspace_root.join(".jyowo/plugins/packages"),
+            &project_plugin_records,
+            "project plugin index",
+        )?;
+        let plugin_snapshot = build_plugin_snapshot(
             global_home,
             &workspace_root,
             &global_plugin_records,
@@ -186,12 +224,22 @@ impl RuntimeConfigResolver {
         .unwrap_or_default();
         validate_agent_profiles(&agent_profiles, &user_profiles)?;
         agent_profiles.extend(user_profiles);
-        let default_agent_profile_id = read_optional_json::<AgentProfileSelectionRecord>(
+        let agent_profile_selection = read_optional_json::<AgentProfileSelectionRecord>(
             &project_config_root.join(AGENT_PROFILE_SELECTION_FILE),
             "project agent profile selection",
-        )?
-        .and_then(|selection| selection.default_profile_id)
-        .filter(|id| !id.trim().is_empty());
+        )?;
+        let default_agent_profile_id = match agent_profile_selection {
+            Some(selection) => match selection.default_profile_id {
+                Some(id) if !id.trim().is_empty() => Some(id),
+                _ => {
+                    return Err(RuntimeConfigError::Invalid {
+                        kind: "project agent profile selection",
+                        reason: "default profile id is empty".to_owned(),
+                    });
+                }
+            },
+            None => None,
+        };
         if let Some(selected) = &default_agent_profile_id {
             if !agent_profiles.iter().any(|profile| &profile.id == selected) {
                 return Err(RuntimeConfigError::Invalid {
@@ -209,7 +257,7 @@ impl RuntimeConfigResolver {
             execution_defaults,
             provider_routes: provider_routes.clone(),
             mcp_servers,
-            plugin_registry,
+            plugin_snapshot,
             skill_loader,
             skill_config: SkillConfigSnapshot::new(),
             enabled_skill_ids,
@@ -234,7 +282,7 @@ pub struct RuntimeConfigSnapshot {
     pub execution_defaults: ExecutionDefaultsRecord,
     pub provider_routes: ProviderCapabilityRouteSettings,
     pub mcp_servers: Vec<RuntimeMcpServerConfig>,
-    pub plugin_registry: PluginRegistry,
+    plugin_snapshot: RuntimePluginSnapshot,
     pub skill_loader: SkillLoader,
     pub skill_config: SkillConfigSnapshot,
     pub enabled_skill_ids: BTreeSet<String>,
@@ -255,7 +303,7 @@ impl fmt::Debug for RuntimeConfigSnapshot {
             .field("execution_defaults", &self.execution_defaults)
             .field("provider_routes", &self.provider_routes)
             .field("mcp_servers", &self.mcp_servers)
-            .field("plugin_registry", &self.plugin_registry)
+            .field("plugin_snapshot", &self.plugin_snapshot)
             .field("skill_loader", &"SkillLoader")
             .field("skill_config", &self.skill_config)
             .field("enabled_skill_ids", &self.enabled_skill_ids)
@@ -265,6 +313,104 @@ impl fmt::Debug for RuntimeConfigSnapshot {
             .field("default_agent_profile_id", &self.default_agent_profile_id)
             .field("memory_database_path", &self.memory_database_path)
             .finish_non_exhaustive()
+    }
+}
+
+impl RuntimeConfigSnapshot {
+    pub fn materialize_plugin_registry(
+        &self,
+    ) -> Result<PluginRegistry, harness_plugin::PluginError> {
+        self.plugin_snapshot.materialize()
+    }
+
+    pub fn ensure_memory_parent(&self) -> Result<(), RuntimeConfigError> {
+        ensure_secure_directory_chain(
+            &self.workspace_root,
+            Path::new(".jyowo/runtime/memory"),
+            "runtime memory directory",
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_plugin_runtime_loader(
+        mut self,
+        loader: Arc<dyn PluginRuntimeLoader>,
+    ) -> Self {
+        self.plugin_snapshot.runtime_loaders.push(loader);
+        self
+    }
+}
+
+#[derive(Clone)]
+struct RuntimePluginSnapshot {
+    config: PluginConfig,
+    sources: Vec<FrozenPluginSource>,
+    runtime_loaders: Vec<Arc<dyn PluginRuntimeLoader>>,
+}
+
+impl fmt::Debug for RuntimePluginSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RuntimePluginSnapshot")
+            .field("sources", &self.sources)
+            .field("runtime_loader_count", &self.runtime_loaders.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl RuntimePluginSnapshot {
+    fn materialize(&self) -> Result<PluginRegistry, harness_plugin::PluginError> {
+        let mut builder = PluginRegistry::builder().with_config(self.config.clone());
+        for source in &self.sources {
+            builder = builder
+                .with_source(source.source.clone())
+                .with_manifest_loader(Arc::new(FrozenPluginManifestLoader {
+                    source: source.source.clone(),
+                    report: source.report.clone(),
+                }));
+        }
+        for loader in &self.runtime_loaders {
+            builder = builder.with_runtime_loader(Arc::clone(loader));
+        }
+        builder.build()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FrozenPluginSource {
+    source: DiscoverySource,
+    report: ManifestLoadReport,
+}
+
+#[derive(Debug, Clone)]
+struct FrozenPluginManifestLoader {
+    source: DiscoverySource,
+    report: ManifestLoadReport,
+}
+
+#[async_trait::async_trait]
+impl PluginManifestLoader for FrozenPluginManifestLoader {
+    async fn enumerate(
+        &self,
+        source: &DiscoverySource,
+    ) -> Result<Vec<harness_plugin::ManifestRecord>, ManifestLoaderError> {
+        Ok(if source == &self.source {
+            self.report.records.clone()
+        } else {
+            Vec::new()
+        })
+    }
+
+    async fn load_report(
+        &self,
+        source: &DiscoverySource,
+    ) -> Result<ManifestLoadReport, ManifestLoaderError> {
+        Ok(if source == &self.source {
+            self.report.clone()
+        } else {
+            ManifestLoadReport::default()
+        })
     }
 }
 
@@ -454,6 +600,124 @@ fn reject_symlink_if_present(path: &Path, kind: &'static str) -> Result<(), Runt
             source,
         }),
     }
+}
+
+fn validate_runtime_path_roots(workspace_root: &Path) -> Result<(), RuntimeConfigError> {
+    for (relative, kind) in [
+        (".jyowo/runtime/memory", "runtime memory directory"),
+        (".jyowo/skills/packages", "project skill packages"),
+        (".jyowo/plugins/packages", "project plugin packages"),
+    ] {
+        validate_existing_directory_chain(workspace_root, Path::new(relative), kind)?;
+    }
+    let plugin_index = workspace_root.join(".jyowo/plugins/index.json");
+    if fs::symlink_metadata(&plugin_index).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(RuntimeConfigError::ConfigSymlink {
+            kind: "project plugin index",
+            path: plugin_index,
+        });
+    }
+    Ok(())
+}
+
+fn validate_existing_directory_chain(
+    root: &Path,
+    relative: &Path,
+    kind: &'static str,
+) -> Result<(), RuntimeConfigError> {
+    let mut current = root.to_owned();
+    for component in relative.components() {
+        let std::path::Component::Normal(component) = component else {
+            return Err(RuntimeConfigError::Invalid {
+                kind,
+                reason: "path must contain only relative directory components".to_owned(),
+            });
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(RuntimeConfigError::ConfigSymlink {
+                    kind,
+                    path: current,
+                });
+            }
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return Err(RuntimeConfigError::Invalid {
+                    kind,
+                    reason: "path component is not a directory".to_owned(),
+                });
+            }
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(source) => {
+                return Err(RuntimeConfigError::Read {
+                    kind,
+                    path: current,
+                    source,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_secure_directory_chain(
+    root: &Path,
+    relative: &Path,
+    kind: &'static str,
+) -> Result<PathBuf, RuntimeConfigError> {
+    let mut current = root.to_owned();
+    for component in relative.components() {
+        let std::path::Component::Normal(component) = component else {
+            return Err(RuntimeConfigError::Invalid {
+                kind,
+                reason: "path must contain only relative directory components".to_owned(),
+            });
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(RuntimeConfigError::ConfigSymlink {
+                    kind,
+                    path: current,
+                });
+            }
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return Err(RuntimeConfigError::Invalid {
+                    kind,
+                    reason: "path component is not a directory".to_owned(),
+                });
+            }
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&current).map_err(|source| RuntimeConfigError::Read {
+                    kind,
+                    path: current.clone(),
+                    source,
+                })?;
+                let metadata =
+                    fs::symlink_metadata(&current).map_err(|source| RuntimeConfigError::Read {
+                        kind,
+                        path: current.clone(),
+                        source,
+                    })?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(RuntimeConfigError::ConfigSymlink {
+                        kind,
+                        path: current,
+                    });
+                }
+            }
+            Err(source) => {
+                return Err(RuntimeConfigError::Read {
+                    kind,
+                    path: current,
+                    source,
+                });
+            }
+        }
+    }
+    Ok(current)
 }
 
 fn read_optional_json<T: DeserializeOwned>(
@@ -669,14 +933,14 @@ fn effective_plugin_selection(
     (enabled, project.allow_project_plugins)
 }
 
-fn build_plugin_registry(
+fn build_plugin_snapshot(
     global_home: &Path,
     workspace_root: &Path,
     global: &PluginSettingsFile,
     project: &PluginSettingsFile,
     enabled_ids: &BTreeSet<String>,
     allow_project_plugins: bool,
-) -> Result<PluginRegistry, RuntimeConfigError> {
+) -> Result<RuntimePluginSnapshot, RuntimeConfigError> {
     let mut allowed_user_plugins = BTreeSet::new();
     let mut disabled_plugins = BTreeSet::new();
     let mut entries = BTreeMap::new();
@@ -710,15 +974,60 @@ fn build_plugin_registry(
         workspace_root: Some(workspace_root.to_owned()),
         ..PluginConfig::default()
     };
-    PluginRegistry::builder()
-        .with_config(config)
-        .with_source(DiscoverySource::User(global_home.join("plugins/packages")))
-        .with_source(DiscoverySource::Workspace(
-            workspace_root.join(".jyowo/plugins/packages"),
-        ))
-        .with_manifest_loader(Arc::new(FileManifestLoader))
-        .build()
-        .map_err(|source| RuntimeConfigError::PluginRegistry { source })
+    let loader = FileManifestLoader;
+    let sources = [
+        DiscoverySource::User(global_home.join("plugins/packages")),
+        DiscoverySource::Workspace(workspace_root.join(".jyowo/plugins/packages")),
+    ]
+    .into_iter()
+    .map(|source| {
+        let report = loader.load_source_report(&source).map_err(|source| {
+            RuntimeConfigError::PluginRegistry {
+                source: source.into(),
+            }
+        })?;
+        Ok(FrozenPluginSource { source, report })
+    })
+    .collect::<Result<Vec<_>, RuntimeConfigError>>()?;
+    Ok(RuntimePluginSnapshot {
+        config,
+        sources,
+        runtime_loaders: Vec::new(),
+    })
+}
+
+fn validate_provider_routes(
+    settings: &ProviderCapabilityRouteSettings,
+    kind: &'static str,
+) -> Result<(), RuntimeConfigError> {
+    for route in &settings.routes {
+        validate_provider_capability_route(route)
+            .map_err(|reason| RuntimeConfigError::Invalid { kind, reason })?;
+    }
+    Ok(())
+}
+
+fn validate_plugin_index_paths(
+    packages_root: &Path,
+    settings: &PluginSettingsFile,
+    kind: &'static str,
+) -> Result<(), RuntimeConfigError> {
+    for record in &settings.records {
+        let package_dir = Path::new(&record.package_dir);
+        if package_dir.components().count() != 1
+            || !matches!(
+                package_dir.components().next(),
+                Some(std::path::Component::Normal(_))
+            )
+        {
+            return Err(RuntimeConfigError::Invalid {
+                kind,
+                reason: "package directory must be a single relative path component".to_owned(),
+            });
+        }
+        validate_existing_directory_chain(packages_root, package_dir, kind)?;
+    }
+    Ok(())
 }
 
 fn validate_agent_profiles(
