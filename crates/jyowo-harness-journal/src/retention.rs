@@ -1,13 +1,16 @@
 //! Retention policy and prune report types.
 //!
 
+#[cfg(feature = "sqlite")]
 use std::collections::HashSet;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "sqlite")]
 use harness_contracts::JournalError;
 
+#[cfg(feature = "sqlite")]
 use crate::{BlobId, BlobRetention, BlobStore, EvidenceRefStore, FileBlobStore, TenantId};
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -67,6 +70,7 @@ impl RetentionEnforcer {
         &self.policy
     }
 
+    #[cfg(feature = "sqlite")]
     pub async fn collect_garbage(
         &self,
         tenant: TenantId,
@@ -86,6 +90,7 @@ impl RetentionEnforcer {
             })
     }
 
+    #[cfg(feature = "sqlite")]
     async fn collect_garbage_with_live_refs(
         &self,
         tenant: TenantId,
@@ -106,6 +111,7 @@ impl RetentionEnforcer {
     }
 }
 
+#[cfg(feature = "sqlite")]
 fn is_collectable(retention: &BlobRetention, created_at: chrono::DateTime<chrono::Utc>) -> bool {
     match retention {
         BlobRetention::TtlDays(days) => {

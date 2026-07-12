@@ -1,3 +1,5 @@
+#![cfg(all(feature = "sqlite", feature = "in-memory"))]
+
 //! Journal-backed evidence payload read guards.
 
 use std::sync::Arc;

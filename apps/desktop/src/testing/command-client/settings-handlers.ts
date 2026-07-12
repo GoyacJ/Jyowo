@@ -1,22 +1,16 @@
 import type {
   DeleteProjectResponse,
   DeleteProviderCapabilityRouteResponse,
-  ListAutomationRunsResponse,
-  ListAutomationsResponse,
   ModelSettingsPageResponse,
   RefreshModelProviderCatalogResponse,
   RequestProviderConfigApiKeyRevealResponse,
-  RunEvalCaseResponse,
   SaveProviderCapabilityRouteResponse,
   SwitchProjectResponse,
 } from '@/shared/tauri/commands'
 
 import { cloneResponse, timestamp, wait } from './base'
 import {
-  fixtureAutomation,
-  fixtureAutomationRun,
   fixtureGetModelUsageSummary,
-  fixtureListEvalCases,
   fixtureListOfficialQuotaSnapshots,
   fixtureListProviderProbeSnapshots,
   fixtureModelProviderCatalog,
@@ -25,7 +19,6 @@ import {
   fixtureRefreshOfficialQuota,
   fixtureSaveProviderSettings,
   fixtureValidateProviderSettings,
-  normalizeAutomationSpec,
 } from './settings'
 import type { TestCommandClientState, TestCommandHandlers } from './state'
 

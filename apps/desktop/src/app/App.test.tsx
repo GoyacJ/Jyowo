@@ -383,7 +383,6 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Models' })).toBeInTheDocument()
     expect(await screen.findByRole('heading', { name: 'No configured models' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Model configuration' })).not.toBeInTheDocument()
-
   })
 
   it('resolves system theme from the operating system preference', () => {

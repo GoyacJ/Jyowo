@@ -285,21 +285,9 @@ const createConversationResponseSchema = z
   })
   .strict()
 
-const getConversationRequestSchema = z
-  .object({
-    conversationId: z.string().min(1),
-  })
-  .strict()
-
 const getConversationResponseSchema = z
   .object({
     conversation: conversationSchema,
-  })
-  .strict()
-
-const deleteConversationRequestSchema = z
-  .object({
-    conversationId: z.string().min(1),
   })
   .strict()
 
@@ -417,13 +405,6 @@ const attachmentReferenceSchema = z.union([
   attachmentReferenceSnakeSchema,
 ])
 
-const createAttachmentFromPathRequestSchema = z
-  .object({
-    conversationId: z.string().trim().min(1).optional(),
-    path: z.string().trim().min(1),
-  })
-  .strict()
-
 const createAttachmentFromPathResponseSchema = z
   .object({
     attachment: attachmentReferenceSchema,
@@ -456,12 +437,6 @@ const listReferenceCandidatesRequestSchema = z
   })
   .strict()
 
-const cancelRunRequestSchema = z
-  .object({
-    runId: z.string().min(1),
-  })
-  .strict()
-
 const cancelRunResponseSchema = z
   .object({
     runId: z.string().min(1),
@@ -478,15 +453,6 @@ const maxEvidenceReadBytes = 64 * 1024
 const evidenceContentHashSchema = z.string().regex(/^[0-9a-f]{64}$/)
 const evidenceHashAlgorithmSchema = z.literal('blake3')
 const evidenceExportKindSchema = z.enum(['artifact-content', 'command-output', 'diff-patch'])
-
-const getConversationCommandOutputRequestSchema = z
-  .object({
-    conversationId: z.string().min(1),
-    cursor: z.string().min(1).optional(),
-    fullOutputRef: z.string().min(1),
-    maxBytes: z.number().int().positive().max(maxEvidenceReadBytes).optional(),
-  })
-  .strict()
 
 const getConversationCommandOutputResponseSchema = z
   .object({
@@ -507,15 +473,6 @@ const getConversationCommandOutputResponseSchema = z
     returnedBytes: z.number().int().nonnegative(),
     totalBytes: z.number().int().nonnegative(),
     truncated: z.boolean(),
-  })
-  .strict()
-
-const getConversationDiffPatchRequestSchema = z
-  .object({
-    conversationId: z.string().min(1),
-    cursor: z.string().min(1).optional(),
-    fullPatchRef: z.string().min(1),
-    maxBytes: z.number().int().positive().max(maxEvidenceReadBytes).optional(),
   })
   .strict()
 
@@ -541,15 +498,6 @@ const getConversationDiffPatchResponseSchema = z
   })
   .strict()
 
-const getArtifactRevisionContentRequestSchema = z
-  .object({
-    contentRef: z.string().min(1),
-    conversationId: z.string().min(1),
-    cursor: z.string().min(1).optional(),
-    maxBytes: z.number().int().positive().max(maxEvidenceReadBytes).optional(),
-  })
-  .strict()
-
 const getArtifactRevisionContentResponseSchema = z
   .object({
     artifactId: z.string().optional(),
@@ -571,14 +519,6 @@ const getArtifactRevisionContentResponseSchema = z
     revisionId: z.string().optional(),
     totalBytes: z.number().int().nonnegative(),
     truncated: z.boolean(),
-  })
-  .strict()
-
-const exportConversationEvidenceRequestSchema = z
-  .object({
-    conversationId: z.string().min(1),
-    kind: evidenceExportKindSchema,
-    refId: z.string().min(1),
   })
   .strict()
 
@@ -1355,13 +1295,6 @@ const conversationInspectorSelectionSchema = z.discriminatedUnion('kind', [
     })
     .strict(),
 ])
-
-const getConversationInspectorItemRequestSchema = z
-  .object({
-    conversationId: z.string().min(1),
-    selection: conversationInspectorSelectionSchema,
-  })
-  .strict()
 
 const conversationInspectorItemSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('empty') }).strict(),
@@ -2366,21 +2299,10 @@ const saveAutomationResponseSchema = z
     status: z.literal('saved'),
   })
   .strict()
-const deleteAutomationRequestSchema = z
-  .object({
-    id: automationIdSchema,
-  })
-  .strict()
 const deleteAutomationResponseSchema = z
   .object({
     id: automationIdSchema,
     status: z.literal('deleted'),
-  })
-  .strict()
-const setAutomationEnabledRequestSchema = z
-  .object({
-    enabled: z.boolean(),
-    id: automationIdSchema,
   })
   .strict()
 const setAutomationEnabledResponseSchema = z
@@ -2389,15 +2311,9 @@ const setAutomationEnabledResponseSchema = z
     status: z.literal('saved'),
   })
   .strict()
-const runAutomationNowRequestSchema = deleteAutomationRequestSchema
 const runAutomationNowResponseSchema = z
   .object({
     record: automationRunRecordSchema,
-  })
-  .strict()
-const listAutomationRunsRequestSchema = z
-  .object({
-    automationId: automationIdSchema.optional(),
   })
   .strict()
 const listAutomationRunsResponseSchema = z
@@ -3504,12 +3420,6 @@ const listEvalCasesResponseSchema = z
   })
   .strict()
 
-const runEvalCaseRequestSchema = z
-  .object({
-    caseId: evalCaseIdSchema,
-  })
-  .strict()
-
 const runEvalCaseResponseSchema = z
   .object({
     case: evalCaseSchema,
@@ -3544,12 +3454,6 @@ const switchProjectRequestSchema = z
   })
   .strict()
 
-const projectPathRequestSchema = z
-  .object({
-    path: z.string().min(1),
-  })
-  .strict()
-
 const moveProjectRequestSchema = z
   .object({
     direction: z.enum(['up', 'down']),
@@ -3572,13 +3476,6 @@ const switchProjectResponseSchema = z
 
 const deleteProjectRequestSchema = z
   .object({
-    path: z.string().min(1),
-  })
-  .strict()
-
-const deleteProjectConversationRequestSchema = z
-  .object({
-    conversationId: z.string().min(1),
     path: z.string().min(1),
   })
   .strict()
@@ -3608,19 +3505,15 @@ export type SwitchProjectResponse = z.infer<typeof switchProjectResponseSchema>
 export type DeleteProjectResponse = z.infer<typeof deleteProjectResponseSchema>
 export type CreateConversationResponse = z.infer<typeof createConversationResponseSchema>
 export type GetConversationResponse = z.infer<typeof getConversationResponseSchema>
-type GetConversationCommandOutputRequest = z.infer<typeof getConversationCommandOutputRequestSchema>
 export type GetConversationCommandOutputResponse = z.infer<
   typeof getConversationCommandOutputResponseSchema
 >
-type GetConversationDiffPatchRequest = z.infer<typeof getConversationDiffPatchRequestSchema>
 export type GetConversationDiffPatchResponse = z.infer<
   typeof getConversationDiffPatchResponseSchema
 >
-type GetArtifactRevisionContentRequest = z.infer<typeof getArtifactRevisionContentRequestSchema>
 export type GetArtifactRevisionContentResponse = z.infer<
   typeof getArtifactRevisionContentResponseSchema
 >
-type ExportConversationEvidenceRequest = z.infer<typeof exportConversationEvidenceRequestSchema>
 export type ExportConversationEvidenceResponse = z.infer<
   typeof exportConversationEvidenceResponseSchema
 >
@@ -3683,7 +3576,6 @@ export type ConversationTurn = z.infer<typeof conversationTurnSchema>
 export type PageConversationWorktreeResponse = z.infer<typeof conversationWorktreePageSchema>
 export type ConversationInspectorSelection = z.infer<typeof conversationInspectorSelectionSchema>
 export type ConversationInspectorItem = z.infer<typeof conversationInspectorItemSchema>
-type GetConversationInspectorItemRequest = z.infer<typeof getConversationInspectorItemRequestSchema>
 export type GetConversationInspectorItemResponse = z.infer<
   typeof getConversationInspectorItemResponseSchema
 >

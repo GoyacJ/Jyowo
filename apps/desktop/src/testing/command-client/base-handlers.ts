@@ -7,10 +7,7 @@ import {
 } from './base'
 import type { TestCommandClientState, TestCommandHandlers } from './state'
 
-type BaseCommandKeys =
-  | 'getAppInfo'
-  | 'getRuntimeExecutionStatus'
-  | 'listRuntimeTools'
+type BaseCommandKeys = 'getAppInfo' | 'getRuntimeExecutionStatus' | 'listRuntimeTools'
 
 export function createBaseCommandHandlers(
   state: TestCommandClientState,

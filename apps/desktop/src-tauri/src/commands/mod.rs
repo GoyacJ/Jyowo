@@ -12,12 +12,12 @@ use chrono::{DateTime, NaiveDate, Utc};
 use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
 use harness_contracts::{
     validate_agent_profile, validate_provider_capability_route, AgentCapabilityUnavailableReason,
-    AgentProfile, AgentProfileScope, AutomationRunRecord, AutomationSpec,
-    BackgroundAgentState, CapabilityRouteKind, ConversationInspectorSelection,
-    DiagnosticsRawOutput, DiagnosticsRunRequest, DiagnosticsRunnerCap, DiagnosticsRunnerKind,
-    ListProviderCapabilityRouteOptionsResponse, LocalIsolationTag,
-    PluginConfigUpdate, PluginDetail, PluginId, PluginInstallReport, PluginOperationResult,
-    PluginOperationStatus, PluginSummary, ProviderCapabilityRoute, ProviderCapabilityRouteOption,
+    AgentProfile, AgentProfileScope, AutomationRunRecord, AutomationSpec, BackgroundAgentState,
+    CapabilityRouteKind, ConversationInspectorSelection, DiagnosticsRawOutput,
+    DiagnosticsRunRequest, DiagnosticsRunnerCap, DiagnosticsRunnerKind,
+    ListProviderCapabilityRouteOptionsResponse, LocalIsolationTag, PluginConfigUpdate,
+    PluginDetail, PluginId, PluginInstallReport, PluginOperationResult, PluginOperationStatus,
+    PluginSummary, ProviderCapabilityRoute, ProviderCapabilityRouteOption,
     ProviderCapabilityRouteSettings, ProviderProbeSnapshot, ProviderServiceAdapterAvailability,
     RejectionReason, SandboxMode, TrustLevel, WorkspaceAccess,
 };
@@ -78,9 +78,9 @@ use crate::skill_catalog::{
 
 mod agents;
 mod app;
-mod automations;
 #[allow(dead_code)]
 mod artifacts;
+mod automations;
 #[allow(dead_code)]
 mod constants;
 mod contracts;
@@ -120,9 +120,9 @@ pub use agents::{
 pub use app::get_app_info_payload;
 pub use contracts::{
     AppInfoPayload, ArtifactRevisionPayload, ArtifactSummaryPayload, AttachmentBlobRefPayload,
-    AttachmentReferencePayload, BackgroundAgentActionResponse,
-    BackgroundAgentDeleteResponse, BackgroundAgentIdRequest, BackgroundAgentPayload,
-    BrowserMcpPresetId, BrowserMcpPresetSummaryPayload, CancelRunRequest, CancelRunResponse,
+    AttachmentReferencePayload, BackgroundAgentActionResponse, BackgroundAgentDeleteResponse,
+    BackgroundAgentIdRequest, BackgroundAgentPayload, BrowserMcpPresetId,
+    BrowserMcpPresetSummaryPayload, CancelRunRequest, CancelRunResponse,
     ClearMcpDiagnosticsRequest, ClearMcpDiagnosticsResponse, ContextDecisionPayload,
     ContextFilePayload, ContextReferencePayload, ConversationMessagePayload,
     ConversationMetadataFile, ConversationMetadataRecord, ConversationMetadataState,
@@ -265,8 +265,8 @@ pub use skills::{
     set_skill_enabled_with_runtime_state, start_skill_catalog_install_task_with_runtime_state,
 };
 pub use stores::{
-    DesktopMcpDiagnosticStore, DesktopModelUsageRollupStore,
-    DesktopPluginStore, DesktopProviderCatalogSnapshotStore, DesktopProviderDiagnosticsStore,
+    DesktopMcpDiagnosticStore, DesktopModelUsageRollupStore, DesktopPluginStore,
+    DesktopProviderCatalogSnapshotStore, DesktopProviderDiagnosticsStore,
     DesktopProviderQuotaCacheStore, DesktopRuntimeState, DesktopSkillStore,
 };
 

@@ -1,3 +1,5 @@
+#![cfg(feature = "sqlite")]
+
 use harness_contracts::{ClientId, CommandId, TaskId};
 use harness_journal::{AcceptedCommand, CommandOutcome, NewTaskEvent, TaskStore};
 use serde_json::json;

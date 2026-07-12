@@ -43,12 +43,14 @@ export function TaskTimeline({
   const latest = orderedItems.at(-1)
   const first = orderedItems.at(0)
   const blocks = createBlocks(coalesceAssistantItems(orderedItems))
-  const { endRef, jumpToLatest, onScroll, showJumpToLatest, viewportRef } =
-    useTaskScrollAnchor(latest ? `${latest.id}:${latest.incomplete}` : null, {
+  const { endRef, jumpToLatest, onScroll, showJumpToLatest, viewportRef } = useTaskScrollAnchor(
+    latest ? `${latest.id}:${latest.incomplete}` : null,
+    {
       prependAnchorKey: first?.id,
       isStreamingUpdate: latest?.incomplete,
       streamingScrollTick: latest?.incomplete ? `${latest.id}:${latest.summary.length}` : undefined,
-    })
+    },
+  )
   const useVirtualList = blocks.length >= virtualListThreshold
   const rowVirtualizer = useVirtualizer({
     count: useVirtualList ? blocks.length : 0,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-const validEvidenceContentHash = 'a'.repeat(64)
+const _validEvidenceContentHash = 'a'.repeat(64)
 const tauriListenSpy = vi.hoisted(() => vi.fn())
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -60,8 +60,6 @@ import {
   renameProject,
   requestProviderConfigApiKeyReveal,
   restartMcpServer,
-  type SaveAutomationRequest,
-  type StartRunRequest,
   saveAgentProfile,
   saveBrowserMcpPreset,
   saveMcpServer,
@@ -83,9 +81,9 @@ import {
 } from './commands'
 import { getCommandErrorMessage } from './errors'
 
-const validAttachmentId =
+const _validAttachmentId =
   'attachment-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
-const validBlobRef = {
+const _validBlobRef = {
   contentHash: Array.from({ length: 32 }, () => 1),
   contentType: 'text/plain',
   id: '01J00000000000000000000000',
@@ -113,7 +111,7 @@ const openAiModelDescriptor = {
   modelId: 'gpt-5.4-mini',
   runtimeStatus: { kind: 'runnable' },
 } as const
-const openAiRunModelSnapshot = {
+const _openAiRunModelSnapshot = {
   modelConfigId: 'provider-config-001',
   providerId: 'openai',
   modelId: openAiModelDescriptor.modelId,
@@ -122,7 +120,7 @@ const openAiRunModelSnapshot = {
 } as const
 
 describe('CommandClient', () => {
-  const attachmentPreviewId =
+  const _attachmentPreviewId =
     'attachment-1111111111111111111111111111111111111111111111111111111111111111'
 
   it('normalizes get_app_info through Zod validation', async () => {
@@ -146,7 +144,6 @@ describe('CommandClient', () => {
     })
     expect(invoke).toHaveBeenCalledWith('get_app_info')
   })
-
 
   it('normalizes execution settings with context compression ratio', async () => {
     const agentCapabilities = {
@@ -270,9 +267,6 @@ describe('CommandClient', () => {
     ).rejects.toBeInstanceOf(TauriCommandPayloadError)
   })
 
-
-
-
   it('throws a schema error for invalid IPC payloads', async () => {
     const client = createInvokeCommandClient(vi.fn().mockResolvedValue({ name: 'Jyowo' }))
 
@@ -311,12 +305,6 @@ describe('CommandClient', () => {
     )
     expect(getCommandErrorMessage('')).toBe('Unknown command error')
   })
-
-
-
-
-
-
 
   it('models project deletion through Zod validation', async () => {
     const invoke = vi.fn().mockResolvedValue({
@@ -368,43 +356,6 @@ describe('CommandClient', () => {
     })
   })
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   it('moves projects through Tauri with a direction', async () => {
     const invoke = vi.fn().mockResolvedValue({
       activePath: '/repo/alpha',
@@ -440,8 +391,6 @@ describe('CommandClient', () => {
     })
     expect(invoke).toHaveBeenCalledWith('move_project', { direction: 'up', path: '/repo/beta' })
   })
-
-
 
   it('lists model provider catalog and saved provider profiles', async () => {
     const invoke = vi.fn(async (command: string) => {
@@ -2850,8 +2799,4 @@ describe('agent orchestration contracts', () => {
     )
     expect(invoke).not.toHaveBeenCalled()
   })
-
-
-
-
 })

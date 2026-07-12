@@ -1,3 +1,5 @@
+#![cfg(all(feature = "sqlite", feature = "in-memory"))]
+
 //! Evidence ref retention read guards.
 
 use std::sync::Arc;

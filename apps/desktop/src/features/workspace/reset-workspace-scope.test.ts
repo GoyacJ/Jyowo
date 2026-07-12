@@ -12,7 +12,7 @@ describe('onProjectWorkspaceChanged', () => {
   it('clears run state, workspace-scoped caches, and navigates to welcome', async () => {
     const queryClient = new QueryClient()
     const navigate = vi.fn(async () => undefined)
-    const workspacePath = '/Users/goya/Repo/Git/Jyowo'
+    const _workspacePath = '/Users/goya/Repo/Git/Jyowo'
 
     uiStore.getState().setActiveRun({
       conversationId: 'conversation-runtime-001',

@@ -1,3 +1,5 @@
+#![cfg(all(feature = "sqlite", feature = "in-memory"))]
+
 //! Tests for evidence ref store.
 
 use harness_contracts::*;

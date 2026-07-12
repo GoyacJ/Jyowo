@@ -1,13 +1,5 @@
 import type {
   AppInfo,
-  CommandClient,
-  CreateAttachmentFromPathResponse,
-  DeleteAutomationResponse,
-  ExportSupportBundleResponse,
-  GetArtifactMediaPreviewResponse,
-  GetAttachmentMediaPreviewResponse,
-  GetContextSnapshotResponse,
-  GetConversationResponse,
   GetExecutionSettingsResponse,
   GetMcpServerConfigResponse,
   GetModelUsageSummaryResponse,
@@ -17,27 +9,17 @@ import type {
   GetSkillCatalogFileResponse,
   GetSkillDetailResponse,
   GetSkillFileResponse,
-  HarnessHealthcheck,
   InstallSkillFromCatalogResponse,
-  ListActivityResponse,
-  ListArtifactsResponse,
-  ListAutomationRunsResponse,
-  ListAutomationsResponse,
-  ListBackgroundAgentsResponse,
   ListBrowserMcpPresetsResponse,
-  ListConversationsResponse,
-  ListEvalCasesResponse,
   ListMcpDiagnosticsResponse,
   ListMcpServersResponse,
   ListOfficialQuotaSnapshotsResponse,
   ListPluginsResponse,
-  ListProjectConversationGroupsResponse,
   ListProjectsResponse,
   ListProviderCapabilityRouteOptionsResponse,
   ListProviderCapabilityRoutesResponse,
   ListProviderProbeSnapshotsResponse,
   ListProviderSettingsResponse,
-  ListReferenceCandidatesResponse,
   ListRuntimeToolsResponse,
   ListSkillCatalogEntriesResponse,
   ListSkillCatalogInstallTasksResponse,
@@ -45,21 +27,16 @@ import type {
   ListSkillsResponse,
   ModelProviderCatalogResponse,
   ModelSettingsPageResponse,
-  PageConversationWorktreeResponse,
   PluginInstallReport,
   PluginOperationResult,
   ProbeProviderConfigResponse,
   RefreshModelProviderCatalogResponse,
   RefreshOfficialQuotaResponse,
-  ReplayTimelineResponse,
   RequestProviderConfigApiKeyRevealResponse,
-  RunAutomationNowResponse,
   RuntimeExecutionStatus,
-  SaveAutomationResponse,
   SaveBrowserMcpPresetResponse,
   SaveMcpServerResponse,
   SaveProviderSettingsResponse,
-  SetAutomationEnabledResponse,
   SetExecutionSettingsResponse,
   SetProjectPluginsEnabledResponse,
   SubscribeMcpDiagnosticsResponse,
@@ -155,12 +132,6 @@ export function wait(delayMs: number | undefined) {
     window.setTimeout(resolve, delayMs)
   })
 }
-
-type TestCommandResponseOverride<TMethod> = TMethod extends (
-  ...args: infer Args
-) => Promise<infer Response>
-  ? Response | ((...args: Args) => Promise<Response> | Response)
-  : never
 
 function isResponseOverrideHandler<Args extends unknown[], Response>(
   override: Response | ((...args: Args) => Promise<Response> | Response) | undefined,

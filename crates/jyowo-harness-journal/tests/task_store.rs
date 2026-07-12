@@ -1,3 +1,5 @@
+#![cfg(feature = "sqlite")]
+
 use chrono::Utc;
 use harness_contracts::{ClientId, CommandId, RunSegmentId, RunTerminalReason, TaskId};
 use harness_journal::{

@@ -1,3 +1,5 @@
+#![cfg(feature = "sqlite")]
+
 use harness_contracts::{
     ClientId, CommandId, PermissionMode, QueueItemId, RunId, RunSegmentId, SessionId, TaskId,
     TaskState, WorkspaceMode, WorkspaceSelection,

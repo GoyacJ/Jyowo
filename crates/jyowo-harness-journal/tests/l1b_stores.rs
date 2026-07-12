@@ -633,6 +633,7 @@ async fn file_blob_store_rejects_hash_mismatch_and_uses_prefixed_paths() {
         .exists());
 }
 
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn retention_enforcer_collects_unreferenced_expired_file_blobs() {
     let tenant = TenantId::SINGLE;

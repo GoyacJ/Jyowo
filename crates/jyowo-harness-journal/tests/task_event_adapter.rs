@@ -1,3 +1,5 @@
+#![cfg(all(feature = "sqlite", feature = "blob-file"))]
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 

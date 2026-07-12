@@ -1,3 +1,5 @@
+#![cfg(all(feature = "sqlite", feature = "blob-file"))]
+
 use std::sync::Arc;
 
 use harness_contracts::{

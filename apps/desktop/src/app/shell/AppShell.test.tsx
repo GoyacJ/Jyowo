@@ -190,8 +190,6 @@ describe('AppShell', () => {
     })
   })
 
-
-
   it('reflects the selected task generated current run in the status bar', () => {
     const taskId = '01J00000000000000000000041'
     window.history.pushState(null, '', `/?taskId=${taskId}`)
@@ -225,7 +223,6 @@ describe('AppShell', () => {
       within(screen.getByRole('region', { name: 'Status' })).getByText('In progress'),
     ).toBeInTheDocument()
   })
-
 
   it('reflects active run state in the status bar from ui store', async () => {
     act(() => {
