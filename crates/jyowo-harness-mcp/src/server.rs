@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
     net::SocketAddr,
+    path::Path,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -1009,11 +1010,12 @@ impl McpServerAdapter {
             Err(error) => return Ok(tool_error_result(error.to_string())),
         };
 
+        let output_schema = tool.descriptor().output_schema.clone();
         let stream = match tool.execute_authorized(authorized, context).await {
             Ok(stream) => stream,
             Err(error) => return Ok(tool_error_result(error.to_string())),
         };
-        let result = collect_tool_stream(stream).await;
+        let result = collect_tool_stream(stream, output_schema.as_ref()).await;
         serde_json::to_value(result).map_err(|_| internal_jsonrpc_error())
     }
 
@@ -2154,38 +2156,59 @@ fn tool_descriptor_to_mcp(descriptor: &ToolDescriptor) -> McpToolDescriptor {
     }
 }
 
-async fn collect_tool_stream(mut stream: harness_tool::ToolStream) -> McpToolResult {
+async fn collect_tool_stream(
+    mut stream: harness_tool::ToolStream,
+    output_schema: Option<&Value>,
+) -> McpToolResult {
     let mut content = Vec::new();
     let mut structured = Vec::new();
     while let Some(event) = stream.next().await {
         match event {
             ToolEvent::Progress(_) => {}
-            ToolEvent::Partial(part) => {
-                let mapped = message_part_to_mcp(part);
-                content.extend(mapped.content);
-                if let Some(value) = mapped.structured_content {
-                    structured.push(value);
+            ToolEvent::Partial(part) => match part {
+                MessagePart::ToolResult {
+                    content: result, ..
+                } => append_tool_result(result, &mut content, &mut structured),
+                other => {
+                    append_mcp_result(message_part_to_mcp(other), &mut content, &mut structured)
                 }
-            }
+            },
             ToolEvent::Journal(_) => {}
             ToolEvent::Final(result) => {
-                let mapped = tool_result_to_mcp(result);
-                content.extend(mapped.content);
-                if let Some(value) = mapped.structured_content {
-                    structured.push(value);
-                }
-                return McpToolResult {
-                    content,
-                    structured_content: combine_structured(structured),
-                    is_error: false,
-                    meta: BTreeMap::new(),
-                };
+                append_tool_result(result, &mut content, &mut structured);
+                return finalize_tool_result(content, structured, output_schema);
             }
             ToolEvent::Error(error) => return mcp_error_result(error.to_string()),
         }
     }
 
     mcp_error_result("tool stream ended without final result")
+}
+
+fn append_tool_result(
+    result: ToolResult,
+    content: &mut Vec<McpContent>,
+    structured: &mut Vec<serde_json::Map<String, Value>>,
+) {
+    match result {
+        ToolResult::Mixed(parts) => {
+            for part in parts {
+                append_mcp_result(tool_result_part_to_mcp(part), content, structured);
+            }
+        }
+        other => append_mcp_result(tool_result_to_mcp(other), content, structured),
+    }
+}
+
+fn append_mcp_result(
+    mapped: McpToolResult,
+    content: &mut Vec<McpContent>,
+    structured: &mut Vec<serde_json::Map<String, Value>>,
+) {
+    content.extend(mapped.content);
+    if let Some(value) = mapped.structured_content {
+        structured.push(value);
+    }
 }
 
 fn tool_result_to_mcp(result: ToolResult) -> McpToolResult {
@@ -2257,11 +2280,32 @@ fn tool_result_part_to_mcp(part: ToolResultPart) -> McpToolResult {
             is_error: false,
             meta: BTreeMap::new(),
         },
-        ToolResultPart::Reference { title, summary, .. } => McpToolResult::text(
-            summary
-                .or(title)
-                .unwrap_or_else(|| "Tool result reference".to_owned()),
-        ),
+        ToolResultPart::Reference {
+            reference_kind,
+            title,
+            summary,
+        } => {
+            let identity = match reference_kind {
+                ReferenceKind::File { path, line_range } => {
+                    let mut identity = format!("file:{}", encode_path_identity(&path));
+                    if let Some((start, end)) = line_range {
+                        identity.push_str(&format!("#L{start}-L{end}"));
+                    }
+                    identity
+                }
+                ReferenceKind::Transcript(transcript) => format!(
+                    "transcript:{}#offset={}-{}",
+                    transcript.blob.id, transcript.from_offset.0, transcript.to_offset.0
+                ),
+                ReferenceKind::ToolUse { tool_use_id } => format!("tool-use:{tool_use_id}"),
+                ReferenceKind::Memory { memory_id } => format!("memory:{memory_id}"),
+                other => format!(
+                    "reference:{}",
+                    serde_json::to_string(&other).unwrap_or_else(|_| format!("{other:?}"))
+                ),
+            };
+            McpToolResult::text(reference_text(identity, title, summary))
+        }
         ToolResultPart::Table {
             headers,
             rows,
@@ -2297,6 +2341,35 @@ fn tool_result_part_to_mcp(part: ToolResultPart) -> McpToolResult {
         }
         _ => McpToolResult::text("Unsupported tool result part"),
     }
+}
+
+fn reference_text(identity: String, title: Option<String>, summary: Option<String>) -> String {
+    let mut text = identity;
+    if let Some(title) = title {
+        text.push_str(" | title: ");
+        text.push_str(&title);
+    }
+    if let Some(summary) = summary {
+        text.push_str(" | summary: ");
+        text.push_str(&summary);
+    }
+    text
+}
+
+fn encode_path_identity(path: &Path) -> String {
+    let mut encoded = String::with_capacity(path.as_os_str().as_encoded_bytes().len());
+    for &byte in path.as_os_str().as_encoded_bytes() {
+        if byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':' | b'\\')
+        {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(b"0123456789ABCDEF"[usize::from(byte >> 4)]));
+            encoded.push(char::from(b"0123456789ABCDEF"[usize::from(byte & 0x0f)]));
+        }
+    }
+    encoded
 }
 
 fn message_part_to_mcp(part: MessagePart) -> McpToolResult {
@@ -2337,11 +2410,63 @@ fn combine_structured(
     match values.len() {
         0 => None,
         1 => values.pop(),
-        _ => Some(serde_json::Map::from_iter([(
-            "parts".to_owned(),
-            Value::Array(values.into_iter().map(Value::Object).collect()),
-        )])),
+        _ => None,
     }
+}
+
+fn finalize_tool_result(
+    mut content: Vec<McpContent>,
+    structured: Vec<serde_json::Map<String, Value>>,
+    output_schema: Option<&Value>,
+) -> McpToolResult {
+    let structured_count = structured.len();
+    let structured_content = combine_structured(structured);
+    let output_error = output_schema.and_then(|schema| match &structured_content {
+        Some(value) => validate_output_schema(schema, value).err(),
+        None => Some(format!(
+            "tool output schema validation failed: expected exactly one structured object, got {structured_count}"
+        )),
+    });
+
+    if let Some(error) = output_error {
+        content.push(McpContent::text(error));
+        return McpToolResult {
+            content,
+            structured_content: None,
+            is_error: true,
+            meta: BTreeMap::new(),
+        };
+    }
+
+    McpToolResult {
+        content,
+        structured_content,
+        is_error: false,
+        meta: BTreeMap::new(),
+    }
+}
+
+fn validate_output_schema(
+    schema: &Value,
+    structured: &serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    let validator = if schema.get("$schema").is_some() {
+        jsonschema::validator_for(schema)
+    } else {
+        jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(schema)
+    }
+    .map_err(|error| format!("failed to compile tool output schema: {error}"))?;
+    let value = Value::Object(structured.clone());
+    if validator.is_valid(&value) {
+        return Ok(());
+    }
+    let details = validator.iter_errors(&value).next().map_or_else(
+        || "tool output does not match output schema".to_owned(),
+        |error| error.to_string(),
+    );
+    Err(format!("tool output schema validation failed: {details}"))
 }
 
 fn tool_error_result(message: impl Into<String>) -> Value {
