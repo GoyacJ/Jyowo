@@ -86,6 +86,24 @@ describe('TaskWorkbench', () => {
     expect(screen.queryByText('Artifact is unavailable')).not.toBeInTheDocument()
   })
 
+  it('clears incompatible event identity when switching panels', () => {
+    uiStore.setState({ taskWorkbenchSelection: selection('commands', { blobId }) })
+    render(
+      <TaskWorkbench
+        client={{ readBlob: vi.fn().mockResolvedValue(blob('output')) }}
+        events={events}
+        projection={projection}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Changes' }))
+
+    expect(uiStore.getState().taskWorkbenchSelection).toEqual({
+      panel: 'changes',
+      taskId,
+    })
+  })
+
   it('hides decorative workbench icons from assistive technology', () => {
     const { container } = render(
       <TaskWorkbench client={{ readBlob: vi.fn() }} events={events} projection={projection} />,

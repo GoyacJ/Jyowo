@@ -81,13 +81,11 @@ export function TaskWorkbench({
   if (mode === 'closed') return null
 
   function selectPanel(panel: TaskWorkbenchPanel) {
-    setSelection({
-      blobId: panel === activePanel ? selection?.blobId : undefined,
-      eventId: selection?.eventId ?? projection.taskId,
-      panel,
-      segmentId: selection?.segmentId,
-      taskId: projection.taskId,
-    })
+    setSelection(
+      panel === activePanel && selection
+        ? { ...selection, panel }
+        : { panel, taskId: projection.taskId },
+    )
   }
 
   return (
@@ -205,8 +203,12 @@ function SelectionIdentity({ selection }: { selection: TaskWorkbenchSelection })
           <dd className="truncate">{selection.segmentId}</dd>
         </>
       ) : null}
-      <dt>Event</dt>
-      <dd className="truncate">{selection.eventId}</dd>
+      {selection.eventId ? (
+        <>
+          <dt>Event</dt>
+          <dd className="truncate">{selection.eventId}</dd>
+        </>
+      ) : null}
     </dl>
   )
 }

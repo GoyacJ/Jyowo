@@ -14,7 +14,7 @@ export type TaskWorkbenchMode = 'closed' | 'inspector' | 'collaboration'
 
 export type TaskWorkbenchSelection = {
   blobId?: string
-  eventId: string
+  eventId?: string
   panel: TaskWorkbenchPanel
   segmentId?: string
   taskId: string
