@@ -1,4 +1,9 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    io::{self, Write},
+    sync::Arc,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -13,6 +18,7 @@ use harness_tool::{
     action_plan_from_permission_check, AuthorizedToolInput, PermissionCheck, Tool, ToolContext,
     ToolEvent, ToolProgress, ToolStream, ValidationError,
 };
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
@@ -407,7 +413,7 @@ fn into_tool_result(result: McpToolResult) -> ToolResult {
     }
     if let Some(value) = result.structured_content {
         parts.push(ToolResultPart::Structured {
-            value,
+            value: Value::Object(value),
             schema_ref: None,
         });
     }
@@ -426,14 +432,170 @@ fn into_tool_result(result: McpToolResult) -> ToolResult {
 }
 
 fn result_error_message(result: &McpToolResult) -> String {
-    result
+    const MAX_ERROR_MESSAGE_BYTES: usize = 16 * 1024;
+    const MAX_SUMMARY_BYTES: usize = 2 * 1024;
+    const DETAILS_PREFIX: &str = "\nMCP error details: ";
+
+    let summary = result
         .content
         .iter()
         .find_map(|content| match content {
-            McpContent::Text { text, .. } => Some(text.clone()),
+            McpContent::Text { text, .. } => Some(text.as_str()),
             _ => None,
         })
-        .unwrap_or_else(|| "mcp tool returned an error".to_owned())
+        .unwrap_or("mcp tool returned an error");
+    let summary = truncate_utf8(summary, MAX_SUMMARY_BYTES, " [truncated]");
+    let details_value = McpToolErrorDetails {
+        content: &result.content,
+        structured_content: result.structured_content.as_ref(),
+        meta: &result.meta,
+    };
+    let details_budget = MAX_ERROR_MESSAGE_BYTES
+        .saturating_sub(summary.len())
+        .saturating_sub(DETAILS_PREFIX.len());
+    let (details, details_truncated) = json_prefix(&details_value, details_budget);
+
+    if !details_truncated {
+        return format!("{summary}{DETAILS_PREFIX}{details}");
+    }
+
+    // A JSON prefix can at most double when encoded as a JSON string because quotes and
+    // backslashes are escaped. Split the remaining budget across the three protocol fields.
+    let content_types = result
+        .content
+        .iter()
+        .take(8)
+        .map(|content| truncate_utf8(content_type_name(content), 32, "..."))
+        .collect();
+    let preview_budget = details_budget.saturating_sub(2_560) / 6;
+    let (content_preview, _) = json_prefix(&result.content, preview_budget);
+    let structured_content_preview = result
+        .structured_content
+        .as_ref()
+        .map(|content| json_prefix(content, preview_budget).0);
+    let meta_preview =
+        (!result.meta.is_empty()).then(|| json_prefix(&result.meta, preview_budget).0);
+    let truncated = serde_json::to_string(&TruncatedMcpToolErrorDetails {
+        truncated: true,
+        content_types,
+        content_types_truncated: result.content.len() > 8,
+        content_preview,
+        structured_content_preview,
+        meta_preview,
+    })
+    .expect("truncated MCP tool error details serialize");
+    debug_assert!(truncated.len() <= details_budget);
+    format!("{summary}{DETAILS_PREFIX}{truncated}")
+}
+
+#[derive(Serialize)]
+struct McpToolErrorDetails<'a> {
+    content: &'a [McpContent],
+    #[serde(rename = "structuredContent", skip_serializing_if = "Option::is_none")]
+    structured_content: Option<&'a serde_json::Map<String, Value>>,
+    #[serde(rename = "_meta", skip_serializing_if = "BTreeMap::is_empty")]
+    meta: &'a BTreeMap<String, Value>,
+}
+
+#[derive(Serialize)]
+struct TruncatedMcpToolErrorDetails {
+    truncated: bool,
+    #[serde(rename = "contentTypes")]
+    content_types: Vec<String>,
+    #[serde(
+        rename = "contentTypesTruncated",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    content_types_truncated: bool,
+    #[serde(rename = "contentPreview")]
+    content_preview: String,
+    #[serde(
+        rename = "structuredContentPreview",
+        skip_serializing_if = "Option::is_none"
+    )]
+    structured_content_preview: Option<String>,
+    #[serde(rename = "_metaPreview", skip_serializing_if = "Option::is_none")]
+    meta_preview: Option<String>,
+}
+
+fn content_type_name(content: &McpContent) -> &str {
+    match content {
+        McpContent::Text { .. } => "text",
+        McpContent::Image { .. } => "image",
+        McpContent::Audio { .. } => "audio",
+        McpContent::ResourceLink { .. } => "resource_link",
+        McpContent::Resource { .. } => "resource",
+        McpContent::Unknown(value) => value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown"),
+    }
+}
+
+fn json_prefix<T>(value: &T, limit: usize) -> (String, bool)
+where
+    T: Serialize + ?Sized,
+{
+    let mut writer = LimitedWriter::new(limit);
+    let result = serde_json::to_writer(&mut writer, value);
+    let truncated = writer.truncated;
+    if let Err(error) = result {
+        assert!(truncated, "MCP error detail serialization failed: {error}");
+    }
+    (
+        String::from_utf8_lossy(&writer.bytes).into_owned(),
+        truncated,
+    )
+}
+
+struct LimitedWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+    truncated: bool,
+}
+
+impl LimitedWriter {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(limit),
+            limit,
+            truncated: false,
+        }
+    }
+}
+
+impl Write for LimitedWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let remaining = self.limit.saturating_sub(self.bytes.len());
+        if buffer.len() <= remaining {
+            self.bytes.extend_from_slice(buffer);
+            return Ok(buffer.len());
+        }
+        self.bytes.extend_from_slice(&buffer[..remaining]);
+        self.truncated = true;
+        Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            "MCP error detail limit reached",
+        ))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize, suffix: &str) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+    let keep = max_bytes.saturating_sub(suffix.len());
+    let boundary = value
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= keep)
+        .last()
+        .unwrap_or(0);
+    format!("{}{suffix}", &value[..boundary])
 }
 
 fn progress_fraction(progress: Option<f64>, total: Option<f64>) -> Option<f32> {
@@ -475,7 +637,7 @@ mod tests {
     use harness_contracts::{ToolResult, ToolResultPart};
     use serde_json::json;
 
-    use super::{into_tool_result, validate_input_schema};
+    use super::{into_tool_result, result_error_message, validate_input_schema};
     use crate::{McpContent, McpToolResult};
 
     #[test]
@@ -485,7 +647,12 @@ mod tests {
                 McpContent::text("fallback"),
                 McpContent::Unknown(json!({ "type": "vendor", "raw": true })),
             ],
-            structured_content: Some(json!({ "answer": 42 })),
+            structured_content: Some(
+                json!({ "answer": 42 })
+                    .as_object()
+                    .expect("object fixture")
+                    .clone(),
+            ),
             is_error: false,
             meta: BTreeMap::from([("trace".to_owned(), json!("abc"))]),
         });
@@ -505,6 +672,73 @@ mod tests {
             part,
             ToolResultPart::Structured { value, .. } if value == &json!({ "_meta": { "trace": "abc" } })
         )));
+    }
+
+    #[test]
+    fn wrapper_error_message_preserves_bounded_protocol_details() {
+        let result = McpToolResult {
+            content: vec![
+                McpContent::text("upstream failed"),
+                McpContent::Unknown(json!({ "type": "vendor_error", "code": 17 })),
+            ],
+            structured_content: Some(json!({ "reason": "quota" }).as_object().unwrap().clone()),
+            is_error: true,
+            meta: BTreeMap::from([("trace".to_owned(), json!("abc"))]),
+        };
+
+        let message = result_error_message(&result);
+        assert_eq!(message, result_error_message(&result));
+        let (_, details) = message
+            .split_once("\nMCP error details: ")
+            .expect("structured MCP error details");
+        let details: serde_json::Value = serde_json::from_str(details).unwrap();
+        assert_eq!(
+            details,
+            json!({
+                "content": [
+                    { "type": "text", "text": "upstream failed" },
+                    { "type": "vendor_error", "code": 17 }
+                ],
+                "structuredContent": { "reason": "quota" },
+                "_meta": { "trace": "abc" }
+            })
+        );
+
+        let oversized = McpToolResult {
+            content: vec![McpContent::Unknown(json!({
+                "type": "vendor_error",
+                "payload": "x".repeat(32 * 1024)
+            }))],
+            structured_content: Some(
+                json!({ "reason": "y".repeat(32 * 1024) })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            is_error: true,
+            meta: BTreeMap::from([("trace".to_owned(), json!("z".repeat(32 * 1024)))]),
+        };
+        let oversized_message = result_error_message(&oversized);
+        assert!(oversized_message.len() <= 16 * 1024);
+        let (_, details) = oversized_message
+            .split_once("\nMCP error details: ")
+            .expect("truncated MCP error details");
+        let details: serde_json::Value = serde_json::from_str(details).unwrap();
+        assert_eq!(details.get("truncated"), Some(&json!(true)));
+        assert!(details["contentTypes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|kind| kind == "vendor_error"));
+        assert!(details["contentPreview"]
+            .as_str()
+            .unwrap()
+            .contains("payload"));
+        assert!(details["structuredContentPreview"]
+            .as_str()
+            .unwrap()
+            .contains("reason"));
+        assert!(details["_metaPreview"].as_str().unwrap().contains("trace"));
     }
 
     #[test]

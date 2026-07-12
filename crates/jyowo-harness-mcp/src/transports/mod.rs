@@ -253,7 +253,10 @@ mod lifecycle_compatibility_tests {
         ))
         .unwrap();
         assert_eq!(resource.contents.len(), 2);
-        assert_eq!(resource.contents[1].blob.as_deref(), Some("AA=="));
+        assert!(matches!(
+            &resource.contents[1],
+            McpResourceContents::Blob { blob, .. } if blob == "AA=="
+        ));
         assert_eq!(resource.meta.get("trace"), Some(&json!("abc")));
     }
 }

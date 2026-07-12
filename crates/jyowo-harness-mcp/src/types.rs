@@ -528,13 +528,26 @@ pub struct McpToolResult {
     #[serde(
         rename = "structuredContent",
         default,
+        deserialize_with = "deserialize_optional_object",
         skip_serializing_if = "Option::is_none"
     )]
-    pub structured_content: Option<Value>,
+    pub structured_content: Option<Map<String, Value>>,
     #[serde(rename = "isError", default)]
     pub is_error: bool,
     #[serde(rename = "_meta", default, skip_serializing_if = "BTreeMap::is_empty")]
     pub meta: BTreeMap<String, Value>,
+}
+
+fn deserialize_optional_object<'de, D>(
+    deserializer: D,
+) -> Result<Option<Map<String, Value>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Value::deserialize(deserializer)? {
+        Value::Object(object) => Ok(Some(object)),
+        _ => Err(D::Error::custom("structuredContent must be a JSON object")),
+    }
 }
 
 impl McpToolResult {
@@ -823,17 +836,82 @@ pub struct McpResource {
     pub meta: BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct McpResourceContents {
-    pub uri: String,
-    #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
-    pub mime_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub blob: Option<String>,
-    #[serde(rename = "_meta", default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub meta: BTreeMap<String, Value>,
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum McpResourceContents {
+    Text {
+        uri: String,
+        #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+        text: String,
+        #[serde(rename = "_meta", default, skip_serializing_if = "BTreeMap::is_empty")]
+        meta: BTreeMap<String, Value>,
+    },
+    Blob {
+        uri: String,
+        #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+        blob: String,
+        #[serde(rename = "_meta", default, skip_serializing_if = "BTreeMap::is_empty")]
+        meta: BTreeMap<String, Value>,
+    },
+}
+
+impl<'de> Deserialize<'de> for McpResourceContents {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| D::Error::custom("resource contents must be a JSON object"))?;
+        match (object.contains_key("text"), object.contains_key("blob")) {
+            (true, true) => {
+                return Err(D::Error::custom(
+                    "resource contents must not contain both text and blob",
+                ));
+            }
+            (false, false) => {
+                return Err(D::Error::custom(
+                    "resource contents must contain exactly one of text or blob",
+                ));
+            }
+            _ => {}
+        }
+        let fields: ResourceContentsFields =
+            serde_json::from_value(value).map_err(D::Error::custom)?;
+        match (fields.text, fields.blob) {
+            (Some(text), None) => Ok(Self::Text {
+                uri: fields.uri,
+                mime_type: fields.mime_type,
+                text,
+                meta: fields.meta,
+            }),
+            (None, Some(blob)) => Ok(Self::Blob {
+                uri: fields.uri,
+                mime_type: fields.mime_type,
+                blob,
+                meta: fields.meta,
+            }),
+            (None, None) | (Some(_), Some(_)) => Err(D::Error::custom(
+                "resource text and blob values must be non-null strings",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ResourceContentsFields {
+    uri: String,
+    #[serde(rename = "mimeType", default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    blob: Option<String>,
+    #[serde(rename = "_meta", default)]
+    meta: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

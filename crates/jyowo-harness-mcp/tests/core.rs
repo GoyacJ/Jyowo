@@ -13,9 +13,9 @@ use harness_contracts::{
 use harness_mcp::{
     collapse_reserved_separator, trust_level_for_source, FilterConflict, FilterDecision,
     JsonRpcRequest, JsonRpcResponse, ListChangedEvent, McpChange, McpClient, McpConnection,
-    McpMetric, McpMetricOutcome, McpMetricsSink, McpRegistry, McpResource, McpServerScope,
-    McpServerSpec, McpTimeouts, McpToolCallEvent, McpToolDescriptor, McpToolFilter, McpToolGlob,
-    McpToolResult, ReconnectPolicy, SamplingPolicy, StdioEnv, TransportChoice,
+    McpContent, McpMetric, McpMetricOutcome, McpMetricsSink, McpRegistry, McpResource,
+    McpServerScope, McpServerSpec, McpTimeouts, McpToolCallEvent, McpToolDescriptor, McpToolFilter,
+    McpToolGlob, McpToolResult, ReconnectPolicy, SamplingPolicy, StdioEnv, TransportChoice,
 };
 use harness_tool::{
     AuthorizedTicketSummary, AuthorizedToolInput, InterruptToken, Tool, ToolContext, ToolEvent,
@@ -584,6 +584,68 @@ async fn mcp_tool_wrapper_maps_mcp_cancelled_to_interrupted_error() {
         stream.next().await,
         Some(ToolEvent::Error(ToolError::Interrupted))
     );
+}
+
+#[tokio::test]
+async fn mcp_tool_wrapper_preserves_protocol_details_on_error_events() {
+    let connection = TestConnection {
+        tools: vec![McpToolDescriptor {
+            name: "failing_tool".into(),
+            title: None,
+            icons: None,
+            execution: None,
+            description: Some("Return a structured failure".into()),
+            input_schema: json!({ "type": "object" }),
+            output_schema: None,
+            annotations: None,
+            meta: BTreeMap::new(),
+        }],
+        ..Default::default()
+    };
+    connection.results.lock().push_back(McpToolResult {
+        content: vec![
+            McpContent::text("upstream failed"),
+            McpContent::Unknown(json!({ "type": "vendor_error", "code": 17 })),
+        ],
+        structured_content: Some(
+            json!({ "reason": "quota" })
+                .as_object()
+                .expect("object fixture")
+                .clone(),
+        ),
+        is_error: true,
+        meta: BTreeMap::from([("trace".to_owned(), json!("abc"))]),
+    });
+
+    let registry = McpRegistry::new();
+    let server_id = McpServerId("errors".into());
+    registry
+        .add_ready_server(
+            server_spec("errors", McpServerSource::Workspace),
+            McpServerScope::Session(SessionId::new()),
+            Arc::new(connection),
+        )
+        .await
+        .expect("server registers");
+    let tools = ToolRegistry::builder().build().expect("tool registry");
+    registry
+        .inject_tools_into(&tools, &server_id)
+        .await
+        .expect("tools inject");
+
+    let tool = tools
+        .get("mcp__errors__failing_tool")
+        .expect("tool registered");
+    let mut stream = run_authorized(&tool, json!({}), tool_context())
+        .await
+        .expect("tool executes");
+    let Some(ToolEvent::Error(ToolError::Message(message))) = stream.next().await else {
+        panic!("MCP isError result must map to a ToolError message");
+    };
+
+    assert!(message.contains("\"structuredContent\":{\"reason\":\"quota\"}"));
+    assert!(message.contains("\"type\":\"vendor_error\""));
+    assert!(message.contains("\"_meta\":{\"trace\":\"abc\"}"));
 }
 
 #[tokio::test]

@@ -73,7 +73,13 @@ async fn server_calls_tool_and_maps_results() {
     assert_eq!(text, McpToolResult::text("hello"));
 
     let structured = call_tool(&server, "json", json!({})).await;
-    assert_eq!(structured.structured_content, Some(json!({ "ok": true })));
+    assert_eq!(
+        structured
+            .structured_content
+            .as_ref()
+            .and_then(|content| content.get("ok")),
+        Some(&json!(true))
+    );
     assert!(text_content(&structured).contains("\"ok\": true"));
 
     let mixed = call_tool(&server, "mixed", json!({})).await;

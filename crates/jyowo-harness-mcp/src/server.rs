@@ -2211,7 +2211,8 @@ fn structured_result(value: Value) -> McpToolResult {
     let structured = structured_object(value);
     McpToolResult {
         content: vec![McpContent::text(
-            serde_json::to_string_pretty(&structured).unwrap_or_else(|_| structured.to_string()),
+            serde_json::to_string_pretty(&structured)
+                .unwrap_or_else(|_| Value::Object(structured.clone()).to_string()),
         )],
         structured_content: Some(structured),
         is_error: false,
@@ -2219,19 +2220,23 @@ fn structured_result(value: Value) -> McpToolResult {
     }
 }
 
-fn structured_object(value: Value) -> Value {
-    if value.is_object() {
-        value
-    } else {
-        json!({ "value": value })
+fn structured_object(value: Value) -> serde_json::Map<String, Value> {
+    match value {
+        Value::Object(object) => object,
+        value => serde_json::Map::from_iter([("value".to_owned(), value)]),
     }
 }
 
-fn combine_structured(mut values: Vec<Value>) -> Option<Value> {
+fn combine_structured(
+    mut values: Vec<serde_json::Map<String, Value>>,
+) -> Option<serde_json::Map<String, Value>> {
     match values.len() {
         0 => None,
-        1 => values.pop().map(structured_object),
-        _ => Some(json!({ "parts": values })),
+        1 => values.pop(),
+        _ => Some(serde_json::Map::from_iter([(
+            "parts".to_owned(),
+            Value::Array(values.into_iter().map(Value::Object).collect()),
+        )])),
     }
 }
 

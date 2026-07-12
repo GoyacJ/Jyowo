@@ -2,8 +2,8 @@ use std::{collections::VecDeque, sync::Mutex};
 
 use async_trait::async_trait;
 use harness_mcp::{
-    McpConnection, McpError, McpListPage, McpPaginationLimits, McpPrompt, McpResource,
-    McpToolDescriptor, McpToolResult,
+    McpConnection, McpError, McpListPage, McpPaginationLimits, McpPrompt, McpReadResourceResult,
+    McpResource, McpToolDescriptor, McpToolResult,
 };
 use serde_json::{json, Value};
 
@@ -113,6 +113,16 @@ async fn resource_and_prompt_all_apis_follow_their_cursors() {
             ]
             .into(),
         ),
+        resource_cursors: Mutex::new(Vec::new()),
+        prompt_cursors: Mutex::new(Vec::new()),
+        read_result: serde_json::from_value(json!({
+            "contents": [
+                { "uri": "test://document", "text": "hello" },
+                { "uri": "test://document/image", "blob": "AA==" }
+            ],
+            "_meta": { "trace": "resource-read" }
+        }))
+        .unwrap(),
     };
 
     let resources = connection.list_resources_all().await.unwrap();
@@ -126,6 +136,27 @@ async fn resource_and_prompt_all_apis_follow_their_cursors() {
         ["one", "two"]
     );
     assert_eq!(prompts[0].name, "triage");
+    assert_eq!(
+        connection.resource_cursors.lock().unwrap().as_slice(),
+        [None, Some("resources-2".to_owned())]
+    );
+    assert_eq!(
+        connection.prompt_cursors.lock().unwrap().as_slice(),
+        [None, Some("prompts-2".to_owned())]
+    );
+
+    let read = connection.read_resource("test://document").await.unwrap();
+    assert_eq!(read.contents.len(), 2);
+    assert_eq!(
+        serde_json::to_value(read).unwrap(),
+        json!({
+            "contents": [
+                { "uri": "test://document", "text": "hello" },
+                { "uri": "test://document/image", "blob": "AA==" }
+            ],
+            "_meta": { "trace": "resource-read" }
+        })
+    );
 }
 
 fn page(names: &[&str], next_cursor: Option<&str>) -> McpListPage<McpToolDescriptor> {
@@ -195,6 +226,9 @@ impl McpConnection for PagedConnection {
 struct MetadataPagedConnection {
     resource_pages: Mutex<VecDeque<McpListPage<McpResource>>>,
     prompt_pages: Mutex<VecDeque<McpListPage<McpPrompt>>>,
+    resource_cursors: Mutex<Vec<Option<String>>>,
+    prompt_cursors: Mutex<Vec<Option<String>>>,
+    read_result: McpReadResourceResult,
 }
 
 #[async_trait]
@@ -209,8 +243,12 @@ impl McpConnection for MetadataPagedConnection {
 
     async fn list_resources_page(
         &self,
-        _cursor: Option<&str>,
+        cursor: Option<&str>,
     ) -> Result<McpListPage<McpResource>, McpError> {
+        self.resource_cursors
+            .lock()
+            .unwrap()
+            .push(cursor.map(str::to_owned));
         self.resource_pages
             .lock()
             .unwrap()
@@ -220,13 +258,21 @@ impl McpConnection for MetadataPagedConnection {
 
     async fn list_prompts_page(
         &self,
-        _cursor: Option<&str>,
+        cursor: Option<&str>,
     ) -> Result<McpListPage<McpPrompt>, McpError> {
+        self.prompt_cursors
+            .lock()
+            .unwrap()
+            .push(cursor.map(str::to_owned));
         self.prompt_pages
             .lock()
             .unwrap()
             .pop_front()
             .ok_or_else(|| McpError::InvalidResponse("fixture ran out of prompt pages".into()))
+    }
+
+    async fn read_resource(&self, _uri: &str) -> Result<McpReadResourceResult, McpError> {
+        Ok(self.read_result.clone())
     }
 
     async fn call_tool(&self, _name: &str, _args: Value) -> Result<McpToolResult, McpError> {

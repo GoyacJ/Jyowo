@@ -322,14 +322,29 @@ fn official_tool_descriptor_and_result_round_trip() {
     });
     let result: McpToolResult = serde_json::from_value(result_fixture.clone()).unwrap();
     assert_eq!(
-        result.structured_content,
-        Some(json!({ "temperature": 18 }))
+        result
+            .structured_content
+            .as_ref()
+            .and_then(|content| content.get("temperature")),
+        Some(&json!(18))
     );
     assert!(matches!(
         result.content.last(),
         Some(McpContent::Unknown(_))
     ));
     assert_eq!(serde_json::to_value(result).unwrap(), result_fixture);
+}
+
+#[test]
+fn structured_content_rejects_non_object_json_values() {
+    for structured_content in [json!(null), json!([]), json!("text"), json!(42)] {
+        let fixture = json!({
+            "content": [{ "type": "text", "text": "fallback" }],
+            "structuredContent": structured_content
+        });
+
+        assert!(serde_json::from_value::<McpToolResult>(fixture).is_err());
+    }
 }
 
 #[test]
@@ -368,6 +383,22 @@ fn official_resource_and_prompt_models_round_trip() {
     ] {
         let contents: McpResourceContents = serde_json::from_value(fixture.clone()).unwrap();
         assert_eq!(serde_json::to_value(contents).unwrap(), fixture);
+    }
+
+    for invalid in [
+        json!({ "uri": "file:///tmp/missing" }),
+        json!({
+            "uri": "file:///tmp/ambiguous",
+            "text": "hello",
+            "blob": "AA=="
+        }),
+        json!({
+            "uri": "file:///tmp/null-text",
+            "text": null,
+            "blob": "AA=="
+        }),
+    ] {
+        assert!(serde_json::from_value::<McpResourceContents>(invalid).is_err());
     }
 
     let prompt_fixture = json!({

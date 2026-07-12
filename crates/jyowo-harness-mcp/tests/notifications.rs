@@ -375,11 +375,10 @@ impl McpConnection for MutableMetadata {
         uri: &str,
     ) -> Result<harness_mcp::McpReadResourceResult, McpError> {
         Ok(harness_mcp::McpReadResourceResult {
-            contents: vec![McpResourceContents {
+            contents: vec![McpResourceContents::Text {
                 uri: uri.into(),
                 mime_type: None,
-                text: None,
-                blob: None,
+                text: String::new(),
                 meta: Default::default(),
             }],
             meta: Default::default(),

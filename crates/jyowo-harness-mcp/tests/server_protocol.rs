@@ -1559,11 +1559,10 @@ impl ResourceProvider for StaticResources {
             )));
         }
         Ok(McpReadResourceResult {
-            contents: vec![McpResourceContents {
+            contents: vec![McpResourceContents::Text {
                 uri: uri.into(),
                 mime_type: Some("application/json".into()),
-                text: Some("{\"session\":\"active\"}".into()),
-                blob: None,
+                text: "{\"session\":\"active\"}".into(),
                 meta: Default::default(),
             }],
             meta: Default::default(),
