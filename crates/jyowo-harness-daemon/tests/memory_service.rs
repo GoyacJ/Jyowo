@@ -2,12 +2,14 @@ use std::fs;
 
 use harness_contracts::{
     ActionPlanId, ApproveMemoryCandidateRequest, ClientRequest, ContentHash,
-    ExportMemoryItemsRequest, GetMemorySettingsRequest, GetModelRequestPreviewRequest,
-    ListMemoryCandidatesRequest, ListMemoryRecallTracesRequest, MemoryEvidence,
-    MemoryEvidenceOrigin, MemoryGlobalSettings, MemoryKind, MemoryModelRequestPreview,
-    MemoryModelRequestPreviewSection, MemoryRecordDraft, MemorySource, MemoryVisibility,
-    MergeMemoryCandidateRequest, RunId, ServerMessage, SessionId, TenantId,
-    UpdateMemorySettingsRequest,
+    ExportMemoryItemsRequest, GetMemoryRecallTraceRequest, GetMemorySettingsRequest,
+    GetModelRequestPreviewRequest, GetThreadMemorySettingsRequest, ListMemoryCandidatesRequest,
+    ListMemoryRecallTracesRequest, MemoryCandidateId, MemoryEvidence, MemoryEvidenceOrigin,
+    MemoryGlobalSettings, MemoryKind, MemoryModelRequestPreview, MemoryModelRequestPreviewSection,
+    MemoryRecordDraft, MemorySource, MemoryThreadMode, MemoryThreadSettings, MemoryTraceId,
+    MemoryVisibility, MergeMemoryCandidateRequest, RejectMemoryCandidateRequest, RunId,
+    ServerMessage, SessionId, TenantId, UpdateMemorySettingsRequest,
+    UpdateThreadMemorySettingsRequest,
 };
 use harness_daemon::{MemoryService, MemoryServiceError, RuntimeConfigResolver};
 use harness_memory::{
@@ -398,7 +400,7 @@ async fn updating_memory_settings_rejects_zero_capacity_limits() {
 }
 
 #[tokio::test]
-async fn mutations_reject_unsupported_action_plans_before_writing() {
+async fn explicit_memory_mutations_accept_action_plan_context() {
     let fixture = Fixture::new();
     let db_path = fixture
         .service
@@ -406,9 +408,18 @@ async fn mutations_reject_unsupported_action_plans_before_writing() {
         .expect("workspace database");
     let provider = LocalMemoryProvider::open(&db_path.to_string_lossy(), TenantId::SINGLE)
         .expect("local provider");
-    let record = memory_record("original");
-    let memory_id = record.id;
-    provider.upsert(record).await.expect("insert memory");
+    let record_to_update = memory_record("original");
+    let update_id = record_to_update.id;
+    provider
+        .upsert(record_to_update)
+        .await
+        .expect("insert memory to update");
+    let record_to_delete = memory_record("delete me");
+    let delete_id = record_to_delete.id;
+    provider
+        .upsert(record_to_delete)
+        .await
+        .expect("insert memory to delete");
     let inbox = MemoryInbox::open(&db_path.to_string_lossy(), TenantId::SINGLE).expect("inbox");
     let approve = inbox
         .propose(candidate_draft("approve"), candidate_evidence())
@@ -421,27 +432,40 @@ async fn mutations_reject_unsupported_action_plans_before_writing() {
         .expect("second merge candidate");
     let action_plan_id = ActionPlanId::new();
 
-    let requests = [
-        ClientRequest::UpdateMemoryItem {
+    fixture
+        .service
+        .handle(ClientRequest::UpdateMemoryItem {
             workspace_root: Some(fixture.workspace_string()),
-            memory_id,
+            memory_id: update_id,
             content: "changed".to_owned(),
             action_plan_id: Some(action_plan_id),
-        },
-        ClientRequest::DeleteMemoryItem {
+        })
+        .await
+        .expect("action-plan update should be authorized");
+    fixture
+        .service
+        .handle(ClientRequest::DeleteMemoryItem {
             workspace_root: Some(fixture.workspace_string()),
-            memory_id,
+            memory_id: delete_id,
             action_plan_id: Some(action_plan_id),
-        },
-        ClientRequest::ApproveMemoryCandidate {
+        })
+        .await
+        .expect("action-plan delete should be authorized");
+    fixture
+        .service
+        .handle(ClientRequest::ApproveMemoryCandidate {
             workspace_root: Some(fixture.workspace_string()),
             request: ApproveMemoryCandidateRequest {
                 tenant_id: TenantId::SINGLE,
                 candidate_id: approve.id,
                 action_plan_id: Some(action_plan_id),
             },
-        },
-        ClientRequest::MergeMemoryCandidate {
+        })
+        .await
+        .expect("action-plan approval should be authorized");
+    fixture
+        .service
+        .handle(ClientRequest::MergeMemoryCandidate {
             workspace_root: Some(fixture.workspace_string()),
             request: MergeMemoryCandidateRequest {
                 tenant_id: TenantId::SINGLE,
@@ -450,12 +474,124 @@ async fn mutations_reject_unsupported_action_plans_before_writing() {
                 evidence: candidate_evidence(),
                 action_plan_id: Some(action_plan_id),
             },
-        },
-    ];
-
-    for request in requests {
-        assert!(fixture.service.handle(request).await.is_err());
+        })
+        .await
+        .expect("action-plan merge should be authorized");
+    assert_eq!(
+        provider
+            .get(update_id)
+            .await
+            .expect("updated memory remains")
+            .content,
+        "changed"
+    );
+    assert!(provider.get(delete_id).await.is_err());
+    let candidates = inbox.list(None).expect("list candidates");
+    assert_eq!(
+        candidates
+            .iter()
+            .find(|candidate| candidate.id == approve.id)
+            .expect("approved candidate")
+            .state,
+        harness_contracts::MemoryCandidateState::Promoted
+    );
+    for merged_id in [merge_one.id, merge_two.id] {
+        assert_eq!(
+            candidates
+                .iter()
+                .find(|candidate| candidate.id == merged_id)
+                .expect("merged candidate")
+                .state,
+            harness_contracts::MemoryCandidateState::Merged
+        );
     }
+}
+
+#[tokio::test]
+async fn action_plan_context_does_not_bypass_memory_policy() {
+    let fixture = Fixture::new();
+    let db_path = fixture
+        .service
+        .database_path(Some(&fixture.workspace))
+        .expect("workspace database");
+    let provider = LocalMemoryProvider::open(&db_path.to_string_lossy(), TenantId::SINGLE)
+        .expect("local provider");
+    let record = memory_record("original");
+    let memory_id = record.id;
+    provider.upsert(record).await.expect("insert memory");
+    let inbox = MemoryInbox::open(&db_path.to_string_lossy(), TenantId::SINGLE).expect("inbox");
+    let candidate = inbox
+        .propose(candidate_draft("approve"), candidate_evidence())
+        .expect("candidate");
+    let merge_one = inbox
+        .propose(candidate_draft("merge one"), candidate_evidence())
+        .expect("first merge candidate");
+    let merge_two = inbox
+        .propose(candidate_draft("merge two"), candidate_evidence())
+        .expect("second merge candidate");
+    MemorySettingsStore::open(&db_path.to_string_lossy())
+        .expect("settings store")
+        .update_global(
+            TenantId::SINGLE,
+            MemoryGlobalSettings {
+                use_memories: false,
+                generate_memories: false,
+                disable_generation_when_external_context_used: false,
+                retention_days: None,
+                max_memory_bytes: 1024,
+                max_recall_records_per_turn: 4,
+                max_recall_chars_per_turn: 2048,
+            },
+        )
+        .expect("disable memory policy");
+
+    let action_plan_id = ActionPlanId::new();
+    let update = fixture
+        .service
+        .handle(ClientRequest::UpdateMemoryItem {
+            workspace_root: Some(fixture.workspace_string()),
+            memory_id,
+            content: "denied".to_owned(),
+            action_plan_id: Some(action_plan_id),
+        })
+        .await;
+    let approve = fixture
+        .service
+        .handle(ClientRequest::ApproveMemoryCandidate {
+            workspace_root: Some(fixture.workspace_string()),
+            request: ApproveMemoryCandidateRequest {
+                tenant_id: TenantId::SINGLE,
+                candidate_id: candidate.id,
+                action_plan_id: Some(action_plan_id),
+            },
+        })
+        .await;
+    let delete = fixture
+        .service
+        .handle(ClientRequest::DeleteMemoryItem {
+            workspace_root: Some(fixture.workspace_string()),
+            memory_id,
+            action_plan_id: Some(action_plan_id),
+        })
+        .await;
+    let merge = fixture
+        .service
+        .handle(ClientRequest::MergeMemoryCandidate {
+            workspace_root: Some(fixture.workspace_string()),
+            request: MergeMemoryCandidateRequest {
+                tenant_id: TenantId::SINGLE,
+                candidate_ids: vec![merge_one.id, merge_two.id],
+                merged_record: candidate_draft("denied merge"),
+                evidence: candidate_evidence(),
+                action_plan_id: Some(action_plan_id),
+            },
+        })
+        .await;
+
+    assert!(matches!(update, Err(MemoryServiceError::PolicyDenied(_))));
+    assert!(matches!(approve, Err(MemoryServiceError::PolicyDenied(_))));
+    assert!(matches!(delete, Err(MemoryServiceError::PolicyDenied(_))));
+    assert!(matches!(merge, Err(MemoryServiceError::PolicyDenied(_))));
     assert_eq!(
         provider
             .get(memory_id)
@@ -464,19 +600,138 @@ async fn mutations_reject_unsupported_action_plans_before_writing() {
             .content,
         "original"
     );
-    assert_eq!(
-        provider
-            .list(harness_memory::MemoryListScope::All)
-            .await
-            .expect("list memories")
-            .len(),
-        1
-    );
     assert!(inbox
         .list(None)
-        .expect("list candidates")
+        .expect("candidates remain")
         .iter()
         .all(|candidate| candidate.state == harness_contracts::MemoryCandidateState::Proposed));
+}
+
+#[tokio::test]
+async fn every_tenant_bearing_request_rejects_non_single_before_opening_storage() {
+    let fixture = Fixture::new();
+    let tenant_id = TenantId::SHARED;
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let candidate_id = MemoryCandidateId::new();
+    let trace_id = MemoryTraceId::new();
+    let settings = MemoryGlobalSettings {
+        use_memories: true,
+        generate_memories: true,
+        disable_generation_when_external_context_used: false,
+        retention_days: None,
+        max_memory_bytes: 1024,
+        max_recall_records_per_turn: 4,
+        max_recall_chars_per_turn: 2048,
+    };
+    let workspace_root = Some(fixture.workspace_string());
+    let requests = vec![
+        ClientRequest::ListMemoryCandidates {
+            workspace_root: workspace_root.clone(),
+            request: ListMemoryCandidatesRequest {
+                tenant_id,
+                session_id: None,
+                state: None,
+                limit: 1,
+                cursor: None,
+            },
+        },
+        ClientRequest::ApproveMemoryCandidate {
+            workspace_root: workspace_root.clone(),
+            request: ApproveMemoryCandidateRequest {
+                tenant_id,
+                candidate_id,
+                action_plan_id: None,
+            },
+        },
+        ClientRequest::RejectMemoryCandidate {
+            workspace_root: workspace_root.clone(),
+            request: RejectMemoryCandidateRequest {
+                tenant_id,
+                candidate_id,
+                reason: "reject".to_owned(),
+            },
+        },
+        ClientRequest::MergeMemoryCandidate {
+            workspace_root: workspace_root.clone(),
+            request: MergeMemoryCandidateRequest {
+                tenant_id,
+                candidate_ids: vec![candidate_id, MemoryCandidateId::new()],
+                merged_record: candidate_draft("merged"),
+                evidence: candidate_evidence(),
+                action_plan_id: None,
+            },
+        },
+        ClientRequest::ListMemoryRecallTraces {
+            workspace_root: workspace_root.clone(),
+            request: ListMemoryRecallTracesRequest {
+                tenant_id,
+                session_id: None,
+                run_id: None,
+                limit: 1,
+                cursor: None,
+            },
+        },
+        ClientRequest::GetMemoryRecallTrace {
+            workspace_root: workspace_root.clone(),
+            request: GetMemoryRecallTraceRequest {
+                tenant_id,
+                trace_id,
+            },
+        },
+        ClientRequest::GetModelRequestPreview {
+            workspace_root: workspace_root.clone(),
+            request: GetModelRequestPreviewRequest {
+                tenant_id,
+                session_id,
+                run_id,
+                trace_id: None,
+            },
+        },
+        ClientRequest::GetMemorySettings {
+            workspace_root: workspace_root.clone(),
+            request: GetMemorySettingsRequest { tenant_id },
+        },
+        ClientRequest::UpdateMemorySettings {
+            workspace_root: workspace_root.clone(),
+            request: UpdateMemorySettingsRequest {
+                tenant_id,
+                settings,
+            },
+        },
+        ClientRequest::GetThreadMemorySettings {
+            workspace_root: workspace_root.clone(),
+            request: GetThreadMemorySettingsRequest {
+                tenant_id,
+                session_id,
+            },
+        },
+        ClientRequest::UpdateThreadMemorySettings {
+            workspace_root,
+            request: UpdateThreadMemorySettingsRequest {
+                tenant_id,
+                settings: MemoryThreadSettings {
+                    session_id,
+                    use_memories: None,
+                    generate_memories: None,
+                    memory_mode: MemoryThreadMode::ReadWrite,
+                },
+            },
+        },
+    ];
+
+    for request in requests {
+        let result = fixture.service.handle(request).await;
+        assert!(matches!(result, Err(MemoryServiceError::Invalid(_))));
+    }
+    let db_path = fixture
+        .service
+        .database_path(Some(&fixture.workspace))
+        .expect("workspace database path");
+    assert!(
+        !db_path.exists(),
+        "tenant rejection must precede database open"
+    );
 }
 
 #[tokio::test]

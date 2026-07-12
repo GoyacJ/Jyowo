@@ -20,6 +20,23 @@ async fn runtime_execution_status_returns_the_settings_runtime_payload() {
     assert!(status.http_broker.available);
 }
 
+#[tokio::test]
+async fn desktop_settings_runtime_does_not_start_the_legacy_memory_owner() {
+    let workspace = unique_workspace("settings-runtime-without-memory-owner");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state = runtime_state_for_workspace(workspace)
+        .await
+        .expect("runtime state should initialize");
+    let legacy_memory_database = state.runtime_root().join("memory/memory.sqlite3");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(
+        !legacy_memory_database.exists(),
+        "desktop settings construction must not create the legacy memory database"
+    );
+}
+
 #[test]
 fn runtime_execution_status_rejects_an_uninitialized_settings_runtime() {
     let workspace = unique_workspace("runtime-status-not-ready");

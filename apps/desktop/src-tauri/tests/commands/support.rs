@@ -171,19 +171,21 @@ pub(crate) async fn runtime_state_with_settings_runtime_for_workspace(
         max_pending: 16,
     }));
     let settings_runtime: Arc<DesktopSettingsRuntime> = Arc::new(
-        DesktopSettingsRuntime::builder()
-            .with_options(test_settings_options(&workspace))
-            .with_model(TestModelProvider::default())
-            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
-            .with_sandbox(NoopSandbox::new())
-            .with_stream_permission_broker_arc(
-                stream_permission_runtime.broker(),
-                stream_permission_runtime.resolver_handle(),
-            )
-            .build()
-            .await
-            .expect("settings runtime should build with stream permission runtime")
-            .into(),
+        DesktopSettingsRuntime::try_from(
+            DesktopSettingsRuntime::builder()
+                .with_options(test_settings_options(&workspace))
+                .with_model(TestModelProvider::default())
+                .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+                .with_sandbox(NoopSandbox::new())
+                .with_stream_permission_broker_arc(
+                    stream_permission_runtime.broker(),
+                    stream_permission_runtime.resolver_handle(),
+                )
+                .build()
+                .await
+                .expect("settings runtime should build with stream permission runtime"),
+        )
+        .expect("settings runtime must not own memory extraction"),
     );
 
     let mut state =
@@ -219,23 +221,25 @@ pub(crate) async fn runtime_state_with_mcp_registry_for_workspace(
         max_pending: 16,
     }));
     let settings_runtime: Arc<DesktopSettingsRuntime> = Arc::new(
-        DesktopSettingsRuntime::builder()
-            .with_options(test_settings_options(&workspace))
-            .with_model(TestModelProvider::default())
-            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
-            .with_sandbox(AllowExecPreflightSandbox)
-            .with_stream_permission_broker_arc(
-                stream_permission_runtime.broker(),
-                stream_permission_runtime.resolver_handle(),
-            )
-            .with_mcp_config(McpConfig {
-                registry,
-                server_ids_to_inject,
-            })
-            .build()
-            .await
-            .expect("harness should build with MCP registry")
-            .into(),
+        DesktopSettingsRuntime::try_from(
+            DesktopSettingsRuntime::builder()
+                .with_options(test_settings_options(&workspace))
+                .with_model(TestModelProvider::default())
+                .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+                .with_sandbox(AllowExecPreflightSandbox)
+                .with_stream_permission_broker_arc(
+                    stream_permission_runtime.broker(),
+                    stream_permission_runtime.resolver_handle(),
+                )
+                .with_mcp_config(McpConfig {
+                    registry,
+                    server_ids_to_inject,
+                })
+                .build()
+                .await
+                .expect("harness should build with MCP registry"),
+        )
+        .expect("settings runtime must not own memory extraction"),
     );
 
     let mut state =

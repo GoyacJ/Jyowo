@@ -1084,7 +1084,7 @@ pub(crate) async fn build_desktop_settings_runtime(
         default_session_options =
             default_session_options.with_project_workspace_root(project_workspace_root);
     }
-    let settings_runtime = DesktopSettingsRuntime::builder()
+    let settings_harness = DesktopSettingsRuntime::builder()
         .with_workspace_root(execution_cwd)
         .with_model_arc(model_provider)
         .with_model_id(model_id.clone())
@@ -1116,8 +1116,12 @@ pub(crate) async fn build_desktop_settings_runtime(
             runtime_init_failed(format!(
                 "desktop settings runtime initialization failed: {error}"
             ))
-        })?
-        .into();
+        })?;
+    let settings_runtime = DesktopSettingsRuntime::try_from(settings_harness).map_err(|error| {
+        runtime_init_failed(format!(
+            "desktop settings runtime ownership validation failed: {error}"
+        ))
+    })?;
 
     Ok((settings_runtime, model_id, protocol, model_options))
 }

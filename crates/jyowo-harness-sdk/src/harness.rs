@@ -749,6 +749,11 @@ fn process_tool_status_spec() -> ExecSpec {
 }
 
 impl Harness {
+    #[cfg(feature = "memory-provider-registry")]
+    pub(crate) fn owns_memory_extraction_runtime(&self) -> bool {
+        self.inner._memory_extraction_runtime.is_some()
+    }
+
     #[must_use]
     pub fn builder() -> HarnessBuilder<Unset, Unset, Unset> {
         HarnessBuilder::new()
@@ -1335,19 +1340,6 @@ impl Harness {
             };
 
         #[cfg(feature = "memory-provider-registry")]
-        let memory_extractor = extras.memory_extractor.take().unwrap_or_else(|| {
-            let extraction_redactor = observer
-                .as_ref()
-                .map(|observer| Arc::clone(&observer.redactor))
-                .unwrap_or_else(default_hook_redactor);
-            Arc::new(ModelBackedMemoryExtractor::new(
-                Arc::clone(&builder.model.0),
-                builder.options.model_id.clone(),
-                builder.model.0.default_protocol(),
-                extraction_redactor,
-            ))
-        });
-        #[cfg(feature = "memory-provider-registry")]
         let memory_database_path = extras.memory_database_path.take().unwrap_or_else(|| {
             builder
                 .options
@@ -1365,14 +1357,28 @@ impl Harness {
                 .join("memory.sqlite3")
         });
         #[cfg(feature = "memory-provider-registry")]
-        let memory_extraction_runtime = Some({
-            MemoryExtractionRuntime::spawn(
+        let memory_extraction_runtime = if extras.memory_runtime_disabled {
+            None
+        } else {
+            let memory_extractor = extras.memory_extractor.take().unwrap_or_else(|| {
+                let extraction_redactor = observer
+                    .as_ref()
+                    .map(|observer| Arc::clone(&observer.redactor))
+                    .unwrap_or_else(default_hook_redactor);
+                Arc::new(ModelBackedMemoryExtractor::new(
+                    Arc::clone(&builder.model.0),
+                    builder.options.model_id.clone(),
+                    builder.model.0.default_protocol(),
+                    extraction_redactor,
+                ))
+            });
+            Some(MemoryExtractionRuntime::spawn(
                 memory_database_path.clone(),
                 builder.options.tenant_policy.id,
-                Arc::clone(&memory_extractor),
+                memory_extractor,
                 observer.as_ref().map(Arc::clone),
-            )
-        });
+            ))
+        };
 
         Ok(Self {
             inner: Arc::new(HarnessInner {

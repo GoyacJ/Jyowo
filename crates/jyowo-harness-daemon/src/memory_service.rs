@@ -6,14 +6,17 @@ use harness_contracts::{
     DeleteMemoryItemResponse, ExportMemoryItemsResponse, GetMemoryItemResponse,
     GetMemoryRecallTraceResponse, GetMemorySettingsResponse, GetModelRequestPreviewResponse,
     GetThreadMemorySettingsResponse, ListMemoryCandidatesResponse, ListMemoryItemsResponse,
-    ListMemoryRecallTracesResponse, MemoryActorContext, MemoryCandidate, MemoryCandidateListItem,
-    MemoryCandidateState, MemoryId, MemoryModelRequestPreview, MemoryModelRequestPreviewSection,
-    MergeMemoryCandidateResponse, ServerMessage, TenantId, UpdateMemoryItemResponse,
-    UpdateMemorySettingsResponse, UpdateThreadMemorySettingsResponse,
+    ListMemoryRecallTracesResponse, MemoryActor, MemoryActorContext, MemoryCandidate,
+    MemoryCandidateListItem, MemoryCandidateState, MemoryEvidence, MemoryEvidenceOrigin, MemoryId,
+    MemoryModelRequestPreview, MemoryModelRequestPreviewSection, MemoryPermissionContext,
+    MemoryPolicyDecision, MemorySource, MemoryVisibility, MergeMemoryCandidateResponse,
+    ServerMessage, SessionId, TenantId, UpdateMemoryItemResponse, UpdateMemorySettingsResponse,
+    UpdateThreadMemorySettingsResponse,
 };
 use harness_memory::{
-    local::LocalMemoryProvider, MemoryInbox, MemoryListScope, MemoryMetadata,
-    MemoryRecallTraceCollector, MemoryRecord, MemorySettingsStore, MemoryStore,
+    default_thread_settings, local::LocalMemoryProvider, MemoryInbox, MemoryListScope,
+    MemoryMetadata, MemoryPolicyEngine, MemoryRecallTraceCollector, MemoryRecord,
+    MemorySettingsStore, MemoryStore,
 };
 use thiserror::Error;
 
@@ -45,6 +48,7 @@ impl MemoryService {
         &self,
         request: ClientRequest,
     ) -> Result<ServerMessage, MemoryServiceError> {
+        ensure_single_tenant_request(&request)?;
         let workspace_root = memory_workspace_root(&request)?;
         let db_path = self.database_path(workspace_root.as_deref())?;
         match request {
@@ -82,7 +86,6 @@ impl MemoryService {
                 action_plan_id,
                 ..
             } => {
-                reject_action_plan(action_plan_id)?;
                 if content.trim().is_empty() {
                     return Err(MemoryServiceError::Invalid(
                         "memory content must not be empty".to_owned(),
@@ -101,6 +104,12 @@ impl MemoryService {
                 )
                 .await?;
                 let mut record = provider.get(memory_id).await?;
+                authorize_memory_write(
+                    &db_path,
+                    action_plan_id,
+                    mutation_evidence(action_plan_id, "memory-item-update", &content),
+                    &record.visibility,
+                )?;
                 record.content = content;
                 record.updated_at = Utc::now();
                 provider.upsert(record).await?;
@@ -119,7 +128,6 @@ impl MemoryService {
                 action_plan_id,
                 ..
             } => {
-                reject_action_plan(action_plan_id)?;
                 let provider = local_provider(&db_path, TenantId::SINGLE)?;
                 ensure_memory_visible(
                     &provider,
@@ -127,6 +135,7 @@ impl MemoryService {
                     &management_actor(TenantId::SINGLE, None),
                 )
                 .await?;
+                authorize_memory_delete(&db_path, action_plan_id, None)?;
                 provider.forget(memory_id).await?;
                 Ok(ServerMessage::MemoryDeleted(DeleteMemoryItemResponse {
                     memory_id,
@@ -224,9 +233,15 @@ impl MemoryService {
                 ))
             }
             ClientRequest::ApproveMemoryCandidate { request, .. } => {
-                reject_action_plan(request.action_plan_id)?;
                 let inbox = MemoryInbox::open(&db_path.to_string_lossy(), request.tenant_id)
                     .map_err(MemoryServiceError::Store)?;
+                let candidate = find_candidate(&inbox, request.candidate_id)?;
+                authorize_memory_write(
+                    &db_path,
+                    request.action_plan_id,
+                    candidate.evidence.clone(),
+                    &candidate.proposed_record.visibility,
+                )?;
                 let (candidate, memory_id) = inbox
                     .promote_into_memory(request.candidate_id)
                     .map_err(MemoryServiceError::Store)?;
@@ -253,7 +268,6 @@ impl MemoryService {
                 ))
             }
             ClientRequest::MergeMemoryCandidate { request, .. } => {
-                reject_action_plan(request.action_plan_id)?;
                 if request.candidate_ids.len() < 2 {
                     return Err(MemoryServiceError::Invalid(
                         "at least two candidates are required".into(),
@@ -279,6 +293,12 @@ impl MemoryService {
                         )));
                     }
                 }
+                authorize_memory_write(
+                    &db_path,
+                    request.action_plan_id,
+                    request.evidence.clone(),
+                    &request.merged_record.visibility,
+                )?;
                 let now = Utc::now();
                 let record = MemoryRecord {
                     id: MemoryId::new(),
@@ -437,15 +457,113 @@ fn validate_global_settings(
     Ok(())
 }
 
-fn reject_action_plan(
+fn ensure_single_tenant_request(request: &ClientRequest) -> Result<(), MemoryServiceError> {
+    let tenant_id = match request {
+        ClientRequest::ListMemoryCandidates { request, .. } => Some(request.tenant_id),
+        ClientRequest::ApproveMemoryCandidate { request, .. } => Some(request.tenant_id),
+        ClientRequest::RejectMemoryCandidate { request, .. } => Some(request.tenant_id),
+        ClientRequest::MergeMemoryCandidate { request, .. } => Some(request.tenant_id),
+        ClientRequest::ListMemoryRecallTraces { request, .. } => Some(request.tenant_id),
+        ClientRequest::GetMemoryRecallTrace { request, .. } => Some(request.tenant_id),
+        ClientRequest::GetModelRequestPreview { request, .. } => Some(request.tenant_id),
+        ClientRequest::GetMemorySettings { request, .. } => Some(request.tenant_id),
+        ClientRequest::UpdateMemorySettings { request, .. } => Some(request.tenant_id),
+        ClientRequest::GetThreadMemorySettings { request, .. } => Some(request.tenant_id),
+        ClientRequest::UpdateThreadMemorySettings { request, .. } => Some(request.tenant_id),
+        _ => None,
+    };
+    if tenant_id.is_some_and(|tenant_id| tenant_id != TenantId::SINGLE) {
+        return Err(MemoryServiceError::Invalid(
+            "daemon memory requests require the single-user tenant".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn authorize_memory_write(
+    db_path: &Path,
     action_plan_id: Option<harness_contracts::ActionPlanId>,
+    evidence: MemoryEvidence,
+    visibility: &MemoryVisibility,
 ) -> Result<(), MemoryServiceError> {
-    if action_plan_id.is_some() {
-        Err(MemoryServiceError::Invalid(
-            "action-plan-authorized memory mutations are not supported by the daemon API".into(),
-        ))
-    } else {
-        Ok(())
+    let (engine, thread) = memory_policy(db_path, evidence.session_id)?;
+    authorize_policy_decision(engine.evaluate_write(
+        &thread,
+        &MemoryActor::User { user_label: None },
+        &evidence,
+        &manual_memory_permission(action_plan_id),
+        visibility,
+    ))
+}
+
+fn authorize_memory_delete(
+    db_path: &Path,
+    action_plan_id: Option<harness_contracts::ActionPlanId>,
+    session_id: Option<SessionId>,
+) -> Result<(), MemoryServiceError> {
+    let (engine, thread) = memory_policy(db_path, session_id)?;
+    authorize_policy_decision(engine.evaluate_delete(
+        &thread,
+        &MemoryActor::User { user_label: None },
+        &manual_memory_permission(action_plan_id),
+    ))
+}
+
+fn memory_policy(
+    db_path: &Path,
+    session_id: Option<SessionId>,
+) -> Result<(MemoryPolicyEngine, harness_contracts::MemoryThreadSettings), MemoryServiceError> {
+    let store =
+        MemorySettingsStore::open(&db_path.to_string_lossy()).map_err(MemoryServiceError::Store)?;
+    let global = store
+        .get_global(TenantId::SINGLE)
+        .map_err(MemoryServiceError::Store)?;
+    let thread = match session_id {
+        Some(session_id) => store
+            .get_thread(TenantId::SINGLE, session_id)
+            .map_err(MemoryServiceError::Store)?,
+        None => default_thread_settings(SessionId::new()),
+    };
+    Ok((MemoryPolicyEngine::new(global), thread))
+}
+
+fn manual_memory_permission(
+    action_plan_id: Option<harness_contracts::ActionPlanId>,
+) -> MemoryPermissionContext {
+    MemoryPermissionContext {
+        explicit_user_instruction: true,
+        include_raw_content: false,
+        action_plan_id,
+        authorization_ticket_id: None,
+        non_interactive_policy_grant: false,
+    }
+}
+
+fn mutation_evidence(
+    action_plan_id: Option<harness_contracts::ActionPlanId>,
+    operation: &str,
+    content: &str,
+) -> MemoryEvidence {
+    MemoryEvidence {
+        source: MemorySource::UserInput,
+        origin: MemoryEvidenceOrigin::Imported {
+            importer: operation.to_owned(),
+            import_id: action_plan_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| operation.to_owned()),
+        },
+        content_hash: ContentHash(*blake3::hash(content.as_bytes()).as_bytes()),
+        session_id: None,
+        run_id: None,
+        message_id: None,
+        tool_use_id: None,
+    }
+}
+
+fn authorize_policy_decision(decision: MemoryPolicyDecision) -> Result<(), MemoryServiceError> {
+    match decision {
+        MemoryPolicyDecision::Allow => Ok(()),
+        denied => Err(MemoryServiceError::PolicyDenied(format!("{denied:?}"))),
     }
 }
 
@@ -459,6 +577,8 @@ pub enum MemoryServiceError {
     Store(String),
     #[error("invalid memory request: {0}")]
     Invalid(String),
+    #[error("memory mutation denied by policy: {0}")]
+    PolicyDenied(String),
     #[error("{0} not found")]
     NotFound(String),
     #[error("memory export I/O failed: {0}")]
