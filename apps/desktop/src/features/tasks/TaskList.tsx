@@ -58,7 +58,7 @@ export function groupSidebarTasks(
   defaultRoot: string,
 ): SidebarTaskGroups {
   const visible = tasks
-    .filter((task) => !task.removed && !task.archived)
+    .filter((task) => !task.parent && !task.removed && !task.archived)
     .sort(
       (left, right) =>
         right.lastGlobalOffset - left.lastGlobalOffset || left.title.localeCompare(right.title),

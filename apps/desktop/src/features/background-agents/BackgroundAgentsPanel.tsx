@@ -2,8 +2,8 @@ import { Archive, Pause, Play, Send, Trash2, X } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import type { TaskProjection, TaskState } from '@/generated/daemon-protocol'
 import { cn } from '@/shared/lib/utils'
-import type { BackgroundAgentIdRequest, BackgroundAgentRecord } from '@/shared/tauri/commands'
 import { Button } from '@/shared/ui/button'
 import { Card } from '@/shared/ui/card'
 import { EmptyState } from '@/shared/ui/empty-state'
@@ -12,30 +12,18 @@ import { Section, SectionTitle } from '@/shared/ui/section'
 
 import { useBackgroundAgents } from './use-background-agents'
 
-const stateLabels: Record<BackgroundAgentRecord['state'], string> = {
-  archived: 'state.archived',
-  cancelled: 'state.cancelled',
-  cancelling: 'state.cancelling',
+const stateLabels: Record<TaskState, string> = {
+  completed: 'state.succeeded',
   failed: 'state.failed',
+  idle: 'state.queued',
   interrupted: 'state.interrupted',
-  paused: 'state.paused',
-  queued: 'state.queued',
-  recoverable: 'state.recoverable',
   running: 'state.running',
-  succeeded: 'state.succeeded',
-  waiting_for_input: 'state.waitingForInput',
-  waiting_for_permission: 'state.waitingForPermission',
+  waiting_permission: 'state.waitingForPermission',
+  yielding: 'state.running',
 }
 
-function agentRequest(agent: BackgroundAgentRecord): BackgroundAgentIdRequest {
-  return {
-    backgroundAgentId: agent.backgroundAgentId,
-    conversationId: agent.conversationId,
-  }
-}
-
-function canArchive(state: BackgroundAgentRecord['state']) {
-  return ['cancelled', 'failed', 'interrupted', 'recoverable', 'succeeded'].includes(state)
+function canArchive(task: TaskProjection) {
+  return !task.archived && ['completed', 'failed', 'interrupted'].includes(task.state)
 }
 
 export function BackgroundAgentsPanel({
@@ -55,82 +43,60 @@ export function BackgroundAgentsPanel({
   } = useBackgroundAgents()
   const [inputDrafts, setInputDrafts] = useState<Record<string, string>>({})
   const agents = selectedBackgroundAgentId
-    ? [...(listQuery.data?.agents ?? [])].sort((left, right) => {
-        if (left.backgroundAgentId === selectedBackgroundAgentId) {
-          return -1
-        }
-        if (right.backgroundAgentId === selectedBackgroundAgentId) {
-          return 1
-        }
+    ? [...(listQuery.data ?? [])].sort((left, right) => {
+        if (left.taskId === selectedBackgroundAgentId) return -1
+        if (right.taskId === selectedBackgroundAgentId) return 1
         return 0
       })
-    : (listQuery.data?.agents ?? [])
+    : (listQuery.data ?? [])
 
-  function submitInput(agent: BackgroundAgentRecord) {
-    const input = inputDrafts[agent.backgroundAgentId]?.trim()
-
-    if (!input) {
-      return
-    }
-
-    if (!agent.pendingInputRequestId) {
-      return
-    }
-
-    sendInputMutation.mutate({
-      ...agentRequest(agent),
-      input,
-      requestId: agent.pendingInputRequestId,
-    })
+  function submitInput(task: TaskProjection) {
+    const input = inputDrafts[task.taskId]?.trim()
+    if (input) sendInputMutation.mutate({ input, task })
   }
 
   return (
     <Section className="mx-auto w-full max-w-5xl">
       <SectionTitle>{t('title')}</SectionTitle>
-
       {listQuery.isLoading ? <p className="text-muted-foreground text-sm">{t('loading')}</p> : null}
-
       {listQuery.isError ? (
         <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
           {t('loadError')}
         </p>
       ) : null}
-
       {!listQuery.isLoading && !listQuery.isError && agents.length === 0 ? (
         <EmptyState>{t('empty')}</EmptyState>
       ) : null}
-
       {agents.length > 0 ? (
         <div className="grid gap-3">
-          {agents.map((agent) => (
+          {agents.map((task) => (
             <Card
-              aria-label={agent.title}
+              aria-label={task.title}
               className={cn(
                 'bg-background p-4',
-                agent.backgroundAgentId === selectedBackgroundAgentId && 'border-primary',
+                task.taskId === selectedBackgroundAgentId && 'border-primary',
               )}
-              key={agent.backgroundAgentId}
+              key={task.taskId}
               role="article"
             >
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0 space-y-1">
-                  <h2 className="break-words font-medium text-base">{agent.title}</h2>
+                  <h2 className="break-words font-medium text-base">{task.title}</h2>
                   <div className="flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground text-xs">
-                    <span>{t(stateLabels[agent.state])}</span>
-                    <span>{agent.conversationId}</span>
-                    {agent.parentRunId ? <span>{agent.parentRunId}</span> : null}
-                    {agent.backgroundAgentId === selectedBackgroundAgentId ? (
+                    <span>{task.archived ? t('state.archived') : t(stateLabels[task.state])}</span>
+                    <span>{task.parent?.parentTaskId}</span>
+                    <span>{task.parent?.parentSegmentId}</span>
+                    {task.taskId === selectedBackgroundAgentId ? (
                       <span>{t('selected')}</span>
                     ) : null}
                   </div>
                 </div>
-
                 <div className="flex flex-wrap justify-end gap-2">
-                  {agent.state === 'running' || agent.state === 'queued' ? (
+                  {['running', 'yielding', 'waiting_permission'].includes(task.state) ? (
                     <>
                       <Button
                         disabled={pauseMutation.isPending}
-                        onClick={() => pauseMutation.mutate(agentRequest(agent))}
+                        onClick={() => pauseMutation.mutate(task)}
                         size="sm"
                         type="button"
                         variant="outline"
@@ -140,7 +106,7 @@ export function BackgroundAgentsPanel({
                       </Button>
                       <Button
                         disabled={cancelMutation.isPending}
-                        onClick={() => cancelMutation.mutate(agentRequest(agent))}
+                        onClick={() => cancelMutation.mutate(task)}
                         size="sm"
                         type="button"
                         variant="outline"
@@ -150,11 +116,10 @@ export function BackgroundAgentsPanel({
                       </Button>
                     </>
                   ) : null}
-
-                  {['interrupted', 'paused', 'recoverable'].includes(agent.state) ? (
+                  {task.state === 'interrupted' && !task.archived ? (
                     <Button
                       disabled={resumeMutation.isPending}
-                      onClick={() => resumeMutation.mutate(agentRequest(agent))}
+                      onClick={() => resumeMutation.mutate(task)}
                       size="sm"
                       type="button"
                       variant="outline"
@@ -163,11 +128,10 @@ export function BackgroundAgentsPanel({
                       {t('actions.resume')}
                     </Button>
                   ) : null}
-
-                  {canArchive(agent.state) ? (
+                  {canArchive(task) ? (
                     <Button
                       disabled={archiveMutation.isPending}
-                      onClick={() => archiveMutation.mutate(agentRequest(agent))}
+                      onClick={() => archiveMutation.mutate(task)}
                       size="sm"
                       type="button"
                       variant="outline"
@@ -176,11 +140,10 @@ export function BackgroundAgentsPanel({
                       {t('actions.archive')}
                     </Button>
                   ) : null}
-
-                  {agent.state === 'archived' ? (
+                  {task.archived ? (
                     <Button
                       disabled={deleteMutation.isPending}
-                      onClick={() => deleteMutation.mutate(agentRequest(agent))}
+                      onClick={() => deleteMutation.mutate(task)}
                       size="sm"
                       type="button"
                       variant="outline"
@@ -191,39 +154,33 @@ export function BackgroundAgentsPanel({
                   ) : null}
                 </div>
               </div>
-
-              {agent.state === 'waiting_for_input' ? (
+              {task.state === 'interrupted' && !task.archived ? (
                 <div className="mt-3 flex flex-wrap items-end gap-2">
                   <label
                     className="flex min-w-64 flex-1 flex-col gap-1 text-sm"
-                    htmlFor={`background-agent-input-${agent.backgroundAgentId}`}
+                    htmlFor={`background-agent-input-${task.taskId}`}
                   >
                     <span className="font-medium">{t('input.label')}</span>
                     <Input
-                      id={`background-agent-input-${agent.backgroundAgentId}`}
+                      id={`background-agent-input-${task.taskId}`}
                       onChange={(event) =>
                         setInputDrafts((current) => ({
                           ...current,
-                          [agent.backgroundAgentId]: event.target.value,
+                          [task.taskId]: event.target.value,
                         }))
                       }
-                      value={inputDrafts[agent.backgroundAgentId] ?? ''}
+                      value={inputDrafts[task.taskId] ?? ''}
                     />
                   </label>
                   <Button
-                    disabled={sendInputMutation.isPending || !agent.pendingInputRequestId}
-                    onClick={() => submitInput(agent)}
+                    disabled={sendInputMutation.isPending}
+                    onClick={() => submitInput(task)}
                     size="sm"
                     type="button"
                   >
                     <Send data-icon className="size-4" />
                     {t('input.send')}
                   </Button>
-                  {!agent.pendingInputRequestId ? (
-                    <p className="basis-full text-muted-foreground text-xs">
-                      {t('input.pendingRequestMissing')}
-                    </p>
-                  ) : null}
                 </div>
               ) : null}
             </Card>

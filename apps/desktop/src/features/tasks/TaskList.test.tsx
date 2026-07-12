@@ -35,6 +35,22 @@ describe('groupSidebarTasks', () => {
     expect(groups.projects[1]?.tasks).toEqual([])
     expect(groups.conversations.map((task) => task.taskId)).toEqual([taskId(4), taskId(3)])
   })
+
+  it('excludes every child task from ordinary sidebar groups', () => {
+    const child = projection(5, 'running', { root: '/repo/alpha' })
+    child.parent = {
+      attachment: 'detached',
+      delegationId: taskId(20),
+      parentSegmentId: taskId(21),
+      parentTaskId: taskId(22),
+    }
+
+    const groups = groupSidebarTasks([child], projects, defaultRoot)
+
+    expect(groups.pinned).toEqual([])
+    expect(groups.projects.every((group) => group.tasks.length === 0)).toBe(true)
+    expect(groups.conversations).toEqual([])
+  })
 })
 
 describe('TaskList', () => {
