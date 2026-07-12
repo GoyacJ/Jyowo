@@ -10,12 +10,12 @@ use chrono::{DateTime, Utc};
 #[cfg(feature = "blob-file")]
 use fs2::FileExt;
 use harness_contracts::{
-    now, ActorId, BlobId, CheckpointId, ClientId, CommandId, Event, EventId, EventSource,
-    EventSourceKind, IdParseError, IndeterminateToolDecision, PermissionMode, QueueItemId,
-    QueueItemProjection, RedactRules, Redactor, RequestId, RunId, RunSegmentId, RunState,
-    RunTerminalReason, SessionId, SubagentActorState, SubagentId, SubagentParentProjection,
-    SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection, TenantId,
-    TimelineItemProjection, ToolUseId, WorkspaceLeaseId, WorkspaceLeaseProjection,
+    now, ActorId, BlobId, CheckpointId, ChildAttachment, ClientId, CommandId, Event, EventId,
+    EventSource, EventSourceKind, IdParseError, IndeterminateToolDecision, PermissionMode,
+    QueueItemId, QueueItemProjection, RedactRules, Redactor, RequestId, RunId, RunSegmentId,
+    RunState, RunTerminalReason, SessionId, SubagentActorState, SubagentId,
+    SubagentParentProjection, SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection,
+    TenantId, TimelineItemProjection, ToolUseId, WorkspaceLeaseId, WorkspaceLeaseProjection,
     WorkspaceLeaseState, WorkspaceMode, WorkspaceSelection, MAX_DAEMON_TASK_EVENT_PAGE_BYTES,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -582,6 +582,7 @@ impl TaskStore {
             parent_task_id: child.parent_task_id,
             parent_segment_id: child.parent_segment_id,
             delegation_id: child.delegation_id,
+            attachment: ChildAttachment::Attached,
         };
         let supervisor = Self::supervisor_authority();
         let mut child_events = append_in_transaction(
@@ -664,6 +665,11 @@ impl TaskStore {
             parent_task_id: existing.parent_task_id,
             parent_segment_id: existing.parent_segment_id,
             delegation_id: existing.delegation_id,
+            attachment: if existing.detached {
+                ChildAttachment::Detached
+            } else {
+                ChildAttachment::Attached
+            },
         };
         if child_projection.actor_id != Some(existing.actor_id)
             || child_projection.parent.as_ref() != Some(&expected_parent)
@@ -865,6 +871,7 @@ impl TaskStore {
                 parent_task_id: existing.parent_task_id,
                 parent_segment_id: existing.parent_segment_id,
                 delegation_id: existing.delegation_id,
+                attachment: ChildAttachment::Attached,
             };
             if child_projection.actor_id != Some(existing.actor_id)
                 || child_projection.parent.as_ref() != Some(&expected_parent)

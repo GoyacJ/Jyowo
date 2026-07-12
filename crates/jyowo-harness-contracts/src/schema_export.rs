@@ -313,6 +313,47 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "diagnostic_item", DiagnosticItem);
     insert_schema!(schemas, "automation_spec", AutomationSpec);
     insert_schema!(schemas, "automation_run_record", AutomationRunRecord);
+    insert_schema!(schemas, "automations_response", AutomationsResponse);
+    insert_schema!(
+        schemas,
+        "automation_saved_response",
+        AutomationSavedResponse
+    );
+    insert_schema!(
+        schemas,
+        "automation_enabled_response",
+        AutomationEnabledResponse
+    );
+    insert_schema!(
+        schemas,
+        "automation_deleted_response",
+        AutomationDeletedResponse
+    );
+    insert_schema!(schemas, "automation_run_response", AutomationRunResponse);
+    insert_schema!(schemas, "automation_runs_response", AutomationRunsResponse);
+    insert_schema!(
+        schemas,
+        "list_runtime_tools_response",
+        ListRuntimeToolsResponse
+    );
+    insert_schema!(schemas, "runtime_tool_summary", RuntimeToolSummary);
+    insert_schema!(
+        schemas,
+        "runtime_tool_service_binding_summary",
+        RuntimeToolServiceBindingSummary
+    );
+    insert_schema!(
+        schemas,
+        "list_memory_items_response",
+        ListMemoryItemsResponse
+    );
+    insert_schema!(schemas, "get_memory_item_response", GetMemoryItemResponse);
+    insert_schema!(
+        schemas,
+        "delete_memory_item_response",
+        DeleteMemoryItemResponse
+    );
+    insert_schema!(schemas, "child_attachment", ChildAttachment);
     insert_schema!(
         schemas,
         "provider_service_adapter_availability",

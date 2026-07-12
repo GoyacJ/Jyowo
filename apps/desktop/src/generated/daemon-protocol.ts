@@ -122,6 +122,54 @@ export type ClientRequest =
       type: 'list_tasks'
     }
   | {
+      type: 'list_runtime_tools'
+      workspaceRoot?: string | null
+    }
+  | {
+      type: 'list_memory_items'
+      workspaceRoot?: string | null
+    }
+  | {
+      memoryId: TypedUlid
+      type: 'get_memory_item'
+      workspaceRoot?: string | null
+    }
+  | {
+      memoryId: TypedUlid
+      type: 'delete_memory_item'
+      workspaceRoot?: string | null
+    }
+  | {
+      type: 'list_automations'
+      workspaceRoot?: string | null
+    }
+  | {
+      automation: AutomationSpec
+      type: 'save_automation'
+      workspaceRoot?: string | null
+    }
+  | {
+      automationId: string
+      enabled: boolean
+      type: 'set_automation_enabled'
+      workspaceRoot?: string | null
+    }
+  | {
+      automationId: string
+      type: 'delete_automation'
+      workspaceRoot?: string | null
+    }
+  | {
+      automationId: string
+      type: 'run_automation_now'
+      workspaceRoot?: string | null
+    }
+  | {
+      automationId?: string | null
+      type: 'list_automation_runs'
+      workspaceRoot?: string | null
+    }
+  | {
       base64Data: string
       mediaType: string
       taskId: TypedUlid
@@ -156,6 +204,93 @@ export type StopMode = 'safe_point' | 'force'
  * via the `definition` "IndeterminateToolResolution".
  */
 export type IndeterminateToolResolution = 'treat_as_failed' | 'execute_again'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "PermissionMode".
+ */
+export type PermissionMode =
+  | 'default'
+  | 'plan'
+  | 'accept_edits'
+  | 'bypass_permissions'
+  | 'dont_ask'
+  | 'auto'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "SandboxMode".
+ */
+export type SandboxMode =
+  | ('none' | 'container' | 'remote')
+  | {
+      os_level: LocalIsolationTag
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "LocalIsolationTag".
+ */
+export type LocalIsolationTag = 'none' | 'bubblewrap' | 'seatbelt' | 'job_object'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "ToolProfile".
+ */
+export type ToolProfile =
+  | ('minimal' | 'coding' | 'full')
+  | {
+      custom: {
+        allowlist?: string[]
+        denylist?: string[]
+        group_allowlist?: ToolGroup[]
+        group_denylist?: ToolGroup[]
+        mcp_included?: boolean
+        plugin_included?: boolean
+      }
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "ToolGroup".
+ */
+export type ToolGroup =
+  | (
+      | 'file_system'
+      | 'search'
+      | 'network'
+      | 'shell'
+      | 'git'
+      | 'worktree'
+      | 'session'
+      | 'artifact'
+      | 'browser'
+      | 'computer'
+      | 'image'
+      | 'notebook'
+      | 'lsp'
+      | 'automation'
+      | 'workflow'
+      | 'agent'
+      | 'coordinator'
+      | 'memory'
+      | 'clarification'
+      | 'meta'
+    )
+  | {
+      custom: string
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "WorkspaceAccess".
+ */
+export type WorkspaceAccess =
+  | ('none' | 'read_only')
+  | {
+      read_write: {
+        allowed_writable_subpaths: string[]
+      }
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "AutomationWorkspaceScope".
+ */
+export type AutomationWorkspaceScope = 'current_workspace'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "ServerMessage".
@@ -198,6 +333,47 @@ export type ServerMessage =
   | {
       tasks: TaskProjection[]
       type: 'task_list'
+    }
+  | {
+      generation: number
+      tools: RuntimeToolSummary[]
+      type: 'runtime_tools'
+    }
+  | {
+      items: MemoryRecord[]
+      type: 'memory_items'
+    }
+  | {
+      item?: MemoryRecord | null
+      type: 'memory_item'
+    }
+  | {
+      memoryId: TypedUlid
+      type: 'memory_deleted'
+    }
+  | {
+      automations: AutomationSpec[]
+      type: 'automations'
+    }
+  | {
+      automation: AutomationSpec
+      type: 'automation_saved'
+    }
+  | {
+      automation: AutomationSpec
+      type: 'automation_enabled'
+    }
+  | {
+      automationId: string
+      type: 'automation_deleted'
+    }
+  | {
+      run: AutomationRunRecord
+      type: 'automation_run'
+    }
+  | {
+      runs: AutomationRunRecord[]
+      type: 'automation_runs'
     }
   | {
       afterOffset: number
@@ -298,6 +474,11 @@ export type RunTerminalReason =
   | 'failed'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "ChildAttachment".
+ */
+export type ChildAttachment = 'attached' | 'detached'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "DaemonPermissionKind".
  */
 export type DaemonPermissionKind = 'command' | 'filesystem' | 'network' | 'mcp' | 'automation'
@@ -361,6 +542,41 @@ export type EventSourceKind =
   | 'recovery'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryKind".
+ */
+export type MemoryKind =
+  | ('user_preference' | 'feedback' | 'project_fact' | 'reference' | 'agent_self_note')
+  | {
+      custom: string
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryVisibility".
+ */
+export type MemoryVisibility =
+  | 'tenant'
+  | {
+      private: {
+        session_id: TypedUlid
+      }
+    }
+  | {
+      user: {
+        user_id: string
+      }
+    }
+  | {
+      team: {
+        team_id: TypedUlid
+      }
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "AutomationRunStatus".
+ */
+export type AutomationRunStatus = 'started' | 'rejected' | 'failed'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "ProtocolErrorCode".
  */
 export type ProtocolErrorCode =
@@ -372,15 +588,9 @@ export type ProtocolErrorCode =
   | 'internal'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "PermissionMode".
+ * via the `definition` "MissedRunPolicy".
  */
-export type PermissionMode =
-  | 'default'
-  | 'plan'
-  | 'accept_edits'
-  | 'bypass_permissions'
-  | 'dont_ask'
-  | 'auto'
+export type MissedRunPolicy = 'skip' | 'run_once'
 
 export interface DaemonProtocol {
   client: ClientFrame
@@ -419,6 +629,31 @@ export interface WorkspaceSelection {
 export interface IndeterminateToolDecision {
   resolution: IndeterminateToolResolution
   toolUseId: string
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "AutomationSpec".
+ */
+export interface AutomationSpec {
+  createdAt: string
+  enabled?: boolean
+  id: string
+  missedRunPolicy?: 'skip' | 'run_once'
+  permissionMode: PermissionMode
+  prompt: string
+  sandboxMode: SandboxMode
+  schedule: AutomationSchedule
+  toolProfile: ToolProfile
+  updatedAt: string
+  workspaceAccess: WorkspaceAccess
+  workspaceScope: AutomationWorkspaceScope
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "AutomationSchedule".
+ */
+export interface AutomationSchedule {
+  intervalMinutes: number
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
@@ -493,6 +728,7 @@ export interface RunProjection {
  * via the `definition` "SubagentParentProjection".
  */
 export interface SubagentParentProjection {
+  attachment: ChildAttachment
   delegationId: TypedUlid
   parentSegmentId: TypedUlid
   parentTaskId: TypedUlid
@@ -587,4 +823,79 @@ export interface EventSource {
   actorId?: TypedUlid | null
   clientId?: TypedUlid | null
   kind: EventSourceKind
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "RuntimeToolSummary".
+ */
+export interface RuntimeToolSummary {
+  access: string
+  category: string
+  deferPolicy: string
+  description: string
+  displayName: string
+  executionChannel: string
+  group: string
+  groupLabel: string
+  longRunning: boolean
+  name: string
+  originId?: string | null
+  originKind: string
+  requiredCapabilities: string[]
+  serviceBinding?: RuntimeToolServiceBindingSummary | null
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "RuntimeToolServiceBindingSummary".
+ */
+export interface RuntimeToolServiceBindingSummary {
+  operationId: string
+  providerId: string
+  routeKind: string
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryRecord".
+ */
+export interface MemoryRecord {
+  content: string
+  created_at: string
+  deleted_at?: string | null
+  expires_at?: string | null
+  id: TypedUlid
+  kind: MemoryKind
+  metadata: MemoryMetadata
+  tenant_id: TypedUlid
+  updated_at: string
+  visibility: MemoryVisibility
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryMetadata".
+ */
+export interface MemoryMetadata {
+  source_trust?: number
+  tags?: string[]
+  ttl?: Duration | null
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "Duration".
+ */
+export interface Duration {
+  nanos: number
+  secs: number
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "AutomationRunRecord".
+ */
+export interface AutomationRunRecord {
+  automationId: string
+  completedAt?: string | null
+  id: string
+  message?: string | null
+  runId?: string | null
+  startedAt: string
+  status: AutomationRunStatus
 }

@@ -338,6 +338,19 @@ impl IpcConnection {
                 ProtocolErrorCode::InvalidFrame,
                 "command requires the task supervisor",
             ),
+            ClientRequest::ListRuntimeTools { .. }
+            | ClientRequest::ListMemoryItems { .. }
+            | ClientRequest::GetMemoryItem { .. }
+            | ClientRequest::DeleteMemoryItem { .. }
+            | ClientRequest::ListAutomations { .. }
+            | ClientRequest::SaveAutomation { .. }
+            | ClientRequest::SetAutomationEnabled { .. }
+            | ClientRequest::DeleteAutomation { .. }
+            | ClientRequest::RunAutomationNow { .. }
+            | ClientRequest::ListAutomationRuns { .. } => protocol_error(
+                ProtocolErrorCode::InvalidFrame,
+                "runtime request is not implemented",
+            ),
             ClientRequest::Handshake(_) => unreachable!("handshake handled above"),
         };
         Ok(vec![server_frame(Some(request_id), message)])

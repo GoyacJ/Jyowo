@@ -24,6 +24,17 @@ fn daemon_protocol_exports_one_versioned_schema() {
         "subscribe_events",
         "load_task_events",
         "read_blob",
+        "list_runtime_tools",
+        "list_memory_items",
+        "get_memory_item",
+        "delete_memory_item",
+        "list_automations",
+        "save_automation",
+        "set_automation_enabled",
+        "delete_automation",
+        "run_automation_now",
+        "list_automation_runs",
+        "detached",
     ] {
         assert!(text.contains(required), "missing {required}");
     }

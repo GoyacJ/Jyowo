@@ -70,3 +70,39 @@ pub struct AutomationRunRecord {
     pub started_at: DateTime<Utc>,
     pub status: AutomationRunStatus,
 }
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AutomationsResponse {
+    pub automations: Vec<AutomationSpec>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AutomationSavedResponse {
+    pub automation: AutomationSpec,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AutomationEnabledResponse {
+    pub automation: AutomationSpec,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AutomationDeletedResponse {
+    pub automation_id: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AutomationRunResponse {
+    pub run: AutomationRunRecord,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AutomationRunsResponse {
+    pub runs: Vec<AutomationRunRecord>,
+}

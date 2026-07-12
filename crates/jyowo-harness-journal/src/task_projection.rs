@@ -2,9 +2,9 @@
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    ActorId, DeltaChunk, Event, MessageContent, MessagePart, PromotionMode, QueueItemProjection,
-    QueueItemState, RunProjection, RunState, RunTerminalReason, SubagentProjection,
-    TaskEventEnvelope, TaskId, TaskProjection, TaskState, TimelineEventKind,
+    ActorId, ChildAttachment, DeltaChunk, Event, MessageContent, MessagePart, PromotionMode,
+    QueueItemProjection, QueueItemState, RunProjection, RunState, RunTerminalReason,
+    SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection, TaskState, TimelineEventKind,
     TimelineItemProjection,
 };
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -1477,6 +1477,13 @@ fn apply_subagent_update(
     if task_id == child.child_task_id {
         projection.actor_id = Some(child.actor_id);
         projection.context_cursor = child.context_cursor;
+        if let Some(parent) = projection.parent.as_mut() {
+            parent.attachment = if child.detached {
+                ChildAttachment::Detached
+            } else {
+                ChildAttachment::Attached
+            };
+        }
         return Ok(());
     }
     integrity("subagent update belongs to another task")

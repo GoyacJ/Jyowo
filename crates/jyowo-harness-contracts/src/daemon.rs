@@ -6,8 +6,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    ActorId, BlobId, CheckpointId, ClientId, CommandId, EventId, PermissionMode, QueueItemId,
-    RequestId, RunSegmentId, SubagentId, TaskId, WorkspaceLeaseId,
+    ActorId, AutomationDeletedResponse, AutomationEnabledResponse, AutomationRunResponse,
+    AutomationRunsResponse, AutomationSavedResponse, AutomationSpec, AutomationsResponse, BlobId,
+    CheckpointId, ClientId, CommandId, EventId, MemoryId, MemoryRecord, PermissionMode,
+    QueueItemId, RequestId, RunSegmentId, SubagentId, TaskId, WorkspaceLeaseId,
 };
 
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -76,6 +78,44 @@ pub enum ClientRequest {
         limit: u16,
     },
     ListTasks,
+    ListRuntimeTools {
+        workspace_root: Option<String>,
+    },
+    ListMemoryItems {
+        workspace_root: Option<String>,
+    },
+    GetMemoryItem {
+        workspace_root: Option<String>,
+        memory_id: MemoryId,
+    },
+    DeleteMemoryItem {
+        workspace_root: Option<String>,
+        memory_id: MemoryId,
+    },
+    ListAutomations {
+        workspace_root: Option<String>,
+    },
+    SaveAutomation {
+        workspace_root: Option<String>,
+        automation: AutomationSpec,
+    },
+    SetAutomationEnabled {
+        workspace_root: Option<String>,
+        automation_id: String,
+        enabled: bool,
+    },
+    DeleteAutomation {
+        workspace_root: Option<String>,
+        automation_id: String,
+    },
+    RunAutomationNow {
+        workspace_root: Option<String>,
+        automation_id: String,
+    },
+    ListAutomationRuns {
+        workspace_root: Option<String>,
+        automation_id: Option<String>,
+    },
     StageBlob(StageBlobCommand),
     ReadBlob {
         blob_id: BlobId,
@@ -91,7 +131,12 @@ pub struct ServerFrame {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum ServerMessage {
     Handshake(HandshakeResponse),
     CommandAccepted(CommandAccepted),
@@ -99,6 +144,16 @@ pub enum ServerMessage {
     TaskSnapshot(TaskSnapshot),
     TaskEventPage(TaskEventPage),
     TaskList { tasks: Vec<TaskProjection> },
+    RuntimeTools(ListRuntimeToolsResponse),
+    MemoryItems(ListMemoryItemsResponse),
+    MemoryItem(GetMemoryItemResponse),
+    MemoryDeleted(DeleteMemoryItemResponse),
+    Automations(AutomationsResponse),
+    AutomationSaved(AutomationSavedResponse),
+    AutomationEnabled(AutomationEnabledResponse),
+    AutomationDeleted(AutomationDeletedResponse),
+    AutomationRun(AutomationRunResponse),
+    AutomationRuns(AutomationRunsResponse),
     EventBatch(TaskEventBatch),
     Blob(BlobPayload),
     Error(ProtocolError),
@@ -109,6 +164,58 @@ pub enum ServerMessage {
 pub struct DaemonProtocol {
     pub client: ClientFrame,
     pub server: ServerFrame,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListRuntimeToolsResponse {
+    pub generation: u64,
+    pub tools: Vec<RuntimeToolSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeToolSummary {
+    pub name: String,
+    pub display_name: String,
+    pub description: String,
+    pub category: String,
+    pub group: String,
+    pub group_label: String,
+    pub origin_kind: String,
+    pub origin_id: Option<String>,
+    pub access: String,
+    pub execution_channel: String,
+    pub required_capabilities: Vec<String>,
+    pub defer_policy: String,
+    pub long_running: bool,
+    pub service_binding: Option<RuntimeToolServiceBindingSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeToolServiceBindingSummary {
+    pub provider_id: String,
+    pub operation_id: String,
+    pub route_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListMemoryItemsResponse {
+    pub items: Vec<MemoryRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetMemoryItemResponse {
+    pub item: Option<MemoryRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeleteMemoryItemResponse {
+    pub memory_id: MemoryId,
 }
 
 #[must_use]
@@ -577,6 +684,14 @@ pub struct SubagentParentProjection {
     pub parent_task_id: TaskId,
     pub parent_segment_id: RunSegmentId,
     pub delegation_id: SubagentId,
+    pub attachment: ChildAttachment,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildAttachment {
+    Attached,
+    Detached,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

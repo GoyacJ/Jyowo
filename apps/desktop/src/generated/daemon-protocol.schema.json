@@ -36,6 +36,143 @@
         "backgroundAgents"
       ]
     },
+    "AutomationRunRecord": {
+      "type": "object",
+      "properties": {
+        "automationId": {
+          "type": "string"
+        },
+        "completedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "id": {
+          "type": "string"
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "$ref": "#/$defs/AutomationRunStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "automationId",
+        "id",
+        "startedAt",
+        "status"
+      ]
+    },
+    "AutomationRunStatus": {
+      "type": "string",
+      "enum": [
+        "started",
+        "rejected",
+        "failed"
+      ]
+    },
+    "AutomationSchedule": {
+      "type": "object",
+      "properties": {
+        "intervalMinutes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "intervalMinutes"
+      ]
+    },
+    "AutomationSpec": {
+      "type": "object",
+      "properties": {
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "id": {
+          "type": "string"
+        },
+        "missedRunPolicy": {
+          "$ref": "#/$defs/MissedRunPolicy",
+          "default": "skip"
+        },
+        "permissionMode": {
+          "$ref": "#/$defs/PermissionMode"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "sandboxMode": {
+          "$ref": "#/$defs/SandboxMode"
+        },
+        "schedule": {
+          "$ref": "#/$defs/AutomationSchedule"
+        },
+        "toolProfile": {
+          "$ref": "#/$defs/ToolProfile"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "workspaceAccess": {
+          "$ref": "#/$defs/WorkspaceAccess"
+        },
+        "workspaceScope": {
+          "$ref": "#/$defs/AutomationWorkspaceScope"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "prompt",
+        "schedule",
+        "toolProfile",
+        "permissionMode",
+        "sandboxMode",
+        "workspaceScope",
+        "workspaceAccess",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AutomationWorkspaceScope": {
+      "type": "string",
+      "enum": [
+        "current_workspace"
+      ]
+    },
+    "ChildAttachment": {
+      "type": "string",
+      "enum": [
+        "attached",
+        "detached"
+      ]
+    },
     "ClientFrame": {
       "type": "object",
       "properties": {
@@ -556,6 +693,230 @@
         {
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "list_runtime_tools"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "list_memory_items"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "memoryId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "get_memory_item"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "memoryId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "memoryId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "delete_memory_item"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "memoryId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "list_automations"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "automation": {
+              "$ref": "#/$defs/AutomationSpec"
+            },
+            "type": {
+              "type": "string",
+              "const": "save_automation"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "automation"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "automationId": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "set_automation_enabled"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "automationId",
+            "enabled"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "automationId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "delete_automation"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "automationId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "automationId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "run_automation_now"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "automationId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "automationId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "list_automation_runs"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "base64Data": {
               "type": "string"
             },
@@ -641,6 +1002,25 @@
         "automation"
       ]
     },
+    "Duration": {
+      "type": "object",
+      "properties": {
+        "nanos": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "secs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "secs",
+        "nanos"
+      ]
+    },
     "EventSource": {
       "type": "object",
       "properties": {
@@ -707,6 +1087,199 @@
       "enum": [
         "treat_as_failed",
         "execute_again"
+      ]
+    },
+    "LocalIsolationTag": {
+      "type": "string",
+      "enum": [
+        "none",
+        "bubblewrap",
+        "seatbelt",
+        "job_object"
+      ]
+    },
+    "MemoryKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "user_preference",
+            "feedback",
+            "project_fact",
+            "reference",
+            "agent_self_note"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "custom": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "custom"
+          ]
+        }
+      ]
+    },
+    "MemoryMetadata": {
+      "type": "object",
+      "properties": {
+        "source_trust": {
+          "type": "number",
+          "format": "double",
+          "default": 0.5
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ttl": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "MemoryRecord": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "deleted_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "kind": {
+          "$ref": "#/$defs/MemoryKind"
+        },
+        "metadata": {
+          "$ref": "#/$defs/MemoryMetadata"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "visibility": {
+          "$ref": "#/$defs/MemoryVisibility"
+        }
+      },
+      "required": [
+        "id",
+        "tenant_id",
+        "kind",
+        "visibility",
+        "content",
+        "metadata",
+        "created_at",
+        "updated_at"
+      ]
+    },
+    "MemoryVisibility": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "tenant"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "private": {
+              "type": "object",
+              "properties": {
+                "session_id": {
+                  "$ref": "#/$defs/TypedUlid"
+                }
+              },
+              "required": [
+                "session_id"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "private"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "user": {
+              "type": "object",
+              "properties": {
+                "user_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "user_id"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "user"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "team": {
+              "type": "object",
+              "properties": {
+                "team_id": {
+                  "$ref": "#/$defs/TypedUlid"
+                }
+              },
+              "required": [
+                "team_id"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "team"
+          ]
+        }
+      ]
+    },
+    "MissedRunPolicy": {
+      "type": "string",
+      "enum": [
+        "skip",
+        "run_once"
       ]
     },
     "PermissionMode": {
@@ -987,6 +1560,125 @@
         "failed"
       ]
     },
+    "RuntimeToolServiceBindingSummary": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "providerId": {
+          "type": "string"
+        },
+        "routeKind": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "providerId",
+        "operationId",
+        "routeKind"
+      ]
+    },
+    "RuntimeToolSummary": {
+      "type": "object",
+      "properties": {
+        "access": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "deferPolicy": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "executionChannel": {
+          "type": "string"
+        },
+        "group": {
+          "type": "string"
+        },
+        "groupLabel": {
+          "type": "string"
+        },
+        "longRunning": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "originId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "originKind": {
+          "type": "string"
+        },
+        "requiredCapabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "serviceBinding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeToolServiceBindingSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "displayName",
+        "description",
+        "category",
+        "group",
+        "groupLabel",
+        "originKind",
+        "access",
+        "executionChannel",
+        "requiredCapabilities",
+        "deferPolicy",
+        "longRunning"
+      ]
+    },
+    "SandboxMode": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "none",
+            "container",
+            "remote"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "os_level": {
+              "$ref": "#/$defs/LocalIsolationTag"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "os_level"
+          ]
+        }
+      ]
+    },
     "ServerFrame": {
       "type": "object",
       "properties": {
@@ -1218,6 +1910,200 @@
         {
           "type": "object",
           "properties": {
+            "generation": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RuntimeToolSummary"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "runtime_tools"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "generation",
+            "tools"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/MemoryRecord"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "memory_items"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "items"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "item": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MemoryRecord"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "memory_item"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "memoryId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "memory_deleted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "memoryId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "automations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AutomationSpec"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "automations"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "automations"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "automation": {
+              "$ref": "#/$defs/AutomationSpec"
+            },
+            "type": {
+              "type": "string",
+              "const": "automation_saved"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "automation"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "automation": {
+              "$ref": "#/$defs/AutomationSpec"
+            },
+            "type": {
+              "type": "string",
+              "const": "automation_enabled"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "automation"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "automationId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "automation_deleted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "automationId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "run": {
+              "$ref": "#/$defs/AutomationRunRecord"
+            },
+            "type": {
+              "type": "string",
+              "const": "automation_run"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "run"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "runs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AutomationRunRecord"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "automation_runs"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "runs"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "afterOffset": {
               "type": "integer",
               "format": "uint64",
@@ -1345,6 +2231,9 @@
     "SubagentParentProjection": {
       "type": "object",
       "properties": {
+        "attachment": {
+          "$ref": "#/$defs/ChildAttachment"
+        },
         "delegationId": {
           "$ref": "#/$defs/TypedUlid"
         },
@@ -1359,7 +2248,8 @@
       "required": [
         "parentTaskId",
         "parentSegmentId",
-        "delegationId"
+        "delegationId",
+        "attachment"
       ]
     },
     "SubagentProjection": {
@@ -1688,9 +2578,148 @@
         "incomplete"
       ]
     },
+    "ToolGroup": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "file_system",
+            "search",
+            "network",
+            "shell",
+            "git",
+            "worktree",
+            "session",
+            "artifact",
+            "browser",
+            "computer",
+            "image",
+            "notebook",
+            "lsp",
+            "automation",
+            "workflow",
+            "agent",
+            "coordinator",
+            "memory",
+            "clarification",
+            "meta"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "custom": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "custom"
+          ]
+        }
+      ]
+    },
+    "ToolProfile": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "minimal",
+            "coding",
+            "full"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "custom": {
+              "type": "object",
+              "properties": {
+                "allowlist": {
+                  "type": "array",
+                  "default": [],
+                  "items": {
+                    "type": "string"
+                  },
+                  "uniqueItems": true
+                },
+                "denylist": {
+                  "type": "array",
+                  "default": [],
+                  "items": {
+                    "type": "string"
+                  },
+                  "uniqueItems": true
+                },
+                "group_allowlist": {
+                  "type": "array",
+                  "default": [],
+                  "items": {
+                    "$ref": "#/$defs/ToolGroup"
+                  }
+                },
+                "group_denylist": {
+                  "type": "array",
+                  "default": [],
+                  "items": {
+                    "$ref": "#/$defs/ToolGroup"
+                  }
+                },
+                "mcp_included": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "plugin_included": {
+                  "type": "boolean",
+                  "default": false
+                }
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "custom"
+          ]
+        }
+      ]
+    },
     "TypedUlid": {
       "type": "string",
       "format": "ulid"
+    },
+    "WorkspaceAccess": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "none",
+            "read_only"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "read_write": {
+              "type": "object",
+              "properties": {
+                "allowed_writable_subpaths": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "allowed_writable_subpaths"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "read_write"
+          ]
+        }
+      ]
     },
     "WorkspaceMode": {
       "type": "string",
