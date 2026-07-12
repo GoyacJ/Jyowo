@@ -17,7 +17,9 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use super::IpcError;
-use crate::{PermissionDecisionInput, QueueCommand, Supervisor, ValidatedTaskCommand};
+use crate::{
+    PermissionDecisionInput, QueueCommand, Supervisor, TaskMetadataMutation, ValidatedTaskCommand,
+};
 
 #[derive(Debug, Clone)]
 pub struct IpcServerConfig {
@@ -215,18 +217,23 @@ impl IpcConnection {
                 ServerMessage::EventBatch(batch)
             }
             ClientRequest::ListTasks => ServerMessage::TaskList {
-                tasks: self.store.task_projections()?,
+                tasks: self
+                    .store
+                    .task_projections()?
+                    .into_iter()
+                    .filter(|task| !task.removed)
+                    .collect(),
             },
             ClientRequest::LoadTask { task_id } => {
                 match self.store.task_projection_snapshot(task_id)? {
-                    Some((projection, snapshot_offset, timeline)) => {
+                    Some((projection, snapshot_offset, timeline)) if !projection.removed => {
                         ServerMessage::TaskSnapshot(TaskSnapshot {
                             snapshot_offset,
                             projection,
                             timeline,
                         })
                     }
-                    None => protocol_error(ProtocolErrorCode::NotFound, "task not found"),
+                    None | Some(_) => protocol_error(ProtocolErrorCode::NotFound, "task not found"),
                 }
             }
             ClientRequest::StageBlob(command) => {
@@ -298,6 +305,10 @@ impl IpcConnection {
                 None => protocol_error(ProtocolErrorCode::NotFound, "blob not found"),
             },
             ClientRequest::SubmitMessage(_)
+            | ClientRequest::RenameTask(_)
+            | ClientRequest::SetTaskPinned(_)
+            | ClientRequest::SetTaskArchived(_)
+            | ClientRequest::RemoveTask(_)
             | ClientRequest::EditQueuedMessage(_)
             | ClientRequest::DeleteQueuedMessage(_)
             | ClientRequest::PromoteQueuedMessage(_)
@@ -350,7 +361,11 @@ impl IpcConnection {
 fn requires_task_supervisor(request: &ClientRequest) -> bool {
     matches!(
         request,
-        ClientRequest::SubmitMessage(_)
+        ClientRequest::RenameTask(_)
+            | ClientRequest::SetTaskPinned(_)
+            | ClientRequest::SetTaskArchived(_)
+            | ClientRequest::RemoveTask(_)
+            | ClientRequest::SubmitMessage(_)
             | ClientRequest::EditQueuedMessage(_)
             | ClientRequest::DeleteQueuedMessage(_)
             | ClientRequest::PromoteQueuedMessage(_)
@@ -378,6 +393,44 @@ fn validated_task_command(
     request: ClientRequest,
 ) -> Result<Option<(TaskId, ValidatedTaskCommand)>, IpcError> {
     let command = match request {
+        ClientRequest::RenameTask(request) => {
+            let task_id = request.task_id;
+            let payload = serde_json::to_value(&request)?;
+            ValidatedTaskCommand::Metadata {
+                command: accepted_command(client_id, task_id, request.metadata, payload),
+                mutation: TaskMetadataMutation::Rename {
+                    title: request.title,
+                },
+            }
+        }
+        ClientRequest::SetTaskPinned(request) => {
+            let task_id = request.task_id;
+            let payload = serde_json::to_value(&request)?;
+            ValidatedTaskCommand::Metadata {
+                command: accepted_command(client_id, task_id, request.metadata, payload),
+                mutation: TaskMetadataMutation::SetPinned {
+                    pinned: request.pinned,
+                },
+            }
+        }
+        ClientRequest::SetTaskArchived(request) => {
+            let task_id = request.task_id;
+            let payload = serde_json::to_value(&request)?;
+            ValidatedTaskCommand::Metadata {
+                command: accepted_command(client_id, task_id, request.metadata, payload),
+                mutation: TaskMetadataMutation::SetArchived {
+                    archived: request.archived,
+                },
+            }
+        }
+        ClientRequest::RemoveTask(request) => {
+            let task_id = request.task_id;
+            let payload = serde_json::to_value(&request)?;
+            ValidatedTaskCommand::Metadata {
+                command: accepted_command(client_id, task_id, request.metadata, payload),
+                mutation: TaskMetadataMutation::Remove,
+            }
+        }
         ClientRequest::SubmitMessage(request) => {
             let task_id = request.task_id;
             let command_id = request.metadata.command_id;
@@ -453,7 +506,8 @@ fn validated_task_command(
         _ => return Ok(None),
     };
     let task_id = match &command {
-        ValidatedTaskCommand::SubmitMessage { command, .. }
+        ValidatedTaskCommand::Metadata { command, .. }
+        | ValidatedTaskCommand::SubmitMessage { command, .. }
         | ValidatedTaskCommand::StartSegment { command, .. }
         | ValidatedTaskCommand::ContinueTask { command, .. }
         | ValidatedTaskCommand::StopRun { command, .. }

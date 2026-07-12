@@ -107,6 +107,102 @@
         {
           "type": "object",
           "properties": {
+            "metadata": {
+              "$ref": "#/$defs/CommandMetadata"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "rename_task"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "metadata",
+            "taskId",
+            "title"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "metadata": {
+              "$ref": "#/$defs/CommandMetadata"
+            },
+            "pinned": {
+              "type": "boolean"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "set_task_pinned"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "metadata",
+            "taskId",
+            "pinned"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "archived": {
+              "type": "boolean"
+            },
+            "metadata": {
+              "$ref": "#/$defs/CommandMetadata"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "set_task_archived"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "metadata",
+            "taskId",
+            "archived"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "metadata": {
+              "$ref": "#/$defs/CommandMetadata"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "remove_task"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "metadata",
+            "taskId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "attachments": {
               "type": "array",
               "items": {
@@ -1362,11 +1458,19 @@
             }
           ]
         },
+        "pinned": {
+          "type": "boolean",
+          "default": false
+        },
         "queue": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/QueueItemProjection"
           }
+        },
+        "removed": {
+          "type": "boolean",
+          "default": false
         },
         "state": {
           "$ref": "#/$defs/TaskState"

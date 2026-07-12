@@ -283,6 +283,9 @@ fn ensure_foreground_workspace(
     else {
         return Ok(());
     };
+    if projection.removed {
+        return Ok(());
+    }
     let segment_command = matches!(
         command,
         ValidatedTaskCommand::SubmitMessage { .. }

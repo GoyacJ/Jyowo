@@ -16,6 +16,10 @@ fn daemon_protocol_exports_one_versioned_schema() {
         "edit_queued_message",
         "delete_queued_message",
         "promote_queued_message",
+        "rename_task",
+        "set_task_pinned",
+        "set_task_archived",
+        "remove_task",
         "resolve_permission",
         "subscribe_events",
         "read_blob",
@@ -32,6 +36,42 @@ fn daemon_protocol_exports_one_versioned_schema() {
     assert_eq!(value["request"]["type"], "subscribe_events");
     assert_eq!(value["request"]["afterOffset"], 42);
     assert!(value["request"].get("after_offset").is_none());
+}
+
+#[test]
+fn task_metadata_commands_use_task_scoped_camel_case_contracts() {
+    for (request_type, extra) in [
+        ("rename_task", json!({ "title": "Renamed" })),
+        ("set_task_pinned", json!({ "pinned": true })),
+        ("set_task_archived", json!({ "archived": true })),
+        ("remove_task", json!({})),
+    ] {
+        let mut request = json!({
+            "type": request_type,
+            "metadata": {
+                "commandId": "00000000000000000000000001",
+                "idempotencyKey": format!("{request_type}-1"),
+                "expectedStreamVersion": 4
+            },
+            "taskId": "00000000000000000000000002"
+        });
+        request
+            .as_object_mut()
+            .expect("request object")
+            .extend(extra.as_object().expect("extra object").clone());
+        let frame = json!({
+            "requestId": "req-1",
+            "protocolVersion": PROTOCOL_VERSION,
+            "request": request
+        });
+
+        let parsed = serde_json::from_value::<ClientFrame>(frame).expect("metadata command parses");
+        let encoded = serde_json::to_value(parsed).expect("metadata command serializes");
+
+        assert_eq!(encoded["request"]["type"], request_type);
+        assert_eq!(encoded["request"]["expectedStreamVersion"], json!(null));
+        assert_eq!(encoded["request"]["metadata"]["expectedStreamVersion"], 4);
+    }
 }
 
 #[test]

@@ -1327,6 +1327,27 @@ impl TaskStore {
             return Ok(outcome);
         }
 
+        if projection.removed {
+            let outcome = CommandOutcome::Rejected {
+                command_id: command.command_id,
+                task_id: command.task_id,
+                rejection: CommandRejection::InvalidCommand {
+                    message: "removed tasks cannot accept new commands".into(),
+                },
+            };
+            finish_command(
+                &transaction,
+                command.command_id,
+                "rejected",
+                &outcome,
+                actual,
+                latest_global_offset_in_transaction(&transaction)?,
+                0,
+            )?;
+            transaction.commit()?;
+            return Ok(outcome);
+        }
+
         if let Some(authority) = workspace_authority.as_ref() {
             if let Err(rejection) =
                 validate_workspace_command_authority(&transaction, authority, command.task_id)

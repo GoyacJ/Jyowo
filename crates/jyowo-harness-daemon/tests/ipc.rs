@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use harness_contracts::{
-    now, ClientFrame, ClientId, ClientRequest, CommandId, CommandMetadata, ContinueTaskCommand,
-    CreateTaskCommand, DaemonPermissionKind, HandshakeRequest, PermissionOption, QueueItemId,
-    RequestId, ResolvePermissionCommand, RunSegmentId, RunState, RunTerminalReason, ServerMessage,
-    StopMode, StopRunCommand, TaskState, ToolUseId, WorkspaceMode, WorkspaceSelection,
-    MAX_DAEMON_BLOB_BYTES, PROTOCOL_VERSION,
+    now, ClientFrame, ClientId, ClientRequest, CommandId, CommandMetadata, CommandRejectionReason,
+    ContinueTaskCommand, CreateTaskCommand, DaemonPermissionKind, HandshakeRequest,
+    PermissionOption, QueueItemId, RequestId, ResolvePermissionCommand, RunSegmentId, RunState,
+    RunTerminalReason, ServerMessage, StopMode, StopRunCommand, TaskState, ToolUseId,
+    WorkspaceMode, WorkspaceSelection, MAX_DAEMON_BLOB_BYTES, PROTOCOL_VERSION,
 };
 use harness_daemon::{
     encode_frame, IpcConnection, IpcServerConfig, JsonFrameDecoder, LocalIpcServer,

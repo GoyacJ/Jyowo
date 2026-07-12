@@ -21,6 +21,29 @@ export type ClientRequest =
       workspace: WorkspaceSelection
     }
   | {
+      metadata: CommandMetadata
+      taskId: TypedUlid
+      title: string
+      type: 'rename_task'
+    }
+  | {
+      metadata: CommandMetadata
+      pinned: boolean
+      taskId: TypedUlid
+      type: 'set_task_pinned'
+    }
+  | {
+      archived: boolean
+      metadata: CommandMetadata
+      taskId: TypedUlid
+      type: 'set_task_archived'
+    }
+  | {
+      metadata: CommandMetadata
+      taskId: TypedUlid
+      type: 'remove_task'
+    }
+  | {
       attachments: TypedUlid[]
       content: string
       contextReferences: string[]
@@ -420,7 +443,9 @@ export interface TaskProjection {
   lastGlobalOffset: number
   parent?: SubagentParentProjection | null
   pendingPermission?: PermissionProjection | null
+  pinned?: boolean
   queue: QueueItemProjection[]
+  removed?: boolean
   state: TaskState
   streamVersion: number
   subagents?: SubagentProjection[]

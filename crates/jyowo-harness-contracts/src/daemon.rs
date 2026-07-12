@@ -47,6 +47,10 @@ pub struct ClientFrame {
 pub enum ClientRequest {
     Handshake(HandshakeRequest),
     CreateTask(CreateTaskCommand),
+    RenameTask(RenameTaskCommand),
+    SetTaskPinned(SetTaskPinnedCommand),
+    SetTaskArchived(SetTaskArchivedCommand),
+    RemoveTask(RemoveTaskCommand),
     SubmitMessage(SubmitMessageCommand),
     EditQueuedMessage(EditQueuedMessageCommand),
     DeleteQueuedMessage(DeleteQueuedMessageCommand),
@@ -126,6 +130,37 @@ pub struct CreateTaskCommand {
     pub metadata: CommandMetadata,
     pub title: String,
     pub workspace: WorkspaceSelection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RenameTaskCommand {
+    pub metadata: CommandMetadata,
+    pub task_id: TaskId,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetTaskPinnedCommand {
+    pub metadata: CommandMetadata,
+    pub task_id: TaskId,
+    pub pinned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetTaskArchivedCommand {
+    pub metadata: CommandMetadata,
+    pub task_id: TaskId,
+    pub archived: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoveTaskCommand {
+    pub metadata: CommandMetadata,
+    pub task_id: TaskId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

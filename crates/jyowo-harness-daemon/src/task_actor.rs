@@ -31,6 +31,10 @@ pub enum TaskActorMessage {
 
 #[derive(Debug, Clone)]
 pub enum ValidatedTaskCommand {
+    Metadata {
+        command: AcceptedCommand,
+        mutation: TaskMetadataMutation,
+    },
     SubmitMessage {
         command: AcceptedCommand,
         queue_item_id: QueueItemId,
@@ -64,6 +68,14 @@ pub enum ValidatedTaskCommand {
     },
 }
 
+#[derive(Debug, Clone)]
+pub enum TaskMetadataMutation {
+    Rename { title: String },
+    SetPinned { pinned: bool },
+    SetArchived { archived: bool },
+    Remove,
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum TaskActorError {
     #[error("task does not exist")]
@@ -83,7 +95,8 @@ pub(crate) enum TaskActorError {
 impl ValidatedTaskCommand {
     pub(crate) fn accepted_command(&self) -> &AcceptedCommand {
         match self {
-            Self::SubmitMessage { command, .. }
+            Self::Metadata { command, .. }
+            | Self::SubmitMessage { command, .. }
             | Self::StartSegment { command, .. }
             | Self::ContinueTask { command, .. }
             | Self::StopRun { command, .. }
@@ -93,7 +106,8 @@ impl ValidatedTaskCommand {
 
     pub(crate) fn accepted_command_mut(&mut self) -> &mut AcceptedCommand {
         match self {
-            Self::SubmitMessage { command, .. }
+            Self::Metadata { command, .. }
+            | Self::SubmitMessage { command, .. }
             | Self::StartSegment { command, .. }
             | Self::ContinueTask { command, .. }
             | Self::StopRun { command, .. }
@@ -231,6 +245,69 @@ async fn handle_command(
     reply: oneshot::Sender<CommandOutcome>,
 ) -> Result<(), TaskActorError> {
     match command {
+        ValidatedTaskCommand::Metadata {
+            mut command,
+            mutation,
+        } => {
+            if command.task_id != task_id {
+                let _ = reply.send(CommandOutcome::Rejected {
+                    command_id: command.command_id,
+                    task_id: command.task_id,
+                    rejection: CommandRejection::InvalidCommand {
+                        message: "command task does not match actor task".into(),
+                    },
+                });
+                return Ok(());
+            }
+            let removes_task = matches!(mutation, TaskMetadataMutation::Remove);
+            let (event, invalid_title) = match mutation {
+                TaskMetadataMutation::Rename { title } => {
+                    let title = title.trim().to_owned();
+                    let invalid_title = title.is_empty();
+                    command.payload = json!({ "type": "rename_task", "title": title });
+                    (NewTaskEvent::task_title_changed(title), invalid_title)
+                }
+                TaskMetadataMutation::SetPinned { pinned } => {
+                    command.payload = json!({ "type": "set_task_pinned", "pinned": pinned });
+                    (NewTaskEvent::task_pinned(pinned), false)
+                }
+                TaskMetadataMutation::SetArchived { archived } => {
+                    command.payload = json!({ "type": "set_task_archived", "archived": archived });
+                    (NewTaskEvent::task_archived(archived), false)
+                }
+                TaskMetadataMutation::Remove => {
+                    command.payload = json!({ "type": "remove_task" });
+                    (NewTaskEvent::task_removed(true), false)
+                }
+            };
+            let command_id = command.command_id;
+            let command_task_id = command.task_id;
+            let outcome = match store.transact_command(command, |projection| {
+                if invalid_title {
+                    return Err(CommandRejection::InvalidCommand {
+                        message: "task title cannot be empty".into(),
+                    });
+                }
+                if removes_task
+                    && (projection.current_run.as_ref().is_some_and(|run| {
+                        matches!(
+                            run.state,
+                            RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                        )
+                    }) || !projection.queue.is_empty())
+                {
+                    return Err(CommandRejection::InvalidCommand {
+                        message: "a task with an active run or queued message cannot be removed"
+                            .into(),
+                    });
+                }
+                Ok(vec![event.clone()])
+            }) {
+                Ok(outcome) => outcome,
+                Err(error) => command_store_error(error, command_id, command_task_id)?,
+            };
+            let _ = reply.send(outcome);
+        }
         ValidatedTaskCommand::SubmitMessage {
             command,
             queue_item_id,

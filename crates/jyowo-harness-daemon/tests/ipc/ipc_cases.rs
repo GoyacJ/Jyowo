@@ -900,6 +900,363 @@ fn task_snapshot_uses_the_global_cursor_even_when_other_tasks_advanced_it() {
     }
 }
 
+#[tokio::test]
+async fn task_metadata_commands_update_projection_and_hide_removed_tasks() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let supervisor = Arc::new(
+        Supervisor::start(
+            Arc::clone(&store),
+            Arc::new(IdleRunFactory),
+            SupervisorQuotas::new(2, 2),
+        )
+        .unwrap(),
+    );
+    let mut connection = IpcConnection::with_supervisor(Arc::clone(&store), config(), supervisor);
+    connection.handle(handshake("token-a")).unwrap();
+    let created = connection
+        .handle(create(
+            "create-metadata",
+            CommandId::new(),
+            "create-metadata",
+        ))
+        .unwrap();
+    let task_id = match &created[0].message {
+        ServerMessage::CommandAccepted(accepted) => accepted.task_id,
+        other => panic!("unexpected {other:?}"),
+    };
+
+    let remove_request = ClientRequest::RemoveTask(harness_contracts::RemoveTaskCommand {
+        metadata: CommandMetadata {
+            command_id: CommandId::new(),
+            idempotency_key: "remove-task".into(),
+            expected_stream_version: 4,
+        },
+        task_id,
+    });
+    let requests = [
+        ClientRequest::RenameTask(harness_contracts::RenameTaskCommand {
+            metadata: CommandMetadata {
+                command_id: CommandId::new(),
+                idempotency_key: "rename-task".into(),
+                expected_stream_version: 1,
+            },
+            task_id,
+            title: "  Renamed task  ".into(),
+        }),
+        ClientRequest::SetTaskPinned(harness_contracts::SetTaskPinnedCommand {
+            metadata: CommandMetadata {
+                command_id: CommandId::new(),
+                idempotency_key: "pin-task".into(),
+                expected_stream_version: 2,
+            },
+            task_id,
+            pinned: true,
+        }),
+        ClientRequest::SetTaskArchived(harness_contracts::SetTaskArchivedCommand {
+            metadata: CommandMetadata {
+                command_id: CommandId::new(),
+                idempotency_key: "archive-task".into(),
+                expected_stream_version: 3,
+            },
+            task_id,
+            archived: true,
+        }),
+        remove_request.clone(),
+    ];
+
+    for (index, request) in requests.into_iter().enumerate() {
+        let response = connection
+            .handle_async(frame(&format!("metadata-{index}"), request))
+            .await
+            .unwrap();
+        assert!(
+            matches!(response[0].message, ServerMessage::CommandAccepted(_)),
+            "unexpected response: {response:?}"
+        );
+    }
+
+    let projection = store.task_projection(task_id).unwrap().unwrap();
+    assert_eq!(projection.title, "Renamed task");
+    assert!(projection.pinned);
+    assert!(projection.archived);
+    assert!(projection.removed);
+
+    let listed = connection
+        .handle(frame("list-after-remove", ClientRequest::ListTasks))
+        .unwrap();
+    assert!(matches!(
+        &listed[0].message,
+        ServerMessage::TaskList { tasks } if tasks.iter().all(|task| task.task_id != task_id)
+    ));
+    let loaded = connection
+        .handle(frame(
+            "load-after-remove",
+            ClientRequest::LoadTask { task_id },
+        ))
+        .unwrap();
+    assert!(matches!(
+        &loaded[0].message,
+        ServerMessage::Error(error) if error.code == harness_contracts::ProtocolErrorCode::NotFound
+    ));
+
+    let hidden_rename = connection
+        .handle_async(frame(
+            "rename-after-remove",
+            ClientRequest::RenameTask(harness_contracts::RenameTaskCommand {
+                metadata: CommandMetadata {
+                    command_id: CommandId::new(),
+                    idempotency_key: "rename-after-remove".into(),
+                    expected_stream_version: store.stream_version(task_id).unwrap(),
+                },
+                task_id,
+                title: "Must stay hidden".into(),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        &hidden_rename[0].message,
+        ServerMessage::CommandRejected(rejected)
+            if rejected.reason == CommandRejectionReason::InvalidCommand
+    ));
+    assert_eq!(
+        store.task_projection(task_id).unwrap().unwrap().title,
+        "Renamed task"
+    );
+
+    let hidden_submit = connection
+        .handle_async(frame(
+            "submit-after-remove",
+            ClientRequest::SubmitMessage(harness_contracts::SubmitMessageCommand {
+                metadata: CommandMetadata {
+                    command_id: CommandId::new(),
+                    idempotency_key: "submit-after-remove".into(),
+                    expected_stream_version: store.stream_version(task_id).unwrap(),
+                },
+                task_id,
+                content: "must stay removed".into(),
+                attachments: Vec::new(),
+                context_references: Vec::new(),
+                model_config_id: None,
+                permission_mode: harness_contracts::PermissionMode::Default,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        &hidden_submit[0].message,
+        ServerMessage::CommandRejected(rejected)
+            if rejected.reason == CommandRejectionReason::InvalidCommand
+    ));
+    assert!(store
+        .nonterminal_workspace_leases_for_task(task_id)
+        .unwrap()
+        .is_empty());
+
+    let replayed_remove = connection
+        .handle_async(frame("replay-remove", remove_request))
+        .await
+        .unwrap();
+    assert!(matches!(
+        &replayed_remove[0].message,
+        ServerMessage::CommandAccepted(accepted) if accepted.stream_version == 5
+    ));
+}
+
+#[tokio::test]
+async fn task_metadata_commands_reject_stale_versions_and_running_removal() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let factory = Arc::new(ControlledRunFactory::default());
+    let supervisor = Arc::new(
+        Supervisor::start(Arc::clone(&store), factory, SupervisorQuotas::new(2, 2)).unwrap(),
+    );
+    let mut connection = IpcConnection::with_supervisor(Arc::clone(&store), config(), supervisor);
+    connection.handle(handshake("token-a")).unwrap();
+    let created = connection
+        .handle(create("create-running", CommandId::new(), "create-running"))
+        .unwrap();
+    let task_id = match &created[0].message {
+        ServerMessage::CommandAccepted(accepted) => accepted.task_id,
+        other => panic!("unexpected {other:?}"),
+    };
+
+    let stale = connection
+        .handle_async(frame(
+            "stale-pin",
+            ClientRequest::SetTaskPinned(harness_contracts::SetTaskPinnedCommand {
+                metadata: CommandMetadata {
+                    command_id: CommandId::new(),
+                    idempotency_key: "stale-pin".into(),
+                    expected_stream_version: 0,
+                },
+                task_id,
+                pinned: true,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        &stale[0].message,
+        ServerMessage::CommandRejected(rejected)
+            if rejected.reason == CommandRejectionReason::WrongExpectedVersion
+    ));
+
+    let empty_title_command_id = CommandId::new();
+    let empty_title = connection
+        .handle_async(frame(
+            "empty-title",
+            ClientRequest::RenameTask(harness_contracts::RenameTaskCommand {
+                metadata: CommandMetadata {
+                    command_id: empty_title_command_id,
+                    idempotency_key: "empty-title".into(),
+                    expected_stream_version: store.stream_version(task_id).unwrap(),
+                },
+                task_id,
+                title: "   ".into(),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        &empty_title[0].message,
+        ServerMessage::CommandRejected(rejected)
+            if rejected.reason == CommandRejectionReason::InvalidCommand
+    ));
+    let reused_empty_title_identity = connection
+        .handle_async(frame(
+            "reuse-empty-title-identity",
+            ClientRequest::RenameTask(harness_contracts::RenameTaskCommand {
+                metadata: CommandMetadata {
+                    command_id: empty_title_command_id,
+                    idempotency_key: "empty-title".into(),
+                    expected_stream_version: store.stream_version(task_id).unwrap(),
+                },
+                task_id,
+                title: "Must not be accepted".into(),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        &reused_empty_title_identity[0].message,
+        ServerMessage::CommandRejected(rejected)
+            if rejected.reason == CommandRejectionReason::InvalidCommand
+    ));
+    assert_eq!(
+        store.task_projection(task_id).unwrap().unwrap().title,
+        "task"
+    );
+
+    let submit_version = store.stream_version(task_id).unwrap();
+    connection
+        .handle_async(frame(
+            "submit-before-remove",
+            ClientRequest::SubmitMessage(harness_contracts::SubmitMessageCommand {
+                metadata: CommandMetadata {
+                    command_id: CommandId::new(),
+                    idempotency_key: "submit-before-remove".into(),
+                    expected_stream_version: submit_version,
+                },
+                task_id,
+                content: "keep running".into(),
+                attachments: Vec::new(),
+                context_references: Vec::new(),
+                model_config_id: None,
+                permission_mode: harness_contracts::PermissionMode::Default,
+            }),
+        ))
+        .await
+        .unwrap();
+    let remove = connection
+        .handle_async(frame(
+            "remove-running",
+            ClientRequest::RemoveTask(harness_contracts::RemoveTaskCommand {
+                metadata: CommandMetadata {
+                    command_id: CommandId::new(),
+                    idempotency_key: "remove-running".into(),
+                    expected_stream_version: store.stream_version(task_id).unwrap(),
+                },
+                task_id,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        &remove[0].message,
+        ServerMessage::CommandRejected(rejected)
+            if rejected.reason == CommandRejectionReason::InvalidCommand
+    ));
+    assert!(!store.task_projection(task_id).unwrap().unwrap().removed);
+}
+
+#[tokio::test]
+async fn task_removal_rejects_a_nonempty_queue() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let supervisor = Arc::new(
+        Supervisor::start(
+            Arc::clone(&store),
+            Arc::new(IdleRunFactory),
+            SupervisorQuotas::new(2, 2),
+        )
+        .unwrap(),
+    );
+    let mut connection = IpcConnection::with_supervisor(Arc::clone(&store), config(), supervisor);
+    connection.handle(handshake("token-a")).unwrap();
+    let created = connection
+        .handle(create("create-queued", CommandId::new(), "create-queued"))
+        .unwrap();
+    let task_id = match &created[0].message {
+        ServerMessage::CommandAccepted(accepted) => accepted.task_id,
+        other => panic!("unexpected {other:?}"),
+    };
+    store
+        .transact_command(
+            AcceptedCommand {
+                command_id: CommandId::new(),
+                task_id,
+                idempotency_key: "queue-before-remove".into(),
+                expected_stream_version: 1,
+                authority: TaskStore::supervisor_authority(),
+                payload: json!({ "type": "queue_before_remove" }),
+            },
+            |_| {
+                Ok(vec![NewTaskEvent::message_queued(
+                    QueueItemId::new(),
+                    "queued",
+                    Vec::new(),
+                    Vec::new(),
+                    now(),
+                )])
+            },
+        )
+        .unwrap();
+
+    let response = connection
+        .handle_async(frame(
+            "remove-queued",
+            ClientRequest::RemoveTask(harness_contracts::RemoveTaskCommand {
+                metadata: CommandMetadata {
+                    command_id: CommandId::new(),
+                    idempotency_key: "remove-queued".into(),
+                    expected_stream_version: store.stream_version(task_id).unwrap(),
+                },
+                task_id,
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        &response[0].message,
+        ServerMessage::CommandRejected(rejected)
+            if rejected.reason == CommandRejectionReason::InvalidCommand
+    ));
+    assert!(!store.task_projection(task_id).unwrap().unwrap().removed);
+}
+
 #[test]
 fn read_blob_returns_owned_bytes_and_metadata() {
     let root = tempfile::tempdir().unwrap();
