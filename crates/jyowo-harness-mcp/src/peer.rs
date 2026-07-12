@@ -20,8 +20,8 @@ use serde_json::{json, Value};
 use tokio::sync::{oneshot, Notify, Semaphore};
 
 use crate::{
-    ElicitationRequestRouter, JsonRpcError, JsonRpcNotification, JsonRpcRequest, McpError,
-    McpLifecycleState, McpMessage, McpMessageSink, McpOutboundMessage, McpSession,
+    ElicitationRequestRouter, InitializeResult, JsonRpcError, JsonRpcNotification, JsonRpcRequest,
+    McpError, McpLifecycleState, McpMessage, McpMessageSink, McpOutboundMessage, McpSession,
     SamplingRequestRouter,
 };
 
@@ -59,6 +59,10 @@ pub trait McpNotificationHandler: Send + Sync + 'static {
     async fn handle_notification(&self, notification: JsonRpcNotification) -> Result<(), McpError>;
 }
 
+pub trait McpOrderedNotificationHandler: Send + Sync + 'static {
+    fn handle_notification(&self, notification: JsonRpcNotification) -> Result<(), McpError>;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpInboundOutcome {
     ResponseResolved,
@@ -80,12 +84,13 @@ type PendingResult = Result<Value, McpError>;
 #[derive(Clone)]
 struct McpInboundRouter {
     sink: Arc<dyn McpMessageSink>,
-    session: McpSession,
+    session: Arc<Mutex<McpSession>>,
     closed: Arc<AtomicBool>,
     sampling_handler: Option<Arc<dyn SamplingRequestRouter>>,
     elicitation_handler: Option<Arc<dyn ElicitationRequestRouter>>,
     roots_handler: Option<Arc<dyn McpRootsListHandler>>,
     notification_handlers: HashMap<String, Arc<dyn McpNotificationHandler>>,
+    ordered_notification_handlers: HashMap<String, Arc<dyn McpOrderedNotificationHandler>>,
 }
 
 struct McpPeerInner {
@@ -121,6 +126,44 @@ struct PendingGuard {
     key: RequestIdKey,
     request_id: Value,
     wire_committed: Arc<AtomicBool>,
+}
+
+pub struct McpPendingRequest {
+    request_id: Value,
+    method: String,
+    deadline: tokio::time::Instant,
+    receiver: Option<oneshot::Receiver<PendingResult>>,
+    ready: Option<PendingResult>,
+    guard: PendingGuard,
+}
+
+impl McpPendingRequest {
+    #[must_use]
+    pub fn request_id(&self) -> &Value {
+        &self.request_id
+    }
+
+    pub async fn wait(mut self) -> Result<Value, McpError> {
+        let result = if let Some(result) = self.ready.take() {
+            result
+        } else {
+            let receiver = self
+                .receiver
+                .take()
+                .expect("pending MCP request must retain a receiver");
+            match tokio::time::timeout_at(self.deadline, receiver).await {
+                Ok(result) => decode_pending_result(result),
+                Err(_) => {
+                    self.guard.cancel_with_reason("client request timed out");
+                    return Err(McpError::Connection(format!(
+                        "MCP request timed out: {}",
+                        self.method
+                    )));
+                }
+            }
+        };
+        result
+    }
 }
 
 struct InboundTaskGuard {
@@ -206,6 +249,21 @@ pub struct McpPeer {
     inner: Arc<McpPeerInner>,
 }
 
+#[derive(Clone)]
+#[cfg(feature = "stdio")]
+pub(crate) struct McpWeakPeer {
+    inner: Weak<McpPeerInner>,
+}
+
+#[cfg(feature = "stdio")]
+impl McpWeakPeer {
+    pub(crate) async fn close(&self, reason: impl Into<String>) {
+        if let Some(inner) = self.inner.upgrade() {
+            McpPeer { inner }.close(reason).await;
+        }
+    }
+}
+
 impl McpPeer {
     pub fn builder(sink: Arc<dyn McpMessageSink>, session: McpSession) -> McpPeerBuilder {
         McpPeerBuilder {
@@ -217,12 +275,31 @@ impl McpPeer {
             elicitation_handler: None,
             roots_handler: None,
             notification_handlers: HashMap::new(),
+            ordered_notification_handlers: HashMap::new(),
         }
     }
 
-    #[must_use]
-    pub fn session(&self) -> &McpSession {
-        &self.inner.inbound_router.session
+    pub fn session(&self) -> Result<McpSession, McpError> {
+        self.inner
+            .inbound_router
+            .session
+            .lock()
+            .map(|session| session.clone())
+            .map_err(|_| McpError::Connection("MCP session lock poisoned".to_owned()))
+    }
+
+    #[cfg(feature = "stdio")]
+    pub(crate) fn downgrade(&self) -> McpWeakPeer {
+        McpWeakPeer {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+
+    pub(crate) fn ensure_open(&self) -> Result<(), McpError> {
+        if self.inner.inbound_router.closed.load(Ordering::Acquire) {
+            return Err(McpError::Connection("MCP peer is closed".to_owned()));
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -240,9 +317,119 @@ impl McpPeer {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, McpError> {
+        self.request_optional(method, Some(params), timeout).await
+    }
+
+    pub async fn request_optional(
+        &self,
+        method: impl Into<String>,
+        params: Option<Value>,
+        timeout: Duration,
+    ) -> Result<Value, McpError> {
+        self.start_request_optional(method, params, timeout)
+            .await?
+            .wait()
+            .await
+    }
+
+    pub async fn initialize(&self, timeout: Duration) -> Result<(), McpError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let params = self
+            .inner
+            .inbound_router
+            .session
+            .lock()
+            .map_err(|_| McpError::Connection("MCP session lock poisoned".to_owned()))?
+            .begin_initialization()?;
+        let result = self
+            .request(
+                "initialize",
+                serde_json::to_value(params).map_err(|error| {
+                    McpError::Protocol(format!("failed to encode initialize request: {error}"))
+                })?,
+                remaining_until(deadline)?,
+            )
+            .await?;
+        self.ensure_open()?;
+        let result = serde_json::from_value::<InitializeResult>(result).map_err(|error| {
+            McpError::InvalidResponse(format!("invalid initialize result: {error}"))
+        })?;
+        let notification =
+            {
+                let mut session =
+                    self.inner.inbound_router.session.lock().map_err(|_| {
+                        McpError::Connection("MCP session lock poisoned".to_owned())
+                    })?;
+                session.accept_initialize_result(result)?;
+                session.initialized_notification()?
+            };
+        let message = McpOutboundMessage::notification_without_params(notification.method)?;
+        tokio::time::timeout_at(deadline, self.inner.inbound_router.sink.send(message))
+            .await
+            .map_err(|_| McpError::Connection("MCP initialize handshake timed out".to_owned()))??;
+        self.ensure_open()?;
+        self.inner
+            .inbound_router
+            .session
+            .lock()
+            .map_err(|_| McpError::Connection("MCP session lock poisoned".to_owned()))?
+            .mark_initialized_notification_sent()?;
+        Ok(())
+    }
+
+    pub async fn start_request(
+        &self,
+        method: impl Into<String>,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<McpPendingRequest, McpError> {
+        self.start_request_optional(method, Some(params), timeout)
+            .await
+    }
+
+    pub async fn start_request_optional(
+        &self,
+        method: impl Into<String>,
+        params: Option<Value>,
+        timeout: Duration,
+    ) -> Result<McpPendingRequest, McpError> {
+        self.start_request_with(method, timeout, move |_| params)
+            .await
+    }
+
+    pub async fn start_request_with<F>(
+        &self,
+        method: impl Into<String>,
+        timeout: Duration,
+        params: F,
+    ) -> Result<McpPendingRequest, McpError>
+    where
+        F: FnOnce(&Value) -> Option<Value> + Send,
+    {
         if self.inner.inbound_router.closed.load(Ordering::Acquire) {
             return Err(McpError::Connection("MCP peer is closed".to_owned()));
         }
+        let method = method.into();
+        let lifecycle = self
+            .inner
+            .inbound_router
+            .session
+            .lock()
+            .map_err(|_| McpError::Connection("MCP session lock poisoned".to_owned()))?
+            .state();
+        if lifecycle != McpLifecycleState::Ready
+            && !(lifecycle == McpLifecycleState::Initializing && method == "initialize")
+        {
+            return Err(McpError::Protocol(format!(
+                "MCP peer is not ready for request: {method}"
+            )));
+        }
+        if lifecycle == McpLifecycleState::Ready && method == "initialize" {
+            return Err(McpError::Protocol(
+                "MCP peer is already initialized".to_owned(),
+            ));
+        }
+        let deadline = tokio::time::Instant::now() + timeout;
         let request_id = self
             .inner
             .next_request_id
@@ -250,7 +437,10 @@ impl McpPeer {
             .map_err(|_| McpError::Connection("MCP request id space exhausted".to_owned()))?;
         let id = Value::from(request_id);
         let key = RequestIdKey::Number(request_id);
-        let message = McpOutboundMessage::request(id.clone(), method, params)?;
+        let message = match params(&id) {
+            Some(params) => McpOutboundMessage::request(id.clone(), method.clone(), params)?,
+            None => McpOutboundMessage::request_without_params(id.clone(), method.clone())?,
+        };
         let (sender, mut receiver) = oneshot::channel();
         let wire_committed = Arc::new(AtomicBool::new(false));
 
@@ -281,21 +471,31 @@ impl McpPeer {
         let operation = async {
             tokio::select! {
                 biased;
-                result = &mut receiver => decode_pending_result(result),
+                result = &mut receiver => Ok(Some(decode_pending_result(result))),
                 send_result = self.inner.inbound_router.sink.send(message) => {
                     send_result?;
                     wire_committed.store(true, Ordering::Release);
-                    decode_pending_result(receiver.await)
+                    Ok(None)
                 }
             }
         };
-        match tokio::time::timeout(timeout, operation).await {
-            Ok(result) => result,
+        match tokio::time::timeout_at(deadline, operation).await {
+            Ok(Ok(ready)) => Ok(McpPendingRequest {
+                request_id: id,
+                method,
+                deadline,
+                receiver: ready.is_none().then_some(receiver),
+                ready,
+                guard: pending_guard,
+            }),
+            Ok(Err(error)) => {
+                pending_guard.remove();
+                Err(error)
+            }
             Err(_) => {
                 pending_guard.cancel_with_reason("client request timed out");
                 Err(McpError::Connection(format!(
-                    "MCP request timed out after {} ms",
-                    timeout.as_millis()
+                    "MCP request timed out: {method}"
                 )))
             }
         }
@@ -306,6 +506,14 @@ impl McpPeer {
             return Err(McpError::Connection("MCP peer is closed".to_owned()));
         }
         let message = McpOutboundMessage::notification(method, params)?;
+        self.inner.inbound_router.sink.send(message).await
+    }
+
+    pub async fn notify_without_params(&self, method: impl Into<String>) -> Result<(), McpError> {
+        if self.inner.inbound_router.closed.load(Ordering::Acquire) {
+            return Err(McpError::Connection("MCP peer is closed".to_owned()));
+        }
+        let message = McpOutboundMessage::notification_without_params(method)?;
         self.inner.inbound_router.sink.send(message).await
     }
 
@@ -329,6 +537,26 @@ impl McpPeer {
                 Ok(McpInboundOutcome::RequestHandled)
             }
             McpMessage::Notification(notification) => {
+                let ordered_handler = self
+                    .inner
+                    .inbound_router
+                    .ordered_notification_handlers
+                    .get(&notification.method)
+                    .cloned();
+                if let Some(handler) = ordered_handler {
+                    match std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        handler.handle_notification(notification)
+                    })) {
+                        Ok(result) => result?,
+                        Err(payload) => {
+                            return Err(McpError::Connection(format!(
+                                "MCP ordered notification handler panicked: {}",
+                                panic_payload_message(payload.as_ref())
+                            )));
+                        }
+                    }
+                    return Ok(McpInboundOutcome::NotificationHandled);
+                }
                 let handler = self
                     .inner
                     .inbound_router
@@ -545,18 +773,18 @@ impl McpInboundRouter {
 
     fn sampling_advertised(&self) -> bool {
         self.session
-            .offered_client_capabilities()
-            .sampling
-            .is_some()
+            .lock()
+            .is_ok_and(|session| session.offered_client_capabilities().sampling.is_some())
     }
 
     fn elicitation_mode_advertised(&self, request: &JsonRpcRequest) -> Result<bool, JsonRpcError> {
-        let Some(capability) = self
-            .session
-            .offered_client_capabilities()
-            .elicitation
-            .as_ref()
-        else {
+        let session = self.session.lock().map_err(|_| JsonRpcError {
+            code: INTERNAL_ERROR,
+            message: "MCP session lock poisoned".to_owned(),
+            data: None,
+            extra: Default::default(),
+        })?;
+        let Some(capability) = session.offered_client_capabilities().elicitation.as_ref() else {
             return Ok(false);
         };
 
@@ -585,7 +813,7 @@ impl McpInboundRouter {
             });
         }
 
-        match self.session.negotiated_protocol_version() {
+        match session.negotiated_protocol_version() {
             Some("2025-11-25") => match mode.unwrap_or("form") {
                 "form" => Ok(capability.form.is_some()),
                 "url" => Ok(capability.url.is_some()),
@@ -597,7 +825,9 @@ impl McpInboundRouter {
     }
 
     fn roots_advertised(&self) -> bool {
-        self.session.offered_client_capabilities().roots.is_some()
+        self.session
+            .lock()
+            .is_ok_and(|session| session.offered_client_capabilities().roots.is_some())
     }
 }
 
@@ -610,6 +840,7 @@ pub struct McpPeerBuilder {
     elicitation_handler: Option<Arc<dyn ElicitationRequestRouter>>,
     roots_handler: Option<Arc<dyn McpRootsListHandler>>,
     notification_handlers: HashMap<String, Arc<dyn McpNotificationHandler>>,
+    ordered_notification_handlers: HashMap<String, Arc<dyn McpOrderedNotificationHandler>>,
 }
 
 impl McpPeerBuilder {
@@ -653,10 +884,24 @@ impl McpPeerBuilder {
         self
     }
 
+    #[must_use]
+    pub fn ordered_notification_handler(
+        mut self,
+        method: impl Into<String>,
+        handler: Arc<dyn McpOrderedNotificationHandler>,
+    ) -> Self {
+        self.ordered_notification_handlers
+            .insert(method.into(), handler);
+        self
+    }
+
     pub fn build(self) -> Result<McpPeer, McpError> {
-        if self.session.state() != McpLifecycleState::Ready {
+        if !matches!(
+            self.session.state(),
+            McpLifecycleState::New | McpLifecycleState::Ready
+        ) {
             return Err(McpError::Protocol(
-                "MCP peer requires a fully negotiated, ready session".to_owned(),
+                "MCP peer requires a new or fully negotiated session".to_owned(),
             ));
         }
         if self.max_pending == 0 {
@@ -690,16 +935,18 @@ impl McpPeerBuilder {
                 "MCP client tasks capability has no installed peer router".to_owned(),
             ));
         }
+        let session = Arc::new(Mutex::new(self.session));
         Ok(McpPeer {
             inner: Arc::new(McpPeerInner {
                 inbound_router: McpInboundRouter {
                     sink: self.sink,
-                    session: self.session,
+                    session,
                     closed: Arc::new(AtomicBool::new(false)),
                     sampling_handler: self.sampling_handler,
                     elicitation_handler: self.elicitation_handler,
                     roots_handler: self.roots_handler,
                     notification_handlers: self.notification_handlers,
+                    ordered_notification_handlers: self.ordered_notification_handlers,
                 },
                 next_request_id: AtomicU64::new(1),
                 pending: Mutex::new(HashMap::new()),
@@ -734,6 +981,13 @@ fn decode_pending_result(
             "MCP pending request channel closed".to_owned(),
         ))
     })
+}
+
+fn remaining_until(deadline: tokio::time::Instant) -> Result<Duration, McpError> {
+    deadline
+        .checked_duration_since(tokio::time::Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| McpError::Connection("MCP initialize handshake timed out".to_owned()))
 }
 
 fn request_id_key(id: &Value) -> Option<RequestIdKey> {

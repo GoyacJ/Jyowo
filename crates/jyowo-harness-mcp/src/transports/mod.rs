@@ -51,10 +51,12 @@ use harness_contracts::PermissionMode;
 ))]
 use crate::{
     elicitation_from_jsonrpc_error, handle_jsonrpc_elicitation_error, ElicitationHandler,
-    InitializeParams, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpClientCapabilities,
-    McpError, McpImplementation, McpListPage, McpPrompt, McpPromptMessages, McpReadResourceResult,
-    McpResource, McpResourceContents, McpToolDescriptor, McpToolResult,
+    JsonRpcRequest, JsonRpcResponse, McpError, McpListPage, McpPrompt, McpPromptMessages,
+    McpReadResourceResult, McpResource, McpResourceContents, McpToolDescriptor, McpToolResult,
 };
+
+#[cfg(any(feature = "http", feature = "websocket", feature = "sse"))]
+use crate::{InitializeParams, JsonRpcNotification, McpClientCapabilities, McpImplementation};
 
 #[cfg(feature = "http")]
 mod http;
@@ -162,22 +164,12 @@ impl JsonRpcPeer {
     }
 }
 
-#[cfg(any(
-    feature = "stdio",
-    feature = "http",
-    feature = "websocket",
-    feature = "sse"
-))]
+#[cfg(any(feature = "http", feature = "websocket", feature = "sse"))]
 pub(crate) fn initialized_notification() -> JsonRpcNotification {
     JsonRpcNotification::new("notifications/initialized", None)
 }
 
-#[cfg(any(
-    feature = "stdio",
-    feature = "http",
-    feature = "websocket",
-    feature = "sse"
-))]
+#[cfg(any(feature = "http", feature = "websocket", feature = "sse"))]
 pub(crate) fn initialize_request(peer: &JsonRpcPeer) -> JsonRpcRequest {
     // Existing transports do not yet validate and retain InitializeResult. Keep their wire
     // version at the last implemented lifecycle revision until McpSession owns the handshake.
@@ -206,6 +198,7 @@ pub(crate) fn initialize_request(peer: &JsonRpcPeer) -> JsonRpcRequest {
 mod lifecycle_compatibility_tests {
     use super::*;
 
+    #[cfg(any(feature = "http", feature = "websocket", feature = "sse"))]
     #[test]
     fn legacy_transport_helper_does_not_advertise_unwired_latest_session() {
         let request = initialize_request(&JsonRpcPeer::new());
@@ -567,7 +560,7 @@ pub(crate) fn continue_tool_call_after_elicitation(
     Ok(peer.request("tools/call", Some(params)))
 }
 
-#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
+#[cfg(any(feature = "websocket", feature = "sse"))]
 pub(crate) fn response_key(id: &Value) -> String {
     serde_json::to_string(id).expect("json-rpc ids should serialize")
 }
@@ -596,8 +589,7 @@ pub(crate) fn notification_change(
         "notifications/cancelled" => Some(crate::McpChange::Cancelled {
             request_id: params
                 .and_then(|params| params.get("requestId").or_else(|| params.get("request_id")))
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+                .and_then(notification_token),
             reason: params
                 .and_then(|params| params.get("reason"))
                 .and_then(Value::as_str)
@@ -610,8 +602,7 @@ pub(crate) fn notification_change(
                         .get("progressToken")
                         .or_else(|| params.get("progress_token"))
                 })
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+                .and_then(notification_token),
             progress: params
                 .and_then(|params| params.get("progress"))
                 .and_then(Value::as_f64),
@@ -628,6 +619,15 @@ pub(crate) fn notification_change(
 }
 
 #[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
+fn notification_token(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| value.as_i64().map(|value| value.to_string()))
+        .or_else(|| value.as_u64().map(|value| value.to_string()))
+}
+
+#[cfg(any(feature = "websocket", feature = "sse"))]
 pub(crate) fn tool_call_event_from_change(
     request_key: &str,
     change: crate::McpChange,

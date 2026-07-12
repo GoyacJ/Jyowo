@@ -12,15 +12,34 @@ use harness_mcp::{
     ClientTasksCapability, ElicitationClientCapability, ElicitationRequestRouter,
     EmptyClientCapability, InitializeResult, JsonRpcError, JsonRpcNotification, JsonRpcRequest,
     McpClientCapabilities, McpError, McpExpectedCapabilities, McpImplementation, McpInboundOutcome,
-    McpMessage, McpMessageSink, McpOutboundMessage, McpPeer, McpRoot, McpRootsListHandler,
-    McpServerCapabilities, McpSession, RootsClientCapability, SamplingClientCapability,
-    SamplingRequestRouter, ToolsServerCapability,
+    McpMessage, McpMessageSink, McpOrderedNotificationHandler, McpOutboundMessage, McpPeer,
+    McpRoot, McpRootsListHandler, McpServerCapabilities, McpSession, RootsClientCapability,
+    SamplingClientCapability, SamplingRequestRouter, ToolsServerCapability,
 };
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, Barrier, Notify};
 
 struct ChannelSink {
     sender: mpsc::UnboundedSender<McpOutboundMessage>,
+}
+
+struct OrderedNotificationHandler {
+    calls: Arc<AtomicUsize>,
+}
+
+struct PanickingOrderedNotificationHandler;
+
+impl McpOrderedNotificationHandler for OrderedNotificationHandler {
+    fn handle_notification(&self, _notification: JsonRpcNotification) -> Result<(), McpError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+impl McpOrderedNotificationHandler for PanickingOrderedNotificationHandler {
+    fn handle_notification(&self, _notification: JsonRpcNotification) -> Result<(), McpError> {
+        panic!("fixture ordered notification panic")
+    }
 }
 
 #[async_trait]
@@ -180,6 +199,214 @@ fn test_peer(
 
 fn incoming(value: Value) -> McpMessage {
     serde_json::from_value(value).unwrap()
+}
+
+#[tokio::test]
+async fn peer_initializes_new_session_and_sends_initialized_without_params() {
+    let (sender, mut outbound) = mpsc::unbounded_channel();
+    let session = McpSession::new(
+        McpExpectedCapabilities::default(),
+        McpClientCapabilities::default(),
+        McpImplementation::new("peer-test", "1.0.0"),
+    );
+    let peer = McpPeer::builder(Arc::new(ChannelSink { sender }), session)
+        .build()
+        .unwrap();
+    let initializing_peer = peer.clone();
+    let initialize =
+        tokio::spawn(async move { initializing_peer.initialize(Duration::from_secs(1)).await });
+
+    let message = outbound.recv().await.unwrap();
+    let McpMessage::Request(request) = message.as_message() else {
+        panic!("expected initialize request")
+    };
+    assert_eq!(request.method, "initialize");
+    assert_eq!(
+        request.params.as_ref().unwrap()["protocolVersion"],
+        "2025-11-25"
+    );
+    peer.receive(incoming(json!({
+        "jsonrpc": "2.0",
+        "id": request.id,
+        "result": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": { "tools": {} },
+            "serverInfo": { "name": "server", "version": "1.0.0" }
+        }
+    })))
+    .await
+    .unwrap();
+
+    let message = outbound.recv().await.unwrap();
+    let McpMessage::Notification(notification) = message.as_message() else {
+        panic!("expected initialized notification")
+    };
+    assert_eq!(notification.method, "notifications/initialized");
+    assert!(notification.params.is_none());
+    initialize.await.unwrap().unwrap();
+    assert_eq!(
+        peer.session().unwrap().negotiated_protocol_version(),
+        Some("2025-06-18")
+    );
+}
+
+#[tokio::test]
+async fn new_peer_rejects_application_requests_before_initialization() {
+    let (sender, mut outbound) = mpsc::unbounded_channel();
+    let peer = McpPeer::builder(
+        Arc::new(ChannelSink { sender }),
+        McpSession::new(
+            McpExpectedCapabilities::default(),
+            McpClientCapabilities::default(),
+            McpImplementation::new("peer-test", "1.0.0"),
+        ),
+    )
+    .build()
+    .unwrap();
+
+    let error = peer
+        .request("tools/list", json!({}), Duration::from_millis(10))
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("not ready"));
+    assert!(outbound.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn pending_handle_exposes_peer_owned_request_id_and_waits_for_response() {
+    let (peer, mut outbound) = test_peer(McpClientCapabilities::default());
+    let starting_peer = peer.clone();
+    let start = tokio::spawn(async move {
+        starting_peer
+            .start_request("tools/call", json!({}), Duration::from_secs(1))
+            .await
+    });
+    let message = outbound.recv().await.unwrap();
+    let McpMessage::Request(request) = message.as_message() else {
+        panic!("expected request")
+    };
+    let handle = start.await.unwrap().unwrap();
+    assert_eq!(handle.request_id(), &request.id);
+
+    peer.receive(incoming(json!({
+        "jsonrpc": "2.0",
+        "id": request.id,
+        "result": { "content": [] }
+    })))
+    .await
+    .unwrap();
+    assert_eq!(handle.wait().await.unwrap(), json!({ "content": [] }));
+}
+
+#[tokio::test]
+async fn pending_handle_can_build_params_from_its_peer_owned_request_id() {
+    let (peer, mut outbound) = test_peer(McpClientCapabilities::default());
+    let starting_peer = peer.clone();
+    let start = tokio::spawn(async move {
+        starting_peer
+            .start_request_with("tools/call", Duration::from_secs(1), |request_id| {
+                Some(json!({
+                    "name": "slow",
+                    "arguments": {},
+                    "_meta": { "progressToken": request_id }
+                }))
+            })
+            .await
+    });
+    let message = outbound.recv().await.unwrap();
+    let McpMessage::Request(request) = message.as_message() else {
+        panic!("expected request")
+    };
+    assert_eq!(
+        request.params.as_ref().unwrap()["_meta"]["progressToken"],
+        request.id
+    );
+    let handle = start.await.unwrap().unwrap();
+    peer.receive(incoming(json!({
+        "jsonrpc": "2.0",
+        "id": request.id,
+        "result": {}
+    })))
+    .await
+    .unwrap();
+    handle.wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn ordered_notification_handler_completes_before_receive_returns() {
+    let (sender, _outbound) = mpsc::unbounded_channel();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let peer = McpPeer::builder(
+        Arc::new(ChannelSink { sender }),
+        ready_session(McpClientCapabilities::default()),
+    )
+    .ordered_notification_handler(
+        "notifications/progress",
+        Arc::new(OrderedNotificationHandler {
+            calls: calls.clone(),
+        }),
+    )
+    .build()
+    .unwrap();
+
+    peer.receive(incoming(json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": { "progressToken": 1, "progress": 1 }
+    })))
+    .await
+    .unwrap();
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn ordered_notification_panic_becomes_an_error_that_closes_pending_requests() {
+    let (sender, mut outbound) = mpsc::unbounded_channel();
+    let peer = McpPeer::builder(
+        Arc::new(ChannelSink { sender }),
+        ready_session(McpClientCapabilities::default()),
+    )
+    .ordered_notification_handler(
+        "notifications/progress",
+        Arc::new(PanickingOrderedNotificationHandler),
+    )
+    .build()
+    .unwrap();
+    let requester = peer.clone();
+    let pending = tokio::spawn(async move {
+        requester
+            .request("tools/list", json!({}), Duration::from_secs(10))
+            .await
+    });
+    outbound.recv().await.expect("pending request committed");
+
+    let reader_peer = peer.clone();
+    let reader = tokio::spawn(async move {
+        if let Err(error) = reader_peer
+            .receive(incoming(json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": { "progressToken": 1, "progress": 1 }
+            })))
+            .await
+        {
+            reader_peer
+                .close(format!("stdio inbound routing failed: {error}"))
+                .await;
+        }
+    });
+    reader.await.expect("reader task must not panic");
+
+    let error = tokio::time::timeout(Duration::from_millis(100), pending)
+        .await
+        .expect("pending request must wake")
+        .expect("pending task")
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("ordered notification handler panicked"));
 }
 
 #[tokio::test]

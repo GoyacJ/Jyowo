@@ -30,6 +30,17 @@ impl McpOutboundMessage {
         )))
     }
 
+    pub fn request_without_params(
+        id: impl Into<Value>,
+        method: impl Into<String>,
+    ) -> Result<Self, McpError> {
+        Self::checked(McpMessage::Request(JsonRpcRequest::new(
+            id.into(),
+            method,
+            None,
+        )))
+    }
+
     pub fn notification(method: impl Into<String>, params: Value) -> Result<Self, McpError> {
         Self::checked(McpMessage::Notification(JsonRpcNotification::new(
             method,
@@ -269,6 +280,16 @@ pub trait McpConnection: Send + Sync + 'static {
     ) -> Result<McpToolCallStream, McpError> {
         let result = self.call_tool(name, args).await?;
         Ok(Box::pin(stream::iter([McpToolCallEvent::Final(result)])))
+    }
+
+    async fn call_tool_events_for_request(
+        &self,
+        client_request_id: &str,
+        name: &str,
+        args: Value,
+    ) -> Result<McpToolCallStream, McpError> {
+        let _ = client_request_id;
+        self.call_tool_events(name, args).await
     }
 
     async fn cancel_tool_call(

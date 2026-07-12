@@ -15,7 +15,7 @@ workspace = true
 
 [features]
 default = []
-stdio = ["tokio/io-util", "tokio/process"]
+stdio = ["dep:nix", "tokio/io-util", "tokio/process"]
 http = ["dep:reqwest"]
 websocket = ["dep:tokio-tungstenite", "tokio/net"]
 sse = ["dep:reqwest", "dep:reqwest-eventsource", "dep:reqwest-eventsource-client"]
@@ -52,6 +52,9 @@ reqwest-eventsource-client = { package = "reqwest", version = "0.13.4", default-
   "stream",
 ], optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, optional = true }
 
 [dev-dependencies]
 jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox", features = ["noop"] }

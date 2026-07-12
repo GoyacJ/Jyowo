@@ -274,43 +274,55 @@ impl Tool for McpToolWrapper {
         ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
         let input = authorized.raw_input().clone();
+        let tool_use_id = ctx.tool_use_id;
+        let client_request_id = tool_use_id.to_string();
         let mut upstream = self
             .connection
-            .call_tool_events(&self.upstream_name, input)
+            .call_tool_events_for_request(&client_request_id, &self.upstream_name, input)
             .await
             .map_err(|error| {
                 self.record_invocation(McpMetricOutcome::Error);
                 to_tool_error(error)
             })?;
-        let tool_use_id = ctx.tool_use_id;
         let run_id = ctx.run_id;
         let metrics_sink = Arc::clone(&self.metrics_sink);
         let server_id = self.server_id.clone();
         let connection = Arc::clone(&self.connection);
-        let request_id = ctx.tool_use_id.to_string();
+        let request_id = client_request_id;
         let interrupt = ctx.interrupt.clone();
         let cancel_ack_timeout = self.cancel_ack_timeout;
 
         Ok(Box::pin(async_stream::stream! {
             loop {
-                let event = tokio::select! {
-                    event = upstream.next() => event,
-                    () = tokio::time::sleep(Duration::from_millis(10)), if interrupt.is_interrupted() => {
+                let event = if interrupt.is_interrupted() {
+                    let cancel_and_ack = async {
                         let _ = connection
                             .cancel_tool_call(&request_id, Some("harness interrupted tool call".to_owned()))
                             .await;
-                        match tokio::time::timeout(cancel_ack_timeout, upstream.next()).await {
-                            Ok(event) => event,
-                            Err(_) => {
-                                let _ = connection
-                                    .mark_unhealthy("mcp tool cancellation acknowledgement timed out".to_owned())
-                                    .await;
-                                record_invocation(&metrics_sink, &server_id, McpMetricOutcome::Cancelled);
-                                yield ToolEvent::Error(ToolError::Interrupted);
-                                break;
-                            },
+                        loop {
+                            let event = upstream.next().await;
+                            if matches!(event, Some(McpToolCallEvent::Progress { .. })) {
+                                continue;
+                            }
+                            break event;
                         }
-                    },
+                    };
+                    match tokio::time::timeout(cancel_ack_timeout, cancel_and_ack).await {
+                        Ok(event) => event,
+                        Err(_) => {
+                            let _ = connection
+                                .mark_unhealthy("mcp tool cancellation acknowledgement timed out".to_owned())
+                                .await;
+                            record_invocation(&metrics_sink, &server_id, McpMetricOutcome::Cancelled);
+                            yield ToolEvent::Error(ToolError::Interrupted);
+                            break;
+                        },
+                    }
+                } else {
+                    tokio::select! {
+                        event = upstream.next() => event,
+                        () = tokio::time::sleep(Duration::from_millis(10)) => continue,
+                    }
                 };
                 let Some(event) = event else {
                     break;

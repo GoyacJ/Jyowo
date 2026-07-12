@@ -3202,6 +3202,7 @@ dependencies = [
  "jyowo-harness-permission",
  "jyowo-harness-sandbox",
  "jyowo-harness-tool",
+ "nix",
  "parking_lot",
  "reqwest 0.13.4",
  "reqwest-eventsource",
