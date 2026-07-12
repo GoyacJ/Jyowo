@@ -1296,6 +1296,7 @@ mod lock_order_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::await_holding_lock)]
     async fn committed_resolution_wins_if_timeout_fires_before_waiter_notification() {
         let root = tempfile::tempdir().unwrap();
         let database_path = root.path().join("tasks.sqlite");

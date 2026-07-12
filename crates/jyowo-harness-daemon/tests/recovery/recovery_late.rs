@@ -712,7 +712,6 @@ async fn pending_continue_outbox_is_retried_after_actor_failure() {
     })
     .await
     .expect("pending segment start should be retried");
-    drop(dispatch);
     assert!(store
         .pending_segment_start(task_id, continued_segment_id)
         .unwrap()
