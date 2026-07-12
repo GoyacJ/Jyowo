@@ -1,9 +1,11 @@
 import '@testing-library/jest-dom/vitest'
 
 import { fireEvent, render, screen } from '@testing-library/react'
+import { I18nextProvider } from 'react-i18next'
 import { describe, expect, it } from 'vitest'
 
 import type { TimelineItemProjection } from '@/generated/daemon-protocol'
+import { createAppI18n } from '@/shared/i18n/i18n'
 import { TaskTimeline } from './TaskTimeline'
 
 const items: TimelineItemProjection[] = [
@@ -131,6 +133,29 @@ describe('TaskTimeline', () => {
     expect(renderedItems.length).toBeGreaterThan(0)
     expect(renderedItems.length).toBeLessThan(longRun.length)
     expect(screen.getByTestId('task-timeline-scroll-content')).toHaveClass('relative')
+  })
+
+  it('localizes canonical task lifecycle summaries without translating assistant content', () => {
+    render(
+      <I18nextProvider i18n={createAppI18n('zh-CN')}>
+        <TaskTimeline
+          items={[
+            item(700, 'notice', 'Run started', 'segment-localized'),
+            item(701, 'assistant_text', 'Run completed', 'segment-localized'),
+            item(702, 'notice', 'Run completed', 'segment-localized'),
+            item(703, 'diff', 'Artifact updated', 'segment-localized', true),
+          ]}
+          onSelectItem={() => undefined}
+        />
+      </I18nextProvider>,
+    )
+
+    expect(screen.getByText('运行已开始')).toBeInTheDocument()
+    expect(screen.getByText('运行已完成')).toBeInTheDocument()
+    expect(screen.getByText('Run completed')).toBeInTheDocument()
+    expect(screen.getByText('未完成')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '打开更改' })).toHaveTextContent('打开')
+    expect(screen.getByText('详情')).toBeInTheDocument()
   })
 })
 

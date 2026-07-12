@@ -1,5 +1,6 @@
 import { ShieldAlert } from 'lucide-react'
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import type { PermissionProjection, TypedUlid } from '@/generated/daemon-protocol'
 import { requireAcceptedCommand } from './task-command'
@@ -14,6 +15,7 @@ export function PendingPermissionDecision({
   permission: PermissionProjection
   taskId: TypedUlid
 }) {
+  const { t } = useTranslation('tasks')
   const [submittingLabel, setSubmittingLabel] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const details = permission.details
@@ -29,11 +31,11 @@ export function PendingPermissionDecision({
         <div className="flex min-h-9 items-center gap-2 border-border/70 border-b px-3">
           <ShieldAlert aria-hidden="true" className="size-4 text-destructive" />
           <h2 className="font-medium text-sm" id={`permission-${permission.requestId}`}>
-            Permission details unavailable
+            {t('permission.detailsUnavailable')}
           </h2>
         </div>
         <p className="px-3 py-3 text-muted-foreground text-sm">
-          Restart or recover the task before deciding this request.
+          {t('permission.recoverBeforeDecision')}
         </p>
       </section>
     )
@@ -67,19 +69,19 @@ export function PendingPermissionDecision({
       data-artifact="true"
     >
       <p
-        aria-label="Pending permission request"
+        aria-label={t('permission.pendingRequest')}
         aria-live="polite"
         className="sr-only"
         role="status"
       >
-        Permission request: {details.preview}
+        {t('permission.requestAnnouncement', { preview: details.preview })}
       </p>
       <div className="flex min-h-9 items-center gap-2 border-border/70 border-b px-3">
         <ShieldAlert aria-hidden="true" className="size-4 text-state-waiting" />
         <h2 className="font-medium text-sm" id={`permission-${permission.requestId}`}>
-          Permission required
+          {t('permission.required')}
         </h2>
-        <span className="ml-auto text-state-waiting text-xs">Waiting permission</span>
+        <span className="ml-auto text-state-waiting text-xs">{t('permission.waiting')}</span>
       </div>
       <div className="space-y-3 px-3 py-3">
         <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-code-background px-3 py-2 font-mono text-xs">
@@ -100,7 +102,7 @@ export function PendingPermissionDecision({
         </div>
         {submittingLabel ? (
           <p aria-live="polite" className="text-muted-foreground text-xs" role="status">
-            Submitting {submittingLabel}
+            {t('permission.submitting', { label: submittingLabel })}
           </p>
         ) : null}
         {error ? (

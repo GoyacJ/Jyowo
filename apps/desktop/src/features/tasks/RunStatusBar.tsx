@@ -1,8 +1,10 @@
 import { Clock3, GitPullRequestArrow, ListTodo, LoaderCircle } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import type { TaskProjection, TimelineItemProjection } from '@/generated/daemon-protocol'
 import { cn } from '@/shared/lib/utils'
+import { timelineSummary } from './timeline/timeline-summary'
 
 export function RunStatusBar({
   items,
@@ -13,24 +15,28 @@ export function RunStatusBar({
   now?: number
   projection: TaskProjection
 }) {
+  const { t } = useTranslation('tasks')
   const clock = useClock(now)
   const run = projection.currentRun
   if (!run || !['running', 'waiting_permission', 'yielding'].includes(run.state)) return null
 
   const segmentItems = items.filter((item) => item.runSegmentId === run.segmentId)
-  const currentStep = segmentItems.at(-1)?.summary ?? statusLabel(run.state)
+  const latestItem = segmentItems.at(-1)
+  const currentStep = latestItem ? timelineSummary(latestItem, t) : t(statusKey(run.state))
   const queueCount = projection.queue.filter(
     (item) => item.state === 'queued' || item.state === 'promoting',
   ).length
-  const changeSummary = [...segmentItems].reverse().find((item) => item.kind === 'diff')?.summary
+  const changeItem = [...segmentItems].reverse().find((item) => item.kind === 'diff')
+  const changeSummary = changeItem ? timelineSummary(changeItem, t) : undefined
 
   return (
     <section
-      aria-label="Current run status"
+      aria-label={t('run.currentStatus')}
       className="flex min-h-9 items-center gap-4 border-border border-t bg-surface/75 px-4 text-xs backdrop-blur-sm"
     >
       <span aria-atomic="true" aria-live="polite" className="sr-only" role="status">
-        {currentStep}, {queueCount} queued, {changeSummary ?? 'No file changes'}
+        {currentStep}, {t('run.queued', { count: queueCount })},{' '}
+        {changeSummary ?? t('run.noFileChanges')}
       </span>
       <span
         className={cn(
@@ -46,8 +52,8 @@ export function RunStatusBar({
         <span className="truncate">{currentStep}</span>
       </span>
       <StatusDatum icon={<Clock3 />} label={formatElapsed(run.startedAt, clock)} />
-      <StatusDatum icon={<ListTodo />} label={`${queueCount} queued`} />
-      <StatusDatum icon={<GitPullRequestArrow />} label={changeSummary ?? 'No file changes'} />
+      <StatusDatum icon={<ListTodo />} label={t('run.queued', { count: queueCount })} />
+      <StatusDatum icon={<GitPullRequestArrow />} label={changeSummary ?? t('run.noFileChanges')} />
     </section>
   )
 }
@@ -84,8 +90,8 @@ function formatElapsed(startedAt: string, now: number) {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
 }
 
-function statusLabel(state: string) {
-  if (state === 'waiting_permission') return 'Waiting for permission'
-  if (state === 'yielding') return 'Preparing to yield'
-  return 'Running'
+function statusKey(state: string) {
+  if (state === 'waiting_permission') return 'run.status.waitingPermission'
+  if (state === 'yielding') return 'run.status.yielding'
+  return 'run.status.running'
 }

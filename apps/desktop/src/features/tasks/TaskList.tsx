@@ -1,3 +1,4 @@
+import type { TFunction } from 'i18next'
 import {
   Archive,
   ArrowDown,
@@ -541,7 +542,7 @@ function TaskRow({
   const [renameOpen, setRenameOpen] = useState(false)
   const [archiveOpen, setArchiveOpen] = useState(false)
   const [removeOpen, setRemoveOpen] = useState(false)
-  const status = taskStatus(task)
+  const status = taskStatus(task, t)
 
   return (
     <li>
@@ -755,22 +756,32 @@ type DisplayStatus =
   | 'running'
   | 'waiting'
 
-function taskStatus(task: TaskProjection): { key: DisplayStatus; label: string } {
+function taskStatus(
+  task: TaskProjection,
+  t: TFunction<'shell'>,
+): { key: DisplayStatus; label: string } {
   if (task.state === 'running' || task.state === 'yielding') {
-    return { key: 'running', label: task.state === 'yielding' ? 'Yielding' : 'Running' }
+    return {
+      key: 'running',
+      label: t(task.state === 'yielding' ? 'sidebar.status.yielding' : 'sidebar.status.running'),
+    }
   }
-  if (task.state === 'waiting_permission') return { key: 'waiting', label: 'Waiting permission' }
+  if (task.state === 'waiting_permission') {
+    return { key: 'waiting', label: t('sidebar.status.waitingPermission') }
+  }
   if (task.queue.some((item) => item.state === 'queued' || item.state === 'promoting')) {
     const count = task.queue.filter(
       (item) => item.state === 'queued' || item.state === 'promoting',
     ).length
-    return { key: 'queued', label: `${count} queued` }
+    return { key: 'queued', label: t('sidebar.status.queued', { count }) }
   }
-  if (task.state === 'interrupted') return { key: 'interrupted', label: 'Interrupted' }
-  if (task.state === 'failed') return { key: 'failed', label: 'Failed' }
+  if (task.state === 'interrupted') {
+    return { key: 'interrupted', label: t('sidebar.status.interrupted') }
+  }
+  if (task.state === 'failed') return { key: 'failed', label: t('sidebar.status.failed') }
   return {
     key: task.state === 'idle' ? 'idle' : 'completed',
-    label: task.state === 'idle' ? 'Ready' : 'Completed',
+    label: t(task.state === 'idle' ? 'sidebar.status.ready' : 'sidebar.status.completed'),
   }
 }
 

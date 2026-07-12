@@ -1,13 +1,28 @@
 import '@testing-library/jest-dom/vitest'
 
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import {
+  act,
+  fireEvent,
+  screen,
+  render as testingLibraryRender,
+  waitFor,
+} from '@testing-library/react'
+import { I18nextProvider } from 'react-i18next'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { TaskEventEnvelope, TaskProjection } from '@/generated/daemon-protocol'
+import { createAppI18n } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
 import type { TaskWorkbenchSelection } from '@/shared/state/workbench-selection'
 
 import { TaskWorkbench } from './TaskWorkbench'
+
+function render(ui: React.ReactNode) {
+  const i18n = createAppI18n('en-US')
+  return testingLibraryRender(ui, {
+    wrapper: ({ children }) => <I18nextProvider i18n={i18n}>{children}</I18nextProvider>,
+  })
+}
 
 describe('TaskWorkbench', () => {
   beforeEach(() => {
@@ -113,6 +128,19 @@ describe('TaskWorkbench', () => {
     for (const icon of container.querySelectorAll('header svg')) {
       expect(icon).toHaveAttribute('aria-hidden', 'true')
     }
+  })
+
+  it('localizes workbench controls and empty state in Chinese', () => {
+    render(
+      <I18nextProvider i18n={createAppI18n('zh-CN')}>
+        <TaskWorkbench client={{ readBlob: vi.fn() }} events={[]} projection={projection} />
+      </I18nextProvider>,
+    )
+
+    expect(screen.getByRole('complementary', { name: '任务工作台' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '更改' })).toBeInTheDocument()
+    expect(screen.getByText('请选择一条更改事件以查看补丁。')).toBeInTheDocument()
+    expect(screen.queryByText('Workbench')).not.toBeInTheDocument()
   })
 
   it('renders historical environment, source, and audit projections from the snapshot', async () => {

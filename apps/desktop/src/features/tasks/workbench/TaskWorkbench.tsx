@@ -1,5 +1,6 @@
 import { Columns3, PanelRight, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import type {
   TaskEventEnvelope,
@@ -18,13 +19,13 @@ import { EnvironmentPanel } from './EnvironmentPanel'
 import { SourcesPanel } from './SourcesPanel'
 import { SubagentsPanel } from './SubagentsPanel'
 
-const tabs: Array<{ label: string; panel: TaskWorkbenchPanel }> = [
-  { label: 'Changes', panel: 'changes' },
-  { label: 'Commands', panel: 'commands' },
-  { label: 'Agents', panel: 'agents' },
-  { label: 'Environment', panel: 'environment' },
-  { label: 'Sources', panel: 'sources' },
-  { label: 'Audit', panel: 'audit' },
+const tabs: TaskWorkbenchPanel[] = [
+  'changes',
+  'commands',
+  'agents',
+  'environment',
+  'sources',
+  'audit',
 ]
 
 export function TaskWorkbench({
@@ -38,6 +39,7 @@ export function TaskWorkbench({
   projection: TaskProjection
   timeline?: TimelineItemProjection[]
 }) {
+  const { t } = useTranslation('tasks')
   const mode = useUiStore((state) => state.taskWorkbenchMode)
   const selection = useUiStore((state) => state.taskWorkbenchSelection)
   const setMode = useUiStore((state) => state.setTaskWorkbenchMode)
@@ -90,16 +92,18 @@ export function TaskWorkbench({
 
   return (
     <aside
-      aria-label="Task workbench"
+      aria-label={t('workbench.label')}
       className="task-workbench-panel static z-auto flex h-full min-h-[360px] w-full shrink-0 flex-col border-border border-t bg-background shadow-none"
       data-mode={mode}
     >
       <header className="flex h-11 shrink-0 items-center justify-between border-border border-b px-3">
-        <span className="font-medium text-xs">Workbench</span>
+        <span className="font-medium text-xs">{t('workbench.title')}</span>
         <div className="flex items-center gap-1">
           <Button
             aria-label={
-              mode === 'collaboration' ? 'Use inspector width' : 'Use collaboration width'
+              mode === 'collaboration'
+                ? t('workbench.useInspectorWidth')
+                : t('workbench.useCollaborationWidth')
             }
             className="size-7"
             onClick={() => setMode(mode === 'collaboration' ? 'inspector' : 'collaboration')}
@@ -114,7 +118,7 @@ export function TaskWorkbench({
             )}
           </Button>
           <Button
-            aria-label="Close task workbench"
+            aria-label={t('workbench.close')}
             className="size-7"
             onClick={() => {
               setSelection(null)
@@ -129,7 +133,7 @@ export function TaskWorkbench({
         </div>
       </header>
       <div
-        aria-label="Task workbench panels"
+        aria-label={t('workbench.panelsLabel')}
         className="grid grid-cols-6 overflow-hidden border-border border-b px-2"
         onKeyDown={(event) => {
           if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
@@ -152,19 +156,19 @@ export function TaskWorkbench({
         ref={tablistRef}
         role="tablist"
       >
-        {tabs.map((tab) => (
+        {tabs.map((panel) => (
           <button
-            aria-controls={`task-workbench-panel-${tab.panel}`}
-            aria-selected={activePanel === tab.panel}
+            aria-controls={`task-workbench-panel-${panel}`}
+            aria-selected={activePanel === panel}
             className="min-w-0 border-transparent border-b-2 px-1.5 py-2 text-[11px] text-muted-foreground aria-selected:border-foreground aria-selected:text-foreground"
-            id={`task-workbench-tab-${tab.panel}`}
-            key={tab.panel}
-            onClick={() => selectPanel(tab.panel)}
+            id={`task-workbench-tab-${panel}`}
+            key={panel}
+            onClick={() => selectPanel(panel)}
             role="tab"
-            tabIndex={activePanel === tab.panel ? 0 : -1}
+            tabIndex={activePanel === panel ? 0 : -1}
             type="button"
           >
-            {tab.label}
+            {t(`workbench.tabs.${panel}`)}
           </button>
         ))}
       </div>
@@ -193,19 +197,20 @@ export function TaskWorkbench({
 }
 
 function SelectionIdentity({ selection }: { selection: TaskWorkbenchSelection }) {
+  const { t } = useTranslation('tasks')
   return (
     <dl className="grid shrink-0 grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 border-border border-b px-3 py-2 font-mono text-[10px] text-muted-foreground">
-      <dt>Task</dt>
+      <dt>{t('workbench.identity.task')}</dt>
       <dd className="truncate">{selection.taskId}</dd>
       {selection.segmentId ? (
         <>
-          <dt>Segment</dt>
+          <dt>{t('workbench.identity.segment')}</dt>
           <dd className="truncate">{selection.segmentId}</dd>
         </>
       ) : null}
       {selection.eventId ? (
         <>
-          <dt>Event</dt>
+          <dt>{t('workbench.identity.event')}</dt>
           <dd className="truncate">{selection.eventId}</dd>
         </>
       ) : null}

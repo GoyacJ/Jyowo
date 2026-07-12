@@ -113,7 +113,7 @@ export function TaskWorkspaceView({
   permissionMode?: PermissionMode
   snapshot: TaskSnapshot | null
 }) {
-  const { t } = useTranslation('shell')
+  const { t: tTasks } = useTranslation('tasks')
   const snapshotTaskId = snapshot?.projection.taskId ?? null
   const workbenchMode = useUiStore((state) => state.taskWorkbenchMode)
   const workbenchSelection = useUiStore((state) => state.taskWorkbenchSelection)
@@ -159,7 +159,7 @@ export function TaskWorkspaceView({
           className="max-w-md rounded-xl border border-destructive/30 bg-destructive/5 px-5 py-4 text-destructive text-sm"
           role="alert"
         >
-          {connectionError ?? t('sidebar.unavailable')}
+          {connectionError ?? tTasks('workspace.unavailable')}
         </div>
       </div>
     )
@@ -169,8 +169,8 @@ export function TaskWorkspaceView({
     return (
       <div className="grid h-full place-items-center text-muted-foreground text-sm" role="status">
         {connectionState === 'disconnected'
-          ? t('sidebar.unavailable')
-          : t('sidebar.loadingConversation')}
+          ? tTasks('workspace.unavailable')
+          : tTasks('workspace.loading')}
       </div>
     )
   }
@@ -208,11 +208,11 @@ export function TaskWorkspaceView({
                 {liveSnapshot.projection.title}
               </h1>
               <p className="mt-1 text-muted-foreground text-xs capitalize">
-                {liveSnapshot.projection.state.replace('_', ' ')}
+                {tTasks(taskStateKey(liveSnapshot.projection.state))}
               </p>
             </div>
             <span className="mt-1 shrink-0 text-muted-foreground text-xs">
-              {connectionLabel(connectionState)}
+              {tTasks(connectionStateKey(connectionState))}
             </span>
           </header>
           <div className="flex min-h-0 flex-1 pt-6">
@@ -288,13 +288,26 @@ function workbenchPanel(item: TimelineItemProjection): TaskWorkbenchPanel | null
   return null
 }
 
-function connectionLabel(state: TaskConnectionState) {
-  const labels: Record<TaskConnectionState, string> = {
-    connected: 'Connected',
-    connecting: 'Connecting',
-    disconnected: 'Disconnected',
-    protocol_error: 'Protocol error',
-    resyncing: 'Resyncing',
-  }
-  return labels[state]
+function connectionStateKey(state: TaskConnectionState) {
+  const keys = {
+    connected: 'workspace.connection.connected',
+    connecting: 'workspace.connection.connecting',
+    disconnected: 'workspace.connection.disconnected',
+    protocol_error: 'workspace.connection.protocolError',
+    resyncing: 'workspace.connection.resyncing',
+  } as const
+  return keys[state]
+}
+
+function taskStateKey(state: TaskSnapshot['projection']['state']) {
+  const keys = {
+    completed: 'workspace.state.completed',
+    failed: 'workspace.state.failed',
+    idle: 'workspace.state.idle',
+    interrupted: 'workspace.state.interrupted',
+    running: 'workspace.state.running',
+    waiting_permission: 'workspace.state.waitingPermission',
+    yielding: 'workspace.state.yielding',
+  } as const
+  return keys[state]
 }

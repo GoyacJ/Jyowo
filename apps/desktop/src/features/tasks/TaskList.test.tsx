@@ -2,9 +2,11 @@ import '@testing-library/jest-dom/vitest'
 
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { I18nextProvider } from 'react-i18next'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { TaskProjection, TaskState } from '@/generated/daemon-protocol'
+import { createAppI18n } from '@/shared/i18n/i18n'
 import type { ListProjectsResponse } from '@/shared/tauri/commands'
 
 import { groupSidebarTasks, TaskList } from './TaskList'
@@ -163,38 +165,47 @@ describe('TaskList', () => {
     expect(screen.getByRole('button', { name: 'Projects' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Conversations' })).toBeInTheDocument()
   })
+
+  it('localizes task status labels in Chinese', () => {
+    renderTaskList({ sections: { conversations: true, pinned: true, projects: true } }, 'zh-CN')
+
+    expect(screen.getByText('Task 2').closest('button')).toHaveAttribute('title', '已完成')
+    expect(screen.getByText('Task 3').closest('button')).toHaveAttribute('title', '就绪')
+  })
 })
 
 type TaskListOverrides = Partial<React.ComponentProps<typeof TaskList>>
 
-function renderTaskList(overrides: TaskListOverrides = {}) {
+function renderTaskList(overrides: TaskListOverrides = {}, locale: 'en-US' | 'zh-CN' = 'en-US') {
   const tasks = [
     projection(1, 'completed', { pinned: true, root: '/repo/alpha' }),
     projection(2, 'completed', { root: '/repo/alpha' }),
     projection(3, 'idle', { root: defaultRoot }),
   ]
   return render(
-    <TaskList
-      activeTaskId={taskId(2)}
-      defaultRoot={defaultRoot}
-      expandedProjects={{ '/repo/alpha': true, '/repo/beta': false }}
-      onAddProject={vi.fn()}
-      onCreateConversation={vi.fn()}
-      onMoveProject={vi.fn()}
-      onRemoveProject={vi.fn()}
-      onRemoveTask={vi.fn()}
-      onRenameProject={vi.fn()}
-      onRenameTask={vi.fn()}
-      onSelectTask={vi.fn()}
-      onSetTaskArchived={vi.fn()}
-      onSetTaskPinned={vi.fn()}
-      onToggleProject={vi.fn()}
-      onToggleSection={vi.fn()}
-      projects={projects}
-      sections={{ conversations: false, pinned: true, projects: true }}
-      tasks={tasks}
-      {...overrides}
-    />,
+    <I18nextProvider i18n={createAppI18n(locale)}>
+      <TaskList
+        activeTaskId={taskId(2)}
+        defaultRoot={defaultRoot}
+        expandedProjects={{ '/repo/alpha': true, '/repo/beta': false }}
+        onAddProject={vi.fn()}
+        onCreateConversation={vi.fn()}
+        onMoveProject={vi.fn()}
+        onRemoveProject={vi.fn()}
+        onRemoveTask={vi.fn()}
+        onRenameProject={vi.fn()}
+        onRenameTask={vi.fn()}
+        onSelectTask={vi.fn()}
+        onSetTaskArchived={vi.fn()}
+        onSetTaskPinned={vi.fn()}
+        onToggleProject={vi.fn()}
+        onToggleSection={vi.fn()}
+        projects={projects}
+        sections={{ conversations: false, pinned: true, projects: true }}
+        tasks={tasks}
+        {...overrides}
+      />
+    </I18nextProvider>,
   )
 }
 

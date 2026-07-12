@@ -8,10 +8,12 @@ import {
   Sparkles,
   SquareTerminal,
 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import type { TimelineItemProjection } from '@/generated/daemon-protocol'
 
 import { ArtifactContainer } from './ArtifactContainer'
+import { timelineSummary } from './timeline-summary'
 import { UserMessage } from './UserMessage'
 
 export function TimelineEvent({
@@ -21,6 +23,8 @@ export function TimelineEvent({
   item: TimelineItemProjection
   onSelect?: (item: TimelineItemProjection) => void
 }) {
+  const { t } = useTranslation('tasks')
+  const displaySummary = timelineSummary(item, t)
   if (item.kind === 'user_message') {
     return (
       <TimelineItem item={item}>
@@ -44,14 +48,16 @@ export function TimelineEvent({
       <TimelineItem item={item}>
         <ArtifactContainer
           item={item}
-          label={artifactLabel(item.kind)}
+          label={t(artifactLabelKey(item.kind))}
           onOpen={onSelect ? () => onSelect(item) : undefined}
-          openLabel={onSelect ? `Open ${workbenchLabel(item)}` : undefined}
+          openLabel={
+            onSelect ? t('timeline.openPanel', { panel: t(workbenchLabelKey(item)) }) : undefined
+          }
         >
           <div className="flex items-start gap-2.5 text-sm leading-6">
             <ArtifactIcon kind={item.kind} />
             <span className={item.kind === 'command' ? 'font-mono text-[13px]' : undefined}>
-              {item.summary}
+              {displaySummary}
             </span>
           </div>
         </ArtifactContainer>
@@ -62,15 +68,15 @@ export function TimelineEvent({
   const row = (
     <div className="flex items-start gap-2.5 py-1 text-muted-foreground text-sm leading-5">
       <RowIcon kind={item.kind} />
-      <span>{item.summary}</span>
-      {item.incomplete ? <span className="sr-only">Incomplete</span> : null}
+      <span>{displaySummary}</span>
+      {item.incomplete ? <span className="sr-only">{t('timeline.incomplete')}</span> : null}
     </div>
   )
   return (
     <TimelineItem item={item}>
       {onSelect && isWorkbenchRow(item) ? (
         <button
-          aria-label={`Open ${workbenchLabel(item)}`}
+          aria-label={t('timeline.openPanel', { panel: t(workbenchLabelKey(item)) })}
           className="w-full rounded-md text-left hover:bg-muted/60"
           onClick={() => onSelect(item)}
           type="button"
@@ -112,15 +118,15 @@ function isArtifact(item: TimelineItemProjection) {
   )
 }
 
-function artifactLabel(kind: TimelineItemProjection['kind']) {
+function artifactLabelKey(kind: TimelineItemProjection['kind']) {
   const labels: Partial<Record<TimelineItemProjection['kind'], string>> = {
-    command: 'Command',
-    diff: 'Changes',
-    error: 'Action required',
-    image: 'Image',
-    permission: 'Permission',
+    command: 'timeline.command',
+    diff: 'timeline.changes',
+    error: 'timeline.actionRequired',
+    image: 'timeline.image',
+    permission: 'timeline.permission',
   }
-  return labels[kind] ?? 'Output'
+  return labels[kind] ?? 'timeline.output'
 }
 
 function ArtifactIcon({ kind }: { kind: TimelineItemProjection['kind'] }) {
@@ -143,13 +149,13 @@ function isWorkbenchRow(item: TimelineItemProjection) {
   return ['compaction', 'notice', 'subagent', 'tool_activity'].includes(item.kind)
 }
 
-function workbenchLabel(item: TimelineItemProjection) {
-  if (item.kind === 'diff') return 'Changes'
-  if (item.kind === 'command') return 'Commands'
-  if (item.kind === 'subagent') return 'Agents'
-  if (item.kind === 'image') return 'Sources'
+function workbenchLabelKey(item: TimelineItemProjection) {
+  if (item.kind === 'diff') return 'workbench.tabs.changes'
+  if (item.kind === 'command') return 'workbench.tabs.commands'
+  if (item.kind === 'subagent') return 'workbench.tabs.agents'
+  if (item.kind === 'image') return 'workbench.tabs.sources'
   if (item.kind === 'notice' && item.summary.toLowerCase().startsWith('workspace')) {
-    return 'Environment'
+    return 'workbench.tabs.environment'
   }
-  return 'Audit'
+  return 'workbench.tabs.audit'
 }

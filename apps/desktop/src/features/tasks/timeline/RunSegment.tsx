@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import type { RunProjection, TimelineItemProjection } from '@/generated/daemon-protocol'
 
 import { TimelineEvent, TimelineItem } from './TimelineEvent'
@@ -17,7 +18,9 @@ export function RunSegment({
   showHeader?: boolean
   statusItems?: TimelineItemProjection[]
 }) {
+  const { t } = useTranslation('tasks')
   const status = run?.segmentId === segmentId ? projectedStatus(run) : inferStatus(statusItems)
+  const statusText = t(runStatusKey(status))
   const duration = run?.segmentId === segmentId ? formatDuration(run) : null
   const content = <div className="space-y-4">{renderItems(items, onSelectItem)}</div>
 
@@ -30,15 +33,33 @@ export function RunSegment({
   }
 
   return (
-    <section aria-label={`Run ${status}`} className="space-y-5" data-run-segment={segmentId}>
+    <section
+      aria-label={t('run.label', { status: statusText })}
+      className="space-y-5"
+      data-run-segment={segmentId}
+    >
       <div className="flex items-center gap-3 text-muted-foreground text-xs">
-        <span className="font-medium capitalize text-foreground">{status.replace('_', ' ')}</span>
+        <span className="font-medium text-foreground">{statusText}</span>
         {duration ? <span>{duration}</span> : null}
         <span aria-hidden="true" className="h-px flex-1 bg-border" />
       </div>
       {content}
     </section>
   )
+}
+
+function runStatusKey(status: string) {
+  const keys: Record<string, string> = {
+    cancelled: 'run.status.cancelled',
+    completed: 'run.status.completed',
+    failed: 'run.status.failed',
+    interrupted: 'run.status.interrupted',
+    running: 'run.status.running',
+    superseded: 'run.status.superseded',
+    waiting_permission: 'run.status.waitingPermission',
+    yielding: 'run.status.yielding',
+  }
+  return keys[status] ?? 'run.status.running'
 }
 
 function projectedStatus(run: RunProjection) {

@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next'
+
 import { ArtifactText } from './DiffPanel'
 
 export function CommandPanel({
@@ -9,9 +11,10 @@ export function CommandPanel({
   missing: boolean
   text: string | null
 }) {
+  const { t } = useTranslation('tasks')
   return (
     <ArtifactText
-      empty="Select a command event to inspect its output."
+      empty={t('workbench.empty.commands')}
       loading={loading}
       missing={missing}
       text={text}
