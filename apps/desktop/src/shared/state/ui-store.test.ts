@@ -11,8 +11,16 @@ describe('ui-store', () => {
     const store = createUiStore()
 
     expect(store.getState().theme).toBe('system')
+    expect(store.getState().sidebarSections).toEqual({
+      pinned: true,
+      projects: true,
+      conversations: true,
+    })
+    expect(store.getState().expandedProjects).toEqual({})
 
     store.getState().setSidebarCollapsed(true)
+    store.getState().setSidebarSectionExpanded('pinned', false)
+    store.getState().setProjectExpanded('/repo/alpha', true)
     store.getState().setContextPanelCollapsed(true)
     store.getState().setActiveRun({ conversationId: 'conversation-001', runId: 'run-001' })
     store.getState().setInspectorOpen(false)
@@ -22,6 +30,8 @@ describe('ui-store', () => {
     expect(store.getState().activeRunConversationId).toBe('conversation-001')
     expect(store.getState().activeRunId).toBe('run-001')
     expect(store.getState().sidebarCollapsed).toBe(true)
+    expect(store.getState().sidebarSections.pinned).toBe(false)
+    expect(store.getState().expandedProjects['/repo/alpha']).toBe(true)
     expect(store.getState().contextPanelCollapsed).toBe(true)
     expect(store.getState().inspectorOpen).toBe(false)
     expect(store.getState().theme).toBe('dark')

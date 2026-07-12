@@ -149,10 +149,14 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
   const theme = useUiStore((state) => state.theme)
   const locale = useUiStore((state) => state.locale)
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed)
+  const sidebarSections = useUiStore((state) => state.sidebarSections)
+  const expandedProjects = useUiStore((state) => state.expandedProjects)
   const taskWorkbenchMode = useUiStore((state) => state.taskWorkbenchMode)
   const setTheme = useUiStore((state) => state.setTheme)
   const setLocale = useUiStore((state) => state.setLocale)
   const setSidebarCollapsed = useUiStore((state) => state.setSidebarCollapsed)
+  const setSidebarSectionExpanded = useUiStore((state) => state.setSidebarSectionExpanded)
+  const setProjectExpanded = useUiStore((state) => state.setProjectExpanded)
   const setTaskWorkbenchMode = useUiStore((state) => state.setTaskWorkbenchMode)
   const [hydrated, setHydrated] = useState(false)
 
@@ -176,6 +180,12 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
         setTheme(preferences.theme)
         setLocale(preferences.locale)
         setSidebarCollapsed(preferences.sidebarCollapsed)
+        setSidebarSectionExpanded('pinned', preferences.sidebarSections.pinned)
+        setSidebarSectionExpanded('projects', preferences.sidebarSections.projects)
+        setSidebarSectionExpanded('conversations', preferences.sidebarSections.conversations)
+        for (const [path, expanded] of Object.entries(preferences.expandedProjects)) {
+          setProjectExpanded(path, expanded)
+        }
         setTaskWorkbenchMode(preferences.taskWorkbenchMode)
         applyTheme(preferences.theme, getSystemPrefersDark())
         setHydrated(true)
@@ -196,17 +206,39 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
       window.clearTimeout(revealTimeout)
       cancelReveal?.()
     }
-  }, [setLocale, setSidebarCollapsed, setTaskWorkbenchMode, setTheme])
+  }, [
+    setLocale,
+    setProjectExpanded,
+    setSidebarCollapsed,
+    setSidebarSectionExpanded,
+    setTaskWorkbenchMode,
+    setTheme,
+  ])
 
   useEffect(() => {
     if (!hydrated) {
       return
     }
 
-    void writeUiPreferences({ locale, sidebarCollapsed, taskWorkbenchMode, theme }).catch(() => {
+    void writeUiPreferences({
+      expandedProjects,
+      locale,
+      sidebarCollapsed,
+      sidebarSections,
+      taskWorkbenchMode,
+      theme,
+    }).catch(() => {
       // Local UI preferences are non-security settings; the app can keep running without persistence.
     })
-  }, [hydrated, locale, sidebarCollapsed, taskWorkbenchMode, theme])
+  }, [
+    expandedProjects,
+    hydrated,
+    locale,
+    sidebarCollapsed,
+    sidebarSections,
+    taskWorkbenchMode,
+    theme,
+  ])
 
   return children
 }

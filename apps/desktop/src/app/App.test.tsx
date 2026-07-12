@@ -32,6 +32,12 @@ const uiPreferencesStoreFixture = vi.hoisted(() => ({
       theme: 'light' | 'dark' | 'system'
       locale: 'zh-CN' | 'en-US'
       sidebarCollapsed: boolean
+      sidebarSections: {
+        pinned: boolean
+        projects: boolean
+        conversations: boolean
+      }
+      expandedProjects: Record<string, boolean>
       taskWorkbenchMode: 'closed' | 'inspector' | 'collaboration'
       chatComposerHeight: number
       contextPanelWidth: number
@@ -40,6 +46,12 @@ const uiPreferencesStoreFixture = vi.hoisted(() => ({
     theme: 'light',
     locale: 'en-US',
     sidebarCollapsed: false,
+    sidebarSections: {
+      pinned: true,
+      projects: true,
+      conversations: true,
+    },
+    expandedProjects: {},
     taskWorkbenchMode: 'closed',
     chatComposerHeight: 160,
     contextPanelWidth: 320,
@@ -114,6 +126,12 @@ describe('App', () => {
       theme: 'light',
       locale: 'en-US',
       sidebarCollapsed: false,
+      sidebarSections: {
+        pinned: true,
+        projects: true,
+        conversations: true,
+      },
+      expandedProjects: {},
       taskWorkbenchMode: 'closed',
       chatComposerHeight: 160,
       contextPanelWidth: 320,
@@ -132,6 +150,12 @@ describe('App', () => {
     uiStore.getState().setTheme('light')
     uiStore.getState().setLocale('en-US')
     uiStore.getState().setSidebarCollapsed(false)
+    uiStore.getState().setSidebarSectionExpanded('pinned', true)
+    uiStore.getState().setSidebarSectionExpanded('projects', true)
+    uiStore.getState().setSidebarSectionExpanded('conversations', true)
+    for (const path of Object.keys(uiStore.getState().expandedProjects)) {
+      uiStore.getState().setProjectExpanded(path, false)
+    }
     uiStore.getState().setTaskWorkbenchMode('closed')
     document.documentElement.classList.remove('dark')
     delete document.documentElement.dataset.theme
@@ -380,6 +404,12 @@ describe('App', () => {
       theme: 'dark',
       locale: 'en-US',
       sidebarCollapsed: true,
+      sidebarSections: {
+        pinned: false,
+        projects: true,
+        conversations: false,
+      },
+      expandedProjects: { '/repo/alpha': true },
       taskWorkbenchMode: 'collaboration',
       chatComposerHeight: 160,
       contextPanelWidth: 320,
@@ -394,6 +424,12 @@ describe('App', () => {
     await waitFor(() => {
       expect(uiStore.getState().theme).toBe('dark')
       expect(uiStore.getState().sidebarCollapsed).toBe(true)
+      expect(uiStore.getState().sidebarSections).toEqual({
+        pinned: false,
+        projects: true,
+        conversations: false,
+      })
+      expect(uiStore.getState().expandedProjects['/repo/alpha']).toBe(true)
       expect(uiStore.getState().taskWorkbenchMode).toBe('collaboration')
       expect(document.documentElement).toHaveClass('dark')
     })
@@ -406,6 +442,12 @@ describe('App', () => {
       locale: 'en-US',
       theme: 'system',
       sidebarCollapsed: true,
+      sidebarSections: {
+        pinned: false,
+        projects: true,
+        conversations: false,
+      },
+      expandedProjects: { '/repo/alpha': true },
       taskWorkbenchMode: 'collaboration',
     })
   })
@@ -445,6 +487,12 @@ describe('App', () => {
         theme: 'dark',
         locale: 'en-US',
         sidebarCollapsed: false,
+        sidebarSections: {
+          pinned: true,
+          projects: true,
+          conversations: true,
+        },
+        expandedProjects: {},
         taskWorkbenchMode: 'closed',
         chatComposerHeight: 160,
         contextPanelWidth: 320,

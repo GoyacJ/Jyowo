@@ -42,6 +42,12 @@ describe('ui-preferences-store', () => {
       theme: 'system',
       locale: 'zh-CN',
       sidebarCollapsed: false,
+      sidebarSections: {
+        pinned: true,
+        projects: true,
+        conversations: true,
+      },
+      expandedProjects: {},
       taskWorkbenchMode: 'closed',
       chatComposerHeight: 160,
       contextPanelWidth: 320,
@@ -53,6 +59,12 @@ describe('ui-preferences-store', () => {
         theme: 'system',
         locale: 'zh-CN',
         sidebarCollapsed: false,
+        sidebarSections: {
+          pinned: true,
+          projects: true,
+          conversations: true,
+        },
+        expandedProjects: {},
         taskWorkbenchMode: 'closed',
         chatComposerHeight: 160,
         contextPanelWidth: 320,
@@ -65,6 +77,8 @@ describe('ui-preferences-store', () => {
     storeFixture.state.set('theme', 'blue')
     storeFixture.state.set('locale', 'pirate')
     storeFixture.state.set('sidebarCollapsed', 'yes')
+    storeFixture.state.set('sidebarSections', { pinned: 'yes' })
+    storeFixture.state.set('expandedProjects', { '/repo/alpha': 'yes' })
     storeFixture.state.set('taskWorkbenchMode', 'wide')
     storeFixture.state.set('chatComposerHeight', 'tall')
     storeFixture.state.set('contextPanelWidth', 'wide')
@@ -75,6 +89,12 @@ describe('ui-preferences-store', () => {
       theme: 'system',
       locale: 'zh-CN',
       sidebarCollapsed: false,
+      sidebarSections: {
+        pinned: true,
+        projects: true,
+        conversations: true,
+      },
+      expandedProjects: {},
       taskWorkbenchMode: 'closed',
       chatComposerHeight: 160,
       contextPanelWidth: 320,
@@ -88,6 +108,12 @@ describe('ui-preferences-store', () => {
       theme: 'dark',
       locale: 'en-US',
       sidebarCollapsed: true,
+      sidebarSections: {
+        pinned: false,
+        projects: true,
+        conversations: false,
+      },
+      expandedProjects: { '/repo/alpha': true },
       taskWorkbenchMode: 'collaboration',
       contextPanelWidth: 420,
     })
@@ -95,12 +121,24 @@ describe('ui-preferences-store', () => {
     expect(storeFixture.set).toHaveBeenCalledWith('theme', 'dark')
     expect(storeFixture.set).toHaveBeenCalledWith('locale', 'en-US')
     expect(storeFixture.set).toHaveBeenCalledWith('sidebarCollapsed', true)
+    expect(storeFixture.set).toHaveBeenCalledWith('sidebarSections', {
+      pinned: false,
+      projects: true,
+      conversations: false,
+    })
+    expect(storeFixture.set).toHaveBeenCalledWith('expandedProjects', { '/repo/alpha': true })
     expect(storeFixture.set).toHaveBeenCalledWith('taskWorkbenchMode', 'collaboration')
     expect(storeFixture.set).toHaveBeenCalledWith('contextPanelWidth', 420)
     await expect(readUiPreferences()).resolves.toMatchObject({
       theme: 'dark',
       locale: 'en-US',
       sidebarCollapsed: true,
+      sidebarSections: {
+        pinned: false,
+        projects: true,
+        conversations: false,
+      },
+      expandedProjects: { '/repo/alpha': true },
       contextPanelWidth: 420,
     })
   })

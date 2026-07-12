@@ -9,6 +9,8 @@ import type {
 } from '@/shared/state/workbench-selection'
 
 type ThemeMode = 'light' | 'dark' | 'system'
+export type SidebarSection = 'pinned' | 'projects' | 'conversations'
+export type SidebarSections = Record<SidebarSection, boolean>
 
 type TimelineScrollRequest = {
   anchorId: string
@@ -23,6 +25,8 @@ export interface UiState {
   theme: ThemeMode
   locale: AppLocale
   sidebarCollapsed: boolean
+  sidebarSections: SidebarSections
+  expandedProjects: Record<string, boolean>
   contextPanelCollapsed: boolean
   inspectorOpen: boolean
   workbenchSelection: WorkbenchSelection | null
@@ -36,6 +40,8 @@ export interface UiState {
   setTheme: (theme: ThemeMode) => void
   setLocale: (locale: AppLocale) => void
   setSidebarCollapsed: (sidebarCollapsed: boolean) => void
+  setSidebarSectionExpanded: (section: SidebarSection, expanded: boolean) => void
+  setProjectExpanded: (path: string, expanded: boolean) => void
   setContextPanelCollapsed: (contextPanelCollapsed: boolean) => void
   setInspectorOpen: (inspectorOpen: boolean) => void
   setWorkbenchSelection: (selection: WorkbenchSelection | null) => void
@@ -54,6 +60,12 @@ export function createUiStore() {
     theme: initialTheme(),
     locale: DEFAULT_APP_LOCALE,
     sidebarCollapsed: false,
+    sidebarSections: {
+      pinned: true,
+      projects: true,
+      conversations: true,
+    },
+    expandedProjects: {},
     contextPanelCollapsed: true,
     inspectorOpen: false,
     workbenchSelection: null,
@@ -100,6 +112,20 @@ export function createUiStore() {
     setTheme: (theme) => set({ theme }),
     setLocale: (locale) => set({ locale }),
     setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
+    setSidebarSectionExpanded: (section, expanded) =>
+      set((state) => ({
+        sidebarSections: {
+          ...state.sidebarSections,
+          [section]: expanded,
+        },
+      })),
+    setProjectExpanded: (path, expanded) =>
+      set((state) => ({
+        expandedProjects: {
+          ...state.expandedProjects,
+          [path]: expanded,
+        },
+      })),
     setContextPanelCollapsed: (contextPanelCollapsed) => set({ contextPanelCollapsed }),
     setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
     setWorkbenchSelection: (workbenchSelection) => set({ workbenchSelection }),

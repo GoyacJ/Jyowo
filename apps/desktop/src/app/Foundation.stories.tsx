@@ -71,6 +71,8 @@ const uiPreferencesSmoke: UiPreferences = {
   theme: 'system',
   locale: 'zh-CN',
   sidebarCollapsed: false,
+  sidebarSections: { pinned: true, projects: true, conversations: true },
+  expandedProjects: {},
   taskWorkbenchMode: 'closed',
   chatComposerHeight: 160,
   contextPanelWidth: 320,

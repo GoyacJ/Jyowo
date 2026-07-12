@@ -7,10 +7,18 @@ export const UI_PREFERENCES_STORE_PATH = 'ui-preferences.json'
 
 export type UiThemePreference = 'system' | 'light' | 'dark'
 
+export type SidebarSectionsPreference = {
+  pinned: boolean
+  projects: boolean
+  conversations: boolean
+}
+
 export type UiPreferences = {
   theme: UiThemePreference
   locale: AppLocale
   sidebarCollapsed: boolean
+  sidebarSections: SidebarSectionsPreference
+  expandedProjects: Record<string, boolean>
   taskWorkbenchMode: TaskWorkbenchMode
   chatComposerHeight: number
   contextPanelWidth: number
@@ -20,6 +28,12 @@ const UI_PREFERENCES_DEFAULTS: UiPreferences = {
   theme: 'system',
   locale: DEFAULT_APP_LOCALE,
   sidebarCollapsed: false,
+  sidebarSections: {
+    pinned: true,
+    projects: true,
+    conversations: true,
+  },
+  expandedProjects: {},
   taskWorkbenchMode: 'closed',
   chatComposerHeight: 160,
   contextPanelWidth: 320,
@@ -43,6 +57,8 @@ export async function readUiPreferences(): Promise<UiPreferences> {
     theme,
     locale,
     sidebarCollapsed,
+    sidebarSections,
+    expandedProjects,
     taskWorkbenchMode,
     chatComposerHeight,
     contextPanelWidth,
@@ -50,6 +66,8 @@ export async function readUiPreferences(): Promise<UiPreferences> {
     store.get<UiThemePreference>('theme'),
     store.get<AppLocale>('locale'),
     store.get<boolean>('sidebarCollapsed'),
+    store.get<SidebarSectionsPreference>('sidebarSections'),
+    store.get<Record<string, boolean>>('expandedProjects'),
     store.get<TaskWorkbenchMode>('taskWorkbenchMode'),
     store.get<number>('chatComposerHeight'),
     store.get<number>('contextPanelWidth'),
@@ -62,6 +80,10 @@ export async function readUiPreferences(): Promise<UiPreferences> {
       typeof sidebarCollapsed === 'boolean'
         ? sidebarCollapsed
         : UI_PREFERENCES_DEFAULTS.sidebarCollapsed,
+    sidebarSections: isSidebarSectionsPreference(sidebarSections)
+      ? sidebarSections
+      : { ...UI_PREFERENCES_DEFAULTS.sidebarSections },
+    expandedProjects: isExpandedProjectsPreference(expandedProjects) ? expandedProjects : {},
     taskWorkbenchMode: isTaskWorkbenchMode(taskWorkbenchMode)
       ? taskWorkbenchMode
       : UI_PREFERENCES_DEFAULTS.taskWorkbenchMode,
@@ -94,4 +116,23 @@ function isUiThemePreference(value: unknown): value is UiThemePreference {
 
 function isTaskWorkbenchMode(value: unknown): value is TaskWorkbenchMode {
   return value === 'closed' || value === 'inspector' || value === 'collaboration'
+}
+
+function isSidebarSectionsPreference(value: unknown): value is SidebarSectionsPreference {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const candidate = value as Partial<SidebarSectionsPreference>
+  return (
+    typeof candidate.pinned === 'boolean' &&
+    typeof candidate.projects === 'boolean' &&
+    typeof candidate.conversations === 'boolean'
+  )
+}
+
+function isExpandedProjectsPreference(value: unknown): value is Record<string, boolean> {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.values(value).every((expanded) => typeof expanded === 'boolean')
+  )
 }
