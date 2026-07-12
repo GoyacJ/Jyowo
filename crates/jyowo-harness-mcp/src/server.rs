@@ -17,7 +17,7 @@ use futures::StreamExt;
 use harness_contracts::{
     ManifestOriginRef, McpPromptOperation, McpResourceOperation, McpServerId, McpServerSource,
     MessagePart, Severity, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolResult,
-    ToolResultPart, ToolUseId,
+    ToolUseId,
 };
 use harness_execution::{AuthorizationContext, ExecutionError};
 use harness_tool::{AuthorizedToolInput, ToolContext, ToolEvent, ToolRegistry};
@@ -42,7 +42,7 @@ use tokio_tungstenite::{
 use crate::{
     authorize_mcp_prompt, authorize_mcp_resource, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
     McpAuthorizationContext, McpContent, McpMetric, McpMetricOutcome, McpMetricsSink, McpPrompt,
-    McpPromptMessages, McpResource, McpResourceContents, McpServerSpec, McpToolDescriptor,
+    McpPromptMessages, McpReadResourceResult, McpResource, McpServerSpec, McpToolDescriptor,
     McpToolResult, NoopMcpEventSink, NoopMcpMetricsSink, SamplingJsonRpcHandler, SamplingPolicy,
     TransportChoice,
 };
@@ -741,7 +741,7 @@ fn mcp_authorization_error_to_tool_error(error: ExecutionError) -> ToolError {
 pub trait ResourceProvider: Send + Sync + 'static {
     async fn list_resources(&self) -> Result<Vec<McpResource>, McpServerError>;
 
-    async fn read_resource(&self, uri: &str) -> Result<McpResourceContents, McpServerError>;
+    async fn read_resource(&self, uri: &str) -> Result<McpReadResourceResult, McpServerError>;
 }
 
 #[async_trait]
@@ -764,7 +764,7 @@ impl ResourceProvider for EmptyResourceProvider {
         Ok(Vec::new())
     }
 
-    async fn read_resource(&self, uri: &str) -> Result<McpResourceContents, McpServerError> {
+    async fn read_resource(&self, uri: &str) -> Result<McpReadResourceResult, McpServerError> {
         Err(McpServerError::InvalidParams(format!(
             "unknown resource: {uri}"
         )))
@@ -1045,7 +1045,7 @@ impl McpServerAdapter {
             .read_resource(uri)
             .await
             .map_err(server_error_to_jsonrpc)?;
-        Ok(json!({ "contents": [contents] }))
+        serde_json::to_value(contents).map_err(|_| internal_jsonrpc_error())
     }
 
     async fn list_prompts(&self) -> Result<Value, JsonRpcError> {
@@ -1443,8 +1443,12 @@ where
             .await
             .map_err(server_error_to_jsonrpc)?;
         serde_json::to_value(McpToolResult {
-            content: vec![McpContent::Json { value: result }],
+            content: vec![McpContent::text(
+                serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()),
+            )],
+            structured_content: Some(structured_object(result)),
             is_error: false,
+            meta: BTreeMap::new(),
         })
         .map_err(|_| internal_jsonrpc_error())
     }
@@ -2024,8 +2028,11 @@ fn harness_tool_spec(
         capability,
         descriptor: McpToolDescriptor {
             name: name.into(),
+            title: None,
             description: Some(description.into()),
+            icons: None,
             input_schema,
+            execution: None,
             output_schema: None,
             annotations: None,
             meta: BTreeMap::new(),
@@ -2063,7 +2070,14 @@ fn tool_call_parts(params: Option<&Value>) -> Result<(&str, Value), JsonRpcError
 }
 
 fn validate_input_schema(schema: &Value, arguments: &Value) -> Result<(), JsonRpcError> {
-    let validator = jsonschema::validator_for(schema).map_err(|error| {
+    let validator = if schema.get("$schema").is_some() {
+        jsonschema::validator_for(schema)
+    } else {
+        jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(schema)
+    }
+    .map_err(|error| {
         jsonrpc_error(
             JSONRPC_INTERNAL_ERROR,
             format!("failed to compile tool input schema: {error}"),
@@ -2129,8 +2143,11 @@ fn capability_label(capability: ExposedCapability) -> &'static str {
 fn tool_descriptor_to_mcp(descriptor: &ToolDescriptor) -> McpToolDescriptor {
     McpToolDescriptor {
         name: descriptor.name.clone(),
+        title: Some(descriptor.display_name.clone()),
         description: Some(descriptor.description.clone()),
+        icons: None,
         input_schema: descriptor.input_schema.clone(),
+        execution: None,
         output_schema: descriptor.output_schema.clone(),
         annotations: None,
         meta: BTreeMap::new(),
@@ -2139,16 +2156,29 @@ fn tool_descriptor_to_mcp(descriptor: &ToolDescriptor) -> McpToolDescriptor {
 
 async fn collect_tool_stream(mut stream: harness_tool::ToolStream) -> McpToolResult {
     let mut content = Vec::new();
+    let mut structured = Vec::new();
     while let Some(event) = stream.next().await {
         match event {
             ToolEvent::Progress(_) => {}
-            ToolEvent::Partial(part) => content.extend(message_part_to_mcp(part)),
+            ToolEvent::Partial(part) => {
+                let mapped = message_part_to_mcp(part);
+                content.extend(mapped.content);
+                if let Some(value) = mapped.structured_content {
+                    structured.push(value);
+                }
+            }
             ToolEvent::Journal(_) => {}
             ToolEvent::Final(result) => {
-                content.extend(tool_result_to_mcp_content(result));
+                let mapped = tool_result_to_mcp(result);
+                content.extend(mapped.content);
+                if let Some(value) = mapped.structured_content {
+                    structured.push(value);
+                }
                 return McpToolResult {
                     content,
+                    structured_content: combine_structured(structured),
                     is_error: false,
+                    meta: BTreeMap::new(),
                 };
             }
             ToolEvent::Error(error) => return mcp_error_result(error.to_string()),
@@ -2158,60 +2188,50 @@ async fn collect_tool_stream(mut stream: harness_tool::ToolStream) -> McpToolRes
     mcp_error_result("tool stream ended without final result")
 }
 
-fn tool_result_to_mcp_content(result: ToolResult) -> Vec<McpContent> {
+fn tool_result_to_mcp(result: ToolResult) -> McpToolResult {
     match result {
-        ToolResult::Text(text) => vec![McpContent::Text { text }],
-        ToolResult::Structured(value) => vec![McpContent::Json { value }],
-        ToolResult::Blob {
-            content_type,
-            blob_ref,
-        } => vec![McpContent::Json {
-            value: json!({
-                "contentType": content_type,
-                "blobRef": blob_ref,
-            }),
-        }],
-        ToolResult::Mixed(parts) => parts.into_iter().map(tool_result_part_to_mcp).collect(),
-        other => vec![McpContent::Json {
-            value: serde_json::to_value(other).unwrap_or_else(|_| json!({})),
-        }],
-    }
-}
-
-fn tool_result_part_to_mcp(part: ToolResultPart) -> McpContent {
-    match part {
-        ToolResultPart::Text { text } | ToolResultPart::Code { text, .. } => {
-            McpContent::Text { text }
+        ToolResult::Text(text) => McpToolResult::text(text),
+        ToolResult::Structured(value) => structured_result(value),
+        other => {
+            let value = serde_json::to_value(other).unwrap_or_else(|_| json!({}));
+            structured_result(value)
         }
-        ToolResultPart::Structured { value, .. } => McpContent::Json { value },
-        ToolResultPart::Artifact {
-            artifact_kind,
-            content_type,
-            title,
-            preview,
-            ..
-        } => McpContent::Json {
-            value: json!({
-                "kind": "artifact",
-                "artifactKind": artifact_kind,
-                "contentType": content_type,
-                "title": title,
-                "preview": preview,
-            }),
-        },
-        other => McpContent::Json {
-            value: serde_json::to_value(other).unwrap_or_else(|_| json!({})),
-        },
     }
 }
 
-fn message_part_to_mcp(part: MessagePart) -> Vec<McpContent> {
+fn message_part_to_mcp(part: MessagePart) -> McpToolResult {
     match part {
-        MessagePart::Text(text) => vec![McpContent::Text { text }],
-        MessagePart::ToolResult { content, .. } => tool_result_to_mcp_content(content),
-        other => vec![McpContent::Json {
-            value: serde_json::to_value(other).unwrap_or_else(|_| json!({})),
-        }],
+        MessagePart::Text(text) => McpToolResult::text(text),
+        MessagePart::ToolResult { content, .. } => tool_result_to_mcp(content),
+        other => structured_result(serde_json::to_value(other).unwrap_or_else(|_| json!({}))),
+    }
+}
+
+fn structured_result(value: Value) -> McpToolResult {
+    let structured = structured_object(value);
+    McpToolResult {
+        content: vec![McpContent::text(
+            serde_json::to_string_pretty(&structured).unwrap_or_else(|_| structured.to_string()),
+        )],
+        structured_content: Some(structured),
+        is_error: false,
+        meta: BTreeMap::new(),
+    }
+}
+
+fn structured_object(value: Value) -> Value {
+    if value.is_object() {
+        value
+    } else {
+        json!({ "value": value })
+    }
+}
+
+fn combine_structured(mut values: Vec<Value>) -> Option<Value> {
+    match values.len() {
+        0 => None,
+        1 => values.pop().map(structured_object),
+        _ => Some(json!({ "parts": values })),
     }
 }
 
@@ -2221,10 +2241,10 @@ fn tool_error_result(message: impl Into<String>) -> Value {
 
 fn mcp_error_result(message: impl Into<String>) -> McpToolResult {
     McpToolResult {
-        content: vec![McpContent::Text {
-            text: message.into(),
-        }],
+        content: vec![McpContent::text(message)],
+        structured_content: None,
         is_error: true,
+        meta: BTreeMap::new(),
     }
 }
 

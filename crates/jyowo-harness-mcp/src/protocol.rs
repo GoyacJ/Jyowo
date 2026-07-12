@@ -358,8 +358,8 @@ pub struct McpIcon {
     pub src: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sizes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sizes: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<McpIconTheme>,
     #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]

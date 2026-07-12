@@ -5,8 +5,8 @@ use std::{
 
 pub use harness_contracts::McpServerScope;
 use harness_contracts::{ManifestOriginRef, McpServerId, McpServerSource, SessionId, TrustLevel};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::{Map, Value};
 
 use crate::SamplingPolicy;
 
@@ -441,12 +441,23 @@ pub enum FilterDecision {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpToolDescriptor {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icons: Option<Vec<crate::McpIcon>>,
     #[serde(rename = "inputSchema")]
     pub input_schema: Value,
-    #[serde(rename = "outputSchema")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<McpToolExecution>,
+    #[serde(
+        rename = "outputSchema",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub output_schema: Option<Value>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotations: Option<McpToolAnnotations>,
     #[serde(rename = "_meta", default)]
     pub meta: BTreeMap<String, Value>,
@@ -454,65 +465,438 @@ pub struct McpToolDescriptor {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpToolAnnotations {
-    #[serde(rename = "readOnlyHint", default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(
+        rename = "readOnlyHint",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub read_only_hint: Option<bool>,
-    #[serde(rename = "destructiveHint", default)]
+    #[serde(
+        rename = "destructiveHint",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub destructive_hint: Option<bool>,
-    #[serde(rename = "idempotentHint", default)]
+    #[serde(
+        rename = "idempotentHint",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub idempotent_hint: Option<bool>,
-    #[serde(rename = "openWorldHint", default)]
+    #[serde(
+        rename = "openWorldHint",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub open_world_hint: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpToolExecution {
+    #[serde(
+        rename = "taskSupport",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub task_support: Option<McpTaskSupport>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTaskSupport {
+    #[default]
+    Forbidden,
+    Optional,
+    Required,
+}
+
+impl std::fmt::Display for McpTaskSupport {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Forbidden => "forbidden",
+            Self::Optional => "optional",
+            Self::Required => "required",
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpToolResult {
     pub content: Vec<McpContent>,
+    #[serde(
+        rename = "structuredContent",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub structured_content: Option<Value>,
     #[serde(rename = "isError", default)]
     pub is_error: bool,
+    #[serde(rename = "_meta", default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, Value>,
 }
 
 impl McpToolResult {
     pub fn text(text: impl Into<String>) -> Self {
         Self {
-            content: vec![McpContent::Text { text: text.into() }],
+            content: vec![McpContent::text(text)],
+            structured_content: None,
             is_error: false,
+            meta: BTreeMap::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum McpContent {
-    Text { text: String },
-    Json { value: Value },
+    Text {
+        text: String,
+        annotations: Option<McpAnnotations>,
+        meta: BTreeMap<String, Value>,
+    },
+    Image {
+        data: String,
+        mime_type: String,
+        annotations: Option<McpAnnotations>,
+        meta: BTreeMap<String, Value>,
+    },
+    Audio {
+        data: String,
+        mime_type: String,
+        annotations: Option<McpAnnotations>,
+        meta: BTreeMap<String, Value>,
+    },
+    ResourceLink {
+        resource: Box<McpResource>,
+    },
+    Resource {
+        resource: McpResourceContents,
+        annotations: Option<McpAnnotations>,
+        meta: BTreeMap<String, Value>,
+    },
+    Unknown(Value),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+impl McpContent {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text {
+            text: text.into(),
+            annotations: None,
+            meta: BTreeMap::new(),
+        }
+    }
+
+    pub fn text_value(&self) -> Option<&str> {
+        match self {
+            Self::Text { text, .. } => Some(text),
+            _ => None,
+        }
+    }
+}
+
+impl Serialize for McpContent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let value = match self {
+            Self::Text {
+                text,
+                annotations,
+                meta,
+            } => content_value(
+                "text",
+                [Some(("text", Value::String(text.clone())))],
+                annotations,
+                meta,
+            ),
+            Self::Image {
+                data,
+                mime_type,
+                annotations,
+                meta,
+            } => content_value(
+                "image",
+                [
+                    Some(("data", Value::String(data.clone()))),
+                    Some(("mimeType", Value::String(mime_type.clone()))),
+                ],
+                annotations,
+                meta,
+            ),
+            Self::Audio {
+                data,
+                mime_type,
+                annotations,
+                meta,
+            } => content_value(
+                "audio",
+                [
+                    Some(("data", Value::String(data.clone()))),
+                    Some(("mimeType", Value::String(mime_type.clone()))),
+                ],
+                annotations,
+                meta,
+            ),
+            Self::ResourceLink { resource } => {
+                let mut value =
+                    serde_json::to_value(resource).map_err(serde::ser::Error::custom)?;
+                value
+                    .as_object_mut()
+                    .expect("MCP resource serializes as an object")
+                    .insert("type".to_owned(), Value::String("resource_link".to_owned()));
+                value
+            }
+            Self::Resource {
+                resource,
+                annotations,
+                meta,
+            } => content_value(
+                "resource",
+                [Some((
+                    "resource",
+                    serde_json::to_value(resource).map_err(serde::ser::Error::custom)?,
+                ))],
+                annotations,
+                meta,
+            ),
+            Self::Unknown(value) => value.clone(),
+        };
+        value.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for McpContent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        let Some(kind) = value.get("type").and_then(Value::as_str).map(str::to_owned) else {
+            return Ok(Self::Unknown(value));
+        };
+        match kind.as_str() {
+            "text" => {
+                let fields: ContentFields =
+                    serde_json::from_value(value).map_err(D::Error::custom)?;
+                Ok(Self::Text {
+                    text: fields
+                        .text
+                        .ok_or_else(|| D::Error::custom("text content missing text"))?,
+                    annotations: fields.annotations,
+                    meta: fields.meta,
+                })
+            }
+            "image" | "audio" => {
+                let fields: ContentFields =
+                    serde_json::from_value(value).map_err(D::Error::custom)?;
+                let data = fields
+                    .data
+                    .ok_or_else(|| D::Error::custom(format!("{kind} content missing data")))?;
+                let mime_type = fields
+                    .mime_type
+                    .ok_or_else(|| D::Error::custom(format!("{kind} content missing mimeType")))?;
+                if kind == "image" {
+                    Ok(Self::Image {
+                        data,
+                        mime_type,
+                        annotations: fields.annotations,
+                        meta: fields.meta,
+                    })
+                } else {
+                    Ok(Self::Audio {
+                        data,
+                        mime_type,
+                        annotations: fields.annotations,
+                        meta: fields.meta,
+                    })
+                }
+            }
+            "resource_link" => {
+                let mut resource = value;
+                resource
+                    .as_object_mut()
+                    .expect("checked object")
+                    .remove("type");
+                Ok(Self::ResourceLink {
+                    resource: Box::new(serde_json::from_value(resource).map_err(D::Error::custom)?),
+                })
+            }
+            "resource" => {
+                let fields: ContentFields =
+                    serde_json::from_value(value).map_err(D::Error::custom)?;
+                Ok(Self::Resource {
+                    resource: fields
+                        .resource
+                        .ok_or_else(|| D::Error::custom("embedded resource missing resource"))?,
+                    annotations: fields.annotations,
+                    meta: fields.meta,
+                })
+            }
+            _ => Ok(Self::Unknown(value)),
+        }
+    }
+}
+
+fn content_value<const N: usize>(
+    kind: &str,
+    fields: [Option<(&str, Value)>; N],
+    annotations: &Option<McpAnnotations>,
+    meta: &BTreeMap<String, Value>,
+) -> Value {
+    let mut object = Map::new();
+    object.insert("type".to_owned(), Value::String(kind.to_owned()));
+    for (name, value) in fields.into_iter().flatten() {
+        object.insert(name.to_owned(), value);
+    }
+    if let Some(annotations) = annotations {
+        object.insert(
+            "annotations".to_owned(),
+            serde_json::to_value(annotations).expect("MCP annotations serialize"),
+        );
+    }
+    if !meta.is_empty() {
+        object.insert(
+            "_meta".to_owned(),
+            serde_json::to_value(meta).expect("MCP metadata serialize"),
+        );
+    }
+    Value::Object(object)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContentFields {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    data: Option<String>,
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    resource: Option<McpResourceContents>,
+    #[serde(default)]
+    annotations: Option<McpAnnotations>,
+    #[serde(rename = "_meta", default)]
+    meta: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpAnnotations {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<Vec<McpRole>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<f64>,
+    #[serde(
+        rename = "lastModified",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub last_modified: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpRole {
+    User,
+    Assistant,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpResource {
     pub uri: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(rename = "mimeType")]
+    #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icons: Option<Vec<crate::McpIcon>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<McpAnnotations>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(rename = "_meta", default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpResourceContents {
     pub uri: String,
-    #[serde(rename = "mimeType")]
+    #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob: Option<String>,
+    #[serde(rename = "_meta", default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpReadResourceResult {
+    pub contents: Vec<McpResourceContents>,
+    #[serde(rename = "_meta", default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpPrompt {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icons: Option<Vec<crate::McpIcon>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Vec<McpPromptArgument>>,
+    #[serde(rename = "_meta", default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct McpPrompt {
+pub struct McpPromptArgument {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpPromptMessages {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub messages: Vec<Value>,
+    #[serde(rename = "_meta", default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpPaginationLimits {
+    pub max_pages: usize,
+    pub max_items: usize,
+}
+
+impl Default for McpPaginationLimits {
+    fn default() -> Self {
+        Self {
+            max_pages: 100,
+            max_items: 10_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpListPage<T> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
 }
 
 pub fn trust_level_for_source(source: &McpServerSource) -> TrustLevel {

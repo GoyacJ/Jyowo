@@ -72,6 +72,9 @@ async fn in_process_transport_rejects_wrong_transport_choice() {
 fn tool(name: &str) -> McpToolDescriptor {
     McpToolDescriptor {
         name: name.into(),
+        title: None,
+        icons: None,
+        execution: None,
         description: Some(format!("{name} tool")),
         input_schema: json!({ "type": "object" }),
         output_schema: None,

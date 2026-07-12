@@ -1,4 +1,7 @@
-use harness_mcp::{InitializeParams, InitializeResult, McpMessage, LATEST_PROTOCOL_VERSION};
+use harness_mcp::{
+    InitializeParams, InitializeResult, McpContent, McpMessage, McpPrompt, McpResource,
+    McpResourceContents, McpToolDescriptor, McpToolResult, LATEST_PROTOCOL_VERSION,
+};
 use serde_json::json;
 
 #[test]
@@ -200,7 +203,7 @@ fn official_initialize_capabilities_and_implementation_round_trip() {
     assert!(tasks.requests.as_ref().unwrap().sampling.is_some());
     assert_eq!(
         client.client_info.icons.as_ref().unwrap()[0].sizes,
-        vec!["any"]
+        Some(vec!["any".to_owned()])
     );
     assert_eq!(serde_json::to_value(client).unwrap(), client_fixture);
 
@@ -244,4 +247,143 @@ fn rejects_ambiguous_or_invalid_message_shapes() {
             "invalid message was accepted"
         );
     }
+}
+
+#[test]
+fn official_tool_descriptor_and_result_round_trip() {
+    let tool_fixture = json!({
+        "name": "weather_current",
+        "title": "Current weather",
+        "description": "Read current weather conditions",
+        "icons": [{
+            "src": "https://example.com/weather.png",
+            "mimeType": "image/png",
+            "sizes": []
+        }],
+        "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": { "city": { "type": "string" } },
+            "required": ["city"]
+        },
+        "execution": { "taskSupport": "optional" },
+        "outputSchema": {
+            "type": "object",
+            "properties": { "temperature": { "type": "number" } }
+        },
+        "annotations": {
+            "title": "Weather lookup",
+            "readOnlyHint": true,
+            "destructiveHint": false,
+            "idempotentHint": true,
+            "openWorldHint": true
+        },
+        "_meta": { "vendor/tool-id": "weather-v2" }
+    });
+    let tool: McpToolDescriptor = serde_json::from_value(tool_fixture.clone()).unwrap();
+    assert_eq!(tool.title.as_deref(), Some("Current weather"));
+    assert_eq!(tool.icons.as_ref().unwrap()[0].sizes, Some(Vec::new()));
+    assert_eq!(
+        tool.execution
+            .as_ref()
+            .unwrap()
+            .task_support
+            .unwrap()
+            .to_string(),
+        "optional"
+    );
+    assert_eq!(serde_json::to_value(tool).unwrap(), tool_fixture);
+
+    let result_fixture = json!({
+        "content": [
+            { "type": "text", "text": "18 C", "annotations": { "audience": ["assistant"] } },
+            { "type": "image", "data": "AA==", "mimeType": "image/png" },
+            { "type": "audio", "data": "AQ==", "mimeType": "audio/wav" },
+            {
+                "type": "resource_link",
+                "uri": "weather://london",
+                "name": "London weather",
+                "title": "Observation",
+                "size": 128
+            },
+            {
+                "type": "resource",
+                "resource": {
+                    "uri": "weather://london/raw",
+                    "mimeType": "application/json",
+                    "text": "{\"temperature\":18}"
+                }
+            },
+            { "type": "vendor_chart", "series": [18, 19], "vendor": true }
+        ],
+        "structuredContent": { "temperature": 18 },
+        "isError": false,
+        "_meta": { "trace": "abc" }
+    });
+    let result: McpToolResult = serde_json::from_value(result_fixture.clone()).unwrap();
+    assert_eq!(
+        result.structured_content,
+        Some(json!({ "temperature": 18 }))
+    );
+    assert!(matches!(
+        result.content.last(),
+        Some(McpContent::Unknown(_))
+    ));
+    assert_eq!(serde_json::to_value(result).unwrap(), result_fixture);
+}
+
+#[test]
+fn official_resource_and_prompt_models_round_trip() {
+    let resource_fixture = json!({
+        "uri": "file:///tmp/report.pdf",
+        "name": "report",
+        "title": "Quarterly report",
+        "description": "Published report",
+        "mimeType": "application/pdf",
+        "icons": [{ "src": "data:image/png;base64,AA==" }],
+        "annotations": {
+            "audience": ["user", "assistant"],
+            "priority": 0.8,
+            "lastModified": "2025-11-25T12:00:00Z"
+        },
+        "size": 4096,
+        "_meta": { "etag": "v2" }
+    });
+    let resource: McpResource = serde_json::from_value(resource_fixture.clone()).unwrap();
+    assert_eq!(resource.size, Some(4096));
+    assert_eq!(serde_json::to_value(resource).unwrap(), resource_fixture);
+
+    for fixture in [
+        json!({
+            "uri": "file:///tmp/readme.txt",
+            "mimeType": "text/plain",
+            "text": "hello",
+            "_meta": { "part": 1 }
+        }),
+        json!({
+            "uri": "file:///tmp/image.png",
+            "mimeType": "image/png",
+            "blob": "AA=="
+        }),
+    ] {
+        let contents: McpResourceContents = serde_json::from_value(fixture.clone()).unwrap();
+        assert_eq!(serde_json::to_value(contents).unwrap(), fixture);
+    }
+
+    let prompt_fixture = json!({
+        "name": "summarize",
+        "title": "Summarize a document",
+        "description": "Builds a summary prompt",
+        "icons": [{ "src": "https://example.com/prompt.svg", "theme": "dark" }],
+        "arguments": [{
+            "name": "style",
+            "title": "Summary style",
+            "description": "Desired writing style",
+            "required": true
+        }],
+        "_meta": { "version": 2 }
+    });
+    let prompt: McpPrompt = serde_json::from_value(prompt_fixture.clone()).unwrap();
+    assert_eq!(prompt.arguments.as_ref().unwrap()[0].required, Some(true));
+    assert_eq!(serde_json::to_value(prompt).unwrap(), prompt_fixture);
 }

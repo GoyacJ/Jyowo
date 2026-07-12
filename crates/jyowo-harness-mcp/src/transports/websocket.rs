@@ -25,9 +25,9 @@ use crate::{
     read_resource_request, response_key, subscribe_resource_request, tool_call_event_from_change,
     unsubscribe_resource_request, ElicitationHandler, JsonRpcNotification, JsonRpcPeer,
     JsonRpcRequest, JsonRpcResponse, ListChangedEvent, McpChange, McpConnectContext, McpConnection,
-    McpError, McpMetricsSink, McpPrompt, McpPromptMessages, McpResource, McpResourceContents,
-    McpServerSpec, McpToolCallEvent, McpToolCallStream, McpToolDescriptor, McpToolResult,
-    McpTransport, NoopMcpMetricsSink, TransportChoice,
+    McpError, McpListPage, McpMetricsSink, McpPrompt, McpPromptMessages, McpReadResourceResult,
+    McpResource, McpServerSpec, McpToolCallEvent, McpToolCallStream, McpToolDescriptor,
+    McpToolResult, McpTransport, NoopMcpMetricsSink, TransportChoice,
 };
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -237,7 +237,14 @@ impl McpConnection for WebsocketConnection {
     }
 
     async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
-        decode_list_tools(self.send(list_tools_request(&self.peer)).await?)
+        self.list_tools_all().await
+    }
+
+    async fn list_tools_page(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<McpListPage<McpToolDescriptor>, McpError> {
+        decode_list_tools(self.send(list_tools_request(&self.peer, cursor)).await?)
     }
 
     async fn call_tool(&self, name: &str, args: Value) -> Result<McpToolResult, McpError> {
@@ -338,10 +345,20 @@ impl McpConnection for WebsocketConnection {
     }
 
     async fn list_resources(&self) -> Result<Vec<McpResource>, McpError> {
-        decode_list_resources(self.send(list_resources_request(&self.peer)).await?)
+        self.list_resources_all().await
     }
 
-    async fn read_resource(&self, uri: &str) -> Result<McpResourceContents, McpError> {
+    async fn list_resources_page(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<McpListPage<McpResource>, McpError> {
+        decode_list_resources(
+            self.send(list_resources_request(&self.peer, cursor))
+                .await?,
+        )
+    }
+
+    async fn read_resource(&self, uri: &str) -> Result<McpReadResourceResult, McpError> {
         decode_read_resource(self.send(read_resource_request(&self.peer, uri)).await?)
     }
 
@@ -360,7 +377,14 @@ impl McpConnection for WebsocketConnection {
     }
 
     async fn list_prompts(&self) -> Result<Vec<McpPrompt>, McpError> {
-        decode_list_prompts(self.send(list_prompts_request(&self.peer)).await?)
+        self.list_prompts_all().await
+    }
+
+    async fn list_prompts_page(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<McpListPage<McpPrompt>, McpError> {
+        decode_list_prompts(self.send(list_prompts_request(&self.peer, cursor)).await?)
     }
 
     async fn get_prompt(&self, name: &str, args: Value) -> Result<McpPromptMessages, McpError> {

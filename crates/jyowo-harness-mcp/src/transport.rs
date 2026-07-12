@@ -1,4 +1,4 @@
-use std::{pin::Pin, sync::Arc};
+use std::{collections::BTreeSet, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use futures::{stream, Stream};
@@ -7,8 +7,9 @@ use serde_json::Value;
 
 use crate::{
     ElicitationHandler, McpAuthorizationContext, McpConnectionState, McpError, McpEventSink,
-    McpMetricsSink, McpPrompt, McpPromptMessages, McpResource, McpResourceContents, McpServerSpec,
-    McpToolDescriptor, McpToolResult, NoopMcpEventSink,
+    McpListPage, McpMetricsSink, McpPaginationLimits, McpPrompt, McpPromptMessages,
+    McpReadResourceResult, McpResource, McpServerSpec, McpToolDescriptor, McpToolResult,
+    NoopMcpEventSink,
 };
 
 pub type ListChangedEvent = Pin<Box<dyn Stream<Item = McpChange> + Send + 'static>>;
@@ -144,6 +145,41 @@ pub trait McpConnection: Send + Sync + 'static {
 
     async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError>;
 
+    async fn list_tools_page(
+        &self,
+        _cursor: Option<&str>,
+    ) -> Result<McpListPage<McpToolDescriptor>, McpError> {
+        Ok(McpListPage {
+            items: self.list_tools().await?,
+            next_cursor: None,
+        })
+    }
+
+    async fn list_tools_all(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
+        self.list_tools_all_with_limits(McpPaginationLimits::default())
+            .await
+    }
+
+    async fn list_tools_all_with_limits(
+        &self,
+        limits: McpPaginationLimits,
+    ) -> Result<Vec<McpToolDescriptor>, McpError> {
+        let mut items = Vec::new();
+        let mut cursor = None;
+        let mut seen = BTreeSet::new();
+        for _ in 0..limits.max_pages {
+            let page = self.list_tools_page(cursor.as_deref()).await?;
+            ensure_item_limit(items.len(), page.items.len(), limits.max_items)?;
+            items.extend(page.items);
+            let Some(next_cursor) = page.next_cursor else {
+                return Ok(items);
+            };
+            ensure_fresh_cursor(&mut seen, &next_cursor)?;
+            cursor = Some(next_cursor);
+        }
+        Err(page_limit_error(limits.max_pages))
+    }
+
     async fn call_tool(&self, name: &str, args: Value) -> Result<McpToolResult, McpError>;
 
     async fn call_tool_events(
@@ -175,7 +211,42 @@ pub trait McpConnection: Send + Sync + 'static {
         Ok(Vec::new())
     }
 
-    async fn read_resource(&self, uri: &str) -> Result<McpResourceContents, McpError> {
+    async fn list_resources_page(
+        &self,
+        _cursor: Option<&str>,
+    ) -> Result<McpListPage<McpResource>, McpError> {
+        Ok(McpListPage {
+            items: self.list_resources().await?,
+            next_cursor: None,
+        })
+    }
+
+    async fn list_resources_all(&self) -> Result<Vec<McpResource>, McpError> {
+        self.list_resources_all_with_limits(McpPaginationLimits::default())
+            .await
+    }
+
+    async fn list_resources_all_with_limits(
+        &self,
+        limits: McpPaginationLimits,
+    ) -> Result<Vec<McpResource>, McpError> {
+        let mut items = Vec::new();
+        let mut cursor = None;
+        let mut seen = BTreeSet::new();
+        for _ in 0..limits.max_pages {
+            let page = self.list_resources_page(cursor.as_deref()).await?;
+            ensure_item_limit(items.len(), page.items.len(), limits.max_items)?;
+            items.extend(page.items);
+            let Some(next_cursor) = page.next_cursor else {
+                return Ok(items);
+            };
+            ensure_fresh_cursor(&mut seen, &next_cursor)?;
+            cursor = Some(next_cursor);
+        }
+        Err(page_limit_error(limits.max_pages))
+    }
+
+    async fn read_resource(&self, uri: &str) -> Result<McpReadResourceResult, McpError> {
         Err(McpError::Protocol(format!(
             "resources/read not implemented for {uri}"
         )))
@@ -197,6 +268,41 @@ pub trait McpConnection: Send + Sync + 'static {
         Ok(Vec::new())
     }
 
+    async fn list_prompts_page(
+        &self,
+        _cursor: Option<&str>,
+    ) -> Result<McpListPage<McpPrompt>, McpError> {
+        Ok(McpListPage {
+            items: self.list_prompts().await?,
+            next_cursor: None,
+        })
+    }
+
+    async fn list_prompts_all(&self) -> Result<Vec<McpPrompt>, McpError> {
+        self.list_prompts_all_with_limits(McpPaginationLimits::default())
+            .await
+    }
+
+    async fn list_prompts_all_with_limits(
+        &self,
+        limits: McpPaginationLimits,
+    ) -> Result<Vec<McpPrompt>, McpError> {
+        let mut items = Vec::new();
+        let mut cursor = None;
+        let mut seen = BTreeSet::new();
+        for _ in 0..limits.max_pages {
+            let page = self.list_prompts_page(cursor.as_deref()).await?;
+            ensure_item_limit(items.len(), page.items.len(), limits.max_items)?;
+            items.extend(page.items);
+            let Some(next_cursor) = page.next_cursor else {
+                return Ok(items);
+            };
+            ensure_fresh_cursor(&mut seen, &next_cursor)?;
+            cursor = Some(next_cursor);
+        }
+        Err(page_limit_error(limits.max_pages))
+    }
+
     async fn get_prompt(&self, name: &str, _args: Value) -> Result<McpPromptMessages, McpError> {
         Err(McpError::Protocol(format!(
             "prompts/get not implemented for {name}"
@@ -208,4 +314,26 @@ pub trait McpConnection: Send + Sync + 'static {
     }
 
     async fn shutdown(&self) -> Result<(), McpError>;
+}
+
+fn ensure_item_limit(current: usize, added: usize, limit: usize) -> Result<(), McpError> {
+    if current.saturating_add(added) <= limit {
+        return Ok(());
+    }
+    Err(McpError::InvalidResponse(format!(
+        "MCP pagination item limit exceeded ({limit})"
+    )))
+}
+
+fn ensure_fresh_cursor(seen: &mut BTreeSet<String>, cursor: &str) -> Result<(), McpError> {
+    if seen.insert(cursor.to_owned()) {
+        return Ok(());
+    }
+    Err(McpError::InvalidResponse(format!(
+        "MCP pagination returned repeated cursor {cursor:?}"
+    )))
+}
+
+fn page_limit_error(limit: usize) -> McpError {
+    McpError::InvalidResponse(format!("MCP pagination page limit exhausted ({limit})"))
 }

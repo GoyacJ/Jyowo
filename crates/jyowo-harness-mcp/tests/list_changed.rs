@@ -249,6 +249,9 @@ fn tool_with_schema(name: &str, always_load: bool, input_schema: Value) -> McpTo
     }
     McpToolDescriptor {
         name: name.to_owned(),
+        title: None,
+        icons: None,
+        execution: None,
         description: Some(format!("{name} tool")),
         input_schema,
         output_schema: None,

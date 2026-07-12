@@ -430,6 +430,9 @@ fn tool(name: &str) -> McpToolDescriptor {
 fn tool_with_schema(name: &str, input_schema: Value) -> McpToolDescriptor {
     McpToolDescriptor {
         name: name.into(),
+        title: None,
+        icons: None,
+        execution: None,
         description: Some(format!("{name} tool")),
         input_schema,
         output_schema: None,

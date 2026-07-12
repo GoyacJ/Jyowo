@@ -52,8 +52,8 @@ use harness_contracts::PermissionMode;
 use crate::{
     elicitation_from_jsonrpc_error, handle_jsonrpc_elicitation_error, ElicitationHandler,
     InitializeParams, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpClientCapabilities,
-    McpError, McpImplementation, McpPrompt, McpPromptMessages, McpResource, McpResourceContents,
-    McpToolDescriptor, McpToolResult,
+    McpError, McpImplementation, McpListPage, McpPrompt, McpPromptMessages, McpReadResourceResult,
+    McpResource, McpResourceContents, McpToolDescriptor, McpToolResult,
 };
 
 #[cfg(feature = "http")]
@@ -87,6 +87,8 @@ pub use websocket::WebsocketTransport;
 #[derive(Debug, Deserialize)]
 struct ListToolsResult {
     tools: Vec<McpToolDescriptor>,
+    #[serde(rename = "nextCursor", default)]
+    next_cursor: Option<String>,
 }
 
 #[cfg(any(
@@ -98,6 +100,8 @@ struct ListToolsResult {
 #[derive(Debug, Deserialize)]
 struct ListResourcesResult {
     resources: Vec<McpResource>,
+    #[serde(rename = "nextCursor", default)]
+    next_cursor: Option<String>,
 }
 
 #[cfg(any(
@@ -109,6 +113,8 @@ struct ListResourcesResult {
 #[derive(Debug, Deserialize)]
 struct ReadResourceResult {
     contents: Vec<McpResourceContents>,
+    #[serde(rename = "_meta", default)]
+    meta: std::collections::BTreeMap<String, Value>,
 }
 
 #[cfg(any(
@@ -120,6 +126,8 @@ struct ReadResourceResult {
 #[derive(Debug, Deserialize)]
 struct ListPromptsResult {
     prompts: Vec<McpPrompt>,
+    #[serde(rename = "nextCursor", default)]
+    next_cursor: Option<String>,
 }
 
 #[cfg(any(
@@ -209,6 +217,45 @@ mod lifecycle_compatibility_tests {
 
         assert_eq!(protocol_version, Some("2025-03-26"));
     }
+
+    #[test]
+    fn paginated_requests_only_send_a_cursor_when_present() {
+        let peer = JsonRpcPeer::new();
+        assert_eq!(list_tools_request(&peer, None).params, None);
+        assert_eq!(
+            list_resources_request(&peer, Some("resources-2")).params,
+            Some(json!({ "cursor": "resources-2" }))
+        );
+        assert_eq!(
+            list_prompts_request(&peer, Some("prompts-2")).params,
+            Some(json!({ "cursor": "prompts-2" }))
+        );
+    }
+
+    #[test]
+    fn response_decoders_preserve_cursors_and_all_resource_contents() {
+        let tools = decode_list_tools(JsonRpcResponse::success(
+            json!(1),
+            json!({ "tools": [], "nextCursor": "tools-2" }),
+        ))
+        .unwrap();
+        assert_eq!(tools.next_cursor.as_deref(), Some("tools-2"));
+
+        let resource = decode_read_resource(JsonRpcResponse::success(
+            json!(2),
+            json!({
+                "contents": [
+                    { "uri": "test://text", "text": "hello" },
+                    { "uri": "test://blob", "blob": "AA==" }
+                ],
+                "_meta": { "trace": "abc" }
+            }),
+        ))
+        .unwrap();
+        assert_eq!(resource.contents.len(), 2);
+        assert_eq!(resource.contents[1].blob.as_deref(), Some("AA=="));
+        assert_eq!(resource.meta.get("trace"), Some(&json!("abc")));
+    }
 }
 
 #[cfg(any(
@@ -217,8 +264,8 @@ mod lifecycle_compatibility_tests {
     feature = "websocket",
     feature = "sse"
 ))]
-pub(crate) fn list_tools_request(peer: &JsonRpcPeer) -> JsonRpcRequest {
-    peer.request("tools/list", Some(json!({})))
+pub(crate) fn list_tools_request(peer: &JsonRpcPeer, cursor: Option<&str>) -> JsonRpcRequest {
+    peer.request("tools/list", pagination_params(cursor))
 }
 
 #[cfg(any(
@@ -243,8 +290,8 @@ pub(crate) fn call_tool_request(peer: &JsonRpcPeer, name: &str, args: Value) -> 
     feature = "websocket",
     feature = "sse"
 ))]
-pub(crate) fn list_resources_request(peer: &JsonRpcPeer) -> JsonRpcRequest {
-    peer.request("resources/list", Some(json!({})))
+pub(crate) fn list_resources_request(peer: &JsonRpcPeer, cursor: Option<&str>) -> JsonRpcRequest {
+    peer.request("resources/list", pagination_params(cursor))
 }
 
 #[cfg(any(
@@ -283,8 +330,8 @@ pub(crate) fn unsubscribe_resource_request(peer: &JsonRpcPeer, uri: &str) -> Jso
     feature = "websocket",
     feature = "sse"
 ))]
-pub(crate) fn list_prompts_request(peer: &JsonRpcPeer) -> JsonRpcRequest {
-    peer.request("prompts/list", Some(json!({})))
+pub(crate) fn list_prompts_request(peer: &JsonRpcPeer, cursor: Option<&str>) -> JsonRpcRequest {
+    peer.request("prompts/list", pagination_params(cursor))
 }
 
 #[cfg(any(
@@ -311,8 +358,12 @@ pub(crate) fn get_prompt_request(peer: &JsonRpcPeer, name: &str, args: Value) ->
 ))]
 pub(crate) fn decode_list_tools(
     response: JsonRpcResponse,
-) -> Result<Vec<McpToolDescriptor>, McpError> {
-    Ok(decode_success::<ListToolsResult>(response)?.tools)
+) -> Result<McpListPage<McpToolDescriptor>, McpError> {
+    let result = decode_success::<ListToolsResult>(response)?;
+    Ok(McpListPage {
+        items: result.tools,
+        next_cursor: result.next_cursor,
+    })
 }
 
 #[cfg(any(
@@ -323,8 +374,12 @@ pub(crate) fn decode_list_tools(
 ))]
 pub(crate) fn decode_list_resources(
     response: JsonRpcResponse,
-) -> Result<Vec<McpResource>, McpError> {
-    Ok(decode_success::<ListResourcesResult>(response)?.resources)
+) -> Result<McpListPage<McpResource>, McpError> {
+    let result = decode_success::<ListResourcesResult>(response)?;
+    Ok(McpListPage {
+        items: result.resources,
+        next_cursor: result.next_cursor,
+    })
 }
 
 #[cfg(any(
@@ -335,12 +390,12 @@ pub(crate) fn decode_list_resources(
 ))]
 pub(crate) fn decode_read_resource(
     response: JsonRpcResponse,
-) -> Result<McpResourceContents, McpError> {
-    decode_success::<ReadResourceResult>(response)?
-        .contents
-        .into_iter()
-        .next()
-        .ok_or_else(|| McpError::InvalidResponse("resources/read returned no contents".into()))
+) -> Result<McpReadResourceResult, McpError> {
+    let result = decode_success::<ReadResourceResult>(response)?;
+    Ok(McpReadResourceResult {
+        contents: result.contents,
+        meta: result.meta,
+    })
 }
 
 #[cfg(any(
@@ -360,8 +415,24 @@ pub(crate) fn decode_empty_result(response: JsonRpcResponse) -> Result<(), McpEr
     feature = "websocket",
     feature = "sse"
 ))]
-pub(crate) fn decode_list_prompts(response: JsonRpcResponse) -> Result<Vec<McpPrompt>, McpError> {
-    Ok(decode_success::<ListPromptsResult>(response)?.prompts)
+pub(crate) fn decode_list_prompts(
+    response: JsonRpcResponse,
+) -> Result<McpListPage<McpPrompt>, McpError> {
+    let result = decode_success::<ListPromptsResult>(response)?;
+    Ok(McpListPage {
+        items: result.prompts,
+        next_cursor: result.next_cursor,
+    })
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+fn pagination_params(cursor: Option<&str>) -> Option<Value> {
+    cursor.map(|cursor| json!({ "cursor": cursor }))
 }
 
 #[cfg(any(

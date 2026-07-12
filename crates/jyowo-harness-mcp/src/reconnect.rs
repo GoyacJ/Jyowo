@@ -18,10 +18,10 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use crate::{
     authorize_mcp_transport,
     registry::{effective_tool_schema_fingerprint, McpSchemaFingerprint},
-    ListChangedEvent, McpChange, McpConnectContext, McpConnection, McpError, McpMetric,
-    McpMetricConnectionState, McpMetricOutcome, McpMetricsSink, McpPrompt, McpPromptMessages,
-    McpResource, McpResourceContents, McpServerScope, McpServerSpec, McpToolCallStream,
-    McpToolDescriptor, McpToolResult, McpTransport, NoopMcpMetricsSink,
+    ListChangedEvent, McpChange, McpConnectContext, McpConnection, McpError, McpListPage,
+    McpMetric, McpMetricConnectionState, McpMetricOutcome, McpMetricsSink, McpPrompt,
+    McpPromptMessages, McpReadResourceResult, McpResource, McpServerScope, McpServerSpec,
+    McpToolCallStream, McpToolDescriptor, McpToolResult, McpTransport, NoopMcpMetricsSink,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -430,6 +430,17 @@ impl McpConnection for ManagedMcpConnection {
         }
     }
 
+    async fn list_tools_page(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<McpListPage<McpToolDescriptor>, McpError> {
+        let connection = self.current_connection().await?;
+        match connection.list_tools_page(cursor).await {
+            Ok(result) => Ok(result),
+            Err(error) => Err(self.handle_operation_error(error).await),
+        }
+    }
+
     async fn call_tool(&self, name: &str, args: Value) -> Result<McpToolResult, McpError> {
         let connection = self.current_connection().await?;
         match connection.call_tool(name, args).await {
@@ -478,7 +489,18 @@ impl McpConnection for ManagedMcpConnection {
         }
     }
 
-    async fn read_resource(&self, uri: &str) -> Result<McpResourceContents, McpError> {
+    async fn list_resources_page(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<McpListPage<McpResource>, McpError> {
+        let connection = self.current_connection().await?;
+        match connection.list_resources_page(cursor).await {
+            Ok(result) => Ok(result),
+            Err(error) => Err(self.handle_operation_error(error).await),
+        }
+    }
+
+    async fn read_resource(&self, uri: &str) -> Result<McpReadResourceResult, McpError> {
         let connection = self.current_connection().await?;
         match connection.read_resource(uri).await {
             Ok(result) => Ok(result),
@@ -489,6 +511,17 @@ impl McpConnection for ManagedMcpConnection {
     async fn list_prompts(&self) -> Result<Vec<McpPrompt>, McpError> {
         let connection = self.current_connection().await?;
         match connection.list_prompts().await {
+            Ok(result) => Ok(result),
+            Err(error) => Err(self.handle_operation_error(error).await),
+        }
+    }
+
+    async fn list_prompts_page(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<McpListPage<McpPrompt>, McpError> {
+        let connection = self.current_connection().await?;
+        match connection.list_prompts_page(cursor).await {
             Ok(result) => Ok(result),
             Err(error) => Err(self.handle_operation_error(error).await),
         }

@@ -365,6 +365,9 @@ async fn assert_contract(connection: Arc<dyn McpConnection>, expect_change: bool
 fn tool(name: &str) -> McpToolDescriptor {
     McpToolDescriptor {
         name: name.to_owned(),
+        title: None,
+        icons: None,
+        execution: None,
         description: Some("Contract tool".to_owned()),
         input_schema: json!({ "type": "object" }),
         output_schema: None,

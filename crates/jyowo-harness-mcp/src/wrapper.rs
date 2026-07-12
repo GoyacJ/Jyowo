@@ -94,6 +94,16 @@ impl McpToolWrapper {
         cancel_ack_timeout: Duration,
     ) -> Self {
         let upstream_name = mcp_tool.name.clone();
+        let display_name = mcp_tool
+            .title
+            .clone()
+            .or_else(|| {
+                mcp_tool
+                    .annotations
+                    .as_ref()
+                    .and_then(|annotations| annotations.title.clone())
+            })
+            .unwrap_or_else(|| upstream_name.clone());
         let description = mcp_tool
             .description
             .clone()
@@ -104,6 +114,18 @@ impl McpToolWrapper {
             defer_policy,
         );
         let mut server_meta = mcp_tool.meta;
+        if let Some(icons) = mcp_tool.icons {
+            server_meta.insert(
+                "icons".to_owned(),
+                serde_json::to_value(icons).expect("MCP icons serialize"),
+            );
+        }
+        if let Some(execution) = mcp_tool.execution {
+            server_meta.insert(
+                "execution".to_owned(),
+                serde_json::to_value(execution).expect("MCP tool execution serializes"),
+            );
+        }
         if let Some(open_world_hint) = mcp_tool
             .annotations
             .as_ref()
@@ -113,7 +135,7 @@ impl McpToolWrapper {
         }
         let descriptor = ToolDescriptor {
             name: canonical_name,
-            display_name: upstream_name.clone(),
+            display_name,
             description: description.clone(),
             category: "mcp".to_owned(),
             group: ToolGroup::Network,
@@ -356,26 +378,51 @@ fn to_tool_error(error: McpError) -> ToolError {
 }
 
 fn into_tool_result(result: McpToolResult) -> ToolResult {
-    let mut content = result.content;
-    if content.len() == 1 {
-        return match content.remove(0) {
-            McpContent::Text { text } => ToolResult::Text(text),
-            McpContent::Json { value } => ToolResult::Structured(value),
-        };
+    let mut parts = Vec::new();
+    for content in result.content {
+        match content {
+            McpContent::Text {
+                text,
+                annotations,
+                meta,
+            } => {
+                parts.push(ToolResultPart::Text { text: text.clone() });
+                if annotations.is_some() || !meta.is_empty() {
+                    parts.push(ToolResultPart::Structured {
+                        value: serde_json::to_value(McpContent::Text {
+                            text,
+                            annotations,
+                            meta,
+                        })
+                        .expect("MCP text content serializes"),
+                        schema_ref: None,
+                    });
+                }
+            }
+            other => parts.push(ToolResultPart::Structured {
+                value: serde_json::to_value(other).expect("MCP content serializes"),
+                schema_ref: None,
+            }),
+        }
+    }
+    if let Some(value) = result.structured_content {
+        parts.push(ToolResultPart::Structured {
+            value,
+            schema_ref: None,
+        });
+    }
+    if !result.meta.is_empty() {
+        parts.push(ToolResultPart::Structured {
+            value: serde_json::json!({ "_meta": result.meta }),
+            schema_ref: None,
+        });
     }
 
-    ToolResult::Mixed(
-        content
-            .into_iter()
-            .map(|part| match part {
-                McpContent::Text { text } => ToolResultPart::Text { text },
-                McpContent::Json { value } => ToolResultPart::Structured {
-                    value,
-                    schema_ref: None,
-                },
-            })
-            .collect(),
-    )
+    match parts.as_slice() {
+        [ToolResultPart::Text { text }] => ToolResult::Text(text.clone()),
+        [ToolResultPart::Structured { value, .. }] => ToolResult::Structured(value.clone()),
+        _ => ToolResult::Mixed(parts),
+    }
 }
 
 fn result_error_message(result: &McpToolResult) -> String {
@@ -383,8 +430,8 @@ fn result_error_message(result: &McpToolResult) -> String {
         .content
         .iter()
         .find_map(|content| match content {
-            McpContent::Text { text } => Some(text.clone()),
-            McpContent::Json { .. } => None,
+            McpContent::Text { text, .. } => Some(text.clone()),
+            _ => None,
         })
         .unwrap_or_else(|| "mcp tool returned an error".to_owned())
 }
@@ -399,7 +446,14 @@ fn progress_fraction(progress: Option<f64>, total: Option<f64>) -> Option<f32> {
 }
 
 fn validate_input_schema(schema: &Value, input: &Value) -> Result<(), ValidationError> {
-    let validator = jsonschema::validator_for(schema).map_err(|error| {
+    let validator = if schema.get("$schema").is_some() {
+        jsonschema::validator_for(schema)
+    } else {
+        jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(schema)
+    }
+    .map_err(|error| {
         ValidationError::from(format!("failed to compile mcp tool input schema: {error}"))
     })?;
     if validator.is_valid(input) {
@@ -412,4 +466,72 @@ fn validate_input_schema(schema: &Value, input: &Value) -> Result<(), Validation
     Err(ValidationError::from(format!(
         "mcp tool input schema validation failed: {details}"
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use harness_contracts::{ToolResult, ToolResultPart};
+    use serde_json::json;
+
+    use super::{into_tool_result, validate_input_schema};
+    use crate::{McpContent, McpToolResult};
+
+    #[test]
+    fn wrapper_preserves_structured_unknown_and_result_metadata_with_text_fallback() {
+        let result = into_tool_result(McpToolResult {
+            content: vec![
+                McpContent::text("fallback"),
+                McpContent::Unknown(json!({ "type": "vendor", "raw": true })),
+            ],
+            structured_content: Some(json!({ "answer": 42 })),
+            is_error: false,
+            meta: BTreeMap::from([("trace".to_owned(), json!("abc"))]),
+        });
+
+        let ToolResult::Mixed(parts) = result else {
+            panic!("text and structured MCP data must remain mixed");
+        };
+        assert!(matches!(
+            &parts[0],
+            ToolResultPart::Text { text } if text == "fallback"
+        ));
+        assert!(parts.iter().any(|part| matches!(
+            part,
+            ToolResultPart::Structured { value, .. } if value == &json!({ "answer": 42 })
+        )));
+        assert!(parts.iter().any(|part| matches!(
+            part,
+            ToolResultPart::Structured { value, .. } if value == &json!({ "_meta": { "trace": "abc" } })
+        )));
+    }
+
+    #[test]
+    fn schema_defaults_to_2020_12_and_honors_an_explicit_draft() {
+        let draft_2020_12 = json!({
+            "type": "object",
+            "properties": {
+                "tuple": {
+                    "type": "array",
+                    "prefixItems": [{ "type": "string" }],
+                    "items": { "type": "number" }
+                }
+            }
+        });
+        validate_input_schema(&draft_2020_12, &json!({ "tuple": ["first", 2] })).unwrap();
+
+        let draft_7 = json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {
+                "tuple": {
+                    "type": "array",
+                    "items": [{ "type": "string" }],
+                    "additionalItems": false
+                }
+            }
+        });
+        validate_input_schema(&draft_7, &json!({ "tuple": ["first"] })).unwrap();
+    }
 }

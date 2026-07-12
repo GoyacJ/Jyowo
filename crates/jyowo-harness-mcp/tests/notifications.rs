@@ -144,12 +144,21 @@ async fn registry_maps_resource_and_prompt_notifications_to_harness_events() {
     connection.set_resources(vec![McpResource {
         uri: "jyowo://sessions/1".into(),
         name: "session 1".into(),
+        title: None,
         description: None,
         mime_type: Some("application/json".into()),
+        icons: None,
+        annotations: None,
+        size: None,
+        meta: Default::default(),
     }]);
     connection.set_prompts(vec![McpPrompt {
         name: "triage".into(),
+        title: None,
         description: None,
+        icons: None,
+        arguments: None,
+        meta: Default::default(),
     }]);
     let registry = McpRegistry::new();
     registry
@@ -361,11 +370,19 @@ impl McpConnection for MutableMetadata {
         Ok(self.resources.lock().clone())
     }
 
-    async fn read_resource(&self, uri: &str) -> Result<McpResourceContents, McpError> {
-        Ok(McpResourceContents {
-            uri: uri.into(),
-            mime_type: None,
-            text: None,
+    async fn read_resource(
+        &self,
+        uri: &str,
+    ) -> Result<harness_mcp::McpReadResourceResult, McpError> {
+        Ok(harness_mcp::McpReadResourceResult {
+            contents: vec![McpResourceContents {
+                uri: uri.into(),
+                mime_type: None,
+                text: None,
+                blob: None,
+                meta: Default::default(),
+            }],
+            meta: Default::default(),
         })
     }
 
@@ -384,7 +401,11 @@ impl McpConnection for MutableMetadata {
     }
 
     async fn get_prompt(&self, _name: &str, _args: Value) -> Result<McpPromptMessages, McpError> {
-        Ok(McpPromptMessages { messages: vec![] })
+        Ok(McpPromptMessages {
+            description: None,
+            messages: vec![],
+            meta: Default::default(),
+        })
     }
 
     async fn subscribe_changes(&self) -> Result<ListChangedEvent, McpError> {

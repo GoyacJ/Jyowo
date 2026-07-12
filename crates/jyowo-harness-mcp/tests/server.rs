@@ -73,15 +73,12 @@ async fn server_calls_tool_and_maps_results() {
     assert_eq!(text, McpToolResult::text("hello"));
 
     let structured = call_tool(&server, "json", json!({})).await;
-    assert_eq!(
-        structured.content[0],
-        harness_mcp::McpContent::Json {
-            value: json!({ "ok": true })
-        }
-    );
+    assert_eq!(structured.structured_content, Some(json!({ "ok": true })));
+    assert!(text_content(&structured).contains("\"ok\": true"));
 
     let mixed = call_tool(&server, "mixed", json!({})).await;
-    assert_eq!(mixed.content.len(), 2);
+    assert_eq!(mixed.content.len(), 1);
+    assert!(mixed.structured_content.is_some());
 }
 
 #[tokio::test]
@@ -104,14 +101,8 @@ async fn server_maps_typed_artifact_tool_results() {
 
     let result = call_tool(&server, "artifact", json!({})).await;
     assert_eq!(result.content.len(), 1);
-    assert!(matches!(
-        &result.content[0],
-        harness_mcp::McpContent::Json { value }
-            if value["kind"] == "artifact"
-                && value["title"] == "Generated image"
-                && value["contentType"] == "image/png"
-                && value.get("blobRef").is_none()
-    ));
+    assert!(result.structured_content.is_some());
+    assert!(text_content(&result).contains("Generated image"));
 }
 
 #[tokio::test]
@@ -224,8 +215,8 @@ fn text_content(result: &McpToolResult) -> String {
         .content
         .iter()
         .find_map(|content| match content {
-            harness_mcp::McpContent::Text { text } => Some(text.clone()),
-            harness_mcp::McpContent::Json { .. } => None,
+            harness_mcp::McpContent::Text { text, .. } => Some(text.clone()),
+            _ => None,
         })
         .unwrap_or_default()
 }
@@ -262,6 +253,7 @@ fn test_tool(name: &str, behavior: Behavior) -> TestTool {
             origin: ToolOrigin::Builtin,
             search_hint: None,
             service_binding: None,
+            metadata: Default::default(),
         },
         behavior,
     }

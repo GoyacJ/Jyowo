@@ -426,6 +426,9 @@ fn server_id() -> McpServerId {
 fn tool(name: &str) -> McpToolDescriptor {
     McpToolDescriptor {
         name: name.to_owned(),
+        title: None,
+        icons: None,
+        execution: None,
         description: Some(format!("{name} tool")),
         input_schema: json!({ "type": "object" }),
         output_schema: None,

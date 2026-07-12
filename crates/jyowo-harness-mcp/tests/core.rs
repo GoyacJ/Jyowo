@@ -13,9 +13,9 @@ use harness_contracts::{
 use harness_mcp::{
     collapse_reserved_separator, trust_level_for_source, FilterConflict, FilterDecision,
     JsonRpcRequest, JsonRpcResponse, ListChangedEvent, McpChange, McpClient, McpConnection,
-    McpMetric, McpMetricOutcome, McpMetricsSink, McpRegistry, McpResource, McpResourceContents,
-    McpServerScope, McpServerSpec, McpTimeouts, McpToolCallEvent, McpToolDescriptor, McpToolFilter,
-    McpToolGlob, McpToolResult, ReconnectPolicy, SamplingPolicy, StdioEnv, TransportChoice,
+    McpMetric, McpMetricOutcome, McpMetricsSink, McpRegistry, McpResource, McpServerScope,
+    McpServerSpec, McpTimeouts, McpToolCallEvent, McpToolDescriptor, McpToolFilter, McpToolGlob,
+    McpToolResult, ReconnectPolicy, SamplingPolicy, StdioEnv, TransportChoice,
 };
 use harness_tool::{
     AuthorizedTicketSummary, AuthorizedToolInput, InterruptToken, Tool, ToolContext, ToolEvent,
@@ -161,6 +161,9 @@ async fn registry_injects_mcp_tool_wrapper_and_executes_test_connection() {
     let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "post_message".into(),
+            title: None,
+            icons: None,
+            execution: None,
             description: Some("Post a message".into()),
             input_schema: json!({
                 "type": "object",
@@ -232,6 +235,9 @@ async fn registry_records_metric_when_tool_filter_skips_tool() {
         tools: vec![
             McpToolDescriptor {
                 name: "lookup".into(),
+                title: None,
+                icons: None,
+                execution: None,
                 description: Some("Lookup".into()),
                 input_schema: json!({ "type": "object" }),
                 output_schema: None,
@@ -240,6 +246,9 @@ async fn registry_records_metric_when_tool_filter_skips_tool() {
             },
             McpToolDescriptor {
                 name: "delete_record".into(),
+                title: None,
+                icons: None,
+                execution: None,
                 description: Some("Delete".into()),
                 input_schema: json!({ "type": "object" }),
                 output_schema: None,
@@ -288,6 +297,9 @@ async fn mcp_tool_wrapper_validates_input_schema_before_upstream_call() {
     let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "post_message".into(),
+            title: None,
+            icons: None,
+            execution: None,
             description: Some("Post a message".into()),
             input_schema: json!({
                 "type": "object",
@@ -338,10 +350,14 @@ async fn mcp_tool_wrapper_maps_trusted_mcp_annotations_to_tool_properties() {
     let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "lookup".into(),
+            title: None,
+            icons: None,
+            execution: None,
             description: Some("Lookup".into()),
             input_schema: json!({ "type": "object" }),
             output_schema: None,
             annotations: Some(harness_mcp::McpToolAnnotations {
+                title: None,
                 read_only_hint: Some(true),
                 destructive_hint: Some(false),
                 idempotent_hint: Some(true),
@@ -389,10 +405,14 @@ async fn mcp_tool_wrapper_keeps_untrusted_annotations_fail_closed() {
     let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "lookup".into(),
+            title: None,
+            icons: None,
+            execution: None,
             description: Some("Lookup".into()),
             input_schema: json!({ "type": "object" }),
             output_schema: None,
             annotations: Some(harness_mcp::McpToolAnnotations {
+                title: None,
                 read_only_hint: Some(true),
                 destructive_hint: Some(false),
                 idempotent_hint: Some(true),
@@ -436,6 +456,9 @@ async fn mcp_tool_wrapper_maps_mcp_progress_to_progress_and_heartbeat_events() {
     let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "post_message".into(),
+            title: None,
+            icons: None,
+            execution: None,
             description: Some("Post a message".into()),
             input_schema: json!({
                 "type": "object",
@@ -511,6 +534,9 @@ async fn mcp_tool_wrapper_maps_mcp_cancelled_to_interrupted_error() {
     let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "post_message".into(),
+            title: None,
+            icons: None,
+            execution: None,
             description: Some("Post a message".into()),
             input_schema: json!({
                 "type": "object",
@@ -565,6 +591,9 @@ async fn mcp_tool_wrapper_sends_cancel_and_times_out_when_upstream_ignores_ack()
     let connection = Arc::new(TestConnection {
         tools: vec![McpToolDescriptor {
             name: "post_message".into(),
+            title: None,
+            icons: None,
+            execution: None,
             description: Some("Post a message".into()),
             input_schema: json!({
                 "type": "object",
@@ -772,7 +801,7 @@ impl McpConnection for TestConnection {
     async fn read_resource(
         &self,
         _uri: &str,
-    ) -> Result<McpResourceContents, harness_mcp::McpError> {
+    ) -> Result<harness_mcp::McpReadResourceResult, harness_mcp::McpError> {
         Err(harness_mcp::McpError::Protocol("not implemented".into()))
     }
 

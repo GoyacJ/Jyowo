@@ -12,11 +12,11 @@ use harness_contracts::{
 use harness_mcp::{
     ExposedCapability, HarnessMcpBackend, HarnessMcpServer, IsolationMode, JsonRpcRequest,
     JsonRpcResponse, McpMetric, McpMetricOutcome, McpMetricsSink, McpPrompt, McpPromptMessages,
-    McpResource, McpResourceContents, McpServerAdapter, McpServerAuditEvent, McpServerAuditSink,
-    McpServerAuth, McpServerAuthValidator, McpServerError, McpServerPolicy, McpServerRateLimit,
-    McpServerRequestContext, NoopMcpEventSink, PromptProvider, ResourceProvider,
-    SamplingJsonRpcHandler, SamplingPolicy, SamplingProvider, SamplingRequest, SamplingResponse,
-    StaticToolContextFactory, TenantMapping, TenantResolver, ToolContextFactory,
+    McpReadResourceResult, McpResource, McpResourceContents, McpServerAdapter, McpServerAuditEvent,
+    McpServerAuditSink, McpServerAuth, McpServerAuthValidator, McpServerError, McpServerPolicy,
+    McpServerRateLimit, McpServerRequestContext, NoopMcpEventSink, PromptProvider,
+    ResourceProvider, SamplingJsonRpcHandler, SamplingPolicy, SamplingProvider, SamplingRequest,
+    SamplingResponse, StaticToolContextFactory, TenantMapping, TenantResolver, ToolContextFactory,
     MCP_SAMPLING_DENIED_CODE,
 };
 use harness_tool::{
@@ -1282,6 +1282,7 @@ impl Tool for SchemaTool {
             origin: harness_contracts::ToolOrigin::Builtin,
             search_hint: None,
             service_binding: None,
+            metadata: Default::default(),
         })
     }
 
@@ -1541,21 +1542,31 @@ impl ResourceProvider for StaticResources {
         Ok(vec![McpResource {
             uri: "jyowo://sessions/active".into(),
             name: "active session".into(),
+            title: None,
             description: Some("Current session metadata".into()),
             mime_type: Some("application/json".into()),
+            icons: None,
+            annotations: None,
+            size: None,
+            meta: Default::default(),
         }])
     }
 
-    async fn read_resource(&self, uri: &str) -> Result<McpResourceContents, McpServerError> {
+    async fn read_resource(&self, uri: &str) -> Result<McpReadResourceResult, McpServerError> {
         if uri != "jyowo://sessions/active" {
             return Err(McpServerError::InvalidParams(format!(
                 "unknown resource: {uri}"
             )));
         }
-        Ok(McpResourceContents {
-            uri: uri.into(),
-            mime_type: Some("application/json".into()),
-            text: Some("{\"session\":\"active\"}".into()),
+        Ok(McpReadResourceResult {
+            contents: vec![McpResourceContents {
+                uri: uri.into(),
+                mime_type: Some("application/json".into()),
+                text: Some("{\"session\":\"active\"}".into()),
+                blob: None,
+                meta: Default::default(),
+            }],
+            meta: Default::default(),
         })
     }
 }
@@ -1565,7 +1576,11 @@ impl PromptProvider for StaticResources {
     async fn list_prompts(&self) -> Result<Vec<McpPrompt>, McpServerError> {
         Ok(vec![McpPrompt {
             name: "triage".into(),
+            title: None,
             description: Some("Triage a session".into()),
+            icons: None,
+            arguments: None,
+            meta: Default::default(),
         }])
     }
 
@@ -1584,6 +1599,7 @@ impl PromptProvider for StaticResources {
             .and_then(Value::as_str)
             .unwrap_or("session");
         Ok(McpPromptMessages {
+            description: None,
             messages: vec![json!({
                 "role": "user",
                 "content": {
@@ -1591,6 +1607,7 @@ impl PromptProvider for StaticResources {
                     "text": format!("triage {focus}")
                 }
             })],
+            meta: Default::default(),
         })
     }
 }
