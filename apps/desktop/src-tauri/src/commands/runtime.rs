@@ -1353,6 +1353,7 @@ pub(crate) fn build_plugin_registry(
         .collect();
 
     let mut builder = PluginRegistry::builder()
+        .without_memory_provider_capability()
         .with_config(plugin_config_from_parts(
             allow_project_plugins,
             disabled_plugins,

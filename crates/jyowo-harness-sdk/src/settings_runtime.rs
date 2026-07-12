@@ -115,11 +115,43 @@ impl TryFrom<Harness> for DesktopSettingsRuntime {
 
     fn try_from(inner: Harness) -> Result<Self, Self::Error> {
         #[cfg(feature = "memory-provider-registry")]
-        if inner.owns_memory_extraction_runtime() {
+        if inner.owns_memory_runtime() {
             return Err(HarnessError::Internal(
-                "desktop settings runtime must not own memory extraction".to_owned(),
+                "desktop settings runtime must not own memory runtime state".to_owned(),
             ));
         }
         Ok(Self { inner })
+    }
+}
+
+#[cfg(all(test, feature = "memory-provider-registry"))]
+mod tests {
+    use super::*;
+    use harness_contracts::NoopRedactor;
+    use harness_journal::InMemoryEventStore;
+    use harness_model::testing::TestModelProvider;
+    use harness_sandbox::NoopSandbox;
+
+    #[tokio::test]
+    async fn settings_builder_strips_all_memory_runtime_ownership() {
+        let workspace = std::env::temp_dir().join(format!(
+            "jyowo-settings-runtime-ownership-{}",
+            harness_contracts::SessionId::new()
+        ));
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let harness = DesktopSettingsRuntime::builder()
+            .with_workspace_root(&workspace)
+            .with_model(TestModelProvider::default())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .build()
+            .await
+            .expect("settings harness");
+
+        assert!(
+            !harness.owns_memory_runtime(),
+            "settings harness must not retain memory database, providers, extraction, or plugin registrations"
+        );
+        DesktopSettingsRuntime::try_from(harness).expect("ownership-free settings runtime");
     }
 }

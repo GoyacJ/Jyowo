@@ -212,11 +212,7 @@ struct HarnessInner {
     authorization_service: Arc<harness_execution::AuthorizationService>,
     tool_registry: ToolRegistry,
     hook_registry: HookRegistry,
-    memory_providers: Vec<Arc<dyn MemoryProvider>>,
-    #[cfg(feature = "memory-provider-registry")]
-    memory_database_path: PathBuf,
-    #[cfg(feature = "memory-provider-registry")]
-    _memory_extraction_runtime: Option<MemoryExtractionRuntime>,
+    memory_runtime: Option<HarnessMemoryRuntime>,
     #[cfg(feature = "memory-builtin")]
     builtin_memory: Option<BuiltinMemoryConfig>,
     blob_store: Option<Arc<dyn BlobStore>>,
@@ -246,6 +242,14 @@ struct HarnessInner {
     deleted_conversation_sessions: Arc<parking_lot::Mutex<HashSet<(TenantId, SessionId)>>>,
     provider_capability_routes: Arc<parking_lot::RwLock<ProviderCapabilityRouteSettings>>,
     provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
+}
+
+struct HarnessMemoryRuntime {
+    providers: Vec<Arc<dyn MemoryProvider>>,
+    #[cfg(feature = "memory-provider-registry")]
+    database_path: PathBuf,
+    #[cfg(feature = "memory-provider-registry")]
+    _extraction_runtime: Option<MemoryExtractionRuntime>,
 }
 
 struct SdkAuthorizationEventSink {
@@ -750,8 +754,26 @@ fn process_tool_status_spec() -> ExecSpec {
 
 impl Harness {
     #[cfg(feature = "memory-provider-registry")]
-    pub(crate) fn owns_memory_extraction_runtime(&self) -> bool {
-        self.inner._memory_extraction_runtime.is_some()
+    pub(crate) fn owns_memory_runtime(&self) -> bool {
+        self.inner.memory_runtime.is_some()
+            || self.inner.plugin_registry.as_ref().is_some_and(|registry| {
+                registry.memory_provider_capability_enabled()
+                    || !registry.registered_memory_providers().is_empty()
+            })
+    }
+
+    #[cfg(feature = "memory-provider-registry")]
+    fn memory_runtime(&self) -> Result<&HarnessMemoryRuntime, HarnessError> {
+        self.inner.memory_runtime.as_ref().ok_or_else(|| {
+            HarnessError::Internal(
+                "memory runtime is not available in settings-only mode".to_owned(),
+            )
+        })
+    }
+
+    #[cfg(feature = "memory-provider-registry")]
+    fn memory_database_path(&self) -> Result<&Path, HarnessError> {
+        Ok(&self.memory_runtime()?.database_path)
     }
 
     #[must_use]
@@ -1340,26 +1362,41 @@ impl Harness {
             };
 
         #[cfg(feature = "memory-provider-registry")]
-        let memory_database_path = extras.memory_database_path.take().unwrap_or_else(|| {
-            builder
-                .options
-                .default_session_options
-                .agent_runtime_root
-                .clone()
-                .unwrap_or_else(|| {
-                    builder
-                        .options
-                        .workspace_root
-                        .join(".jyowo")
-                        .join("runtime")
-                })
-                .join("memory")
-                .join("memory.sqlite3")
-        });
-        #[cfg(feature = "memory-provider-registry")]
-        let memory_extraction_runtime = if extras.memory_runtime_disabled {
+        let memory_runtime = if extras.memory_runtime_disabled {
+            if !extras.memory_providers.is_empty()
+                || extras.memory_database_path.is_some()
+                || extras.memory_extractor.is_some()
+            {
+                return Err(HarnessError::Internal(
+                    "settings-only harness cannot configure memory runtime state".to_owned(),
+                ));
+            }
+            if extras.plugin_registry.as_ref().is_some_and(|registry| {
+                registry.memory_provider_capability_enabled()
+                    || !registry.registered_memory_providers().is_empty()
+            }) {
+                return Err(HarnessError::Internal(
+                    "settings-only harness cannot use a memory-capable plugin registry".to_owned(),
+                ));
+            }
             None
         } else {
+            let memory_database_path = extras.memory_database_path.take().unwrap_or_else(|| {
+                builder
+                    .options
+                    .default_session_options
+                    .agent_runtime_root
+                    .clone()
+                    .unwrap_or_else(|| {
+                        builder
+                            .options
+                            .workspace_root
+                            .join(".jyowo")
+                            .join("runtime")
+                    })
+                    .join("memory")
+                    .join("memory.sqlite3")
+            });
             let memory_extractor = extras.memory_extractor.take().unwrap_or_else(|| {
                 let extraction_redactor = observer
                     .as_ref()
@@ -1372,13 +1409,22 @@ impl Harness {
                     extraction_redactor,
                 ))
             });
-            Some(MemoryExtractionRuntime::spawn(
+            let extraction_runtime = Some(MemoryExtractionRuntime::spawn(
                 memory_database_path.clone(),
                 builder.options.tenant_policy.id,
                 memory_extractor,
                 observer.as_ref().map(Arc::clone),
-            ))
+            ));
+            Some(HarnessMemoryRuntime {
+                providers: std::mem::take(&mut extras.memory_providers),
+                database_path: memory_database_path,
+                _extraction_runtime: extraction_runtime,
+            })
         };
+        #[cfg(not(feature = "memory-provider-registry"))]
+        let memory_runtime = Some(HarnessMemoryRuntime {
+            providers: std::mem::take(&mut extras.memory_providers),
+        });
 
         Ok(Self {
             inner: Arc::new(HarnessInner {
@@ -1393,11 +1439,7 @@ impl Harness {
                 authorization_service,
                 tool_registry,
                 hook_registry,
-                memory_providers: extras.memory_providers,
-                #[cfg(feature = "memory-provider-registry")]
-                memory_database_path,
-                #[cfg(feature = "memory-provider-registry")]
-                _memory_extraction_runtime: memory_extraction_runtime,
+                memory_runtime,
                 #[cfg(feature = "memory-builtin")]
                 builtin_memory: extras.builtin_memory.take(),
                 blob_store: extras.blob_store.take(),

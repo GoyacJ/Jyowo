@@ -73,6 +73,30 @@ async fn discover_keeps_runtime_loader_idle() {
     );
 }
 
+#[test]
+fn registry_can_remove_memory_provider_capability_from_activation_context() {
+    let manifest = record(
+        "settings-only",
+        PluginCapabilities {
+            memory_provider: Some(harness_plugin::MemoryProviderManifestEntry {
+                name: "memory".to_owned(),
+            }),
+            ..PluginCapabilities::default()
+        },
+    );
+    let registry = PluginRegistry::builder()
+        .without_memory_provider_capability()
+        .build()
+        .expect("settings registry");
+
+    let context = registry.activation_context_for_test(&manifest.manifest);
+
+    assert!(
+        context.memory.is_none(),
+        "settings registry must not inject a memory provider registration capability"
+    );
+}
+
 #[tokio::test]
 async fn activate_injects_only_declared_capability_handles() {
     let manifest = record(

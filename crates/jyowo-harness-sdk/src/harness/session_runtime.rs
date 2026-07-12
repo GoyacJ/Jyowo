@@ -51,7 +51,7 @@ impl Harness {
         #[cfg(feature = "memory-provider-registry")]
         {
             options.memory_thread_settings = Some(memory_thread_settings_for_session(
-                &self.inner.memory_database_path,
+                self.memory_database_path()?,
                 &options,
             )?);
         }
@@ -97,7 +97,7 @@ impl Harness {
             team_id: options.team_id,
             project_workspace_root: options.project_workspace_root.clone(),
             #[cfg(feature = "memory-provider-registry")]
-            memory_database_path: self.inner.memory_database_path.clone(),
+            memory_database_path: self.memory_database_path()?.to_path_buf(),
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
             deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
@@ -340,7 +340,7 @@ impl Harness {
             team_id: turn_options.team_id,
             project_workspace_root: turn_options.project_workspace_root.clone(),
             #[cfg(feature = "memory-provider-registry")]
-            memory_database_path: self.inner.memory_database_path.clone(),
+            memory_database_path: self.memory_database_path()?.to_path_buf(),
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
             deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
@@ -775,7 +775,7 @@ impl Harness {
         #[cfg(feature = "memory-provider-registry")]
         {
             builder = builder.with_model_request_preview_sink(
-                self.model_request_preview_sink_for_session(options),
+                self.model_request_preview_sink_for_session(options)?,
             );
         }
         builder = builder.with_model_middlewares(self.inner.model_middlewares.clone());

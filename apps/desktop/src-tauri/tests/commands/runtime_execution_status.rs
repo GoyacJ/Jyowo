@@ -35,6 +35,20 @@ async fn desktop_settings_runtime_does_not_start_the_legacy_memory_owner() {
         !legacy_memory_database.exists(),
         "desktop settings construction must not create the legacy memory database"
     );
+    let settings_runtime = state
+        .settings_runtime()
+        .expect("settings runtime should initialize");
+    let plugin_registry = settings_runtime
+        .plugin_registry()
+        .expect("settings plugin registry");
+    assert!(
+        !plugin_registry.memory_provider_capability_enabled(),
+        "desktop settings plugins must not receive memory provider registration capability"
+    );
+    assert!(
+        plugin_registry.registered_memory_providers().is_empty(),
+        "desktop settings runtime must not retain plugin memory providers"
+    );
 }
 
 #[test]

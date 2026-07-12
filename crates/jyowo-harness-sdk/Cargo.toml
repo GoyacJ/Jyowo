@@ -173,6 +173,7 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 jyowo-harness-journal = { path = "../jyowo-harness-journal", features = ["in-memory"] }
+jyowo-harness-model = { path = "../jyowo-harness-model", features = ["testing"] }
 jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox", features = ["noop"] }
 semver = { workspace = true }
 tokio = { workspace = true }

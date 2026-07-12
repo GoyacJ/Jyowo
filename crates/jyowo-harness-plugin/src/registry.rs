@@ -91,6 +91,7 @@ pub struct PluginRegistry {
     event_sink: Option<Arc<dyn PluginEventSink>>,
     metrics_sink: Option<Arc<dyn PluginMetricsSink>>,
     tenant_id: TenantId,
+    memory_provider_capability_enabled: bool,
 }
 
 impl std::fmt::Debug for PluginRegistry {
@@ -186,6 +187,7 @@ pub struct PluginRegistryBuilder {
     event_sink: Option<Arc<dyn PluginEventSink>>,
     metrics_sink: Option<Arc<dyn PluginMetricsSink>>,
     tenant_id: Option<TenantId>,
+    memory_provider_capability_enabled: bool,
 }
 
 pub trait PluginEventSink: Send + Sync + 'static {
@@ -819,6 +821,11 @@ impl PluginRegistry {
             .collect()
     }
 
+    #[must_use]
+    pub fn memory_provider_capability_enabled(&self) -> bool {
+        self.memory_provider_capability_enabled
+    }
+
     pub fn activation_context_for_test(
         &self,
         manifest: &PluginManifest,
@@ -908,7 +915,9 @@ impl PluginRegistry {
                     self.metrics_sink.clone(),
                 )) as Arc<_>
             }),
-            memory: manifest.capabilities.memory_provider.is_some().then(|| {
+            memory: (self.memory_provider_capability_enabled
+                && manifest.capabilities.memory_provider.is_some())
+            .then(|| {
                 Arc::new(ScopedMemoryProviderRegistration::new(Arc::clone(
                     &activation,
                 ))) as Arc<_>
@@ -2461,6 +2470,12 @@ fn is_manifest_signature_rejection(error: &PluginError) -> bool {
 
 impl PluginRegistryBuilder {
     #[must_use]
+    pub fn without_memory_provider_capability(mut self) -> Self {
+        self.memory_provider_capability_enabled = false;
+        self
+    }
+
+    #[must_use]
     pub fn with_manifest_loader(mut self, loader: Arc<dyn PluginManifestLoader>) -> Self {
         self.manifest_loaders.push(loader);
         self
@@ -2502,6 +2517,7 @@ impl PluginRegistryBuilder {
             event_sink,
             metrics_sink,
             tenant_id,
+            memory_provider_capability_enabled,
         } = self;
 
         if signer_store.is_some() && !trusted_signers.is_empty() {
@@ -2532,6 +2548,7 @@ impl PluginRegistryBuilder {
             event_sink,
             metrics_sink,
             tenant_id: tenant_id.unwrap_or(TenantId::SINGLE),
+            memory_provider_capability_enabled,
         })
     }
 
@@ -2579,6 +2596,7 @@ impl Default for PluginRegistryBuilder {
             event_sink: None,
             metrics_sink: None,
             tenant_id: None,
+            memory_provider_capability_enabled: true,
         }
     }
 }
