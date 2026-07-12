@@ -660,8 +660,11 @@ impl Harness {
             }
             selected_candidates.push(candidate.clone());
         }
-        let evidence =
-            merged_candidate_evidence(&selected_candidates, &request.merged_record.content);
+        let evidence = harness_memory::derive_merged_candidate_evidence(
+            &selected_candidates,
+            &request.merged_record.content,
+        )
+        .map_err(|error| HarnessError::Memory(harness_contracts::MemoryError::Message(error)))?;
         let policy = harness_memory::MemoryOperationPolicy {
             thread,
             actor,
@@ -702,7 +705,7 @@ impl Harness {
                     .forget_for_actor_with_policy(
                         memory_id,
                         memory_actor_from_options(&options),
-                        request.evidence.run_id,
+                        evidence.run_id,
                         &policy,
                     )
                     .await;
@@ -2890,30 +2893,6 @@ fn ensure_distinct_memory_candidates(
         ));
     }
     Ok(())
-}
-
-#[cfg(feature = "memory-provider-registry")]
-fn merged_candidate_evidence(
-    candidates: &[harness_contracts::MemoryCandidate],
-    merged_content: &str,
-) -> harness_contracts::MemoryEvidence {
-    let Some(first) = candidates.first() else {
-        return harness_contracts::MemoryEvidence {
-            source: harness_contracts::MemorySource::AgentDerived,
-            origin: harness_contracts::MemoryEvidenceOrigin::Imported {
-                importer: "memory-candidate-merge".to_owned(),
-                import_id: "empty-candidate-set".to_owned(),
-            },
-            content_hash: content_hash(merged_content),
-            session_id: None,
-            run_id: None,
-            message_id: None,
-            tool_use_id: None,
-        };
-    };
-    let mut evidence = first.evidence.clone();
-    evidence.content_hash = content_hash(merged_content);
-    evidence
 }
 
 #[cfg(feature = "memory-provider-registry")]

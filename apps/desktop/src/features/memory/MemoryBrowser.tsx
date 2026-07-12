@@ -65,17 +65,14 @@ export function MemoryBrowser({ workspaceRoot }: { workspaceRoot?: string }) {
   })
   const exportMutation = useMutation({
     mutationFn: () =>
-      daemonClient.exportMemoryItems(
-        workspaceRoot,
-        {
-          explicitUserAction: true,
-          format: 'json',
-          includeHashes: true,
-          includeMetadata: true,
-          includeRawContent: false,
-          scope: 'visible',
-        },
-      ),
+      daemonClient.exportMemoryItems(workspaceRoot, {
+        explicitUserAction: true,
+        format: 'json',
+        includeHashes: true,
+        includeMetadata: true,
+        includeRawContent: false,
+        scope: 'visible',
+      }),
     onSuccess: (response) => {
       setExportMessage(t('exportSaved', { count: response.itemCount, path: response.path }))
     },

@@ -69,7 +69,6 @@ fn memory_facade_merge_marks_candidates_merged() {
                     tenant_id: TenantId::SINGLE,
                     candidate_ids: vec![first.id, second.id],
                     merged_record: memory_draft("merged memory"),
-                    evidence: memory_evidence(session_id, run_id, 3),
                     action_plan_id: Some(ActionPlanId::new()),
                 },
             )
@@ -91,7 +90,7 @@ fn memory_facade_merge_marks_candidates_merged() {
 }
 
 #[test]
-fn memory_facade_merge_derives_evidence_from_candidates_not_request_payload() {
+fn memory_facade_merge_derives_evidence_from_candidates() {
     block_on(async {
         let workspace = unique_workspace("sdk-facade-merge-derives-evidence");
         std::fs::create_dir_all(&workspace).unwrap();
@@ -109,13 +108,6 @@ fn memory_facade_merge_derives_evidence_from_candidates_not_request_payload() {
                 memory_evidence(session_id, run_id, 1),
             )
             .expect("propose candidate");
-        let mut forged_evidence = memory_evidence(session_id, run_id, 9);
-        forged_evidence.source = MemorySource::WebRetrieval;
-        forged_evidence.origin = MemoryEvidenceOrigin::WebRetrieval {
-            url_hash: ContentHash([9; 32]),
-            fetch_tool_use_id: None,
-        };
-
         let merged = harness
             .merge_memory_candidate(
                 options.clone(),
@@ -123,12 +115,11 @@ fn memory_facade_merge_derives_evidence_from_candidates_not_request_payload() {
                     tenant_id: TenantId::SINGLE,
                     candidate_ids: vec![candidate.id],
                     merged_record: memory_draft("merged memory"),
-                    evidence: forged_evidence,
                     action_plan_id: Some(ActionPlanId::new()),
                 },
             )
             .await
-            .expect("merge should ignore forged request evidence");
+            .expect("merge should derive evidence from the selected candidate");
 
         let item = harness
             .get_memory_item(options, merged.memory_id)
@@ -165,7 +156,6 @@ fn memory_facade_merge_rejects_missing_candidate_before_write() {
                     tenant_id: TenantId::SINGLE,
                     candidate_ids: vec![first.id, harness_contracts::MemoryCandidateId::new()],
                     merged_record: memory_draft("merged memory should not be written"),
-                    evidence: memory_evidence(session_id, run_id, 3),
                     action_plan_id: Some(ActionPlanId::new()),
                 },
             )
@@ -208,7 +198,6 @@ fn memory_facade_merge_rejects_duplicate_candidates_before_write() {
                     tenant_id: TenantId::SINGLE,
                     candidate_ids: vec![candidate.id, candidate.id],
                     merged_record: memory_draft("merged memory should not be written"),
-                    evidence: memory_evidence(session_id, run_id, 2),
                     action_plan_id: Some(ActionPlanId::new()),
                 },
             )
@@ -300,7 +289,6 @@ fn memory_facade_merge_rejects_cross_session_candidate_before_write() {
                     tenant_id: TenantId::SINGLE,
                     candidate_ids: vec![first.id, second.id],
                     merged_record: memory_draft("merged memory should not be written"),
-                    evidence: memory_evidence(session_id, run_id, 3),
                     action_plan_id: Some(ActionPlanId::new()),
                 },
             )

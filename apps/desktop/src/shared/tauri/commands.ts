@@ -3474,18 +3474,6 @@ const skillCatalogInstallProgressPayloadSchema = z
   })
   .strict()
 
-const memoryItemIdSchema = z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/)
-const tenantIdSchema = memoryItemIdSchema
-const teamIdSchema = memoryItemIdSchema
-const sessionIdSchema = memoryItemIdSchema
-const runIdSchema = memoryItemIdSchema
-const actionPlanIdSchema = memoryItemIdSchema
-const agentIdSchema = memoryItemIdSchema
-const messageIdSchema = memoryItemIdSchema
-const snapshotIdSchema = memoryItemIdSchema
-const toolUseIdSchema = memoryItemIdSchema
-const workspaceIdSchema = memoryItemIdSchema
-
 const evalRunStatusSchema = z.enum(['failed', 'passed', 'running', 'unavailable'])
 
 const evalCaseIdSchema = z

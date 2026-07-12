@@ -917,23 +917,11 @@ fn ipc_approve_reject_merge_contracts_roundtrip() {
             metadata: make_meta(),
             expires_at: None,
         },
-        evidence: MemoryEvidence {
-            source: MemorySource::Consolidated {
-                from: vec![new_memory_id()],
-            },
-            origin: MemoryEvidenceOrigin::Consolidated {
-                from: vec![new_memory_id()],
-            },
-            content_hash: ContentHash([10u8; 32]),
-            session_id: None,
-            run_id: None,
-            message_id: None,
-            tool_use_id: None,
-        },
         action_plan_id: None,
     };
     let merge_json = serde_json::to_value(&merge).unwrap();
     assert!(merge_json.get("action_plan_id").is_none());
+    assert!(merge_json.get("evidence").is_none());
     let _: MergeMemoryCandidateRequest = serde_json::from_value(merge_json).unwrap();
 }
 

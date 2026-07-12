@@ -298,11 +298,9 @@ impl MemoryService {
                     }
                     candidates.push(candidate);
                 }
-                let evidence = authoritative_merge_evidence(
-                    &candidates,
-                    &request.evidence,
-                    &request.merged_record.content,
-                )?;
+                let evidence =
+                    derive_merged_candidate_evidence(&candidates, &request.merged_record.content)
+                        .map_err(MemoryServiceError::Invalid)?;
                 let now = Utc::now();
                 let record = MemoryRecord {
                     id: MemoryId::new(),
@@ -457,21 +455,6 @@ fn validate_memory_content(content: &str) -> Result<(), MemoryServiceError> {
         )));
     }
     Ok(())
-}
-
-fn authoritative_merge_evidence(
-    candidates: &[MemoryCandidate],
-    claimed: &MemoryEvidence,
-    merged_content: &str,
-) -> Result<MemoryEvidence, MemoryServiceError> {
-    let authoritative = derive_merged_candidate_evidence(candidates, merged_content)
-        .map_err(MemoryServiceError::Invalid)?;
-    if claimed != &authoritative {
-        return Err(MemoryServiceError::Invalid(
-            "merge evidence does not match authoritative candidate evidence".to_owned(),
-        ));
-    }
-    Ok(authoritative)
 }
 
 fn validate_global_settings(

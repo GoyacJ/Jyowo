@@ -215,7 +215,10 @@ export function createDaemonClient(
       return frame.message
     },
     async listMemoryItems(workspaceRoot) {
-      return expectDaemonMessage(await request({ type: 'list_memory_items', workspaceRoot }), 'memory_items')
+      return expectDaemonMessage(
+        await request({ type: 'list_memory_items', workspaceRoot }),
+        'memory_items',
+      )
     },
     async getMemoryItem(workspaceRoot, memoryId) {
       return expectDaemonMessage(
@@ -260,13 +263,21 @@ export function createDaemonClient(
     },
     async approveMemoryCandidate(workspaceRoot, candidateRequest) {
       return expectDaemonMessage(
-        await request({ request: candidateRequest, type: 'approve_memory_candidate', workspaceRoot }),
+        await request({
+          request: candidateRequest,
+          type: 'approve_memory_candidate',
+          workspaceRoot,
+        }),
         'memory_candidate_approved',
       )
     },
     async rejectMemoryCandidate(workspaceRoot, candidateRequest) {
       return expectDaemonMessage(
-        await request({ request: candidateRequest, type: 'reject_memory_candidate', workspaceRoot }),
+        await request({
+          request: candidateRequest,
+          type: 'reject_memory_candidate',
+          workspaceRoot,
+        }),
         'memory_candidate_rejected',
       )
     },

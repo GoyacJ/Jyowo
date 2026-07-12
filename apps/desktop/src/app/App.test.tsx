@@ -17,6 +17,22 @@ const emptyProviderSettingsList = {
 
 const daemonClient = {
   connect: vi.fn().mockResolvedValue(undefined),
+  listMemoryItems: vi.fn().mockResolvedValue({
+    items: [
+      {
+        contentHash: '0'.repeat(64),
+        contentPreview: 'Prefers concise Chinese responses',
+        deleted: false,
+        id: '01HZ0000000000000000000001',
+        kind: 'user_preference',
+        source: 'user_input',
+        tags: ['tone'],
+        updatedAt: '2026-07-12T00:00:00Z',
+        visibility: 'tenant',
+      },
+    ],
+    type: 'memory_items',
+  }),
   listTasks: vi.fn().mockResolvedValue({ tasks: [], type: 'task_list' }),
   loadTask: vi.fn(),
   readBlob: vi.fn(),

@@ -40,11 +40,13 @@ const memoryItems: { items: MemoryItemSummary[]; type: 'memory_items' } = {
   ],
 }
 
-function createMemoryDaemonClient(options: {
-  memoryExport?: Record<string, unknown>
-  memoryItem?: Record<string, unknown>
-  memoryItems?: { items: MemoryItemSummary[]; type?: 'memory_items' }
-} = {}) {
+function createMemoryDaemonClient(
+  options: {
+    memoryExport?: Record<string, unknown>
+    memoryItem?: Record<string, unknown>
+    memoryItems?: { items: MemoryItemSummary[]; type?: 'memory_items' }
+  } = {},
+) {
   return {
     deleteMemoryItem: vi.fn().mockResolvedValue({ memoryId: '', type: 'memory_deleted' }),
     exportMemoryItems: vi.fn().mockResolvedValue({

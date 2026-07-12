@@ -46,14 +46,11 @@ export function MemoryInbox({ workspaceRoot }: { workspaceRoot?: string }) {
 
   const rejectMutation = useMutation({
     mutationFn: (candidateId: string) =>
-      daemonClient.rejectMemoryCandidate(
-        workspaceRoot,
-        {
-          candidate_id: candidateId,
-          reason: 'rejected by user',
-          tenant_id: DEFAULT_MEMORY_TENANT_ID,
-        },
-      ),
+      daemonClient.rejectMemoryCandidate(workspaceRoot, {
+        candidate_id: candidateId,
+        reason: 'rejected by user',
+        tenant_id: DEFAULT_MEMORY_TENANT_ID,
+      }),
     onSuccess: () => {
       setMessage(t('candidateRejected'))
       queryClient.invalidateQueries({ queryKey: inboxQueryKeys.all(workspaceRoot) })
@@ -69,34 +66,30 @@ export function MemoryInbox({ workspaceRoot }: { workspaceRoot?: string }) {
       if (!firstCandidate || selectedCandidates.length < 2) {
         throw new Error('Select at least two candidates.')
       }
-      return daemonClient.mergeMemoryCandidate(
-        workspaceRoot,
-        {
-          candidate_ids: selectedCandidates.map((candidate) => candidate.id),
-          evidence: firstCandidate.evidence,
-          merged_record: {
-            content: selectedCandidates
-              .map((candidate) => candidate.proposed_record.content.trim())
-              .filter(Boolean)
-              .join('\n\n'),
-            expires_at: firstCandidate.proposed_record.expires_at ?? undefined,
-            kind: firstCandidate.proposed_record.kind,
-            metadata: {
-              source_trust: firstCandidate.proposed_record.metadata.source_trust,
-              tags: Array.from(
-                new Set(
-                  selectedCandidates.flatMap(
-                    (candidate) => candidate.proposed_record.metadata.tags ?? [],
-                  ),
+      return daemonClient.mergeMemoryCandidate(workspaceRoot, {
+        candidate_ids: selectedCandidates.map((candidate) => candidate.id),
+        merged_record: {
+          content: selectedCandidates
+            .map((candidate) => candidate.proposed_record.content.trim())
+            .filter(Boolean)
+            .join('\n\n'),
+          expires_at: firstCandidate.proposed_record.expires_at ?? undefined,
+          kind: firstCandidate.proposed_record.kind,
+          metadata: {
+            source_trust: firstCandidate.proposed_record.metadata.source_trust,
+            tags: Array.from(
+              new Set(
+                selectedCandidates.flatMap(
+                  (candidate) => candidate.proposed_record.metadata.tags ?? [],
                 ),
               ),
-              ttl: firstCandidate.proposed_record.metadata.ttl ?? null,
-            },
-            visibility: firstCandidate.proposed_record.visibility,
+            ),
+            ttl: firstCandidate.proposed_record.metadata.ttl ?? null,
           },
-          tenant_id: DEFAULT_MEMORY_TENANT_ID,
+          visibility: firstCandidate.proposed_record.visibility,
         },
-      )
+        tenant_id: DEFAULT_MEMORY_TENANT_ID,
+      })
     },
     onSuccess: () => {
       setMessage(t('candidateMerged'))

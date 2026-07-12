@@ -471,7 +471,6 @@ async fn explicit_memory_mutations_accept_action_plan_context() {
                 tenant_id: TenantId::SINGLE,
                 candidate_ids: vec![merge_one.id, merge_two.id],
                 merged_record: candidate_draft("merged"),
-                evidence: merged_evidence_claim(candidate_evidence(), "merged"),
                 action_plan_id: Some(action_plan_id),
             },
         })
@@ -582,7 +581,6 @@ async fn action_plan_context_does_not_bypass_memory_policy() {
                 tenant_id: TenantId::SINGLE,
                 candidate_ids: vec![merge_one.id, merge_two.id],
                 merged_record: candidate_draft("denied merge"),
-                evidence: merged_evidence_claim(candidate_evidence(), "denied merge"),
                 action_plan_id: Some(action_plan_id),
             },
         })
@@ -759,7 +757,7 @@ async fn candidate_approval_cannot_update_or_delete_an_invisible_target() {
 }
 
 #[tokio::test]
-async fn candidate_merge_rejects_forged_evidence_without_writing_memory() {
+async fn candidate_merge_uses_authoritative_evidence_for_policy_without_writing_memory() {
     let fixture = Fixture::new();
     let db_path = fixture
         .service
@@ -797,13 +795,12 @@ async fn candidate_merge_rejects_forged_evidence_without_writing_memory() {
                 tenant_id: TenantId::SINGLE,
                 candidate_ids: vec![first.id, second.id],
                 merged_record: candidate_draft("forged merge"),
-                evidence: candidate_evidence(),
                 action_plan_id: None,
             },
         })
         .await;
 
-    assert!(matches!(result, Err(MemoryServiceError::Invalid(_))));
+    assert!(matches!(result, Err(MemoryServiceError::PolicyDenied(_))));
     let provider = LocalMemoryProvider::open(&db_path.to_string_lossy(), TenantId::SINGLE)
         .expect("local provider");
     assert!(provider
@@ -837,8 +834,6 @@ async fn candidate_merge_accepts_same_run_with_different_messages_and_hashes() {
         .propose(candidate_draft("second"), second_evidence)
         .expect("second candidate");
     let merged_content = "merged from two messages";
-    let claimed = merged_evidence_claim(first_evidence, merged_content);
-
     let result = fixture
         .service
         .handle(ClientRequest::MergeMemoryCandidate {
@@ -847,7 +842,6 @@ async fn candidate_merge_accepts_same_run_with_different_messages_and_hashes() {
                 tenant_id: TenantId::SINGLE,
                 candidate_ids: vec![first.id, second.id],
                 merged_record: candidate_draft(merged_content),
-                evidence: claimed,
                 action_plan_id: None,
             },
         })
@@ -890,7 +884,6 @@ async fn candidate_merge_persists_hash_of_merged_content() {
                 tenant_id: TenantId::SINGLE,
                 candidate_ids: vec![first.id, second.id],
                 merged_record: candidate_draft(merged_content),
-                evidence: merged_evidence_claim(evidence, merged_content),
                 action_plan_id: None,
             },
         })
@@ -943,7 +936,6 @@ async fn candidate_merge_rejects_incompatible_provenance_without_writing() {
                 tenant_id: TenantId::SINGLE,
                 candidate_ids: vec![first.id, second.id],
                 merged_record: candidate_draft(merged_content),
-                evidence: merged_evidence_claim(first_evidence, merged_content),
                 action_plan_id: None,
             },
         })
@@ -1035,7 +1027,6 @@ async fn every_tenant_bearing_request_rejects_non_single_before_opening_storage(
                 tenant_id,
                 candidate_ids: vec![candidate_id, MemoryCandidateId::new()],
                 merged_record: candidate_draft("merged"),
-                evidence: candidate_evidence(),
                 action_plan_id: None,
             },
         },
@@ -1410,7 +1401,6 @@ async fn merging_duplicate_candidate_ids_is_rejected_without_partial_writes() {
                 tenant_id: TenantId::SINGLE,
                 candidate_ids: vec![candidate.id, candidate.id],
                 merged_record: candidate_draft("merged"),
-                evidence: candidate_evidence(),
                 action_plan_id: None,
             },
         })
@@ -1465,7 +1455,6 @@ async fn candidate_merge_rolls_back_all_writes_when_one_transition_fails() {
                 tenant_id: TenantId::SINGLE,
                 candidate_ids: vec![first.id, second.id],
                 merged_record: candidate_draft("atomic merge"),
-                evidence: merged_evidence_claim(candidate_evidence(), "atomic merge"),
                 action_plan_id: None,
             },
         })
@@ -1651,11 +1640,6 @@ fn run_candidate_evidence(
     }
 }
 
-fn merged_evidence_claim(mut evidence: MemoryEvidence, merged_content: &str) -> MemoryEvidence {
-    evidence.content_hash = ContentHash(*blake3::hash(merged_content.as_bytes()).as_bytes());
-    evidence
-}
-
 async fn assert_invalid_merge_content(content: &str) {
     let fixture = Fixture::new();
     let db_path = fixture
@@ -1678,7 +1662,6 @@ async fn assert_invalid_merge_content(content: &str) {
                 tenant_id: TenantId::SINGLE,
                 candidate_ids: vec![first.id, second.id],
                 merged_record: candidate_draft(content),
-                evidence: candidate_evidence(),
                 action_plan_id: None,
             },
         })

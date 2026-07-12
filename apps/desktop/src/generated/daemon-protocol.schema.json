@@ -3228,9 +3228,6 @@
             "$ref": "#/$defs/TypedUlid"
           }
         },
-        "evidence": {
-          "$ref": "#/$defs/MemoryEvidence"
-        },
         "merged_record": {
           "$ref": "#/$defs/MemoryRecordDraft"
         },
@@ -3241,8 +3238,7 @@
       "required": [
         "tenant_id",
         "candidate_ids",
-        "merged_record",
-        "evidence"
+        "merged_record"
       ]
     },
     "MergeMemoryCandidateResponse": {

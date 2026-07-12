@@ -284,144 +284,6 @@ export type MemoryCandidateState =
   | 'merged'
   | 'expired'
 /**
- * @minItems 32
- * @maxItems 32
- *
- * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "ContentHash".
- */
-export type ContentHash = [
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-]
-/**
- * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "MemoryEvidenceOrigin".
- */
-export type MemoryEvidenceOrigin =
-  | {
-      user_message: {
-        message_id: TypedUlid
-        run_id: TypedUlid
-        session_id: TypedUlid
-      }
-    }
-  | {
-      assistant_message: {
-        message_id: TypedUlid
-        run_id: TypedUlid
-        session_id: TypedUlid
-      }
-    }
-  | {
-      subagent_output: {
-        agent_id?: TypedUlid | null
-        child_session_id: TypedUlid
-        parent_session_id: TypedUlid
-        run_id: TypedUlid
-      }
-    }
-  | {
-      builtin_tool_output: {
-        tool_name: string
-        tool_use_id: TypedUlid
-      }
-    }
-  | {
-      mcp_tool_output: {
-        server_id: string
-        tool_name: string
-        tool_use_id: TypedUlid
-      }
-    }
-  | {
-      plugin_output: {
-        plugin_id: string
-        tool_name?: string | null
-        tool_use_id?: TypedUlid | null
-      }
-    }
-  | {
-      web_retrieval: {
-        fetch_tool_use_id?: TypedUlid | null
-        url_hash: ContentHash
-      }
-    }
-  | {
-      workspace_file: {
-        path_hash: ContentHash
-        snapshot_id?: TypedUlid | null
-        workspace_id: TypedUlid
-      }
-    }
-  | {
-      imported: {
-        import_id: string
-        importer: string
-      }
-    }
-  | {
-      consolidated: {
-        from: TypedUlid[]
-      }
-    }
-/**
- * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "MemorySource".
- */
-export type MemorySource =
-  | (
-      | 'user_input'
-      | 'agent_derived'
-      | 'tool_output'
-      | 'mcp_tool_output'
-      | 'plugin_output'
-      | 'web_retrieval'
-      | 'workspace_file'
-      | 'external_retrieval'
-      | 'imported'
-    )
-  | {
-      subagent_derived: {
-        child_session: TypedUlid
-      }
-    }
-  | {
-      consolidated: {
-        from: TypedUlid[]
-      }
-    }
-/**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "MemoryKind".
  */
@@ -852,6 +714,144 @@ export type EventSourceKind =
   | 'subagent'
   | 'recovery'
 /**
+ * @minItems 32
+ * @maxItems 32
+ *
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "ContentHash".
+ */
+export type ContentHash = [
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+]
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryEvidenceOrigin".
+ */
+export type MemoryEvidenceOrigin =
+  | {
+      user_message: {
+        message_id: TypedUlid
+        run_id: TypedUlid
+        session_id: TypedUlid
+      }
+    }
+  | {
+      assistant_message: {
+        message_id: TypedUlid
+        run_id: TypedUlid
+        session_id: TypedUlid
+      }
+    }
+  | {
+      subagent_output: {
+        agent_id?: TypedUlid | null
+        child_session_id: TypedUlid
+        parent_session_id: TypedUlid
+        run_id: TypedUlid
+      }
+    }
+  | {
+      builtin_tool_output: {
+        tool_name: string
+        tool_use_id: TypedUlid
+      }
+    }
+  | {
+      mcp_tool_output: {
+        server_id: string
+        tool_name: string
+        tool_use_id: TypedUlid
+      }
+    }
+  | {
+      plugin_output: {
+        plugin_id: string
+        tool_name?: string | null
+        tool_use_id?: TypedUlid | null
+      }
+    }
+  | {
+      web_retrieval: {
+        fetch_tool_use_id?: TypedUlid | null
+        url_hash: ContentHash
+      }
+    }
+  | {
+      workspace_file: {
+        path_hash: ContentHash
+        snapshot_id?: TypedUlid | null
+        workspace_id: TypedUlid
+      }
+    }
+  | {
+      imported: {
+        import_id: string
+        importer: string
+      }
+    }
+  | {
+      consolidated: {
+        from: TypedUlid[]
+      }
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemorySource".
+ */
+export type MemorySource =
+  | (
+      | 'user_input'
+      | 'agent_derived'
+      | 'tool_output'
+      | 'mcp_tool_output'
+      | 'plugin_output'
+      | 'web_retrieval'
+      | 'workspace_file'
+      | 'external_retrieval'
+      | 'imported'
+    )
+  | {
+      subagent_derived: {
+        child_session: TypedUlid
+      }
+    }
+  | {
+      consolidated: {
+        from: TypedUlid[]
+      }
+    }
+/**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "MemoryPolicyDecision".
  */
@@ -1034,22 +1034,8 @@ export interface RejectMemoryCandidateRequest {
 export interface MergeMemoryCandidateRequest {
   action_plan_id?: TypedUlid | null
   candidate_ids: TypedUlid[]
-  evidence: MemoryEvidence
   merged_record: MemoryRecordDraft
   tenant_id: TypedUlid
-}
-/**
- * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "MemoryEvidence".
- */
-export interface MemoryEvidence {
-  content_hash: ContentHash
-  message_id?: TypedUlid | null
-  origin: MemoryEvidenceOrigin
-  run_id?: TypedUlid | null
-  session_id?: TypedUlid | null
-  source: MemorySource
-  tool_use_id?: TypedUlid | null
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
@@ -1447,6 +1433,19 @@ export interface MemoryCandidateListItem {
       }
   proposed_record: MemoryRecordDraft
   state: MemoryCandidateState
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryEvidence".
+ */
+export interface MemoryEvidence {
+  content_hash: ContentHash
+  message_id?: TypedUlid | null
+  origin: MemoryEvidenceOrigin
+  run_id?: TypedUlid | null
+  session_id?: TypedUlid | null
+  source: MemorySource
+  tool_use_id?: TypedUlid | null
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema

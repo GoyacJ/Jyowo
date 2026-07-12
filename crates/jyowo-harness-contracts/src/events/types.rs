@@ -1213,7 +1213,6 @@ pub struct MergeMemoryCandidateRequest {
     pub tenant_id: TenantId,
     pub candidate_ids: Vec<MemoryCandidateId>,
     pub merged_record: MemoryRecordDraft,
-    pub evidence: MemoryEvidence,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action_plan_id: Option<ActionPlanId>,
 }

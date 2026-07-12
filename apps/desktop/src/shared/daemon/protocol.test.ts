@@ -23,9 +23,9 @@ const completeSubmitMessageFrame: ClientFrame = {
 
 describe('daemon protocol validation', () => {
   it('rejects protocol v1 client and server frames', () => {
-    expect(() =>
-      parseClientFrame({ ...completeSubmitMessageFrame, protocolVersion: 1 }),
-    ).toThrow('Invalid daemon client frame')
+    expect(() => parseClientFrame({ ...completeSubmitMessageFrame, protocolVersion: 1 })).toThrow(
+      'Invalid daemon client frame',
+    )
     expect(() =>
       parseServerFrame({
         requestId: null,

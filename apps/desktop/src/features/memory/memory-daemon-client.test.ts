@@ -79,7 +79,8 @@ describe('daemon memory client', () => {
 
     expect(
       invoke.mock.calls.map(([, args]) => {
-        const frame = (args as { frame: { request: { type: string; workspaceRoot: string } } }).frame
+        const frame = (args as { frame: { request: { type: string; workspaceRoot: string } } })
+          .frame
         return [frame.request.type, frame.request.workspaceRoot]
       }),
     ).toEqual([

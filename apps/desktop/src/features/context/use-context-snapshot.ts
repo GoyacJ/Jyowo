@@ -1,7 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
-
-import type { TypedUlid } from '@/generated/daemon-protocol'
 import { DEFAULT_MEMORY_TENANT_ID } from '@/features/memory/memory-types'
+import type { TypedUlid } from '@/generated/daemon-protocol'
 import {
   type GetContextSnapshotRequest,
   type GetContextSnapshotResponse,
