@@ -145,6 +145,39 @@ impl ProjectRegistry {
         Ok(record)
     }
 
+    pub fn rename(
+        &self,
+        workspace_root: &Path,
+        name: &str,
+    ) -> Result<ProjectRecord, CommandErrorPayload> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(registry_io_failed("project name is required".to_owned()));
+        }
+        if name.chars().count() > 120 {
+            return Err(registry_io_failed(
+                "project name must be at most 120 characters".to_owned(),
+            ));
+        }
+        let path = workspace_root.to_string_lossy().into_owned();
+        let record = {
+            let mut data = self
+                .data
+                .lock()
+                .expect("project registry lock should not be poisoned");
+            let project = data
+                .projects
+                .iter_mut()
+                .find(|project| project.path == path)
+                .ok_or_else(|| registry_not_found(path.clone()))?;
+            project.name = name.to_owned();
+            project.clone()
+        };
+
+        self.persist()?;
+        Ok(record)
+    }
+
     pub fn clear_active(&self) -> Result<(), CommandErrorPayload> {
         {
             let mut data = self
@@ -231,6 +264,18 @@ pub fn unconfigured_workspace_root() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
         .join(".jyowo")
         .join("unconfigured")
+}
+
+pub fn default_workspace_root() -> Result<PathBuf, CommandErrorPayload> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .ok_or_else(|| registry_io_failed("home directory is unavailable".to_owned()))?;
+    let root = PathBuf::from(home)
+        .join(".jyowo")
+        .join("workspaces")
+        .join("default");
+    crate::commands::stores::ensure_app_dir_no_symlink(&root, "default workspace")?;
+    Ok(root)
 }
 
 fn workspace_project_name(workspace_root: &Path) -> String {
@@ -454,6 +499,67 @@ mod tests {
 
         assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
         assert!(error.message.contains("symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_workspace_root_is_private_and_rejects_symlinks() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = HOME_ENV_LOCK.lock().expect("home env lock");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root = temp_dir.path().canonicalize().expect("canonical temp dir");
+        let home = temp_root.join("home");
+        fs::create_dir_all(&home).expect("home dir");
+        let _home_guard = HomeEnvGuard::set(&home);
+
+        let root = default_workspace_root().expect("default workspace");
+
+        assert_eq!(root, home.join(".jyowo/workspaces/default"));
+        assert!(root.is_dir());
+        assert_eq!(
+            fs::metadata(&root)
+                .expect("default metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+
+        fs::remove_dir(&root).expect("remove default root");
+        let external = temp_root.join("external");
+        fs::create_dir(&external).expect("external dir");
+        std::os::unix::fs::symlink(&external, &root).expect("default symlink");
+
+        let error = default_workspace_root().expect_err("default symlink must fail");
+        assert!(error.message.contains("symlink"));
+    }
+
+    #[test]
+    fn rename_project_preserves_identity_and_persists() {
+        let _lock = HOME_ENV_LOCK.lock().expect("home env lock");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root = temp_dir.path().canonicalize().expect("canonical temp dir");
+        let home = temp_root.join("home");
+        let workspace = temp_root.join("workspace");
+        fs::create_dir_all(&home).expect("home dir");
+        fs::create_dir_all(&workspace).expect("workspace dir");
+        let _home_guard = HomeEnvGuard::set(&home);
+        let registry = ProjectRegistry::load().expect("registry loads");
+        let original = registry
+            .upsert_and_activate(&workspace)
+            .expect("project registered");
+
+        let renamed = registry
+            .rename(&workspace, "  Workspace Alpha  ")
+            .expect("project renamed");
+
+        assert_eq!(renamed.path, original.path);
+        assert_eq!(renamed.last_opened_at, original.last_opened_at);
+        assert_eq!(renamed.name, "Workspace Alpha");
+        drop(registry);
+        let reloaded = ProjectRegistry::load().expect("registry reloads");
+        assert_eq!(reloaded.list_projects(), vec![renamed]);
     }
 
     #[cfg(unix)]

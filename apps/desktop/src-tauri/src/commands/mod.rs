@@ -261,8 +261,9 @@ pub use plugins::{
     validate_plugin_from_path_with_runtime_state,
 };
 pub use projects::{
-    add_project_payload, delete_project_payload, list_projects_payload, move_project_payload,
-    switch_project_payload, DeleteProjectResponse, ListProjectsResponse, ProjectMoveDirection,
+    add_project_payload, delete_project_payload, get_default_workspace_payload,
+    list_projects_payload, move_project_payload, rename_project_payload, switch_project_payload,
+    DefaultWorkspaceResponse, DeleteProjectResponse, ListProjectsResponse, ProjectMoveDirection,
     SwitchProjectResponse,
 };
 pub use providers::{
@@ -310,6 +311,20 @@ pub fn get_app_info() -> AppInfoPayload {
 #[tauri::command]
 pub fn list_projects(project_registry: tauri::State<'_, ProjectRegistry>) -> ListProjectsResponse {
     list_projects_payload(&project_registry)
+}
+
+#[tauri::command]
+pub fn get_default_workspace() -> Result<DefaultWorkspaceResponse, CommandErrorPayload> {
+    get_default_workspace_payload()
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn rename_project(
+    path: String,
+    name: String,
+    project_registry: tauri::State<'_, ProjectRegistry>,
+) -> Result<SwitchProjectResponse, CommandErrorPayload> {
+    rename_project_payload(path, name, &project_registry)
 }
 
 #[tauri::command(rename_all = "camelCase")]

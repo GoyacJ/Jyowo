@@ -8,7 +8,8 @@ use super::runtime::{
     ManagedDesktopRuntime,
 };
 use crate::project_registry::{
-    ProjectMoveDirection as RegistryProjectMoveDirection, ProjectRecord, ProjectRegistry,
+    default_workspace_root, ProjectMoveDirection as RegistryProjectMoveDirection, ProjectRecord,
+    ProjectRegistry,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -22,6 +23,12 @@ pub struct ListProjectsResponse {
 #[serde(rename_all = "camelCase")]
 pub struct SwitchProjectResponse {
     pub project: ProjectRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DefaultWorkspaceResponse {
+    pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -54,6 +61,21 @@ pub fn list_projects_payload(project_registry: &ProjectRegistry) -> ListProjects
         projects: project_registry.list_projects(),
         active_path: project_registry.active_path(),
     }
+}
+
+pub fn get_default_workspace_payload() -> Result<DefaultWorkspaceResponse, CommandErrorPayload> {
+    Ok(DefaultWorkspaceResponse {
+        path: default_workspace_root()?.to_string_lossy().into_owned(),
+    })
+}
+
+pub fn rename_project_payload(
+    path: String,
+    name: String,
+    project_registry: &ProjectRegistry,
+) -> Result<SwitchProjectResponse, CommandErrorPayload> {
+    let project = project_registry.rename(&PathBuf::from(path), &name)?;
+    Ok(SwitchProjectResponse { project })
 }
 
 pub async fn switch_project_payload(

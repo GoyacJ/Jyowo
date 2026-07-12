@@ -40,6 +40,7 @@ import {
   getConversation,
   getConversationInspectorItem,
   getExecutionSettings,
+  getDefaultWorkspace,
   getHarnessHealthcheck,
   getMcpServerConfig,
   getMemoryItem,
@@ -100,6 +101,7 @@ import {
   rejectMemoryCandidate,
   reloadPlugin,
   requestProviderConfigApiKeyReveal,
+  renameProject,
   restartMcpServer,
   resumeBackgroundAgent,
   runAutomationNow,
@@ -718,6 +720,38 @@ describe('CommandClient', () => {
       status: 'deleted',
     })
     expect(invoke).toHaveBeenCalledWith('delete_project', {
+      path: '/Users/goya/Repo/Git/Jyowo',
+    })
+  })
+
+  it('models the default workspace and project renaming through Zod validation', async () => {
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce({ path: '/Users/goya/.jyowo/workspaces/default' })
+      .mockResolvedValueOnce({
+        project: {
+          path: '/Users/goya/Repo/Git/Jyowo',
+          name: 'Jyowo Desktop',
+          lastOpenedAt: '2026-07-12T00:00:00Z',
+        },
+      })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(getDefaultWorkspace(client)).resolves.toEqual({
+      path: '/Users/goya/.jyowo/workspaces/default',
+    })
+    await expect(
+      renameProject('/Users/goya/Repo/Git/Jyowo', 'Jyowo Desktop', client),
+    ).resolves.toEqual({
+      project: {
+        path: '/Users/goya/Repo/Git/Jyowo',
+        name: 'Jyowo Desktop',
+        lastOpenedAt: '2026-07-12T00:00:00Z',
+      },
+    })
+    expect(invoke).toHaveBeenNthCalledWith(1, 'get_default_workspace')
+    expect(invoke).toHaveBeenNthCalledWith(2, 'rename_project', {
+      name: 'Jyowo Desktop',
       path: '/Users/goya/Repo/Git/Jyowo',
     })
   })

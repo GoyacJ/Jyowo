@@ -4223,6 +4223,12 @@ const listProjectsResponseSchema = z
   })
   .strict()
 
+const defaultWorkspaceResponseSchema = z
+  .object({
+    path: z.string().min(1),
+  })
+  .strict()
+
 const switchProjectRequestSchema = z
   .object({
     path: z.string().min(1),
@@ -4238,6 +4244,13 @@ const projectPathRequestSchema = z
 const moveProjectRequestSchema = z
   .object({
     direction: z.enum(['up', 'down']),
+    path: z.string().min(1),
+  })
+  .strict()
+
+const renameProjectRequestSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
     path: z.string().min(1),
   })
   .strict()
@@ -4280,6 +4293,7 @@ export type ListProjectConversationGroupsResponse = z.infer<
   typeof listProjectConversationGroupsResponseSchema
 >
 export type ListProjectsResponse = z.infer<typeof listProjectsResponseSchema>
+export type DefaultWorkspaceResponse = z.infer<typeof defaultWorkspaceResponseSchema>
 export type MoveProjectDirection = z.infer<typeof moveProjectRequestSchema>['direction']
 export type SwitchProjectResponse = z.infer<typeof switchProjectResponseSchema>
 export type DeleteProjectResponse = z.infer<typeof deleteProjectResponseSchema>
@@ -4667,6 +4681,7 @@ export interface CommandClient {
   listProviderCapabilityRouteOptions: () => Promise<ListProviderCapabilityRouteOptionsResponse>
   listProviderProbeSnapshots: () => Promise<ListProviderProbeSnapshotsResponse>
   listProjects: () => Promise<ListProjectsResponse>
+  getDefaultWorkspace: () => Promise<DefaultWorkspaceResponse>
   addProject: (path: string) => Promise<SwitchProjectResponse>
   switchProject: (path: string) => Promise<SwitchProjectResponse>
   deleteProject: (path: string) => Promise<DeleteProjectResponse>
@@ -4675,6 +4690,7 @@ export interface CommandClient {
     conversationId: string,
   ) => Promise<DeleteConversationResponse>
   moveProject: (path: string, direction: MoveProjectDirection) => Promise<ListProjectsResponse>
+  renameProject: (path: string, name: string) => Promise<SwitchProjectResponse>
   getConversationInspectorItem: (
     request: GetConversationInspectorItemRequest,
   ) => Promise<GetConversationInspectorItemResponse>
@@ -5386,6 +5402,10 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'list_projects'
       return parsePayload(command, listProjectsResponseSchema, await invoke(command))
     },
+    async getDefaultWorkspace() {
+      const command = 'get_default_workspace'
+      return parsePayload(command, defaultWorkspaceResponseSchema, await invoke(command))
+    },
     async listPlugins() {
       const command = 'list_plugins'
       return parsePayload(command, listPluginsResponseSchema, await invoke(command))
@@ -5404,6 +5424,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'move_project'
       const args = parseArgs(command, moveProjectRequestSchema, { direction, path })
       return parsePayload(command, listProjectsResponseSchema, await invoke(command, args))
+    },
+    async renameProject(path, name) {
+      const command = 'rename_project'
+      const args = parseArgs(command, renameProjectRequestSchema, { name, path })
+      return parsePayload(command, switchProjectResponseSchema, await invoke(command, args))
     },
     async deleteProject(path) {
       const command = 'delete_project'
@@ -6411,6 +6436,12 @@ export function listProjects(
   return client.listProjects()
 }
 
+export function getDefaultWorkspace(
+  client: CommandClient = tauriCommandClient,
+): Promise<DefaultWorkspaceResponse> {
+  return client.getDefaultWorkspace()
+}
+
 export function addProject(
   path: string,
   client: CommandClient = tauriCommandClient,
@@ -6424,6 +6455,14 @@ export function moveProject(
   client: CommandClient = tauriCommandClient,
 ): Promise<ListProjectsResponse> {
   return client.moveProject(path, direction)
+}
+
+export function renameProject(
+  path: string,
+  name: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<SwitchProjectResponse> {
+  return client.renameProject(path, name)
 }
 
 export function deleteProject(
