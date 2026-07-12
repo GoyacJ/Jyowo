@@ -22,6 +22,12 @@ type SidebarNavProps = {
   compact?: boolean
 }
 
+type TaskMutation =
+  | { kind: 'archive'; task: TaskProjection }
+  | { kind: 'pin'; pinned: boolean; task: TaskProjection }
+  | { kind: 'remove'; task: TaskProjection }
+  | { kind: 'rename'; task: TaskProjection; title: string }
+
 export function SidebarNav({ compact = false }: SidebarNavProps) {
   const { t } = useTranslation('shell')
   const client = useDaemonClient()
@@ -104,31 +110,47 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
     mutationFn: (path: string) => commandClient.deleteProject(path),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: WORKSPACES_QUERY_KEY }),
   })
+  const taskMutation = useMutation({
+    mutationFn: async (mutation: TaskMutation) => {
+      if (mutation.kind === 'pin') {
+        await client.setTaskPinned(
+          mutation.task.taskId,
+          mutation.task.streamVersion,
+          mutation.pinned,
+        )
+      } else if (mutation.kind === 'rename') {
+        await client.renameTask(mutation.task.taskId, mutation.task.streamVersion, mutation.title)
+      } else if (mutation.kind === 'archive') {
+        await client.setTaskArchived(mutation.task.taskId, mutation.task.streamVersion, true)
+      } else {
+        await client.removeTask(mutation.task.taskId, mutation.task.streamVersion)
+      }
+    },
+    onSuccess: async (_, mutation) => {
+      await queryClient.invalidateQueries({ queryKey: TASKS_QUERY_KEY })
+      if (
+        (mutation.kind === 'archive' || mutation.kind === 'remove') &&
+        mutation.task.taskId === activeTaskId
+      ) {
+        await navigate({ search: {}, to: '/' })
+      }
+    },
+  })
 
-  async function refreshTasks() {
-    await queryClient.invalidateQueries({ queryKey: TASKS_QUERY_KEY })
+  function setTaskPinned(task: TaskProjection, pinned: boolean) {
+    taskMutation.mutate({ kind: 'pin', pinned, task })
   }
 
-  async function setTaskPinned(task: TaskProjection, pinned: boolean) {
-    await client.setTaskPinned(task.taskId, task.streamVersion, pinned)
-    await refreshTasks()
+  function renameTask(task: TaskProjection, title: string) {
+    taskMutation.mutate({ kind: 'rename', task, title })
   }
 
-  async function renameTask(task: TaskProjection, title: string) {
-    await client.renameTask(task.taskId, task.streamVersion, title)
-    await refreshTasks()
+  function setTaskArchived(task: TaskProjection, archived: boolean) {
+    if (archived) taskMutation.mutate({ kind: 'archive', task })
   }
 
-  async function setTaskArchived(task: TaskProjection, archived: boolean) {
-    await client.setTaskArchived(task.taskId, task.streamVersion, archived)
-    await refreshTasks()
-    if (task.taskId === activeTaskId) await navigate({ search: {}, to: '/' })
-  }
-
-  async function removeTask(task: TaskProjection) {
-    await client.removeTask(task.taskId, task.streamVersion)
-    await refreshTasks()
-    if (task.taskId === activeTaskId) await navigate({ search: {}, to: '/' })
+  function removeTask(task: TaskProjection) {
+    taskMutation.mutate({ kind: 'remove', task })
   }
 
   useEffect(() => {
@@ -179,6 +201,7 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
     renameProject.error ??
     moveProject.error ??
     removeProject.error ??
+    taskMutation.error ??
     tasksQuery.error ??
     workspacesQuery.error
 

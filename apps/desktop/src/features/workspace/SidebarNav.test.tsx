@@ -138,6 +138,24 @@ describe('SidebarNav task navigation', () => {
     await waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith({ search: {}, to: '/' }))
   })
 
+  it('shows task mutation errors without discarding the current task list', async () => {
+    const user = userEvent.setup()
+    const listTasks = vi.fn().mockResolvedValue({
+      tasks: [taskProjection({ root: '/repo/alpha' })],
+      type: 'task_list',
+    })
+    const setTaskPinned = vi.fn().mockRejectedValue(new Error('stale task version'))
+    mocks.daemonClient = daemonClient({ listTasks, setTaskPinned })
+
+    renderSidebar()
+    await user.click(await screen.findByRole('button', { name: 'Daemon conversation actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Pin' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('stale task version')
+    expect(screen.getByRole('button', { name: 'Daemon conversation' })).toBeInTheDocument()
+    expect(listTasks).toHaveBeenCalledOnce()
+  })
+
   it('renames, moves, and removes projects through registry commands', async () => {
     const user = userEvent.setup()
     const renameProject = vi.fn().mockResolvedValue({ project: projects[0] })
