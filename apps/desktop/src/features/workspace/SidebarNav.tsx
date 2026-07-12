@@ -192,7 +192,7 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
       if (root) createTask.mutate(root)
       return
     }
-    void navigate({ to: action === 'settings' ? '/settings' : '/evals' })
+    void navigate({ to: '/settings' })
   }
 
   const error =

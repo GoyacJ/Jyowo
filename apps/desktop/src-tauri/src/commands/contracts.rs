@@ -1308,13 +1308,6 @@ pub trait McpDiagnosticStore: Send + Sync {
     fn clear_records(&self, server_id: Option<&str>) -> Result<(), CommandErrorPayload>;
 }
 
-pub trait AutomationStore: Send + Sync {
-    fn load_automations(&self) -> Result<Vec<AutomationSpec>, CommandErrorPayload>;
-    fn save_automations(&self, records: &[AutomationSpec]) -> Result<(), CommandErrorPayload>;
-    fn load_run_records(&self) -> Result<Vec<AutomationRunRecord>, CommandErrorPayload>;
-    fn append_run_record(&self, record: &AutomationRunRecord) -> Result<(), CommandErrorPayload>;
-}
-
 pub trait SkillStore: Send + Sync {
     fn enabled_dir(&self) -> PathBuf;
     fn load_records(&self) -> Result<Vec<SkillStoreRecord>, CommandErrorPayload>;

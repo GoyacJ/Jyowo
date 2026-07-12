@@ -3852,28 +3852,11 @@ export type ListArtifactsRequest = z.infer<typeof listArtifactsRequestSchema>
 export type ListReferenceCandidatesRequest = z.infer<typeof listReferenceCandidatesRequestSchema>
 
 export interface CommandClient {
-  cancelRun: (runId: string) => Promise<CancelRunResponse>
-  createAttachmentFromPath: (
-    path: string,
-    conversationId?: string,
-  ) => Promise<CreateAttachmentFromPathResponse>
-  createConversation: () => Promise<CreateConversationResponse>
-  createDefaultConversation: () => Promise<CreateConversationResponse>
-  createProjectConversation: (path: string) => Promise<CreateConversationResponse>
-  deleteAutomation: (id: string) => Promise<DeleteAutomationResponse>
   deleteAgentProfile: (id: string) => Promise<DeleteAgentProfileResponse>
-  deleteBackgroundAgent: (
-    request: BackgroundAgentIdRequest,
-  ) => Promise<DeleteBackgroundAgentResponse>
-  deleteConversation: (conversationId: string) => Promise<DeleteConversationResponse>
   deleteMcpServer: (id: string) => Promise<DeleteMcpServerResponse>
   uninstallPlugin: (pluginId: string) => Promise<PluginOperationResult>
   deleteSkill: (id: string) => Promise<DeleteSkillResponse>
-  getContextSnapshot: (request: GetContextSnapshotRequest) => Promise<GetContextSnapshotResponse>
-  getBackgroundAgent: (request: BackgroundAgentIdRequest) => Promise<GetBackgroundAgentResponse>
-  getConversation: (conversationId: string) => Promise<GetConversationResponse>
   getAppInfo: () => Promise<AppInfo>
-  getHarnessHealthcheck: () => Promise<HarnessHealthcheck>
   getRuntimeExecutionStatus: () => Promise<RuntimeExecutionStatus>
   getModelSettingsPage: () => Promise<ModelSettingsPageResponse>
   listRuntimeTools: () => Promise<ListRuntimeToolsResponse>
@@ -3886,7 +3869,6 @@ export interface CommandClient {
     configId: string,
     revealToken: string,
   ) => Promise<GetProviderConfigApiKeyResponse>
-  getReplayTimeline: (request: ReplayTimelineRequest) => Promise<ReplayTimelineResponse>
   getSkillCatalogEntry: (
     request: GetSkillCatalogEntryRequest,
   ) => Promise<GetSkillCatalogEntryResponse>
@@ -3902,27 +3884,10 @@ export interface CommandClient {
   listenSkillCatalogInstallProgress: (
     onProgress: (progress: SkillCatalogInstallProgressPayload) => void,
   ) => Promise<() => void>
-  exportSupportBundle: (request: ExportSupportBundleRequest) => Promise<ExportSupportBundleResponse>
   getExecutionSettings: (
     request?: GetExecutionSettingsRequest,
   ) => Promise<GetExecutionSettingsResponse>
-  listActivity: (request: ListActivityRequest) => Promise<ListActivityResponse>
   listAgentProfiles: () => Promise<ListAgentProfilesResponse>
-  listArtifacts: (request: ListArtifactsRequest) => Promise<ListArtifactsResponse>
-  getArtifactMediaPreview: (
-    request: GetArtifactMediaPreviewRequest,
-  ) => Promise<GetArtifactMediaPreviewResponse>
-  getAttachmentMediaPreview: (
-    request: GetAttachmentMediaPreviewRequest,
-  ) => Promise<GetAttachmentMediaPreviewResponse>
-  listAutomationRuns: (automationId?: string) => Promise<ListAutomationRunsResponse>
-  listAutomations: () => Promise<ListAutomationsResponse>
-  listBackgroundAgents: (
-    request: ListBackgroundAgentsRequest,
-  ) => Promise<ListBackgroundAgentsResponse>
-  listConversations: () => Promise<ListConversationsResponse>
-  listProjectConversationGroups: () => Promise<ListProjectConversationGroupsResponse>
-  listEvalCases: () => Promise<ListEvalCasesResponse>
   listBrowserMcpPresets: () => Promise<ListBrowserMcpPresetsResponse>
   listModelProviderCatalog: () => Promise<ModelProviderCatalogResponse>
   listMcpDiagnostics: (serverId?: string) => Promise<ListMcpDiagnosticsResponse>
@@ -3937,52 +3902,21 @@ export interface CommandClient {
   addProject: (path: string) => Promise<SwitchProjectResponse>
   switchProject: (path: string) => Promise<SwitchProjectResponse>
   deleteProject: (path: string) => Promise<DeleteProjectResponse>
-  deleteProjectConversation: (
-    path: string,
-    conversationId: string,
-  ) => Promise<DeleteConversationResponse>
   moveProject: (path: string, direction: MoveProjectDirection) => Promise<ListProjectsResponse>
   renameProject: (path: string, name: string) => Promise<SwitchProjectResponse>
-  getConversationInspectorItem: (
-    request: GetConversationInspectorItemRequest,
-  ) => Promise<GetConversationInspectorItemResponse>
   probeProviderConfig: (request: ProbeProviderConfigRequest) => Promise<ProbeProviderConfigResponse>
   refreshOfficialQuota: (
     request: RefreshOfficialQuotaRequest,
   ) => Promise<RefreshOfficialQuotaResponse>
-  pauseBackgroundAgent: (
-    request: BackgroundAgentIdRequest,
-  ) => Promise<BackgroundAgentActionResponse>
-  listReferenceCandidates: (
-    request: ListReferenceCandidatesRequest,
-  ) => Promise<ListReferenceCandidatesResponse>
   listSkillCatalogEntries: (
     request: ListSkillCatalogEntriesRequest,
   ) => Promise<ListSkillCatalogEntriesResponse>
   listSkillCatalogSources: () => Promise<ListSkillCatalogSourcesResponse>
   listSkills: () => Promise<ListSkillsResponse>
-  getConversationCommandOutput: (
-    request: GetConversationCommandOutputRequest,
-  ) => Promise<GetConversationCommandOutputResponse>
-  getConversationDiffPatch: (
-    request: GetConversationDiffPatchRequest,
-  ) => Promise<GetConversationDiffPatchResponse>
-  getArtifactRevisionContent: (
-    request: GetArtifactRevisionContentRequest,
-  ) => Promise<GetArtifactRevisionContentResponse>
-  exportConversationEvidence: (
-    request: ExportConversationEvidenceRequest,
-  ) => Promise<ExportConversationEvidenceResponse>
   reloadPlugin: (pluginId: string) => Promise<PluginOperationResult>
   requestProviderConfigApiKeyReveal: (
     configId: string,
   ) => Promise<RequestProviderConfigApiKeyRevealResponse>
-  resumeBackgroundAgent: (
-    request: BackgroundAgentIdRequest,
-  ) => Promise<BackgroundAgentActionResponse>
-  runAutomationNow: (id: string) => Promise<RunAutomationNowResponse>
-  runEvalCase: (caseId: string) => Promise<RunEvalCaseResponse>
-  saveAutomation: (request: SaveAutomationRequest) => Promise<SaveAutomationResponse>
   saveAgentProfile: (profile: AgentProfile) => Promise<SaveAgentProfileResponse>
   saveBrowserMcpPreset: (
     request: SaveBrowserMcpPresetRequest,
@@ -4003,18 +3937,7 @@ export interface CommandClient {
   setExecutionSettings: (
     request: SetExecutionSettingsRequest,
   ) => Promise<SetExecutionSettingsResponse>
-  setAutomationEnabled: (id: string, enabled: boolean) => Promise<SetAutomationEnabledResponse>
   setSkillEnabled: (id: string, enabled: boolean) => Promise<SetSkillEnabledResponse>
-  archiveBackgroundAgent: (
-    request: BackgroundAgentIdRequest,
-  ) => Promise<BackgroundAgentActionResponse>
-  cancelBackgroundAgent: (
-    request: BackgroundAgentIdRequest,
-  ) => Promise<BackgroundAgentActionResponse>
-  sendBackgroundAgentInput: (
-    request: SendBackgroundAgentInputRequest,
-  ) => Promise<BackgroundAgentActionResponse>
-  startRun: (request: StartRunRequest) => Promise<StartRunResponse>
   subscribeMcpDiagnostics: (
     request: SubscribeMcpDiagnosticsRequest,
   ) => Promise<SubscribeMcpDiagnosticsResponse>
@@ -4060,38 +3983,10 @@ function parseArgs<T>(command: string, schema: z.ZodType<T>, args: unknown): T {
 
 export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): CommandClient {
   return {
-    async cancelRun(runId) {
-      const command = 'cancel_run'
-      const args = parseArgs(command, cancelRunRequestSchema, { runId })
-      return parsePayload(command, cancelRunResponseSchema, await invoke(command, args))
-    },
-    async createAttachmentFromPath(path, conversationId) {
-      const command = 'create_attachment_from_path'
-      const args = parseArgs(
-        command,
-        createAttachmentFromPathRequestSchema,
-        conversationId ? { conversationId, path } : { path },
-      )
-      return parsePayload(
-        command,
-        createAttachmentFromPathResponseSchema,
-        await invoke(command, args),
-      )
-    },
-    async deleteAutomation(id) {
-      const command = 'delete_automation'
-      const args = parseArgs(command, deleteAutomationRequestSchema, { id })
-      return parsePayload(command, deleteAutomationResponseSchema, await invoke(command, args))
-    },
     async deleteAgentProfile(id) {
       const command = 'delete_agent_profile'
       const args = parseArgs(command, deleteAgentProfileRequestSchema, { id })
       return parsePayload(command, deleteAgentProfileResponseSchema, await invoke(command, args))
-    },
-    async deleteBackgroundAgent(request) {
-      const command = 'delete_background_agent'
-      const args = parseArgs(command, backgroundAgentIdRequestSchema, request)
-      return parsePayload(command, deleteBackgroundAgentResponseSchema, await invoke(command, args))
     },
     async deleteMcpServer(id) {
       const command = 'delete_mcp_server'
@@ -4108,21 +4003,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, deleteSkillRequestSchema, { id })
       return parsePayload(command, deleteSkillResponseSchema, await invoke(command, args))
     },
-    async exportSupportBundle(request) {
-      const command = 'export_support_bundle'
-      const args = parseArgs(command, exportSupportBundleRequestSchema, request)
-      return parsePayload(command, exportSupportBundleResponseSchema, await invoke(command, args))
-    },
-    async getContextSnapshot(request) {
-      const command = 'get_context_snapshot'
-      const args = parseArgs(command, getContextSnapshotRequestSchema, request)
-      return parsePayload(command, getContextSnapshotResponseSchema, await invoke(command, args))
-    },
-    async getBackgroundAgent(request) {
-      const command = 'get_background_agent'
-      const args = parseArgs(command, backgroundAgentIdRequestSchema, request)
-      return parsePayload(command, getBackgroundAgentResponseSchema, await invoke(command, args))
-    },
     async getExecutionSettings(request) {
       const command = 'get_execution_settings'
       const args =
@@ -4135,20 +4015,9 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         args === undefined ? await invoke(command) : await invoke(command, args),
       )
     },
-    async getConversation(conversationId) {
-      const command = 'get_conversation'
-      const args = parseArgs(command, getConversationRequestSchema, {
-        conversationId,
-      })
-      return parsePayload(command, getConversationResponseSchema, await invoke(command, args))
-    },
     async getAppInfo() {
       const command = 'get_app_info'
       return parsePayload(command, appInfoSchema, await invoke(command))
-    },
-    async getHarnessHealthcheck() {
-      const command = 'harness_healthcheck'
-      return parsePayload(command, harnessHealthcheckSchema, await invoke(command))
     },
     async getRuntimeExecutionStatus() {
       const command = 'get_runtime_execution_status'
@@ -4186,11 +4055,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         await invoke(command, args),
       )
     },
-    async getReplayTimeline(request) {
-      const command = 'get_replay_timeline'
-      const args = parseArgs(command, replayTimelineRequestSchema, request)
-      return parsePayload(command, replayTimelineResponseSchema, await invoke(command, args))
-    },
     async getSkillCatalogEntry(request) {
       const command = 'get_skill_catalog_entry'
       const args = parseArgs(command, getSkillCatalogEntryRequestSchema, request)
@@ -4201,15 +4065,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, getSkillCatalogFileRequestSchema, request)
       return parsePayload(command, getSkillCatalogFileResponseSchema, await invoke(command, args))
     },
-    async getConversationInspectorItem(request) {
-      const command = 'get_conversation_inspector_item'
-      const args = parseArgs(command, getConversationInspectorItemRequestSchema, request)
-      return parsePayload(
-        command,
-        getConversationInspectorItemResponseSchema,
-        await invoke(command, args),
-      )
-    },
     async probeProviderConfig(request) {
       const command = 'probe_provider_config'
       const args = parseArgs(command, probeProviderConfigRequestSchema, request)
@@ -4219,11 +4074,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'refresh_official_quota'
       const args = parseArgs(command, refreshOfficialQuotaRequestSchema, request)
       return parsePayload(command, refreshOfficialQuotaResponseSchema, await invoke(command, args))
-    },
-    async pauseBackgroundAgent(request) {
-      const command = 'pause_background_agent'
-      const args = parseArgs(command, backgroundAgentIdRequestSchema, request)
-      return parsePayload(command, backgroundAgentActionResponseSchema, await invoke(command, args))
     },
     async getSkillDetail(id) {
       const command = 'get_skill_detail'
@@ -4275,94 +4125,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
 
       return unlisten
     },
-    async listActivity(request) {
-      const command = 'list_activity'
-      const args = parseArgs(command, listActivityRequestSchema, request)
-      return parsePayload(command, listActivityResponseSchema, await invoke(command, args))
-    },
-    async listArtifacts(request) {
-      const command = 'list_artifacts'
-      const args = parseArgs(command, listArtifactsRequestSchema, request)
-      return parsePayload(command, listArtifactsResponseSchema, await invoke(command, args))
-    },
-    async getArtifactMediaPreview(request) {
-      const command = 'get_artifact_media_preview'
-      const args = parseArgs(command, getArtifactMediaPreviewRequestSchema, request)
-      return parsePayload(
-        command,
-        getArtifactMediaPreviewResponseSchema,
-        await invoke(command, args),
-      )
-    },
-    async getAttachmentMediaPreview(request) {
-      const command = 'get_attachment_media_preview'
-      const args = parseArgs(command, getAttachmentMediaPreviewRequestSchema, request)
-      return parsePayload(
-        command,
-        getAttachmentMediaPreviewResponseSchema,
-        await invoke(command, args),
-      )
-    },
-    async listConversations() {
-      const command = 'list_conversations'
-      return parsePayload(command, listConversationsResponseSchema, await invoke(command))
-    },
-    async listProjectConversationGroups() {
-      const command = 'list_project_conversation_groups'
-      return parsePayload(
-        command,
-        listProjectConversationGroupsResponseSchema,
-        await invoke(command),
-      )
-    },
-    async listAutomations() {
-      const command = 'list_automations'
-      return parsePayload(command, listAutomationsResponseSchema, await invoke(command))
-    },
-    async listBackgroundAgents(request) {
-      const command = 'list_background_agents'
-      const args = parseArgs(command, listBackgroundAgentsRequestSchema, request)
-      return parsePayload(command, listBackgroundAgentsResponseSchema, await invoke(command, args))
-    },
-    async listAutomationRuns(automationId) {
-      const command = 'list_automation_runs'
-      const args = parseArgs(command, listAutomationRunsRequestSchema, {
-        automationId,
-      })
-      return parsePayload(command, listAutomationRunsResponseSchema, await invoke(command, args))
-    },
-    async createConversation() {
-      const command = 'create_conversation'
-      return parsePayload(command, createConversationResponseSchema, await invoke(command))
-    },
-    async createDefaultConversation() {
-      const command = 'create_default_conversation'
-      return parsePayload(command, createConversationResponseSchema, await invoke(command))
-    },
-    async createProjectConversation(path) {
-      const command = 'create_project_conversation'
-      const args = parseArgs(command, projectPathRequestSchema, { path })
-      return parsePayload(command, createConversationResponseSchema, await invoke(command, args))
-    },
-    async deleteConversation(conversationId) {
-      const command = 'delete_conversation'
-      const args = parseArgs(command, deleteConversationRequestSchema, {
-        conversationId,
-      })
-      return parsePayload(command, deleteConversationResponseSchema, await invoke(command, args))
-    },
-    async deleteProjectConversation(path, conversationId) {
-      const command = 'delete_project_conversation'
-      const args = parseArgs(command, deleteProjectConversationRequestSchema, {
-        conversationId,
-        path,
-      })
-      return parsePayload(command, deleteConversationResponseSchema, await invoke(command, args))
-    },
-    async listEvalCases() {
-      const command = 'list_eval_cases'
-      return parsePayload(command, listEvalCasesResponseSchema, await invoke(command))
-    },
     async listBrowserMcpPresets() {
       const command = 'list_browser_mcp_presets'
       return parsePayload(command, listBrowserMcpPresetsResponseSchema, await invoke(command))
@@ -4393,15 +4155,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         pluginId,
       })
       return parsePayload(command, getPluginDetailResponseSchema, await invoke(command, args))
-    },
-    async listReferenceCandidates(request) {
-      const command = 'list_reference_candidates'
-      const args = parseArgs(command, listReferenceCandidatesRequestSchema, request)
-      return parsePayload(
-        command,
-        listReferenceCandidatesResponseSchema,
-        await invoke(command, args),
-      )
     },
     async listSkillCatalogEntries(request) {
       const command = 'list_skill_catalog_entries'
@@ -4491,42 +4244,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'list_agent_profiles'
       return parsePayload(command, listAgentProfilesResponseSchema, await invoke(command))
     },
-    async getConversationCommandOutput(request) {
-      const command = 'get_conversation_command_output'
-      const args = parseArgs(command, getConversationCommandOutputRequestSchema, request)
-      return parsePayload(
-        command,
-        getConversationCommandOutputResponseSchema,
-        await invoke(command, args),
-      )
-    },
-    async getConversationDiffPatch(request) {
-      const command = 'get_conversation_diff_patch'
-      const args = parseArgs(command, getConversationDiffPatchRequestSchema, request)
-      return parsePayload(
-        command,
-        getConversationDiffPatchResponseSchema,
-        await invoke(command, args),
-      )
-    },
-    async getArtifactRevisionContent(request) {
-      const command = 'get_artifact_revision_content'
-      const args = parseArgs(command, getArtifactRevisionContentRequestSchema, request)
-      return parsePayload(
-        command,
-        getArtifactRevisionContentResponseSchema,
-        await invoke(command, args),
-      )
-    },
-    async exportConversationEvidence(request) {
-      const command = 'export_conversation_evidence'
-      const args = parseArgs(command, exportConversationEvidenceRequestSchema, request)
-      return parsePayload(
-        command,
-        exportConversationEvidenceResponseSchema,
-        await invoke(command, args),
-      )
-    },
     async reloadPlugin(pluginId) {
       const command = 'reload_plugin'
       const args = parseArgs(command, pluginIdRequestSchema, { pluginId })
@@ -4542,26 +4259,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         requestProviderConfigApiKeyRevealResponseSchema,
         await invoke(command, args),
       )
-    },
-    async resumeBackgroundAgent(request) {
-      const command = 'resume_background_agent'
-      const args = parseArgs(command, backgroundAgentIdRequestSchema, request)
-      return parsePayload(command, backgroundAgentActionResponseSchema, await invoke(command, args))
-    },
-    async runEvalCase(caseId) {
-      const command = 'run_eval_case'
-      const args = parseArgs(command, runEvalCaseRequestSchema, { caseId })
-      return parsePayload(command, runEvalCaseResponseSchema, await invoke(command, args))
-    },
-    async runAutomationNow(id) {
-      const command = 'run_automation_now'
-      const args = parseArgs(command, runAutomationNowRequestSchema, { id })
-      return parsePayload(command, runAutomationNowResponseSchema, await invoke(command, args))
-    },
-    async saveAutomation(request) {
-      const command = 'save_automation'
-      const args = parseArgs(command, saveAutomationRequestSchema, request)
-      return parsePayload(command, saveAutomationResponseSchema, await invoke(command, args))
     },
     async saveAgentProfile(profile) {
       const command = 'save_agent_profile'
@@ -4595,14 +4292,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'set_execution_settings'
       const args = parseArgs(command, setExecutionSettingsRequestSchema, request)
       return parsePayload(command, setExecutionSettingsResponseSchema, await invoke(command, args))
-    },
-    async setAutomationEnabled(id, enabled) {
-      const command = 'set_automation_enabled'
-      const args = parseArgs(command, setAutomationEnabledRequestSchema, {
-        enabled,
-        id,
-      })
-      return parsePayload(command, setAutomationEnabledResponseSchema, await invoke(command, args))
     },
     async saveBrowserMcpPreset(request) {
       const command = 'save_browser_mcp_preset'
@@ -4661,30 +4350,10 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       })
       return parsePayload(command, setSkillEnabledResponseSchema, await invoke(command, args))
     },
-    async archiveBackgroundAgent(request) {
-      const command = 'archive_background_agent'
-      const args = parseArgs(command, backgroundAgentIdRequestSchema, request)
-      return parsePayload(command, backgroundAgentActionResponseSchema, await invoke(command, args))
-    },
-    async cancelBackgroundAgent(request) {
-      const command = 'cancel_background_agent'
-      const args = parseArgs(command, backgroundAgentIdRequestSchema, request)
-      return parsePayload(command, backgroundAgentActionResponseSchema, await invoke(command, args))
-    },
-    async sendBackgroundAgentInput(request) {
-      const command = 'send_background_agent_input'
-      const args = parseArgs(command, sendBackgroundAgentInputRequestSchema, request)
-      return parsePayload(command, backgroundAgentActionResponseSchema, await invoke(command, args))
-    },
     async installPluginFromPath(sourcePath) {
       const command = 'install_plugin_from_path'
       const args = parseArgs(command, pluginPathRequestSchema, { sourcePath })
       return parsePayload(command, pluginOperationResultSchema, await invoke(command, args))
-    },
-    async startRun(request) {
-      const command = 'start_run'
-      const args = parseArgs(command, startRunRequestSchema, request)
-      return parsePayload(command, startRunResponseSchema, await invoke(command, args))
     },
     async subscribeMcpDiagnostics(request) {
       const command = 'subscribe_mcp_diagnostics'
@@ -4746,12 +4415,6 @@ export function getAppInfo(client: CommandClient = tauriCommandClient): Promise<
   return client.getAppInfo()
 }
 
-export function getHarnessHealthcheck(
-  client: CommandClient = tauriCommandClient,
-): Promise<HarnessHealthcheck> {
-  return client.getHarnessHealthcheck()
-}
-
 export function getRuntimeExecutionStatus(
   client: CommandClient = tauriCommandClient,
 ): Promise<RuntimeExecutionStatus> {
@@ -4762,43 +4425,6 @@ export function listRuntimeTools(
   client: CommandClient = tauriCommandClient,
 ): Promise<ListRuntimeToolsResponse> {
   return client.listRuntimeTools()
-}
-
-export function listConversations(
-  client: CommandClient = tauriCommandClient,
-): Promise<ListConversationsResponse> {
-  return client.listConversations()
-}
-
-export function listProjectConversationGroups(
-  client: CommandClient = tauriCommandClient,
-): Promise<ListProjectConversationGroupsResponse> {
-  return client.listProjectConversationGroups()
-}
-
-export function createConversation(
-  client: CommandClient = tauriCommandClient,
-): Promise<CreateConversationResponse> {
-  return client.createConversation()
-}
-
-export function createDefaultConversation(
-  client: CommandClient = tauriCommandClient,
-): Promise<CreateConversationResponse> {
-  return client.createDefaultConversation()
-}
-
-export function createProjectConversation(
-  path: string,
-  client: CommandClient = tauriCommandClient,
-): Promise<CreateConversationResponse> {
-  return client.createProjectConversation(path)
-}
-
-export function listEvalCases(
-  client: CommandClient = tauriCommandClient,
-): Promise<ListEvalCasesResponse> {
-  return client.listEvalCases()
 }
 
 export function listModelProviderCatalog(
@@ -4817,179 +4443,6 @@ export function refreshModelProviderCatalog(
   client: CommandClient = tauriCommandClient,
 ): Promise<RefreshModelProviderCatalogResponse> {
   return client.refreshModelProviderCatalog()
-}
-
-export function listArtifacts(
-  request: ListArtifactsRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<ListArtifactsResponse> {
-  return client.listArtifacts(request)
-}
-
-export function getArtifactMediaPreview(
-  request: GetArtifactMediaPreviewRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<GetArtifactMediaPreviewResponse> {
-  return client.getArtifactMediaPreview(request)
-}
-
-export function getAttachmentMediaPreview(
-  request: GetAttachmentMediaPreviewRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<GetAttachmentMediaPreviewResponse> {
-  return client.getAttachmentMediaPreview(request)
-}
-
-export function getConversation(
-  conversationId: string,
-  client: CommandClient = tauriCommandClient,
-): Promise<GetConversationResponse> {
-  return client.getConversation(conversationId)
-}
-
-export function deleteConversation(
-  conversationId: string,
-  client: CommandClient = tauriCommandClient,
-): Promise<DeleteConversationResponse> {
-  return client.deleteConversation(conversationId)
-}
-
-export function startRun(
-  request: StartRunRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<StartRunResponse> {
-  return client.startRun(request)
-}
-
-export function createAttachmentFromPath(
-  path: string,
-  conversationIdOrClient?: string | CommandClient,
-  client: CommandClient = tauriCommandClient,
-): Promise<CreateAttachmentFromPathResponse> {
-  if (typeof conversationIdOrClient === 'object' && conversationIdOrClient !== null) {
-    return conversationIdOrClient.createAttachmentFromPath(path)
-  }
-  const conversationId = conversationIdOrClient
-  return client.createAttachmentFromPath(path, conversationId)
-}
-
-export function listReferenceCandidates(
-  request: ListReferenceCandidatesRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<ListReferenceCandidatesResponse> {
-  return client.listReferenceCandidates(request)
-}
-
-export function cancelRun(
-  runId: string,
-  client: CommandClient = tauriCommandClient,
-): Promise<CancelRunResponse> {
-  return client.cancelRun(runId)
-}
-
-export function runEvalCase(
-  caseId: string,
-  client: CommandClient = tauriCommandClient,
-): Promise<RunEvalCaseResponse> {
-  return client.runEvalCase(caseId)
-}
-
-export function listAutomations(
-  client: CommandClient = tauriCommandClient,
-): Promise<ListAutomationsResponse> {
-  return client.listAutomations()
-}
-
-export function listBackgroundAgents(
-  request: ListBackgroundAgentsRequest = {},
-  client: CommandClient = tauriCommandClient,
-): Promise<ListBackgroundAgentsResponse> {
-  return client.listBackgroundAgents(request)
-}
-
-export function getBackgroundAgent(
-  request: BackgroundAgentIdRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<GetBackgroundAgentResponse> {
-  return client.getBackgroundAgent(request)
-}
-
-export function pauseBackgroundAgent(
-  request: BackgroundAgentIdRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<BackgroundAgentActionResponse> {
-  return client.pauseBackgroundAgent(request)
-}
-
-export function resumeBackgroundAgent(
-  request: BackgroundAgentIdRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<BackgroundAgentActionResponse> {
-  return client.resumeBackgroundAgent(request)
-}
-
-export function cancelBackgroundAgent(
-  request: BackgroundAgentIdRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<BackgroundAgentActionResponse> {
-  return client.cancelBackgroundAgent(request)
-}
-
-export function sendBackgroundAgentInput(
-  request: SendBackgroundAgentInputRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<BackgroundAgentActionResponse> {
-  return client.sendBackgroundAgentInput(request)
-}
-
-export function archiveBackgroundAgent(
-  request: BackgroundAgentIdRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<BackgroundAgentActionResponse> {
-  return client.archiveBackgroundAgent(request)
-}
-
-export function deleteBackgroundAgent(
-  request: BackgroundAgentIdRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<DeleteBackgroundAgentResponse> {
-  return client.deleteBackgroundAgent(request)
-}
-
-export function saveAutomation(
-  request: SaveAutomationRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<SaveAutomationResponse> {
-  return client.saveAutomation(request)
-}
-
-export function deleteAutomation(
-  id: string,
-  client: CommandClient = tauriCommandClient,
-): Promise<DeleteAutomationResponse> {
-  return client.deleteAutomation(id)
-}
-
-export function setAutomationEnabled(
-  id: string,
-  enabled: boolean,
-  client: CommandClient = tauriCommandClient,
-): Promise<SetAutomationEnabledResponse> {
-  return client.setAutomationEnabled(id, enabled)
-}
-
-export function runAutomationNow(
-  id: string,
-  client: CommandClient = tauriCommandClient,
-): Promise<RunAutomationNowResponse> {
-  return client.runAutomationNow(id)
-}
-
-export function listAutomationRuns(
-  automationId?: string,
-  client: CommandClient = tauriCommandClient,
-): Promise<ListAutomationRunsResponse> {
-  return client.listAutomationRuns(automationId)
 }
 
 export function listMcpServers(
@@ -5256,13 +4709,6 @@ export function deleteSkill(
   return client.deleteSkill(id)
 }
 
-export function exportSupportBundle(
-  request: ExportSupportBundleRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<ExportSupportBundleResponse> {
-  return client.exportSupportBundle(request)
-}
-
 export function saveProviderSettings(
   request: ProviderSettingsRequest,
   client: CommandClient = tauriCommandClient,
@@ -5370,14 +4816,6 @@ export function deleteProject(
   return client.deleteProject(path)
 }
 
-export function deleteProjectConversation(
-  path: string,
-  conversationId: string,
-  client: CommandClient = tauriCommandClient,
-): Promise<DeleteConversationResponse> {
-  return client.deleteProjectConversation(path, conversationId)
-}
-
 export function getExecutionSettings(
   client: CommandClient = tauriCommandClient,
   request?: GetExecutionSettingsRequest,
@@ -5419,32 +4857,4 @@ export function probeProviderConfig(
   client: CommandClient = tauriCommandClient,
 ): Promise<ProbeProviderConfigResponse> {
   return client.probeProviderConfig(request)
-}
-
-export function listActivity(
-  request: ListActivityRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<ListActivityResponse> {
-  return client.listActivity(request)
-}
-
-export function getReplayTimeline(
-  request: ReplayTimelineRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<ReplayTimelineResponse> {
-  return client.getReplayTimeline(request)
-}
-
-export function getConversationInspectorItem(
-  request: GetConversationInspectorItemRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<GetConversationInspectorItemResponse> {
-  return client.getConversationInspectorItem(request)
-}
-
-export function getContextSnapshot(
-  request: GetContextSnapshotRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<GetContextSnapshotResponse> {
-  return client.getContextSnapshot(request)
 }

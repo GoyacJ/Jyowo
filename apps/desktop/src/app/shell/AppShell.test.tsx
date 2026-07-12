@@ -183,65 +183,14 @@ describe('AppShell', () => {
 
     expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('option', { name: 'Open evals' }))
+    fireEvent.click(screen.getByRole('option', { name: 'Settings' }))
 
     await waitFor(() => {
-      expect(routerSpy.navigate).toHaveBeenCalledWith({ to: '/evals' })
+      expect(routerSpy.navigate).toHaveBeenCalledWith({ to: '/settings' })
     })
   })
 
-  it('does not request hidden context while idle', async () => {
-    const commandClient = createTestCommandClient()
-    const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
-    const trackedClient = {
-      ...commandClient,
-      getContextSnapshot: async (request: Parameters<CommandClient['getContextSnapshot']>[0]) => {
-        contextRequests.push(request)
-        return commandClient.getContextSnapshot(request)
-      },
-    } satisfies CommandClient
 
-    renderAppShell(trackedClient)
-
-    await waitFor(() => {
-      expect(screen.getByRole('main')).toContainElement(screen.getByText('Workbench content'))
-      expect(contextRequests).toEqual([])
-    })
-  })
-
-  it('does not show another conversation run while the selected conversation is idle', async () => {
-    window.history.pushState(null, '', '/?taskId=task-001')
-    const commandClient = createTestCommandClient()
-    const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
-    const trackedClient = {
-      ...commandClient,
-      getContextSnapshot: async (request: Parameters<CommandClient['getContextSnapshot']>[0]) => {
-        contextRequests.push(request)
-        return commandClient.getContextSnapshot(request)
-      },
-    } satisfies CommandClient
-
-    act(() => {
-      uiStore.getState().setActiveRun({
-        conversationId: 'conversation-002',
-        runId: 'run-002',
-      })
-    })
-
-    renderAppShell(trackedClient)
-
-    await waitFor(() => {
-      expect(screen.getByRole('main')).toContainElement(screen.getByText('Workbench content'))
-      expect(contextRequests).toEqual([])
-    })
-    expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
-    expect(
-      within(screen.getByRole('region', { name: 'Status' })).getByText('Ready'),
-    ).toBeInTheDocument()
-    expect(
-      within(screen.getByRole('region', { name: 'Status' })).queryByText('run-002'),
-    ).not.toBeInTheDocument()
-  })
 
   it('reflects the selected task generated current run in the status bar', () => {
     const taskId = '01J00000000000000000000041'
@@ -277,34 +226,6 @@ describe('AppShell', () => {
     ).toBeInTheDocument()
   })
 
-  it('keeps active run context off standalone pages', async () => {
-    window.history.pushState(null, '', '/settings')
-    const commandClient = createTestCommandClient()
-    const contextRequests: Array<Parameters<CommandClient['getContextSnapshot']>[0]> = []
-    const trackedClient = {
-      ...commandClient,
-      getContextSnapshot: async (request: Parameters<CommandClient['getContextSnapshot']>[0]) => {
-        contextRequests.push(request)
-        return commandClient.getContextSnapshot(request)
-      },
-    } satisfies CommandClient
-
-    act(() => {
-      uiStore.getState().setActiveRun({
-        conversationId: 'conversation-001',
-        runId: 'run-001',
-      })
-    })
-
-    renderAppShell(trackedClient)
-
-    await waitFor(() => {
-      expect(screen.getByRole('main')).toContainElement(screen.getByText('Workbench content'))
-      expect(contextRequests).toEqual([])
-    })
-    expect(screen.queryByRole('complementary', { name: 'Context' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Show context panel' })).not.toBeInTheDocument()
-  })
 
   it('reflects active run state in the status bar from ui store', async () => {
     act(() => {

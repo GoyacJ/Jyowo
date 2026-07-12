@@ -2,7 +2,6 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { Info, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
-import { SystemStatusPage } from '@/features/system-status/SystemStatusPage'
 import { highlightCode } from '@/shared/code/highlight'
 import {
   loadUiPreferencesStore,
@@ -60,8 +59,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/shar
 
 const meta = {
   title: 'Foundation/Smoke',
-  component: SystemStatusPage,
-} satisfies Meta<typeof SystemStatusPage>
+} satisfies Meta
 
 export default meta
 
@@ -83,8 +81,6 @@ const uiStoreApiNames = [
   readUiPreferences.name,
   writeUiPreferences.name,
 ]
-
-export const SystemStatus: Story = {}
 
 export const Primitives: Story = {
   render: () => (

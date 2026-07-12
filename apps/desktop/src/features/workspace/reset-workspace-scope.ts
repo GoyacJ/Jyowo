@@ -21,7 +21,6 @@ export async function onProjectWorkspaceChanged(
   removeProviderSettingsSaveMutations(queryClient)
   uiStore.getState().clearActiveRun()
   uiStore.getState().clearTimelineScrollRequest()
-  queryClient.removeQueries({ queryKey: ['conversation'] })
   queryClient.removeQueries({ queryKey: providerSettingsQueryKey })
   await navigate({ replace: true, search: {}, to: '/' })
   await queryClient.invalidateQueries()

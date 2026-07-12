@@ -31,15 +31,11 @@ import type { TestCommandClientState, TestCommandHandlers } from './state'
 
 type SettingsCommandKeys =
   | 'addProject'
-  | 'deleteAutomation'
   | 'deleteProject'
   | 'deleteProviderCapabilityRoute'
   | 'getProviderConfigApiKey'
   | 'getModelSettingsPage'
   | 'getModelUsageSummary'
-  | 'listAutomationRuns'
-  | 'listAutomations'
-  | 'listEvalCases'
   | 'listOfficialQuotaSnapshots'
   | 'listModelProviderCatalog'
   | 'listProjects'
@@ -54,12 +50,8 @@ type SettingsCommandKeys =
   | 'refreshModelProviderCatalog'
   | 'refreshOfficialQuota'
   | 'requestProviderConfigApiKeyReveal'
-  | 'runAutomationNow'
-  | 'runEvalCase'
-  | 'saveAutomation'
   | 'saveProviderCapabilityRoute'
   | 'saveProviderSettings'
-  | 'setAutomationEnabled'
   | 'switchProject'
   | 'validateProviderSettings'
 
@@ -80,18 +72,6 @@ export function createSettingsCommandHandlers(
         projects: [project, ...state.projects.projects.filter((entry) => entry.path !== path)],
       }
       return { project }
-    },
-    async deleteAutomation(id) {
-      await wait(state.options.delayMs)
-      state.automations = {
-        automations: state.automations.automations.filter((automation) => automation.id !== id),
-      }
-      return (
-        state.options.automationDelete ?? {
-          id,
-          status: 'deleted',
-        }
-      )
     },
     async deleteProject(path) {
       await wait(state.options.delayMs)
@@ -184,24 +164,6 @@ export function createSettingsCommandHandlers(
           } satisfies ModelSettingsPageResponse),
       )
     },
-    async listAutomationRuns(automationId) {
-      await wait(state.options.delayMs)
-      const runs =
-        automationId === undefined
-          ? state.automationRuns.runs
-          : state.automationRuns.runs.filter((run) => run.automationId === automationId)
-      return {
-        runs: cloneResponse(runs),
-      }
-    },
-    async listAutomations() {
-      await wait(state.options.delayMs)
-      return cloneResponse(state.automations)
-    },
-    async listEvalCases() {
-      await wait(state.options.delayMs)
-      return state.options.evalCases ?? fixtureListEvalCases
-    },
     async listModelProviderCatalog() {
       await wait(state.options.delayMs)
       return state.options.modelProviderCatalog ?? fixtureModelProviderCatalog
@@ -274,59 +236,6 @@ export function createSettingsCommandHandlers(
         configId,
       }
     },
-    async runAutomationNow(id) {
-      await wait(state.options.delayMs)
-      const record = {
-        ...fixtureAutomationRun,
-        automationId: id,
-      } satisfies ListAutomationRunsResponse['runs'][number]
-      state.automationRuns = {
-        runs: [record, ...state.automationRuns.runs.filter((run) => run.id !== record.id)],
-      }
-      return (
-        state.options.automationRunNow ?? {
-          record,
-        }
-      )
-    },
-    async runEvalCase(caseId) {
-      await wait(state.options.delayMs)
-      const evalCase =
-        (state.options.evalCases ?? fixtureListEvalCases).cases.find(
-          (currentCase) => currentCase.id === caseId,
-        ) ?? fixtureListEvalCases.cases[0]
-
-      return {
-        case: {
-          ...evalCase,
-          lastRun: {
-            completedAt: timestamp,
-            failed: 0,
-            passed: (evalCase.lastRun?.passed ?? 0) + 1,
-            status: 'passed',
-          },
-        },
-        status: 'completed',
-      } satisfies RunEvalCaseResponse
-    },
-    async saveAutomation(request) {
-      await wait(state.options.delayMs)
-      const automation = normalizeAutomationSpec(request.automation)
-      state.automations = {
-        automations: [
-          automation,
-          ...state.automations.automations.filter(
-            (automation) => automation.id !== request.automation.id,
-          ),
-        ],
-      }
-      return (
-        state.options.automationSave ?? {
-          automation,
-          status: 'saved',
-        }
-      )
-    },
     async saveProviderCapabilityRoute(request) {
       await wait(state.options.delayMs)
       const nextRoutes = state.providerCapabilityRoutes.routes.filter(
@@ -376,29 +285,6 @@ export function createSettingsCommandHandlers(
       }
       return response
     },
-    async setAutomationEnabled(id, enabled) {
-      await wait(state.options.delayMs)
-      const automation =
-        state.automations.automations.find((automation) => automation.id === id) ??
-        fixtureAutomation
-      const updated = {
-        ...automation,
-        enabled,
-        updatedAt: new Date().toISOString(),
-      } satisfies ListAutomationsResponse['automations'][number]
-      state.automations = {
-        automations: [
-          updated,
-          ...state.automations.automations.filter((automation) => automation.id !== id),
-        ],
-      }
-      return (
-        state.options.automationSetEnabled ?? {
-          automation: updated,
-          status: 'saved',
-        }
-      )
-    },
     async switchProject(path) {
       await wait(state.options.delayMs)
       const project = state.projects.projects.find((entry) => entry.path === path)
@@ -429,18 +315,6 @@ export function createSettingsCommandHandlers(
       state.projects = {
         ...state.projects,
         projects,
-      }
-      state.projectConversationGroups = {
-        ...state.projectConversationGroups,
-        groups: projects
-          .map((project) =>
-            state.projectConversationGroups.groups.find(
-              (group) => group.project.path === project.path,
-            ),
-          )
-          .filter((group): group is (typeof state.projectConversationGroups.groups)[number] =>
-            Boolean(group),
-          ),
       }
       return state.projects
     },

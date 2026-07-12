@@ -6,13 +6,13 @@ import {
   preservedScrollTop,
   shouldAutoFollowOnAnchorChange,
   shouldShowJumpToLatest,
-} from './conversation-scroll-controller'
+} from './task-scroll-controller'
 
 function scrollToEnd(endElement: HTMLElement | null) {
   endElement?.scrollIntoView({ block: 'end' })
 }
 
-export function useConversationScrollAnchor(
+export function useTaskScrollAnchor(
   latestAnchorKey: string | null,
   options: {
     isStreamingUpdate?: boolean
@@ -50,40 +50,29 @@ export function useConversationScrollAnchor(
   })
 
   useLayoutEffect(() => {
-    if (options.streamingScrollTick === undefined) {
-      return
-    }
-
+    if (options.streamingScrollTick === undefined) return
     if (!followRef.current.followLatest) {
       setShowJumpToLatest(true)
       return
     }
-
     scrollToEnd(endRef.current)
     setShowJumpToLatest(false)
   }, [options.streamingScrollTick])
 
   useLayoutEffect(() => {
-    if (options.streamingScrollTick !== undefined) {
-      return
-    }
-
+    if (options.streamingScrollTick !== undefined) return
     const anchorChanged = Boolean(latestAnchorKey && latestAnchorKey !== lastAnchorKeyRef.current)
     lastAnchorKeyRef.current = latestAnchorKey
-
     if (
       !shouldAutoFollowOnAnchorChange({
-        followLatest: followRef.current.followLatest,
         anchorChanged,
+        followLatest: followRef.current.followLatest,
         isStreamingUpdate: options.isStreamingUpdate ?? false,
       })
     ) {
-      if (anchorChanged) {
-        setShowJumpToLatest(shouldShowJumpToLatest(followRef.current.followLatest))
-      }
+      if (anchorChanged) setShowJumpToLatest(shouldShowJumpToLatest(followRef.current.followLatest))
       return
     }
-
     scrollToEnd(endRef.current)
     setShowJumpToLatest(false)
   }, [latestAnchorKey, options.isStreamingUpdate, options.streamingScrollTick])
@@ -94,15 +83,12 @@ export function useConversationScrollAnchor(
       followRef.current.followLatest = true
       return
     }
-
     followRef.current.followLatest = isNearBottom(viewport, followRef.current.nearBottomThresholdPx)
     if (previousPrependRef.current) {
       previousPrependRef.current.scrollHeight = viewport.scrollHeight
       previousPrependRef.current.scrollTop = viewport.scrollTop
     }
-    if (followRef.current.followLatest) {
-      setShowJumpToLatest(false)
-    }
+    if (followRef.current.followLatest) setShowJumpToLatest(false)
   }, [])
 
   const jumpToLatest = useCallback(() => {
@@ -111,11 +97,5 @@ export function useConversationScrollAnchor(
     setShowJumpToLatest(false)
   }, [])
 
-  return {
-    endRef,
-    jumpToLatest,
-    onScroll,
-    showJumpToLatest,
-    viewportRef,
-  }
+  return { endRef, jumpToLatest, onScroll, showJumpToLatest, viewportRef }
 }

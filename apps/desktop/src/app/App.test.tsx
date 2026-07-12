@@ -286,7 +286,7 @@ describe('App', () => {
     expect(screen.getByRole('complementary', { name: 'Workspace' })).toBeInTheDocument()
   })
 
-  it('renders support routes for skills, settings, and evals', async () => {
+  it('renders support routes for skills and settings', async () => {
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: {
@@ -384,13 +384,6 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'No configured models' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Model configuration' })).not.toBeInTheDocument()
 
-    window.history.pushState(null, '', '/evals')
-    rerender(
-      <App commandClient={commandClient} daemonClient={daemonClient} queryClient={queryClient} />,
-    )
-
-    expect(await screen.findByRole('heading', { name: 'Eval lab' })).toBeInTheDocument()
-    expect(await screen.findByText('Regression smoke')).toBeInTheDocument()
   })
 
   it('resolves system theme from the operating system preference', () => {

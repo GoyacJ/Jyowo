@@ -12,10 +12,10 @@ use chrono::{DateTime, NaiveDate, Utc};
 use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
 use harness_contracts::{
     validate_agent_profile, validate_provider_capability_route, AgentCapabilityUnavailableReason,
-    AgentProfile, AgentProfileScope, AutomationRunRecord, AutomationSpec, AutomationWorkspaceScope,
+    AgentProfile, AgentProfileScope, AutomationRunRecord, AutomationSpec,
     BackgroundAgentState, CapabilityRouteKind, ConversationInspectorSelection,
     DiagnosticsRawOutput, DiagnosticsRunRequest, DiagnosticsRunnerCap, DiagnosticsRunnerKind,
-    ListProviderCapabilityRouteOptionsResponse, LocalIsolationTag, MissedRunPolicy,
+    ListProviderCapabilityRouteOptionsResponse, LocalIsolationTag,
     PluginConfigUpdate, PluginDetail, PluginId, PluginInstallReport, PluginOperationResult,
     PluginOperationStatus, PluginSummary, ProviderCapabilityRoute, ProviderCapabilityRouteOption,
     ProviderCapabilityRouteSettings, ProviderProbeSnapshot, ProviderServiceAdapterAvailability,
@@ -78,9 +78,9 @@ use crate::skill_catalog::{
 
 mod agents;
 mod app;
+mod automations;
 #[allow(dead_code)]
 mod artifacts;
-mod automations;
 #[allow(dead_code)]
 mod constants;
 mod contracts;
@@ -117,18 +117,10 @@ pub use agents::{
     delete_agent_profile_with_runtime_state, list_agent_profiles_with_runtime_state,
     save_agent_profile_with_runtime_state,
 };
-pub use app::{
-    get_app_info_payload, harness_healthcheck_payload, list_eval_cases_payload,
-    list_eval_cases_with_runtime_state,
-};
-pub use automations::{
-    delete_automation_with_runtime_state, list_automation_runs_with_runtime_state,
-    list_automations_with_runtime_state, save_automation_with_runtime_state,
-    set_automation_enabled_with_runtime_state,
-};
+pub use app::get_app_info_payload;
 pub use contracts::{
     AppInfoPayload, ArtifactRevisionPayload, ArtifactSummaryPayload, AttachmentBlobRefPayload,
-    AttachmentReferencePayload, AutomationStore, BackgroundAgentActionResponse,
+    AttachmentReferencePayload, BackgroundAgentActionResponse,
     BackgroundAgentDeleteResponse, BackgroundAgentIdRequest, BackgroundAgentPayload,
     BrowserMcpPresetId, BrowserMcpPresetSummaryPayload, CancelRunRequest, CancelRunResponse,
     ClearMcpDiagnosticsRequest, ClearMcpDiagnosticsResponse, ContextDecisionPayload,
@@ -204,7 +196,6 @@ pub use contracts::{
     ValidateProviderSettingsResponse,
 };
 pub use error::CommandErrorPayload;
-pub use evals::{run_eval_case_payload, run_eval_case_with_runtime_state};
 pub use mcp::{
     clear_mcp_diagnostics_with_runtime_state, delete_mcp_server_with_runtime_state,
     delete_mcp_server_with_store, get_mcp_server_config_with_runtime_state,
@@ -274,7 +265,7 @@ pub use skills::{
     set_skill_enabled_with_runtime_state, start_skill_catalog_install_task_with_runtime_state,
 };
 pub use stores::{
-    DesktopAutomationStore, DesktopMcpDiagnosticStore, DesktopModelUsageRollupStore,
+    DesktopMcpDiagnosticStore, DesktopModelUsageRollupStore,
     DesktopPluginStore, DesktopProviderCatalogSnapshotStore, DesktopProviderDiagnosticsStore,
     DesktopProviderQuotaCacheStore, DesktopRuntimeState, DesktopSkillStore,
 };
@@ -387,55 +378,6 @@ pub async fn set_execution_settings(
         runtime_state.execution_settings_store.as_ref(),
         capabilities.as_ref(),
     )
-}
-
-#[tauri::command]
-pub async fn list_automations(
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ListAutomationsResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    list_automations_with_runtime_state(&runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn save_automation(
-    automation: AutomationSpec,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<SaveAutomationResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    save_automation_with_runtime_state(SaveAutomationRequest { automation }, &runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn delete_automation(
-    id: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<DeleteAutomationResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    delete_automation_with_runtime_state(id, &runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn set_automation_enabled(
-    id: String,
-    enabled: bool,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<SetAutomationEnabledResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    set_automation_enabled_with_runtime_state(
-        SetAutomationEnabledRequest { id, enabled },
-        &runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn list_automation_runs(
-    automation_id: Option<String>,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ListAutomationRunsResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    list_automation_runs_with_runtime_state(automation_id, &runtime_state).await
 }
 
 #[tauri::command(rename_all = "camelCase")]

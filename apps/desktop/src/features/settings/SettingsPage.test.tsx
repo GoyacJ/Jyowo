@@ -6,9 +6,10 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { AppI18nProvider } from '@/shared/i18n/i18n'
+import type { DaemonClient } from '@/shared/daemon/client'
 import { uiStore } from '@/shared/state/ui-store'
 import type { CommandClient } from '@/shared/tauri/commands'
-import { CommandClientProvider } from '@/shared/tauri/react'
+import { CommandClientProvider, DaemonClientProvider } from '@/shared/tauri/react'
 import {
   createRejectedTestCommandClient,
   createTestCommandClient,
@@ -52,6 +53,10 @@ function renderSettingsPage(options: TestCommandClientOptions = {}, commandClien
   })
 
   function Wrapper({ children }: { children: ReactNode }) {
+    const daemonClient = {
+      listAutomationRuns: vi.fn(async () => ({ runs: [], type: 'automation_runs' as const })),
+      listAutomations: vi.fn(async () => ({ automations: [], type: 'automations' as const })),
+    } as unknown as DaemonClient
     return (
       <CommandClientProvider
         client={
@@ -62,9 +67,11 @@ function renderSettingsPage(options: TestCommandClientOptions = {}, commandClien
           })
         }
       >
-        <QueryClientProvider client={queryClient}>
-          <AppI18nProvider>{children}</AppI18nProvider>
-        </QueryClientProvider>
+        <DaemonClientProvider client={daemonClient}>
+          <QueryClientProvider client={queryClient}>
+            <AppI18nProvider>{children}</AppI18nProvider>
+          </QueryClientProvider>
+        </DaemonClientProvider>
       </CommandClientProvider>
     )
   }

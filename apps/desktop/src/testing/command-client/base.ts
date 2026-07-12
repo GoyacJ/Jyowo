@@ -78,11 +78,6 @@ export const fixtureAppInfo: AppInfo = {
   },
 }
 
-export const fixtureHarnessHealthcheck: HarnessHealthcheck = {
-  status: 'available',
-  sdkCrate: 'jyowo_harness_sdk',
-}
-
 export const fixtureRuntimeExecutionStatus: RuntimeExecutionStatus = {
   processSandbox: {
     backendId: 'routing',
@@ -186,33 +181,7 @@ export async function resolveResponseOverride<Args extends unknown[], Response>(
 
 export interface TestCommandClientOptions {
   appInfo?: AppInfo
-  attachmentFromPath?: CreateAttachmentFromPathResponse
-  contextSnapshot?: GetContextSnapshotResponse
-  conversation?: GetConversationResponse
-  conversationCommandOutput?: TestCommandResponseOverride<
-    CommandClient['getConversationCommandOutput']
-  >
-  conversationDiffPatch?: TestCommandResponseOverride<CommandClient['getConversationDiffPatch']>
-  conversationEvidenceExport?: TestCommandResponseOverride<
-    CommandClient['exportConversationEvidence']
-  >
-  conversations?: ListConversationsResponse
-  projectConversationGroups?: ListProjectConversationGroupsResponse
   executionSettings?: GetExecutionSettingsResponse
-  healthcheck?: HarnessHealthcheck
-  artifacts?: ListArtifactsResponse
-  artifactRevisionContent?: TestCommandResponseOverride<CommandClient['getArtifactRevisionContent']>
-  automations?: ListAutomationsResponse
-  automationRuns?: ListAutomationRunsResponse
-  automationRunNow?: RunAutomationNowResponse
-  automationSave?: SaveAutomationResponse
-  automationSetEnabled?: SetAutomationEnabledResponse
-  automationDelete?: DeleteAutomationResponse
-  backgroundAgents?: ListBackgroundAgentsResponse
-  artifactMediaPreview?: GetArtifactMediaPreviewResponse
-  attachmentMediaPreview?: GetAttachmentMediaPreviewResponse
-  listActivity?: ListActivityResponse
-  evalCases?: ListEvalCasesResponse
   browserMcpPresets?: ListBrowserMcpPresetsResponse
   browserMcpPreset?: SaveBrowserMcpPresetResponse
   mcpDiagnostics?: ListMcpDiagnosticsResponse
@@ -241,14 +210,8 @@ export interface TestCommandClientOptions {
   providerValidation?: ValidateProviderSettingsResponse
   setExecutionSettings?: SetExecutionSettingsResponse
   setProjectPluginsEnabled?: SetProjectPluginsEnabledResponse
-  referenceCandidates?: ListReferenceCandidatesResponse
-  replayTimeline?: ReplayTimelineResponse
   runtimeExecutionStatus?: RuntimeExecutionStatus
   runtimeTools?: ListRuntimeToolsResponse
-  conversationInspectorItem?: TestCommandResponseOverride<
-    CommandClient['getConversationInspectorItem']
-  >
-  conversationWorktreePage?: PageConversationWorktreeResponse
   subscribeMcpDiagnostics?: SubscribeMcpDiagnosticsResponse
   skillDetail?: GetSkillDetailResponse
   skillFile?: GetSkillFileResponse
@@ -259,6 +222,5 @@ export interface TestCommandClientOptions {
   skillCatalogSources?: ListSkillCatalogSourcesResponse
   skillCatalogInstall?: InstallSkillFromCatalogResponse
   skills?: ListSkillsResponse
-  supportBundleExport?: ExportSupportBundleResponse
   delayMs?: number
 }

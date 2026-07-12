@@ -107,10 +107,6 @@ impl DesktopRuntimeState {
                 provider_config_fingerprint: None,
                 settings_runtime: None,
             })),
-            automation_lock: Arc::new(tokio::sync::Mutex::new(())),
-            automation_store: Arc::new(DesktopAutomationStore::global_with_layout(
-                storage_layout.clone(),
-            )),
             default_conversation_id: SessionId::new(),
             mcp_diagnostic_store: Arc::new(DesktopMcpDiagnosticStore::new_runtime_root(
                 runtime_layout.runtime_root.clone(),
@@ -315,8 +311,6 @@ impl DesktopRuntimeState {
                 provider_config_fingerprint: active_runtime_binding.map(|binding| binding.1),
                 settings_runtime: Some(settings_runtime),
             })),
-            automation_lock: Arc::new(tokio::sync::Mutex::new(())),
-            automation_store: automation_store_for_layout(&runtime_layout),
             default_conversation_id: SessionId::new(),
             mcp_diagnostic_store: Arc::new(DesktopMcpDiagnosticStore::new_runtime_root(
                 runtime_layout.runtime_root.clone(),
@@ -720,13 +714,6 @@ pub(crate) fn global_config_store_for_home() -> GlobalConfigStore {
 
 pub(crate) fn project_config_store_for_workspace(workspace_root: &Path) -> ProjectConfigStore {
     ProjectConfigStore::new(storage_layout_for_home(), workspace_root.to_path_buf())
-}
-
-fn automation_store_for_layout(layout: &RuntimeLayout) -> Arc<dyn AutomationStore> {
-    let _ = layout;
-    Arc::new(DesktopAutomationStore::global_with_layout(
-        storage_layout_for_home(),
-    ))
 }
 
 fn mcp_server_store_for_layout(layout: &RuntimeLayout) -> Arc<dyn McpServerStore> {

@@ -34,15 +34,12 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 
-pub(crate) mod automation;
 mod global_config;
 mod mcp;
 pub(crate) mod plugin;
 mod project_config;
 pub(crate) mod skill;
 
-pub use automation::DesktopAutomationStore;
-pub use automation::NoWorkspaceAutomationStore;
 pub use global_config::GlobalConfigStore;
 pub use mcp::DesktopMcpDiagnosticStore;
 pub(crate) use mcp::DesktopMcpServerStore;
@@ -81,22 +78,6 @@ pub(crate) fn read_secret_json_file<T: DeserializeOwned>(
     ensure_no_symlink_components(path, &format!("{label} file"))?;
     set_owner_only_if_exists_unix(path, label)?;
     read_json_file(path, label)
-}
-
-pub(crate) fn read_secret_json_file_or_default_on_blank<T: Default + DeserializeOwned>(
-    path: &Path,
-    label: &str,
-) -> Result<T, CommandErrorPayload> {
-    ensure_no_symlink_components(path, &format!("{label} file"))?;
-    set_owner_only_if_exists_unix(path, label)?;
-    let Some(bytes) = read_file_no_follow(path, label)? else {
-        return Ok(T::default());
-    };
-    if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Ok(T::default());
-    }
-    serde_json::from_slice(&bytes)
-        .map_err(|error| invalid_payload(format!("{label} parse failed: {error}")))
 }
 
 pub(crate) fn read_json_file_or_remove_invalid<T: DeserializeOwned>(
@@ -774,13 +755,6 @@ pub(crate) fn write_mcp_server_records(
     records: &[McpServerConfigRecord],
 ) -> Result<(), CommandErrorPayload> {
     write_secret_json_file_atomic(settings_path, "mcp server settings", records)
-}
-
-pub(crate) fn write_automation_specs(
-    automations_path: &Path,
-    records: &[AutomationSpec],
-) -> Result<(), CommandErrorPayload> {
-    write_secret_json_file_atomic(automations_path, "automation settings", records)
 }
 
 #[cfg(test)]
@@ -2397,8 +2371,6 @@ impl ModelUsageRollupStore for DesktopModelUsageRollupStore {
 #[derive(Clone)]
 pub struct DesktopRuntimeState {
     pub(crate) active_runtime: Arc<RwLock<DesktopActiveRuntime>>,
-    pub(crate) automation_lock: Arc<tokio::sync::Mutex<()>>,
-    pub(crate) automation_store: Arc<dyn AutomationStore>,
     pub(crate) default_conversation_id: SessionId,
     pub(crate) mcp_diagnostic_store: Arc<dyn McpDiagnosticStore>,
     pub(crate) mcp_diagnostic_subscriptions:

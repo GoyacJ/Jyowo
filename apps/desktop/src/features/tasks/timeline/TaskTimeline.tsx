@@ -1,12 +1,12 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useTranslation } from 'react-i18next'
-import { useConversationScrollAnchor } from '@/features/conversation/timeline/use-conversation-scroll-anchor'
 import type { RunProjection, TimelineItemProjection } from '@/generated/daemon-protocol'
 import { Button } from '@/shared/ui/button'
 
 import { RunSegment } from './RunSegment'
 import { TimelineEvent } from './TimelineEvent'
 import { timelineSummary } from './timeline-summary'
+import { useTaskScrollAnchor } from './use-task-scroll-anchor'
 
 const estimatedBlockHeightPx = 240
 const segmentChunkSize = 16
@@ -44,7 +44,7 @@ export function TaskTimeline({
   const first = orderedItems.at(0)
   const blocks = createBlocks(coalesceAssistantItems(orderedItems))
   const { endRef, jumpToLatest, onScroll, showJumpToLatest, viewportRef } =
-    useConversationScrollAnchor(latest ? `${latest.id}:${latest.incomplete}` : null, {
+    useTaskScrollAnchor(latest ? `${latest.id}:${latest.incomplete}` : null, {
       prependAnchorKey: first?.id,
       isStreamingUpdate: latest?.incomplete,
       streamingScrollTick: latest?.incomplete ? `${latest.id}:${latest.summary.length}` : undefined,
