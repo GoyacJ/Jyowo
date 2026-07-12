@@ -36,6 +36,25 @@ pub struct JsonRpcResponse {
     pub extra: Map<String, Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JsonRpcResultResponse {
+    pub jsonrpc: String,
+    pub id: Value,
+    pub result: Value,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JsonRpcErrorResponse {
+    pub jsonrpc: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<Value>,
+    pub error: JsonRpcError,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
 impl JsonRpcResponse {
     pub fn success(id: Value, result: Value) -> Self {
         Self {
@@ -95,4 +114,6 @@ pub struct JsonRpcError {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
 }

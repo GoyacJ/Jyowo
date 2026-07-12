@@ -202,6 +202,7 @@ impl SamplingPolicy {
                 code,
                 message: message.to_owned(),
                 data: Some(json!({ "server_id": request.server_id.0 })),
+                extra: Default::default(),
             },
             outcome,
         }
@@ -591,6 +592,7 @@ impl SamplingJsonRpcHandler {
                     code: MCP_SAMPLING_DENIED_CODE,
                     message: format!("method not found: {}", request.method),
                     data: None,
+                    extra: Default::default(),
                 },
             );
         }
@@ -630,6 +632,7 @@ impl SamplingJsonRpcHandler {
                             code: MCP_SAMPLING_DENIED_CODE,
                             message: "sampling authorization context is not configured".to_owned(),
                             data: Some(json!({ "server_id": self.server_id.0 })),
+                            extra: Default::default(),
                         },
                     );
                 };
@@ -668,6 +671,7 @@ impl SamplingJsonRpcHandler {
                                 code: MCP_SAMPLING_DENIED_CODE,
                                 message: "sampling approval denied".to_owned(),
                                 data: Some(json!({ "server_id": self.server_id.0 })),
+                                extra: Default::default(),
                             },
                         )
                     }
@@ -693,6 +697,7 @@ impl SamplingJsonRpcHandler {
                             code: MCP_SAMPLING_DENIED_CODE,
                             message: "sampling authorization context is not configured".to_owned(),
                             data: Some(json!({ "server_id": self.server_id.0 })),
+                            extra: Default::default(),
                         },
                     );
                 };
@@ -729,6 +734,7 @@ impl SamplingJsonRpcHandler {
                                 code: MCP_SAMPLING_DENIED_CODE,
                                 message: "sampling approval denied".to_owned(),
                                 data: Some(json!({ "server_id": self.server_id.0 })),
+                                extra: Default::default(),
                             },
                         )
                     }
@@ -758,6 +764,7 @@ impl SamplingJsonRpcHandler {
                 code: MCP_SAMPLING_DENIED_CODE,
                 message: "sampling requires an authoritative run context".to_owned(),
                 data: Some(json!({ "server_id": self.server_id.0 })),
+                extra: Default::default(),
             },
         )
     }
@@ -789,6 +796,7 @@ impl SamplingJsonRpcHandler {
                     code: MCP_SAMPLING_DENIED_CODE,
                     message: "sampling model is not allowed".to_owned(),
                     data: Some(json!({ "server_id": sampling_request.server_id.0 })),
+                    extra: Default::default(),
                 },
             );
         }
@@ -801,6 +809,7 @@ impl SamplingJsonRpcHandler {
                     code: MCP_SAMPLING_DENIED_CODE,
                     message: "sampling model invocation is deferred beyond P0".to_owned(),
                     data: Some(json!({ "server_id": self.server_id.0 })),
+                    extra: Default::default(),
                 },
             );
         };
@@ -855,6 +864,7 @@ impl SamplingJsonRpcHandler {
                         code: MCP_SAMPLING_UPSTREAM_ERROR_CODE,
                         message,
                         data: Some(json!({ "server_id": sampling_request.server_id.0 })),
+                        extra: Default::default(),
                     },
                 )
             }
@@ -872,6 +882,7 @@ impl SamplingJsonRpcHandler {
                         code: MCP_SAMPLING_UPSTREAM_ERROR_CODE,
                         message: "sampling provider timed out".to_owned(),
                         data: Some(json!({ "server_id": sampling_request.server_id.0 })),
+                        extra: Default::default(),
                     },
                 )
             }
@@ -1040,5 +1051,6 @@ fn invalid_params(message: impl Into<String>) -> JsonRpcError {
         code: JSONRPC_INVALID_PARAMS,
         message: message.into(),
         data: None,
+        extra: Default::default(),
     }
 }

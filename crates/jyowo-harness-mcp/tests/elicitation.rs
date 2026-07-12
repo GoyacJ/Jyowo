@@ -140,6 +140,7 @@ fn jsonrpc_elicitation_error_parses_request() {
             },
             "timeout_ms": 5000
         })),
+        extra: Default::default(),
     };
 
     let request = elicitation_from_jsonrpc_error(&error).expect("parsed");
@@ -215,6 +216,7 @@ fn sample_jsonrpc_error() -> harness_mcp::JsonRpcError {
                 "properties": { "token": { "type": "string" } }
             }
         })),
+        extra: Default::default(),
     }
 }
 

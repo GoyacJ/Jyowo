@@ -60,44 +60,91 @@ fn classifies_success_and_error_responses() {
     });
     let error_fixture = json!({
         "jsonrpc": "2.0",
-        "id": "one",
         "error": {
             "code": -32601,
             "message": "Method not found",
-            "data": { "method": "missing" }
+            "data": { "method": "missing" },
+            "vendorErrorField": true
         },
         "vendorField": "error-extension"
     });
 
     let success: McpMessage = serde_json::from_value(success_fixture.clone()).unwrap();
-    let McpMessage::Response(success) = success else {
+    let McpMessage::SuccessResponse(success) = success else {
         panic!("success fixture was misclassified");
     };
-    assert!(success.is_success());
     assert_eq!(
         success.extra.get("vendorField"),
         Some(&json!("success-extension"))
     );
 
     let error: McpMessage = serde_json::from_value(error_fixture.clone()).unwrap();
-    let McpMessage::Response(error) = error else {
+    let McpMessage::ErrorResponse(error) = error else {
         panic!("error fixture was misclassified");
     };
-    assert!(error.is_error());
+    assert_eq!(error.id, None);
     assert_eq!(
         error.extra.get("vendorField"),
         Some(&json!("error-extension"))
     );
-    assert_eq!(error.error.as_ref().unwrap().code, -32601);
+    assert_eq!(error.error.code, -32601);
+    assert_eq!(
+        error.error.extra.get("vendorErrorField"),
+        Some(&json!(true))
+    );
 
     assert_eq!(
-        serde_json::to_value(McpMessage::Response(success)).unwrap(),
+        serde_json::to_value(McpMessage::SuccessResponse(success)).unwrap(),
         success_fixture
     );
     assert_eq!(
-        serde_json::to_value(McpMessage::Response(error)).unwrap(),
+        serde_json::to_value(McpMessage::ErrorResponse(error)).unwrap(),
         error_fixture
     );
+}
+
+#[test]
+fn result_null_is_a_success_response_and_round_trips() {
+    let fixture = json!({ "jsonrpc": "2.0", "id": "nullable", "result": null });
+
+    let message: McpMessage = serde_json::from_value(fixture.clone()).unwrap();
+    let McpMessage::SuccessResponse(response) = message else {
+        panic!("result:null was not classified as success");
+    };
+    assert!(response.result.is_null());
+    assert_eq!(
+        serde_json::to_value(McpMessage::SuccessResponse(response)).unwrap(),
+        fixture
+    );
+}
+
+#[test]
+fn error_response_id_is_optional_but_never_null() {
+    for id in [json!(7), json!("request-7")] {
+        let fixture = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": -32603, "message": "Internal error" }
+        });
+        let message: McpMessage = serde_json::from_value(fixture.clone()).unwrap();
+        let McpMessage::ErrorResponse(response) = message else {
+            panic!("error response was misclassified");
+        };
+        assert_eq!(response.id.as_ref(), Some(&id));
+        assert_eq!(
+            serde_json::to_value(McpMessage::ErrorResponse(response)).unwrap(),
+            fixture
+        );
+    }
+
+    for invalid_id in [json!(null), json!(1.5), json!({ "bad": true })] {
+        let fixture = json!({
+            "jsonrpc": "2.0",
+            "id": invalid_id,
+            "error": { "code": -32603, "message": "Internal error" }
+        });
+        assert!(serde_json::from_value::<McpMessage>(fixture).is_err());
+    }
 }
 
 #[test]
@@ -107,6 +154,7 @@ fn rejects_ambiguous_or_invalid_message_shapes() {
         json!({ "jsonrpc": "2.0", "id": 1 }),
         json!({ "jsonrpc": "2.0", "method": "tools/list", "id": null }),
         json!({ "jsonrpc": "2.0", "method": "tools/list", "id": { "bad": true } }),
+        json!({ "jsonrpc": "2.0", "result": {} }),
         json!({ "jsonrpc": "1.0", "method": "tools/list" }),
     ] {
         assert!(

@@ -4,7 +4,8 @@ use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
 use crate::{
-    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpError, McpExpectedCapabilities,
+    JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcResultResponse, McpError,
+    McpExpectedCapabilities,
 };
 
 pub const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -19,7 +20,8 @@ pub const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] = [
 pub enum McpMessage {
     Request(JsonRpcRequest),
     Notification(JsonRpcNotification),
-    Response(JsonRpcResponse),
+    SuccessResponse(JsonRpcResultResponse),
+    ErrorResponse(JsonRpcErrorResponse),
 }
 
 impl Serialize for McpMessage {
@@ -30,7 +32,8 @@ impl Serialize for McpMessage {
         match self {
             Self::Request(request) => request.serialize(serializer),
             Self::Notification(notification) => notification.serialize(serializer),
-            Self::Response(response) => response.serialize(serializer),
+            Self::SuccessResponse(response) => response.serialize(serializer),
+            Self::ErrorResponse(response) => response.serialize(serializer),
         }
     }
 }
@@ -72,18 +75,26 @@ impl<'de> Deserialize<'de> for McpMessage {
                 .map_err(D::Error::custom);
         }
 
-        if !has_id {
-            return Err(D::Error::custom("JSON-RPC response must contain an id"));
-        }
         if has_result == has_error {
             return Err(D::Error::custom(
                 "JSON-RPC response must contain exactly one of result or error",
             ));
         }
-        validate_response_id(object.get("id").expect("id presence checked"))
-            .map_err(D::Error::custom)?;
+        if has_result {
+            let id = object
+                .get("id")
+                .ok_or_else(|| D::Error::custom("JSON-RPC result response must contain an id"))?;
+            validate_request_id(id).map_err(D::Error::custom)?;
+            return serde_json::from_value(value)
+                .map(Self::SuccessResponse)
+                .map_err(D::Error::custom);
+        }
+
+        if let Some(id) = object.get("id") {
+            validate_request_id(id).map_err(D::Error::custom)?;
+        }
         serde_json::from_value(value)
-            .map(Self::Response)
+            .map(Self::ErrorResponse)
             .map_err(D::Error::custom)
     }
 }
@@ -93,14 +104,6 @@ fn validate_request_id(id: &Value) -> Result<(), &'static str> {
         Ok(())
     } else {
         Err("JSON-RPC request id must be a string or integer")
-    }
-}
-
-fn validate_response_id(id: &Value) -> Result<(), &'static str> {
-    if id.is_null() || id.is_string() || id.is_i64() || id.is_u64() {
-        Ok(())
-    } else {
-        Err("JSON-RPC response id must be null, a string, or an integer")
     }
 }
 

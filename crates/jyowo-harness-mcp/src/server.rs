@@ -2237,6 +2237,7 @@ fn server_error_to_jsonrpc(error: McpServerError) -> JsonRpcError {
             data: Some(json!({
                 "retry_after_ms": retry_after.as_millis().max(1),
             })),
+            extra: Default::default(),
         },
         McpServerError::Unauthorized(message) => jsonrpc_error(JSONRPC_UNAUTHORIZED, message),
         McpServerError::TenantMapping(message) => jsonrpc_error(JSONRPC_TENANT_MAPPING, message),
@@ -2257,6 +2258,7 @@ fn jsonrpc_error(code: i32, message: impl Into<String>) -> JsonRpcError {
         code,
         message: message.into(),
         data: None,
+        extra: Default::default(),
     }
 }
 
