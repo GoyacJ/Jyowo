@@ -36,6 +36,46 @@
         "backgroundAgents"
       ]
     },
+    "ApproveMemoryCandidateRequest": {
+      "type": "object",
+      "properties": {
+        "action_plan_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidate_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "candidate_id"
+      ]
+    },
+    "ApproveMemoryCandidateResponse": {
+      "type": "object",
+      "properties": {
+        "candidate": {
+          "$ref": "#/$defs/MemoryCandidate"
+        },
+        "memory_id": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "required": [
+        "candidate",
+        "memory_id"
+      ]
+    },
     "AutomationRunRecord": {
       "type": "object",
       "properties": {
@@ -754,6 +794,53 @@
         {
           "type": "object",
           "properties": {
+            "actionPlanId": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TypedUlid"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "content": {
+              "type": "string"
+            },
+            "memoryId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "update_memory_item"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "memoryId",
+            "content"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "actionPlanId": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TypedUlid"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "memoryId": {
               "$ref": "#/$defs/TypedUlid"
             },
@@ -772,6 +859,282 @@
           "required": [
             "type",
             "memoryId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/ExportMemoryItemsRequest"
+            },
+            "type": {
+              "type": "string",
+              "const": "export_memory_items"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/ListMemoryCandidatesRequest"
+            },
+            "type": {
+              "type": "string",
+              "const": "list_memory_candidates"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/ApproveMemoryCandidateRequest"
+            },
+            "type": {
+              "type": "string",
+              "const": "approve_memory_candidate"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/RejectMemoryCandidateRequest"
+            },
+            "type": {
+              "type": "string",
+              "const": "reject_memory_candidate"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/MergeMemoryCandidateRequest"
+            },
+            "type": {
+              "type": "string",
+              "const": "merge_memory_candidate"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/ListMemoryRecallTracesRequest"
+            },
+            "type": {
+              "type": "string",
+              "const": "list_memory_recall_traces"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/GetMemoryRecallTraceRequest"
+            },
+            "type": {
+              "type": "string",
+              "const": "get_memory_recall_trace"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/GetModelRequestPreviewRequest"
+            },
+            "type": {
+              "type": "string",
+              "const": "get_model_request_preview"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/GetMemorySettingsRequest"
+            },
+            "type": {
+              "type": "string",
+              "const": "get_memory_settings"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/UpdateMemorySettingsRequest"
+            },
+            "type": {
+              "type": "string",
+              "const": "update_memory_settings"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/GetThreadMemorySettingsRequest"
+            },
+            "type": {
+              "type": "string",
+              "const": "get_thread_memory_settings"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/UpdateThreadMemorySettingsRequest"
+            },
+            "type": {
+              "type": "string",
+              "const": "update_thread_memory_settings"
+            },
+            "workspaceRoot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "request"
           ]
         },
         {
@@ -992,6 +1355,169 @@
         "not_found"
       ]
     },
+    "ContentHash": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "uint8",
+        "maximum": 255,
+        "minimum": 0
+      },
+      "maxItems": 32,
+      "minItems": 32
+    },
+    "DaemonMemoryItem": {
+      "type": "object",
+      "properties": {
+        "accessCount": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "confidence": {
+          "type": "number",
+          "format": "float"
+        },
+        "content": {
+          "type": "string"
+        },
+        "contentHash": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "expiresAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "lastAccessedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "providerId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "visibility": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "visibility",
+        "content",
+        "contentHash",
+        "source",
+        "tags",
+        "confidence",
+        "accessCount",
+        "deleted",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DaemonMemoryItemSummary": {
+      "type": "object",
+      "properties": {
+        "contentHash": {
+          "type": "string"
+        },
+        "contentPreview": {
+          "type": "string"
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "expiresAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "lastAccessedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "providerId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "visibility": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "visibility",
+        "contentPreview",
+        "contentHash",
+        "source",
+        "tags",
+        "deleted",
+        "updatedAt"
+      ]
+    },
     "DaemonPermissionKind": {
       "type": "string",
       "enum": [
@@ -1066,6 +1592,162 @@
         "recovery"
       ]
     },
+    "ExportMemoryItemsRequest": {
+      "type": "object",
+      "properties": {
+        "explicitUserAction": {
+          "type": "boolean"
+        },
+        "format": {
+          "type": "string"
+        },
+        "includeHashes": {
+          "type": "boolean"
+        },
+        "includeMetadata": {
+          "type": "boolean"
+        },
+        "includeRawContent": {
+          "type": "boolean"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "sessionId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "format",
+        "includeRawContent",
+        "includeMetadata",
+        "includeHashes",
+        "explicitUserAction"
+      ]
+    },
+    "GetMemoryRecallTraceRequest": {
+      "type": "object",
+      "properties": {
+        "tenant_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "trace_id": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "trace_id"
+      ]
+    },
+    "GetMemoryRecallTraceResponse": {
+      "type": "object",
+      "properties": {
+        "trace": {
+          "$ref": "#/$defs/MemoryRecallTrace"
+        }
+      },
+      "required": [
+        "trace"
+      ]
+    },
+    "GetMemorySettingsRequest": {
+      "type": "object",
+      "properties": {
+        "tenant_id": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "required": [
+        "tenant_id"
+      ]
+    },
+    "GetMemorySettingsResponse": {
+      "type": "object",
+      "properties": {
+        "settings": {
+          "$ref": "#/$defs/MemoryGlobalSettings"
+        }
+      },
+      "required": [
+        "settings"
+      ]
+    },
+    "GetModelRequestPreviewRequest": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "session_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "trace_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "tenant_id",
+        "session_id",
+        "run_id"
+      ]
+    },
+    "GetModelRequestPreviewResponse": {
+      "type": "object",
+      "properties": {
+        "preview": {
+          "$ref": "#/$defs/MemoryModelRequestPreview"
+        }
+      },
+      "required": [
+        "preview"
+      ]
+    },
+    "GetThreadMemorySettingsRequest": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "session_id"
+      ]
+    },
+    "GetThreadMemorySettingsResponse": {
+      "type": "object",
+      "properties": {
+        "settings": {
+          "$ref": "#/$defs/MemoryThreadSettings"
+        }
+      },
+      "required": [
+        "settings"
+      ]
+    },
     "IndeterminateToolDecision": {
       "type": "object",
       "properties": {
@@ -1089,6 +1771,132 @@
         "execute_again"
       ]
     },
+    "ListMemoryCandidatesRequest": {
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemoryCandidateState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "limit"
+      ]
+    },
+    "ListMemoryCandidatesResponse": {
+      "type": "object",
+      "properties": {
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MemoryCandidateListItem"
+          }
+        },
+        "next_cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "candidates"
+      ]
+    },
+    "ListMemoryRecallTracesRequest": {
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "limit"
+      ]
+    },
+    "ListMemoryRecallTracesResponse": {
+      "type": "object",
+      "properties": {
+        "next_cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "traces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MemoryRecallTraceSummary"
+          }
+        }
+      },
+      "required": [
+        "traces"
+      ]
+    },
     "LocalIsolationTag": {
       "type": "string",
       "enum": [
@@ -1096,6 +1904,663 @@
         "bubblewrap",
         "seatbelt",
         "job_object"
+      ]
+    },
+    "MemoryCandidate": {
+      "type": "object",
+      "properties": {
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidence": {
+          "$ref": "#/$defs/MemoryEvidence"
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "operation": {
+          "$ref": "#/$defs/MemoryCandidateOperation",
+          "default": "create"
+        },
+        "proposed_record": {
+          "$ref": "#/$defs/MemoryRecordDraft"
+        },
+        "state": {
+          "$ref": "#/$defs/MemoryCandidateState"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "tenant_id",
+        "state",
+        "proposed_record",
+        "evidence",
+        "created_at",
+        "updated_at"
+      ]
+    },
+    "MemoryCandidateListItem": {
+      "type": "object",
+      "properties": {
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidence": {
+          "$ref": "#/$defs/MemoryEvidence"
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "operation": {
+          "$ref": "#/$defs/MemoryCandidateOperation",
+          "default": "create"
+        },
+        "proposed_record": {
+          "$ref": "#/$defs/MemoryRecordDraft"
+        },
+        "state": {
+          "$ref": "#/$defs/MemoryCandidateState"
+        }
+      },
+      "required": [
+        "id",
+        "state",
+        "proposed_record",
+        "evidence",
+        "created_at"
+      ]
+    },
+    "MemoryCandidateOperation": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "create"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "update": {
+              "type": "object",
+              "properties": {
+                "memory_id": {
+                  "$ref": "#/$defs/TypedUlid"
+                }
+              },
+              "required": [
+                "memory_id"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "update"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "delete": {
+              "type": "object",
+              "properties": {
+                "memory_id": {
+                  "$ref": "#/$defs/TypedUlid"
+                }
+              },
+              "required": [
+                "memory_id"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "delete"
+          ]
+        }
+      ]
+    },
+    "MemoryCandidateState": {
+      "type": "string",
+      "enum": [
+        "proposed",
+        "approved",
+        "rejected",
+        "promoted",
+        "merged",
+        "expired"
+      ]
+    },
+    "MemoryCandidateTrace": {
+      "type": "object",
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ContentHash"
+        },
+        "memory_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "policy_decision": {
+          "$ref": "#/$defs/MemoryPolicyDecision"
+        },
+        "provider_id": {
+          "type": "string"
+        },
+        "score": {
+          "$ref": "#/$defs/MemoryScoreBreakdown"
+        }
+      },
+      "required": [
+        "memory_id",
+        "provider_id",
+        "content_hash",
+        "score",
+        "policy_decision"
+      ]
+    },
+    "MemoryDropReason": {
+      "type": "string",
+      "enum": [
+        "expired",
+        "deleted",
+        "visibility_denied",
+        "policy_denied",
+        "threat_blocked",
+        "budget_exceeded",
+        "duplicate",
+        "provider_timeout",
+        "provider_error",
+        "score_below_threshold"
+      ]
+    },
+    "MemoryDroppedTrace": {
+      "type": "object",
+      "properties": {
+        "content_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContentHash"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memory_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/MemoryDropReason"
+        }
+      },
+      "required": [
+        "reason"
+      ]
+    },
+    "MemoryEvidence": {
+      "type": "object",
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ContentHash"
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "origin": {
+          "$ref": "#/$defs/MemoryEvidenceOrigin"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/MemorySource"
+        },
+        "tool_use_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "source",
+        "origin",
+        "content_hash"
+      ]
+    },
+    "MemoryEvidenceOrigin": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "user_message": {
+              "type": "object",
+              "properties": {
+                "message_id": {
+                  "$ref": "#/$defs/TypedUlid"
+                },
+                "run_id": {
+                  "$ref": "#/$defs/TypedUlid"
+                },
+                "session_id": {
+                  "$ref": "#/$defs/TypedUlid"
+                }
+              },
+              "required": [
+                "session_id",
+                "run_id",
+                "message_id"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "user_message"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "assistant_message": {
+              "type": "object",
+              "properties": {
+                "message_id": {
+                  "$ref": "#/$defs/TypedUlid"
+                },
+                "run_id": {
+                  "$ref": "#/$defs/TypedUlid"
+                },
+                "session_id": {
+                  "$ref": "#/$defs/TypedUlid"
+                }
+              },
+              "required": [
+                "session_id",
+                "run_id",
+                "message_id"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "assistant_message"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "subagent_output": {
+              "type": "object",
+              "properties": {
+                "agent_id": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TypedUlid"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "child_session_id": {
+                  "$ref": "#/$defs/TypedUlid"
+                },
+                "parent_session_id": {
+                  "$ref": "#/$defs/TypedUlid"
+                },
+                "run_id": {
+                  "$ref": "#/$defs/TypedUlid"
+                }
+              },
+              "required": [
+                "parent_session_id",
+                "child_session_id",
+                "run_id"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "subagent_output"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "builtin_tool_output": {
+              "type": "object",
+              "properties": {
+                "tool_name": {
+                  "type": "string"
+                },
+                "tool_use_id": {
+                  "$ref": "#/$defs/TypedUlid"
+                }
+              },
+              "required": [
+                "tool_name",
+                "tool_use_id"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "builtin_tool_output"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "mcp_tool_output": {
+              "type": "object",
+              "properties": {
+                "server_id": {
+                  "type": "string"
+                },
+                "tool_name": {
+                  "type": "string"
+                },
+                "tool_use_id": {
+                  "$ref": "#/$defs/TypedUlid"
+                }
+              },
+              "required": [
+                "server_id",
+                "tool_name",
+                "tool_use_id"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mcp_tool_output"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "plugin_output": {
+              "type": "object",
+              "properties": {
+                "plugin_id": {
+                  "type": "string"
+                },
+                "tool_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "tool_use_id": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TypedUlid"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "plugin_id"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "plugin_output"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "web_retrieval": {
+              "type": "object",
+              "properties": {
+                "fetch_tool_use_id": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TypedUlid"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "url_hash": {
+                  "$ref": "#/$defs/ContentHash"
+                }
+              },
+              "required": [
+                "url_hash"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "web_retrieval"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "workspace_file": {
+              "type": "object",
+              "properties": {
+                "path_hash": {
+                  "$ref": "#/$defs/ContentHash"
+                },
+                "snapshot_id": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TypedUlid"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "workspace_id": {
+                  "$ref": "#/$defs/TypedUlid"
+                }
+              },
+              "required": [
+                "workspace_id",
+                "path_hash"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "workspace_file"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "imported": {
+              "type": "object",
+              "properties": {
+                "import_id": {
+                  "type": "string"
+                },
+                "importer": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "importer",
+                "import_id"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "imported"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "consolidated": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/TypedUlid"
+                  }
+                }
+              },
+              "required": [
+                "from"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "consolidated"
+          ]
+        }
+      ]
+    },
+    "MemoryGlobalSettings": {
+      "type": "object",
+      "properties": {
+        "disable_generation_when_external_context_used": {
+          "type": "boolean"
+        },
+        "generate_memories": {
+          "type": "boolean"
+        },
+        "max_memory_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_recall_chars_per_turn": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_recall_records_per_turn": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "retention_days": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "use_memories": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "use_memories",
+        "generate_memories",
+        "disable_generation_when_external_context_used",
+        "max_memory_bytes",
+        "max_recall_records_per_turn",
+        "max_recall_chars_per_turn"
+      ]
+    },
+    "MemoryInjectedTrace": {
+      "type": "object",
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ContentHash"
+        },
+        "fence_id": {
+          "type": "string"
+        },
+        "injected_chars": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "memory_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "provider_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "memory_id",
+        "provider_id",
+        "content_hash",
+        "injected_chars",
+        "fence_id"
       ]
     },
     "MemoryKind": {
@@ -1150,22 +2615,359 @@
         }
       }
     },
-    "MemoryRecord": {
+    "MemoryModelRequestPreview": {
+      "type": "object",
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/ContentHash"
+        },
+        "policy_decisions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "redacted_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "run_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MemoryModelRequestPreviewSection"
+          }
+        },
+        "session_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "token_estimate": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "tool_names": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "trace_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "run_id",
+        "sections",
+        "redacted_count",
+        "token_estimate",
+        "content_hash"
+      ]
+    },
+    "MemoryModelRequestPreviewSection": {
+      "type": "object",
+      "properties": {
+        "memory_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TypedUlid"
+          }
+        },
+        "provider_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "redacted_content": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/MemorySource"
+        }
+      },
+      "required": [
+        "source",
+        "memory_ids",
+        "redacted_content"
+      ]
+    },
+    "MemoryPolicyDecision": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "allow"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "deny": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "$ref": "#/$defs/MemoryPolicyDenyReason"
+                }
+              },
+              "required": [
+                "reason"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "deny"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "candidate_only": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "$ref": "#/$defs/MemoryPolicyDenyReason"
+                }
+              },
+              "required": [
+                "reason"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "candidate_only"
+          ]
+        }
+      ]
+    },
+    "MemoryPolicyDenyReason": {
+      "type": "string",
+      "enum": [
+        "global_use_disabled",
+        "thread_use_disabled",
+        "global_generation_disabled",
+        "thread_generation_disabled",
+        "external_context_generation_disabled",
+        "missing_policy",
+        "visibility_escalation_denied",
+        "provider_not_writable",
+        "tenant_mismatch",
+        "tombstone_matched",
+        "permission_required",
+        "threat_blocked"
+      ]
+    },
+    "MemoryProviderTrace": {
+      "type": "object",
+      "properties": {
+        "error_kind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "latency_ms": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "provider_id": {
+          "type": "string"
+        },
+        "readable": {
+          "type": "boolean"
+        },
+        "requested_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "returned_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "timed_out": {
+          "type": "boolean"
+        },
+        "trust_level": {
+          "$ref": "#/$defs/MemoryProviderTrust"
+        },
+        "writable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "provider_id",
+        "trust_level",
+        "readable",
+        "writable",
+        "requested_count",
+        "returned_count",
+        "timed_out",
+        "latency_ms"
+      ]
+    },
+    "MemoryProviderTrust": {
+      "type": "string",
+      "enum": [
+        "built_in",
+        "workspace",
+        "team",
+        "plugin",
+        "external"
+      ]
+    },
+    "MemoryRecallTrace": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MemoryCandidateTrace"
+          }
+        },
+        "deadline_used_ms": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "dropped": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MemoryDroppedTrace"
+          }
+        },
+        "injected": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MemoryInjectedTrace"
+          }
+        },
+        "injected_chars": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "provider_results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MemoryProviderTrace"
+          }
+        },
+        "query_text_hash": {
+          "$ref": "#/$defs/ContentHash"
+        },
+        "redacted_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "run_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "session_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "trace_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "turn": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "trace_id",
+        "tenant_id",
+        "session_id",
+        "run_id",
+        "turn",
+        "query_text_hash",
+        "provider_results",
+        "candidates",
+        "injected",
+        "dropped",
+        "redacted_count",
+        "injected_chars",
+        "deadline_used_ms",
+        "at"
+      ]
+    },
+    "MemoryRecallTraceSummary": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "dropped_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "injected_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "redacted_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "run_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "session_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "trace_id": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "required": [
+        "trace_id",
+        "tenant_id",
+        "session_id",
+        "run_id",
+        "injected_count",
+        "dropped_count",
+        "redacted_count",
+        "at"
+      ]
+    },
+    "MemoryRecordDraft": {
       "type": "object",
       "properties": {
         "content": {
           "type": "string"
-        },
-        "created_at": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "deleted_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
         },
         "expires_at": {
           "type": [
@@ -1174,35 +2976,167 @@
           ],
           "format": "date-time"
         },
-        "id": {
-          "$ref": "#/$defs/TypedUlid"
-        },
         "kind": {
           "$ref": "#/$defs/MemoryKind"
         },
         "metadata": {
           "$ref": "#/$defs/MemoryMetadata"
         },
-        "tenant_id": {
-          "$ref": "#/$defs/TypedUlid"
-        },
-        "updated_at": {
-          "type": "string",
-          "format": "date-time"
-        },
         "visibility": {
           "$ref": "#/$defs/MemoryVisibility"
         }
       },
       "required": [
-        "id",
-        "tenant_id",
         "kind",
         "visibility",
         "content",
-        "metadata",
-        "created_at",
-        "updated_at"
+        "metadata"
+      ]
+    },
+    "MemoryScoreBreakdown": {
+      "type": "object",
+      "properties": {
+        "access_score": {
+          "type": "number",
+          "format": "float"
+        },
+        "confidence_score": {
+          "type": "number",
+          "format": "float"
+        },
+        "explicit_selection_boost": {
+          "type": "number",
+          "format": "float"
+        },
+        "final_score": {
+          "type": "number",
+          "format": "float"
+        },
+        "lexical_score": {
+          "type": "number",
+          "format": "float"
+        },
+        "recency_score": {
+          "type": "number",
+          "format": "float"
+        },
+        "source_trust_score": {
+          "type": "number",
+          "format": "float"
+        },
+        "vector_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        }
+      },
+      "required": [
+        "lexical_score",
+        "confidence_score",
+        "recency_score",
+        "access_score",
+        "source_trust_score",
+        "explicit_selection_boost",
+        "final_score"
+      ]
+    },
+    "MemorySource": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "user_input",
+            "agent_derived",
+            "tool_output",
+            "mcp_tool_output",
+            "plugin_output",
+            "web_retrieval",
+            "workspace_file",
+            "external_retrieval",
+            "imported"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "subagent_derived": {
+              "type": "object",
+              "properties": {
+                "child_session": {
+                  "$ref": "#/$defs/TypedUlid"
+                }
+              },
+              "required": [
+                "child_session"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "subagent_derived"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "consolidated": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/TypedUlid"
+                  }
+                }
+              },
+              "required": [
+                "from"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "consolidated"
+          ]
+        }
+      ]
+    },
+    "MemoryThreadMode": {
+      "type": "string",
+      "enum": [
+        "off",
+        "read_only",
+        "read_write",
+        "candidate_only"
+      ]
+    },
+    "MemoryThreadSettings": {
+      "type": "object",
+      "properties": {
+        "generate_memories": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "memory_mode": {
+          "$ref": "#/$defs/MemoryThreadMode"
+        },
+        "session_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "use_memories": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "memory_mode"
       ]
     },
     "MemoryVisibility": {
@@ -1273,6 +3207,60 @@
             "team"
           ]
         }
+      ]
+    },
+    "MergeMemoryCandidateRequest": {
+      "type": "object",
+      "properties": {
+        "action_plan_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidate_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TypedUlid"
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/MemoryEvidence"
+        },
+        "merged_record": {
+          "$ref": "#/$defs/MemoryRecordDraft"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "candidate_ids",
+        "merged_record",
+        "evidence"
+      ]
+    },
+    "MergeMemoryCandidateResponse": {
+      "type": "object",
+      "properties": {
+        "candidate_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TypedUlid"
+          }
+        },
+        "memory_id": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "required": [
+        "candidate_ids",
+        "memory_id"
       ]
     },
     "MissedRunPolicy": {
@@ -1482,6 +3470,36 @@
         "promoting",
         "consumed",
         "deleted"
+      ]
+    },
+    "RejectMemoryCandidateRequest": {
+      "type": "object",
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "candidate_id",
+        "reason"
+      ]
+    },
+    "RejectMemoryCandidateResponse": {
+      "type": "object",
+      "properties": {
+        "candidate": {
+          "$ref": "#/$defs/MemoryCandidate"
+        }
+      },
+      "required": [
+        "candidate"
       ]
     },
     "RunProjection": {
@@ -1939,7 +3957,7 @@
             "items": {
               "type": "array",
               "items": {
-                "$ref": "#/$defs/MemoryRecord"
+                "$ref": "#/$defs/DaemonMemoryItemSummary"
               }
             },
             "type": {
@@ -1957,14 +3975,7 @@
           "type": "object",
           "properties": {
             "item": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/MemoryRecord"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/$defs/DaemonMemoryItem"
             },
             "type": {
               "type": "string",
@@ -1973,7 +3984,25 @@
           },
           "additionalProperties": false,
           "required": [
-            "type"
+            "type",
+            "item"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "item": {
+              "$ref": "#/$defs/DaemonMemoryItem"
+            },
+            "type": {
+              "type": "string",
+              "const": "memory_updated"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "item"
           ]
         },
         {
@@ -1991,6 +4020,263 @@
           "required": [
             "type",
             "memoryId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "auditHash": {
+              "type": "string"
+            },
+            "exportedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "format": {
+              "type": "string"
+            },
+            "includeHashes": {
+              "type": "boolean"
+            },
+            "includeMetadata": {
+              "type": "boolean"
+            },
+            "includeRawContent": {
+              "type": "boolean"
+            },
+            "itemCount": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "path": {
+              "type": "string"
+            },
+            "scope": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "memory_exported"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "exportedAt",
+            "format",
+            "scope",
+            "includeRawContent",
+            "includeMetadata",
+            "includeHashes",
+            "itemCount",
+            "path",
+            "auditHash"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "candidates": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/MemoryCandidateListItem"
+              }
+            },
+            "next_cursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "memory_candidates"
+            }
+          },
+          "required": [
+            "candidates",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "candidate": {
+              "$ref": "#/$defs/MemoryCandidate"
+            },
+            "memory_id": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "memory_candidate_approved"
+            }
+          },
+          "required": [
+            "candidate",
+            "memory_id",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "candidate": {
+              "$ref": "#/$defs/MemoryCandidate"
+            },
+            "type": {
+              "type": "string",
+              "const": "memory_candidate_rejected"
+            }
+          },
+          "required": [
+            "candidate",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "candidate_ids": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TypedUlid"
+              }
+            },
+            "memory_id": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "memory_candidates_merged"
+            }
+          },
+          "required": [
+            "candidate_ids",
+            "memory_id",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "next_cursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "traces": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/MemoryRecallTraceSummary"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "memory_recall_traces"
+            }
+          },
+          "required": [
+            "traces",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "trace": {
+              "$ref": "#/$defs/MemoryRecallTrace"
+            },
+            "type": {
+              "type": "string",
+              "const": "memory_recall_trace"
+            }
+          },
+          "required": [
+            "trace",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "preview": {
+              "$ref": "#/$defs/MemoryModelRequestPreview"
+            },
+            "type": {
+              "type": "string",
+              "const": "model_request_preview"
+            }
+          },
+          "required": [
+            "preview",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "settings": {
+              "$ref": "#/$defs/MemoryGlobalSettings"
+            },
+            "type": {
+              "type": "string",
+              "const": "memory_settings"
+            }
+          },
+          "required": [
+            "settings",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "settings": {
+              "$ref": "#/$defs/MemoryGlobalSettings"
+            },
+            "type": {
+              "type": "string",
+              "const": "memory_settings_updated"
+            }
+          },
+          "required": [
+            "settings",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "settings": {
+              "$ref": "#/$defs/MemoryThreadSettings"
+            },
+            "type": {
+              "type": "string",
+              "const": "thread_memory_settings"
+            }
+          },
+          "required": [
+            "settings",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "settings": {
+              "$ref": "#/$defs/MemoryThreadSettings"
+            },
+            "type": {
+              "type": "string",
+              "const": "thread_memory_settings_updated"
+            }
+          },
+          "required": [
+            "settings",
+            "type"
           ]
         },
         {
@@ -2686,6 +4972,58 @@
     "TypedUlid": {
       "type": "string",
       "format": "ulid"
+    },
+    "UpdateMemorySettingsRequest": {
+      "type": "object",
+      "properties": {
+        "settings": {
+          "$ref": "#/$defs/MemoryGlobalSettings"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "settings"
+      ]
+    },
+    "UpdateMemorySettingsResponse": {
+      "type": "object",
+      "properties": {
+        "settings": {
+          "$ref": "#/$defs/MemoryGlobalSettings"
+        }
+      },
+      "required": [
+        "settings"
+      ]
+    },
+    "UpdateThreadMemorySettingsRequest": {
+      "type": "object",
+      "properties": {
+        "settings": {
+          "$ref": "#/$defs/MemoryThreadSettings"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "settings"
+      ]
+    },
+    "UpdateThreadMemorySettingsResponse": {
+      "type": "object",
+      "properties": {
+        "settings": {
+          "$ref": "#/$defs/MemoryThreadSettings"
+        }
+      },
+      "required": [
+        "settings"
+      ]
     },
     "WorkspaceAccess": {
       "oneOf": [

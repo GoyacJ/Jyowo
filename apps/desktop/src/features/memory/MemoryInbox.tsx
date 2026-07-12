@@ -3,59 +3,60 @@ import { Check, GitMerge, X } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import {
-  approveMemoryCandidate,
-  DEFAULT_MEMORY_TENANT_ID,
-  listMemoryCandidates,
-  mergeMemoryCandidate,
-  rejectMemoryCandidate,
-} from '@/shared/tauri/commands'
-import { useCommandClient } from '@/shared/tauri/react'
+import { useDaemonClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card'
 import { Checkbox } from '@/shared/ui/checkbox'
 import { EmptyState } from '@/shared/ui/empty-state'
 import { Section } from '@/shared/ui/section'
 
+import { DEFAULT_MEMORY_TENANT_ID } from './memory-types'
+
 const inboxQueryKeys = {
-  all: ['memory-inbox'] as const,
+  all: (workspaceRoot: string | undefined) => ['memory-inbox', workspaceRoot ?? null] as const,
 }
 
-export function MemoryInbox() {
+export function MemoryInbox({ workspaceRoot }: { workspaceRoot?: string }) {
   const { t } = useTranslation('memory')
-  const commandClient = useCommandClient()
+  const daemonClient = useDaemonClient()
   const queryClient = useQueryClient()
   const [message, setMessage] = useState<string | null>(null)
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([])
 
   const inboxQuery = useQuery({
-    queryKey: inboxQueryKeys.all,
+    queryKey: inboxQueryKeys.all(workspaceRoot),
     queryFn: () =>
-      listMemoryCandidates({ limit: 50, tenantId: DEFAULT_MEMORY_TENANT_ID }, commandClient),
+      daemonClient.listMemoryCandidates(workspaceRoot, {
+        limit: 50,
+        tenant_id: DEFAULT_MEMORY_TENANT_ID,
+      }),
   })
 
   const approveMutation = useMutation({
     mutationFn: (candidateId: string) =>
-      approveMemoryCandidate({ candidateId, tenantId: DEFAULT_MEMORY_TENANT_ID }, commandClient),
+      daemonClient.approveMemoryCandidate(workspaceRoot, {
+        candidate_id: candidateId,
+        tenant_id: DEFAULT_MEMORY_TENANT_ID,
+      }),
     onSuccess: () => {
       setMessage(t('candidateApproved'))
-      queryClient.invalidateQueries({ queryKey: inboxQueryKeys.all })
+      queryClient.invalidateQueries({ queryKey: inboxQueryKeys.all(workspaceRoot) })
     },
   })
 
   const rejectMutation = useMutation({
     mutationFn: (candidateId: string) =>
-      rejectMemoryCandidate(
+      daemonClient.rejectMemoryCandidate(
+        workspaceRoot,
         {
-          candidateId,
+          candidate_id: candidateId,
           reason: 'rejected by user',
-          tenantId: DEFAULT_MEMORY_TENANT_ID,
+          tenant_id: DEFAULT_MEMORY_TENANT_ID,
         },
-        commandClient,
       ),
     onSuccess: () => {
       setMessage(t('candidateRejected'))
-      queryClient.invalidateQueries({ queryKey: inboxQueryKeys.all })
+      queryClient.invalidateQueries({ queryKey: inboxQueryKeys.all(workspaceRoot) })
     },
   })
 
@@ -68,11 +69,12 @@ export function MemoryInbox() {
       if (!firstCandidate || selectedCandidates.length < 2) {
         throw new Error('Select at least two candidates.')
       }
-      return mergeMemoryCandidate(
+      return daemonClient.mergeMemoryCandidate(
+        workspaceRoot,
         {
-          candidateIds: selectedCandidates.map((candidate) => candidate.id),
+          candidate_ids: selectedCandidates.map((candidate) => candidate.id),
           evidence: firstCandidate.evidence,
-          mergedRecord: {
+          merged_record: {
             content: selectedCandidates
               .map((candidate) => candidate.proposed_record.content.trim())
               .filter(Boolean)
@@ -84,7 +86,7 @@ export function MemoryInbox() {
               tags: Array.from(
                 new Set(
                   selectedCandidates.flatMap(
-                    (candidate) => candidate.proposed_record.metadata.tags,
+                    (candidate) => candidate.proposed_record.metadata.tags ?? [],
                   ),
                 ),
               ),
@@ -92,15 +94,14 @@ export function MemoryInbox() {
             },
             visibility: firstCandidate.proposed_record.visibility,
           },
-          tenantId: DEFAULT_MEMORY_TENANT_ID,
+          tenant_id: DEFAULT_MEMORY_TENANT_ID,
         },
-        commandClient,
       )
     },
     onSuccess: () => {
       setMessage(t('candidateMerged'))
       setSelectedCandidateIds([])
-      queryClient.invalidateQueries({ queryKey: inboxQueryKeys.all })
+      queryClient.invalidateQueries({ queryKey: inboxQueryKeys.all(workspaceRoot) })
     },
   })
 

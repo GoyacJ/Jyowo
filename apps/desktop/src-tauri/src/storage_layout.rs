@@ -283,12 +283,6 @@ impl StorageLayout {
         }
     }
 
-    pub fn runtime_memory_file_for(&self, scope: &RuntimeScope) -> PathBuf {
-        self.runtime_root_for(scope)
-            .join("memory")
-            .join("memory.sqlite3")
-    }
-
     pub fn runtime_events_dir_for(&self, scope: &RuntimeScope) -> PathBuf {
         self.runtime_root_for(scope).join("events")
     }
@@ -593,14 +587,6 @@ mod tests {
         assert_eq!(
             layout.runtime_permission_decisions_file_for(&global_scope),
             Path::new("/home/alice/.jyowo/runtime/global-conversations/permission-decisions.json")
-        );
-        assert_eq!(
-            layout.runtime_memory_file_for(&project_scope),
-            Path::new("/workspaces/jyowo/.jyowo/runtime/memory/memory.sqlite3")
-        );
-        assert_eq!(
-            layout.runtime_memory_file_for(&global_scope),
-            Path::new("/home/alice/.jyowo/runtime/global-conversations/memory/memory.sqlite3")
         );
         assert_eq!(
             layout.runtime_agent_worktrees_dir_for(&global_scope),

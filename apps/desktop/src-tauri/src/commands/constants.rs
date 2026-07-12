@@ -13,7 +13,6 @@ use super::evals::*;
 #[allow(unused_imports)]
 use super::mcp::*;
 #[allow(unused_imports)]
-use super::memory::*;
 #[allow(unused_imports)]
 use super::plugins::*;
 #[allow(unused_imports)]
@@ -29,7 +28,6 @@ use super::validation::*;
 use super::*;
 
 pub(crate) const WORKSPACE_ROOT_ENV: &str = "JYOWO_WORKSPACE_ROOT";
-pub(crate) const MAX_MEMORY_CONTENT_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_ARTIFACT_PREVIEW_BYTES: usize = 16 * 1024;
 pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 5 * 1024 * 1024;
 pub(crate) const MAX_ATTACHMENT_PREVIEW_DECODED_BYTES: u64 = 64 * 1024 * 1024;

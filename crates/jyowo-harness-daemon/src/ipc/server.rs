@@ -18,7 +18,8 @@ use tokio::task::JoinHandle;
 
 use super::IpcError;
 use crate::{
-    PermissionDecisionInput, QueueCommand, Supervisor, TaskMetadataMutation, ValidatedTaskCommand,
+    MemoryService, MemoryServiceError, PermissionDecisionInput, QueueCommand, Supervisor,
+    TaskMetadataMutation, ValidatedTaskCommand,
 };
 
 #[derive(Debug, Clone)]
@@ -34,6 +35,7 @@ pub struct IpcConnection {
     store: Arc<TaskStore>,
     config: IpcServerConfig,
     supervisor: Option<Arc<Supervisor>>,
+    memory_service: Option<Arc<MemoryService>>,
     client_id: Option<ClientId>,
     subscription_offset: Option<u64>,
 }
@@ -45,6 +47,7 @@ impl IpcConnection {
             store,
             config,
             supervisor: None,
+            memory_service: None,
             client_id: None,
             subscription_offset: None,
         }
@@ -60,15 +63,33 @@ impl IpcConnection {
             store,
             config,
             supervisor: Some(supervisor),
+            memory_service: None,
             client_id: None,
             subscription_offset: None,
         }
     }
 
+    #[must_use]
+    pub fn with_memory_service(mut self, memory_service: Arc<MemoryService>) -> Self {
+        self.memory_service = Some(memory_service);
+        self
+    }
+
     pub async fn handle_async(&mut self, frame: ClientFrame) -> Result<Vec<ServerFrame>, IpcError> {
         let request_id = frame.request_id.clone();
         let request = frame.request.clone();
+        let valid_runtime_frame =
+            valid_request_id(&frame.request_id) && frame.protocol_version == PROTOCOL_VERSION;
         let response = self.handle(frame)?;
+        if is_memory_request(&request) && valid_runtime_frame && self.client_id.is_some() {
+            if let Some(memory_service) = self.memory_service.as_ref() {
+                let message = match memory_service.handle(request).await {
+                    Ok(message) => message,
+                    Err(error) => memory_service_error(error),
+                };
+                return Ok(vec![server_frame(Some(request_id), message)]);
+            }
+        }
         if !requires_task_supervisor(&request) || !is_supervisor_required_response(&response) {
             return Ok(response);
         }
@@ -341,7 +362,20 @@ impl IpcConnection {
             ClientRequest::ListRuntimeTools { .. }
             | ClientRequest::ListMemoryItems { .. }
             | ClientRequest::GetMemoryItem { .. }
+            | ClientRequest::UpdateMemoryItem { .. }
             | ClientRequest::DeleteMemoryItem { .. }
+            | ClientRequest::ExportMemoryItems { .. }
+            | ClientRequest::ListMemoryCandidates { .. }
+            | ClientRequest::ApproveMemoryCandidate { .. }
+            | ClientRequest::RejectMemoryCandidate { .. }
+            | ClientRequest::MergeMemoryCandidate { .. }
+            | ClientRequest::ListMemoryRecallTraces { .. }
+            | ClientRequest::GetMemoryRecallTrace { .. }
+            | ClientRequest::GetModelRequestPreview { .. }
+            | ClientRequest::GetMemorySettings { .. }
+            | ClientRequest::UpdateMemorySettings { .. }
+            | ClientRequest::GetThreadMemorySettings { .. }
+            | ClientRequest::UpdateThreadMemorySettings { .. }
             | ClientRequest::ListAutomations { .. }
             | ClientRequest::SaveAutomation { .. }
             | ClientRequest::SetAutomationEnabled { .. }
@@ -388,6 +422,42 @@ impl IpcConnection {
             gap,
             events,
         })
+    }
+}
+
+fn is_memory_request(request: &ClientRequest) -> bool {
+    matches!(
+        request,
+        ClientRequest::ListMemoryItems { .. }
+            | ClientRequest::GetMemoryItem { .. }
+            | ClientRequest::UpdateMemoryItem { .. }
+            | ClientRequest::DeleteMemoryItem { .. }
+            | ClientRequest::ExportMemoryItems { .. }
+            | ClientRequest::ListMemoryCandidates { .. }
+            | ClientRequest::ApproveMemoryCandidate { .. }
+            | ClientRequest::RejectMemoryCandidate { .. }
+            | ClientRequest::MergeMemoryCandidate { .. }
+            | ClientRequest::ListMemoryRecallTraces { .. }
+            | ClientRequest::GetMemoryRecallTrace { .. }
+            | ClientRequest::GetModelRequestPreview { .. }
+            | ClientRequest::GetMemorySettings { .. }
+            | ClientRequest::UpdateMemorySettings { .. }
+            | ClientRequest::GetThreadMemorySettings { .. }
+            | ClientRequest::UpdateThreadMemorySettings { .. }
+    )
+}
+
+fn memory_service_error(error: MemoryServiceError) -> ServerMessage {
+    match error {
+        MemoryServiceError::NotFound(_)
+        | MemoryServiceError::Memory(harness_contracts::MemoryError::NotFound(_)) => {
+            protocol_error(ProtocolErrorCode::NotFound, "memory item not found")
+        }
+        MemoryServiceError::Invalid(message) => ServerMessage::Error(ProtocolError {
+            code: ProtocolErrorCode::InvalidFrame,
+            message,
+        }),
+        _ => protocol_error(ProtocolErrorCode::Internal, "memory operation failed"),
     }
 }
 

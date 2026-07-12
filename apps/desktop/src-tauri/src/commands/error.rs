@@ -13,7 +13,6 @@ use super::evals::*;
 #[allow(unused_imports)]
 use super::mcp::*;
 #[allow(unused_imports)]
-use super::memory::*;
 #[allow(unused_imports)]
 use super::plugins::*;
 #[allow(unused_imports)]
@@ -68,22 +67,4 @@ pub(crate) fn not_found(message: String) -> CommandErrorPayload {
         code: "NOT_FOUND",
         message,
     }
-}
-
-pub(crate) fn memory_operation_failed(message: &'static str) -> CommandErrorPayload {
-    CommandErrorPayload {
-        code: "RUNTIME_OPERATION_FAILED",
-        message: message.to_owned(),
-    }
-}
-
-pub(crate) fn memory_export_error(error: impl std::fmt::Display) -> CommandErrorPayload {
-    let message = error.to_string();
-    if message.contains("memory export requires explicit user action")
-        || message.contains("memory export scope must be visible")
-        || message.contains("memory export format must be json")
-    {
-        return invalid_payload(message);
-    }
-    memory_operation_failed("Memory export could not be prepared.")
 }

@@ -24,7 +24,6 @@ use harness_contracts::{
     UiSafeText, UserMessageAppendedEvent, WorkspaceAccess,
 };
 use harness_journal::ReplayCursor;
-use harness_memory::{MemoryListScope, MemoryProviderDescriptor, MemoryQuery};
 use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
 use harness_tool::BuiltinToolset;
 use image::codecs::{gif::GifEncoder, jpeg::JpegEncoder, webp::WebPEncoder};
@@ -36,19 +35,16 @@ use jyowo_harness_sdk::ext::{
     BlobRetention, BlobStore, BudgetMetric, Decision, DecisionScope, DeferPolicy, DeltaChunk,
     Event, EventStore, FallbackPolicy, InteractivityLevel, McpConnection, McpError, McpRegistry,
     McpServerId, McpServerScope, McpServerSource, McpServerSpec, McpToolDescriptor, McpToolResult,
-    MemoryId, MemoryKind, MemoryLifecycle, MemoryMetadata, MemoryProvider, MemoryRecord,
-    MemorySource, MemoryStore, MemorySummary, MemoryVisibility, Message, MessagePart, MessageRole,
-    ModelError, OverflowAction, PermissionCheck, PermissionContext, PermissionMode,
-    PermissionRequest, PermissionSubject, ProviderCredentialResolveContext, ProviderRestriction,
-    RequestId, ResultBudget, RuleSnapshot, RunId, SessionId, Severity, StreamBrokerConfig,
-    TenantId, ThinkingDelta, Tool, ToolCapability, ToolContext, ToolDescriptor, ToolError,
-    ToolEvent, ToolGroup, ToolProfile, ToolProperties, ToolRegistry, ToolResult, ToolStream,
-    ToolUseId, TransportChoice, TrustLevel, UsageSnapshot, ValidationError,
+    Message, MessagePart, MessageRole, ModelError, OverflowAction, PermissionCheck,
+    PermissionContext, PermissionMode, PermissionRequest, PermissionSubject,
+    ProviderCredentialResolveContext, ProviderRestriction, RequestId, ResultBudget, RuleSnapshot,
+    RunId, SessionId, Severity, StreamBrokerConfig, TenantId, ThinkingDelta, Tool, ToolCapability,
+    ToolContext, ToolDescriptor, ToolError, ToolEvent, ToolGroup, ToolProfile, ToolProperties,
+    ToolRegistry, ToolResult, ToolStream, ToolUseId, TransportChoice, TrustLevel, UsageSnapshot,
+    ValidationError,
 };
 use jyowo_harness_sdk::ext::{ContentDelta, ModelStreamEvent};
-use jyowo_harness_sdk::testing::{
-    InMemoryEventStore, InMemoryMemoryProvider, NoopSandbox, TestModelProvider,
-};
+use jyowo_harness_sdk::testing::{InMemoryEventStore, NoopSandbox, TestModelProvider};
 use jyowo_harness_sdk::{
     ConversationEventsPageRequest, DesktopSettingsRuntime, HarnessOptions, McpConfig,
     StreamPermissionRuntime,
@@ -78,8 +74,6 @@ mod automations;
 mod execution_settings;
 #[path = "commands/mcp.rs"]
 mod mcp;
-#[path = "commands/memory.rs"]
-mod memory;
 #[path = "commands/official_quota.rs"]
 mod official_quota;
 #[path = "commands/provider_credential_routes.rs"]

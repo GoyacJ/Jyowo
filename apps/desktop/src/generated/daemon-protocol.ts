@@ -135,8 +135,76 @@ export type ClientRequest =
       workspaceRoot?: string | null
     }
   | {
+      actionPlanId?: TypedUlid | null
+      content: string
+      memoryId: TypedUlid
+      type: 'update_memory_item'
+      workspaceRoot?: string | null
+    }
+  | {
+      actionPlanId?: TypedUlid | null
       memoryId: TypedUlid
       type: 'delete_memory_item'
+      workspaceRoot?: string | null
+    }
+  | {
+      request: ExportMemoryItemsRequest
+      type: 'export_memory_items'
+      workspaceRoot?: string | null
+    }
+  | {
+      request: ListMemoryCandidatesRequest
+      type: 'list_memory_candidates'
+      workspaceRoot?: string | null
+    }
+  | {
+      request: ApproveMemoryCandidateRequest
+      type: 'approve_memory_candidate'
+      workspaceRoot?: string | null
+    }
+  | {
+      request: RejectMemoryCandidateRequest
+      type: 'reject_memory_candidate'
+      workspaceRoot?: string | null
+    }
+  | {
+      request: MergeMemoryCandidateRequest
+      type: 'merge_memory_candidate'
+      workspaceRoot?: string | null
+    }
+  | {
+      request: ListMemoryRecallTracesRequest
+      type: 'list_memory_recall_traces'
+      workspaceRoot?: string | null
+    }
+  | {
+      request: GetMemoryRecallTraceRequest
+      type: 'get_memory_recall_trace'
+      workspaceRoot?: string | null
+    }
+  | {
+      request: GetModelRequestPreviewRequest
+      type: 'get_model_request_preview'
+      workspaceRoot?: string | null
+    }
+  | {
+      request: GetMemorySettingsRequest
+      type: 'get_memory_settings'
+      workspaceRoot?: string | null
+    }
+  | {
+      request: UpdateMemorySettingsRequest
+      type: 'update_memory_settings'
+      workspaceRoot?: string | null
+    }
+  | {
+      request: GetThreadMemorySettingsRequest
+      type: 'get_thread_memory_settings'
+      workspaceRoot?: string | null
+    }
+  | {
+      request: UpdateThreadMemorySettingsRequest
+      type: 'update_thread_memory_settings'
       workspaceRoot?: string | null
     }
   | {
@@ -204,6 +272,190 @@ export type StopMode = 'safe_point' | 'force'
  * via the `definition` "IndeterminateToolResolution".
  */
 export type IndeterminateToolResolution = 'treat_as_failed' | 'execute_again'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryCandidateState".
+ */
+export type MemoryCandidateState =
+  | 'proposed'
+  | 'approved'
+  | 'rejected'
+  | 'promoted'
+  | 'merged'
+  | 'expired'
+/**
+ * @minItems 32
+ * @maxItems 32
+ *
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "ContentHash".
+ */
+export type ContentHash = [
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+]
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryEvidenceOrigin".
+ */
+export type MemoryEvidenceOrigin =
+  | {
+      user_message: {
+        message_id: TypedUlid
+        run_id: TypedUlid
+        session_id: TypedUlid
+      }
+    }
+  | {
+      assistant_message: {
+        message_id: TypedUlid
+        run_id: TypedUlid
+        session_id: TypedUlid
+      }
+    }
+  | {
+      subagent_output: {
+        agent_id?: TypedUlid | null
+        child_session_id: TypedUlid
+        parent_session_id: TypedUlid
+        run_id: TypedUlid
+      }
+    }
+  | {
+      builtin_tool_output: {
+        tool_name: string
+        tool_use_id: TypedUlid
+      }
+    }
+  | {
+      mcp_tool_output: {
+        server_id: string
+        tool_name: string
+        tool_use_id: TypedUlid
+      }
+    }
+  | {
+      plugin_output: {
+        plugin_id: string
+        tool_name?: string | null
+        tool_use_id?: TypedUlid | null
+      }
+    }
+  | {
+      web_retrieval: {
+        fetch_tool_use_id?: TypedUlid | null
+        url_hash: ContentHash
+      }
+    }
+  | {
+      workspace_file: {
+        path_hash: ContentHash
+        snapshot_id?: TypedUlid | null
+        workspace_id: TypedUlid
+      }
+    }
+  | {
+      imported: {
+        import_id: string
+        importer: string
+      }
+    }
+  | {
+      consolidated: {
+        from: TypedUlid[]
+      }
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemorySource".
+ */
+export type MemorySource =
+  | (
+      | 'user_input'
+      | 'agent_derived'
+      | 'tool_output'
+      | 'mcp_tool_output'
+      | 'plugin_output'
+      | 'web_retrieval'
+      | 'workspace_file'
+      | 'external_retrieval'
+      | 'imported'
+    )
+  | {
+      subagent_derived: {
+        child_session: TypedUlid
+      }
+    }
+  | {
+      consolidated: {
+        from: TypedUlid[]
+      }
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryKind".
+ */
+export type MemoryKind =
+  | ('user_preference' | 'feedback' | 'project_fact' | 'reference' | 'agent_self_note')
+  | {
+      custom: string
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryVisibility".
+ */
+export type MemoryVisibility =
+  | 'tenant'
+  | {
+      private: {
+        session_id: TypedUlid
+      }
+    }
+  | {
+      user: {
+        user_id: string
+      }
+    }
+  | {
+      team: {
+        team_id: TypedUlid
+      }
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryThreadMode".
+ */
+export type MemoryThreadMode = 'off' | 'read_only' | 'read_write' | 'candidate_only'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "PermissionMode".
@@ -340,16 +592,80 @@ export type ServerMessage =
       type: 'runtime_tools'
     }
   | {
-      items: MemoryRecord[]
+      items: DaemonMemoryItemSummary[]
       type: 'memory_items'
     }
   | {
-      item?: MemoryRecord | null
+      item: DaemonMemoryItem
       type: 'memory_item'
+    }
+  | {
+      item: DaemonMemoryItem
+      type: 'memory_updated'
     }
   | {
       memoryId: TypedUlid
       type: 'memory_deleted'
+    }
+  | {
+      auditHash: string
+      exportedAt: string
+      format: string
+      includeHashes: boolean
+      includeMetadata: boolean
+      includeRawContent: boolean
+      itemCount: number
+      path: string
+      scope: string
+      type: 'memory_exported'
+    }
+  | {
+      candidates: MemoryCandidateListItem[]
+      next_cursor?: string | null
+      type: 'memory_candidates'
+    }
+  | {
+      candidate: MemoryCandidate
+      memory_id: TypedUlid
+      type: 'memory_candidate_approved'
+    }
+  | {
+      candidate: MemoryCandidate
+      type: 'memory_candidate_rejected'
+    }
+  | {
+      candidate_ids: TypedUlid[]
+      memory_id: TypedUlid
+      type: 'memory_candidates_merged'
+    }
+  | {
+      next_cursor?: string | null
+      traces: MemoryRecallTraceSummary[]
+      type: 'memory_recall_traces'
+    }
+  | {
+      trace: MemoryRecallTrace
+      type: 'memory_recall_trace'
+    }
+  | {
+      preview: MemoryModelRequestPreview
+      type: 'model_request_preview'
+    }
+  | {
+      settings: MemoryGlobalSettings
+      type: 'memory_settings'
+    }
+  | {
+      settings: MemoryGlobalSettings
+      type: 'memory_settings_updated'
+    }
+  | {
+      settings: MemoryThreadSettings
+      type: 'thread_memory_settings'
+    }
+  | {
+      settings: MemoryThreadSettings
+      type: 'thread_memory_settings_updated'
     }
   | {
       automations: AutomationSpec[]
@@ -537,34 +853,57 @@ export type EventSourceKind =
   | 'recovery'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "MemoryKind".
+ * via the `definition` "MemoryPolicyDecision".
  */
-export type MemoryKind =
-  | ('user_preference' | 'feedback' | 'project_fact' | 'reference' | 'agent_self_note')
+export type MemoryPolicyDecision =
+  | 'allow'
   | {
-      custom: string
+      deny: {
+        reason: MemoryPolicyDenyReason
+      }
+    }
+  | {
+      candidate_only: {
+        reason: MemoryPolicyDenyReason
+      }
     }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "MemoryVisibility".
+ * via the `definition` "MemoryPolicyDenyReason".
  */
-export type MemoryVisibility =
-  | 'tenant'
-  | {
-      private: {
-        session_id: TypedUlid
-      }
-    }
-  | {
-      user: {
-        user_id: string
-      }
-    }
-  | {
-      team: {
-        team_id: TypedUlid
-      }
-    }
+export type MemoryPolicyDenyReason =
+  | 'global_use_disabled'
+  | 'thread_use_disabled'
+  | 'global_generation_disabled'
+  | 'thread_generation_disabled'
+  | 'external_context_generation_disabled'
+  | 'missing_policy'
+  | 'visibility_escalation_denied'
+  | 'provider_not_writable'
+  | 'tenant_mismatch'
+  | 'tombstone_matched'
+  | 'permission_required'
+  | 'threat_blocked'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryDropReason".
+ */
+export type MemoryDropReason =
+  | 'expired'
+  | 'deleted'
+  | 'visibility_denied'
+  | 'policy_denied'
+  | 'threat_blocked'
+  | 'budget_exceeded'
+  | 'duplicate'
+  | 'provider_timeout'
+  | 'provider_error'
+  | 'score_below_threshold'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryProviderTrust".
+ */
+export type MemoryProviderTrust = 'built_in' | 'workspace' | 'team' | 'plugin' | 'external'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "AutomationRunStatus".
@@ -586,6 +925,22 @@ export type ProtocolErrorCode =
  * via the `definition` "ChildAttachment".
  */
 export type ChildAttachment = 'attached' | 'detached'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryCandidateOperation".
+ */
+export type MemoryCandidateOperation =
+  | 'create'
+  | {
+      update: {
+        memory_id: TypedUlid
+      }
+    }
+  | {
+      delete: {
+        memory_id: TypedUlid
+      }
+    }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "MissedRunPolicy".
@@ -629,6 +984,183 @@ export interface WorkspaceSelection {
 export interface IndeterminateToolDecision {
   resolution: IndeterminateToolResolution
   toolUseId: string
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "ExportMemoryItemsRequest".
+ */
+export interface ExportMemoryItemsRequest {
+  explicitUserAction: boolean
+  format: string
+  includeHashes: boolean
+  includeMetadata: boolean
+  includeRawContent: boolean
+  scope: string
+  sessionId?: TypedUlid | null
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "ListMemoryCandidatesRequest".
+ */
+export interface ListMemoryCandidatesRequest {
+  cursor?: string | null
+  limit: number
+  session_id?: TypedUlid | null
+  state?: MemoryCandidateState | null
+  tenant_id: TypedUlid
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "ApproveMemoryCandidateRequest".
+ */
+export interface ApproveMemoryCandidateRequest {
+  action_plan_id?: TypedUlid | null
+  candidate_id: TypedUlid
+  tenant_id: TypedUlid
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "RejectMemoryCandidateRequest".
+ */
+export interface RejectMemoryCandidateRequest {
+  candidate_id: TypedUlid
+  reason: string
+  tenant_id: TypedUlid
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MergeMemoryCandidateRequest".
+ */
+export interface MergeMemoryCandidateRequest {
+  action_plan_id?: TypedUlid | null
+  candidate_ids: TypedUlid[]
+  evidence: MemoryEvidence
+  merged_record: MemoryRecordDraft
+  tenant_id: TypedUlid
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryEvidence".
+ */
+export interface MemoryEvidence {
+  content_hash: ContentHash
+  message_id?: TypedUlid | null
+  origin: MemoryEvidenceOrigin
+  run_id?: TypedUlid | null
+  session_id?: TypedUlid | null
+  source: MemorySource
+  tool_use_id?: TypedUlid | null
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryRecordDraft".
+ */
+export interface MemoryRecordDraft {
+  content: string
+  expires_at?: string | null
+  kind: MemoryKind
+  metadata: MemoryMetadata
+  visibility: MemoryVisibility
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryMetadata".
+ */
+export interface MemoryMetadata {
+  source_trust?: number
+  tags?: string[]
+  ttl?: Duration | null
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "Duration".
+ */
+export interface Duration {
+  nanos: number
+  secs: number
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "ListMemoryRecallTracesRequest".
+ */
+export interface ListMemoryRecallTracesRequest {
+  cursor?: string | null
+  limit: number
+  run_id?: TypedUlid | null
+  session_id?: TypedUlid | null
+  tenant_id: TypedUlid
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "GetMemoryRecallTraceRequest".
+ */
+export interface GetMemoryRecallTraceRequest {
+  tenant_id: TypedUlid
+  trace_id: TypedUlid
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "GetModelRequestPreviewRequest".
+ */
+export interface GetModelRequestPreviewRequest {
+  run_id: TypedUlid
+  session_id: TypedUlid
+  tenant_id: TypedUlid
+  trace_id?: TypedUlid | null
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "GetMemorySettingsRequest".
+ */
+export interface GetMemorySettingsRequest {
+  tenant_id: TypedUlid
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "UpdateMemorySettingsRequest".
+ */
+export interface UpdateMemorySettingsRequest {
+  settings: MemoryGlobalSettings
+  tenant_id: TypedUlid
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryGlobalSettings".
+ */
+export interface MemoryGlobalSettings {
+  disable_generation_when_external_context_used: boolean
+  generate_memories: boolean
+  max_memory_bytes: number
+  max_recall_chars_per_turn: number
+  max_recall_records_per_turn: number
+  retention_days?: number | null
+  use_memories: boolean
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "GetThreadMemorySettingsRequest".
+ */
+export interface GetThreadMemorySettingsRequest {
+  session_id: TypedUlid
+  tenant_id: TypedUlid
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "UpdateThreadMemorySettingsRequest".
+ */
+export interface UpdateThreadMemorySettingsRequest {
+  settings: MemoryThreadSettings
+  tenant_id: TypedUlid
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryThreadSettings".
+ */
+export interface MemoryThreadSettings {
+  generate_memories?: boolean | null
+  memory_mode: MemoryThreadMode
+  session_id: TypedUlid
+  use_memories?: boolean | null
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
@@ -855,36 +1387,212 @@ export interface RuntimeToolServiceBindingSummary {
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "MemoryRecord".
+ * via the `definition` "DaemonMemoryItemSummary".
  */
-export interface MemoryRecord {
+export interface DaemonMemoryItemSummary {
+  contentHash: string
+  contentPreview: string
+  deleted: boolean
+  expiresAt?: string | null
+  id: TypedUlid
+  kind: string
+  lastAccessedAt?: string | null
+  providerId?: string | null
+  source: string
+  tags: string[]
+  updatedAt: string
+  visibility: string
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "DaemonMemoryItem".
+ */
+export interface DaemonMemoryItem {
+  accessCount: number
+  confidence: number
   content: string
+  contentHash: string
+  createdAt: string
+  deleted: boolean
+  expiresAt?: string | null
+  id: TypedUlid
+  kind: string
+  lastAccessedAt?: string | null
+  providerId?: string | null
+  source: string
+  tags: string[]
+  updatedAt: string
+  visibility: string
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryCandidateListItem".
+ */
+export interface MemoryCandidateListItem {
   created_at: string
-  deleted_at?: string | null
+  evidence: MemoryEvidence
   expires_at?: string | null
   id: TypedUlid
-  kind: MemoryKind
-  metadata: MemoryMetadata
+  operation?:
+    | 'create'
+    | {
+        update: {
+          memory_id: TypedUlid
+        }
+      }
+    | {
+        delete: {
+          memory_id: TypedUlid
+        }
+      }
+  proposed_record: MemoryRecordDraft
+  state: MemoryCandidateState
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryCandidate".
+ */
+export interface MemoryCandidate {
+  created_at: string
+  evidence: MemoryEvidence
+  expires_at?: string | null
+  id: TypedUlid
+  operation?:
+    | 'create'
+    | {
+        update: {
+          memory_id: TypedUlid
+        }
+      }
+    | {
+        delete: {
+          memory_id: TypedUlid
+        }
+      }
+  proposed_record: MemoryRecordDraft
+  state: MemoryCandidateState
   tenant_id: TypedUlid
   updated_at: string
-  visibility: MemoryVisibility
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "MemoryMetadata".
+ * via the `definition` "MemoryRecallTraceSummary".
  */
-export interface MemoryMetadata {
-  source_trust?: number
-  tags?: string[]
-  ttl?: Duration | null
+export interface MemoryRecallTraceSummary {
+  at: string
+  dropped_count: number
+  injected_count: number
+  redacted_count: number
+  run_id: TypedUlid
+  session_id: TypedUlid
+  tenant_id: TypedUlid
+  trace_id: TypedUlid
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "Duration".
+ * via the `definition` "MemoryRecallTrace".
  */
-export interface Duration {
-  nanos: number
-  secs: number
+export interface MemoryRecallTrace {
+  at: string
+  candidates: MemoryCandidateTrace[]
+  deadline_used_ms: number
+  dropped: MemoryDroppedTrace[]
+  injected: MemoryInjectedTrace[]
+  injected_chars: number
+  provider_results: MemoryProviderTrace[]
+  query_text_hash: ContentHash
+  redacted_count: number
+  run_id: TypedUlid
+  session_id: TypedUlid
+  tenant_id: TypedUlid
+  trace_id: TypedUlid
+  turn: number
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryCandidateTrace".
+ */
+export interface MemoryCandidateTrace {
+  content_hash: ContentHash
+  memory_id: TypedUlid
+  policy_decision: MemoryPolicyDecision
+  provider_id: string
+  score: MemoryScoreBreakdown
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryScoreBreakdown".
+ */
+export interface MemoryScoreBreakdown {
+  access_score: number
+  confidence_score: number
+  explicit_selection_boost: number
+  final_score: number
+  lexical_score: number
+  recency_score: number
+  source_trust_score: number
+  vector_score?: number | null
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryDroppedTrace".
+ */
+export interface MemoryDroppedTrace {
+  content_hash?: ContentHash | null
+  memory_id?: TypedUlid | null
+  provider_id?: string | null
+  reason: MemoryDropReason
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryInjectedTrace".
+ */
+export interface MemoryInjectedTrace {
+  content_hash: ContentHash
+  fence_id: string
+  injected_chars: number
+  memory_id: TypedUlid
+  provider_id: string
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryProviderTrace".
+ */
+export interface MemoryProviderTrace {
+  error_kind?: string | null
+  latency_ms: number
+  provider_id: string
+  readable: boolean
+  requested_count: number
+  returned_count: number
+  timed_out: boolean
+  trust_level: MemoryProviderTrust
+  writable: boolean
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryModelRequestPreview".
+ */
+export interface MemoryModelRequestPreview {
+  content_hash: ContentHash
+  policy_decisions?: string[]
+  redacted_count: number
+  run_id: TypedUlid
+  sections: MemoryModelRequestPreviewSection[]
+  session_id: TypedUlid
+  token_estimate: number
+  tool_names?: string[]
+  trace_id?: TypedUlid | null
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MemoryModelRequestPreviewSection".
+ */
+export interface MemoryModelRequestPreviewSection {
+  memory_ids: TypedUlid[]
+  provider_id?: string | null
+  redacted_content: string
+  source: MemorySource
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
@@ -898,4 +1606,85 @@ export interface AutomationRunRecord {
   runId?: string | null
   startedAt: string
   status: AutomationRunStatus
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "ApproveMemoryCandidateResponse".
+ */
+export interface ApproveMemoryCandidateResponse {
+  candidate: MemoryCandidate
+  memory_id: TypedUlid
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "GetMemoryRecallTraceResponse".
+ */
+export interface GetMemoryRecallTraceResponse {
+  trace: MemoryRecallTrace
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "GetMemorySettingsResponse".
+ */
+export interface GetMemorySettingsResponse {
+  settings: MemoryGlobalSettings
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "GetModelRequestPreviewResponse".
+ */
+export interface GetModelRequestPreviewResponse {
+  preview: MemoryModelRequestPreview
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "GetThreadMemorySettingsResponse".
+ */
+export interface GetThreadMemorySettingsResponse {
+  settings: MemoryThreadSettings
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "ListMemoryCandidatesResponse".
+ */
+export interface ListMemoryCandidatesResponse {
+  candidates: MemoryCandidateListItem[]
+  next_cursor?: string | null
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "ListMemoryRecallTracesResponse".
+ */
+export interface ListMemoryRecallTracesResponse {
+  next_cursor?: string | null
+  traces: MemoryRecallTraceSummary[]
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "MergeMemoryCandidateResponse".
+ */
+export interface MergeMemoryCandidateResponse {
+  candidate_ids: TypedUlid[]
+  memory_id: TypedUlid
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "RejectMemoryCandidateResponse".
+ */
+export interface RejectMemoryCandidateResponse {
+  candidate: MemoryCandidate
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "UpdateMemorySettingsResponse".
+ */
+export interface UpdateMemorySettingsResponse {
+  settings: MemoryGlobalSettings
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "UpdateThreadMemorySettingsResponse".
+ */
+export interface UpdateThreadMemorySettingsResponse {
+  settings: MemoryThreadSettings
 }

@@ -1,41 +1,43 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import type { MemoryRecallTrace } from '@/generated/daemon-protocol'
 import { formatTime } from '@/shared/formatters'
-import {
-  DEFAULT_MEMORY_TENANT_ID,
-  getMemoryRecallTrace,
-  listMemoryRecallTraces,
-} from '@/shared/tauri/commands'
-import { useCommandClient } from '@/shared/tauri/react'
+import { useDaemonClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card'
 import { EmptyState } from '@/shared/ui/empty-state'
 import { Section } from '@/shared/ui/section'
 
+import { DEFAULT_MEMORY_TENANT_ID } from './memory-types'
+
 const traceQueryKeys = {
-  all: ['memory-traces'] as const,
-  detail: (traceId: string | null) => ['memory-traces', 'detail', traceId] as const,
+  all: (workspaceRoot: string | undefined) => ['memory-traces', workspaceRoot ?? null] as const,
+  detail: (workspaceRoot: string | undefined, traceId: string | null) =>
+    ['memory-traces', workspaceRoot ?? null, 'detail', traceId] as const,
 }
 
-export function MemoryRecallTracePanel() {
+export function MemoryRecallTracePanel({ workspaceRoot }: { workspaceRoot?: string }) {
   const { t } = useTranslation('memory')
-  const commandClient = useCommandClient()
+  const daemonClient = useDaemonClient()
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
 
   const tracesQuery = useQuery({
-    queryKey: traceQueryKeys.all,
+    queryKey: traceQueryKeys.all(workspaceRoot),
     queryFn: () =>
-      listMemoryRecallTraces({ limit: 30, tenantId: DEFAULT_MEMORY_TENANT_ID }, commandClient),
+      daemonClient.listMemoryRecallTraces(workspaceRoot, {
+        limit: 30,
+        tenant_id: DEFAULT_MEMORY_TENANT_ID,
+      }),
   })
   const traceDetailQuery = useQuery({
     enabled: selectedTraceId !== null,
-    queryKey: traceQueryKeys.detail(selectedTraceId),
+    queryKey: traceQueryKeys.detail(workspaceRoot, selectedTraceId),
     queryFn: () =>
-      getMemoryRecallTrace(
-        { tenantId: DEFAULT_MEMORY_TENANT_ID, traceId: selectedTraceId ?? '' },
-        commandClient,
-      ),
+      daemonClient.getMemoryRecallTrace(workspaceRoot, {
+        tenant_id: DEFAULT_MEMORY_TENANT_ID,
+        trace_id: selectedTraceId ?? '',
+      }),
   })
 
   if (tracesQuery.isLoading) {
@@ -101,7 +103,7 @@ function TraceDetail({
 }: {
   error: boolean
   loading: boolean
-  trace: NonNullable<Awaited<ReturnType<typeof getMemoryRecallTrace>>['trace']> | undefined
+  trace: MemoryRecallTrace | undefined
 }) {
   const { t } = useTranslation('memory')
 

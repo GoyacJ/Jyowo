@@ -6,6 +6,7 @@ import { MemoryBrowser } from '@/features/memory/MemoryBrowser'
 import { MemoryInbox } from '@/features/memory/MemoryInbox'
 import { MemoryRecallTracePanel } from '@/features/memory/MemoryRecallTracePanel'
 import { MemorySettings } from '@/features/memory/MemorySettings'
+import { useActiveProjectPath } from '@/features/workspace/use-active-project-path'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 
 type MemoryTab = 'items' | 'inbox' | 'traces' | 'settings'
@@ -16,6 +17,11 @@ function MemoryPage() {
   const requestedTab = useRouterState({
     select: (state) => state.location.search.tab,
   })
+  const requestedWorkspaceRoot = useRouterState({
+    select: (state) => state.location.search.workspaceRoot,
+  })
+  const activeProjectPathQuery = useActiveProjectPath({ enabled: !requestedWorkspaceRoot })
+  const workspaceRoot = requestedWorkspaceRoot ?? activeProjectPathQuery.data ?? undefined
   const [tab, setTab] = useState<MemoryTab>(isMemoryTab(requestedTab) ? requestedTab : 'items')
 
   const tabs: { id: MemoryTab; label: string }[] = [
@@ -33,7 +39,15 @@ function MemoryPage() {
 
   function selectTab(nextTab: MemoryTab) {
     setTab(nextTab)
-    void navigate({ search: { tab: nextTab }, to: '/memory' })
+    void navigate({ search: { tab: nextTab, workspaceRoot }, to: '/memory' })
+  }
+
+  if (!requestedWorkspaceRoot && activeProjectPathQuery.isLoading) {
+    return <div className="text-muted-foreground text-sm">{t('loading')}</div>
+  }
+
+  if (!requestedWorkspaceRoot && activeProjectPathQuery.isError) {
+    return <div className="text-destructive text-sm">{t('errorLoading')}</div>
   }
 
   return (
@@ -56,16 +70,16 @@ function MemoryPage() {
             ))}
           </TabsList>
           <TabsContent className="space-y-5 pt-3" value="items">
-            <MemoryBrowser />
+            <MemoryBrowser workspaceRoot={workspaceRoot} />
           </TabsContent>
           <TabsContent className="space-y-5 pt-3" value="inbox">
-            <MemoryInbox />
+            <MemoryInbox workspaceRoot={workspaceRoot} />
           </TabsContent>
           <TabsContent className="space-y-5 pt-3" value="traces">
-            <MemoryRecallTracePanel />
+            <MemoryRecallTracePanel workspaceRoot={workspaceRoot} />
           </TabsContent>
           <TabsContent className="space-y-5 pt-3" value="settings">
-            <MemorySettings />
+            <MemorySettings workspaceRoot={workspaceRoot} />
           </TabsContent>
         </Tabs>
       </div>

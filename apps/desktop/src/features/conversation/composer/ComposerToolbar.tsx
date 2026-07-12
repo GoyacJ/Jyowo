@@ -2,8 +2,9 @@ import { Check, ChevronDown, Database, Paperclip, Shield } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import type { MemoryThreadMode } from '@/generated/daemon-protocol'
 import { cn } from '@/shared/lib/utils'
-import type { ContextReference, MemoryThreadMode, PermissionMode } from '@/shared/tauri/commands'
+import type { ContextReference, PermissionMode } from '@/shared/tauri/commands'
 import {
   DropdownMenu,
   DropdownMenuContent,

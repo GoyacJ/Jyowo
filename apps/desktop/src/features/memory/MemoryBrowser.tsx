@@ -3,15 +3,7 @@ import { Download, Save, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import {
-  type DeleteMemoryItemRequest,
-  exportMemoryItems,
-  getMemoryItem,
-  listMemoryItems,
-  type UpdateMemoryItemRequest,
-  updateMemoryItem,
-} from '@/shared/tauri/commands'
-import { useCommandClient } from '@/shared/tauri/react'
+import { useDaemonClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
 import { Card, CardContent } from '@/shared/ui/card'
 import { EmptyState } from '@/shared/ui/empty-state'
@@ -20,16 +12,19 @@ import { Section, SectionDescription, SectionHeader, SectionTitle } from '@/shar
 import { Textarea } from '@/shared/ui/textarea'
 
 import { MemoryItemCard } from './MemoryItemCard'
+import type { DeleteMemoryItemRequest, UpdateMemoryItemRequest } from './memory-types'
 
 const memoryQueryKeys = {
   all: ['memory'] as const,
-  detail: (id: string | null) => [...memoryQueryKeys.all, 'detail', id] as const,
-  list: () => [...memoryQueryKeys.all, 'list'] as const,
+  detail: (workspaceRoot: string | undefined, id: string | null) =>
+    [...memoryQueryKeys.all, workspaceRoot ?? null, 'detail', id] as const,
+  list: (workspaceRoot: string | undefined) =>
+    [...memoryQueryKeys.all, workspaceRoot ?? null, 'list'] as const,
 }
 
-export function MemoryBrowser() {
+export function MemoryBrowser({ workspaceRoot }: { workspaceRoot?: string }) {
   const { t } = useTranslation('memory')
-  const commandClient = useCommandClient()
+  const daemonClient = useDaemonClient()
   const queryClient = useQueryClient()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [draftContent, setDraftContent] = useState('')
@@ -37,27 +32,31 @@ export function MemoryBrowser() {
   const [exportMessage, setExportMessage] = useState<string | null>(null)
 
   const memoryItemsQuery = useQuery({
-    queryKey: memoryQueryKeys.list(),
-    queryFn: () => listMemoryItems(commandClient),
+    queryKey: memoryQueryKeys.list(workspaceRoot),
+    queryFn: () => daemonClient.listMemoryItems(workspaceRoot),
   })
   const detailQuery = useQuery({
     enabled: selectedId !== null,
-    queryKey: memoryQueryKeys.detail(selectedId),
-    queryFn: () => getMemoryItem(selectedId ?? '', commandClient),
+    queryKey: memoryQueryKeys.detail(workspaceRoot, selectedId),
+    queryFn: () => daemonClient.getMemoryItem(workspaceRoot, selectedId ?? ''),
   })
   const updateMutation = useMutation({
-    mutationFn: (request: UpdateMemoryItemRequest) => updateMemoryItem(request, commandClient),
+    mutationFn: (request: UpdateMemoryItemRequest) =>
+      daemonClient.updateMemoryItem(workspaceRoot, request),
     onSuccess: async (response) => {
       setDraftContent(response.item.content)
-      await queryClient.invalidateQueries({ queryKey: memoryQueryKeys.list() })
-      await queryClient.invalidateQueries({ queryKey: memoryQueryKeys.detail(response.item.id) })
+      await queryClient.invalidateQueries({ queryKey: memoryQueryKeys.list(workspaceRoot) })
+      await queryClient.invalidateQueries({
+        queryKey: memoryQueryKeys.detail(workspaceRoot, response.item.id),
+      })
     },
   })
   const deleteMutation = useMutation({
-    mutationFn: (request: DeleteMemoryItemRequest) => commandClient.deleteMemoryItem(request),
+    mutationFn: (request: DeleteMemoryItemRequest) =>
+      daemonClient.deleteMemoryItem(workspaceRoot, request),
     onSuccess: async (response) => {
       setDeleteCandidateId(null)
-      if (selectedId === response.id) {
+      if (selectedId === response.memoryId) {
         setSelectedId(null)
         setDraftContent('')
       }
@@ -66,7 +65,8 @@ export function MemoryBrowser() {
   })
   const exportMutation = useMutation({
     mutationFn: () =>
-      exportMemoryItems(
+      daemonClient.exportMemoryItems(
+        workspaceRoot,
         {
           explicitUserAction: true,
           format: 'json',
@@ -75,7 +75,6 @@ export function MemoryBrowser() {
           includeRawContent: false,
           scope: 'visible',
         },
-        commandClient,
       ),
     onSuccess: (response) => {
       setExportMessage(t('exportSaved', { count: response.itemCount, path: response.path }))

@@ -1,7 +1,7 @@
 import { ChevronDown, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import type { GetModelRequestPreviewResponse } from '@/shared/tauri/commands'
+import type { GetModelRequestPreviewResponse } from '@/generated/daemon-protocol'
 
 import { ContextSection } from './ContextSection'
 import { type ContextFileReference, FileReferenceList } from './FileReferenceList'
@@ -258,9 +258,9 @@ function ModelRequestPreview({
           {t('previewTrace')}: {preview.trace_id ?? t('none')}
         </div>
       </div>
-      {preview.tool_names.length > 0 ? (
+      {(preview.tool_names?.length ?? 0) > 0 ? (
         <div className="flex flex-wrap gap-1.5">
-          {preview.tool_names.map((toolName) => (
+          {preview.tool_names?.map((toolName) => (
             <span
               className="rounded-md border border-border bg-background px-2 py-0.5 font-mono text-xs"
               key={toolName}
@@ -270,9 +270,9 @@ function ModelRequestPreview({
           ))}
         </div>
       ) : null}
-      {preview.policy_decisions.length > 0 ? (
+      {(preview.policy_decisions?.length ?? 0) > 0 ? (
         <div className="text-muted-foreground text-xs">
-          {t('previewPolicy')}: {preview.policy_decisions.join(', ')}
+          {t('previewPolicy')}: {preview.policy_decisions?.join(', ')}
         </div>
       ) : null}
       {preview.sections.length > 0 ? (

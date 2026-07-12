@@ -9,7 +9,6 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 import { createTestCommandClient } from '@/testing/command-client'
 import {
-  approveMemoryCandidate,
   archiveBackgroundAgent,
   cancelBackgroundAgent,
   cancelRun,
@@ -25,12 +24,10 @@ import {
   deleteBackgroundAgent,
   deleteConversation,
   deleteMcpServer,
-  deleteMemoryItem,
   deleteProject,
   deleteProjectConversation,
   deleteProviderCapabilityRoute,
   deleteSkill,
-  exportMemoryItems,
   exportSupportBundle,
   getAppInfo,
   getArtifactMediaPreview,
@@ -43,10 +40,6 @@ import {
   getExecutionSettings,
   getHarnessHealthcheck,
   getMcpServerConfig,
-  getMemoryItem,
-  getMemoryRecallTrace,
-  getMemorySettings,
-  getModelRequestPreview,
   getModelSettingsPage,
   getModelUsageSummary,
   getPluginDetail,
@@ -56,7 +49,6 @@ import {
   getSkillCatalogFile,
   getSkillDetail,
   getSkillFile,
-  getThreadMemorySettings,
   importSkill,
   installPluginFromPath,
   installSkillFromCatalog,
@@ -73,9 +65,6 @@ import {
   listenSkillCatalogInstallProgress,
   listMcpDiagnostics,
   listMcpServers,
-  listMemoryCandidates,
-  listMemoryItems,
-  listMemoryRecallTraces,
   listModelProviderCatalog,
   listOfficialQuotaSnapshots,
   listPlugins,
@@ -89,7 +78,6 @@ import {
   listSkillCatalogInstallTasks,
   listSkillCatalogSources,
   listSkills,
-  mergeMemoryCandidate,
   moveProject,
   parseAgentCapabilities,
   parseAgentProfile,
@@ -98,7 +86,6 @@ import {
   probeProviderConfig,
   refreshModelProviderCatalog,
   refreshOfficialQuota,
-  rejectMemoryCandidate,
   reloadPlugin,
   renameProject,
   requestProviderConfigApiKeyReveal,
@@ -127,10 +114,7 @@ import {
   type ToolProfile,
   uninstallPlugin,
   unsubscribeMcpDiagnostics,
-  updateMemoryItem,
-  updateMemorySettings,
   updatePluginConfig,
-  updateThreadMemorySettings,
   validatePluginFromPath,
   validateProviderSettings,
 } from './commands'
@@ -3566,483 +3550,6 @@ describe('CommandClient', () => {
       ),
     ).rejects.toThrow(TauriCommandPayloadError)
     await expect(deleteMcpServer('', client)).rejects.toThrow(TauriCommandPayloadError)
-    expect(invoke).not.toHaveBeenCalled()
-  })
-
-  it('models memory browser commands through parsed payloads without generic execution', async () => {
-    const invoke = vi.fn(async (command: string) => {
-      if (command === 'list_memory_items') {
-        return {
-          items: [
-            {
-              contentHash: '0'.repeat(64),
-              contentPreview: 'Prefers concise Chinese responses',
-              deleted: false,
-              id: '01HZ0000000000000000000001',
-              kind: 'user_preference',
-              lastAccessedAt: null,
-              providerId: 'local',
-              source: 'user_input',
-              tags: ['tone'],
-              updatedAt: '2026-06-17T00:00:00.000Z',
-              visibility: 'tenant',
-            },
-          ],
-        }
-      }
-
-      if (command === 'get_memory_item' || command === 'update_memory_item') {
-        return {
-          item: {
-            accessCount: 0,
-            confidence: 1,
-            content: 'Prefers concise Chinese responses',
-            contentHash: '0'.repeat(64),
-            createdAt: '2026-06-17T00:00:00.000Z',
-            deleted: false,
-            id: '01HZ0000000000000000000001',
-            kind: 'user_preference',
-            lastAccessedAt: null,
-            providerId: 'local',
-            source: 'user_input',
-            tags: ['tone'],
-            updatedAt: '2026-06-17T00:00:00.000Z',
-            visibility: 'tenant',
-          },
-        }
-      }
-
-      if (command === 'delete_memory_item') {
-        return {
-          id: '01HZ0000000000000000000001',
-          status: 'deleted',
-        }
-      }
-
-      return {
-        auditHash: '0'.repeat(64),
-        exportedAt: '2026-06-17T00:00:00.000Z',
-        format: 'json',
-        includeHashes: true,
-        includeMetadata: true,
-        includeRawContent: false,
-        itemCount: 1,
-        path: '.jyowo/runtime/exports/memory-20260617T000000.000Z.json',
-        scope: 'visible',
-      }
-    })
-    const client = createInvokeCommandClient(invoke)
-    const actionPlanId = '01HZ0000000000000000000008'
-
-    await expect(listMemoryItems(client)).resolves.toHaveProperty('items.0.visibility', 'tenant')
-    await expect(getMemoryItem('01HZ0000000000000000000001', client)).resolves.toHaveProperty(
-      'item.content',
-      'Prefers concise Chinese responses',
-    )
-    await expect(
-      updateMemoryItem(
-        {
-          actionPlanId,
-          content: '  Prefers terse Chinese responses\n',
-          id: '01HZ0000000000000000000001',
-        },
-        client,
-      ),
-    ).resolves.toHaveProperty('item.id', '01HZ0000000000000000000001')
-    await expect(
-      deleteMemoryItem({ actionPlanId, id: '01HZ0000000000000000000001' }, client),
-    ).resolves.toEqual({
-      id: '01HZ0000000000000000000001',
-      status: 'deleted',
-    })
-    const exportRequest = {
-      explicitUserAction: true,
-      format: 'json' as const,
-      includeHashes: true,
-      includeMetadata: true,
-      includeRawContent: false as const,
-      scope: 'visible' as const,
-    }
-    await expect(exportMemoryItems(exportRequest, client)).resolves.toEqual({
-      auditHash: '0'.repeat(64),
-      exportedAt: '2026-06-17T00:00:00.000Z',
-      format: 'json',
-      includeHashes: true,
-      includeMetadata: true,
-      includeRawContent: false,
-      itemCount: 1,
-      path: '.jyowo/runtime/exports/memory-20260617T000000.000Z.json',
-      scope: 'visible',
-    })
-
-    expect(invoke).toHaveBeenCalledWith('list_memory_items')
-    expect(invoke).toHaveBeenCalledWith('get_memory_item', {
-      id: '01HZ0000000000000000000001',
-    })
-    expect(invoke).toHaveBeenCalledWith('update_memory_item', {
-      actionPlanId,
-      content: '  Prefers terse Chinese responses\n',
-      id: '01HZ0000000000000000000001',
-    })
-    expect(invoke).toHaveBeenCalledWith('delete_memory_item', {
-      actionPlanId,
-      id: '01HZ0000000000000000000001',
-    })
-    expect(invoke).toHaveBeenCalledWith('export_memory_items', { request: exportRequest })
-    expect(invoke).not.toHaveBeenCalledWith('execute', expect.anything())
-  })
-
-  it('models memory platform settings and candidate commands through typed request payloads', async () => {
-    const tenantId = '00000000000000000000000001'
-    const candidateId = '01HZ0000000000000000000002'
-    const mergedCandidateId = '01HZ0000000000000000000007'
-    const memoryId = '01HZ0000000000000000000003'
-    const traceId = '01HZ0000000000000000000004'
-    const runId = '01HZ0000000000000000000005'
-    const sessionId = '01HZ0000000000000000000006'
-    const actionPlanId = '01HZ0000000000000000000008'
-    const contentHash = Array.from({ length: 32 }, (_, index) => index)
-    const candidate = {
-      created_at: '2026-06-17T00:00:00.000Z',
-      evidence: {
-        content_hash: Array.from({ length: 32 }, () => 1),
-        origin: {
-          imported: {
-            import_id: candidateId,
-            importer: 'test',
-          },
-        },
-        source: 'user_input' as const,
-      },
-      expires_at: null,
-      id: candidateId,
-      operation: 'create' as const,
-      proposed_record: {
-        content: 'Candidate memory entry',
-        expires_at: null,
-        kind: 'user_preference' as const,
-        metadata: { source_trust: 0.8, tags: ['tone'], ttl: null },
-        visibility: 'tenant' as const,
-      },
-      state: 'proposed' as const,
-      tenant_id: tenantId,
-      updated_at: '2026-06-17T00:00:00.000Z',
-    }
-    const candidateListItem = {
-      created_at: candidate.created_at,
-      evidence: candidate.evidence,
-      expires_at: candidate.expires_at,
-      id: candidate.id,
-      operation: candidate.operation,
-      proposed_record: candidate.proposed_record,
-      state: candidate.state,
-    }
-    const settings = {
-      disable_generation_when_external_context_used: false,
-      generate_memories: true,
-      max_memory_bytes: 1_000_000,
-      max_recall_chars_per_turn: 4_000,
-      max_recall_records_per_turn: 5,
-      retention_days: null,
-      use_memories: true,
-    }
-    const threadSettings = {
-      generate_memories: null,
-      memory_mode: 'read_write' as const,
-      session_id: sessionId,
-      use_memories: null,
-    } as const
-    const traceSummary = {
-      at: '2026-06-17T00:00:00.000Z',
-      dropped_count: 0,
-      injected_count: 1,
-      redacted_count: 1,
-      run_id: runId,
-      session_id: sessionId,
-      tenant_id: tenantId,
-      trace_id: traceId,
-    }
-    const trace = {
-      at: traceSummary.at,
-      candidates: [
-        {
-          content_hash: contentHash,
-          memory_id: memoryId,
-          policy_decision: 'allow',
-          provider_id: 'local',
-          score: {
-            access_score: 0,
-            confidence_score: 1,
-            explicit_selection_boost: 0,
-            final_score: 0.8,
-            lexical_score: 0.8,
-            recency_score: 1,
-            source_trust_score: 1,
-            vector_score: null,
-          },
-        },
-      ],
-      deadline_used_ms: 250,
-      dropped: [],
-      injected: [
-        {
-          content_hash: contentHash,
-          fence_id: 'memory-fence-1',
-          injected_chars: 42,
-          memory_id: memoryId,
-          provider_id: 'local',
-        },
-      ],
-      injected_chars: 42,
-      provider_results: [
-        {
-          error_kind: null,
-          latency_ms: 1,
-          provider_id: 'local',
-          readable: true,
-          requested_count: 5,
-          returned_count: 1,
-          timed_out: false,
-          trust_level: 'built_in',
-          writable: true,
-        },
-      ],
-      query_text_hash: contentHash,
-      redacted_count: traceSummary.redacted_count,
-      run_id: runId,
-      session_id: sessionId,
-      tenant_id: tenantId,
-      trace_id: traceId,
-      turn: 1,
-    }
-    const preview = {
-      content_hash: contentHash,
-      policy_decisions: ['Allow'],
-      redacted_count: 1,
-      run_id: runId,
-      sections: [
-        {
-          memory_ids: [memoryId],
-          provider_id: 'local',
-          redacted_content: '[redacted memory]',
-          source: 'user_input',
-        },
-      ],
-      session_id: sessionId,
-      token_estimate: 4,
-      tool_names: ['memory'],
-      trace_id: traceId,
-    }
-    const invoke = vi.fn(async (command: string) => {
-      if (command === 'get_memory_settings' || command === 'update_memory_settings') {
-        return { settings }
-      }
-      if (command === 'get_thread_memory_settings' || command === 'update_thread_memory_settings') {
-        return { settings: threadSettings }
-      }
-      if (command === 'list_memory_candidates') {
-        return { candidates: [candidateListItem], next_cursor: null }
-      }
-      if (command === 'approve_memory_candidate') {
-        return {
-          candidate: { ...candidate, state: 'promoted' },
-          memory_id: memoryId,
-        }
-      }
-      if (command === 'reject_memory_candidate') {
-        return {
-          candidate: { ...candidate, state: 'rejected' },
-        }
-      }
-      if (command === 'merge_memory_candidate') {
-        return {
-          candidate_ids: [candidateId, mergedCandidateId],
-          memory_id: memoryId,
-        }
-      }
-      if (command === 'list_memory_recall_traces') {
-        return { next_cursor: null, traces: [traceSummary] }
-      }
-      if (command === 'get_memory_recall_trace') {
-        return { trace }
-      }
-      if (command === 'get_model_request_preview') {
-        return { preview }
-      }
-      throw new Error(`unexpected command ${command}`)
-    })
-    const client = createInvokeCommandClient(invoke)
-
-    await expect(getMemorySettings(client)).resolves.toEqual({ settings })
-    await expect(updateMemorySettings({ settings, tenantId }, client)).resolves.toEqual({
-      settings,
-    })
-    await expect(getThreadMemorySettings({ sessionId, tenantId }, client)).resolves.toEqual({
-      settings: threadSettings,
-    })
-    await expect(
-      updateThreadMemorySettings({ settings: threadSettings, tenantId }, client),
-    ).resolves.toEqual({
-      settings: threadSettings,
-    })
-    await expect(listMemoryCandidates({ limit: 50, tenantId }, client)).resolves.toHaveProperty(
-      'candidates.0.id',
-      candidateId,
-    )
-    await expect(
-      approveMemoryCandidate({ actionPlanId, candidateId, tenantId }, client),
-    ).resolves.toHaveProperty('memory_id', memoryId)
-    await expect(
-      rejectMemoryCandidate({ candidateId, reason: 'rejected by user', tenantId }, client),
-    ).resolves.toHaveProperty('candidate.state', 'rejected')
-    await expect(
-      mergeMemoryCandidate(
-        {
-          candidateIds: [candidateId, mergedCandidateId],
-          evidence: candidate.evidence,
-          mergedRecord: candidate.proposed_record,
-          tenantId,
-        },
-        client,
-      ),
-    ).resolves.toHaveProperty('memory_id', memoryId)
-    await expect(
-      listMemoryRecallTraces({ limit: 10, runId, sessionId, tenantId }, client),
-    ).resolves.toHaveProperty('traces.0.trace_id', traceId)
-    await expect(getMemoryRecallTrace({ traceId, tenantId }, client)).resolves.toHaveProperty(
-      'trace.trace_id',
-      traceId,
-    )
-    await expect(
-      getModelRequestPreview({ runId, sessionId, tenantId, traceId }, client),
-    ).resolves.toHaveProperty('preview.sections.0.memory_ids.0', memoryId)
-    await expect(
-      getModelRequestPreview({ runId, sessionId, tenantId, traceId }, client),
-    ).resolves.toHaveProperty('preview.trace_id', traceId)
-
-    expect(invoke).toHaveBeenCalledWith('get_memory_settings', {
-      request: { tenant_id: tenantId },
-    })
-    expect(invoke).toHaveBeenCalledWith('update_memory_settings', {
-      request: { settings, tenant_id: tenantId },
-    })
-    expect(invoke).toHaveBeenCalledWith('get_thread_memory_settings', {
-      request: { session_id: sessionId, tenant_id: tenantId },
-    })
-    expect(invoke).toHaveBeenCalledWith('update_thread_memory_settings', {
-      request: { settings: threadSettings, tenant_id: tenantId },
-    })
-    expect(invoke).toHaveBeenCalledWith('list_memory_candidates', {
-      request: { limit: 50, tenant_id: tenantId },
-    })
-    expect(invoke).toHaveBeenCalledWith('approve_memory_candidate', {
-      request: { action_plan_id: actionPlanId, candidate_id: candidateId, tenant_id: tenantId },
-    })
-    expect(invoke).toHaveBeenCalledWith('reject_memory_candidate', {
-      request: { candidate_id: candidateId, reason: 'rejected by user', tenant_id: tenantId },
-    })
-    expect(invoke).toHaveBeenCalledWith('merge_memory_candidate', {
-      request: {
-        candidate_ids: [candidateId, mergedCandidateId],
-        evidence: candidate.evidence,
-        merged_record: candidate.proposed_record,
-        tenant_id: tenantId,
-      },
-    })
-    expect(invoke).toHaveBeenCalledWith('list_memory_recall_traces', {
-      request: {
-        cursor: undefined,
-        limit: 10,
-        run_id: runId,
-        session_id: sessionId,
-        tenant_id: tenantId,
-      },
-    })
-    expect(invoke).toHaveBeenCalledWith('get_memory_recall_trace', {
-      request: { tenant_id: tenantId, trace_id: traceId },
-    })
-    expect(invoke).toHaveBeenCalledWith('get_model_request_preview', {
-      request: {
-        run_id: runId,
-        session_id: sessionId,
-        tenant_id: tenantId,
-        trace_id: traceId,
-      },
-    })
-  })
-
-  it('rejects invalid memory command args before invoking Tauri', async () => {
-    const invoke = vi.fn()
-    const client = createInvokeCommandClient(invoke)
-
-    await expect(getMemoryItem('', client)).rejects.toThrow(TauriCommandPayloadError)
-    await expect(deleteMemoryItem({ actionPlanId: '', id: '' }, client)).rejects.toThrow(
-      TauriCommandPayloadError,
-    )
-    await expect(
-      updateMemoryItem(
-        {
-          content: '',
-          id: '01HZ0000000000000000000001',
-        },
-        client,
-      ),
-    ).rejects.toThrow(TauriCommandPayloadError)
-    await expect(
-      mergeMemoryCandidate(
-        {
-          actionPlanId: '01HZ0000000000000000000004',
-          candidateIds: ['01HZ0000000000000000000002', '01HZ0000000000000000000002'],
-          evidence: {
-            content_hash: Array.from({ length: 32 }, () => 0),
-            origin: {
-              user_message: {
-                message_id: '01HZ0000000000000000000005',
-                run_id: '01HZ0000000000000000000006',
-                session_id: '01HZ0000000000000000000007',
-              },
-            },
-            run_id: '01HZ0000000000000000000006',
-            session_id: '01HZ0000000000000000000007',
-            source: 'user_input',
-          },
-          mergedRecord: {
-            content: 'merged memory',
-            kind: 'project_fact',
-            metadata: { source_trust: 0.8, tags: [] },
-            visibility: 'tenant',
-          },
-        },
-        client,
-      ),
-    ).rejects.toThrow(TauriCommandPayloadError)
-    await expect(
-      mergeMemoryCandidate(
-        {
-          candidateIds: ['01HZ0000000000000000000002', '01HZ0000000000000000000003'],
-          evidence: {
-            content_hash: Array.from({ length: 32 }, () => 0),
-            origin: {
-              user_message: {
-                message_id: '01HZ0000000000000000000005',
-                run_id: '01HZ0000000000000000000006',
-                session_id: '01HZ0000000000000000000007',
-              },
-            },
-            run_id: '01HZ0000000000000000000006',
-            session_id: '01HZ0000000000000000000007',
-            source: 'not_a_memory_source' as never,
-          },
-          mergedRecord: {
-            content: 'merged memory',
-            kind: 'project_fact',
-            metadata: { source_trust: 0.8, tags: [] },
-            visibility: 'tenant',
-          },
-        },
-        client,
-      ),
-    ).rejects.toThrow(TauriCommandPayloadError)
     expect(invoke).not.toHaveBeenCalled()
   })
 

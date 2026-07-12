@@ -4,86 +4,6 @@
 use super::*;
 use harness_sandbox::{NetworkPolicySupport, WorkspacePolicySupport};
 
-pub(crate) fn test_memory_record(session_id: SessionId, content: &str) -> MemoryRecord {
-    MemoryRecord {
-        id: MemoryId::new(),
-        tenant_id: TenantId::SINGLE,
-        kind: MemoryKind::UserPreference,
-        visibility: MemoryVisibility::Private { session_id },
-        content: content.to_owned(),
-        metadata: MemoryMetadata {
-            tags: Vec::new(),
-            source: MemorySource::UserInput,
-            confidence: 1.0,
-            evidence: None,
-            access_count: 0,
-            last_accessed_at: None,
-            recall_score: 1.0,
-            recall_score_breakdown: None,
-            ttl: None,
-            redacted_segments: 0,
-        },
-        created_at: now(),
-        updated_at: now(),
-    }
-}
-
-pub(crate) struct RawExportMemoryProvider {
-    inner: Arc<InMemoryMemoryProvider>,
-}
-
-impl RawExportMemoryProvider {
-    pub(crate) fn new(inner: Arc<InMemoryMemoryProvider>) -> Self {
-        Self { inner }
-    }
-}
-
-#[async_trait]
-impl MemoryStore for RawExportMemoryProvider {
-    fn provider_id(&self) -> &str {
-        self.inner.provider_id()
-    }
-
-    async fn recall(
-        &self,
-        query: MemoryQuery,
-    ) -> Result<Vec<MemoryRecord>, harness_contracts::MemoryError> {
-        self.inner.recall(query).await
-    }
-
-    async fn get(&self, id: MemoryId) -> Result<MemoryRecord, harness_contracts::MemoryError> {
-        self.inner.get(id).await
-    }
-
-    async fn upsert(
-        &self,
-        record: MemoryRecord,
-    ) -> Result<MemoryId, harness_contracts::MemoryError> {
-        self.inner.upsert(record).await
-    }
-
-    async fn forget(&self, id: MemoryId) -> Result<(), harness_contracts::MemoryError> {
-        self.inner.forget(id).await
-    }
-
-    async fn list(
-        &self,
-        scope: MemoryListScope,
-    ) -> Result<Vec<MemorySummary>, harness_contracts::MemoryError> {
-        self.inner.list(scope).await
-    }
-}
-
-impl MemoryLifecycle for RawExportMemoryProvider {}
-
-impl MemoryProvider for RawExportMemoryProvider {
-    fn descriptor(&self) -> MemoryProviderDescriptor {
-        let mut descriptor = self.inner.descriptor();
-        descriptor.supports_raw_content_export = true;
-        descriptor
-    }
-}
-
 pub(crate) fn permission_option_id_for_decision(
     pending: &jyowo_harness_sdk::ext::PendingPermissionRequest,
     decision: Decision,
@@ -269,42 +189,6 @@ pub(crate) async fn runtime_state_with_settings_runtime_for_workspace(
     let mut state =
         DesktopRuntimeState::with_settings_runtime_for_workspace(workspace, settings_runtime)
             .expect("state should use the settings permission broker");
-    let state_workspace = state.workspace_root().to_path_buf();
-    use_test_provider_settings_store(&mut state, &state_workspace);
-    state
-}
-
-pub(crate) async fn runtime_state_with_memory_provider(
-    provider: Arc<dyn MemoryProvider>,
-) -> DesktopRuntimeState {
-    let workspace = unique_workspace("memory-provider");
-    std::fs::create_dir_all(&workspace).unwrap();
-    write_test_provider_settings(&workspace);
-    let stream_permission_runtime = Arc::new(StreamPermissionRuntime::new(StreamBrokerConfig {
-        default_timeout: Some(Duration::from_secs(5)),
-        heartbeat_interval: None,
-        max_pending: 16,
-    }));
-    let settings_runtime: Arc<DesktopSettingsRuntime> = Arc::new(
-        DesktopSettingsRuntime::builder()
-            .with_options(test_settings_options(&workspace))
-            .with_model(TestModelProvider::default())
-            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
-            .with_sandbox(NoopSandbox::new())
-            .with_stream_permission_broker_arc(
-                stream_permission_runtime.broker(),
-                stream_permission_runtime.resolver_handle(),
-            )
-            .with_memory_provider_arc(provider)
-            .build()
-            .await
-            .expect("harness should build with memory provider")
-            .into(),
-    );
-
-    let mut state =
-        DesktopRuntimeState::with_settings_runtime_for_workspace(workspace, settings_runtime)
-            .expect("state should use the harness permission broker");
     let state_workspace = state.workspace_root().to_path_buf();
     use_test_provider_settings_store(&mut state, &state_workspace);
     state

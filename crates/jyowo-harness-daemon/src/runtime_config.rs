@@ -78,10 +78,47 @@ impl RuntimeConfigResolver {
                     reason: "config root has no Jyowo home parent".to_owned(),
                 })?;
         let workspace_root = workspace_root.map(canonical_workspace_root).transpose()?;
-        Ok(daemon_memory_database_path(
-            global_home,
-            workspace_root.as_deref(),
-        ))
+        let memory_database_path =
+            daemon_memory_database_path(global_home, workspace_root.as_deref());
+        ensure_memory_parent_path(&memory_database_path, global_home)?;
+        Ok(memory_database_path)
+    }
+
+    pub(crate) fn resolve_memory_export_directory(
+        &self,
+        workspace_root: Option<&Path>,
+    ) -> Result<PathBuf, RuntimeConfigError> {
+        let memory_database_path = self.resolve_memory_database_path(workspace_root)?;
+        let global_config_root =
+            self.global_config_root
+                .canonicalize()
+                .map_err(|source| RuntimeConfigError::Read {
+                    kind: "global config root",
+                    path: self.global_config_root.clone(),
+                    source,
+                })?;
+        let global_home =
+            global_config_root
+                .parent()
+                .ok_or_else(|| RuntimeConfigError::Invalid {
+                    kind: "global config root",
+                    reason: "config root has no Jyowo home parent".to_owned(),
+                })?;
+        let export_directory = memory_database_path
+            .parent()
+            .ok_or_else(|| RuntimeConfigError::Invalid {
+                kind: "runtime memory export directory",
+                reason: "memory database path has no parent".to_owned(),
+            })?
+            .join("exports");
+        let relative = export_directory.strip_prefix(global_home).map_err(|_| {
+            RuntimeConfigError::Invalid {
+                kind: "runtime memory export directory",
+                reason: "memory export path escaped daemon storage root".to_owned(),
+            }
+        })?;
+        ensure_secure_directory_chain(global_home, relative, "runtime memory export directory")?;
+        Ok(export_directory)
     }
 
     pub fn resolve(
@@ -362,25 +399,62 @@ impl RuntimeConfigSnapshot {
     }
 
     pub fn ensure_memory_parent(&self) -> Result<(), RuntimeConfigError> {
-        let parent =
-            self.memory_database_path
-                .parent()
-                .ok_or_else(|| RuntimeConfigError::Invalid {
-                    kind: "runtime memory directory",
-                    reason: "memory database path has no parent".to_owned(),
-                })?;
-        let relative = parent
-            .strip_prefix(&self.memory_storage_root)
+        ensure_memory_parent_path(&self.memory_database_path, &self.memory_storage_root)
+    }
+}
+
+fn ensure_memory_parent_path(
+    memory_database_path: &Path,
+    memory_storage_root: &Path,
+) -> Result<(), RuntimeConfigError> {
+    let parent = memory_database_path
+        .parent()
+        .ok_or_else(|| RuntimeConfigError::Invalid {
+            kind: "runtime memory directory",
+            reason: "memory database path has no parent".to_owned(),
+        })?;
+    let relative =
+        parent
+            .strip_prefix(memory_storage_root)
             .map_err(|_| RuntimeConfigError::Invalid {
                 kind: "runtime memory directory",
                 reason: "memory database path escaped daemon storage root".to_owned(),
             })?;
-        ensure_secure_directory_chain(
-            &self.memory_storage_root,
-            relative,
-            "runtime memory directory",
-        )?;
-        Ok(())
+    ensure_secure_directory_chain(memory_storage_root, relative, "runtime memory directory")?;
+    for path in [
+        memory_database_path.to_owned(),
+        path_with_suffix(memory_database_path, "-wal"),
+        path_with_suffix(memory_database_path, "-shm"),
+    ] {
+        reject_symlink_path_if_present(&path, "runtime memory sqlite file")?;
+    }
+    Ok(())
+}
+
+fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_owned();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+fn reject_symlink_path_if_present(
+    path: &Path,
+    kind: &'static str,
+) -> Result<(), RuntimeConfigError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(RuntimeConfigError::ConfigSymlink {
+                kind,
+                path: path.to_owned(),
+            })
+        }
+        Ok(_) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(RuntimeConfigError::Read {
+            kind,
+            path: path.to_owned(),
+            source,
+        }),
     }
 }
 

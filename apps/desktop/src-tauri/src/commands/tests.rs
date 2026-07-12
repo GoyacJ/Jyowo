@@ -12,47 +12,8 @@ mod tests {
         record_skill_catalog_install_task_progress, skill_catalog_install_stage,
     };
     use crate::commands::stores::ensure_plugin_package_dir_name;
-    use harness_contracts::{
-        MemoryGlobalSettings, MemoryThreadMode, MemoryThreadSettings, PluginProductState,
-        PluginSourceKind,
-    };
+    use harness_contracts::{PluginProductState, PluginSourceKind};
     use std::path::Path;
-
-    async fn memory_runtime_state_for_test(
-        workspace_root: &std::path::Path,
-    ) -> DesktopRuntimeState {
-        let state = DesktopRuntimeState::with_workspace_for_test(workspace_root.to_path_buf())
-            .expect("desktop runtime state");
-        let memory_db_path = workspace_root
-            .join(".jyowo")
-            .join("runtime")
-            .join("memory")
-            .join("memory.sqlite3");
-        let memory_provider = harness_memory::local::LocalMemoryProvider::open(
-            &memory_db_path.to_string_lossy(),
-            TenantId::SINGLE,
-        )
-        .expect("local memory provider");
-        let settings_runtime: DesktopSettingsRuntime = DesktopSettingsRuntime::builder()
-            .with_workspace_root(workspace_root)
-            .with_model(jyowo_harness_sdk::testing::TestModelProvider::default())
-            .with_store(jyowo_harness_sdk::testing::InMemoryEventStore::new(
-                Arc::new(jyowo_harness_sdk::testing::NoopRedactor),
-            ))
-            .with_sandbox(jyowo_harness_sdk::testing::NoopSandbox::new())
-            .with_memory_provider(memory_provider)
-            .build()
-            .await
-            .expect("memory settings runtime")
-            .into();
-        state.replace_settings_runtime(
-            Arc::new(settings_runtime),
-            "test-model".to_owned(),
-            ModelProtocol::ChatCompletions,
-            harness_contracts::ModelRequestOptions::default(),
-        );
-        state
-    }
 
     #[test]
     fn skill_catalog_progress_payload_serializes_camel_case() {
@@ -1328,79 +1289,6 @@ exit 2
             normalize_probe_timeout_ms(Some(120_000)),
             MAX_PROBE_TIMEOUT_MS
         );
-    }
-
-    #[tokio::test]
-    async fn memory_settings_commands_persist_in_workspace_store() {
-        let workspace = tempfile::tempdir().unwrap();
-        let state = memory_runtime_state_for_test(workspace.path()).await;
-        let settings = MemoryGlobalSettings {
-            use_memories: false,
-            generate_memories: true,
-            disable_generation_when_external_context_used: true,
-            retention_days: Some(30),
-            max_memory_bytes: 123_456,
-            max_recall_records_per_turn: 7,
-            max_recall_chars_per_turn: 8_192,
-        };
-
-        update_memory_settings_with_runtime_state(
-            UpdateMemorySettingsRequest {
-                tenant_id: TenantId::SINGLE,
-                settings: settings.clone(),
-            },
-            &state,
-        )
-        .await
-        .unwrap();
-
-        let reopened = memory_runtime_state_for_test(workspace.path()).await;
-        let response = get_memory_settings_with_runtime_state(
-            GetMemorySettingsRequest {
-                tenant_id: TenantId::SINGLE,
-            },
-            &reopened,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(response.settings, settings);
-    }
-
-    #[tokio::test]
-    async fn thread_memory_settings_commands_persist_in_workspace_store() {
-        let workspace = tempfile::tempdir().unwrap();
-        let state = memory_runtime_state_for_test(workspace.path()).await;
-        let session_id = SessionId::new();
-        let settings = MemoryThreadSettings {
-            session_id,
-            use_memories: Some(false),
-            generate_memories: Some(false),
-            memory_mode: MemoryThreadMode::ReadOnly,
-        };
-
-        update_thread_memory_settings_with_runtime_state(
-            UpdateThreadMemorySettingsRequest {
-                tenant_id: TenantId::SINGLE,
-                settings: settings.clone(),
-            },
-            &state,
-        )
-        .await
-        .unwrap();
-
-        let reopened = memory_runtime_state_for_test(workspace.path()).await;
-        let response = get_thread_memory_settings_with_runtime_state(
-            GetThreadMemorySettingsRequest {
-                tenant_id: TenantId::SINGLE,
-                session_id,
-            },
-            &reopened,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(response.settings, settings);
     }
 
     #[derive(Clone)]

@@ -3,13 +3,7 @@ import { Save } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import {
-  DEFAULT_MEMORY_TENANT_ID,
-  getMemorySettings,
-  type UpdateMemorySettingsRequest,
-  updateMemorySettings,
-} from '@/shared/tauri/commands'
-import { useCommandClient } from '@/shared/tauri/react'
+import { useDaemonClient } from '@/shared/tauri/react'
 import { Button } from '@/shared/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card'
 import { EmptyState } from '@/shared/ui/empty-state'
@@ -17,27 +11,30 @@ import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 import { Switch } from '@/shared/ui/switch'
 
+import { DEFAULT_MEMORY_TENANT_ID, type UpdateMemorySettingsRequest } from './memory-types'
+
 const settingsQueryKeys = {
-  all: ['memory-settings'] as const,
+  all: (workspaceRoot: string | undefined) => ['memory-settings', workspaceRoot ?? null] as const,
 }
 
-export function MemorySettings() {
+export function MemorySettings({ workspaceRoot }: { workspaceRoot?: string }) {
   const { t } = useTranslation('memory')
-  const commandClient = useCommandClient()
+  const daemonClient = useDaemonClient()
   const queryClient = useQueryClient()
   const [saved, setSaved] = useState(false)
 
   const settingsQuery = useQuery({
-    queryKey: settingsQueryKeys.all,
-    queryFn: () => getMemorySettings(commandClient),
+    queryKey: settingsQueryKeys.all(workspaceRoot),
+    queryFn: () => daemonClient.getMemorySettings(workspaceRoot, DEFAULT_MEMORY_TENANT_ID),
   })
 
   const updateMutation = useMutation({
-    mutationFn: (req: UpdateMemorySettingsRequest) => updateMemorySettings(req, commandClient),
+    mutationFn: (req: UpdateMemorySettingsRequest) =>
+      daemonClient.updateMemorySettings(workspaceRoot, req),
     onSuccess: () => {
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
-      queryClient.invalidateQueries({ queryKey: settingsQueryKeys.all })
+      queryClient.invalidateQueries({ queryKey: settingsQueryKeys.all(workspaceRoot) })
     },
   })
 
@@ -58,7 +55,7 @@ export function MemorySettings() {
     value: boolean,
   ) => {
     updateMutation.mutate({
-      tenantId: DEFAULT_MEMORY_TENANT_ID,
+      tenant_id: DEFAULT_MEMORY_TENANT_ID,
       settings: { ...settings, [key]: value },
     })
   }
@@ -71,7 +68,7 @@ export function MemorySettings() {
       return
     }
     updateMutation.mutate({
-      tenantId: DEFAULT_MEMORY_TENANT_ID,
+      tenant_id: DEFAULT_MEMORY_TENANT_ID,
       settings: { ...settings, [key]: Math.trunc(parsed) },
     })
   }
@@ -159,7 +156,7 @@ export function MemorySettings() {
       <Button
         onClick={() =>
           updateMutation.mutate({
-            tenantId: DEFAULT_MEMORY_TENANT_ID,
+            tenant_id: DEFAULT_MEMORY_TENANT_ID,
             settings,
           })
         }

@@ -1,12 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
 
+import type { TypedUlid } from '@/generated/daemon-protocol'
+import { DEFAULT_MEMORY_TENANT_ID } from '@/features/memory/memory-types'
 import {
   type GetContextSnapshotRequest,
   type GetContextSnapshotResponse,
   getContextSnapshot,
-  getModelRequestPreview,
 } from '@/shared/tauri/commands'
-import { useCommandClient } from '@/shared/tauri/react'
+import { useCommandClient, useDaemonClient } from '@/shared/tauri/react'
 
 import type { WorkspaceContext } from './ContextPanel'
 
@@ -24,9 +25,10 @@ const contextSnapshotQueryKeys = {
 
 export function useContextSnapshot(
   request: GetContextSnapshotRequest = {},
-  options: { enabled?: boolean } = {},
+  options: { enabled?: boolean; workspaceRoot?: string } = {},
 ) {
   const commandClient = useCommandClient()
+  const daemonClient = useDaemonClient()
   const contextQuery = useQuery({
     enabled: options.enabled ?? true,
     queryKey: contextSnapshotQueryKeys.detail(request),
@@ -34,15 +36,17 @@ export function useContextSnapshot(
   })
   const previewQuery = useQuery({
     enabled: Boolean((options.enabled ?? true) && request.conversationId && request.runId),
-    queryKey: [...contextSnapshotQueryKeys.detail(request), 'model-request-preview'],
+    queryKey: [
+      ...contextSnapshotQueryKeys.detail(request),
+      'model-request-preview',
+      options.workspaceRoot ?? null,
+    ],
     queryFn: () =>
-      getModelRequestPreview(
-        {
-          runId: request.runId ?? '',
-          sessionId: request.conversationId ?? '',
-        },
-        commandClient,
-      ),
+      daemonClient.getModelRequestPreview(options.workspaceRoot, {
+        run_id: request.runId as TypedUlid,
+        session_id: request.conversationId as TypedUlid,
+        tenant_id: DEFAULT_MEMORY_TENANT_ID,
+      }),
   })
 
   return {

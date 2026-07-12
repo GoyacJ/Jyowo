@@ -14,7 +14,6 @@ use super::error::*;
 #[allow(unused_imports)]
 use super::evals::*;
 #[allow(unused_imports)]
-use super::memory::*;
 #[allow(unused_imports)]
 use super::plugins::*;
 #[allow(unused_imports)]

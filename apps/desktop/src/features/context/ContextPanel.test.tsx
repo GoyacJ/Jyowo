@@ -3,6 +3,8 @@ import '@testing-library/jest-dom/vitest'
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
+import type { ContentHash } from '@/generated/daemon-protocol'
+
 import { ContextPanel, type WorkspaceContext } from './ContextPanel'
 
 const readyContext = {
@@ -121,7 +123,7 @@ describe('ContextPanel', () => {
       <ContextPanel
         context={readyContext}
         modelRequestPreview={{
-          content_hash: Array.from({ length: 32 }, () => 1),
+          content_hash: Array.from({ length: 32 }, () => 1) as ContentHash,
           policy_decisions: ['Allow'],
           redacted_count: 1,
           run_id: '01HZ0000000000000000000002',

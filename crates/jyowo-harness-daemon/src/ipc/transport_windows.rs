@@ -19,7 +19,7 @@ impl LocalIpcServer {
         store: Arc<TaskStore>,
         config: IpcServerConfig,
     ) -> Result<Self, IpcError> {
-        Self::bind_named_pipe_inner(pipe_name.into(), store, config, None).await
+        Self::bind_named_pipe_inner(pipe_name.into(), store, config, None, None).await
     }
 
     pub async fn bind_named_pipe_with_supervisor(
@@ -28,7 +28,24 @@ impl LocalIpcServer {
         config: IpcServerConfig,
         supervisor: Arc<crate::Supervisor>,
     ) -> Result<Self, IpcError> {
-        Self::bind_named_pipe_inner(pipe_name.into(), store, config, Some(supervisor)).await
+        Self::bind_named_pipe_inner(pipe_name.into(), store, config, Some(supervisor), None).await
+    }
+
+    pub async fn bind_named_pipe_with_runtime_services(
+        pipe_name: impl Into<String>,
+        store: Arc<TaskStore>,
+        config: IpcServerConfig,
+        supervisor: Arc<crate::Supervisor>,
+        memory_service: Arc<crate::MemoryService>,
+    ) -> Result<Self, IpcError> {
+        Self::bind_named_pipe_inner(
+            pipe_name.into(),
+            store,
+            config,
+            Some(supervisor),
+            Some(memory_service),
+        )
+        .await
     }
 
     async fn bind_named_pipe_inner(
@@ -36,6 +53,7 @@ impl LocalIpcServer {
         store: Arc<TaskStore>,
         config: IpcServerConfig,
         supervisor: Option<Arc<crate::Supervisor>>,
+        memory_service: Option<Arc<crate::MemoryService>>,
     ) -> Result<Self, IpcError> {
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
         let clients = Arc::new(AtomicUsize::new(0));
@@ -54,7 +72,7 @@ impl LocalIpcServer {
                     _ = &mut shutdown_rx => break,
                     connected = server.connect() => {
                         connected?;
-                        let connection = supervisor.as_ref().map_or_else(
+                        let mut connection = supervisor.as_ref().map_or_else(
                             || IpcConnection::new(Arc::clone(&store), config.clone()),
                             |supervisor| IpcConnection::with_supervisor(
                                 Arc::clone(&store),
@@ -62,6 +80,9 @@ impl LocalIpcServer {
                                 Arc::clone(supervisor),
                             ),
                         );
+                        if let Some(memory_service) = memory_service.as_ref() {
+                            connection = connection.with_memory_service(Arc::clone(memory_service));
+                        }
                         let client_lease = ClientLease::new(Arc::clone(&server_clients));
                         client_tasks.spawn(async move {
                             let _client_lease = client_lease;

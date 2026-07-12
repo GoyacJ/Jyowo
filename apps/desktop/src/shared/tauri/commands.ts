@@ -3475,8 +3475,6 @@ const skillCatalogInstallProgressPayloadSchema = z
   .strict()
 
 const memoryItemIdSchema = z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/)
-const memoryCandidateIdSchema = memoryItemIdSchema
-const memoryTraceIdSchema = memoryItemIdSchema
 const tenantIdSchema = memoryItemIdSchema
 const teamIdSchema = memoryItemIdSchema
 const sessionIdSchema = memoryItemIdSchema
@@ -3487,649 +3485,6 @@ const messageIdSchema = memoryItemIdSchema
 const snapshotIdSchema = memoryItemIdSchema
 const toolUseIdSchema = memoryItemIdSchema
 const workspaceIdSchema = memoryItemIdSchema
-
-export const DEFAULT_MEMORY_TENANT_ID = '00000000000000000000000001'
-
-const memoryKindSchema = z.enum([
-  'agent_self_note',
-  'custom',
-  'feedback',
-  'project_fact',
-  'reference',
-  'user_preference',
-])
-
-const memoryVisibilitySchema = z.enum(['private', 'team', 'tenant', 'user'])
-
-const memorySourceSchema = z.enum([
-  'agent_derived',
-  'consolidated',
-  'external_retrieval',
-  'imported',
-  'subagent_derived',
-  'user_input',
-])
-
-const memoryItemSummarySchema = z
-  .object({
-    contentHash: z.string().regex(/^[a-f0-9]{64}$/),
-    contentPreview: z.string(),
-    deleted: z.boolean(),
-    expiresAt: z.string().datetime({ offset: true }).nullable().optional(),
-    id: memoryItemIdSchema,
-    kind: memoryKindSchema,
-    lastAccessedAt: z.string().datetime({ offset: true }).nullable().optional(),
-    providerId: z.string().min(1).nullable().optional(),
-    source: memorySourceSchema,
-    tags: z.array(z.string()),
-    updatedAt: z.string().datetime({ offset: true }),
-    visibility: memoryVisibilitySchema,
-  })
-  .strict()
-
-const memoryItemSchema = z
-  .object({
-    accessCount: z.number().int().min(0),
-    confidence: z.number().min(0).max(1),
-    content: z.string(),
-    contentHash: z.string().regex(/^[a-f0-9]{64}$/),
-    createdAt: z.string().datetime({ offset: true }),
-    deleted: z.boolean(),
-    expiresAt: z.string().datetime({ offset: true }).nullable().optional(),
-    id: memoryItemIdSchema,
-    kind: memoryKindSchema,
-    lastAccessedAt: z.string().datetime({ offset: true }).nullable().optional(),
-    providerId: z.string().min(1).nullable().optional(),
-    source: memorySourceSchema,
-    tags: z.array(z.string()),
-    updatedAt: z.string().datetime({ offset: true }),
-    visibility: memoryVisibilitySchema,
-  })
-  .strict()
-
-const listMemoryItemsResponseSchema = z
-  .object({
-    items: z.array(memoryItemSummarySchema),
-  })
-  .strict()
-
-const getMemoryItemRequestSchema = z
-  .object({
-    id: memoryItemIdSchema,
-  })
-  .strict()
-
-const getMemoryItemResponseSchema = z
-  .object({
-    item: memoryItemSchema,
-  })
-  .strict()
-
-const updateMemoryItemRequestSchema = z
-  .object({
-    actionPlanId: actionPlanIdSchema.optional(),
-    content: z
-      .string()
-      .max(64 * 1024)
-      .refine((value) => value.trim().length > 0),
-    id: memoryItemIdSchema,
-  })
-  .strict()
-
-const updateMemoryItemResponseSchema = z
-  .object({
-    item: memoryItemSchema,
-  })
-  .strict()
-
-const deleteMemoryItemRequestSchema = z
-  .object({
-    actionPlanId: actionPlanIdSchema.optional(),
-    id: memoryItemIdSchema,
-  })
-  .strict()
-
-const deleteMemoryItemResponseSchema = z
-  .object({
-    id: memoryItemIdSchema,
-    status: z.literal('deleted'),
-  })
-  .strict()
-
-const exportMemoryItemsRequestSchema = z
-  .object({
-    explicitUserAction: z.boolean(),
-    format: z.literal('json'),
-    includeHashes: z.boolean(),
-    includeMetadata: z.boolean(),
-    includeRawContent: z.boolean(),
-    scope: z.literal('visible'),
-    sessionId: sessionIdSchema.optional(),
-  })
-  .strict()
-
-const exportMemoryItemsResponseSchema = z
-  .object({
-    auditHash: z.string().regex(/^[0-9a-f]{64}$/),
-    exportedAt: z.string().datetime({ offset: true }),
-    format: z.literal('json'),
-    includeHashes: z.boolean(),
-    includeMetadata: z.boolean(),
-    includeRawContent: z.boolean(),
-    itemCount: z.number().int().min(0),
-    path: z.string().min(1),
-    scope: z.literal('visible'),
-  })
-  .strict()
-
-const memoryGlobalSettingsSchema = z
-  .object({
-    disable_generation_when_external_context_used: z.boolean(),
-    generate_memories: z.boolean(),
-    max_memory_bytes: z.number().int().positive(),
-    max_recall_chars_per_turn: z.number().int().positive(),
-    max_recall_records_per_turn: z.number().int().positive(),
-    retention_days: z.number().int().positive().nullable().optional(),
-    use_memories: z.boolean(),
-  })
-  .strict()
-
-const getMemorySettingsRequestSchema = z
-  .object({
-    tenantId: tenantIdSchema.default(DEFAULT_MEMORY_TENANT_ID),
-  })
-  .strict()
-
-const updateMemorySettingsRequestSchema = z
-  .object({
-    settings: memoryGlobalSettingsSchema,
-    tenantId: tenantIdSchema.default(DEFAULT_MEMORY_TENANT_ID),
-  })
-  .strict()
-
-const memorySettingsResponseSchema = z
-  .object({
-    settings: memoryGlobalSettingsSchema,
-  })
-  .strict()
-
-const memoryThreadModeSchema = z.enum(['candidate_only', 'off', 'read_only', 'read_write'])
-
-const memoryThreadSettingsSchema = z
-  .object({
-    generate_memories: z.boolean().nullable().optional(),
-    memory_mode: memoryThreadModeSchema,
-    session_id: sessionIdSchema,
-    use_memories: z.boolean().nullable().optional(),
-  })
-  .strict()
-
-const getThreadMemorySettingsRequestSchema = z
-  .object({
-    sessionId: sessionIdSchema,
-    tenantId: tenantIdSchema.default(DEFAULT_MEMORY_TENANT_ID),
-  })
-  .strict()
-
-const updateThreadMemorySettingsRequestSchema = z
-  .object({
-    settings: memoryThreadSettingsSchema,
-    tenantId: tenantIdSchema.default(DEFAULT_MEMORY_TENANT_ID),
-  })
-  .strict()
-
-const threadMemorySettingsResponseSchema = z
-  .object({
-    settings: memoryThreadSettingsSchema,
-  })
-  .strict()
-
-const memoryCandidateStateSchema = z.enum([
-  'approved',
-  'expired',
-  'merged',
-  'promoted',
-  'proposed',
-  'rejected',
-])
-const memoryCandidateOperationSchema = z.union([
-  z.literal('create'),
-  z.object({ update: z.object({ memory_id: memoryItemIdSchema }).strict() }).strict(),
-  z.object({ delete: z.object({ memory_id: memoryItemIdSchema }).strict() }).strict(),
-])
-
-const contractMemoryKindSchema = z.union([
-  memoryKindSchema,
-  z.object({ custom: z.string().min(1) }).strict(),
-])
-const contractMemoryVisibilitySchema = z.union([
-  z.literal('tenant'),
-  z.object({ private: z.object({ session_id: sessionIdSchema }).strict() }).strict(),
-  z.object({ team: z.object({ team_id: teamIdSchema }).strict() }).strict(),
-  z.object({ user: z.object({ user_id: z.string().min(1) }).strict() }).strict(),
-])
-const contractMemorySourceSchema = z.union([
-  z.enum([
-    'agent_derived',
-    'external_retrieval',
-    'imported',
-    'mcp_tool_output',
-    'plugin_output',
-    'tool_output',
-    'user_input',
-    'web_retrieval',
-    'workspace_file',
-  ]),
-  z
-    .object({
-      consolidated: z
-        .object({
-          from: z.array(memoryItemIdSchema),
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      subagent_derived: z
-        .object({
-          child_session: sessionIdSchema,
-        })
-        .strict(),
-    })
-    .strict(),
-])
-const contentHashSchema = z.array(z.number().int().min(0).max(255)).length(32)
-const memoryEvidenceOriginSchema = z.union([
-  z
-    .object({
-      assistant_message: z
-        .object({
-          message_id: messageIdSchema,
-          run_id: runIdSchema,
-          session_id: sessionIdSchema,
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      builtin_tool_output: z
-        .object({
-          tool_name: z.string().min(1),
-          tool_use_id: toolUseIdSchema,
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      consolidated: z
-        .object({
-          from: z.array(memoryItemIdSchema),
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      imported: z
-        .object({
-          import_id: z.string().min(1),
-          importer: z.string().min(1),
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      mcp_tool_output: z
-        .object({
-          server_id: z.string().min(1),
-          tool_name: z.string().min(1),
-          tool_use_id: toolUseIdSchema,
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      plugin_output: z
-        .object({
-          plugin_id: z.string().min(1),
-          tool_name: z.string().min(1).nullable().optional(),
-          tool_use_id: toolUseIdSchema.nullable().optional(),
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      subagent_output: z
-        .object({
-          agent_id: agentIdSchema.nullable().optional(),
-          child_session_id: sessionIdSchema,
-          parent_session_id: sessionIdSchema,
-          run_id: runIdSchema,
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      user_message: z
-        .object({
-          message_id: messageIdSchema,
-          run_id: runIdSchema,
-          session_id: sessionIdSchema,
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      web_retrieval: z
-        .object({
-          fetch_tool_use_id: toolUseIdSchema.nullable().optional(),
-          url_hash: contentHashSchema,
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      workspace_file: z
-        .object({
-          path_hash: contentHashSchema,
-          snapshot_id: snapshotIdSchema.nullable().optional(),
-          workspace_id: workspaceIdSchema,
-        })
-        .strict(),
-    })
-    .strict(),
-])
-const memoryMetadataDraftSchema = z
-  .object({
-    source_trust: z.number().min(0).max(1).optional(),
-    tags: z.array(z.string()),
-    ttl: z.unknown().nullable().optional(),
-  })
-  .strict()
-const memoryRecordDraftSchema = z
-  .object({
-    content: z.string().min(1),
-    expires_at: z.string().datetime({ offset: true }).nullable().optional(),
-    kind: contractMemoryKindSchema,
-    metadata: memoryMetadataDraftSchema,
-    visibility: contractMemoryVisibilitySchema,
-  })
-  .strict()
-const memoryEvidenceSchema = z
-  .object({
-    content_hash: contentHashSchema,
-    message_id: memoryItemIdSchema.nullable().optional(),
-    origin: memoryEvidenceOriginSchema,
-    run_id: runIdSchema.nullable().optional(),
-    session_id: sessionIdSchema.nullable().optional(),
-    source: contractMemorySourceSchema,
-    tool_use_id: memoryItemIdSchema.nullable().optional(),
-  })
-  .strict()
-const memoryCandidateListItemSchema = z
-  .object({
-    created_at: z.string().datetime({ offset: true }),
-    evidence: memoryEvidenceSchema,
-    expires_at: z.string().datetime({ offset: true }).nullable().optional(),
-    id: memoryCandidateIdSchema,
-    operation: memoryCandidateOperationSchema,
-    proposed_record: memoryRecordDraftSchema,
-    state: memoryCandidateStateSchema,
-  })
-  .strict()
-const memoryCandidateSchema = memoryCandidateListItemSchema
-  .extend({
-    tenant_id: tenantIdSchema,
-    updated_at: z.string().datetime({ offset: true }),
-  })
-  .strict()
-
-const listMemoryCandidatesRequestSchema = z
-  .object({
-    cursor: z.string().min(1).optional(),
-    limit: z.number().int().min(1).max(200),
-    sessionId: sessionIdSchema.optional(),
-    state: memoryCandidateStateSchema.optional(),
-    tenantId: tenantIdSchema.default(DEFAULT_MEMORY_TENANT_ID),
-  })
-  .strict()
-const listMemoryCandidatesResponseSchema = z
-  .object({
-    candidates: z.array(memoryCandidateListItemSchema),
-    next_cursor: z.string().min(1).nullable().optional(),
-  })
-  .strict()
-const approveMemoryCandidateRequestSchema = z
-  .object({
-    actionPlanId: actionPlanIdSchema.optional(),
-    candidateId: memoryCandidateIdSchema,
-    tenantId: tenantIdSchema.default(DEFAULT_MEMORY_TENANT_ID),
-  })
-  .strict()
-const approveMemoryCandidateResponseSchema = z
-  .object({
-    candidate: memoryCandidateSchema,
-    memory_id: memoryItemIdSchema,
-  })
-  .strict()
-const rejectMemoryCandidateRequestSchema = z
-  .object({
-    candidateId: memoryCandidateIdSchema,
-    reason: z.string().trim().min(1).max(2_000),
-    tenantId: tenantIdSchema.default(DEFAULT_MEMORY_TENANT_ID),
-  })
-  .strict()
-const rejectMemoryCandidateResponseSchema = z
-  .object({
-    candidate: memoryCandidateSchema,
-  })
-  .strict()
-const mergeMemoryCandidateRequestSchema = z
-  .object({
-    actionPlanId: actionPlanIdSchema.optional(),
-    candidateIds: z
-      .array(memoryCandidateIdSchema)
-      .min(2)
-      .refine((candidateIds) => new Set(candidateIds).size === candidateIds.length, {
-        message: 'candidateIds must contain distinct candidates',
-      }),
-    evidence: memoryEvidenceSchema,
-    mergedRecord: memoryRecordDraftSchema,
-    tenantId: tenantIdSchema.default(DEFAULT_MEMORY_TENANT_ID),
-  })
-  .strict()
-const mergeMemoryCandidateResponseSchema = z
-  .object({
-    candidate_ids: z.array(memoryCandidateIdSchema),
-    memory_id: memoryItemIdSchema,
-  })
-  .strict()
-
-const memoryProviderTrustSchema = z.enum(['built_in', 'external', 'plugin', 'team', 'workspace'])
-const memoryDropReasonSchema = z.enum([
-  'budget_exceeded',
-  'deleted',
-  'duplicate',
-  'expired',
-  'policy_denied',
-  'provider_error',
-  'provider_timeout',
-  'score_below_threshold',
-  'threat_blocked',
-  'visibility_denied',
-])
-const memoryPolicyDenyReasonSchema = z.enum([
-  'external_context_generation_disabled',
-  'global_generation_disabled',
-  'global_use_disabled',
-  'missing_policy',
-  'permission_required',
-  'provider_not_writable',
-  'tenant_mismatch',
-  'thread_generation_disabled',
-  'thread_use_disabled',
-  'threat_blocked',
-  'tombstone_matched',
-  'visibility_escalation_denied',
-])
-const memoryPolicyDecisionSchema = z.union([
-  z.literal('allow'),
-  z.object({ deny: z.object({ reason: memoryPolicyDenyReasonSchema }).strict() }).strict(),
-  z
-    .object({ candidate_only: z.object({ reason: memoryPolicyDenyReasonSchema }).strict() })
-    .strict(),
-])
-const memoryScoreBreakdownSchema = z
-  .object({
-    access_score: z.number(),
-    confidence_score: z.number(),
-    explicit_selection_boost: z.number(),
-    final_score: z.number(),
-    lexical_score: z.number(),
-    recency_score: z.number(),
-    source_trust_score: z.number(),
-    vector_score: z.number().nullable().optional(),
-  })
-  .strict()
-const memoryProviderTraceSchema = z
-  .object({
-    error_kind: z.string().nullable().optional(),
-    latency_ms: z.number().int().min(0),
-    provider_id: z.string().min(1),
-    readable: z.boolean(),
-    requested_count: z.number().int().min(0),
-    returned_count: z.number().int().min(0),
-    timed_out: z.boolean(),
-    trust_level: memoryProviderTrustSchema,
-    writable: z.boolean(),
-  })
-  .strict()
-const memoryCandidateTraceSchema = z
-  .object({
-    content_hash: contentHashSchema,
-    memory_id: memoryItemIdSchema,
-    policy_decision: memoryPolicyDecisionSchema,
-    provider_id: z.string().min(1),
-    score: memoryScoreBreakdownSchema,
-  })
-  .strict()
-const memoryInjectedTraceSchema = z
-  .object({
-    content_hash: contentHashSchema,
-    fence_id: z.string().min(1),
-    injected_chars: z.number().int().min(0),
-    memory_id: memoryItemIdSchema,
-    provider_id: z.string().min(1),
-  })
-  .strict()
-const memoryDroppedTraceSchema = z
-  .object({
-    content_hash: contentHashSchema.nullable().optional(),
-    memory_id: memoryItemIdSchema.nullable().optional(),
-    provider_id: z.string().min(1).nullable().optional(),
-    reason: memoryDropReasonSchema,
-  })
-  .strict()
-const memoryRecallTraceSchema = z
-  .object({
-    at: z.string().datetime({ offset: true }),
-    candidates: z.array(memoryCandidateTraceSchema),
-    deadline_used_ms: z.number().int().min(0),
-    dropped: z.array(memoryDroppedTraceSchema),
-    injected: z.array(memoryInjectedTraceSchema),
-    injected_chars: z.number().int().min(0),
-    provider_results: z.array(memoryProviderTraceSchema),
-    query_text_hash: contentHashSchema,
-    redacted_count: z.number().int().min(0),
-    run_id: runIdSchema,
-    session_id: sessionIdSchema,
-    tenant_id: tenantIdSchema,
-    trace_id: memoryTraceIdSchema,
-    turn: z.number().int().min(0),
-  })
-  .strict()
-
-const memoryRecallTraceSummarySchema = z
-  .object({
-    at: z.string().datetime({ offset: true }),
-    dropped_count: z.number().int().min(0),
-    injected_count: z.number().int().min(0),
-    redacted_count: z.number().int().min(0),
-    run_id: runIdSchema,
-    session_id: sessionIdSchema,
-    tenant_id: tenantIdSchema,
-    trace_id: memoryTraceIdSchema,
-  })
-  .strict()
-const listMemoryRecallTracesRequestSchema = z
-  .object({
-    cursor: z.string().min(1).optional(),
-    limit: z.number().int().min(1).max(200),
-    runId: runIdSchema.optional(),
-    sessionId: sessionIdSchema.optional(),
-    tenantId: tenantIdSchema.default(DEFAULT_MEMORY_TENANT_ID),
-  })
-  .strict()
-const listMemoryRecallTracesResponseSchema = z
-  .object({
-    next_cursor: z.string().min(1).nullable().optional(),
-    traces: z.array(memoryRecallTraceSummarySchema),
-  })
-  .strict()
-const getMemoryRecallTraceRequestSchema = z
-  .object({
-    tenantId: tenantIdSchema.default(DEFAULT_MEMORY_TENANT_ID),
-    traceId: memoryTraceIdSchema,
-  })
-  .strict()
-const getMemoryRecallTraceResponseSchema = z
-  .object({
-    trace: memoryRecallTraceSchema,
-  })
-  .strict()
-const memoryModelRequestPreviewSectionSchema = z
-  .object({
-    memory_ids: z.array(memoryItemIdSchema),
-    provider_id: z.string().min(1).nullable().optional(),
-    redacted_content: z.string(),
-    source: contractMemorySourceSchema,
-  })
-  .strict()
-const memoryModelRequestPreviewSchema = z
-  .object({
-    content_hash: contentHashSchema,
-    policy_decisions: z.array(z.string()).default([]),
-    redacted_count: z.number().int().min(0),
-    run_id: runIdSchema,
-    sections: z.array(memoryModelRequestPreviewSectionSchema),
-    session_id: sessionIdSchema,
-    token_estimate: z.number().int().min(0),
-    tool_names: z.array(z.string()).default([]),
-    trace_id: memoryTraceIdSchema.nullable().optional(),
-  })
-  .strict()
-const getModelRequestPreviewRequestSchema = z
-  .object({
-    runId: runIdSchema,
-    sessionId: sessionIdSchema,
-    tenantId: tenantIdSchema.default(DEFAULT_MEMORY_TENANT_ID),
-    traceId: memoryTraceIdSchema.optional(),
-  })
-  .strict()
-const getModelRequestPreviewResponseSchema = z
-  .object({
-    preview: memoryModelRequestPreviewSchema,
-  })
-  .strict()
 
 const evalRunStatusSchema = z.enum(['failed', 'passed', 'running', 'unavailable'])
 
@@ -4503,49 +3858,12 @@ export type InstallSkillFromCatalogResponse = z.infer<typeof installSkillFromCat
 export type SkillCatalogInstallProgressPayload = z.infer<
   typeof skillCatalogInstallProgressPayloadSchema
 >
-export type MemoryItemSummary = z.infer<typeof memoryItemSummarySchema>
-export type ListMemoryItemsResponse = z.infer<typeof listMemoryItemsResponseSchema>
-export type GetMemoryItemResponse = z.infer<typeof getMemoryItemResponseSchema>
-export type UpdateMemoryItemRequest = z.infer<typeof updateMemoryItemRequestSchema>
-export type UpdateMemoryItemResponse = z.infer<typeof updateMemoryItemResponseSchema>
-export type DeleteMemoryItemRequest = z.infer<typeof deleteMemoryItemRequestSchema>
-export type DeleteMemoryItemResponse = z.infer<typeof deleteMemoryItemResponseSchema>
-export type ExportMemoryItemsRequest = z.infer<typeof exportMemoryItemsRequestSchema>
-export type ExportMemoryItemsResponse = z.infer<typeof exportMemoryItemsResponseSchema>
-type GetMemorySettingsRequest = z.input<typeof getMemorySettingsRequestSchema>
-export type UpdateMemorySettingsRequest = z.input<typeof updateMemorySettingsRequestSchema>
-export type GetMemorySettingsResponse = z.infer<typeof memorySettingsResponseSchema>
-export type UpdateMemorySettingsResponse = z.infer<typeof memorySettingsResponseSchema>
-export type MemoryThreadMode = z.infer<typeof memoryThreadModeSchema>
-export type GetThreadMemorySettingsRequest = z.input<typeof getThreadMemorySettingsRequestSchema>
-export type UpdateThreadMemorySettingsRequest = z.input<
-  typeof updateThreadMemorySettingsRequestSchema
->
-export type GetThreadMemorySettingsResponse = z.infer<typeof threadMemorySettingsResponseSchema>
-export type UpdateThreadMemorySettingsResponse = z.infer<typeof threadMemorySettingsResponseSchema>
-export type ListMemoryCandidatesRequest = z.input<typeof listMemoryCandidatesRequestSchema>
-export type ListMemoryCandidatesResponse = z.infer<typeof listMemoryCandidatesResponseSchema>
-export type ApproveMemoryCandidateRequest = z.input<typeof approveMemoryCandidateRequestSchema>
-export type ApproveMemoryCandidateResponse = z.infer<typeof approveMemoryCandidateResponseSchema>
-export type RejectMemoryCandidateRequest = z.input<typeof rejectMemoryCandidateRequestSchema>
-export type RejectMemoryCandidateResponse = z.infer<typeof rejectMemoryCandidateResponseSchema>
-type MergeMemoryCandidateRequest = z.input<typeof mergeMemoryCandidateRequestSchema>
-type MergeMemoryCandidateResponse = z.infer<typeof mergeMemoryCandidateResponseSchema>
-export type ListMemoryRecallTracesRequest = z.input<typeof listMemoryRecallTracesRequestSchema>
-export type ListMemoryRecallTracesResponse = z.infer<typeof listMemoryRecallTracesResponseSchema>
-export type GetMemoryRecallTraceRequest = z.input<typeof getMemoryRecallTraceRequestSchema>
-export type GetMemoryRecallTraceResponse = z.infer<typeof getMemoryRecallTraceResponseSchema>
-export type GetModelRequestPreviewRequest = z.input<typeof getModelRequestPreviewRequestSchema>
-export type GetModelRequestPreviewResponse = z.infer<typeof getModelRequestPreviewResponseSchema>
 export type ListEvalCasesResponse = z.infer<typeof listEvalCasesResponseSchema>
 export type RunEvalCaseResponse = z.infer<typeof runEvalCaseResponseSchema>
 export type ListArtifactsRequest = z.infer<typeof listArtifactsRequestSchema>
 export type ListReferenceCandidatesRequest = z.infer<typeof listReferenceCandidatesRequestSchema>
 
 export interface CommandClient {
-  approveMemoryCandidate: (
-    request: ApproveMemoryCandidateRequest,
-  ) => Promise<ApproveMemoryCandidateResponse>
   cancelRun: (runId: string) => Promise<CancelRunResponse>
   createAttachmentFromPath: (
     path: string,
@@ -4561,7 +3879,6 @@ export interface CommandClient {
   ) => Promise<DeleteBackgroundAgentResponse>
   deleteConversation: (conversationId: string) => Promise<DeleteConversationResponse>
   deleteMcpServer: (id: string) => Promise<DeleteMcpServerResponse>
-  deleteMemoryItem: (request: DeleteMemoryItemRequest) => Promise<DeleteMemoryItemResponse>
   uninstallPlugin: (pluginId: string) => Promise<PluginOperationResult>
   deleteSkill: (id: string) => Promise<DeleteSkillResponse>
   getContextSnapshot: (request: GetContextSnapshotRequest) => Promise<GetContextSnapshotResponse>
@@ -4575,11 +3892,6 @@ export interface CommandClient {
   getModelUsageSummary: () => Promise<GetModelUsageSummaryResponse>
   refreshModelProviderCatalog: () => Promise<RefreshModelProviderCatalogResponse>
   listOfficialQuotaSnapshots: () => Promise<ListOfficialQuotaSnapshotsResponse>
-  getMemoryItem: (id: string) => Promise<GetMemoryItemResponse>
-  getMemorySettings: (request?: GetMemorySettingsRequest) => Promise<GetMemorySettingsResponse>
-  getThreadMemorySettings: (
-    request: GetThreadMemorySettingsRequest,
-  ) => Promise<GetThreadMemorySettingsResponse>
   getMcpServerConfig: (id: string) => Promise<GetMcpServerConfigResponse>
   getPluginDetail: (pluginId: string) => Promise<GetPluginDetailResponse>
   getProviderConfigApiKey: (
@@ -4602,7 +3914,6 @@ export interface CommandClient {
   listenSkillCatalogInstallProgress: (
     onProgress: (progress: SkillCatalogInstallProgressPayload) => void,
   ) => Promise<() => void>
-  exportMemoryItems: (request: ExportMemoryItemsRequest) => Promise<ExportMemoryItemsResponse>
   exportSupportBundle: (request: ExportSupportBundleRequest) => Promise<ExportSupportBundleResponse>
   getExecutionSettings: (
     request?: GetExecutionSettingsRequest,
@@ -4628,19 +3939,6 @@ export interface CommandClient {
   listModelProviderCatalog: () => Promise<ModelProviderCatalogResponse>
   listMcpDiagnostics: (serverId?: string) => Promise<ListMcpDiagnosticsResponse>
   listMcpServers: () => Promise<ListMcpServersResponse>
-  listMemoryCandidates: (
-    request: ListMemoryCandidatesRequest,
-  ) => Promise<ListMemoryCandidatesResponse>
-  listMemoryRecallTraces: (
-    request: ListMemoryRecallTracesRequest,
-  ) => Promise<ListMemoryRecallTracesResponse>
-  getMemoryRecallTrace: (
-    request: GetMemoryRecallTraceRequest,
-  ) => Promise<GetMemoryRecallTraceResponse>
-  getModelRequestPreview: (
-    request: GetModelRequestPreviewRequest,
-  ) => Promise<GetModelRequestPreviewResponse>
-  listMemoryItems: () => Promise<ListMemoryItemsResponse>
   listPlugins: () => Promise<ListPluginsResponse>
   listProviderSettings: (workspaceRoot?: string) => Promise<ListProviderSettingsResponse>
   listProviderCapabilityRoutes: () => Promise<ListProviderCapabilityRoutesResponse>
@@ -4688,18 +3986,12 @@ export interface CommandClient {
     request: ExportConversationEvidenceRequest,
   ) => Promise<ExportConversationEvidenceResponse>
   reloadPlugin: (pluginId: string) => Promise<PluginOperationResult>
-  mergeMemoryCandidate: (
-    request: MergeMemoryCandidateRequest,
-  ) => Promise<MergeMemoryCandidateResponse>
   requestProviderConfigApiKeyReveal: (
     configId: string,
   ) => Promise<RequestProviderConfigApiKeyRevealResponse>
   resumeBackgroundAgent: (
     request: BackgroundAgentIdRequest,
   ) => Promise<BackgroundAgentActionResponse>
-  rejectMemoryCandidate: (
-    request: RejectMemoryCandidateRequest,
-  ) => Promise<RejectMemoryCandidateResponse>
   runAutomationNow: (id: string) => Promise<RunAutomationNowResponse>
   runEvalCase: (caseId: string) => Promise<RunEvalCaseResponse>
   saveAutomation: (request: SaveAutomationRequest) => Promise<SaveAutomationResponse>
@@ -4742,13 +4034,6 @@ export interface CommandClient {
     onBatch: (batch: McpDiagnosticBatchPayload) => void,
   ) => Promise<() => void>
   unsubscribeMcpDiagnostics: (subscriptionId: string) => Promise<UnsubscribeMcpDiagnosticsResponse>
-  updateMemoryItem: (request: UpdateMemoryItemRequest) => Promise<UpdateMemoryItemResponse>
-  updateMemorySettings: (
-    request: UpdateMemorySettingsRequest,
-  ) => Promise<UpdateMemorySettingsResponse>
-  updateThreadMemorySettings: (
-    request: UpdateThreadMemorySettingsRequest,
-  ) => Promise<UpdateThreadMemorySettingsResponse>
   updatePluginConfig: (
     pluginId: string,
     values: PluginConfigUpdate['values'],
@@ -4785,128 +4070,8 @@ function parseArgs<T>(command: string, schema: z.ZodType<T>, args: unknown): T {
   return parsePayload(`${command} args`, schema, args)
 }
 
-function memorySettingsRequestArgs(request: GetMemorySettingsRequest = {}) {
-  return {
-    request: {
-      tenant_id: request.tenantId ?? DEFAULT_MEMORY_TENANT_ID,
-    },
-  }
-}
-
-function updateMemorySettingsRequestArgs(request: UpdateMemorySettingsRequest) {
-  return {
-    request: {
-      settings: request.settings,
-      tenant_id: request.tenantId ?? DEFAULT_MEMORY_TENANT_ID,
-    },
-  }
-}
-
-function threadMemorySettingsRequestArgs(request: GetThreadMemorySettingsRequest) {
-  return {
-    request: {
-      session_id: request.sessionId,
-      tenant_id: request.tenantId ?? DEFAULT_MEMORY_TENANT_ID,
-    },
-  }
-}
-
-function updateThreadMemorySettingsRequestArgs(request: UpdateThreadMemorySettingsRequest) {
-  return {
-    request: {
-      settings: request.settings,
-      tenant_id: request.tenantId ?? DEFAULT_MEMORY_TENANT_ID,
-    },
-  }
-}
-
-function listMemoryCandidatesRequestArgs(request: ListMemoryCandidatesRequest) {
-  return {
-    request: {
-      cursor: request.cursor,
-      limit: request.limit,
-      session_id: request.sessionId,
-      state: request.state,
-      tenant_id: request.tenantId ?? DEFAULT_MEMORY_TENANT_ID,
-    },
-  }
-}
-
-function approveMemoryCandidateRequestArgs(request: ApproveMemoryCandidateRequest) {
-  return {
-    request: {
-      ...(request.actionPlanId ? { action_plan_id: request.actionPlanId } : {}),
-      candidate_id: request.candidateId,
-      tenant_id: request.tenantId ?? DEFAULT_MEMORY_TENANT_ID,
-    },
-  }
-}
-
-function rejectMemoryCandidateRequestArgs(request: RejectMemoryCandidateRequest) {
-  return {
-    request: {
-      candidate_id: request.candidateId,
-      reason: request.reason,
-      tenant_id: request.tenantId ?? DEFAULT_MEMORY_TENANT_ID,
-    },
-  }
-}
-
-function mergeMemoryCandidateRequestArgs(request: MergeMemoryCandidateRequest) {
-  return {
-    request: {
-      ...(request.actionPlanId ? { action_plan_id: request.actionPlanId } : {}),
-      candidate_ids: request.candidateIds,
-      evidence: request.evidence,
-      merged_record: request.mergedRecord,
-      tenant_id: request.tenantId ?? DEFAULT_MEMORY_TENANT_ID,
-    },
-  }
-}
-
-function listMemoryRecallTracesRequestArgs(request: ListMemoryRecallTracesRequest) {
-  return {
-    request: {
-      cursor: request.cursor,
-      limit: request.limit,
-      run_id: request.runId,
-      session_id: request.sessionId,
-      tenant_id: request.tenantId ?? DEFAULT_MEMORY_TENANT_ID,
-    },
-  }
-}
-
-function getMemoryRecallTraceRequestArgs(request: GetMemoryRecallTraceRequest) {
-  return {
-    request: {
-      tenant_id: request.tenantId ?? DEFAULT_MEMORY_TENANT_ID,
-      trace_id: request.traceId,
-    },
-  }
-}
-
-function getModelRequestPreviewRequestArgs(request: GetModelRequestPreviewRequest) {
-  return {
-    request: {
-      run_id: request.runId,
-      session_id: request.sessionId,
-      tenant_id: request.tenantId ?? DEFAULT_MEMORY_TENANT_ID,
-      trace_id: request.traceId,
-    },
-  }
-}
-
 export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): CommandClient {
   return {
-    async approveMemoryCandidate(request) {
-      const command = 'approve_memory_candidate'
-      const parsed = parseArgs(command, approveMemoryCandidateRequestSchema, request)
-      return parsePayload(
-        command,
-        approveMemoryCandidateResponseSchema,
-        await invoke(command, approveMemoryCandidateRequestArgs(parsed)),
-      )
-    },
     async cancelRun(runId) {
       const command = 'cancel_run'
       const args = parseArgs(command, cancelRunRequestSchema, { runId })
@@ -4945,11 +4110,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, deleteMcpServerRequestSchema, { id })
       return parsePayload(command, deleteMcpServerResponseSchema, await invoke(command, args))
     },
-    async deleteMemoryItem(request) {
-      const command = 'delete_memory_item'
-      const args = parseArgs(command, deleteMemoryItemRequestSchema, request)
-      return parsePayload(command, deleteMemoryItemResponseSchema, await invoke(command, args))
-    },
     async uninstallPlugin(pluginId) {
       const command = 'uninstall_plugin'
       const args = parseArgs(command, pluginIdRequestSchema, { pluginId })
@@ -4959,15 +4119,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'delete_skill'
       const args = parseArgs(command, deleteSkillRequestSchema, { id })
       return parsePayload(command, deleteSkillResponseSchema, await invoke(command, args))
-    },
-    async exportMemoryItems(request) {
-      const command = 'export_memory_items'
-      const args = parseArgs(command, exportMemoryItemsRequestSchema, request)
-      return parsePayload(
-        command,
-        exportMemoryItemsResponseSchema,
-        await invoke(command, { request: args }),
-      )
     },
     async exportSupportBundle(request) {
       const command = 'export_support_bundle'
@@ -5034,29 +4185,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
     async listOfficialQuotaSnapshots() {
       const command = 'list_official_quota_snapshots'
       return parsePayload(command, listOfficialQuotaSnapshotsResponseSchema, await invoke(command))
-    },
-    async getMemoryItem(id) {
-      const command = 'get_memory_item'
-      const args = parseArgs(command, getMemoryItemRequestSchema, { id })
-      return parsePayload(command, getMemoryItemResponseSchema, await invoke(command, args))
-    },
-    async getMemorySettings(request) {
-      const command = 'get_memory_settings'
-      const parsed = parseArgs(command, getMemorySettingsRequestSchema, request ?? {})
-      return parsePayload(
-        command,
-        memorySettingsResponseSchema,
-        await invoke(command, memorySettingsRequestArgs(parsed)),
-      )
-    },
-    async getThreadMemorySettings(request) {
-      const command = 'get_thread_memory_settings'
-      const parsed = parseArgs(command, getThreadMemorySettingsRequestSchema, request)
-      return parsePayload(
-        command,
-        threadMemorySettingsResponseSchema,
-        await invoke(command, threadMemorySettingsRequestArgs(parsed)),
-      )
     },
     async getProviderConfigApiKey(configId, revealToken) {
       const command = 'get_provider_config_api_key'
@@ -5278,46 +4406,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       })
       return parsePayload(command, getPluginDetailResponseSchema, await invoke(command, args))
     },
-    async listMemoryItems() {
-      const command = 'list_memory_items'
-      return parsePayload(command, listMemoryItemsResponseSchema, await invoke(command))
-    },
-    async listMemoryCandidates(request) {
-      const command = 'list_memory_candidates'
-      const parsed = parseArgs(command, listMemoryCandidatesRequestSchema, request)
-      return parsePayload(
-        command,
-        listMemoryCandidatesResponseSchema,
-        await invoke(command, listMemoryCandidatesRequestArgs(parsed)),
-      )
-    },
-    async listMemoryRecallTraces(request) {
-      const command = 'list_memory_recall_traces'
-      const parsed = parseArgs(command, listMemoryRecallTracesRequestSchema, request)
-      return parsePayload(
-        command,
-        listMemoryRecallTracesResponseSchema,
-        await invoke(command, listMemoryRecallTracesRequestArgs(parsed)),
-      )
-    },
-    async getMemoryRecallTrace(request) {
-      const command = 'get_memory_recall_trace'
-      const parsed = parseArgs(command, getMemoryRecallTraceRequestSchema, request)
-      return parsePayload(
-        command,
-        getMemoryRecallTraceResponseSchema,
-        await invoke(command, getMemoryRecallTraceRequestArgs(parsed)),
-      )
-    },
-    async getModelRequestPreview(request) {
-      const command = 'get_model_request_preview'
-      const parsed = parseArgs(command, getModelRequestPreviewRequestSchema, request)
-      return parsePayload(
-        command,
-        getModelRequestPreviewResponseSchema,
-        await invoke(command, getModelRequestPreviewRequestArgs(parsed)),
-      )
-    },
     async listReferenceCandidates(request) {
       const command = 'list_reference_candidates'
       const args = parseArgs(command, listReferenceCandidatesRequestSchema, request)
@@ -5456,15 +4544,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, pluginIdRequestSchema, { pluginId })
       return parsePayload(command, pluginOperationResultSchema, await invoke(command, args))
     },
-    async mergeMemoryCandidate(request) {
-      const command = 'merge_memory_candidate'
-      const parsed = parseArgs(command, mergeMemoryCandidateRequestSchema, request)
-      return parsePayload(
-        command,
-        mergeMemoryCandidateResponseSchema,
-        await invoke(command, mergeMemoryCandidateRequestArgs(parsed)),
-      )
-    },
     async requestProviderConfigApiKeyReveal(configId) {
       const command = 'request_provider_config_api_key_reveal'
       const args = parseArgs(command, requestProviderConfigApiKeyRevealRequestSchema, {
@@ -5480,15 +4559,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'resume_background_agent'
       const args = parseArgs(command, backgroundAgentIdRequestSchema, request)
       return parsePayload(command, backgroundAgentActionResponseSchema, await invoke(command, args))
-    },
-    async rejectMemoryCandidate(request) {
-      const command = 'reject_memory_candidate'
-      const parsed = parseArgs(command, rejectMemoryCandidateRequestSchema, request)
-      return parsePayload(
-        command,
-        rejectMemoryCandidateResponseSchema,
-        await invoke(command, rejectMemoryCandidateRequestArgs(parsed)),
-      )
     },
     async runEvalCase(caseId) {
       const command = 'run_eval_case'
@@ -5655,29 +4725,6 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         command,
         unsubscribeMcpDiagnosticsResponseSchema,
         await invoke(command, args),
-      )
-    },
-    async updateMemoryItem(request) {
-      const command = 'update_memory_item'
-      const args = parseArgs(command, updateMemoryItemRequestSchema, request)
-      return parsePayload(command, updateMemoryItemResponseSchema, await invoke(command, args))
-    },
-    async updateMemorySettings(request) {
-      const command = 'update_memory_settings'
-      const parsed = parseArgs(command, updateMemorySettingsRequestSchema, request)
-      return parsePayload(
-        command,
-        memorySettingsResponseSchema,
-        await invoke(command, updateMemorySettingsRequestArgs(parsed)),
-      )
-    },
-    async updateThreadMemorySettings(request) {
-      const command = 'update_thread_memory_settings'
-      const parsed = parseArgs(command, updateThreadMemorySettingsRequestSchema, request)
-      return parsePayload(
-        command,
-        threadMemorySettingsResponseSchema,
-        await invoke(command, updateThreadMemorySettingsRequestArgs(parsed)),
       )
     },
     async updatePluginConfig(pluginId, values) {
@@ -6219,116 +5266,6 @@ export function deleteSkill(
   client: CommandClient = tauriCommandClient,
 ): Promise<DeleteSkillResponse> {
   return client.deleteSkill(id)
-}
-
-export function listMemoryItems(
-  client: CommandClient = tauriCommandClient,
-): Promise<ListMemoryItemsResponse> {
-  return client.listMemoryItems()
-}
-
-export function getMemoryItem(
-  id: string,
-  client: CommandClient = tauriCommandClient,
-): Promise<GetMemoryItemResponse> {
-  return client.getMemoryItem(id)
-}
-
-export function updateMemoryItem(
-  request: UpdateMemoryItemRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<UpdateMemoryItemResponse> {
-  return client.updateMemoryItem(request)
-}
-
-export function deleteMemoryItem(
-  request: DeleteMemoryItemRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<DeleteMemoryItemResponse> {
-  return client.deleteMemoryItem(request)
-}
-
-export function exportMemoryItems(
-  request: ExportMemoryItemsRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<ExportMemoryItemsResponse> {
-  return client.exportMemoryItems(request)
-}
-
-export function getMemorySettings(
-  client: CommandClient = tauriCommandClient,
-): Promise<GetMemorySettingsResponse> {
-  return client.getMemorySettings()
-}
-
-export function updateMemorySettings(
-  request: UpdateMemorySettingsRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<UpdateMemorySettingsResponse> {
-  return client.updateMemorySettings(request)
-}
-
-export function getThreadMemorySettings(
-  request: GetThreadMemorySettingsRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<GetThreadMemorySettingsResponse> {
-  return client.getThreadMemorySettings(request)
-}
-
-export function updateThreadMemorySettings(
-  request: UpdateThreadMemorySettingsRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<UpdateThreadMemorySettingsResponse> {
-  return client.updateThreadMemorySettings(request)
-}
-
-export function listMemoryCandidates(
-  request: ListMemoryCandidatesRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<ListMemoryCandidatesResponse> {
-  return client.listMemoryCandidates(request)
-}
-
-export function approveMemoryCandidate(
-  request: ApproveMemoryCandidateRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<ApproveMemoryCandidateResponse> {
-  return client.approveMemoryCandidate(request)
-}
-
-export function rejectMemoryCandidate(
-  request: RejectMemoryCandidateRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<RejectMemoryCandidateResponse> {
-  return client.rejectMemoryCandidate(request)
-}
-
-export function mergeMemoryCandidate(
-  request: MergeMemoryCandidateRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<MergeMemoryCandidateResponse> {
-  return client.mergeMemoryCandidate(request)
-}
-
-export function listMemoryRecallTraces(
-  request: ListMemoryRecallTracesRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<ListMemoryRecallTracesResponse> {
-  return client.listMemoryRecallTraces(request)
-}
-
-export function getMemoryRecallTrace(
-  request: GetMemoryRecallTraceRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<GetMemoryRecallTraceResponse> {
-  return client.getMemoryRecallTrace(request)
-}
-
-export function getModelRequestPreview(
-  request: GetModelRequestPreviewRequest,
-  client: CommandClient = tauriCommandClient,
-): Promise<GetModelRequestPreviewResponse> {
-  return client.getModelRequestPreview(request)
 }
 
 export function exportSupportBundle(

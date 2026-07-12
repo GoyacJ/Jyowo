@@ -16,7 +16,6 @@ use super::evals::*;
 #[allow(unused_imports)]
 use super::mcp::*;
 #[allow(unused_imports)]
-use super::memory::*;
 #[allow(unused_imports)]
 use super::model_settings::*;
 #[allow(unused_imports)]
@@ -113,7 +112,6 @@ impl DesktopRuntimeState {
                 storage_layout.clone(),
             )),
             default_conversation_id: SessionId::new(),
-            memory_lock: Arc::new(tokio::sync::Mutex::new(())),
             mcp_diagnostic_store: Arc::new(DesktopMcpDiagnosticStore::new_runtime_root(
                 runtime_layout.runtime_root.clone(),
             )),
@@ -320,7 +318,6 @@ impl DesktopRuntimeState {
             automation_lock: Arc::new(tokio::sync::Mutex::new(())),
             automation_store: automation_store_for_layout(&runtime_layout),
             default_conversation_id: SessionId::new(),
-            memory_lock: Arc::new(tokio::sync::Mutex::new(())),
             mcp_diagnostic_store: Arc::new(DesktopMcpDiagnosticStore::new_runtime_root(
                 runtime_layout.runtime_root.clone(),
             )),
@@ -937,7 +934,6 @@ pub(crate) async fn build_desktop_settings_runtime(
     let execution_cwd = layout.conversation_cwd.as_path();
     let runtime_root = &layout.runtime_root;
 
-    ensure_desktop_settings_store_paths(runtime_root)?;
     let event_store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new(Arc::new(
         DefaultRedactor::default(),
     )));
@@ -1111,20 +1107,6 @@ pub(crate) async fn build_desktop_settings_runtime(
         .with_capability(ToolCapability::NetworkBroker, network_broker)
         .with_mcp_config(mcp_config)
         .with_plugin_registry(plugin_registry)
-        .with_memory_database_path(layout.runtime_root.join("memory").join("memory.sqlite3"))
-        .with_memory_provider(
-            harness_memory::local::LocalMemoryProvider::open(
-                &layout
-                    .runtime_root
-                    .join("memory")
-                    .join("memory.sqlite3")
-                    .to_string_lossy(),
-                TenantId::SINGLE,
-            )
-            .map_err(|e| {
-                runtime_init_failed(format!("memory provider initialization failed: {e}"))
-            })?,
-        )
         .with_skill_loader(skill_loader)
         .with_permission_authority_arc(authorization_service.permission_authority())
         .with_authorization_service_arc(authorization_service)
@@ -1138,43 +1120,6 @@ pub(crate) async fn build_desktop_settings_runtime(
         .into();
 
     Ok((settings_runtime, model_id, protocol, model_options))
-}
-
-fn ensure_desktop_settings_store_paths(runtime_root: &Path) -> Result<(), CommandErrorPayload> {
-    ensure_runtime_directory_no_symlink(runtime_root, "runtime root")?;
-    ensure_runtime_directory_no_symlink(&runtime_root.join("memory"), "runtime memory directory")?;
-
-    for (path, label) in [
-        (
-            runtime_root.join("memory").join("memory.sqlite3"),
-            "memory sqlite file",
-        ),
-        (
-            runtime_root.join("memory").join("memory.sqlite3-shm"),
-            "memory sqlite shm file",
-        ),
-        (
-            runtime_root.join("memory").join("memory.sqlite3-wal"),
-            "memory sqlite wal file",
-        ),
-    ] {
-        ensure_runtime_path_no_symlink(&path, label)?;
-    }
-
-    Ok(())
-}
-
-fn ensure_runtime_directory_no_symlink(
-    path: &Path,
-    label: &str,
-) -> Result<(), CommandErrorPayload> {
-    super::stores::ensure_app_dir_no_symlink(path, label)
-        .map_err(|error| runtime_init_failed(error.message))
-}
-
-fn ensure_runtime_path_no_symlink(path: &Path, label: &str) -> Result<(), CommandErrorPayload> {
-    super::stores::ensure_no_symlink_components(path, label)
-        .map_err(|error| runtime_init_failed(error.message))
 }
 
 struct DesktopAuthorizationEventSink {

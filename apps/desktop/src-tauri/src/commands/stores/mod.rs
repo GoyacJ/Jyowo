@@ -16,7 +16,6 @@ use super::evals::*;
 #[allow(unused_imports)]
 use super::mcp::*;
 #[allow(unused_imports)]
-use super::memory::*;
 use super::model_settings::{OfficialQuotaFlights, ProviderProbeFlights};
 #[allow(unused_imports)]
 use super::plugins::*;
@@ -2401,7 +2400,6 @@ pub struct DesktopRuntimeState {
     pub(crate) automation_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) automation_store: Arc<dyn AutomationStore>,
     pub(crate) default_conversation_id: SessionId,
-    pub(crate) memory_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) mcp_diagnostic_store: Arc<dyn McpDiagnosticStore>,
     pub(crate) mcp_diagnostic_subscriptions:
         Arc<tokio::sync::Mutex<HashMap<String, McpDiagnosticSubscriptionHandle>>>,

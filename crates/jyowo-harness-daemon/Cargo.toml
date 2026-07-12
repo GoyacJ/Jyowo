@@ -20,6 +20,7 @@ jyowo-harness-engine = { path = "../jyowo-harness-engine" }
 jyowo-harness-execution = { path = "../jyowo-harness-execution" }
 jyowo-harness-fs = { path = "../jyowo-harness-fs" }
 jyowo-harness-journal = { path = "../jyowo-harness-journal", features = ["sqlite", "blob-file"] }
+jyowo-harness-memory = { path = "../jyowo-harness-memory" }
 jyowo-harness-model = { path = "../jyowo-harness-model", features = ["all-providers"] }
 jyowo-harness-mcp = { path = "../jyowo-harness-mcp", features = ["stdio", "http"] }
 jyowo-harness-observability = { path = "../jyowo-harness-observability" }

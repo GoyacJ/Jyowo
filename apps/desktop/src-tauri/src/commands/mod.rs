@@ -12,22 +12,14 @@ use chrono::{DateTime, NaiveDate, Utc};
 use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
 use harness_contracts::{
     validate_agent_profile, validate_provider_capability_route, AgentCapabilityUnavailableReason,
-    AgentProfile, AgentProfileScope, ApproveMemoryCandidateRequest, ApproveMemoryCandidateResponse,
-    AutomationRunRecord, AutomationSpec, AutomationWorkspaceScope, BackgroundAgentState,
-    CapabilityRouteKind, ConversationInspectorSelection, DiagnosticsRawOutput,
-    DiagnosticsRunRequest, DiagnosticsRunnerCap, DiagnosticsRunnerKind,
-    GetMemoryRecallTraceRequest, GetMemoryRecallTraceResponse, GetMemorySettingsRequest,
-    GetMemorySettingsResponse, GetModelRequestPreviewRequest, GetModelRequestPreviewResponse,
-    GetThreadMemorySettingsRequest, GetThreadMemorySettingsResponse, ListMemoryCandidatesRequest,
-    ListMemoryCandidatesResponse, ListMemoryRecallTracesRequest, ListMemoryRecallTracesResponse,
-    ListProviderCapabilityRouteOptionsResponse, LocalIsolationTag, MergeMemoryCandidateRequest,
-    MergeMemoryCandidateResponse, MissedRunPolicy, PluginConfigUpdate, PluginDetail, PluginId,
-    PluginInstallReport, PluginOperationResult, PluginOperationStatus, PluginSummary,
-    ProviderCapabilityRoute, ProviderCapabilityRouteOption, ProviderCapabilityRouteSettings,
-    ProviderProbeSnapshot, ProviderServiceAdapterAvailability, RejectMemoryCandidateRequest,
-    RejectMemoryCandidateResponse, RejectionReason, SandboxMode, TrustLevel,
-    UpdateMemorySettingsRequest, UpdateMemorySettingsResponse, UpdateThreadMemorySettingsRequest,
-    UpdateThreadMemorySettingsResponse, WorkspaceAccess,
+    AgentProfile, AgentProfileScope, AutomationRunRecord, AutomationSpec, AutomationWorkspaceScope,
+    BackgroundAgentState, CapabilityRouteKind, ConversationInspectorSelection,
+    DiagnosticsRawOutput, DiagnosticsRunRequest, DiagnosticsRunnerCap, DiagnosticsRunnerKind,
+    ListProviderCapabilityRouteOptionsResponse, LocalIsolationTag, MissedRunPolicy,
+    PluginConfigUpdate, PluginDetail, PluginId, PluginInstallReport, PluginOperationResult,
+    PluginOperationStatus, PluginSummary, ProviderCapabilityRoute, ProviderCapabilityRouteOption,
+    ProviderCapabilityRouteSettings, ProviderProbeSnapshot, ProviderServiceAdapterAvailability,
+    RejectionReason, SandboxMode, TrustLevel, WorkspaceAccess,
 };
 use harness_model::ModelRuntimeSemantics;
 use harness_plugin::{
@@ -52,8 +44,7 @@ use jyowo_harness_sdk::ext::{
     ConversationModelCapability, DirectorySourceKind, Event, EventId, EventStore, FallbackPolicy,
     HttpTransport, InteractivityLevel, McpAuthorizationContext, McpConnectContext,
     McpConnectionState, McpEventSink, McpRegistry, McpServerId, McpServerScope, McpServerSource,
-    McpServerSpec, MemoryId, MemoryKind, MemoryRecord, MemorySource, MemorySummary,
-    MemoryVisibility, ModelDescriptor, ModelInventoryEntry, ModelLifecycle, ModelModality,
+    McpServerSpec, ModelDescriptor, ModelInventoryEntry, ModelLifecycle, ModelModality,
     ModelProtocol, ModelProvider, ModelRuntimeStatus, PermissionMode, ProviderBaseUrlRegion,
     ProviderBuildConfig, ProviderCredential, ProviderCredentialResolveContext,
     ProviderCredentialResolverCap, ProviderProbeInput, ProviderProbeRunner, ProviderRegistryError,
@@ -97,8 +88,6 @@ mod daemon;
 mod error;
 mod evals;
 mod mcp;
-mod memory;
-mod memory_settings;
 mod model_settings;
 mod plugins;
 mod projects;
@@ -150,44 +139,41 @@ pub use contracts::{
     CreateConversationResponse, DeleteAgentProfileRequest, DeleteAgentProfileResponse,
     DeleteAutomationRequest, DeleteAutomationResponse, DeleteConversationRequest,
     DeleteConversationResponse, DeleteMcpServerRequest, DeleteMcpServerResponse,
-    DeleteMemoryItemRequest, DeleteMemoryItemResponse, DeleteProviderCapabilityRouteRequest,
-    DeleteProviderCapabilityRouteResponse, DeleteSkillRequest, DeleteSkillResponse,
-    EvalCasePayload, EvalLastRunPayload, ExportConversationEvidenceRequest,
-    ExportConversationEvidenceResponse, ExportMemoryItemsFormat, ExportMemoryItemsRequest,
-    ExportMemoryItemsResponse, ExportMemoryItemsScope, ExportSupportBundleRequest,
-    ExportSupportBundleResponse, GetArtifactMediaPreviewRequest, GetArtifactMediaPreviewResponse,
-    GetArtifactRevisionContentRequest, GetArtifactRevisionContentResponse,
-    GetAttachmentMediaPreviewRequest, GetAttachmentMediaPreviewResponse, GetBackgroundAgentRequest,
-    GetBackgroundAgentResponse, GetContextSnapshotRequest, GetContextSnapshotResponse,
-    GetConversationCommandOutputRequest, GetConversationCommandOutputResponse,
-    GetConversationDiffPatchRequest, GetConversationDiffPatchResponse,
-    GetConversationInspectorItemRequest, GetConversationRequest, GetConversationResponse,
-    GetExecutionSettingsRequest, GetExecutionSettingsResponse, GetMcpServerConfigRequest,
-    GetMcpServerConfigResponse, GetMemoryItemRequest, GetMemoryItemResponse,
-    GetModelUsageSummaryResponse, GetPluginDetailRequest, GetPluginDetailResponse,
-    GetProviderConfigApiKeyRequest, GetProviderConfigApiKeyResponse, GetSkillDetailRequest,
-    GetSkillDetailResponse, GetSkillFileRequest, GetSkillFileResponse, HarnessHealthcheckPayload,
-    HarnessInfoPayload, ImportSkillRequest, ImportSkillResponse, InstallPluginFromPathRequest,
+    DeleteProviderCapabilityRouteRequest, DeleteProviderCapabilityRouteResponse,
+    DeleteSkillRequest, DeleteSkillResponse, EvalCasePayload, EvalLastRunPayload,
+    ExportConversationEvidenceRequest, ExportConversationEvidenceResponse,
+    ExportSupportBundleRequest, ExportSupportBundleResponse, GetArtifactMediaPreviewRequest,
+    GetArtifactMediaPreviewResponse, GetArtifactRevisionContentRequest,
+    GetArtifactRevisionContentResponse, GetAttachmentMediaPreviewRequest,
+    GetAttachmentMediaPreviewResponse, GetBackgroundAgentRequest, GetBackgroundAgentResponse,
+    GetContextSnapshotRequest, GetContextSnapshotResponse, GetConversationCommandOutputRequest,
+    GetConversationCommandOutputResponse, GetConversationDiffPatchRequest,
+    GetConversationDiffPatchResponse, GetConversationInspectorItemRequest, GetConversationRequest,
+    GetConversationResponse, GetExecutionSettingsRequest, GetExecutionSettingsResponse,
+    GetMcpServerConfigRequest, GetMcpServerConfigResponse, GetModelUsageSummaryResponse,
+    GetPluginDetailRequest, GetPluginDetailResponse, GetProviderConfigApiKeyRequest,
+    GetProviderConfigApiKeyResponse, GetSkillDetailRequest, GetSkillDetailResponse,
+    GetSkillFileRequest, GetSkillFileResponse, HarnessHealthcheckPayload, HarnessInfoPayload,
+    ImportSkillRequest, ImportSkillResponse, InstallPluginFromPathRequest,
     InstallSkillFromCatalogResponse, ListActivityRequest, ListActivityResponse,
     ListAgentProfilesResponse, ListArtifactsRequest, ListArtifactsResponse,
     ListAutomationRunsRequest, ListAutomationRunsResponse, ListAutomationsResponse,
     ListBackgroundAgentsRequest, ListBackgroundAgentsResponse, ListBrowserMcpPresetsResponse,
     ListConversationsResponse, ListEvalCasesResponse, ListMcpDiagnosticsRequest,
-    ListMcpDiagnosticsResponse, ListMcpServersResponse, ListMemoryItemsResponse,
-    ListOfficialQuotaSnapshotsResponse, ListPluginsResponse, ListProjectConversationGroupsResponse,
+    ListMcpDiagnosticsResponse, ListMcpServersResponse, ListOfficialQuotaSnapshotsResponse,
+    ListPluginsResponse, ListProjectConversationGroupsResponse,
     ListProviderCapabilityRoutesResponse, ListProviderProbeSnapshotsResponse,
     ListProviderSettingsResponse, ListReferenceCandidatesRequest, ListReferenceCandidatesResponse,
     ListRuntimeToolsResponse, ListSkillCatalogInstallTasksResponse, ListSkillsResponse,
     McpDiagnosticBatchEmitter, McpDiagnosticBatchPayload, McpDiagnosticRecord,
     McpDiagnosticSeverity, McpDiagnosticStore, McpHeaderEnvRecord, McpNameValueRecord,
     McpNameValueSaveRecord, McpServerConfigRecord, McpServerConfigTransportPayload, McpServerStore,
-    McpServerSummaryPayload, McpServerTransportConfig, MemoryItemPayload, MemoryItemSummaryPayload,
-    ModelCatalogEntry, ModelLifecyclePayload, ModelProviderCatalogEntry,
-    ModelProviderCatalogResponse, ModelRuntimeStatusPayload, ModelSettingsPageResponse,
-    OfficialQuotaScopePayload, OfficialQuotaSnapshotPayload, OfficialQuotaStatusPayload,
-    PermissionDecision, PermissionRequestedRunEventPayload, PluginSettingsRecord, PluginStore,
-    PluginStoreRecord, ProbeProviderConfigRequest, ProbeProviderConfigResponse,
-    ProviderBaseUrlRegionPayload, ProviderCapabilityRouteStore,
+    McpServerSummaryPayload, McpServerTransportConfig, ModelCatalogEntry, ModelLifecyclePayload,
+    ModelProviderCatalogEntry, ModelProviderCatalogResponse, ModelRuntimeStatusPayload,
+    ModelSettingsPageResponse, OfficialQuotaScopePayload, OfficialQuotaSnapshotPayload,
+    OfficialQuotaStatusPayload, PermissionDecision, PermissionRequestedRunEventPayload,
+    PluginSettingsRecord, PluginStore, PluginStoreRecord, ProbeProviderConfigRequest,
+    ProbeProviderConfigResponse, ProviderBaseUrlRegionPayload, ProviderCapabilityRouteStore,
     ProviderCapabilityRouteValidationToken, ProviderConfigPayload, ProviderConfigRecord,
     ProviderDefaultsRecord, ProviderDiagnosticsStore, ProviderModelDescriptorRecord,
     ProviderModelLifecycleRecord, ProviderModelModalityRecord, ProviderProbeErrorKindPayload,
@@ -214,8 +200,7 @@ pub use contracts::{
     SkillParameterPayload, SkillStore, SkillStoreRecord, SkillSummaryPayload, StartRunRequest,
     StartRunResponse, SubscribeMcpDiagnosticsRequest, SubscribeMcpDiagnosticsResponse,
     UninstallPluginRequest, UnsubscribeMcpDiagnosticsRequest, UnsubscribeMcpDiagnosticsResponse,
-    UpdateMemoryItemRequest, UpdateMemoryItemResponse, UpdatePluginConfigRequest,
-    ValidatePluginFromPathRequest, ValidateProviderSettingsRequest,
+    UpdatePluginConfigRequest, ValidatePluginFromPathRequest, ValidateProviderSettingsRequest,
     ValidateProviderSettingsResponse,
 };
 pub use error::CommandErrorPayload;
@@ -234,18 +219,6 @@ pub use mcp::{
     subscribe_mcp_diagnostics_with_runtime_state,
     unsubscribe_mcp_diagnostics_for_window_with_runtime_state,
     unsubscribe_mcp_diagnostics_with_runtime_state,
-};
-pub use memory::{
-    approve_memory_candidate_with_runtime_state, delete_memory_item_with_runtime_state,
-    export_memory_items_with_runtime_state, get_memory_item_with_runtime_state,
-    get_memory_recall_trace_with_runtime_state, get_model_request_preview_with_runtime_state,
-    list_memory_candidates_with_runtime_state, list_memory_items_with_runtime_state,
-    list_memory_recall_traces_with_runtime_state, merge_memory_candidate_with_runtime_state,
-    reject_memory_candidate_with_runtime_state, update_memory_item_with_runtime_state,
-};
-pub use memory_settings::{
-    get_memory_settings_with_runtime_state, get_thread_memory_settings_with_runtime_state,
-    update_memory_settings_with_runtime_state, update_thread_memory_settings_with_runtime_state,
 };
 pub use model_settings::{
     get_model_settings_page_with_runtime_state, get_model_usage_summary_with_runtime_state,
@@ -1205,170 +1178,4 @@ pub async fn delete_agent_profile(
 ) -> Result<DeleteAgentProfileResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
     delete_agent_profile_with_runtime_state(DeleteAgentProfileRequest { id }, &*runtime_state).await
-}
-
-#[tauri::command]
-pub async fn list_memory_items(
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ListMemoryItemsResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    list_memory_items_with_runtime_state(&*runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_memory_item(
-    id: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<GetMemoryItemResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    get_memory_item_with_runtime_state(GetMemoryItemRequest { id }, &*runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn update_memory_item(
-    action_plan_id: Option<String>,
-    content: String,
-    id: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<UpdateMemoryItemResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    let _memory_guard = runtime_state.memory_lock.lock().await;
-    update_memory_item_with_runtime_state(
-        UpdateMemoryItemRequest {
-            action_plan_id,
-            content,
-            id,
-        },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn delete_memory_item(
-    action_plan_id: Option<String>,
-    id: String,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<DeleteMemoryItemResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    let _memory_guard = runtime_state.memory_lock.lock().await;
-    delete_memory_item_with_runtime_state(
-        DeleteMemoryItemRequest { action_plan_id, id },
-        &*runtime_state,
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn export_memory_items(
-    request: ExportMemoryItemsRequest,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ExportMemoryItemsResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    let _memory_guard = runtime_state.memory_lock.lock().await;
-    export_memory_items_with_runtime_state(request, &*runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_memory_settings(
-    request: GetMemorySettingsRequest,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<GetMemorySettingsResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    get_memory_settings_with_runtime_state(request, &*runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn update_memory_settings(
-    request: UpdateMemorySettingsRequest,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<UpdateMemorySettingsResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    let _memory_guard = runtime_state.memory_lock.lock().await;
-    update_memory_settings_with_runtime_state(request, &*runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_thread_memory_settings(
-    request: GetThreadMemorySettingsRequest,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<GetThreadMemorySettingsResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    get_thread_memory_settings_with_runtime_state(request, &*runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn update_thread_memory_settings(
-    request: UpdateThreadMemorySettingsRequest,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<UpdateThreadMemorySettingsResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    let _memory_guard = runtime_state.memory_lock.lock().await;
-    update_thread_memory_settings_with_runtime_state(request, &*runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn list_memory_candidates(
-    request: ListMemoryCandidatesRequest,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ListMemoryCandidatesResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    list_memory_candidates_with_runtime_state(request, &*runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn approve_memory_candidate(
-    request: ApproveMemoryCandidateRequest,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ApproveMemoryCandidateResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    let _memory_guard = runtime_state.memory_lock.lock().await;
-    approve_memory_candidate_with_runtime_state(request, &*runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn reject_memory_candidate(
-    request: RejectMemoryCandidateRequest,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<RejectMemoryCandidateResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    let _memory_guard = runtime_state.memory_lock.lock().await;
-    reject_memory_candidate_with_runtime_state(request, &*runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn merge_memory_candidate(
-    request: MergeMemoryCandidateRequest,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<MergeMemoryCandidateResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    let _memory_guard = runtime_state.memory_lock.lock().await;
-    merge_memory_candidate_with_runtime_state(request, &*runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn list_memory_recall_traces(
-    request: ListMemoryRecallTracesRequest,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<ListMemoryRecallTracesResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    list_memory_recall_traces_with_runtime_state(request, &*runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_memory_recall_trace(
-    request: GetMemoryRecallTraceRequest,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<GetMemoryRecallTraceResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    get_memory_recall_trace_with_runtime_state(request, &*runtime_state).await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_model_request_preview(
-    request: GetModelRequestPreviewRequest,
-    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
-) -> Result<GetModelRequestPreviewResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    get_model_request_preview_with_runtime_state(request, &*runtime_state).await
 }

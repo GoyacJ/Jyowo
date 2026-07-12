@@ -2,10 +2,21 @@ import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { listen as tauriListen } from '@tauri-apps/api/event'
 
 import type {
+  ApproveMemoryCandidateRequest,
   ClientRequest,
+  ExportMemoryItemsRequest,
+  GetMemoryRecallTraceRequest,
+  GetModelRequestPreviewRequest,
+  GetThreadMemorySettingsRequest,
+  ListMemoryCandidatesRequest,
+  ListMemoryRecallTracesRequest,
+  MergeMemoryCandidateRequest,
+  RejectMemoryCandidateRequest,
   ServerFrame,
   ServerMessage,
   TypedUlid,
+  UpdateMemorySettingsRequest,
+  UpdateThreadMemorySettingsRequest,
 } from '@/generated/daemon-protocol'
 import type { AttachmentReference, ListReferenceCandidatesResponse } from '@/shared/tauri/commands'
 
@@ -45,6 +56,69 @@ export interface DaemonClient {
   loadTask: (taskId: TypedUlid) => Promise<TaskSnapshot>
   loadTaskEvents: (taskId: TypedUlid, beforeGlobalOffset?: number) => Promise<TaskEventPage>
   listTasks: () => Promise<Extract<ServerMessage, { type: 'task_list' }>>
+  listMemoryItems: (
+    workspaceRoot?: string,
+  ) => Promise<Extract<ServerMessage, { type: 'memory_items' }>>
+  getMemoryItem: (
+    workspaceRoot: string | undefined,
+    memoryId: TypedUlid,
+  ) => Promise<Extract<ServerMessage, { type: 'memory_item' }>>
+  updateMemoryItem: (
+    workspaceRoot: string | undefined,
+    request: { actionPlanId?: TypedUlid; content: string; id: TypedUlid },
+  ) => Promise<Extract<ServerMessage, { type: 'memory_updated' }>>
+  deleteMemoryItem: (
+    workspaceRoot: string | undefined,
+    request: { actionPlanId?: TypedUlid; id: TypedUlid },
+  ) => Promise<Extract<ServerMessage, { type: 'memory_deleted' }>>
+  exportMemoryItems: (
+    workspaceRoot: string | undefined,
+    request: ExportMemoryItemsRequest,
+  ) => Promise<Extract<ServerMessage, { type: 'memory_exported' }>>
+  listMemoryCandidates: (
+    workspaceRoot: string | undefined,
+    request: ListMemoryCandidatesRequest,
+  ) => Promise<Extract<ServerMessage, { type: 'memory_candidates' }>>
+  approveMemoryCandidate: (
+    workspaceRoot: string | undefined,
+    request: ApproveMemoryCandidateRequest,
+  ) => Promise<Extract<ServerMessage, { type: 'memory_candidate_approved' }>>
+  rejectMemoryCandidate: (
+    workspaceRoot: string | undefined,
+    request: RejectMemoryCandidateRequest,
+  ) => Promise<Extract<ServerMessage, { type: 'memory_candidate_rejected' }>>
+  mergeMemoryCandidate: (
+    workspaceRoot: string | undefined,
+    request: MergeMemoryCandidateRequest,
+  ) => Promise<Extract<ServerMessage, { type: 'memory_candidates_merged' }>>
+  listMemoryRecallTraces: (
+    workspaceRoot: string | undefined,
+    request: ListMemoryRecallTracesRequest,
+  ) => Promise<Extract<ServerMessage, { type: 'memory_recall_traces' }>>
+  getMemoryRecallTrace: (
+    workspaceRoot: string | undefined,
+    request: GetMemoryRecallTraceRequest,
+  ) => Promise<Extract<ServerMessage, { type: 'memory_recall_trace' }>>
+  getModelRequestPreview: (
+    workspaceRoot: string | undefined,
+    request: GetModelRequestPreviewRequest,
+  ) => Promise<Extract<ServerMessage, { type: 'model_request_preview' }>>
+  getMemorySettings: (
+    workspaceRoot: string | undefined,
+    tenantId: TypedUlid,
+  ) => Promise<Extract<ServerMessage, { type: 'memory_settings' }>>
+  updateMemorySettings: (
+    workspaceRoot: string | undefined,
+    request: UpdateMemorySettingsRequest,
+  ) => Promise<Extract<ServerMessage, { type: 'memory_settings_updated' }>>
+  getThreadMemorySettings: (
+    workspaceRoot: string | undefined,
+    request: GetThreadMemorySettingsRequest,
+  ) => Promise<Extract<ServerMessage, { type: 'thread_memory_settings' }>>
+  updateThreadMemorySettings: (
+    workspaceRoot: string | undefined,
+    request: UpdateThreadMemorySettingsRequest,
+  ) => Promise<Extract<ServerMessage, { type: 'thread_memory_settings_updated' }>>
   renameTask: (
     taskId: TypedUlid,
     expectedStreamVersion: number,
@@ -139,6 +213,126 @@ export function createDaemonClient(
         throw new Error(`Expected task_list, received ${frame.message.type}`)
       }
       return frame.message
+    },
+    async listMemoryItems(workspaceRoot) {
+      return expectDaemonMessage(await request({ type: 'list_memory_items', workspaceRoot }), 'memory_items')
+    },
+    async getMemoryItem(workspaceRoot, memoryId) {
+      return expectDaemonMessage(
+        await request({ memoryId, type: 'get_memory_item', workspaceRoot }),
+        'memory_item',
+      )
+    },
+    async updateMemoryItem(workspaceRoot, memoryRequest) {
+      return expectDaemonMessage(
+        await request({
+          ...(memoryRequest.actionPlanId ? { actionPlanId: memoryRequest.actionPlanId } : {}),
+          content: memoryRequest.content,
+          memoryId: memoryRequest.id,
+          type: 'update_memory_item',
+          workspaceRoot,
+        }),
+        'memory_updated',
+      )
+    },
+    async deleteMemoryItem(workspaceRoot, memoryRequest) {
+      return expectDaemonMessage(
+        await request({
+          ...(memoryRequest.actionPlanId ? { actionPlanId: memoryRequest.actionPlanId } : {}),
+          memoryId: memoryRequest.id,
+          type: 'delete_memory_item',
+          workspaceRoot,
+        }),
+        'memory_deleted',
+      )
+    },
+    async exportMemoryItems(workspaceRoot, exportRequest) {
+      return expectDaemonMessage(
+        await request({ request: exportRequest, type: 'export_memory_items', workspaceRoot }),
+        'memory_exported',
+      )
+    },
+    async listMemoryCandidates(workspaceRoot, candidateRequest) {
+      return expectDaemonMessage(
+        await request({ request: candidateRequest, type: 'list_memory_candidates', workspaceRoot }),
+        'memory_candidates',
+      )
+    },
+    async approveMemoryCandidate(workspaceRoot, candidateRequest) {
+      return expectDaemonMessage(
+        await request({ request: candidateRequest, type: 'approve_memory_candidate', workspaceRoot }),
+        'memory_candidate_approved',
+      )
+    },
+    async rejectMemoryCandidate(workspaceRoot, candidateRequest) {
+      return expectDaemonMessage(
+        await request({ request: candidateRequest, type: 'reject_memory_candidate', workspaceRoot }),
+        'memory_candidate_rejected',
+      )
+    },
+    async mergeMemoryCandidate(workspaceRoot, candidateRequest) {
+      return expectDaemonMessage(
+        await request({ request: candidateRequest, type: 'merge_memory_candidate', workspaceRoot }),
+        'memory_candidates_merged',
+      )
+    },
+    async listMemoryRecallTraces(workspaceRoot, traceRequest) {
+      return expectDaemonMessage(
+        await request({ request: traceRequest, type: 'list_memory_recall_traces', workspaceRoot }),
+        'memory_recall_traces',
+      )
+    },
+    async getMemoryRecallTrace(workspaceRoot, traceRequest) {
+      return expectDaemonMessage(
+        await request({ request: traceRequest, type: 'get_memory_recall_trace', workspaceRoot }),
+        'memory_recall_trace',
+      )
+    },
+    async getModelRequestPreview(workspaceRoot, previewRequest) {
+      return expectDaemonMessage(
+        await request({
+          request: previewRequest,
+          type: 'get_model_request_preview',
+          workspaceRoot,
+        }),
+        'model_request_preview',
+      )
+    },
+    async getMemorySettings(workspaceRoot, tenantId) {
+      return expectDaemonMessage(
+        await request({
+          request: { tenant_id: tenantId },
+          type: 'get_memory_settings',
+          workspaceRoot,
+        }),
+        'memory_settings',
+      )
+    },
+    async updateMemorySettings(workspaceRoot, settingsRequest) {
+      return expectDaemonMessage(
+        await request({ request: settingsRequest, type: 'update_memory_settings', workspaceRoot }),
+        'memory_settings_updated',
+      )
+    },
+    async getThreadMemorySettings(workspaceRoot, settingsRequest) {
+      return expectDaemonMessage(
+        await request({
+          request: settingsRequest,
+          type: 'get_thread_memory_settings',
+          workspaceRoot,
+        }),
+        'thread_memory_settings',
+      )
+    },
+    async updateThreadMemorySettings(workspaceRoot, settingsRequest) {
+      return expectDaemonMessage(
+        await request({
+          request: settingsRequest,
+          type: 'update_thread_memory_settings',
+          workspaceRoot,
+        }),
+        'thread_memory_settings_updated',
+      )
     },
     async renameTask(taskId, expectedStreamVersion, title) {
       const frame = await request({
@@ -322,6 +516,19 @@ function defaultRequestId() {
 
 function asError(error: unknown) {
   return error instanceof Error ? error : new Error(String(error))
+}
+
+function expectDaemonMessage<T extends ServerMessage['type']>(
+  frame: ServerFrame,
+  type: T,
+): Extract<ServerMessage, { type: T }> {
+  if (frame.message.type === 'error') {
+    throw new DaemonResponseError(frame.message.code, frame.message.message)
+  }
+  if (frame.message.type !== type) {
+    throw new Error(`Expected ${type}, received ${frame.message.type}`)
+  }
+  return frame.message as Extract<ServerMessage, { type: T }>
 }
 
 function hexByte(byte: number) {

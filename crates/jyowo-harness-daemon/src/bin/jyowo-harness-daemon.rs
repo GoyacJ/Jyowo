@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use harness_contracts::{Redactor, RunState, PROTOCOL_VERSION};
 use harness_daemon::{
-    IpcServerConfig, LocalIpcServer, PermissionBroker, RecoveryService, RuntimeConfigResolver,
-    RuntimeGuard, SdkRunCoordinatorFactory, SdkSubagentEngineRegistry,
+    IpcServerConfig, LocalIpcServer, MemoryService, PermissionBroker, RecoveryService,
+    RuntimeConfigResolver, RuntimeGuard, SdkRunCoordinatorFactory, SdkSubagentEngineRegistry,
     SdkWorkspaceSubagentRunnerFactory, Supervisor, SupervisorQuotas,
     WorkspaceSubagentRunnerFactory,
 };
@@ -40,9 +40,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&redactor),
     ));
     let subagent_engines = Arc::new(SdkSubagentEngineRegistry::default());
+    let runtime_config = RuntimeConfigResolver::new(config_root());
+    let memory_service = Arc::new(MemoryService::new(runtime_config.clone()));
     let run_factory = Arc::new(SdkRunCoordinatorFactory::new_with_subagent_engines(
         Arc::clone(&store),
-        RuntimeConfigResolver::new(config_root()),
+        runtime_config,
         blob_root,
         Arc::clone(&permissions),
         Arc::clone(&redactor),
@@ -61,19 +63,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?);
 
     #[cfg(unix)]
-    let server = LocalIpcServer::bind_unix_with_supervisor(
+    let server = LocalIpcServer::bind_unix_with_runtime_services(
         runtime.endpoint_path(),
         Arc::clone(&store),
         config,
         Arc::clone(&supervisor),
+        Arc::clone(&memory_service),
     )
     .await?;
     #[cfg(windows)]
-    let server = LocalIpcServer::bind_named_pipe_with_supervisor(
+    let server = LocalIpcServer::bind_named_pipe_with_runtime_services(
         format!(r"\\.\pipe\jyowo-harness-daemon-{user_instance_id}"),
         Arc::clone(&store),
         config,
         Arc::clone(&supervisor),
+        Arc::clone(&memory_service),
     )
     .await?;
 

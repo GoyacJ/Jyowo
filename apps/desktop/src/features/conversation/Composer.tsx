@@ -3,13 +3,13 @@ import type { KeyboardEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import type { MemoryThreadMode } from '@/generated/daemon-protocol'
 import type {
   AttachmentInputModality,
   AttachmentReference,
   ContextReference,
   ConversationModelCapability,
   ListReferenceCandidatesResponse,
-  MemoryThreadMode,
   PermissionMode,
   StartRunRequest,
 } from '@/shared/tauri/commands'

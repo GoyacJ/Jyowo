@@ -28,6 +28,7 @@ fn daemon_protocol_exports_one_versioned_schema() {
         "list_memory_items",
         "get_memory_item",
         "delete_memory_item",
+        "get_model_request_preview",
         "list_automations",
         "save_automation",
         "set_automation_enabled",

@@ -3,13 +3,21 @@ import { render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
+import type { DaemonClient } from '@/shared/daemon/client'
 import type { CommandClient } from '@/shared/tauri/commands'
-import { CommandClientProvider } from '@/shared/tauri/react'
+import { CommandClientProvider, DaemonClientProvider } from '@/shared/tauri/react'
 import { createRejectedTestCommandClient, createTestCommandClient } from '@/testing/command-client'
 
 import { useContextSnapshot } from './use-context-snapshot'
 
-function renderUseContextSnapshot(commandClient: CommandClient = createTestCommandClient()) {
+const daemonClient = {
+  getModelRequestPreview: vi.fn(),
+} as unknown as DaemonClient
+
+function renderUseContextSnapshot(
+  commandClient: CommandClient = createTestCommandClient(),
+  client: DaemonClient = daemonClient,
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -37,9 +45,11 @@ function renderUseContextSnapshot(commandClient: CommandClient = createTestComma
 
   function Wrapper({ children }: { children: ReactNode }) {
     return (
-      <CommandClientProvider client={commandClient}>
-        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-      </CommandClientProvider>
+      <DaemonClientProvider client={client}>
+        <CommandClientProvider client={commandClient}>
+          <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        </CommandClientProvider>
+      </DaemonClientProvider>
     )
   }
 
@@ -68,9 +78,11 @@ function renderDisabledUseContextSnapshot(
 
   function Wrapper({ children }: { children: ReactNode }) {
     return (
-      <CommandClientProvider client={commandClient}>
-        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-      </CommandClientProvider>
+      <DaemonClientProvider client={daemonClient}>
+        <CommandClientProvider client={commandClient}>
+          <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        </CommandClientProvider>
+      </DaemonClientProvider>
     )
   }
 
@@ -103,5 +115,53 @@ describe('useContextSnapshot', () => {
 
     expect(screen.getByText('No context loaded')).toBeInTheDocument()
     expect(getContextSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('loads model request preview through the daemon client', async () => {
+    const getModelRequestPreview = vi.fn().mockResolvedValue({
+      preview: {
+        content_hash: Array.from({ length: 32 }, () => 0),
+        policy_decisions: [],
+        redacted_count: 0,
+        run_id: '01HZ0000000000000000000002',
+        sections: [],
+        session_id: '01HZ0000000000000000000001',
+        token_estimate: 0,
+        tool_names: [],
+      },
+      type: 'model_request_preview',
+    })
+    const client = { getModelRequestPreview } as unknown as DaemonClient
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    function Probe() {
+      const snapshot = useContextSnapshot(
+        {
+          conversationId: '01HZ0000000000000000000001',
+          runId: '01HZ0000000000000000000002',
+        },
+        { workspaceRoot: '/workspace/active' },
+      )
+      return <div>{snapshot.modelRequestPreview ? 'Preview loaded' : 'No preview'}</div>
+    }
+
+    render(
+      <DaemonClientProvider client={client}>
+        <CommandClientProvider client={createTestCommandClient()}>
+          <QueryClientProvider client={queryClient}>
+            <Probe />
+          </QueryClientProvider>
+        </CommandClientProvider>
+      </DaemonClientProvider>,
+    )
+
+    expect(await screen.findByText('Preview loaded')).toBeInTheDocument()
+    expect(getModelRequestPreview).toHaveBeenCalledWith('/workspace/active', {
+      run_id: '01HZ0000000000000000000002',
+      session_id: '01HZ0000000000000000000001',
+      tenant_id: '00000000000000000000000001',
+    })
   })
 })

@@ -3,7 +3,6 @@ import type {
   CommandClient,
   CreateAttachmentFromPathResponse,
   DeleteAutomationResponse,
-  ExportMemoryItemsResponse,
   ExportSupportBundleResponse,
   GetArtifactMediaPreviewResponse,
   GetAttachmentMediaPreviewResponse,
@@ -11,7 +10,6 @@ import type {
   GetConversationResponse,
   GetExecutionSettingsResponse,
   GetMcpServerConfigResponse,
-  GetMemoryItemResponse,
   GetModelUsageSummaryResponse,
   GetPluginDetailResponse,
   GetProviderConfigApiKeyResponse,
@@ -31,7 +29,6 @@ import type {
   ListEvalCasesResponse,
   ListMcpDiagnosticsResponse,
   ListMcpServersResponse,
-  ListMemoryItemsResponse,
   ListOfficialQuotaSnapshotsResponse,
   ListPluginsResponse,
   ListProjectConversationGroupsResponse,
@@ -215,12 +212,9 @@ export interface TestCommandClientOptions {
   artifactMediaPreview?: GetArtifactMediaPreviewResponse
   attachmentMediaPreview?: GetAttachmentMediaPreviewResponse
   listActivity?: ListActivityResponse
-  memoryExport?: ExportMemoryItemsResponse
   evalCases?: ListEvalCasesResponse
   browserMcpPresets?: ListBrowserMcpPresetsResponse
   browserMcpPreset?: SaveBrowserMcpPresetResponse
-  memoryItem?: GetMemoryItemResponse
-  memoryItems?: ListMemoryItemsResponse
   mcpDiagnostics?: ListMcpDiagnosticsResponse
   mcpServerConfig?: GetMcpServerConfigResponse
   mcpServer?: SaveMcpServerResponse

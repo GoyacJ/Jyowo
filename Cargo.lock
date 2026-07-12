@@ -3053,6 +3053,7 @@ dependencies = [
  "jyowo-harness-fs",
  "jyowo-harness-journal",
  "jyowo-harness-mcp",
+ "jyowo-harness-memory",
  "jyowo-harness-model",
  "jyowo-harness-observability",
  "jyowo-harness-permission",

@@ -6,10 +6,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    ActorId, AutomationDeletedResponse, AutomationEnabledResponse, AutomationRunResponse,
+    ActionPlanId, ActorId, ApproveMemoryCandidateRequest, ApproveMemoryCandidateResponse,
+    AutomationDeletedResponse, AutomationEnabledResponse, AutomationRunResponse,
     AutomationRunsResponse, AutomationSavedResponse, AutomationSpec, AutomationsResponse, BlobId,
-    CheckpointId, ClientId, CommandId, EventId, MemoryId, MemoryRecord, PermissionMode,
-    QueueItemId, RequestId, RunSegmentId, SubagentId, TaskId, WorkspaceLeaseId,
+    CheckpointId, ClientId, CommandId, EventId, GetMemoryRecallTraceRequest,
+    GetMemoryRecallTraceResponse, GetMemorySettingsRequest, GetMemorySettingsResponse,
+    GetModelRequestPreviewRequest, GetModelRequestPreviewResponse, GetThreadMemorySettingsRequest,
+    GetThreadMemorySettingsResponse, ListMemoryCandidatesRequest, ListMemoryCandidatesResponse,
+    ListMemoryRecallTracesRequest, ListMemoryRecallTracesResponse, MemoryId,
+    MergeMemoryCandidateRequest, MergeMemoryCandidateResponse, PermissionMode, QueueItemId,
+    RejectMemoryCandidateRequest, RejectMemoryCandidateResponse, RequestId, RunSegmentId,
+    SessionId, SubagentId, TaskId, UpdateMemorySettingsRequest, UpdateMemorySettingsResponse,
+    UpdateThreadMemorySettingsRequest, UpdateThreadMemorySettingsResponse, WorkspaceLeaseId,
 };
 
 pub const PROTOCOL_VERSION: u16 = 2;
@@ -88,9 +96,64 @@ pub enum ClientRequest {
         workspace_root: Option<String>,
         memory_id: MemoryId,
     },
+    UpdateMemoryItem {
+        workspace_root: Option<String>,
+        memory_id: MemoryId,
+        content: String,
+        action_plan_id: Option<ActionPlanId>,
+    },
     DeleteMemoryItem {
         workspace_root: Option<String>,
         memory_id: MemoryId,
+        action_plan_id: Option<ActionPlanId>,
+    },
+    ExportMemoryItems {
+        workspace_root: Option<String>,
+        request: ExportMemoryItemsRequest,
+    },
+    ListMemoryCandidates {
+        workspace_root: Option<String>,
+        request: ListMemoryCandidatesRequest,
+    },
+    ApproveMemoryCandidate {
+        workspace_root: Option<String>,
+        request: ApproveMemoryCandidateRequest,
+    },
+    RejectMemoryCandidate {
+        workspace_root: Option<String>,
+        request: RejectMemoryCandidateRequest,
+    },
+    MergeMemoryCandidate {
+        workspace_root: Option<String>,
+        request: MergeMemoryCandidateRequest,
+    },
+    ListMemoryRecallTraces {
+        workspace_root: Option<String>,
+        request: ListMemoryRecallTracesRequest,
+    },
+    GetMemoryRecallTrace {
+        workspace_root: Option<String>,
+        request: GetMemoryRecallTraceRequest,
+    },
+    GetModelRequestPreview {
+        workspace_root: Option<String>,
+        request: GetModelRequestPreviewRequest,
+    },
+    GetMemorySettings {
+        workspace_root: Option<String>,
+        request: GetMemorySettingsRequest,
+    },
+    UpdateMemorySettings {
+        workspace_root: Option<String>,
+        request: UpdateMemorySettingsRequest,
+    },
+    GetThreadMemorySettings {
+        workspace_root: Option<String>,
+        request: GetThreadMemorySettingsRequest,
+    },
+    UpdateThreadMemorySettings {
+        workspace_root: Option<String>,
+        request: UpdateThreadMemorySettingsRequest,
     },
     ListAutomations {
         workspace_root: Option<String>,
@@ -147,7 +210,20 @@ pub enum ServerMessage {
     RuntimeTools(ListRuntimeToolsResponse),
     MemoryItems(ListMemoryItemsResponse),
     MemoryItem(GetMemoryItemResponse),
+    MemoryUpdated(UpdateMemoryItemResponse),
     MemoryDeleted(DeleteMemoryItemResponse),
+    MemoryExported(ExportMemoryItemsResponse),
+    MemoryCandidates(ListMemoryCandidatesResponse),
+    MemoryCandidateApproved(ApproveMemoryCandidateResponse),
+    MemoryCandidateRejected(RejectMemoryCandidateResponse),
+    MemoryCandidatesMerged(MergeMemoryCandidateResponse),
+    MemoryRecallTraces(ListMemoryRecallTracesResponse),
+    MemoryRecallTrace(GetMemoryRecallTraceResponse),
+    ModelRequestPreview(GetModelRequestPreviewResponse),
+    MemorySettings(GetMemorySettingsResponse),
+    MemorySettingsUpdated(UpdateMemorySettingsResponse),
+    ThreadMemorySettings(GetThreadMemorySettingsResponse),
+    ThreadMemorySettingsUpdated(UpdateThreadMemorySettingsResponse),
     Automations(AutomationsResponse),
     AutomationSaved(AutomationSavedResponse),
     AutomationEnabled(AutomationEnabledResponse),
@@ -203,19 +279,88 @@ pub struct RuntimeToolServiceBindingSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListMemoryItemsResponse {
-    pub items: Vec<MemoryRecord>,
+    pub items: Vec<DaemonMemoryItemSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetMemoryItemResponse {
-    pub item: Option<MemoryRecord>,
+    pub item: DaemonMemoryItem,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateMemoryItemResponse {
+    pub item: DaemonMemoryItem,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeleteMemoryItemResponse {
     pub memory_id: MemoryId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DaemonMemoryItemSummary {
+    pub id: MemoryId,
+    pub provider_id: Option<String>,
+    pub kind: String,
+    pub visibility: String,
+    pub content_preview: String,
+    pub content_hash: String,
+    pub source: String,
+    pub tags: Vec<String>,
+    pub last_accessed_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub deleted: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DaemonMemoryItem {
+    pub id: MemoryId,
+    pub provider_id: Option<String>,
+    pub kind: String,
+    pub visibility: String,
+    pub content: String,
+    pub content_hash: String,
+    pub source: String,
+    pub tags: Vec<String>,
+    pub confidence: f32,
+    pub access_count: u32,
+    pub last_accessed_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub deleted: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExportMemoryItemsRequest {
+    pub session_id: Option<SessionId>,
+    pub scope: String,
+    pub format: String,
+    pub include_raw_content: bool,
+    pub include_metadata: bool,
+    pub include_hashes: bool,
+    pub explicit_user_action: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExportMemoryItemsResponse {
+    pub exported_at: DateTime<Utc>,
+    pub format: String,
+    pub scope: String,
+    pub include_raw_content: bool,
+    pub include_metadata: bool,
+    pub include_hashes: bool,
+    pub item_count: u32,
+    pub path: String,
+    pub audit_hash: String,
 }
 
 #[must_use]

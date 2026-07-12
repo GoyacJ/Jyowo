@@ -6,7 +6,6 @@ import type { TestCommandClientOptions } from './base'
 import { createBaseCommandHandlers } from './base-handlers'
 import { createConversationCommandHandlers } from './conversation-handlers'
 import { createMcpCommandHandlers } from './mcp-handlers'
-import { createMemoryCommandHandlers } from './memory-handlers'
 import { createPluginCommandHandlers } from './plugins-handlers'
 import { createSettingsCommandHandlers } from './settings-handlers'
 import { createSkillCommandHandlers } from './skills-handlers'
@@ -25,7 +24,6 @@ export function createTestCommandClient(options: TestCommandClientOptions = {}):
     ...createArtifactCommandHandlers(state),
     ...createConversationCommandHandlers(state),
     ...createMcpCommandHandlers(state),
-    ...createMemoryCommandHandlers(state),
     ...createPluginCommandHandlers(state),
     ...createSettingsCommandHandlers(state),
     ...createSkillCommandHandlers(state),

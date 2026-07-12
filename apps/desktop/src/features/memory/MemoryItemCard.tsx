@@ -1,7 +1,7 @@
 import { Eye, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import type { MemoryItemSummary } from '@/shared/tauri/commands'
+import type { MemoryItemSummary } from './memory-types'
 import { Button } from '@/shared/ui/button'
 
 interface MemoryItemCardProps {

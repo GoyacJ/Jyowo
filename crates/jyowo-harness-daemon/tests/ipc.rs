@@ -10,9 +10,9 @@ use harness_contracts::{
     UsageSnapshot, WorkspaceMode, WorkspaceSelection, MAX_DAEMON_BLOB_BYTES, PROTOCOL_VERSION,
 };
 use harness_daemon::{
-    encode_frame, IpcConnection, IpcServerConfig, JsonFrameDecoder, LocalIpcServer,
+    encode_frame, IpcConnection, IpcServerConfig, JsonFrameDecoder, LocalIpcServer, MemoryService,
     PermissionRequestDraft, RecoveryService, RunCoordinatorFactory, RunningSegment,
-    StartSegmentRequest, Supervisor, SupervisorQuotas, MAX_FRAME_BYTES,
+    RuntimeConfigResolver, StartSegmentRequest, Supervisor, SupervisorQuotas, MAX_FRAME_BYTES,
 };
 use harness_engine::{RunControlHandle, SafePointDecision, TurnOutcome};
 use harness_journal::{
@@ -43,6 +43,10 @@ struct ControlledRunFactory {
     starts: Mutex<Vec<StartSegmentRequest>>,
     controls: Mutex<Vec<(RunSegmentId, RunControlHandle)>>,
     senders: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<harness_daemon::RunCoordinatorEvent>>>,
+}
+
+mod memory_cases {
+    include!("ipc/memory_cases.rs");
 }
 
 impl ControlledRunFactory {

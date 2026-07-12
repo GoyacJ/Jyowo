@@ -5,13 +5,15 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { CommandClient, ListMemoryItemsResponse } from '@/shared/tauri/commands'
-import { CommandClientProvider } from '@/shared/tauri/react'
-import { createTestCommandClient } from '@/testing/command-client'
+import type { DaemonClient } from '@/shared/daemon/client'
+import { DaemonClientProvider } from '@/shared/tauri/react'
 
 import { MemoryBrowser } from './MemoryBrowser'
+import type { MemoryItemSummary } from './memory-types'
 
-const memoryItems: ListMemoryItemsResponse = {
+const workspaceRoot = '/workspace/active'
+const memoryItems: { items: MemoryItemSummary[]; type: 'memory_items' } = {
+  type: 'memory_items',
   items: [
     {
       contentHash: '0'.repeat(64),
@@ -38,7 +40,36 @@ const memoryItems: ListMemoryItemsResponse = {
   ],
 }
 
-function renderMemoryBrowser(commandClient: CommandClient = createTestCommandClient()) {
+function createMemoryDaemonClient(options: {
+  memoryExport?: Record<string, unknown>
+  memoryItem?: Record<string, unknown>
+  memoryItems?: { items: MemoryItemSummary[]; type?: 'memory_items' }
+} = {}) {
+  return {
+    deleteMemoryItem: vi.fn().mockResolvedValue({ memoryId: '', type: 'memory_deleted' }),
+    exportMemoryItems: vi.fn().mockResolvedValue({
+      auditHash: '0'.repeat(64),
+      exportedAt: '2026-06-17T00:00:00.000Z',
+      format: 'json',
+      includeHashes: true,
+      includeMetadata: true,
+      includeRawContent: false,
+      itemCount: 0,
+      path: '/tmp/memory.json',
+      scope: 'visible',
+      type: 'memory_exported',
+      ...options.memoryExport,
+    }),
+    getMemoryItem: vi.fn().mockResolvedValue({ type: 'memory_item', ...options.memoryItem }),
+    listMemoryItems: vi.fn().mockResolvedValue({
+      items: options.memoryItems?.items ?? [],
+      type: 'memory_items',
+    }),
+    updateMemoryItem: vi.fn(),
+  } as unknown as DaemonClient
+}
+
+function renderMemoryBrowser(daemonClient: DaemonClient = createMemoryDaemonClient()) {
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -48,15 +79,15 @@ function renderMemoryBrowser(commandClient: CommandClient = createTestCommandCli
 
   function Wrapper({ children }: { children: ReactNode }) {
     return (
-      <CommandClientProvider client={commandClient}>
+      <DaemonClientProvider client={daemonClient}>
         <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-      </CommandClientProvider>
+      </DaemonClientProvider>
     )
   }
 
   return render(
     <Wrapper>
-      <MemoryBrowser />
+      <MemoryBrowser workspaceRoot={workspaceRoot} />
     </Wrapper>,
   )
 }
@@ -64,7 +95,7 @@ function renderMemoryBrowser(commandClient: CommandClient = createTestCommandCli
 describe('MemoryBrowser', () => {
   it('renders an empty state when no memory items are visible', async () => {
     renderMemoryBrowser(
-      createTestCommandClient({
+      createMemoryDaemonClient({
         memoryExport: {
           auditHash: '0'.repeat(64),
           exportedAt: '2026-06-17T00:00:00.000Z',
@@ -92,7 +123,7 @@ describe('MemoryBrowser', () => {
 
   it('lists visible memory items and inspects the selected item', async () => {
     renderMemoryBrowser(
-      createTestCommandClient({
+      createMemoryDaemonClient({
         memoryItem: {
           item: {
             accessCount: 2,
@@ -129,7 +160,8 @@ describe('MemoryBrowser', () => {
   })
 
   it('keeps long memory lists stable', async () => {
-    const longList: ListMemoryItemsResponse = {
+    const longList: { items: MemoryItemSummary[]; type: 'memory_items' } = {
+      type: 'memory_items',
       items: Array.from({ length: 24 }, (_, index) => ({
         contentHash: String(index).repeat(64).slice(0, 64).padEnd(64, '0'),
         contentPreview: `Memory item ${index + 1}`,
@@ -143,7 +175,7 @@ describe('MemoryBrowser', () => {
       })),
     }
 
-    renderMemoryBrowser(createTestCommandClient({ memoryItems: longList }))
+    renderMemoryBrowser(createMemoryDaemonClient({ memoryItems: longList }))
 
     expect(await screen.findByText('Memory item 1')).toBeInTheDocument()
     expect(screen.getByText('Memory item 24')).toBeInTheDocument()
@@ -184,11 +216,11 @@ describe('MemoryBrowser', () => {
       },
     })
     const client = {
-      ...createTestCommandClient(),
+      ...createMemoryDaemonClient(),
       getMemoryItem,
       listMemoryItems,
       updateMemoryItem,
-    } satisfies CommandClient
+    } as unknown as DaemonClient
 
     renderMemoryBrowser(client)
 
@@ -201,7 +233,7 @@ describe('MemoryBrowser', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save memory item' }))
 
     await waitFor(() =>
-      expect(updateMemoryItem).toHaveBeenCalledWith({
+      expect(updateMemoryItem).toHaveBeenCalledWith(workspaceRoot, {
         content: 'Prefers terse Chinese responses',
         id: '01HZ0000000000000000000001',
       }),
@@ -211,13 +243,13 @@ describe('MemoryBrowser', () => {
 
   it('requires confirmation before deleting a memory item', async () => {
     const deleteMemoryItem = vi.fn().mockResolvedValue({
-      id: '01HZ0000000000000000000001',
-      status: 'deleted',
+      memoryId: '01HZ0000000000000000000001',
+      type: 'memory_deleted',
     })
     const client = {
-      ...createTestCommandClient({ memoryItems }),
+      ...createMemoryDaemonClient({ memoryItems }),
       deleteMemoryItem,
-    } satisfies CommandClient
+    } as unknown as DaemonClient
 
     renderMemoryBrowser(client)
 
@@ -230,7 +262,7 @@ describe('MemoryBrowser', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm memory deletion' }))
 
     await waitFor(() =>
-      expect(deleteMemoryItem).toHaveBeenCalledWith({
+      expect(deleteMemoryItem).toHaveBeenCalledWith(workspaceRoot, {
         id: '01HZ0000000000000000000001',
       }),
     )
@@ -249,16 +281,16 @@ describe('MemoryBrowser', () => {
       scope: 'visible',
     })
     const client = {
-      ...createTestCommandClient({ memoryItems }),
+      ...createMemoryDaemonClient({ memoryItems }),
       exportMemoryItems,
-    } satisfies CommandClient
+    } as unknown as DaemonClient
 
     renderMemoryBrowser(client)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Export memory items' }))
 
     await waitFor(() =>
-      expect(exportMemoryItems).toHaveBeenCalledWith({
+      expect(exportMemoryItems).toHaveBeenCalledWith(workspaceRoot, {
         explicitUserAction: true,
         format: 'json',
         includeHashes: true,
