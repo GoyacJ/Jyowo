@@ -57,7 +57,6 @@ use serde_json::json;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::runtime_config::RuntimeMcpTransport;
 use crate::{
     AgentStarterCapabilities, HarnessPermissionBroker, PermissionBroker,
     PermissionRuntimeAuthority, RunCoordinatorEvent, RunCoordinatorFactory, RunningSegment,
@@ -94,6 +93,38 @@ struct DaemonAuthorizationRuntime {
     network_broker: Arc<dyn ToolNetworkBrokerCap>,
 }
 
+struct DaemonPolicyBroker {
+    hard_policy_broker: Arc<dyn harness_permission::PermissionBroker>,
+}
+
+#[async_trait]
+impl harness_permission::PermissionBroker for DaemonPolicyBroker {
+    async fn decide(
+        &self,
+        _request: harness_permission::PermissionRequest,
+        _ctx: harness_permission::PermissionContext,
+    ) -> harness_contracts::Decision {
+        harness_contracts::Decision::Escalate
+    }
+
+    async fn hard_policy_denies(
+        &self,
+        request: &harness_permission::PermissionRequest,
+        ctx: &harness_permission::PermissionContext,
+    ) -> bool {
+        self.hard_policy_broker
+            .hard_policy_denies(request, ctx)
+            .await
+    }
+
+    async fn persist(
+        &self,
+        decision: harness_permission::PersistedDecision,
+    ) -> Result<(), harness_contracts::PermissionError> {
+        self.hard_policy_broker.persist(decision).await
+    }
+}
+
 fn daemon_authorization_runtime(
     permission_broker: HarnessPermissionBroker,
     sandbox: Arc<dyn SandboxBackend>,
@@ -101,10 +132,16 @@ fn daemon_authorization_runtime(
     redactor: Arc<dyn Redactor>,
     provider_credential_resolver: Arc<dyn harness_contracts::ProviderCredentialResolverCap>,
 ) -> Result<DaemonAuthorizationRuntime, SdkRunFactoryError> {
-    let policy_broker: Arc<dyn harness_permission::PermissionBroker> = Arc::new(permission_broker);
+    let interactive_broker: Arc<dyn harness_permission::PermissionBroker> =
+        Arc::new(permission_broker);
+    let policy_broker: Arc<dyn harness_permission::PermissionBroker> =
+        Arc::new(DaemonPolicyBroker {
+            hard_policy_broker: Arc::clone(&interactive_broker),
+        });
     let authority = Arc::new(
         PermissionAuthority::builder()
             .with_policy_broker(policy_broker)
+            .with_interactive_broker(interactive_broker)
             .with_transient_decision_store(Arc::new(NoopDecisionPersistence))
             .build()
             .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?,
@@ -166,159 +203,194 @@ async fn mcp_config_from_runtime_snapshot(
     session_id: harness_contracts::SessionId,
     run_id: RunId,
     permission_mode: PermissionMode,
-) -> Result<McpConfig, SdkRunFactoryError> {
+) -> Result<DaemonMcpRuntimeGuard, SdkRunFactoryError> {
     let registry = McpRegistry::new();
-    let mut server_ids_to_inject = Vec::new();
-    let agent_id = AgentId::new();
+    let build_result = async {
+        let mut server_ids_to_inject = Vec::new();
+        let agent_id = AgentId::new();
+        for record in snapshot.mcp_servers.iter().filter(|record| record.enabled) {
+            let (spec, transport) = mcp_server_runtime(record, execution_root)?;
+            let scope = match record.scope.as_str() {
+                "global" => McpServerScope::Global,
+                "session" => McpServerScope::Session(session_id),
+                "agent" => McpServerScope::Agent(agent_id),
+                _ => {
+                    return Err(SdkRunFactoryError::RuntimeConfig(
+                        "invalid persisted MCP server scope".to_owned(),
+                    ));
+                }
+            };
+            let server_id = spec.server_id.clone();
+            let authorization = McpAuthorizationContext {
+                authorization_service: Arc::clone(&authorization_service),
+                tenant_id: TenantId::SINGLE,
+                scope: scope.clone(),
+                session_id,
+                run_id,
+                permission_mode,
+                interactivity: InteractivityLevel::NoInteractive,
+                fallback_policy: FallbackPolicy::AskUser,
+                workspace_root: execution_root.to_owned(),
+            };
+            registry
+                .add_managed_server_with_context(
+                    spec,
+                    scope,
+                    transport,
+                    Arc::new(NoopMcpEventSink),
+                    McpConnectContext::default()
+                        .with_permission_mode(permission_mode)
+                        .with_authorization(authorization),
+                )
+                .await
+                .map_err(|_| {
+                    SdkRunFactoryError::RuntimeConfig(
+                        "persisted MCP server failed to connect".to_owned(),
+                    )
+                })?;
+            server_ids_to_inject.push(server_id);
+        }
+        Ok(server_ids_to_inject)
+    }
+    .await;
+    match build_result {
+        Ok(server_ids_to_inject) => Ok(DaemonMcpRuntimeGuard {
+            config: McpConfig {
+                registry,
+                server_ids_to_inject,
+            },
+            shutdown_complete: false,
+        }),
+        Err(error) => {
+            let _ = registry.shutdown_all().await;
+            Err(error)
+        }
+    }
+}
 
-    for record in snapshot.mcp_servers.iter().filter(|record| record.enabled) {
-        let (spec, transport) = mcp_server_runtime(record, execution_root)?;
-        let scope = match record.scope.as_str() {
-            "global" => McpServerScope::Global,
-            "session" => McpServerScope::Session(session_id),
-            "agent" => McpServerScope::Agent(agent_id),
-            _ => {
-                return Err(SdkRunFactoryError::RuntimeConfig(format!(
-                    "MCP server `{}` has an unsupported scope",
-                    record.id
-                )))
-            }
-        };
-        let server_id = spec.server_id.clone();
-        let authorization = McpAuthorizationContext {
-            authorization_service: Arc::clone(&authorization_service),
-            tenant_id: TenantId::SINGLE,
-            scope: scope.clone(),
-            session_id,
-            run_id,
-            permission_mode,
-            interactivity: InteractivityLevel::NoInteractive,
-            fallback_policy: FallbackPolicy::AskUser,
-            workspace_root: execution_root.to_owned(),
-        };
-        registry
-            .add_managed_server_with_context(
-                spec,
-                scope,
-                transport,
-                Arc::new(NoopMcpEventSink),
-                McpConnectContext::default()
-                    .with_permission_mode(permission_mode)
-                    .with_authorization(authorization),
-            )
-            .await
-            .map_err(|_| {
-                SdkRunFactoryError::RuntimeConfig(format!(
-                    "MCP server `{}` failed to connect",
-                    record.id
-                ))
-            })?;
-        server_ids_to_inject.push(server_id);
+struct DaemonMcpRuntimeGuard {
+    config: McpConfig,
+    shutdown_complete: bool,
+}
+
+impl DaemonMcpRuntimeGuard {
+    fn config(&self) -> McpConfig {
+        self.config.clone()
     }
 
-    Ok(McpConfig {
-        registry,
-        server_ids_to_inject,
-    })
+    async fn shutdown(mut self) -> Result<(), SdkRunFactoryError> {
+        let result = self.config.registry.shutdown_all().await;
+        self.shutdown_complete = true;
+        result.map_err(|_| {
+            SdkRunFactoryError::RuntimeConfig("failed to shut down MCP runtime".to_owned())
+        })
+    }
+}
+
+impl Drop for DaemonMcpRuntimeGuard {
+    fn drop(&mut self) {
+        if self.shutdown_complete {
+            return;
+        }
+        let registry = self.config.registry.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = registry.shutdown_all().await;
+            });
+        }
+    }
 }
 
 fn mcp_server_runtime(
     record: &RuntimeMcpServerConfig,
     workspace_root: &Path,
 ) -> Result<(McpServerSpec, Arc<dyn McpTransport>), SdkRunFactoryError> {
-    let (transport_choice, transport): (TransportChoice, Arc<dyn McpTransport>) = match &record
-        .transport
-    {
-        RuntimeMcpTransport::Stdio {
-            command,
-            args,
-            env,
-            inherit_env,
-            working_dir,
-        } => {
-            if command.trim().is_empty() {
-                return Err(SdkRunFactoryError::RuntimeConfig(format!(
-                    "MCP server `{}` has an empty stdio command",
-                    record.id
-                )));
+    let (transport_choice, transport): (TransportChoice, Arc<dyn McpTransport>) =
+        match &record.transport {
+            harness_contracts::McpServerTransportConfig::Stdio {
+                command,
+                args,
+                env,
+                inherit_env,
+                working_dir,
+            } => {
+                if command.trim().is_empty() {
+                    return Err(SdkRunFactoryError::RuntimeConfig(
+                        "persisted MCP stdio command is invalid".to_owned(),
+                    ));
+                }
+                let mut policy = StdioPolicy::default();
+                policy.working_dir = Some(mcp_stdio_working_dir(
+                    working_dir.as_deref(),
+                    workspace_root,
+                )?);
+                let extra = env
+                    .iter()
+                    .map(|entry| (entry.key.clone(), entry.value.clone()))
+                    .collect::<BTreeMap<_, _>>();
+                let inherit = effective_stdio_inherit_env(command, inherit_env)
+                    .into_iter()
+                    .collect::<BTreeSet<_>>();
+                let env = if inherit.is_empty() {
+                    StdioEnv::Empty { extra }
+                } else {
+                    StdioEnv::Allowlist { inherit, extra }
+                };
+                (
+                    TransportChoice::Stdio {
+                        command: command.clone(),
+                        args: args.clone(),
+                        env,
+                        policy,
+                    },
+                    Arc::new(StdioTransport::new()),
+                )
             }
-            let mut policy = StdioPolicy::default();
-            policy.working_dir = Some(mcp_stdio_working_dir(
-                working_dir.as_deref(),
-                workspace_root,
-                &record.id,
-            )?);
-            let extra = env
-                .iter()
-                .map(|entry| (entry.key.clone(), entry.value.clone()))
-                .collect::<BTreeMap<_, _>>();
-            let inherit = effective_stdio_inherit_env(command, inherit_env)
-                .into_iter()
-                .collect::<BTreeSet<_>>();
-            let env = if inherit.is_empty() {
-                StdioEnv::Empty { extra }
-            } else {
-                StdioEnv::Allowlist { inherit, extra }
-            };
-            (
-                TransportChoice::Stdio {
-                    command: command.clone(),
-                    args: args.clone(),
-                    env,
-                    policy,
-                },
-                Arc::new(StdioTransport::new()),
-            )
-        }
-        RuntimeMcpTransport::Http {
-            url,
-            bearer_token_env_var,
-            headers,
-            headers_from_env,
-        } => {
-            if url.trim().is_empty() {
-                return Err(SdkRunFactoryError::RuntimeConfig(format!(
-                    "MCP server `{}` has an empty HTTP URL",
-                    record.id
-                )));
-            }
-            let mut resolved_headers = headers
-                .iter()
-                .map(|entry| (entry.key.trim().to_owned(), entry.value.clone()))
-                .collect::<BTreeMap<_, _>>();
-            for header in headers_from_env {
-                let value = std::env::var(&header.env_var).map_err(|_| {
-                    SdkRunFactoryError::RuntimeConfig(format!(
-                        "MCP server `{}` requires unavailable header environment variable `{}`",
-                        record.id, header.env_var
-                    ))
-                })?;
-                resolved_headers.insert(header.key.trim().to_owned(), value);
-            }
-            if let Some(env_var) = bearer_token_env_var {
-                let token = std::env::var(env_var).map_err(|_| {
-                        SdkRunFactoryError::RuntimeConfig(format!(
-                            "MCP server `{}` requires unavailable bearer environment variable `{env_var}`",
-                            record.id
-                        ))
+            harness_contracts::McpServerTransportConfig::Http {
+                url,
+                bearer_token_env_var,
+                headers,
+                headers_from_env,
+            } => {
+                if url.trim().is_empty() {
+                    return Err(SdkRunFactoryError::RuntimeConfig(
+                        "persisted MCP HTTP URL is invalid".to_owned(),
+                    ));
+                }
+                let mut resolved_headers = headers
+                    .iter()
+                    .map(|entry| (entry.key.trim().to_owned(), entry.value.clone()))
+                    .collect::<BTreeMap<_, _>>();
+                for header in headers_from_env {
+                    let value = std::env::var(&header.env_var).map_err(|_| {
+                        SdkRunFactoryError::RuntimeConfig(
+                            "configured MCP header environment variable is unavailable".to_owned(),
+                        )
                     })?;
-                resolved_headers.insert("Authorization".to_owned(), format!("Bearer {token}"));
+                    resolved_headers.insert(header.key.trim().to_owned(), value);
+                }
+                if let Some(env_var) = bearer_token_env_var {
+                    let token = std::env::var(env_var).map_err(|_| {
+                        SdkRunFactoryError::RuntimeConfig(
+                            "configured MCP bearer environment variable is unavailable".to_owned(),
+                        )
+                    })?;
+                    resolved_headers.insert("Authorization".to_owned(), format!("Bearer {token}"));
+                }
+                (
+                    TransportChoice::Http {
+                        url: url.clone(),
+                        headers: resolved_headers,
+                    },
+                    Arc::new(HttpTransport::new()),
+                )
             }
-            (
-                TransportChoice::Http {
-                    url: url.clone(),
-                    headers: resolved_headers,
-                },
-                Arc::new(HttpTransport::new()),
-            )
-        }
-        RuntimeMcpTransport::InProcess => {
-            return Err(SdkRunFactoryError::RuntimeConfig(format!(
-                "MCP server `{}` cannot use the in-process transport in the daemon",
-                record.id
-            )))
-        }
-    };
+            harness_contracts::McpServerTransportConfig::InProcess => {
+                return Err(SdkRunFactoryError::RuntimeConfig(
+                    "persisted MCP transport is unsupported by the daemon".to_owned(),
+                ))
+            }
+        };
     Ok((
         McpServerSpec::new(
             McpServerId(record.id.clone()),
@@ -351,15 +423,14 @@ fn effective_stdio_inherit_env(command: &str, configured: &[String]) -> Vec<Stri
 fn mcp_stdio_working_dir(
     configured: Option<&str>,
     workspace_root: &Path,
-    server_id: &str,
 ) -> Result<PathBuf, SdkRunFactoryError> {
     let Some(configured) = configured else {
         return Ok(workspace_root.to_owned());
     };
     if configured.trim().is_empty() {
-        return Err(SdkRunFactoryError::RuntimeConfig(format!(
-            "MCP server `{server_id}` has an empty working directory"
-        )));
+        return Err(SdkRunFactoryError::RuntimeConfig(
+            "persisted MCP working directory is invalid".to_owned(),
+        ));
     }
     let path = PathBuf::from(configured);
     let candidate = if path.is_absolute() {
@@ -368,14 +439,14 @@ fn mcp_stdio_working_dir(
         workspace_root.join(path)
     };
     let canonical = candidate.canonicalize().map_err(|_| {
-        SdkRunFactoryError::RuntimeConfig(format!(
-            "MCP server `{server_id}` has an invalid working directory"
-        ))
+        SdkRunFactoryError::RuntimeConfig(
+            "persisted MCP working directory is unavailable".to_owned(),
+        )
     })?;
     if !canonical.starts_with(workspace_root) {
-        return Err(SdkRunFactoryError::RuntimeConfig(format!(
-            "MCP server `{server_id}` working directory escapes the workspace"
-        )));
+        return Err(SdkRunFactoryError::RuntimeConfig(
+            "persisted MCP working directory escapes the workspace".to_owned(),
+        ));
     }
     Ok(canonical)
 }
@@ -580,18 +651,22 @@ impl SubagentEngineFactory for SdkIsolatedSubagentEngineFactory {
             Arc::clone(&self.runtime.runtime_config.provider_credential_resolver),
         )
         .map_err(|error| SubagentError::Engine(error.to_string()))?;
-        let mcp_config = mcp_config_from_runtime_snapshot(
+        let execution_defaults = &self.runtime.runtime_config.execution_defaults;
+        let permission_mode = effective_runtime_permission_mode(
+            request.spec.permission_mode,
+            execution_defaults.permission_mode,
+        );
+        let mcp_runtime = mcp_config_from_runtime_snapshot(
             &self.runtime.runtime_config,
             Arc::clone(&authorization.service),
             &workspace_root,
             self.context.session_id,
             request.child_run_id,
-            request.spec.permission_mode,
+            permission_mode,
         )
         .await
         .map_err(|error| SubagentError::Engine(error.to_string()))?;
         let provider = &self.runtime.runtime_config.provider;
-        let execution_defaults = &self.runtime.runtime_config.execution_defaults;
         let engine_factory = Arc::new(EngineBoundSubagentFactory::default());
         let harness_builder = Harness::builder()
             .with_workspace_root(&workspace_root)
@@ -609,12 +684,15 @@ impl SubagentEngineFactory for SdkIsolatedSubagentEngineFactory {
             .with_memory_database_path(&self.runtime.runtime_config.memory_database_path)
             .with_subagent_runner(Arc::clone(&self.context.subagent_runner))
             .with_subagent_engine_factory(Arc::clone(&engine_factory));
-        let harness =
-            apply_runtime_snapshot(harness_builder, &self.runtime.runtime_config, mcp_config)
-                .map_err(|error| SubagentError::Engine(error.to_string()))?
-                .build()
-                .await
-                .map_err(|error| SubagentError::Engine(error.to_string()))?;
+        let harness = apply_runtime_snapshot(
+            harness_builder,
+            &self.runtime.runtime_config,
+            mcp_runtime.config(),
+        )
+        .map_err(|error| SubagentError::Engine(error.to_string()))?
+        .build()
+        .await
+        .map_err(|error| SubagentError::Engine(error.to_string()))?;
         let options = SessionOptions::new(&workspace_root)
             .with_project_workspace_root(&self.runtime.runtime_config.workspace_root)
             .with_tenant_id(self.context.tenant_id)
@@ -627,19 +705,30 @@ impl SubagentEngineFactory for SdkIsolatedSubagentEngineFactory {
             .with_context_compression_trigger_ratio(
                 execution_defaults.context_compression_trigger_ratio,
             )
-            .with_permission_mode(request.spec.permission_mode);
+            .with_permission_mode(permission_mode);
         let mut run_options = ConversationRunOptions::from_session_options(&options)
             .with_model_config_id(&provider.config_id)
             .with_model_id(&provider.model_id)
             .with_protocol(provider.protocol)
-            .with_permission_mode(request.spec.permission_mode)
+            .with_permission_mode(permission_mode)
             .with_model_options(provider.model_options.clone());
         run_options.agent_tool_policy = Some(self.runtime.agent_tool_policy.clone());
         harness
             .prepare_external_subagent_engine(options, run_options)
             .await
             .map_err(|error| SubagentError::Engine(error.to_string()))?;
-        engine_factory.run_child_engine(request).await
+        let run_result = engine_factory.run_child_engine(request).await;
+        let shutdown_result = mcp_runtime
+            .shutdown()
+            .await
+            .map_err(|error| SubagentError::Engine(error.to_string()));
+        match run_result {
+            Err(error) => Err(error),
+            Ok(outcome) => {
+                shutdown_result?;
+                Ok(outcome)
+            }
+        }
     }
 }
 
@@ -745,6 +834,10 @@ impl SdkRunCoordinatorFactory {
             .map_err(|error| SdkRunFactoryError::RuntimeConfig(error.to_string()))?;
         let provider = &runtime_config.provider;
         let execution_defaults = &runtime_config.execution_defaults;
+        let permission_mode = effective_runtime_permission_mode(
+            request.input.permission_mode,
+            execution_defaults.permission_mode,
+        );
         let model: Arc<dyn ModelProvider> = if replay_calls.is_empty() {
             Arc::clone(&provider.provider)
         } else {
@@ -789,13 +882,13 @@ impl SdkRunCoordinatorFactory {
             Arc::clone(&redactor),
             Arc::clone(&runtime_config.provider_credential_resolver),
         )?;
-        let mcp_config = mcp_config_from_runtime_snapshot(
+        let mcp_runtime = mcp_config_from_runtime_snapshot(
             &runtime_config,
             Arc::clone(&authorization.service),
             &workspace_root,
             request.input.session_id,
             request.input.run_id,
-            request.input.permission_mode,
+            permission_mode,
         )
         .await?;
         let agent_tool_policy = daemon_agent_tool_policy(&execution_defaults)?;
@@ -856,11 +949,12 @@ impl SdkRunCoordinatorFactory {
         } else {
             harness_builder
         };
-        let harness = apply_runtime_snapshot(harness_builder, &runtime_config, mcp_config)
-            .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?
-            .build()
-            .await
-            .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?;
+        let harness =
+            apply_runtime_snapshot(harness_builder, &runtime_config, mcp_runtime.config())
+                .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?
+                .build()
+                .await
+                .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?;
 
         let session_options = SessionOptions::new(&workspace_root)
             .with_project_workspace_root(&runtime_config.workspace_root)
@@ -874,7 +968,7 @@ impl SdkRunCoordinatorFactory {
             .with_context_compression_trigger_ratio(
                 execution_defaults.context_compression_trigger_ratio,
             )
-            .with_permission_mode(request.input.permission_mode);
+            .with_permission_mode(permission_mode);
         harness
             .open_or_create_conversation_session(session_options.clone())
             .await
@@ -901,10 +995,10 @@ impl SdkRunCoordinatorFactory {
             .with_model_config_id(provider.config_id.clone())
             .with_model_id(provider.model_id.clone())
             .with_protocol(provider.protocol)
-            .with_permission_mode(request.input.permission_mode)
+            .with_permission_mode(permission_mode)
             .with_model_options(provider.model_options.clone());
         run_options.agent_tool_policy = Some(agent_tool_policy);
-        harness
+        let run_result = harness
             .submit_conversation_turn_with_run_control(
                 ConversationTurnRequest {
                     options: session_options,
@@ -916,8 +1010,15 @@ impl SdkRunCoordinatorFactory {
                 control,
             )
             .await
-            .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?;
-        Ok(())
+            .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()));
+        let shutdown_result = mcp_runtime.shutdown().await;
+        match run_result {
+            Err(error) => Err(error),
+            Ok(_) => {
+                shutdown_result?;
+                Ok(())
+            }
+        }
     }
 }
 
@@ -1465,6 +1566,17 @@ fn daemon_agent_tool_policy(
     })
 }
 
+fn effective_runtime_permission_mode(
+    requested: PermissionMode,
+    configured: PermissionMode,
+) -> PermissionMode {
+    if requested == PermissionMode::Default {
+        configured
+    } else {
+        requested
+    }
+}
+
 impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
     fn spawn_idempotent(
         &self,
@@ -1564,7 +1676,12 @@ impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
                 )
                 .await;
                 let execution_failed = if let Err(error) = result {
-                    tracing::error!(%task_id, %segment_id, error = %error, "SDK segment failed");
+                    tracing::error!(
+                        %task_id,
+                        %segment_id,
+                        error_kind = error.diagnostic_kind(),
+                        "SDK segment failed"
+                    );
                     true
                 } else {
                     false
@@ -1951,6 +2068,25 @@ enum SdkRunFactoryError {
     DurableTerminal(String),
 }
 
+impl SdkRunFactoryError {
+    fn diagnostic_kind(&self) -> &'static str {
+        match self {
+            Self::WorkspaceLeaseMissing
+            | Self::WorkspaceLeaseNotFound
+            | Self::WorkspaceLeaseTaskMismatch
+            | Self::WorkspaceLeaseInactive
+            | Self::WorkspaceSandboxUnavailable
+            | Self::ManagedWorkspacePathMissing
+            | Self::Workspace(_) => "workspace",
+            Self::RuntimeConfig(_) | Self::ExecutionDefaults(_) => "runtime_config",
+            Self::Attachment(_) | Self::AttachmentMissing => "attachment",
+            Self::RecoveryDecision(_) => "recovery",
+            Self::Sdk(_) => "sdk",
+            Self::DurableTerminal(_) => "durable_terminal",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1963,18 +2099,22 @@ mod tests {
 
     use async_trait::async_trait;
     use harness_contracts::{
-        ClientId, CommandId, DeferPolicy, Event, EventId, IndeterminateToolDecision,
-        IndeterminateToolResolution, ModelError, ModelProtocol, NoopRedactor, PermissionMode,
+        ClientId, CommandId, DeferPolicy, Event, EventId, ExecutionDefaultsRecord,
+        ExecutionOverridesRecord, IndeterminateToolDecision, IndeterminateToolResolution,
+        ModelError, ModelProtocol, NoopRedactor, PermissionMode,
         ProviderProfileConversationCapability, ProviderProfileDefinition,
         ProviderProfileModelDescriptor, ProviderProfileModelLifecycle, ProviderSecretEntry,
         ProviderSecretsRecord, ProviderSelectionRecord, QueueItemId, RunId, RunSegmentId,
-        RunTerminalReason, SessionId, StopReason, TaskId, ToolProperties, ToolUseId,
+        RunTerminalReason, SessionId, StopReason, TaskId, ToolProfile, ToolProperties, ToolUseId,
         ToolUseRequestedEvent, ToolUseStartedEvent, TrustLevel, UsageSnapshot, WorkspaceMode,
     };
     use harness_engine::{RunControl, TurnOutcome};
     use harness_journal::{
         AcceptedCommand, CommandOutcome, EventStore, NewTaskEvent, ReplayCursor, SegmentRunInput,
         TaskEventStoreAdapter, TaskStore,
+    };
+    use harness_mcp::{
+        McpConnection, McpError, McpRegistry, McpServerSpec, McpToolDescriptor, McpToolResult,
     };
     use harness_model::TestModelProvider;
     use harness_plugin::{
@@ -2041,6 +2181,99 @@ mod tests {
             background: Arc::new(UnusedAgentStarter),
             team: Arc::new(UnusedAgentStarter),
         }
+    }
+
+    #[derive(Default)]
+    struct ShutdownTrackingMcpConnection {
+        shutdown: AtomicBool,
+    }
+
+    #[async_trait]
+    impl McpConnection for ShutdownTrackingMcpConnection {
+        fn connection_id(&self) -> &'static str {
+            "daemon-shutdown-tracking"
+        }
+
+        async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
+            Ok(Vec::new())
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _args: serde_json::Value,
+        ) -> Result<McpToolResult, McpError> {
+            Ok(McpToolResult::text("ok"))
+        }
+
+        async fn shutdown(&self) -> Result<(), McpError> {
+            self.shutdown.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn daemon_mcp_runtime_shutdown_closes_and_clears_registry() {
+        let registry = McpRegistry::new();
+        let connection = Arc::new(ShutdownTrackingMcpConnection::default());
+        let server_id = harness_contracts::McpServerId("daemon-fixture".to_owned());
+        registry
+            .add_ready_server(
+                McpServerSpec::new(
+                    server_id.clone(),
+                    "daemon fixture",
+                    harness_mcp::TransportChoice::InProcess,
+                    harness_contracts::McpServerSource::Workspace,
+                ),
+                harness_contracts::McpServerScope::Global,
+                connection.clone(),
+            )
+            .await
+            .expect("register daemon MCP fixture");
+        let guard = super::DaemonMcpRuntimeGuard {
+            config: jyowo_harness_sdk::McpConfig {
+                registry: registry.clone(),
+                server_ids_to_inject: vec![server_id],
+            },
+            shutdown_complete: false,
+        };
+
+        guard
+            .shutdown()
+            .await
+            .expect("shut down daemon MCP runtime");
+
+        assert!(connection.shutdown.load(Ordering::SeqCst));
+        assert!(registry.server_ids().await.is_empty());
+    }
+
+    #[test]
+    fn runtime_mcp_failures_do_not_expose_persisted_ids_or_environment_names() {
+        let record = serde_json::from_value::<crate::RuntimeMcpServerConfig>(json!({
+            "enabled": true,
+            "displayName": "secret display",
+            "id": "sk-diagnostic-secret",
+            "scope": "session",
+            "transport": {
+                "kind": "http",
+                "url": "https://example.com",
+                "headers_from_env": [{
+                    "key": "X-Test",
+                    "envVar": "HEADER_DIAGNOSTIC_SECRET"
+                }]
+            }
+        }))
+        .expect("runtime MCP fixture");
+
+        let error = match super::mcp_server_runtime(&record, Path::new("/tmp")) {
+            Ok(_) => panic!("missing environment must fail"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+
+        assert!(!message.contains("diagnostic-secret"));
+        assert!(!message.contains("DIAGNOSTIC_SECRET"));
+        assert!(message.len() <= 256);
     }
 
     #[cfg(unix)]
@@ -2382,6 +2615,74 @@ mod tests {
             },
         ] {
             assert!(super::daemon_agent_tool_policy(&defaults).is_err());
+        }
+    }
+
+    #[test]
+    fn runtime_permission_precedence_uses_explicit_then_project_then_global() {
+        assert_eq!(
+            super::effective_runtime_permission_mode(PermissionMode::Auto, PermissionMode::Plan),
+            PermissionMode::Auto
+        );
+        assert_eq!(
+            super::effective_runtime_permission_mode(PermissionMode::Default, PermissionMode::Plan),
+            PermissionMode::Plan
+        );
+        assert_eq!(
+            super::effective_runtime_permission_mode(
+                PermissionMode::Default,
+                PermissionMode::DontAsk,
+            ),
+            PermissionMode::DontAsk
+        );
+    }
+
+    #[tokio::test]
+    async fn foreground_runtime_applies_global_project_and_explicit_permission_precedence() {
+        for (project, requested, expected) in [
+            (None, PermissionMode::Default, PermissionMode::Plan),
+            (
+                Some(PermissionMode::AcceptEdits),
+                PermissionMode::Default,
+                PermissionMode::AcceptEdits,
+            ),
+            (
+                Some(PermissionMode::AcceptEdits),
+                PermissionMode::DontAsk,
+                PermissionMode::DontAsk,
+            ),
+        ] {
+            let fixture = Fixture::new();
+            fixture.write_provider_config();
+            fixture.write_permission_config(PermissionMode::Plan, project);
+            let mut request = fixture.request(Some("selected"));
+            request.input.permission_mode = requested;
+            let running = fixture.factory.spawn_idempotent(
+                request,
+                fixture.workspace_tools.clone(),
+                Arc::new(UnusedSubagentRunner),
+                unused_agent_starters(),
+            );
+            running.control().request(RunControl::ForceStop);
+            let mut events = running.into_events();
+            tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+                .await
+                .expect("permission precedence run should terminate");
+
+            let task_events = fixture
+                .store
+                .task_events_after(fixture.task_id, 0, 256)
+                .expect("read task events");
+            let run_started = task_events
+                .iter()
+                .find(|event| event.event_type == "engine.run_started")
+                .expect("effective permission must be journaled on run start");
+            let encoded = serde_json::to_string(&run_started.payload).expect("encode run start");
+            let expected = serde_json::to_string(&expected).expect("encode permission mode");
+            assert!(
+                encoded.contains(&format!("\"permission_mode\":{expected}")),
+                "requested={requested:?}, project={project:?}, payload={encoded}"
+            );
         }
     }
 
@@ -3769,6 +4070,30 @@ mod tests {
                     default_config_id: Some("selected".into()),
                 },
             );
+        }
+
+        fn write_permission_config(&self, global: PermissionMode, project: Option<PermissionMode>) {
+            let config = self._root.path().join("config");
+            std::fs::create_dir_all(&config).expect("global config directory");
+            write_json(
+                &config.join("execution-defaults.json"),
+                &ExecutionDefaultsRecord {
+                    permission_mode: global,
+                    tool_profile: ToolProfile::Full,
+                    ..ExecutionDefaultsRecord::default()
+                },
+            );
+            if let Some(permission_mode) = project {
+                let project_config = self.workspace_root.join(".jyowo/config");
+                std::fs::create_dir_all(&project_config).expect("project config directory");
+                write_json(
+                    &project_config.join("execution-overrides.json"),
+                    &ExecutionOverridesRecord {
+                        permission_mode: Some(permission_mode),
+                        ..ExecutionOverridesRecord::default()
+                    },
+                );
+            }
         }
 
         fn write_sidecar_plugin(&self, name: &str, tool_name: &str) -> PluginManifest {

@@ -1,17 +1,20 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt, fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use harness_contracts::{
-    validate_agent_profile, validate_provider_capability_route, AgentProfile,
-    AgentProfileSelectionRecord, ExecutionDefaultsRecord, ExecutionOverridesRecord,
-    LocalIsolationTag, McpServerSource, PluginId, PluginSelectionRecord, ProviderCapabilityRoute,
+    validate_agent_profile, validate_persisted_mcp_server, validate_provider_capability_route,
+    AgentProfile, AgentProfileSelectionRecord, CapabilityRouteKind, ExecutionDefaultsRecord,
+    ExecutionOverridesRecord, LocalIsolationTag, McpServerConfigRecord, McpServerSource,
+    McpServerTransportConfig, PluginId, PluginSelectionRecord, ProviderCapabilityRoute,
     ProviderCapabilityRouteSettings, ProviderCredential, ProviderCredentialResolveContext,
     ProviderCredentialResolverCap, ProviderProfileDefinition, ProviderSecretEntry,
-    ProviderSecretsRecord, ProviderSelectionRecord, SandboxMode, SkillSelectionRecord, ToolError,
+    ProviderSecretsRecord, ProviderSelectionRecord, ProviderServiceCapability,
+    ProviderServiceCategory, SandboxMode, SkillSelectionRecord, ToolError,
 };
 use harness_plugin::{
     CargoExtensionRuntimeLoader, DiscoverySource, FileManifestLoader, ManifestLoadReport,
@@ -26,7 +29,6 @@ use jyowo_harness_sdk::{
 };
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
-use thiserror::Error;
 
 use crate::{ProviderConfigError, ProviderConfigResolver, ResolvedProviderConfig};
 
@@ -40,6 +42,7 @@ const AGENT_PROFILES_FILE: &str = "agent-profiles.json";
 const AGENT_PROFILE_SELECTION_FILE: &str = "agent-profile-selection.json";
 const PROVIDER_PROFILES_FILE: &str = "provider-profiles.json";
 const PROVIDER_SECRETS_FILE: &str = "provider-secrets.json";
+const MAX_FROZEN_PLUGIN_EXECUTABLE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Resolves immutable SDK factory inputs for one canonical workspace.
 #[derive(Debug, Clone)]
@@ -161,6 +164,8 @@ impl RuntimeConfigResolver {
             validate_provider_routes(routes, "project provider capability routes")?;
         }
         let provider_routes = merge_provider_routes(global_routes, project_routes);
+        let credentials = load_provider_credentials(&global_config_root)?;
+        validate_provider_route_integrity(&provider_routes, &credentials)?;
 
         let mut global_mcp = read_optional_json::<Vec<RuntimeMcpServerConfig>>(
             &global_config_root.join(MCP_SERVERS_FILE),
@@ -179,7 +184,8 @@ impl RuntimeConfigResolver {
                 server.source = McpServerSource::Project;
             }
         }
-        let mcp_servers = merge_mcp_servers(global_mcp, project_mcp)?;
+        let mut mcp_servers = merge_mcp_servers(global_mcp, project_mcp)?;
+        freeze_mcp_working_directories(&mut mcp_servers, &workspace_root)?;
 
         let global_skill_selection = read_optional_json::<SkillSelectionRecord>(
             &global_config_root.join(SKILLS_FILE),
@@ -228,11 +234,15 @@ impl RuntimeConfigResolver {
         validate_plugin_index_paths(
             &global_home.join("plugins/packages"),
             &global_plugin_records,
+            &enabled_plugin_ids,
+            true,
             "global plugin index",
         )?;
         validate_plugin_index_paths(
             &workspace_root.join(".jyowo/plugins/packages"),
             &project_plugin_records,
+            &enabled_plugin_ids,
+            allow_project_plugins,
             "project plugin index",
         )?;
         let plugin_snapshot = build_plugin_snapshot(
@@ -276,8 +286,6 @@ impl RuntimeConfigResolver {
                 });
             }
         }
-
-        let credentials = load_provider_credentials(&global_config_root)?;
 
         Ok(RuntimeConfigSnapshot {
             workspace_root: workspace_root.clone(),
@@ -398,6 +406,77 @@ struct RuntimePluginSnapshot {
     runtime_loaders: Vec<Arc<dyn PluginRuntimeLoader>>,
 }
 
+#[derive(Debug)]
+struct FrozenPluginRuntimeRoot {
+    path: PathBuf,
+}
+
+impl Drop for FrozenPluginRuntimeRoot {
+    fn drop(&mut self) {
+        match fs::symlink_metadata(&self.path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let _ = fs::remove_file(&self.path);
+            }
+            Ok(metadata) if metadata.is_dir() => {
+                let _ = fs::remove_dir_all(&self.path);
+            }
+            Ok(_) => {
+                let _ = fs::remove_file(&self.path);
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FrozenPluginExecutableStore {
+    global_home: PathBuf,
+    runtime_root: Option<Arc<FrozenPluginRuntimeRoot>>,
+    next_file_id: u64,
+}
+
+impl FrozenPluginExecutableStore {
+    fn new(global_home: &Path) -> Self {
+        Self {
+            global_home: global_home.to_owned(),
+            runtime_root: None,
+            next_file_id: 0,
+        }
+    }
+
+    fn runtime_root(&self) -> Option<Arc<FrozenPluginRuntimeRoot>> {
+        self.runtime_root.clone()
+    }
+
+    fn freeze(&mut self, source: &Path) -> Result<PathBuf, RuntimeConfigError> {
+        let bytes = read_regular_executable_no_follow(source)?;
+        let content_hash = blake3::hash(&bytes).to_hex();
+        let root = match &self.runtime_root {
+            Some(root) => Arc::clone(root),
+            None => {
+                let root = Arc::new(FrozenPluginRuntimeRoot {
+                    path: create_frozen_plugin_runtime_root(&self.global_home)?,
+                });
+                self.runtime_root = Some(Arc::clone(&root));
+                root
+            }
+        };
+        self.next_file_id = self.next_file_id.saturating_add(1);
+        let extension = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .filter(|value| value.eq_ignore_ascii_case("exe"))
+            .map(|_| ".exe")
+            .unwrap_or_default();
+        let destination = root.path.join(format!(
+            "{:04}-{content_hash}{extension}",
+            self.next_file_id
+        ));
+        write_frozen_plugin_executable(&destination, &bytes)?;
+        Ok(destination)
+    }
+}
+
 impl fmt::Debug for RuntimePluginSnapshot {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -428,8 +507,7 @@ impl RuntimePluginSnapshot {
 
 #[derive(Debug, Clone)]
 struct DaemonPluginRuntimeLoader {
-    global_packages_root: PathBuf,
-    workspace_packages_root: PathBuf,
+    runtime_root: Option<Arc<FrozenPluginRuntimeRoot>>,
     workspace_root: PathBuf,
 }
 
@@ -438,13 +516,10 @@ impl DaemonPluginRuntimeLoader {
         let ManifestOrigin::CargoExtension { binary, .. } = origin else {
             return None;
         };
-        if binary.starts_with(&self.workspace_packages_root) {
-            return Some(self.workspace_root.clone());
-        }
-        if binary.starts_with(&self.global_packages_root) {
-            return binary.parent().map(Path::to_path_buf);
-        }
-        None
+        let runtime_root = self.runtime_root.as_ref()?;
+        binary
+            .starts_with(&runtime_root.path)
+            .then(|| runtime_root.path.clone())
     }
 }
 
@@ -517,145 +592,401 @@ impl PluginManifestLoader for FrozenPluginManifestLoader {
     }
 }
 
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct RuntimeMcpServerConfig {
-    pub enabled: bool,
-    pub display_name: String,
-    pub id: String,
-    pub scope: String,
-    #[serde(skip, default = "default_mcp_server_source")]
+    config: McpServerConfigRecord,
     pub(crate) source: McpServerSource,
-    pub(crate) transport: RuntimeMcpTransport,
 }
 
 fn default_mcp_server_source() -> McpServerSource {
     McpServerSource::Workspace
 }
 
+impl<'de> Deserialize<'de> for RuntimeMcpServerConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Self {
+            config: McpServerConfigRecord::deserialize(deserializer)?,
+            source: default_mcp_server_source(),
+        })
+    }
+}
+
+impl std::ops::Deref for RuntimeMcpServerConfig {
+    type Target = McpServerConfigRecord;
+
+    fn deref(&self) -> &Self::Target {
+        &self.config
+    }
+}
+
+fn create_frozen_plugin_runtime_root(global_home: &Path) -> Result<PathBuf, RuntimeConfigError> {
+    let parent = ensure_secure_directory_chain(
+        global_home,
+        Path::new("runtime/plugin-snapshots"),
+        "plugin runtime snapshot directory",
+    )?;
+    for _ in 0..16 {
+        let path = parent.join(uuid::Uuid::new_v4().to_string());
+        #[cfg(unix)]
+        let result = {
+            use std::os::unix::fs::DirBuilderExt;
+
+            let mut builder = fs::DirBuilder::new();
+            builder.mode(0o700);
+            builder.create(&path)
+        };
+        #[cfg(not(unix))]
+        let result = fs::create_dir(&path);
+        match result {
+            Ok(()) => {
+                let metadata =
+                    fs::symlink_metadata(&path).map_err(|source| RuntimeConfigError::Read {
+                        kind: "plugin runtime snapshot directory",
+                        path: path.clone(),
+                        source,
+                    })?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(RuntimeConfigError::Invalid {
+                        kind: "plugin runtime snapshot directory",
+                        reason: "snapshot root is not a private directory".to_owned(),
+                    });
+                }
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(source) => {
+                return Err(RuntimeConfigError::Read {
+                    kind: "plugin runtime snapshot directory",
+                    path,
+                    source,
+                });
+            }
+        }
+    }
+    Err(RuntimeConfigError::Invalid {
+        kind: "plugin runtime snapshot directory",
+        reason: "unable to allocate a unique snapshot root".to_owned(),
+    })
+}
+
+#[cfg(unix)]
+fn read_regular_executable_no_follow(path: &Path) -> Result<Vec<u8>, RuntimeConfigError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut components = Vec::new();
+    let mut absolute = false;
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::ParentDir => {
+                return Err(RuntimeConfigError::Invalid {
+                    kind: "plugin sidecar executable",
+                    reason: "executable path is not normalized".to_owned(),
+                });
+            }
+            std::path::Component::RootDir => absolute = true,
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(value) => components.push(value.to_os_string()),
+        }
+    }
+    let file_name = components
+        .pop()
+        .ok_or_else(|| RuntimeConfigError::Invalid {
+            kind: "plugin sidecar executable",
+            reason: "executable path has no file name".to_owned(),
+        })?;
+    let mut directory = fs::File::open(if absolute {
+        Path::new("/")
+    } else {
+        Path::new(".")
+    })
+    .map_err(|source| RuntimeConfigError::Read {
+        kind: "plugin sidecar executable",
+        path: path.to_owned(),
+        source,
+    })?;
+    for component in components {
+        let fd = rustix::fs::openat(
+            &directory,
+            Path::new(&component),
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|error| RuntimeConfigError::Invalid {
+            kind: "plugin sidecar executable",
+            reason: if matches!(error, rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR) {
+                "executable path must not use symbolic links".to_owned()
+            } else {
+                "executable parent directory is unavailable".to_owned()
+            },
+        })?;
+        directory = fs::File::from(fd);
+    }
+    let fd = rustix::fs::openat(
+        &directory,
+        Path::new(&file_name),
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|error| RuntimeConfigError::Invalid {
+        kind: "plugin sidecar executable",
+        reason: if matches!(error, rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR) {
+            "executable must not be a symbolic link".to_owned()
+        } else {
+            "executable is unavailable".to_owned()
+        },
+    })?;
+    let mut file = fs::File::from(fd);
+    let metadata = file.metadata().map_err(|source| RuntimeConfigError::Read {
+        kind: "plugin sidecar executable",
+        path: path.to_owned(),
+        source,
+    })?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return Err(RuntimeConfigError::Invalid {
+            kind: "plugin sidecar executable",
+            reason: "sidecar must be a regular executable file".to_owned(),
+        });
+    }
+    if metadata.len() > MAX_FROZEN_PLUGIN_EXECUTABLE_BYTES {
+        return Err(RuntimeConfigError::Invalid {
+            kind: "plugin sidecar executable",
+            reason: "sidecar executable is too large".to_owned(),
+        });
+    }
+    read_executable_bytes_bounded(
+        &mut file,
+        metadata.len(),
+        MAX_FROZEN_PLUGIN_EXECUTABLE_BYTES,
+        path,
+    )
+}
+
+#[cfg(windows)]
+fn read_regular_executable_no_follow(path: &Path) -> Result<Vec<u8>, RuntimeConfigError> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|source| RuntimeConfigError::Read {
+            kind: "plugin sidecar executable",
+            path: path.to_owned(),
+            source,
+        })?;
+    let metadata = file.metadata().map_err(|source| RuntimeConfigError::Read {
+        kind: "plugin sidecar executable",
+        path: path.to_owned(),
+        source,
+    })?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !metadata.is_file() {
+        return Err(RuntimeConfigError::Invalid {
+            kind: "plugin sidecar executable",
+            reason: "sidecar must be a regular non-symlink file".to_owned(),
+        });
+    }
+    if metadata.len() > MAX_FROZEN_PLUGIN_EXECUTABLE_BYTES {
+        return Err(RuntimeConfigError::Invalid {
+            kind: "plugin sidecar executable",
+            reason: "sidecar executable is too large".to_owned(),
+        });
+    }
+    read_executable_bytes_bounded(
+        &mut file,
+        metadata.len(),
+        MAX_FROZEN_PLUGIN_EXECUTABLE_BYTES,
+        path,
+    )
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn read_regular_executable_no_follow(path: &Path) -> Result<Vec<u8>, RuntimeConfigError> {
+    let mut file = fs::File::open(path).map_err(|source| RuntimeConfigError::Read {
+        kind: "plugin sidecar executable",
+        path: path.to_owned(),
+        source,
+    })?;
+    let metadata = file.metadata().map_err(|source| RuntimeConfigError::Read {
+        kind: "plugin sidecar executable",
+        path: path.to_owned(),
+        source,
+    })?;
+    if !metadata.is_file() || fs::symlink_metadata(path).is_ok_and(|item| item.is_symlink()) {
+        return Err(RuntimeConfigError::Invalid {
+            kind: "plugin sidecar executable",
+            reason: "sidecar must be a regular non-symlink file".to_owned(),
+        });
+    }
+    read_executable_bytes_bounded(
+        &mut file,
+        metadata.len(),
+        MAX_FROZEN_PLUGIN_EXECUTABLE_BYTES,
+        path,
+    )
+}
+
+fn read_executable_bytes_bounded(
+    reader: &mut impl Read,
+    initial_len: u64,
+    max_bytes: u64,
+    path: &Path,
+) -> Result<Vec<u8>, RuntimeConfigError> {
+    let mut bytes = Vec::with_capacity(initial_len.min(max_bytes) as usize);
+    reader
+        .take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|source| RuntimeConfigError::Read {
+            kind: "plugin sidecar executable",
+            path: path.to_owned(),
+            source,
+        })?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(RuntimeConfigError::Invalid {
+            kind: "plugin sidecar executable",
+            reason: "sidecar executable is too large".to_owned(),
+        });
+    }
+    Ok(bytes)
+}
+
+fn write_frozen_plugin_executable(path: &Path, bytes: &[u8]) -> Result<(), RuntimeConfigError> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        options.mode(0o500);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|source| RuntimeConfigError::Read {
+            kind: "frozen plugin sidecar executable",
+            path: path.to_owned(),
+            source,
+        })?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|source| RuntimeConfigError::Read {
+            kind: "frozen plugin sidecar executable",
+            path: path.to_owned(),
+            source,
+        })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(path, fs::Permissions::from_mode(0o500)).map_err(|source| {
+            RuntimeConfigError::Read {
+                kind: "frozen plugin sidecar executable",
+                path: path.to_owned(),
+                source,
+            }
+        })?;
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|source| RuntimeConfigError::Read {
+        kind: "frozen plugin sidecar executable",
+        path: path.to_owned(),
+        source,
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(RuntimeConfigError::Invalid {
+            kind: "frozen plugin sidecar executable",
+            reason: "snapshot executable is not a regular file".to_owned(),
+        });
+    }
+    Ok(())
+}
+
 impl fmt::Debug for RuntimeMcpServerConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RuntimeMcpServerConfig")
-            .field("enabled", &self.enabled)
-            .field("display_name", &self.display_name)
-            .field("id", &self.id)
-            .field("scope", &self.scope)
+            .field("config", &self.config)
             .field("source", &self.source)
-            .field("transport", &self.transport)
             .finish()
     }
 }
 
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields, tag = "kind", rename_all = "camelCase")]
-pub(crate) enum RuntimeMcpTransport {
-    Stdio {
-        command: String,
-        #[serde(default)]
-        args: Vec<String>,
-        #[serde(default)]
-        env: Vec<SecretNameValue>,
-        #[serde(default)]
-        inherit_env: Vec<String>,
-        #[serde(default)]
-        working_dir: Option<String>,
-    },
-    Http {
-        url: String,
-        #[serde(default)]
-        bearer_token_env_var: Option<String>,
-        #[serde(default)]
-        headers: Vec<SecretNameValue>,
-        #[serde(default)]
-        headers_from_env: Vec<HeaderFromEnv>,
-    },
-    InProcess,
-}
+const MAX_RUNTIME_CONFIG_DIAGNOSTIC_BYTES: usize = 512;
 
-impl fmt::Debug for RuntimeMcpTransport {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Stdio {
-                command,
-                args,
-                env,
-                inherit_env,
-                working_dir,
-            } => formatter
-                .debug_struct("Stdio")
-                .field("command", command)
-                .field("args", args)
-                .field(
-                    "env_keys",
-                    &env.iter().map(|item| &item.key).collect::<Vec<_>>(),
-                )
-                .field("inherit_env", inherit_env)
-                .field("working_dir", working_dir)
-                .finish(),
-            Self::Http {
-                url,
-                bearer_token_env_var,
-                headers,
-                headers_from_env,
-            } => formatter
-                .debug_struct("Http")
-                .field("url", url)
-                .field("bearer_token_env_var", bearer_token_env_var)
-                .field(
-                    "header_keys",
-                    &headers.iter().map(|item| &item.key).collect::<Vec<_>>(),
-                )
-                .field("headers_from_env", headers_from_env)
-                .finish(),
-            Self::InProcess => formatter.write_str("InProcess"),
-        }
-    }
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub(crate) struct SecretNameValue {
-    pub(crate) key: String,
-    pub(crate) value: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub(crate) struct HeaderFromEnv {
-    pub(crate) key: String,
-    pub(crate) env_var: String,
-}
-
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum RuntimeConfigError {
-    #[error(transparent)]
-    Provider(#[from] ProviderConfigError),
-    #[error("failed to read {kind} from {path}")]
+    Provider(ProviderConfigError),
     Read {
         kind: &'static str,
         path: PathBuf,
-        #[source]
         source: std::io::Error,
     },
-    #[error("failed to parse {kind} from {path}")]
     Decode {
         kind: &'static str,
         path: PathBuf,
-        #[source]
         source: serde_json::Error,
     },
-    #[error("workspace root must not be a symbolic link: {path}")]
-    WorkspaceSymlink { path: PathBuf },
-    #[error("{kind} must not be a symbolic link: {path}")]
-    ConfigSymlink { kind: &'static str, path: PathBuf },
-    #[error("invalid {kind}: {reason}")]
-    Invalid { kind: &'static str, reason: String },
-    #[error("failed to initialize plugin registry")]
+    WorkspaceSymlink {
+        path: PathBuf,
+    },
+    ConfigSymlink {
+        kind: &'static str,
+        path: PathBuf,
+    },
+    Invalid {
+        kind: &'static str,
+        reason: String,
+    },
     PluginRegistry {
-        #[source]
         source: harness_plugin::PluginError,
     },
+}
+
+impl From<ProviderConfigError> for RuntimeConfigError {
+    fn from(source: ProviderConfigError) -> Self {
+        Self::Provider(source)
+    }
+}
+
+impl fmt::Display for RuntimeConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::Provider(_) => "invalid provider configuration".to_owned(),
+            Self::Read { kind, .. } => format!("failed to read {kind} from configured storage"),
+            Self::Decode { kind, .. } => {
+                format!("failed to parse {kind} from configured storage")
+            }
+            Self::WorkspaceSymlink { .. } => {
+                "workspace root must not be a symbolic link".to_owned()
+            }
+            Self::ConfigSymlink { kind, .. } => {
+                format!("{kind} must not be a symbolic link")
+            }
+            Self::Invalid { kind, .. } => format!("invalid {kind}"),
+            Self::PluginRegistry { .. } => "failed to initialize plugin registry".to_owned(),
+        };
+        formatter.write_str(&bounded_runtime_config_diagnostic(message))
+    }
+}
+
+impl std::error::Error for RuntimeConfigError {}
+
+fn bounded_runtime_config_diagnostic(mut message: String) -> String {
+    if message.len() <= MAX_RUNTIME_CONFIG_DIAGNOSTIC_BYTES {
+        return message;
+    }
+    let mut boundary = MAX_RUNTIME_CONFIG_DIAGNOSTIC_BYTES.saturating_sub(3);
+    while !message.is_char_boundary(boundary) {
+        boundary = boundary.saturating_sub(1);
+    }
+    message.truncate(boundary);
+    message.push_str("...");
+    message
 }
 
 fn canonical_workspace_root(path: &Path) -> Result<PathBuf, RuntimeConfigError> {
@@ -1014,12 +1345,12 @@ fn insert_unique_mcp_servers(
 ) -> Result<(), RuntimeConfigError> {
     let mut ids = HashSet::new();
     for server in servers {
-        if server.id.trim().is_empty() {
-            return Err(RuntimeConfigError::Invalid {
+        validate_persisted_mcp_server(&server.config).map_err(|error| {
+            RuntimeConfigError::Invalid {
                 kind,
-                reason: "server id is empty".to_owned(),
-            });
-        }
+                reason: error.to_string(),
+            }
+        })?;
         if !ids.insert(server.id.clone()) {
             return Err(RuntimeConfigError::Invalid {
                 kind,
@@ -1027,6 +1358,53 @@ fn insert_unique_mcp_servers(
             });
         }
         output.insert(server.id.clone(), server);
+    }
+    Ok(())
+}
+
+fn freeze_mcp_working_directories(
+    servers: &mut [RuntimeMcpServerConfig],
+    workspace_root: &Path,
+) -> Result<(), RuntimeConfigError> {
+    for server in servers {
+        let McpServerTransportConfig::Stdio { working_dir, .. } = &mut server.config.transport
+        else {
+            continue;
+        };
+        let Some(working_dir) = working_dir else {
+            continue;
+        };
+        let configured = PathBuf::from(&*working_dir);
+        let candidate = if configured.is_absolute() {
+            configured
+        } else {
+            workspace_root.join(configured)
+        };
+        let canonical = candidate
+            .canonicalize()
+            .map_err(|_| RuntimeConfigError::Invalid {
+                kind: "MCP server working directory",
+                reason: "configured directory is unavailable".to_owned(),
+            })?;
+        if !canonical.starts_with(workspace_root) {
+            return Err(RuntimeConfigError::Invalid {
+                kind: "MCP server working directory",
+                reason: "configured directory escapes the workspace".to_owned(),
+            });
+        }
+        if !canonical.is_dir() {
+            return Err(RuntimeConfigError::Invalid {
+                kind: "MCP server working directory",
+                reason: "configured path is not a directory".to_owned(),
+            });
+        }
+        *working_dir = canonical
+            .to_str()
+            .ok_or_else(|| RuntimeConfigError::Invalid {
+                kind: "MCP server working directory",
+                reason: "canonical directory is not valid UTF-8".to_owned(),
+            })?
+            .to_owned();
     }
     Ok(())
 }
@@ -1146,12 +1524,16 @@ fn build_plugin_snapshot(
         ..PluginConfig::default()
     };
     let loader = FileManifestLoader;
+    let mut executable_store = FrozenPluginExecutableStore::new(global_home);
     let sources = vec![
         freeze_plugin_source(
             &loader,
             DiscoverySource::User(global_home.join("plugins/packages")),
             &global_home.join("plugins/packages"),
             global,
+            enabled_ids,
+            true,
+            &mut executable_store,
             "global plugin index",
         )?,
         freeze_plugin_source(
@@ -1159,6 +1541,9 @@ fn build_plugin_snapshot(
             DiscoverySource::Project(workspace_root.join(".jyowo/plugins/packages")),
             &workspace_root.join(".jyowo/plugins/packages"),
             project,
+            enabled_ids,
+            allow_project_plugins,
+            &mut executable_store,
             "project plugin index",
         )?,
     ];
@@ -1166,8 +1551,7 @@ fn build_plugin_snapshot(
         config,
         sources,
         runtime_loaders: vec![Arc::new(DaemonPluginRuntimeLoader {
-            global_packages_root: global_home.join("plugins/packages"),
-            workspace_packages_root: workspace_root.join(".jyowo/plugins/packages"),
+            runtime_root: executable_store.runtime_root(),
             workspace_root: workspace_root.to_owned(),
         })],
     })
@@ -1178,10 +1562,15 @@ fn freeze_plugin_source(
     source: DiscoverySource,
     packages_root: &Path,
     settings: &PluginSettingsFile,
+    enabled_ids: &BTreeSet<String>,
+    source_enabled: bool,
+    executable_store: &mut FrozenPluginExecutableStore,
     kind: &'static str,
 ) -> Result<FrozenPluginSource, RuntimeConfigError> {
     let mut report = ManifestLoadReport::default();
-    for index_record in &settings.records {
+    for index_record in settings.records.iter().filter(|record| {
+        source_enabled && record.enabled && enabled_ids.contains(&record.plugin_id.0)
+    }) {
         let package_report = loader
             .load_package_report_sync(&packages_root.join(&index_record.package_dir))
             .map_err(|source| RuntimeConfigError::PluginRegistry {
@@ -1191,6 +1580,12 @@ fn freeze_plugin_source(
             return Err(RuntimeConfigError::Invalid {
                 kind,
                 reason: "indexed plugin package has no manifest".to_owned(),
+            });
+        }
+        if !package_report.failures.is_empty() {
+            return Err(RuntimeConfigError::Invalid {
+                kind,
+                reason: "selected plugin package manifest is invalid".to_owned(),
             });
         }
         for manifest_record in &package_report.records {
@@ -1203,7 +1598,13 @@ fn freeze_plugin_source(
                 });
             }
         }
-        report.records.extend(package_report.records);
+        let mut package_records = package_report.records;
+        for manifest_record in &mut package_records {
+            if let ManifestOrigin::CargoExtension { binary, .. } = &mut manifest_record.origin {
+                *binary = executable_store.freeze(binary)?;
+            }
+        }
+        report.records.extend(package_records);
         report.failures.extend(package_report.failures);
     }
     Ok(FrozenPluginSource { source, report })
@@ -1220,12 +1621,131 @@ fn validate_provider_routes(
     Ok(())
 }
 
+fn validate_provider_route_integrity(
+    settings: &ProviderCapabilityRouteSettings,
+    credentials: &BTreeMap<String, ProviderCredential>,
+) -> Result<(), RuntimeConfigError> {
+    let catalog = harness_model::provider_catalog_entries();
+    let adapter_availability = harness_tool::provider_service_adapter_availability_from_snapshot(
+        &harness_tool::ToolRegistryBuilder::new()
+            .with_builtin_toolset(harness_tool::BuiltinToolset::Default)
+            .build()
+            .map_err(|_| RuntimeConfigError::Invalid {
+                kind: "provider capability routes",
+                reason: "runtime adapter registry is unavailable".to_owned(),
+            })?
+            .snapshot(),
+    );
+    let mut enabled_kind_targets = HashMap::new();
+    for route in &settings.routes {
+        if !route.enabled {
+            continue;
+        }
+        let credential =
+            credentials
+                .get(&route.config_id)
+                .ok_or_else(|| RuntimeConfigError::Invalid {
+                    kind: "provider capability routes",
+                    reason: "route config is missing or has no usable secret".to_owned(),
+                })?;
+        if credential.provider_id != route.provider_id {
+            return Err(RuntimeConfigError::Invalid {
+                kind: "provider capability routes",
+                reason: "route provider does not match its config".to_owned(),
+            });
+        }
+        let provider = catalog
+            .iter()
+            .find(|provider| provider.provider_id == route.provider_id)
+            .ok_or_else(|| RuntimeConfigError::Invalid {
+                kind: "provider capability routes",
+                reason: "route provider is not present in the provider catalog".to_owned(),
+            })?;
+        for operation_id in &route.operation_ids {
+            let capability = provider
+                .service_capabilities
+                .iter()
+                .find(|capability| capability.operation_id == *operation_id)
+                .ok_or_else(|| RuntimeConfigError::Invalid {
+                    kind: "provider capability routes",
+                    reason: "route operation is not declared by the provider catalog".to_owned(),
+                })?;
+            if capability_route_kind(capability) != Some(route.kind) {
+                return Err(RuntimeConfigError::Invalid {
+                    kind: "provider capability routes",
+                    reason: "route kind does not match its operation".to_owned(),
+                });
+            }
+            if !adapter_availability.bindings.iter().any(|binding| {
+                binding.provider_id == route.provider_id
+                    && binding.operation_id == *operation_id
+                    && binding.route_kind == route.kind
+            }) {
+                return Err(RuntimeConfigError::Invalid {
+                    kind: "provider capability routes",
+                    reason: "route operation has no runtime adapter".to_owned(),
+                });
+            }
+        }
+        match enabled_kind_targets.insert(route.kind, (&route.config_id, &route.provider_id)) {
+            Some((config_id, provider_id))
+                if config_id != &route.config_id || provider_id != &route.provider_id =>
+            {
+                return Err(RuntimeConfigError::Invalid {
+                    kind: "provider capability routes",
+                    reason: "route kind cannot target multiple provider configs".to_owned(),
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn capability_route_kind(capability: &ProviderServiceCapability) -> Option<CapabilityRouteKind> {
+    match capability.category {
+        ProviderServiceCategory::Image => Some(CapabilityRouteKind::ImageGeneration),
+        ProviderServiceCategory::Video => Some(CapabilityRouteKind::VideoGeneration),
+        ProviderServiceCategory::ThreeD => Some(CapabilityRouteKind::ThreeDGeneration),
+        ProviderServiceCategory::Embedding => Some(CapabilityRouteKind::EmbeddingGeneration),
+        ProviderServiceCategory::File => Some(CapabilityRouteKind::FileOperation),
+        ProviderServiceCategory::Music => Some(CapabilityRouteKind::MusicGeneration),
+        ProviderServiceCategory::Moderation => Some(CapabilityRouteKind::Moderation),
+        ProviderServiceCategory::Upload => Some(CapabilityRouteKind::FileManagement),
+        ProviderServiceCategory::VectorStore => Some(CapabilityRouteKind::VectorStoreManagement),
+        ProviderServiceCategory::Batch => Some(CapabilityRouteKind::BatchJob),
+        ProviderServiceCategory::FineTuning => Some(CapabilityRouteKind::FineTuningJob),
+        ProviderServiceCategory::Eval | ProviderServiceCategory::Grader => {
+            Some(CapabilityRouteKind::EvalRun)
+        }
+        ProviderServiceCategory::Container => Some(CapabilityRouteKind::ContainerSession),
+        ProviderServiceCategory::Realtime => Some(CapabilityRouteKind::RealtimeSession),
+        ProviderServiceCategory::Admin => Some(CapabilityRouteKind::AdminOperation),
+        ProviderServiceCategory::Webhook => Some(CapabilityRouteKind::WebhookVerification),
+        ProviderServiceCategory::Audio if operation_is_speech_to_text(&capability.operation_id) => {
+            Some(CapabilityRouteKind::SpeechToText)
+        }
+        ProviderServiceCategory::Audio => Some(CapabilityRouteKind::TextToSpeech),
+        ProviderServiceCategory::Conversation | ProviderServiceCategory::Model => None,
+    }
+}
+
+fn operation_is_speech_to_text(operation_id: &str) -> bool {
+    operation_id.contains("speech_to_text")
+        || operation_id.contains("speech-to-text")
+        || operation_id.contains("transcription")
+}
+
 fn validate_plugin_index_paths(
     packages_root: &Path,
     settings: &PluginSettingsFile,
+    enabled_ids: &BTreeSet<String>,
+    source_enabled: bool,
     kind: &'static str,
 ) -> Result<(), RuntimeConfigError> {
-    for record in &settings.records {
+    for record in settings.records.iter().filter(|record| {
+        source_enabled && record.enabled && enabled_ids.contains(&record.plugin_id.0)
+    }) {
         let package_dir = Path::new(&record.package_dir);
         if package_dir.components().count() != 1
             || !matches!(
@@ -1362,5 +1882,20 @@ impl ProviderCredentialResolverCap for DaemonProviderCredentialResolver {
                 )
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use std::{io::Cursor, path::Path};
+
+    #[test]
+    fn bounded_sidecar_read_rejects_growth_beyond_initial_metadata_length() {
+        let mut bytes = Cursor::new(vec![0_u8; 9]);
+        let error =
+            super::read_executable_bytes_bounded(&mut bytes, 4, 8, Path::new("fixture-sidecar"))
+                .expect_err("reader growth beyond the cap must fail closed");
+
+        assert!(matches!(error, super::RuntimeConfigError::Invalid { .. }));
     }
 }

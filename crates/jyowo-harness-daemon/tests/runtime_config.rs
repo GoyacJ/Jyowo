@@ -85,23 +85,67 @@ fn project_settings_merge_over_global_runtime_configuration() {
 }
 
 #[test]
+fn explicit_task_provider_overrides_project_selection_and_global_default() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+
+    let global = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("global provider selection");
+    fixture.write_project(
+        "provider-selection.json",
+        &ProviderSelectionRecord {
+            default_config_id: Some("project-model".into()),
+        },
+    );
+
+    let project = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("project provider selection");
+    let explicit = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), Some("global-model"))
+        .expect("explicit task provider selection");
+
+    assert_eq!(global.provider.config_id, "global-model");
+    assert_eq!(project.provider.config_id, "project-model");
+    assert_eq!(explicit.provider.config_id, "global-model");
+}
+
+#[test]
 fn project_routes_override_by_operation_and_inherit_other_global_operations() {
     let fixture = RuntimeFixture::new();
     fixture.write_global_provider_files();
     fixture.write_global(
+        "provider-profiles.json",
+        &[
+            profile("global-model", "anthropic", "claude-global"),
+            profile("project-model", "minimax", "MiniMax-M2.1"),
+            profile("global", "minimax", "MiniMax-M2.1"),
+        ],
+    );
+    fixture.write_global(
         "provider-capability-routes.json",
-        &routes(&[
-            (
-                "global",
-                "provider-global",
-                &["image.generate", "image.edit"],
-            ),
-            ("global", "provider-global", &["video.generate"]),
-        ]),
+        &ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: vec![
+                route(
+                    CapabilityRouteKind::ImageGeneration,
+                    "global",
+                    "minimax",
+                    &["minimax.image_generation"],
+                ),
+                route(
+                    CapabilityRouteKind::VideoGeneration,
+                    "global",
+                    "minimax",
+                    &["minimax.video_generation"],
+                ),
+            ],
+        },
     );
     fixture.write_project(
         "provider-capability-routes.json",
-        &routes(&[("project-model", "provider-project", &["image.generate"])]),
+        &routes(&[("project-model", "minimax", &["minimax.image_generation"])]),
     );
 
     let snapshot = RuntimeConfigResolver::new(fixture.config_root())
@@ -116,9 +160,11 @@ fn project_routes_override_by_operation_and_inherit_other_global_operations() {
             .expect("operation route")
     };
 
-    assert_eq!(route_for("image.generate").config_id, "project-model");
-    assert_eq!(route_for("image.edit").config_id, "global");
-    assert_eq!(route_for("video.generate").config_id, "global");
+    assert_eq!(
+        route_for("minimax.image_generation").config_id,
+        "project-model"
+    );
+    assert_eq!(route_for("minimax.video_generation").config_id, "global");
 }
 
 #[test]
@@ -262,6 +308,87 @@ fn malformed_project_configuration_fails_closed_without_secret_leakage() {
 }
 
 #[test]
+fn runtime_configuration_diagnostics_are_bounded_and_do_not_echo_user_input() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    let malicious = format!("api_key=diagnostic-secret-{}", "x".repeat(2_048));
+    fixture.write_project_raw(
+        "mcp-servers.json",
+        &format!(
+            r#"[
+              {{"enabled":true,"displayName":"one","id":"{malicious}","scope":"session","transport":{{"kind":"stdio","command":"one"}}}},
+              {{"enabled":true,"displayName":"two","id":"{malicious}","scope":"session","transport":{{"kind":"stdio","command":"two"}}}}
+            ]"#
+        ),
+    );
+
+    let error = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("duplicate malicious id must fail");
+    let message = error.to_string();
+
+    assert!(!message.contains("diagnostic-secret"));
+    assert!(message.len() <= 512, "diagnostic length: {}", message.len());
+}
+
+#[test]
+fn runtime_configuration_paths_and_decode_details_are_redacted() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let secret_path = root.path().join("path-containing-diagnostic-secret");
+    fs::create_dir_all(&secret_path).expect("secret path");
+    let error = RuntimeConfigResolver::new(secret_path.join("missing-config"))
+        .resolve_memory_database_path(None)
+        .expect_err("missing config must fail");
+    let message = error.to_string();
+    assert!(!message.contains("diagnostic-secret"));
+    assert!(message.len() <= 512, "diagnostic length: {}", message.len());
+
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_project_raw(
+        "mcp-servers.json",
+        r#"[{"enabled":true,"displayName":"one","id":"one","scope":"session","diagnostic-secret-field":true,"transport":{"kind":"stdio","command":"one"}}]"#,
+    );
+    let error = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("unknown field must fail");
+    let message = error.to_string();
+    assert!(!message.contains("diagnostic-secret"));
+    assert!(message.len() <= 512, "diagnostic length: {}", message.len());
+}
+
+#[test]
+fn persisted_mcp_records_are_validated_before_runtime_snapshot() {
+    let invalid_records = [
+        r#"{"enabled":true,"displayName":"server","id":"bad/id","scope":"session","transport":{"kind":"stdio","command":"node"}}"#,
+        r#"{"enabled":true,"displayName":"server","id":"server","scope":"workspace","transport":{"kind":"stdio","command":"node"}}"#,
+        r#"{"enabled":true,"displayName":"server","id":"server","scope":"session","transport":{"kind":"stdio","command":"node","args":[""]}}"#,
+        r#"{"enabled":true,"displayName":"server","id":"server","scope":"session","transport":{"kind":"stdio","command":"node","env":[{"key":"BAD-KEY","value":"safe"}]}}"#,
+        r#"{"enabled":true,"displayName":"server","id":"server","scope":"session","transport":{"kind":"stdio","command":"node","env":[{"key":"API_KEY","value":"safe"}]}}"#,
+        r#"{"enabled":true,"displayName":"server","id":"server","scope":"session","transport":{"kind":"stdio","command":"node","env":[{"key":"MODE","value":"sk-diagnostic-secret"}]}}"#,
+        r#"{"enabled":true,"displayName":"server","id":"server","scope":"session","transport":{"kind":"stdio","command":"node","inheritEnv":["SERVICE_TOKEN"]}}"#,
+        r#"{"enabled":true,"displayName":"server","id":"server","scope":"session","transport":{"kind":"stdio","command":"node","workingDir":"../escape"}}"#,
+        r#"{"enabled":true,"displayName":"server","id":"server","scope":"session","transport":{"kind":"http","url":"ftp://example.com"}}"#,
+        r#"{"enabled":true,"displayName":"server","id":"server","scope":"session","transport":{"kind":"http","url":"https://example.com","headers":[{"key":"Authorization","value":"safe"}]}}"#,
+        r#"{"enabled":true,"displayName":"server","id":"server","scope":"session","transport":{"kind":"http","url":"https://example.com","headers":[{"key":"bad header","value":"safe"}]}}"#,
+        r#"{"enabled":true,"displayName":"server","id":"server","scope":"session","transport":{"kind":"inProcess"}}"#,
+    ];
+
+    for record in invalid_records {
+        let fixture = RuntimeFixture::new();
+        fixture.write_global_provider_files();
+        fixture.write_project_raw("mcp-servers.json", &format!("[{record}]"));
+
+        let error = RuntimeConfigResolver::new(fixture.config_root())
+            .resolve(fixture.workspace(), None)
+            .expect_err("invalid persisted MCP record must fail closed");
+        let message = error.to_string();
+        assert!(!message.contains("diagnostic-secret"));
+        assert!(message.len() <= 512);
+    }
+}
+
+#[test]
 fn empty_project_provider_selection_is_rejected_instead_of_inheriting_global() {
     let fixture = RuntimeFixture::new();
     fixture.write_global_provider_files();
@@ -349,6 +476,237 @@ fn invalid_provider_capability_route_is_rejected_without_secret_leakage() {
     assert!(!message.contains("secret-provider-value"));
 }
 
+#[test]
+fn provider_route_missing_config_is_rejected_during_resolution() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_global(
+        "provider-capability-routes.json",
+        &routes(&[(
+            "missing-route-config",
+            "minimax",
+            &["minimax.image_generation"],
+        )]),
+    );
+
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("route config must exist at resolution time");
+}
+
+#[test]
+fn provider_route_missing_secret_is_rejected_during_resolution() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_global(
+        "provider-profiles.json",
+        &[
+            profile("global-model", "anthropic", "claude-global"),
+            profile("route-model", "minimax", "MiniMax-M2.1"),
+        ],
+    );
+    fixture.write_global(
+        "provider-capability-routes.json",
+        &routes(&[("route-model", "minimax", &["minimax.image_generation"])]),
+    );
+
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("route config must have a secret at resolution time");
+}
+
+#[test]
+fn provider_route_provider_mismatch_is_rejected_during_resolution() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_global(
+        "provider-profiles.json",
+        &[
+            profile("global-model", "anthropic", "claude-global"),
+            profile("route-model", "minimax", "MiniMax-M2.1"),
+        ],
+    );
+    fixture.write_global(
+        "provider-secrets.json",
+        &ProviderSecretsRecord {
+            entries: vec![secret("global-model"), secret("route-model")],
+        },
+    );
+    fixture.write_global(
+        "provider-capability-routes.json",
+        &routes(&[("route-model", "openai", &["minimax.image_generation"])]),
+    );
+
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("route provider must match its config");
+}
+
+#[test]
+fn provider_route_unknown_operation_is_rejected_during_resolution() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_route_provider();
+    fixture.write_global(
+        "provider-capability-routes.json",
+        &routes(&[("route-model", "minimax", &["unknown.operation"])]),
+    );
+
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("route operation must exist in the provider catalog");
+}
+
+#[test]
+fn provider_route_kind_mismatch_is_rejected_during_resolution() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_route_provider();
+    fixture.write_global(
+        "provider-capability-routes.json",
+        &routes(&[("route-model", "minimax", &["minimax.video_generation"])]),
+    );
+
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("route kind must match the provider operation");
+}
+
+#[test]
+fn disabled_provider_route_does_not_require_a_live_config_or_adapter() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    let mut disabled = route(
+        CapabilityRouteKind::FileOperation,
+        "removed-config",
+        "minimax",
+        &["minimax.files.upload"],
+    );
+    disabled.enabled = false;
+    fixture.write_global(
+        "provider-capability-routes.json",
+        &ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: vec![disabled],
+        },
+    );
+
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("disabled route must not require runtime dependencies");
+}
+
+#[test]
+fn enabled_provider_route_without_runtime_adapter_is_rejected() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_route_provider();
+    fixture.write_global(
+        "provider-capability-routes.json",
+        &ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: vec![route(
+                CapabilityRouteKind::FileOperation,
+                "route-model",
+                "minimax",
+                &["minimax.files.upload"],
+            )],
+        },
+    );
+
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("catalog-only route must fail before runtime execution");
+}
+
+#[test]
+fn enabled_routes_of_one_kind_cannot_target_multiple_configs() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_global(
+        "provider-profiles.json",
+        &[
+            profile("global-model", "anthropic", "claude-global"),
+            profile("route-one", "minimax", "MiniMax-M2.1"),
+            profile("route-two", "minimax", "MiniMax-M2.1"),
+        ],
+    );
+    fixture.write_global(
+        "provider-secrets.json",
+        &ProviderSecretsRecord {
+            entries: vec![
+                secret("global-model"),
+                secret("route-one"),
+                secret("route-two"),
+            ],
+        },
+    );
+    fixture.write_global(
+        "provider-capability-routes.json",
+        &ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: vec![
+                route(
+                    CapabilityRouteKind::ImageGeneration,
+                    "route-one",
+                    "minimax",
+                    &["minimax.image_generation"],
+                ),
+                route(
+                    CapabilityRouteKind::ImageGeneration,
+                    "route-two",
+                    "minimax",
+                    &["minimax.image_generation"],
+                ),
+            ],
+        },
+    );
+
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("one route kind cannot fan out across provider configs");
+}
+
+#[test]
+fn mcp_working_directory_must_be_a_directory_and_is_frozen_canonically() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fs::write(fixture.workspace.join("not-a-directory"), "fixture").expect("fixture file");
+    fixture.write_project_raw(
+        "mcp-servers.json",
+        r#"[{"enabled":true,"displayName":"server","id":"server","scope":"session","transport":{"kind":"stdio","command":"node","working_dir":"not-a-directory"}}]"#,
+    );
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("MCP working directory cannot be a regular file");
+
+    fs::create_dir(fixture.workspace.join("working-dir")).expect("working directory");
+    fixture.write_project_raw(
+        "mcp-servers.json",
+        r#"[{"enabled":true,"displayName":"server","id":"server","scope":"session","transport":{"kind":"stdio","command":"node","working_dir":"working-dir"}}]"#,
+    );
+    let snapshot = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("valid working directory");
+    let harness_contracts::McpServerTransportConfig::Stdio { working_dir, .. } =
+        &snapshot.mcp_servers[0].transport
+    else {
+        panic!("stdio transport expected");
+    };
+    assert_eq!(
+        working_dir.as_deref(),
+        Some(
+            fixture
+                .workspace
+                .join("working-dir")
+                .canonicalize()
+                .expect("canonical working directory")
+                .to_str()
+                .expect("utf-8 fixture path")
+        )
+    );
+}
+
 #[tokio::test]
 async fn skill_content_is_frozen_when_runtime_snapshot_is_resolved() {
     let fixture = RuntimeFixture::new();
@@ -394,6 +752,51 @@ async fn plugin_manifest_is_frozen_when_runtime_snapshot_is_resolved() {
     assert_eq!(registry.snapshot().discovered.len(), 1);
 }
 
+#[test]
+fn disabled_missing_plugin_package_does_not_block_runtime_resolution() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_global_plugin_index("missing-disabled", false);
+
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("disabled missing package must not be read");
+}
+
+#[test]
+fn disabled_corrupt_plugin_package_does_not_block_runtime_resolution() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_global_plugin_index("corrupt-disabled", false);
+    let package = fixture
+        .home
+        .join("plugins/packages")
+        .join("corrupt-disabled");
+    fs::create_dir_all(&package).expect("corrupt disabled package");
+    fs::write(package.join("plugin.json"), b"not-json").expect("corrupt manifest");
+
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("disabled corrupt package must not be read");
+}
+
+#[test]
+fn enabled_corrupt_plugin_package_fails_closed() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_global_plugin_index("corrupt-enabled", true);
+    let package = fixture
+        .home
+        .join("plugins/packages")
+        .join("corrupt-enabled");
+    fs::create_dir_all(&package).expect("corrupt enabled package");
+    fs::write(package.join("plugin.json"), b"not-json").expect("corrupt manifest");
+
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("enabled corrupt package must fail closed");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn global_sidecar_plugin_uses_the_production_runtime_loader() {
@@ -418,6 +821,57 @@ async fn global_sidecar_plugin_uses_the_production_runtime_loader() {
         registry.state(&plugin_id),
         Some(PluginLifecycleState::Activated)
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn foreground_and_child_registries_use_frozen_sidecar_executable_bytes() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_global_sidecar_plugin("frozen-sidecar");
+    let plugin_id = harness_contracts::PluginId("frozen-sidecar@0.1.0".to_owned());
+
+    let snapshot = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("resolve runtime snapshot");
+    let child_snapshot = snapshot.clone();
+    fixture.write_failing_global_sidecar_binary("frozen-sidecar");
+
+    for (label, snapshot) in [("foreground", snapshot), ("child", child_snapshot)] {
+        let registry = snapshot
+            .materialize_plugin_registry()
+            .expect("materialize plugin registry");
+        registry.discover().await.expect("discover frozen sidecar");
+        registry
+            .activate(&plugin_id)
+            .await
+            .unwrap_or_else(|error| panic!("{label} must execute frozen bytes: {error}"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn frozen_sidecar_snapshot_directory_is_removed_after_last_snapshot_drop() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_global_sidecar_plugin("cleanup-sidecar");
+
+    let snapshot = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("resolve runtime snapshot");
+    let clone = snapshot.clone();
+    let snapshots_root = fixture.home.join("runtime/plugin-snapshots");
+    let roots = fs::read_dir(&snapshots_root)
+        .expect("snapshot root")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("snapshot entries");
+    assert_eq!(roots.len(), 1);
+    let frozen_root = roots[0].path();
+
+    drop(snapshot);
+    assert!(frozen_root.exists(), "clone must keep frozen bytes alive");
+    drop(clone);
+    assert!(!frozen_root.exists(), "last drop must clean frozen bytes");
 }
 
 #[cfg(unix)]
@@ -638,6 +1092,22 @@ impl RuntimeFixture {
         );
     }
 
+    fn write_route_provider(&self) {
+        self.write_global(
+            "provider-profiles.json",
+            &[
+                profile("global-model", "anthropic", "claude-global"),
+                profile("route-model", "minimax", "MiniMax-M2.1"),
+            ],
+        );
+        self.write_global(
+            "provider-secrets.json",
+            &ProviderSecretsRecord {
+                entries: vec![secret("global-model"), secret("route-model")],
+            },
+        );
+    }
+
     fn write_global(&self, file: &str, value: &(impl Serialize + ?Sized)) {
         write_json(&self.home.join("config").join(file), value);
     }
@@ -692,6 +1162,28 @@ impl RuntimeFixture {
         );
     }
 
+    fn write_global_plugin_index(&self, name: &str, enabled: bool) {
+        fs::create_dir_all(self.home.join("plugins")).expect("global plugin settings");
+        write_json(
+            &self.home.join("plugins/index.json"),
+            &serde_json::json!({
+                "allowProjectPlugins": false,
+                "records": [{
+                    "pluginId": format!("{name}@0.1.0"),
+                    "name": name,
+                    "version": "0.1.0",
+                    "enabled": enabled,
+                    "packageDir": name,
+                    "sourcePath": "fixture",
+                    "contentHash": "fixture",
+                    "importedAt": "2026-01-01T00:00:00Z",
+                    "updatedAt": "2026-01-01T00:00:00Z",
+                    "config": {}
+                }]
+            }),
+        );
+    }
+
     #[cfg(unix)]
     fn write_global_sidecar_plugin(&self, name: &str) {
         use std::os::unix::fs::PermissionsExt;
@@ -727,6 +1219,23 @@ exit 2
             .permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(binary, permissions).expect("global plugin sidecar executable");
+    }
+
+    #[cfg(unix)]
+    fn write_failing_global_sidecar_binary(&self, name: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let binary = self
+            .home
+            .join("plugins/packages")
+            .join(name)
+            .join(format!("jyowo-plugin-{name}"));
+        fs::write(&binary, "#!/bin/sh\nexit 91\n").expect("replace source sidecar");
+        let mut permissions = fs::metadata(&binary)
+            .expect("source sidecar metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(binary, permissions).expect("source sidecar executable");
     }
 
     fn write_global_plugin_manifest(&self, name: &str, description: &str) {
@@ -816,6 +1325,24 @@ fn routes(items: &[(&str, &str, &[&str])]) -> ProviderCapabilityRouteSettings {
                 },
             )
             .collect(),
+    }
+}
+
+fn route(
+    kind: CapabilityRouteKind,
+    config_id: &str,
+    provider_id: &str,
+    operations: &[&str],
+) -> ProviderCapabilityRoute {
+    ProviderCapabilityRoute {
+        kind,
+        config_id: config_id.into(),
+        provider_id: provider_id.into(),
+        operation_ids: operations
+            .iter()
+            .map(|operation| (*operation).into())
+            .collect(),
+        enabled: true,
     }
 }
 
