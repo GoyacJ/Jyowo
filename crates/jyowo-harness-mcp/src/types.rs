@@ -152,6 +152,7 @@ pub struct McpExpectedCapabilities {
     pub prompts: bool,
     pub logging: bool,
     pub completions: bool,
+    pub tasks: bool,
 }
 
 impl Default for McpExpectedCapabilities {
@@ -162,6 +163,7 @@ impl Default for McpExpectedCapabilities {
             prompts: false,
             logging: false,
             completions: false,
+            tasks: false,
         }
     }
 }
@@ -183,6 +185,9 @@ impl McpExpectedCapabilities {
         }
         if self.completions && offered.completions.is_none() {
             missing.push("completions");
+        }
+        if self.tasks && offered.tasks.is_none() {
+            missing.push("tasks");
         }
         missing
     }

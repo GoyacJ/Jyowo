@@ -1,4 +1,4 @@
-use harness_mcp::{McpMessage, LATEST_PROTOCOL_VERSION};
+use harness_mcp::{InitializeParams, InitializeResult, McpMessage, LATEST_PROTOCOL_VERSION};
 use serde_json::json;
 
 #[test]
@@ -104,21 +104,6 @@ fn classifies_success_and_error_responses() {
 }
 
 #[test]
-fn result_null_is_a_success_response_and_round_trips() {
-    let fixture = json!({ "jsonrpc": "2.0", "id": "nullable", "result": null });
-
-    let message: McpMessage = serde_json::from_value(fixture.clone()).unwrap();
-    let McpMessage::SuccessResponse(response) = message else {
-        panic!("result:null was not classified as success");
-    };
-    assert!(response.result.is_null());
-    assert_eq!(
-        serde_json::to_value(McpMessage::SuccessResponse(response)).unwrap(),
-        fixture
-    );
-}
-
-#[test]
 fn error_response_id_is_optional_but_never_null() {
     for id in [json!(7), json!("request-7")] {
         let fixture = json!({
@@ -145,6 +130,103 @@ fn error_response_id_is_optional_but_never_null() {
         });
         assert!(serde_json::from_value::<McpMessage>(fixture).is_err());
     }
+}
+
+#[test]
+fn request_and_notification_params_must_be_objects() {
+    for id in [Some(json!(1)), None] {
+        for params in [json!(null), json!(1), json!("bad"), json!([])] {
+            let mut fixture = json!({
+                "jsonrpc": "2.0",
+                "method": "ping",
+                "params": params
+            });
+            if let Some(id) = id.clone() {
+                fixture["id"] = id;
+            }
+            assert!(serde_json::from_value::<McpMessage>(fixture).is_err());
+        }
+    }
+}
+
+#[test]
+fn success_result_must_be_an_object() {
+    for result in [json!(null), json!(1), json!("bad"), json!([])] {
+        let fixture = json!({ "jsonrpc": "2.0", "id": 1, "result": result });
+        assert!(serde_json::from_value::<McpMessage>(fixture).is_err());
+    }
+
+    let fixture = json!({ "jsonrpc": "2.0", "id": 1, "result": {} });
+    assert!(matches!(
+        serde_json::from_value::<McpMessage>(fixture).unwrap(),
+        McpMessage::SuccessResponse(_)
+    ));
+}
+
+#[test]
+fn official_initialize_capabilities_and_implementation_round_trip() {
+    let client_fixture = json!({
+        "protocolVersion": "2025-11-25",
+        "capabilities": {
+            "sampling": { "context": {}, "tools": {} },
+            "tasks": {
+                "list": {},
+                "cancel": {},
+                "requests": {
+                    "sampling": { "createMessage": {} },
+                    "elicitation": { "create": {} }
+                }
+            }
+        },
+        "clientInfo": {
+            "name": "fixture-client",
+            "title": "Fixture Client",
+            "version": "1.0.0",
+            "icons": [{
+                "src": "https://example.com/icon.svg",
+                "mimeType": "image/svg+xml",
+                "sizes": ["any"],
+                "theme": "dark"
+            }]
+        }
+    });
+    let client: InitializeParams = serde_json::from_value(client_fixture.clone()).unwrap();
+    let sampling = client.capabilities.sampling.as_ref().unwrap();
+    assert!(sampling.context.is_some());
+    assert!(sampling.tools.is_some());
+    let tasks = client.capabilities.tasks.as_ref().unwrap();
+    assert!(tasks.list.is_some());
+    assert!(tasks.cancel.is_some());
+    assert!(tasks.requests.as_ref().unwrap().sampling.is_some());
+    assert_eq!(
+        client.client_info.icons.as_ref().unwrap()[0].sizes,
+        vec!["any"]
+    );
+    assert_eq!(serde_json::to_value(client).unwrap(), client_fixture);
+
+    let server_fixture = json!({
+        "protocolVersion": "2025-11-25",
+        "capabilities": {
+            "tools": { "listChanged": true },
+            "tasks": {
+                "list": {},
+                "cancel": {},
+                "requests": { "tools": { "call": {} } }
+            }
+        },
+        "serverInfo": {
+            "name": "fixture-server",
+            "version": "2.0.0",
+            "icons": [{ "src": "data:image/png;base64,AA==", "theme": "light" }]
+        }
+    });
+    let server: InitializeResult = serde_json::from_value(server_fixture.clone()).unwrap();
+    let tasks = server.capabilities.tasks.as_ref().unwrap();
+    assert!(tasks.list.is_some());
+    assert!(tasks.cancel.is_some());
+    assert!(tasks.requests.as_ref().unwrap().tools.is_some());
+    assert_eq!(server.server_info.icons.as_ref().unwrap().len(), 1);
+    assert_eq!(serde_json::to_value(server).unwrap(), server_fixture);
 }
 
 #[test]

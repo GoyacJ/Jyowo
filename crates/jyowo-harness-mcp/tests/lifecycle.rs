@@ -1,7 +1,7 @@
 use harness_mcp::{
-    EmptyClientCapability, InitializeResult, McpClientCapabilities, McpExpectedCapabilities,
-    McpImplementation, McpLifecycleState, McpServerCapabilities, McpSession,
-    PromptsServerCapability, ResourcesServerCapability, ToolsServerCapability,
+    InitializeResult, McpClientCapabilities, McpExpectedCapabilities, McpImplementation,
+    McpLifecycleState, McpServerCapabilities, McpSession, PromptsServerCapability,
+    ResourcesServerCapability, SamplingClientCapability, ToolsServerCapability,
     LATEST_PROTOCOL_VERSION,
 };
 
@@ -22,7 +22,7 @@ fn result(protocol_version: &str, capabilities: McpServerCapabilities) -> Initia
 #[test]
 fn initialization_requests_latest_version_and_offers_only_client_capabilities() {
     let offered = McpClientCapabilities {
-        sampling: Some(EmptyClientCapability::default()),
+        sampling: Some(SamplingClientCapability::default()),
         ..Default::default()
     };
     let mut session = McpSession::new(
@@ -35,6 +35,7 @@ fn initialization_requests_latest_version_and_offers_only_client_capabilities() 
 
     assert_eq!(params.protocol_version, LATEST_PROTOCOL_VERSION);
     assert_eq!(params.capabilities, offered);
+    assert!(params.capabilities.tasks.is_none());
     assert_eq!(params.client_info.name, "jyowo");
     assert_eq!(session.state(), McpLifecycleState::Initializing);
 }
@@ -93,6 +94,7 @@ fn rejects_missing_required_server_capability() {
         prompts: true,
         logging: true,
         completions: true,
+        tasks: true,
     };
     let mut session = McpSession::new(
         required,
@@ -115,6 +117,7 @@ fn rejects_missing_required_server_capability() {
 
     assert!(error.to_string().contains("logging"));
     assert!(error.to_string().contains("completions"));
+    assert!(error.to_string().contains("tasks"));
     assert_eq!(session.state(), McpLifecycleState::Failed);
     assert!(session.initialized_notification().is_err());
 }

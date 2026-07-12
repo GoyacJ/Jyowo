@@ -53,7 +53,7 @@ use crate::{
     elicitation_from_jsonrpc_error, handle_jsonrpc_elicitation_error, ElicitationHandler,
     InitializeParams, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpClientCapabilities,
     McpError, McpImplementation, McpPrompt, McpPromptMessages, McpResource, McpResourceContents,
-    McpToolDescriptor, McpToolResult, LATEST_PROTOCOL_VERSION,
+    McpToolDescriptor, McpToolResult,
 };
 
 #[cfg(feature = "http")]
@@ -171,8 +171,11 @@ pub(crate) fn initialized_notification() -> JsonRpcNotification {
     feature = "sse"
 ))]
 pub(crate) fn initialize_request(peer: &JsonRpcPeer) -> JsonRpcRequest {
+    // Existing transports do not yet validate and retain InitializeResult. Keep their wire
+    // version at the last implemented lifecycle revision until McpSession owns the handshake.
+    const LEGACY_TRANSPORT_PROTOCOL_VERSION: &str = "2025-03-26";
     let params = InitializeParams {
-        protocol_version: LATEST_PROTOCOL_VERSION.to_owned(),
+        protocol_version: LEGACY_TRANSPORT_PROTOCOL_VERSION.to_owned(),
         capabilities: McpClientCapabilities::default(),
         client_info: McpImplementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
         extra: serde_json::Map::new(),
@@ -181,6 +184,31 @@ pub(crate) fn initialize_request(peer: &JsonRpcPeer) -> JsonRpcRequest {
         "initialize",
         Some(serde_json::to_value(params).expect("initialize params serialize")),
     )
+}
+
+#[cfg(all(
+    test,
+    any(
+        feature = "stdio",
+        feature = "http",
+        feature = "websocket",
+        feature = "sse"
+    )
+))]
+mod lifecycle_compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_transport_helper_does_not_advertise_unwired_latest_session() {
+        let request = initialize_request(&JsonRpcPeer::new());
+        let protocol_version = request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("protocolVersion"))
+            .and_then(Value::as_str);
+
+        assert_eq!(protocol_version, Some("2025-03-26"));
+    }
 }
 
 #[cfg(any(

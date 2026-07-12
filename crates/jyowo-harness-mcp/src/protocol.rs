@@ -63,6 +63,14 @@ impl<'de> Deserialize<'de> for McpMessage {
                     "JSON-RPC request or notification cannot contain result or error",
                 ));
             }
+            if object
+                .get("params")
+                .is_some_and(|params| !params.is_object())
+            {
+                return Err(D::Error::custom(
+                    "JSON-RPC request or notification params must be an object",
+                ));
+            }
             if has_id {
                 validate_request_id(object.get("id").expect("id presence checked"))
                     .map_err(D::Error::custom)?;
@@ -85,6 +93,15 @@ impl<'de> Deserialize<'de> for McpMessage {
                 .get("id")
                 .ok_or_else(|| D::Error::custom("JSON-RPC result response must contain an id"))?;
             validate_request_id(id).map_err(D::Error::custom)?;
+            if !object
+                .get("result")
+                .expect("result presence checked")
+                .is_object()
+            {
+                return Err(D::Error::custom(
+                    "JSON-RPC result response result must be an object",
+                ));
+            }
             return serde_json::from_value(value)
                 .map(Self::SuccessResponse)
                 .map_err(D::Error::custom);
@@ -140,6 +157,8 @@ pub struct McpImplementation {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub website_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icons: Option<Vec<McpIcon>>,
     #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
     pub extra: Map<String, Value>,
 }
@@ -152,6 +171,7 @@ impl McpImplementation {
             title: None,
             description: None,
             website_url: None,
+            icons: None,
             extra: Map::new(),
         }
     }
@@ -163,9 +183,11 @@ pub struct McpClientCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roots: Option<RootsClientCapability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sampling: Option<EmptyClientCapability>,
+    pub sampling: Option<SamplingClientCapability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elicitation: Option<ElicitationClientCapability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<ClientTasksCapability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub experimental: Option<BTreeMap<String, Value>>,
     #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
@@ -188,11 +210,60 @@ pub struct EmptyClientCapability {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SamplingClientCapability {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<EmptyClientCapability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<EmptyClientCapability>,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ElicitationClientCapability {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub form: Option<EmptyClientCapability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<EmptyClientCapability>,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ClientTasksCapability {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list: Option<EmptyClientCapability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel: Option<EmptyClientCapability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requests: Option<ClientTaskRequestsCapability>,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ClientTaskRequestsCapability {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<ClientTaskSamplingRequestsCapability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elicitation: Option<ClientTaskElicitationRequestsCapability>,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientTaskSamplingRequestsCapability {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_message: Option<EmptyClientCapability>,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ClientTaskElicitationRequestsCapability {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create: Option<EmptyClientCapability>,
     #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
     pub extra: Map<String, Value>,
 }
@@ -210,6 +281,8 @@ pub struct McpServerCapabilities {
     pub logging: Option<EmptyServerCapability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completions: Option<EmptyServerCapability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<ServerTasksCapability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub experimental: Option<BTreeMap<String, Value>>,
     #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
@@ -249,6 +322,55 @@ pub struct PromptsServerCapability {
 pub struct EmptyServerCapability {
     #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
     pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ServerTasksCapability {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list: Option<EmptyServerCapability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel: Option<EmptyServerCapability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requests: Option<ServerTaskRequestsCapability>,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ServerTaskRequestsCapability {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<ServerTaskToolsRequestsCapability>,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ServerTaskToolsRequestsCapability {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<EmptyServerCapability>,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpIcon {
+    pub src: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sizes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<McpIconTheme>,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpIconTheme {
+    Light,
+    Dark,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
