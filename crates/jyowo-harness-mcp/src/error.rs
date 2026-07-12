@@ -11,6 +11,8 @@ pub enum McpError {
     Protocol(String),
     #[error("invalid response: {0}")]
     InvalidResponse(String),
+    #[error("remote JSON-RPC error ({code}): {message}", code = .0.code, message = .0.message)]
+    RemoteJsonRpc(crate::JsonRpcError),
     #[error("connection: {0}")]
     Connection(String),
     #[error("server not found: {0}")]

@@ -472,6 +472,12 @@ pub trait SamplingProvider: Send + Sync + 'static {
     async fn create_message(&self, request: SamplingRequest) -> Result<SamplingResponse, McpError>;
 }
 
+/// Routing boundary used by [`McpPeer`](crate::McpPeer) for server-initiated sampling.
+#[async_trait]
+pub trait SamplingRequestRouter: Send + Sync + 'static {
+    async fn route_sampling_request(&self, request: JsonRpcRequest) -> Result<Value, JsonRpcError>;
+}
+
 #[derive(Clone)]
 pub struct SamplingJsonRpcHandler {
     policy: SamplingPolicy,
@@ -975,6 +981,23 @@ impl SamplingJsonRpcHandler {
             prompt_cache_namespace: None,
             params: params.clone(),
         })
+    }
+}
+
+#[async_trait]
+impl SamplingRequestRouter for SamplingJsonRpcHandler {
+    async fn route_sampling_request(&self, request: JsonRpcRequest) -> Result<Value, JsonRpcError> {
+        let response = self.handle_request(request).await;
+        match (response.result, response.error) {
+            (Some(result), None) => Ok(result),
+            (None, Some(error)) => Err(error),
+            _ => Err(JsonRpcError {
+                code: -32603,
+                message: "sampling handler returned an invalid JSON-RPC response".to_owned(),
+                data: None,
+                extra: Default::default(),
+            }),
+        }
     }
 }
 

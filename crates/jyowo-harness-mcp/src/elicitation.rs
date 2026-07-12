@@ -8,7 +8,7 @@ use harness_contracts::{
 use serde_json::Value;
 use tokio::sync::{oneshot, Mutex};
 
-use crate::{JsonRpcError, McpEventSink, NoopMcpEventSink};
+use crate::{JsonRpcError, JsonRpcRequest, McpEventSink, NoopMcpEventSink};
 
 pub const MCP_ELICITATION_REQUIRED_CODE: i32 = -32042;
 
@@ -39,6 +39,18 @@ pub trait ElicitationHandler: Send + Sync + 'static {
     fn handler_id(&self) -> &str;
 
     async fn handle(&self, request: ElicitationRequest) -> Result<Value, ElicitationError>;
+}
+
+/// Routing boundary used by [`McpPeer`](crate::McpPeer) for server-initiated elicitation.
+///
+/// Wire-model decoding remains the responsibility of the installed handler until the
+/// 2025-11-25 elicitation model is migrated.
+#[async_trait]
+pub trait ElicitationRequestRouter: Send + Sync + 'static {
+    async fn route_elicitation_request(
+        &self,
+        request: JsonRpcRequest,
+    ) -> Result<Value, JsonRpcError>;
 }
 
 #[derive(Debug, Clone, Default)]

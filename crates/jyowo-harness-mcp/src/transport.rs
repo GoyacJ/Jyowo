@@ -6,11 +6,91 @@ use harness_contracts::PermissionMode;
 use serde_json::Value;
 
 use crate::{
-    ElicitationHandler, McpAuthorizationContext, McpConnectionState, McpError, McpEventSink,
-    McpListPage, McpMetricsSink, McpPaginationLimits, McpPrompt, McpPromptMessages,
+    ElicitationHandler, JsonRpcError, JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest,
+    JsonRpcResultResponse, McpAuthorizationContext, McpConnectionState, McpError, McpEventSink,
+    McpListPage, McpMessage, McpMetricsSink, McpPaginationLimits, McpPrompt, McpPromptMessages,
     McpReadResourceResult, McpResource, McpServerSpec, McpToolDescriptor, McpToolResult,
     NoopMcpEventSink,
 };
+
+/// An MCP message that passed the protocol shape checks at the transport boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpOutboundMessage(McpMessage);
+
+impl McpOutboundMessage {
+    pub fn request(
+        id: impl Into<Value>,
+        method: impl Into<String>,
+        params: Value,
+    ) -> Result<Self, McpError> {
+        Self::checked(McpMessage::Request(JsonRpcRequest::new(
+            id.into(),
+            method,
+            Some(params),
+        )))
+    }
+
+    pub fn notification(method: impl Into<String>, params: Value) -> Result<Self, McpError> {
+        Self::checked(McpMessage::Notification(JsonRpcNotification::new(
+            method,
+            Some(params),
+        )))
+    }
+
+    pub fn notification_without_params(method: impl Into<String>) -> Result<Self, McpError> {
+        Self::checked(McpMessage::Notification(JsonRpcNotification::new(
+            method, None,
+        )))
+    }
+
+    pub fn success(id: impl Into<Value>, result: Value) -> Result<Self, McpError> {
+        Self::checked(McpMessage::SuccessResponse(JsonRpcResultResponse {
+            jsonrpc: "2.0".to_owned(),
+            id: id.into(),
+            result,
+            extra: Default::default(),
+        }))
+    }
+
+    pub fn failure(id: impl Into<Value>, error: JsonRpcError) -> Result<Self, McpError> {
+        Self::checked(McpMessage::ErrorResponse(JsonRpcErrorResponse {
+            jsonrpc: "2.0".to_owned(),
+            id: Some(id.into()),
+            error,
+            extra: Default::default(),
+        }))
+    }
+
+    pub fn checked(message: McpMessage) -> Result<Self, McpError> {
+        let value = serde_json::to_value(&message).map_err(|error| {
+            McpError::Protocol(format!("invalid outbound MCP message: {error}"))
+        })?;
+        let checked = serde_json::from_value(value).map_err(|error| {
+            McpError::Protocol(format!("invalid outbound MCP message: {error}"))
+        })?;
+        Ok(Self(checked))
+    }
+
+    #[must_use]
+    pub fn as_message(&self) -> &McpMessage {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_message(self) -> McpMessage {
+        self.0
+    }
+}
+
+#[async_trait]
+pub trait McpMessageSink: Send + Sync + 'static {
+    /// Commits one complete message to the transport.
+    ///
+    /// Implementations must be cancellation-safe: if this future is dropped before returning
+    /// `Ok(())`, the message must not be committed later. `McpPeer` treats `Ok(())` as the exact
+    /// point at which cancellation notifications become valid for the request.
+    async fn send(&self, message: McpOutboundMessage) -> Result<(), McpError>;
+}
 
 pub type ListChangedEvent = Pin<Box<dyn Stream<Item = McpChange> + Send + 'static>>;
 pub type McpToolCallStream = Pin<Box<dyn Stream<Item = McpToolCallEvent> + Send + 'static>>;

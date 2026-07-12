@@ -15,12 +15,14 @@ pub mod jsonrpc;
 pub mod metrics;
 #[cfg(feature = "oauth")]
 pub mod oauth;
+pub mod peer;
 pub mod protocol;
 pub mod reconnect;
 pub mod registry;
 pub mod sampling;
 #[cfg(feature = "server-adapter")]
 pub mod server;
+pub mod session;
 pub mod transport;
 pub mod transports;
 pub mod types;
@@ -34,12 +36,14 @@ pub use jsonrpc::*;
 pub use metrics::*;
 #[cfg(feature = "oauth")]
 pub use oauth::*;
+pub use peer::*;
 pub use protocol::*;
 pub use reconnect::*;
 pub use registry::*;
 pub use sampling::*;
 #[cfg(feature = "server-adapter")]
 pub use server::*;
+pub use session::*;
 pub use transport::*;
 #[cfg(any(
     feature = "stdio",
