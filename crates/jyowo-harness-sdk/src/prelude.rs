@@ -14,6 +14,3 @@ pub use harness_contracts::{
 pub use harness_hook::HookRegistry;
 pub use harness_journal::ReplayCursor;
 pub use harness_tool::ToolRegistry;
-
-#[cfg(feature = "agents-team")]
-pub use crate::{Team, TeamBuilder};

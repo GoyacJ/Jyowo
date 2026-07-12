@@ -188,6 +188,39 @@ impl Default for ExecutionDefaultsRecord {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionDefaultsValidationError {
+    AgentTeamsRequireSubagents,
+    BackgroundAgentsRequireSubagents,
+}
+
+impl std::fmt::Display for ExecutionDefaultsValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AgentTeamsRequireSubagents => {
+                formatter.write_str("agent teams require subagents to be enabled")
+            }
+            Self::BackgroundAgentsRequireSubagents => {
+                formatter.write_str("background agents require subagents to be enabled")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ExecutionDefaultsValidationError {}
+
+pub fn validate_execution_defaults_dependencies(
+    record: &ExecutionDefaultsRecord,
+) -> Result<(), ExecutionDefaultsValidationError> {
+    if record.agent_teams_enabled && !record.subagents_enabled {
+        return Err(ExecutionDefaultsValidationError::AgentTeamsRequireSubagents);
+    }
+    if record.background_agents_enabled && !record.subagents_enabled {
+        return Err(ExecutionDefaultsValidationError::BackgroundAgentsRequireSubagents);
+    }
+    Ok(())
+}
+
 /// Project execution overrides. Stored in `<workspace>/.jyowo/config/execution-overrides.json`.
 ///
 /// Missing fields inherit from global defaults. `Some` fields explicitly override.

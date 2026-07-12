@@ -170,142 +170,24 @@ pub(super) fn should_install_default_subagent_runner(
 }
 
 #[cfg(feature = "agents-team")]
-const AGENT_TEAM_RUNNER_CAPABILITY: &str = "jyowo.agent_team.runner";
-#[cfg(feature = "agents-team")]
-const AGENT_RUNTIME_ROOT_CAPABILITY: &str = "jyowo.agent_runtime.root";
-
-#[cfg(feature = "agents-team")]
-trait AgentRuntimeRootCap: Send + Sync + 'static {
-    fn agent_runtime_root(&self) -> PathBuf;
-}
-
-#[cfg(feature = "agents-team")]
-struct FixedAgentRuntimeRootCap {
-    root: PathBuf,
-}
-
-#[cfg(feature = "agents-team")]
-impl AgentRuntimeRootCap for FixedAgentRuntimeRootCap {
-    fn agent_runtime_root(&self) -> PathBuf {
-        self.root.clone()
-    }
-}
-
-#[cfg(feature = "agents-team")]
-pub(super) fn install_agent_runtime_root_capability(
-    cap_registry: &mut CapabilityRegistry,
-    options: &SessionOptions,
-) {
-    let Some(root) = options.agent_runtime_root.clone() else {
-        return;
-    };
-    cap_registry.install::<dyn AgentRuntimeRootCap>(
-        ToolCapability::Custom(AGENT_RUNTIME_ROOT_CAPABILITY.to_owned()),
-        Arc::new(FixedAgentRuntimeRootCap { root }),
-    );
-}
-
-#[cfg(feature = "agents-subagent")]
-pub(crate) const BACKGROUND_AGENT_STARTER_CAPABILITY: &str = "jyowo.background_agent.starter";
-
-#[cfg(feature = "agents-team")]
-#[async_trait]
-trait AgentTeamRunnerCap: Send + Sync + 'static {
-    async fn start_team(
-        &self,
-        request: AgentTeamToolStartRequest,
-    ) -> Result<harness_contracts::TeamId, ToolError>;
-}
-
-#[cfg(feature = "agents-team")]
-#[derive(Clone)]
-struct AgentTeamToolStartRequest {
-    run_id: RunId,
-    conversation_session_id: SessionId,
-    goal: String,
-    topology: harness_contracts::AgentTeamTopology,
-    max_turns_per_goal: u32,
-    workspace_root: PathBuf,
-    project_workspace_root: Option<PathBuf>,
-    agent_runtime_root: Option<PathBuf>,
-}
-
-#[cfg(feature = "agents-team")]
-struct SdkAgentTeamRunner {
-    harness: Harness,
-    agent_tool_policy: harness_contracts::AgentToolPolicy,
-    workspace_bootstrap: Option<WorkspaceBootstrap>,
-    agent_profiles: Vec<harness_contracts::AgentProfile>,
-}
-
-#[cfg(feature = "agents-team")]
-#[async_trait]
-impl AgentTeamRunnerCap for SdkAgentTeamRunner {
-    async fn start_team(
-        &self,
-        request: AgentTeamToolStartRequest,
-    ) -> Result<harness_contracts::TeamId, ToolError> {
-        if self.harness.has_active_run_team(request.run_id) {
-            return Err(ToolError::Validation(
-                "an agent team is already active for this run".to_owned(),
-            ));
-        }
-        let profiles = if self.agent_profiles.is_empty() {
-            match request.agent_runtime_root.as_ref() {
-                Some(runtime_root) => crate::list_agent_profiles_from_runtime_dir(runtime_root),
-                None => crate::list_agent_profiles(&request.workspace_root),
-            }
-            .map_err(|error| ToolError::Internal(error.to_string()))?
-        } else {
-            self.agent_profiles.clone()
-        };
-        let mut agent_tool_policy = self.agent_tool_policy.clone();
-        agent_tool_policy.agent_team = harness_contracts::AgentUsePolicy::Allowed;
-        agent_tool_policy.team_config = Some(harness_contracts::AgentTeamRunConfig {
-            topology: request.topology,
-            lead_profile_id: "reviewer".to_owned(),
-            member_profile_ids: vec!["worker".to_owned()],
-            max_turns_per_goal: request.max_turns_per_goal,
-            shared_memory_policy: harness_contracts::AgentTeamSharedMemoryPolicy::SummariesOnly,
-        });
-        let team = self
-            .harness
-            .start_run_scoped_team(super::team_runtime::RunScopedTeamStartupRequest {
-                agent_tool_policy,
-                profiles,
-                run_id: request.run_id,
-                conversation_session_id: request.conversation_session_id,
-                goal: request.goal,
-                workspace_root: request.workspace_root,
-                project_workspace_root: request.project_workspace_root,
-                agent_runtime_root: request.agent_runtime_root,
-                workspace_bootstrap: self.workspace_bootstrap.clone(),
-            })
-            .await
-            .map_err(|error| ToolError::Internal(error.to_string()))?;
-        Ok(team.spec().team_id)
-    }
-}
-
-#[cfg(feature = "agents-team")]
 pub(super) fn install_agent_team_tool_for_run(
-    harness: Harness,
-    cap_registry: &mut CapabilityRegistry,
+    cap_registry: &CapabilityRegistry,
     tools: &mut ToolPool,
     agent_tool_policy: &harness_contracts::AgentToolPolicy,
-    workspace_bootstrap: Option<WorkspaceBootstrap>,
-    agent_profiles: Vec<harness_contracts::AgentProfile>,
+    session_snapshot: harness_contracts::AgentTeamToolSessionSnapshot,
 ) {
-    cap_registry.install::<dyn AgentTeamRunnerCap>(
-        ToolCapability::Custom(AGENT_TEAM_RUNNER_CAPABILITY.to_owned()),
-        Arc::new(SdkAgentTeamRunner {
-            harness,
-            agent_tool_policy: agent_tool_policy.clone(),
-            workspace_bootstrap,
-            agent_profiles,
-        }),
-    );
-    tools.append_runtime_tool(Arc::new(AgentTeamTool::default()));
+    if agent_tool_policy.agent_team != harness_contracts::AgentUsePolicy::Allowed {
+        return;
+    }
+    let capability =
+        ToolCapability::Custom(harness_contracts::AGENT_TEAM_STARTER_CAPABILITY.to_owned());
+    if !cap_registry.contains(&capability) {
+        return;
+    }
+    tools.append_runtime_tool(Arc::new(AgentTeamTool::new(
+        agent_tool_policy.clone(),
+        session_snapshot,
+    )));
 }
 
 #[cfg(feature = "agents-subagent")]
@@ -320,7 +202,8 @@ pub(super) fn install_background_agent_tool_for_run(
     if agent_tool_policy.background_agents != harness_contracts::AgentUsePolicy::Allowed {
         return;
     }
-    let capability = ToolCapability::Custom(BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned());
+    let capability =
+        ToolCapability::Custom(harness_contracts::BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned());
     if !cap_registry.contains(&capability) {
         return;
     }
@@ -388,7 +271,7 @@ impl BackgroundAgentTool {
                 },
                 trust_level: harness_contracts::TrustLevel::AdminTrusted,
                 required_capabilities: vec![ToolCapability::Custom(
-                    BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned(),
+                    harness_contracts::BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned(),
                 )],
                 budget: harness_contracts::ResultBudget {
                     metric: harness_contracts::BudgetMetric::Chars,
@@ -478,7 +361,9 @@ impl Tool for BackgroundAgentTool {
             .unwrap_or_else(|| goal.lines().next().unwrap_or("Background agent"))
             .to_owned();
         let starter = ctx.capability::<dyn harness_contracts::BackgroundAgentStarterCap>(
-            ToolCapability::Custom(BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned()),
+            ToolCapability::Custom(
+                harness_contracts::BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned(),
+            ),
         )?;
         let response = starter
             .start_background_agent(harness_contracts::BackgroundAgentToolStartRequest {
@@ -512,12 +397,19 @@ impl Tool for BackgroundAgentTool {
 #[cfg(feature = "agents-team")]
 struct AgentTeamTool {
     descriptor: ToolDescriptor,
+    agent_tool_policy: harness_contracts::AgentToolPolicy,
+    session_snapshot: harness_contracts::AgentTeamToolSessionSnapshot,
 }
 
 #[cfg(feature = "agents-team")]
-impl Default for AgentTeamTool {
-    fn default() -> Self {
+impl AgentTeamTool {
+    fn new(
+        agent_tool_policy: harness_contracts::AgentToolPolicy,
+        session_snapshot: harness_contracts::AgentTeamToolSessionSnapshot,
+    ) -> Self {
         Self {
+            agent_tool_policy,
+            session_snapshot,
             descriptor: ToolDescriptor {
                 name: "agent_team".to_owned(),
                 display_name: "Agent Team".to_owned(),
@@ -570,7 +462,7 @@ impl Default for AgentTeamTool {
                 },
                 trust_level: harness_contracts::TrustLevel::AdminTrusted,
                 required_capabilities: vec![ToolCapability::Custom(
-                    AGENT_TEAM_RUNNER_CAPABILITY.to_owned(),
+                    harness_contracts::AGENT_TEAM_STARTER_CAPABILITY.to_owned(),
                 )],
                 budget: harness_contracts::ResultBudget {
                     metric: harness_contracts::BudgetMetric::Chars,
@@ -665,31 +557,26 @@ impl Tool for AgentTeamTool {
             .unwrap_or(4)
             .try_into()
             .map_err(|_| ToolError::Validation("maxTurnsPerGoal is too large".to_owned()))?;
-        let runner = ctx.capability::<dyn AgentTeamRunnerCap>(ToolCapability::Custom(
-            AGENT_TEAM_RUNNER_CAPABILITY.to_owned(),
-        ))?;
-        let agent_runtime_root = ctx
-            .cap_registry
-            .get::<dyn AgentRuntimeRootCap>(&ToolCapability::Custom(
-                AGENT_RUNTIME_ROOT_CAPABILITY.to_owned(),
-            ))
-            .map(|capability| capability.agent_runtime_root());
-        let team_id = runner
-            .start_team(AgentTeamToolStartRequest {
-                run_id: ctx.run_id,
-                conversation_session_id: ctx.session_id,
+        let starter = ctx.capability::<dyn harness_contracts::AgentTeamStarterCap>(
+            ToolCapability::Custom(harness_contracts::AGENT_TEAM_STARTER_CAPABILITY.to_owned()),
+        )?;
+        let response = starter
+            .start_agent_team(harness_contracts::AgentTeamToolStartRequest {
+                tenant_id: ctx.tenant_id,
+                conversation_id: ctx.session_id,
+                parent_run_id: ctx.run_id,
+                tool_use_id: ctx.tool_use_id,
                 goal: goal.clone(),
                 topology,
                 max_turns_per_goal,
-                workspace_root: ctx.workspace_root,
-                project_workspace_root: ctx.project_workspace_root,
-                agent_runtime_root,
+                agent_tool_policy: self.agent_tool_policy.clone(),
+                session: self.session_snapshot.clone(),
             })
             .await?;
         Ok(Box::pin(futures::stream::iter([ToolEvent::Final(
             ToolResult::Structured(json!({
-                "team_id": team_id.to_string(),
-                "status": "started",
+                "team_id": response.team_id.to_string(),
+                "status": response.status,
                 "goal": goal,
                 "leadProfileId": "reviewer",
                 "memberProfileIds": ["worker"],
@@ -941,8 +828,8 @@ mod tests {
     use super::*;
     use futures::StreamExt;
     use harness_contracts::{
-        ActionResource, CorrelationId, NoopRedactor, PermissionActorSource, ToolActionPlan,
-        ToolUseId,
+        ActionResource, AgentId, CorrelationId, NoopRedactor, PermissionActorSource,
+        ToolActionPlan, ToolUseId,
     };
     use harness_tool::{
         AuthorizationTicketClaims, AuthorizedTicketSummary, AuthorizedToolInput, InterruptToken,
@@ -951,7 +838,7 @@ mod tests {
     use std::sync::Mutex;
 
     #[test]
-    fn agent_team_tool_preserves_no_workspace_project_context() {
+    fn agent_team_tool_forwards_parent_context() {
         futures::executor::block_on(async {
             let execution_cwd = std::env::temp_dir().join(format!(
                 "jyowo-agent-team-no-workspace-{}",
@@ -960,16 +847,10 @@ mod tests {
             std::fs::create_dir_all(&execution_cwd).expect("execution cwd");
             let captured = Arc::new(Mutex::new(None));
             let mut cap_registry = CapabilityRegistry::default();
-            cap_registry.install::<dyn AgentTeamRunnerCap>(
-                ToolCapability::Custom(AGENT_TEAM_RUNNER_CAPABILITY.to_owned()),
-                Arc::new(CapturingAgentTeamRunner {
+            cap_registry.install::<dyn harness_contracts::AgentTeamStarterCap>(
+                ToolCapability::Custom(harness_contracts::AGENT_TEAM_STARTER_CAPABILITY.to_owned()),
+                Arc::new(CapturingAgentTeamStarter {
                     captured: Arc::clone(&captured),
-                }),
-            );
-            cap_registry.install::<dyn AgentRuntimeRootCap>(
-                ToolCapability::Custom(AGENT_RUNTIME_ROOT_CAPABILITY.to_owned()),
-                Arc::new(TestAgentRuntimeRoot {
-                    root: execution_cwd.join("runtime"),
                 }),
             );
             let ctx = ToolContext {
@@ -992,7 +873,13 @@ mod tests {
                 parent_run: None,
                 actor_source: PermissionActorSource::ParentRun,
             };
-            let tool = AgentTeamTool::default();
+            let expected_run_id = ctx.run_id;
+            let expected_session_id = ctx.session_id;
+            let expected_tool_use_id = ctx.tool_use_id;
+            let tool = AgentTeamTool::new(
+                agent_tool_policy(),
+                team_session_snapshot(expected_session_id),
+            );
             let input = json!({ "goal": "inspect no-workspace" });
             tool.validate(&input, &ctx).await.expect("validate");
             let plan = tool.plan(&input, &ctx).await.expect("plan");
@@ -1024,16 +911,18 @@ mod tests {
                 .expect("captured lock")
                 .clone()
                 .expect("captured request");
-            assert_eq!(request.workspace_root, execution_cwd);
-            assert_eq!(request.project_workspace_root, None);
+            assert_eq!(request.parent_run_id, expected_run_id);
+            assert_eq!(request.conversation_id, expected_session_id);
+            assert_eq!(request.tool_use_id, expected_tool_use_id);
         });
     }
 
     #[test]
-    fn agent_team_tool_reports_missing_runner_capability() {
+    fn agent_team_tool_reports_missing_starter_capability() {
         futures::executor::block_on(async {
             let ctx = test_context(std::env::temp_dir());
-            let tool = AgentTeamTool::default();
+            let tool =
+                AgentTeamTool::new(agent_tool_policy(), team_session_snapshot(ctx.session_id));
             let input = json!({ "goal": "inspect missing runner" });
             let plan = tool.plan(&input, &ctx).await.expect("plan");
             let authorized =
@@ -1047,7 +936,7 @@ mod tests {
             assert!(matches!(
                 error,
                 ToolError::CapabilityMissing(ToolCapability::Custom(ref capability))
-                    if capability == AGENT_TEAM_RUNNER_CAPABILITY
+                    if capability == harness_contracts::AGENT_TEAM_STARTER_CAPABILITY
             ));
         });
     }
@@ -1097,7 +986,9 @@ mod tests {
             let captured = Arc::new(Mutex::new(None));
             let mut cap_registry = CapabilityRegistry::default();
             cap_registry.install::<dyn harness_contracts::BackgroundAgentStarterCap>(
-                ToolCapability::Custom(BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned()),
+                ToolCapability::Custom(
+                    harness_contracts::BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned(),
+                ),
                 Arc::new(CapturingBackgroundAgentStarter {
                     captured: Arc::clone(&captured),
                 }),
@@ -1177,7 +1068,7 @@ mod tests {
             assert!(matches!(
                 error,
                 ToolError::CapabilityMissing(ToolCapability::Custom(ref capability))
-                    if capability == BACKGROUND_AGENT_STARTER_CAPABILITY
+                    if capability == harness_contracts::BACKGROUND_AGENT_STARTER_CAPABILITY
             ));
         });
     }
@@ -1225,7 +1116,8 @@ mod tests {
             );
         }
 
-        let agent_team = AgentTeamTool::default();
+        let agent_team =
+            AgentTeamTool::new(agent_tool_policy(), team_session_snapshot(SessionId::new()));
         assert_eq!(
             agent_team
                 .descriptor()
@@ -1265,18 +1157,27 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct CapturingAgentTeamRunner {
-        captured: Arc<Mutex<Option<AgentTeamToolStartRequest>>>,
+    struct CapturingAgentTeamStarter {
+        captured: Arc<Mutex<Option<harness_contracts::AgentTeamToolStartRequest>>>,
     }
 
-    #[async_trait]
-    impl AgentTeamRunnerCap for CapturingAgentTeamRunner {
-        async fn start_team(
+    impl harness_contracts::AgentTeamStarterCap for CapturingAgentTeamStarter {
+        fn start_agent_team(
             &self,
-            request: AgentTeamToolStartRequest,
-        ) -> Result<harness_contracts::TeamId, ToolError> {
-            *self.captured.lock().expect("captured lock") = Some(request);
-            Ok(harness_contracts::TeamId::new())
+            request: harness_contracts::AgentTeamToolStartRequest,
+        ) -> futures::future::BoxFuture<
+            'static,
+            Result<harness_contracts::AgentTeamToolStartResponse, ToolError>,
+        > {
+            *self.captured.lock().expect("captured lock") = Some(request.clone());
+            Box::pin(async move {
+                Ok(harness_contracts::AgentTeamToolStartResponse {
+                    team_id: harness_contracts::TeamId::new(),
+                    conversation_id: request.conversation_id,
+                    parent_run_id: request.parent_run_id,
+                    status: "started".to_owned(),
+                })
+            })
         }
     }
 
@@ -1303,17 +1204,6 @@ mod tests {
                     status: "queued".to_owned(),
                 })
             })
-        }
-    }
-
-    #[derive(Clone)]
-    struct TestAgentRuntimeRoot {
-        root: PathBuf,
-    }
-
-    impl AgentRuntimeRootCap for TestAgentRuntimeRoot {
-        fn agent_runtime_root(&self) -> PathBuf {
-            self.root.clone()
         }
     }
 
@@ -1375,6 +1265,22 @@ mod tests {
         session_id: SessionId,
     ) -> harness_contracts::BackgroundAgentToolSessionSnapshot {
         harness_contracts::BackgroundAgentToolSessionSnapshot {
+            tenant_id: TenantId::SINGLE,
+            session_id,
+            tool_search: harness_contracts::ToolSearchMode::Disabled,
+            tool_profile: harness_contracts::ToolProfile::Full,
+            permission_mode: harness_contracts::PermissionMode::Default,
+            interactivity: harness_contracts::InteractivityLevel::FullyInteractive,
+            team_id: None,
+            max_iterations: 1,
+            context_compression_trigger_ratio: 0.8,
+        }
+    }
+
+    fn team_session_snapshot(
+        session_id: SessionId,
+    ) -> harness_contracts::AgentTeamToolSessionSnapshot {
+        harness_contracts::AgentTeamToolSessionSnapshot {
             tenant_id: TenantId::SINGLE,
             session_id,
             tool_search: harness_contracts::ToolSearchMode::Disabled,

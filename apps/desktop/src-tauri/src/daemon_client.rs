@@ -2,11 +2,11 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use harness_contracts::{
-    BlobId, ClientFrame, ClientId, ClientRequest, HandshakeRequest, ServerFrame, ServerMessage,
-    PROTOCOL_VERSION,
+    AgentCapabilities, BlobId, ClientFrame, ClientId, ClientRequest, HandshakeRequest,
+    HandshakeResponse, ServerFrame, ServerMessage, PROTOCOL_VERSION,
 };
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -56,6 +56,7 @@ struct DaemonClientInner {
     client_id: ClientId,
     request_sequence: AtomicU64,
     connection: Mutex<Option<LocalStream>>,
+    agent_capabilities: RwLock<Option<AgentCapabilities>>,
 }
 
 #[derive(Clone)]
@@ -91,8 +92,18 @@ impl DaemonClient {
                 client_id: ClientId::new(),
                 request_sequence: AtomicU64::new(1),
                 connection: Mutex::new(None),
+                agent_capabilities: RwLock::new(None),
             }),
         }
+    }
+
+    #[must_use]
+    pub fn agent_capabilities(&self) -> Option<AgentCapabilities> {
+        *self
+            .inner
+            .agent_capabilities
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub async fn request(&self, request: ClientRequest) -> Result<ServerFrame, DaemonClientError> {
@@ -123,8 +134,21 @@ impl DaemonClient {
             let mut connection = self.inner.connection.lock().await;
             if connection.is_none() {
                 match connect_and_handshake(&self.inner.config, self.inner.client_id).await {
-                    Ok(stream) => *connection = Some(stream),
+                    Ok((stream, handshake)) => {
+                        *self
+                            .inner
+                            .agent_capabilities
+                            .write()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            Some(handshake.agent_capabilities);
+                        *connection = Some(stream);
+                    }
                     Err(error) => {
+                        *self
+                            .inner
+                            .agent_capabilities
+                            .write()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                         last_error = Some(error);
                         continue;
                     }
@@ -137,6 +161,11 @@ impl DaemonClient {
                 Ok(response) => return Ok(response),
                 Err(error) => {
                     *connection = None;
+                    *self
+                        .inner
+                        .agent_capabilities
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                     last_error = Some(error);
                 }
             }
@@ -161,7 +190,7 @@ impl DaemonClient {
                     break;
                 }
                 let mut stream = match connect_and_handshake(&config, client_id).await {
-                    Ok(stream) => stream,
+                    Ok((stream, _)) => stream,
                     Err(_) => {
                         if wait_or_cancel(&mut cancelled).await {
                             break;
@@ -248,7 +277,7 @@ async fn request_on_connection(
 async fn connect_and_handshake(
     config: &DaemonClientConfig,
     client_id: ClientId,
-) -> Result<LocalStream, DaemonClientError> {
+) -> Result<(LocalStream, HandshakeResponse), DaemonClientError> {
     let token = read_token(&config.token_path).await?;
     let mut stream = connect_local(&config.endpoint).await?;
     let frame = ClientFrame {
@@ -266,11 +295,13 @@ async fn connect_and_handshake(
     let response: ServerFrame = read_frame(&mut stream).await?;
     if response.protocol_version != PROTOCOL_VERSION
         || response.request_id.as_deref() != Some(frame.request_id.as_str())
-        || !matches!(response.message, ServerMessage::Handshake(_))
     {
         return Err(DaemonClientError::InvalidHandshake);
     }
-    Ok(stream)
+    let ServerMessage::Handshake(handshake) = response.message else {
+        return Err(DaemonClientError::InvalidHandshake);
+    };
+    Ok((stream, handshake))
 }
 
 async fn read_token(path: &PathBuf) -> Result<String, DaemonClientError> {

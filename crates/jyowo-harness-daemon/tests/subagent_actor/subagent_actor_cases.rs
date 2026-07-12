@@ -473,6 +473,163 @@ async fn safe_stop_propagates_but_detached_children_continue_in_background() {
 }
 
 #[tokio::test]
+async fn detached_start_returns_a_durable_background_child_ignored_by_parent_stop() {
+    let fixture = Fixture::new(2, 2);
+    let (parent_task, parent_actor, parent_segment) =
+        create_running_parent(&fixture.store, "parent");
+    acquire_parent_workspace(&fixture, parent_task, parent_actor);
+    let binding = SubagentParentBinding {
+        parent_task_id: parent_task,
+        parent_segment_id: parent_segment,
+        parent_actor_id: parent_actor,
+        depth: 0,
+    };
+
+    let child_task_id = fixture
+        .subagents
+        .start_detached(
+            binding,
+            SubagentSpec::minimal("background", "continue"),
+            input("continue"),
+            parent_context(0),
+        )
+        .await
+        .expect("detached child should start");
+
+    let projected = fixture
+        .store
+        .task_projection(parent_task)
+        .unwrap()
+        .unwrap()
+        .subagents
+        .into_iter()
+        .find(|child| child.child_task_id == child_task_id)
+        .expect("durable child projection");
+    assert_eq!(projected.state, SubagentActorState::Background);
+    assert!(projected.detached);
+    fixture
+        .subagents
+        .request_parent_stop(parent_task, SubagentStopMode::Force)
+        .unwrap();
+    assert_eq!(
+        child_state(&fixture.store, parent_task, child_task_id),
+        SubagentActorState::Background
+    );
+
+    fixture.delegate.wait_started().await;
+    fixture.delegate.complete_one();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if child_state(&fixture.store, parent_task, child_task_id)
+                == SubagentActorState::Completed
+                && fixture
+                    .store
+                    .nonterminal_workspace_leases_for_task(child_task_id)
+                    .unwrap()
+                    .is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("detached child should finalize independently");
+}
+
+#[tokio::test]
+async fn detached_start_failure_cancels_the_child_and_releases_its_workspace() {
+    let fixture = Fixture::new(2, 2);
+    let (parent_task, parent_actor, parent_segment) =
+        create_running_parent(&fixture.store, "parent");
+    acquire_parent_workspace(&fixture, parent_task, parent_actor);
+    let connection = rusqlite::Connection::open(fixture.store.database_path()).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_background_subagent_lifecycle
+             BEFORE INSERT ON event_log
+             WHEN NEW.event_type = 'subagent.backgrounded'
+             BEGIN
+               SELECT RAISE(ABORT, 'injected background lifecycle failure');
+             END;",
+        )
+        .unwrap();
+    drop(connection);
+
+    let result = fixture
+        .subagents
+        .start_detached(
+            SubagentParentBinding {
+                parent_task_id: parent_task,
+                parent_segment_id: parent_segment,
+                parent_actor_id: parent_actor,
+                depth: 0,
+            },
+            SubagentSpec::minimal("background", "fail detach"),
+            input("fail detach"),
+            parent_context(0),
+        )
+        .await;
+
+    assert!(result.is_err());
+    let child = fixture
+        .store
+        .task_projection(parent_task)
+        .unwrap()
+        .unwrap()
+        .subagents[0]
+        .clone();
+    assert!(matches!(
+        child.state,
+        SubagentActorState::Cancelled | SubagentActorState::Failed
+    ));
+    assert!(fixture
+        .store
+        .nonterminal_workspace_leases_for_task(child.child_task_id)
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn detached_start_running_failure_leaves_no_live_child_or_workspace() {
+    let fixture = Fixture::new(2, 2);
+    let (parent_task, parent_actor, parent_segment) =
+        create_running_parent(&fixture.store, "parent");
+    acquire_parent_workspace(&fixture, parent_task, parent_actor);
+    fixture.fail_running_lifecycle_writes();
+
+    let result = fixture
+        .subagents
+        .start_detached(
+            SubagentParentBinding {
+                parent_task_id: parent_task,
+                parent_segment_id: parent_segment,
+                parent_actor_id: parent_actor,
+                depth: 0,
+            },
+            SubagentSpec::minimal("background", "fail running"),
+            input("fail running"),
+            parent_context(0),
+        )
+        .await;
+
+    assert!(result.is_err());
+    let child = fixture
+        .store
+        .task_projection(parent_task)
+        .unwrap()
+        .unwrap()
+        .subagents[0]
+        .clone();
+    assert_eq!(child.state, SubagentActorState::Failed);
+    assert!(fixture
+        .store
+        .nonterminal_workspace_leases_for_task(child.child_task_id)
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn parent_stop_skips_a_durably_detached_stale_active_snapshot() {
     let fixture = Fixture::new(2, 2);
     let (parent_task, parent_actor, parent_segment) =

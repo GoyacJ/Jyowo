@@ -96,7 +96,6 @@ agents-subagent = [
 ]
 agents-team = [
   "agents-subagent",
-  "dep:jyowo-harness-team",
   "jyowo-harness-agent-runtime/agents-team",
 ]
 observability-replay = ["jyowo-harness-observability/replay"]
@@ -157,7 +156,6 @@ jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox" }
 jyowo-harness-session = { path = "../jyowo-harness-session" }
 jyowo-harness-skill = { path = "../jyowo-harness-skill" }
 jyowo-harness-subagent = { path = "../jyowo-harness-subagent", optional = true }
-jyowo-harness-team = { path = "../jyowo-harness-team", optional = true }
 jyowo-harness-execution = { path = "../jyowo-harness-execution" }
 jyowo-harness-tool = { path = "../jyowo-harness-tool" }
 jyowo-harness-tool-search = { path = "../jyowo-harness-tool-search", optional = true }

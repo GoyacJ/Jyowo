@@ -395,6 +395,76 @@ async fn engine_waiter_receives_the_ui_option_committed_by_the_daemon_broker() {
     assert_eq!(decision_task.await.unwrap(), Decision::AllowOnce);
 }
 
+#[tokio::test]
+async fn team_and_background_child_permissions_route_through_the_shared_daemon_broker() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let daemon = Arc::new(PermissionBroker::new(
+        Arc::clone(&store),
+        Arc::new(TokenRedactor),
+    ));
+
+    for title in ["team member child", "background agent child"] {
+        let (child_task_id, child_segment_id) = create_running_task(&store, title);
+        let runtime_authority = permission_runtime_authority(&store, child_task_id);
+        let lease_id = runtime_authority.workspace_lease_id;
+        let engine = HarnessPermissionBroker::new(
+            Arc::clone(&daemon),
+            child_task_id,
+            child_segment_id,
+            runtime_authority,
+        );
+        let request = engine_permission_request(child_task_id, None);
+        let request_id = request.request_id;
+        let allow_option = request
+            .decision_options
+            .iter()
+            .find(|option| option.decision == Decision::AllowOnce)
+            .unwrap()
+            .option_id;
+        let context = engine_permission_context(&request, child_segment_id);
+        let decision_task = tokio::spawn(async move { engine.decide(request, context).await });
+
+        wait_for_pending_permission(&store, child_task_id, request_id).await;
+        assert_eq!(
+            store
+                .task_projection(child_task_id)
+                .unwrap()
+                .unwrap()
+                .pending_permission
+                .as_ref()
+                .unwrap()
+                .route,
+            PermissionRoute::ForegroundTask
+        );
+
+        daemon
+            .resolve(PermissionDecisionInput {
+                task_id: child_task_id,
+                request_id,
+                request_revision: 1,
+                option_id: allow_option.to_string(),
+                expected_task_version: store.stream_version(child_task_id).unwrap(),
+            })
+            .unwrap();
+        assert_eq!(decision_task.await.unwrap(), Decision::AllowOnce);
+
+        let event_types = store
+            .task_events_after(child_task_id, 0, 64)
+            .unwrap()
+            .into_iter()
+            .map(|event| event.event_type)
+            .collect::<Vec<_>>();
+        assert!(event_types
+            .iter()
+            .any(|kind| kind == "permission.requested"));
+        assert!(event_types.iter().any(|kind| kind == "permission.resolved"));
+        store
+            .release_workspace_lease(lease_id, "child permission test complete")
+            .unwrap();
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn committed_ui_decision_wins_when_waiter_and_timeout_are_both_ready() {
     let root = tempfile::tempdir().unwrap();

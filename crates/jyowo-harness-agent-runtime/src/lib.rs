@@ -8,7 +8,6 @@
 
 mod background;
 mod isolation;
-mod policy;
 mod profiles;
 mod schema;
 mod store;
@@ -25,13 +24,6 @@ pub use isolation::{
     CreateWorkspaceIsolationLeaseRequest, GitDiscovery, WorkspaceIsolationCleanupResult,
     WorkspaceIsolationError, WorkspaceIsolationManager, WorkspaceLeaseRepository,
     AGENT_WORKTREES_DIR_NAME,
-};
-pub use policy::{
-    default_agent_capability_environment, AgentCapabilitiesInput, AgentCapabilityEnvironment,
-    AgentCapabilityResolver, AgentRuntimePolicyError, AgentRuntimePolicyResolver,
-    ExecutionSettingsAgentInput, ResolvedAgentCapabilityPolicy, ResolvedAgentToolPolicy,
-    DEFAULT_MAX_CONCURRENT_SUBAGENTS, DEFAULT_MAX_DEPTH, DEFAULT_MAX_TEAM_MEMBERS,
-    MAX_ALLOWED_CONCURRENT_SUBAGENTS, MAX_ALLOWED_DEPTH, MAX_ALLOWED_TEAM_MEMBERS,
 };
 pub use profiles::{
     builtin_agent_profiles, quarantine_invalid_profile_file, AgentProfileRegistry,

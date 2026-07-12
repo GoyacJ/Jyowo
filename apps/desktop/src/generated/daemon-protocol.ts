@@ -156,6 +156,7 @@ export type IndeterminateToolResolution = 'treat_as_failed' | 'execute_again'
  */
 export type ServerMessage =
   | {
+      agentCapabilities: AgentCapabilities
       daemonVersion: string
       latestGlobalOffset: number
       type: 'handshake'
@@ -415,6 +416,15 @@ export interface ServerFrame {
   message: ServerMessage
   protocolVersion: number
   requestId?: string | null
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "AgentCapabilities".
+ */
+export interface AgentCapabilities {
+  agentTeams: boolean
+  backgroundAgents: boolean
+  subagents: boolean
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema

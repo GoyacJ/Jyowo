@@ -1,16 +1,16 @@
 use harness_contracts::{
-    validate_agent_profile, validate_agent_tool_policy, AgentCapabilitiesPayload,
-    AgentCapabilityKind, AgentCapabilityUnavailableReason, AgentOrchestrationValidationError,
-    AgentProfile, AgentProfileContextMode, AgentProfileMemoryScope, AgentProfileModelOverride,
-    AgentProfileSandboxInheritance, AgentProfileScope, AgentTeamRunConfig,
-    AgentTeamSharedMemoryPolicy, AgentTeamTopology, AgentToolPolicy, AgentUsePolicy,
-    AgentWorkspaceIsolationMode, BackgroundAgentArchivedEvent, BackgroundAgentCancelledEvent,
-    BackgroundAgentCompletedEvent, BackgroundAgentDeletedEvent, BackgroundAgentFailedEvent,
-    BackgroundAgentId, BackgroundAgentInputRequestedEvent, BackgroundAgentInputSubmittedEvent,
-    BackgroundAgentInterruptedEvent, BackgroundAgentPermissionRequestedEvent,
-    BackgroundAgentPermissionResolvedEvent, BackgroundAgentStartedEvent, BackgroundAgentState,
-    BackgroundAgentStateChangedEvent, Decision, Event, RequestId, RunId, SessionId, TenantId,
-    UiSafeText,
+    validate_agent_profile, validate_agent_tool_policy, validate_execution_defaults_dependencies,
+    AgentCapabilitiesPayload, AgentCapabilityKind, AgentCapabilityUnavailableReason,
+    AgentOrchestrationValidationError, AgentProfile, AgentProfileContextMode,
+    AgentProfileMemoryScope, AgentProfileModelOverride, AgentProfileSandboxInheritance,
+    AgentProfileScope, AgentTeamRunConfig, AgentTeamSharedMemoryPolicy, AgentTeamTopology,
+    AgentToolPolicy, AgentUsePolicy, AgentWorkspaceIsolationMode, BackgroundAgentArchivedEvent,
+    BackgroundAgentCancelledEvent, BackgroundAgentCompletedEvent, BackgroundAgentDeletedEvent,
+    BackgroundAgentFailedEvent, BackgroundAgentId, BackgroundAgentInputRequestedEvent,
+    BackgroundAgentInputSubmittedEvent, BackgroundAgentInterruptedEvent,
+    BackgroundAgentPermissionRequestedEvent, BackgroundAgentPermissionResolvedEvent,
+    BackgroundAgentStartedEvent, BackgroundAgentState, BackgroundAgentStateChangedEvent, Decision,
+    Event, RequestId, RunId, SessionId, TenantId, UiSafeText,
 };
 use serde_json::json;
 
@@ -19,38 +19,87 @@ fn ui(value: &str) -> UiSafeText {
 }
 
 #[test]
-fn capability_unavailable_not_compiled_roundtrips() {
-    let reason = AgentCapabilityUnavailableReason::NotCompiled {
+fn execution_defaults_require_subagents_for_dependent_capabilities() {
+    for record in [
+        harness_contracts::ExecutionDefaultsRecord {
+            agent_teams_enabled: true,
+            ..Default::default()
+        },
+        harness_contracts::ExecutionDefaultsRecord {
+            background_agents_enabled: true,
+            ..Default::default()
+        },
+    ] {
+        assert!(validate_execution_defaults_dependencies(&record).is_err());
+    }
+
+    validate_execution_defaults_dependencies(&harness_contracts::ExecutionDefaultsRecord {
+        subagents_enabled: true,
+        agent_teams_enabled: true,
+        background_agents_enabled: true,
+        ..Default::default()
+    })
+    .expect("subagent-backed capabilities should validate");
+}
+
+#[test]
+fn agent_team_starter_contract_carries_immutable_run_snapshot() {
+    let run_id = harness_contracts::RunId::new();
+    let session_id = harness_contracts::SessionId::new();
+    let tool_use_id = harness_contracts::ToolUseId::new();
+    let policy = harness_contracts::AgentToolPolicy {
+        subagents: harness_contracts::AgentUsePolicy::Allowed,
+        agent_team: harness_contracts::AgentUsePolicy::Allowed,
+        team_config: Some(harness_contracts::AgentTeamRunConfig {
+            topology: harness_contracts::AgentTeamTopology::CoordinatorWorker,
+            lead_profile_id: "reviewer".to_owned(),
+            member_profile_ids: vec!["worker".to_owned()],
+            max_turns_per_goal: 3,
+            shared_memory_policy: harness_contracts::AgentTeamSharedMemoryPolicy::SummariesOnly,
+        }),
+        background_agents: harness_contracts::AgentUsePolicy::Off,
+        workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
+        max_depth: 2,
+        max_concurrent_subagents: 4,
+        max_team_members: 4,
+    };
+    let request = harness_contracts::AgentTeamToolStartRequest {
+        tenant_id: harness_contracts::TenantId::SINGLE,
+        conversation_id: session_id,
+        parent_run_id: run_id,
+        tool_use_id,
+        goal: "review the change".to_owned(),
+        topology: harness_contracts::AgentTeamTopology::CoordinatorWorker,
+        max_turns_per_goal: 3,
+        agent_tool_policy: policy.clone(),
+        session: harness_contracts::AgentTeamToolSessionSnapshot {
+            tenant_id: harness_contracts::TenantId::SINGLE,
+            session_id,
+            tool_search: harness_contracts::ToolSearchMode::Disabled,
+            tool_profile: harness_contracts::ToolProfile::Full,
+            permission_mode: harness_contracts::PermissionMode::Default,
+            interactivity: harness_contracts::InteractivityLevel::FullyInteractive,
+            team_id: None,
+            max_iterations: 16,
+            context_compression_trigger_ratio: 0.8,
+        },
+    };
+
+    assert_eq!(request.parent_run_id, run_id);
+    assert_eq!(request.tool_use_id, tool_use_id);
+    assert_eq!(request.agent_tool_policy, policy);
+    assert_eq!(request.session.session_id, session_id);
+}
+
+#[test]
+fn capability_unavailable_daemon_roundtrips() {
+    let reason = AgentCapabilityUnavailableReason::DaemonUnavailable {
         capability: AgentCapabilityKind::Subagents,
+        message: "task daemon is unavailable".to_owned(),
     };
     let value = serde_json::to_value(&reason).unwrap();
-    assert_eq!(value["type"], "notCompiled");
+    assert_eq!(value["type"], "daemonUnavailable");
     assert_eq!(value["capability"], "subagents");
-
-    let parsed: AgentCapabilityUnavailableReason = serde_json::from_value(value).unwrap();
-    assert_eq!(parsed, reason);
-}
-
-#[test]
-fn capability_unavailable_runtime_store_roundtrips() {
-    let reason = AgentCapabilityUnavailableReason::RuntimeStoreUnavailable {
-        capability: AgentCapabilityKind::AgentTeams,
-        message: "agent-runtime.sqlite open failed".to_owned(),
-    };
-    let value = serde_json::to_value(&reason).unwrap();
-    assert_eq!(value["type"], "runtimeStoreUnavailable");
-
-    let parsed: AgentCapabilityUnavailableReason = serde_json::from_value(value).unwrap();
-    assert_eq!(parsed, reason);
-}
-
-#[test]
-fn capability_unavailable_background_supervisor_roundtrips() {
-    let reason = AgentCapabilityUnavailableReason::BackgroundSupervisorUnavailable {
-        message: "sidecar not packaged".to_owned(),
-    };
-    let value = serde_json::to_value(&reason).unwrap();
-    assert_eq!(value["type"], "backgroundSupervisorUnavailable");
 
     let parsed: AgentCapabilityUnavailableReason = serde_json::from_value(value).unwrap();
     assert_eq!(parsed, reason);
@@ -224,8 +273,9 @@ fn agent_capabilities_payload_roundtrips() {
         subagents_available: true,
         agent_teams_available: false,
         background_agents_available: false,
-        unavailable_reasons: vec![AgentCapabilityUnavailableReason::NotCompiled {
+        unavailable_reasons: vec![AgentCapabilityUnavailableReason::DaemonUnavailable {
             capability: AgentCapabilityKind::BackgroundAgents,
+            message: "task daemon is unavailable".to_owned(),
         }],
     };
 

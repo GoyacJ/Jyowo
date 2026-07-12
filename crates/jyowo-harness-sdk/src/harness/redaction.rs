@@ -10,16 +10,6 @@ impl Harness {
     }
 }
 
-#[cfg(feature = "agents-team")]
-pub(super) fn topology_kind(topology: harness_team::Topology) -> TopologyKind {
-    match topology {
-        harness_team::Topology::CoordinatorWorker => TopologyKind::CoordinatorWorker,
-        harness_team::Topology::PeerToPeer => TopologyKind::PeerToPeer,
-        harness_team::Topology::RoleRouted => TopologyKind::RoleRouted,
-        harness_team::Topology::Custom => TopologyKind::Custom("sdk".to_owned()),
-    }
-}
-
 fn redact_business_event(event: Event, redactor: &dyn Redactor) -> Event {
     let Ok(mut value) = serde_json::to_value(&event) else {
         return event;

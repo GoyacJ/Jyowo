@@ -13,13 +13,13 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::{future::BoxFuture, stream, FutureExt, Stream, StreamExt};
 use harness_contracts::{
-    ActionResource, AgentToolPolicy, AgentUsePolicy, AgentWorkspaceIsolationMode,
-    ConversationAttachmentReference, ConversationContextReference, ConversationTurnInput, Event,
-    ExecutionDefaultsRecord, IndeterminateToolResolution, ModelError, PromotionMode,
-    QueueItemState, Redactor, RunSegmentId, RunTerminalReason, StopReason, TaskId, TenantId,
-    ToolActionPlan, ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolUseFailedEvent,
-    ToolUseId, UsageSnapshot, WorkspaceAccess as ToolWorkspaceAccess, WorkspaceLeaseId,
-    WorkspaceLeaseState, WorkspaceMode,
+    ActionResource, AgentTeamRunConfig, AgentTeamSharedMemoryPolicy, AgentTeamTopology,
+    AgentToolPolicy, AgentUsePolicy, AgentWorkspaceIsolationMode, ConversationAttachmentReference,
+    ConversationContextReference, ConversationTurnInput, Event, ExecutionDefaultsRecord,
+    IndeterminateToolResolution, ModelError, PromotionMode, QueueItemState, Redactor, RunSegmentId,
+    RunTerminalReason, StopReason, TaskId, TenantId, ToolActionPlan, ToolDescriptor, ToolError,
+    ToolErrorPayload, ToolResult, ToolUseFailedEvent, ToolUseId, UsageSnapshot,
+    WorkspaceAccess as ToolWorkspaceAccess, WorkspaceLeaseId, WorkspaceLeaseState, WorkspaceMode,
 };
 use harness_engine::{EngineBoundSubagentFactory, RunControlHandle, TurnOutcome};
 use harness_journal::{
@@ -44,10 +44,10 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
-    HarnessPermissionBroker, PermissionBroker, PermissionRuntimeAuthority, ProviderConfigResolver,
-    RunCoordinatorEvent, RunCoordinatorFactory, RunningSegment, StartSegmentRequest,
-    WorkspaceSubagentRunContext, WorkspaceSubagentRunnerFactory, WorkspaceToolAction,
-    WorkspaceToolDispatcher,
+    AgentStarterCapabilities, HarnessPermissionBroker, PermissionBroker,
+    PermissionRuntimeAuthority, ProviderConfigResolver, RunCoordinatorEvent, RunCoordinatorFactory,
+    RunningSegment, StartSegmentRequest, WorkspaceSubagentRunContext,
+    WorkspaceSubagentRunnerFactory, WorkspaceToolAction, WorkspaceToolDispatcher,
 };
 
 #[derive(Clone)]
@@ -347,6 +347,7 @@ impl SdkRunCoordinatorFactory {
         request: StartSegmentRequest,
         workspace_tools: WorkspaceToolDispatcher,
         subagent_runner: Arc<dyn SubagentRunner>,
+        agent_starters: AgentStarterCapabilities,
         subagent_engines: Arc<SdkSubagentEngineRegistry>,
         control: RunControlHandle,
     ) -> Result<(), SdkRunFactoryError> {
@@ -415,7 +416,7 @@ impl SdkRunCoordinatorFactory {
                 ),
             },
         );
-        let agent_tool_policy = daemon_agent_tool_policy(&execution_defaults);
+        let agent_tool_policy = daemon_agent_tool_policy(&execution_defaults)?;
         let subagents_enabled = agent_tool_policy.subagents == AgentUsePolicy::Allowed;
         let memory_database_path = blob_root.join("runtime").join("memory.sqlite3");
         std::fs::create_dir_all(
@@ -452,6 +453,26 @@ impl SdkRunCoordinatorFactory {
             .with_memory_database_path(memory_database_path);
         let harness_builder = if subagents_enabled {
             harness_builder.with_subagent_runner(subagent_runner)
+        } else {
+            harness_builder
+        };
+        let harness_builder = if agent_tool_policy.background_agents == AgentUsePolicy::Allowed {
+            harness_builder.with_capability::<dyn harness_contracts::BackgroundAgentStarterCap>(
+                harness_contracts::ToolCapability::Custom(
+                    harness_contracts::BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned(),
+                ),
+                agent_starters.background,
+            )
+        } else {
+            harness_builder
+        };
+        let harness_builder = if agent_tool_policy.agent_team == AgentUsePolicy::Allowed {
+            harness_builder.with_capability::<dyn harness_contracts::AgentTeamStarterCap>(
+                harness_contracts::ToolCapability::Custom(
+                    harness_contracts::AGENT_TEAM_STARTER_CAPABILITY.to_owned(),
+                ),
+                agent_starters.team,
+            )
         } else {
             harness_builder
         };
@@ -1021,21 +1042,40 @@ fn validate_daemon_segment_isolation(isolation: LocalIsolation) -> Result<(), Sd
     }
 }
 
-fn daemon_agent_tool_policy(defaults: &ExecutionDefaultsRecord) -> AgentToolPolicy {
-    AgentToolPolicy {
+fn daemon_agent_tool_policy(
+    defaults: &ExecutionDefaultsRecord,
+) -> Result<AgentToolPolicy, SdkRunFactoryError> {
+    harness_contracts::validate_execution_defaults_dependencies(defaults)
+        .map_err(|error| SdkRunFactoryError::ExecutionDefaults(error.to_string()))?;
+    let teams_enabled = defaults.agent_teams_enabled;
+    Ok(AgentToolPolicy {
         subagents: if defaults.subagents_enabled {
             AgentUsePolicy::Allowed
         } else {
             AgentUsePolicy::Off
         },
-        agent_team: AgentUsePolicy::Off,
-        background_agents: AgentUsePolicy::Off,
-        team_config: None,
+        agent_team: if teams_enabled {
+            AgentUsePolicy::Allowed
+        } else {
+            AgentUsePolicy::Off
+        },
+        background_agents: if defaults.background_agents_enabled {
+            AgentUsePolicy::Allowed
+        } else {
+            AgentUsePolicy::Off
+        },
+        team_config: teams_enabled.then(|| AgentTeamRunConfig {
+            topology: AgentTeamTopology::CoordinatorWorker,
+            lead_profile_id: "reviewer".to_owned(),
+            member_profile_ids: vec!["worker".to_owned()],
+            max_turns_per_goal: 8,
+            shared_memory_policy: AgentTeamSharedMemoryPolicy::SummariesOnly,
+        }),
         workspace_isolation: AgentWorkspaceIsolationMode::GitWorktree,
         max_depth: 4,
         max_concurrent_subagents: 8,
-        max_team_members: 0,
-    }
+        max_team_members: if teams_enabled { 2 } else { 0 },
+    })
 }
 
 impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
@@ -1044,6 +1084,7 @@ impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
         request: StartSegmentRequest,
         workspace_tools: WorkspaceToolDispatcher,
         subagent_runner: Arc<dyn SubagentRunner>,
+        agent_starters: AgentStarterCapabilities,
     ) -> RunningSegment {
         let key = (request.task_id, request.segment_id);
         let request_digest = segment_request_digest(&request);
@@ -1130,6 +1171,7 @@ impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
                     request,
                     workspace_tools,
                     subagent_runner,
+                    agent_starters,
                     subagent_engines,
                     control,
                 )
@@ -1559,12 +1601,57 @@ mod tests {
     use serde_json::json;
 
     use crate::{
-        PermissionBroker, ProviderConfigResolver, RunCoordinatorEvent, RunCoordinatorFactory,
-        SdkRunCoordinatorFactory, SdkSubagentEngineRegistry, SdkWorkspaceSubagentRunnerFactory,
-        StartSegmentRequest, SubagentParentBinding, SubagentSupervisor, WorkspaceAccess,
-        WorkspaceAcquireOutcome, WorkspaceCoordinator, WorkspaceExecutionKind,
-        WorkspaceLeaseRequest, WorkspaceSubagentRunnerFactory, WorkspaceToolDispatcher,
+        AgentStarterCapabilities, PermissionBroker, ProviderConfigResolver, RunCoordinatorEvent,
+        RunCoordinatorFactory, SdkRunCoordinatorFactory, SdkSubagentEngineRegistry,
+        SdkWorkspaceSubagentRunnerFactory, StartSegmentRequest, SubagentParentBinding,
+        SubagentSupervisor, WorkspaceAccess, WorkspaceAcquireOutcome, WorkspaceCoordinator,
+        WorkspaceExecutionKind, WorkspaceLeaseRequest, WorkspaceSubagentRunnerFactory,
+        WorkspaceToolDispatcher,
     };
+
+    struct UnusedAgentStarter;
+
+    impl harness_contracts::BackgroundAgentStarterCap for UnusedAgentStarter {
+        fn start_background_agent(
+            &self,
+            _request: harness_contracts::BackgroundAgentToolStartRequest,
+        ) -> futures::future::BoxFuture<
+            'static,
+            Result<
+                harness_contracts::BackgroundAgentToolStartResponse,
+                harness_contracts::ToolError,
+            >,
+        > {
+            Box::pin(async {
+                Err(harness_contracts::ToolError::Internal(
+                    "unexpected background starter execution".to_owned(),
+                ))
+            })
+        }
+    }
+
+    impl harness_contracts::AgentTeamStarterCap for UnusedAgentStarter {
+        fn start_agent_team(
+            &self,
+            _request: harness_contracts::AgentTeamToolStartRequest,
+        ) -> futures::future::BoxFuture<
+            'static,
+            Result<harness_contracts::AgentTeamToolStartResponse, harness_contracts::ToolError>,
+        > {
+            Box::pin(async {
+                Err(harness_contracts::ToolError::Internal(
+                    "unexpected team starter execution".to_owned(),
+                ))
+            })
+        }
+    }
+
+    fn unused_agent_starters() -> AgentStarterCapabilities {
+        AgentStarterCapabilities {
+            background: Arc::new(UnusedAgentStarter),
+            team: Arc::new(UnusedAgentStarter),
+        }
+    }
 
     #[tokio::test]
     async fn production_subagent_factory_executes_the_child_only_in_its_task_scope() {
@@ -1742,25 +1829,98 @@ mod tests {
     }
 
     #[test]
-    fn execution_defaults_control_the_immutable_subagent_policy() {
-        let disabled =
-            super::daemon_agent_tool_policy(&harness_contracts::ExecutionDefaultsRecord::default());
-        let enabled =
-            super::daemon_agent_tool_policy(&harness_contracts::ExecutionDefaultsRecord {
-                subagents_enabled: true,
-                ..Default::default()
-            });
+    fn execution_defaults_control_the_immutable_agent_policy() {
+        use harness_contracts::{
+            AgentTeamSharedMemoryPolicy, AgentTeamTopology, AgentUsePolicy, ExecutionDefaultsRecord,
+        };
 
-        assert_eq!(disabled.subagents, harness_contracts::AgentUsePolicy::Off);
-        assert_eq!(
-            enabled.subagents,
-            harness_contracts::AgentUsePolicy::Allowed
-        );
-        assert_eq!(disabled.agent_team, harness_contracts::AgentUsePolicy::Off);
-        assert_eq!(
-            disabled.background_agents,
-            harness_contracts::AgentUsePolicy::Off
-        );
+        for (defaults, subagents, teams, background) in [
+            (
+                ExecutionDefaultsRecord::default(),
+                AgentUsePolicy::Off,
+                AgentUsePolicy::Off,
+                AgentUsePolicy::Off,
+            ),
+            (
+                ExecutionDefaultsRecord {
+                    subagents_enabled: true,
+                    ..Default::default()
+                },
+                AgentUsePolicy::Allowed,
+                AgentUsePolicy::Off,
+                AgentUsePolicy::Off,
+            ),
+            (
+                ExecutionDefaultsRecord {
+                    subagents_enabled: true,
+                    agent_teams_enabled: true,
+                    ..Default::default()
+                },
+                AgentUsePolicy::Allowed,
+                AgentUsePolicy::Allowed,
+                AgentUsePolicy::Off,
+            ),
+            (
+                ExecutionDefaultsRecord {
+                    subagents_enabled: true,
+                    background_agents_enabled: true,
+                    ..Default::default()
+                },
+                AgentUsePolicy::Allowed,
+                AgentUsePolicy::Off,
+                AgentUsePolicy::Allowed,
+            ),
+            (
+                ExecutionDefaultsRecord {
+                    subagents_enabled: true,
+                    agent_teams_enabled: true,
+                    background_agents_enabled: true,
+                    ..Default::default()
+                },
+                AgentUsePolicy::Allowed,
+                AgentUsePolicy::Allowed,
+                AgentUsePolicy::Allowed,
+            ),
+        ] {
+            let policy = super::daemon_agent_tool_policy(&defaults)
+                .expect("valid execution defaults should produce a policy");
+            assert_eq!(policy.subagents, subagents);
+            assert_eq!(policy.agent_team, teams);
+            assert_eq!(policy.background_agents, background);
+            if teams == AgentUsePolicy::Allowed {
+                let team = policy.team_config.expect("enabled teams require config");
+                assert_eq!(team.topology, AgentTeamTopology::CoordinatorWorker);
+                assert_eq!(team.lead_profile_id, "reviewer");
+                assert_eq!(team.member_profile_ids, ["worker"]);
+                assert_eq!(
+                    team.shared_memory_policy,
+                    AgentTeamSharedMemoryPolicy::SummariesOnly
+                );
+                assert!(team.max_turns_per_goal > 0);
+                assert_eq!(policy.max_team_members, 2);
+            } else {
+                assert!(policy.team_config.is_none());
+                assert_eq!(policy.max_team_members, 0);
+            }
+        }
+
+        for defaults in [
+            ExecutionDefaultsRecord {
+                agent_teams_enabled: true,
+                ..Default::default()
+            },
+            ExecutionDefaultsRecord {
+                background_agents_enabled: true,
+                ..Default::default()
+            },
+            ExecutionDefaultsRecord {
+                agent_teams_enabled: true,
+                background_agents_enabled: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(super::daemon_agent_tool_policy(&defaults).is_err());
+        }
     }
 
     #[tokio::test]
@@ -1771,6 +1931,7 @@ mod tests {
             request,
             fixture.workspace_tools.clone(),
             Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
         );
 
         assert!(matches!(
@@ -1907,11 +2068,13 @@ mod tests {
             request.clone(),
             fixture.workspace_tools.clone(),
             Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
         );
         let second = fixture.factory.spawn_idempotent(
             request,
             fixture.workspace_tools.clone(),
             Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
         );
         let first_control = first.control();
         let second_control = second.control();
@@ -1935,6 +2098,7 @@ mod tests {
             request,
             fixture.workspace_tools.clone(),
             Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
         );
 
         assert!(running.into_events().recv().await.is_some());
@@ -1965,6 +2129,7 @@ mod tests {
                 request.clone(),
                 fixture.workspace_tools.clone(),
                 Arc::new(UnusedSubagentRunner),
+                unused_agent_starters(),
             )
             .into_events();
 
@@ -2053,12 +2218,14 @@ mod tests {
             request.clone(),
             fixture.workspace_tools.clone(),
             Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
         );
         assert!(first.into_events().recv().await.is_some());
         let replay = fixture.factory.spawn_idempotent(
             request,
             fixture.workspace_tools.clone(),
             Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
         );
         assert!(replay.into_events().recv().await.is_some());
 
@@ -2384,6 +2551,7 @@ mod tests {
             fixture.request(Some("missing")),
             fixture.workspace_tools.clone(),
             Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
         );
 
         assert!(matches!(
@@ -2406,6 +2574,7 @@ mod tests {
             request,
             fixture.workspace_tools.clone(),
             Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
         );
         running.control().request(RunControl::ForceStop);
         let mut events = running.into_events();

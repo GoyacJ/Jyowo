@@ -31,24 +31,7 @@ pub enum AgentCapabilityKind {
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AgentCapabilityUnavailableReason {
-    NotCompiled {
-        capability: AgentCapabilityKind,
-    },
-    RuntimeStoreUnavailable {
-        capability: AgentCapabilityKind,
-        message: String,
-    },
-    PermissionRuntimeUnavailable {
-        capability: AgentCapabilityKind,
-    },
-    InvalidAgentProfiles {
-        capability: AgentCapabilityKind,
-        message: String,
-    },
-    BackgroundSupervisorUnavailable {
-        message: String,
-    },
-    WorkspaceIsolationUnavailable {
+    DaemonUnavailable {
         capability: AgentCapabilityKind,
         message: String,
     },
@@ -303,11 +286,59 @@ pub struct SubagentCapAnnouncement {
     pub transcript_ref: Option<TranscriptRef>,
 }
 
+pub const BACKGROUND_AGENT_STARTER_CAPABILITY: &str = "jyowo.background_agent.starter";
+
 pub trait BackgroundAgentStarterCap: Send + Sync + 'static {
     fn start_background_agent(
         &self,
         request: BackgroundAgentToolStartRequest,
     ) -> BoxFuture<'static, Result<BackgroundAgentToolStartResponse, ToolError>>;
+}
+
+pub const AGENT_TEAM_STARTER_CAPABILITY: &str = "jyowo.agent_team.starter";
+
+pub trait AgentTeamStarterCap: Send + Sync + 'static {
+    fn start_agent_team(
+        &self,
+        request: AgentTeamToolStartRequest,
+    ) -> BoxFuture<'static, Result<AgentTeamToolStartResponse, ToolError>>;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTeamToolStartRequest {
+    pub tenant_id: TenantId,
+    pub conversation_id: SessionId,
+    pub parent_run_id: RunId,
+    pub tool_use_id: ToolUseId,
+    pub goal: String,
+    pub topology: AgentTeamTopology,
+    pub max_turns_per_goal: u32,
+    pub agent_tool_policy: AgentToolPolicy,
+    pub session: AgentTeamToolSessionSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTeamToolSessionSnapshot {
+    pub tenant_id: TenantId,
+    pub session_id: SessionId,
+    pub tool_search: ToolSearchMode,
+    pub tool_profile: ToolProfile,
+    pub permission_mode: PermissionMode,
+    pub interactivity: InteractivityLevel,
+    pub team_id: Option<TeamId>,
+    pub max_iterations: u32,
+    pub context_compression_trigger_ratio: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTeamToolStartResponse {
+    pub team_id: TeamId,
+    pub conversation_id: SessionId,
+    pub parent_run_id: RunId,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

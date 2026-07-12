@@ -255,11 +255,6 @@ pub(crate) fn session_addendum_section(content: &str) -> Option<SystemPromptSect
     })
 }
 
-#[cfg(feature = "agents-team")]
-pub(crate) fn render_session_addendum(content: &str) -> Option<String> {
-    session_addendum_section(content).and_then(|section| render_section(&section))
-}
-
 pub(crate) fn builtin_memory_section(inner: &str) -> Option<SystemPromptSection> {
     if inner.trim().is_empty() {
         return None;

@@ -114,6 +114,26 @@ pub struct HandshakeResponse {
     pub daemon_version: String,
     pub user_instance_id: String,
     pub latest_global_offset: u64,
+    pub agent_capabilities: AgentCapabilities,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentCapabilities {
+    pub subagents: bool,
+    pub agent_teams: bool,
+    pub background_agents: bool,
+}
+
+impl AgentCapabilities {
+    #[must_use]
+    pub const fn daemon_native() -> Self {
+        Self {
+            subagents: true,
+            agent_teams: true,
+            background_agents: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

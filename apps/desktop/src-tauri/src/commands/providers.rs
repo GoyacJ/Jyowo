@@ -34,7 +34,6 @@ use harness_model::{
     ReasoningProtocolSemantics, StreamingProtocolSemantics, ToolProtocolSemantics,
 };
 use harness_provider_state::ProviderContinuationKind;
-use jyowo_harness_sdk::AgentCapabilityResolutionContext;
 
 #[derive(Clone)]
 pub(crate) struct DesktopProviderCredentialResolver {
@@ -709,14 +708,18 @@ impl DesktopExecutionSettingsStore {
     pub fn save_record(
         &self,
         record: &harness_contracts::ExecutionDefaultsRecord,
-        context: Option<&AgentCapabilityResolutionContext>,
+        capabilities: Option<&harness_contracts::AgentCapabilities>,
     ) -> Result<(), CommandErrorPayload> {
         if self.is_global_only() {
-            ensure_no_workspace_execution_defaults_record(record, self.workspace_root(), context)?;
+            ensure_no_workspace_execution_defaults_record(
+                record,
+                self.workspace_root(),
+                capabilities,
+            )?;
             let settings_path = self.settings_path();
             return write_json_file_atomic(&settings_path, "execution settings", record);
         } else {
-            ensure_execution_defaults_record(record, self.workspace_root(), context)?;
+            ensure_execution_defaults_record(record, self.workspace_root(), capabilities)?;
         }
         let settings_path = self.settings_path();
         let overrides = harness_contracts::ExecutionOverridesRecord::from(record.clone());
@@ -734,6 +737,8 @@ fn execution_settings_home_dir() -> PathBuf {
 pub(crate) fn ensure_execution_defaults_structure(
     record: &harness_contracts::ExecutionDefaultsRecord,
 ) -> Result<(), CommandErrorPayload> {
+    harness_contracts::validate_execution_defaults_dependencies(record)
+        .map_err(|error| invalid_payload(error.to_string()))?;
     match record.permission_mode {
         PermissionMode::Default | PermissionMode::Auto | PermissionMode::BypassPermissions => {
             Ok(())
@@ -779,12 +784,12 @@ pub(crate) fn ensure_execution_overrides_structure(
 
 pub(crate) fn ensure_execution_defaults_record(
     record: &harness_contracts::ExecutionDefaultsRecord,
-    workspace_root: &Path,
-    context: Option<&AgentCapabilityResolutionContext>,
+    _workspace_root: &Path,
+    capabilities: Option<&harness_contracts::AgentCapabilities>,
 ) -> Result<(), CommandErrorPayload> {
     ensure_execution_defaults_structure(record)?;
 
-    let policy = resolve_agent_capability_policy(workspace_root, context);
+    let policy = agent_capabilities_payload(record, capabilities);
     ensure_agent_capability_setting_available(
         record.subagents_enabled,
         policy.subagents_available,
@@ -804,11 +809,11 @@ pub(crate) fn ensure_execution_defaults_record(
 
 pub(crate) fn ensure_no_workspace_execution_defaults_record(
     record: &harness_contracts::ExecutionDefaultsRecord,
-    runtime_root: &Path,
-    context: Option<&AgentCapabilityResolutionContext>,
+    _runtime_root: &Path,
+    capabilities: Option<&harness_contracts::AgentCapabilities>,
 ) -> Result<(), CommandErrorPayload> {
     ensure_execution_defaults_structure(record)?;
-    let payload = no_workspace_agent_capabilities_payload(record, runtime_root, context);
+    let payload = agent_capabilities_payload(record, capabilities);
     ensure_agent_capability_setting_available(
         record.subagents_enabled,
         payload.subagents_available,
@@ -857,127 +862,52 @@ pub struct AgentCapabilitiesPayload {
     pub unavailable_reasons: Vec<AgentCapabilityUnavailableReason>,
 }
 
-pub(crate) fn resolve_agent_capability_policy(
-    workspace_root: &Path,
-    context: Option<&AgentCapabilityResolutionContext>,
-) -> jyowo_harness_sdk::ResolvedAgentCapabilityPolicy {
-    jyowo_harness_sdk::resolve_agent_capabilities_with_context(
-        workspace_root,
-        context.copied().unwrap_or_default(),
-    )
-}
-
 pub(crate) fn agent_capabilities_payload(
     record: &harness_contracts::ExecutionDefaultsRecord,
-    workspace_root: &Path,
-    context: Option<&AgentCapabilityResolutionContext>,
+    capabilities: Option<&harness_contracts::AgentCapabilities>,
 ) -> AgentCapabilitiesPayload {
-    let policy = resolve_agent_capability_policy(workspace_root, context);
+    let supported = |capability| {
+        capabilities.is_some_and(|value| match capability {
+            AgentCapabilityKind::Subagents => value.subagents,
+            AgentCapabilityKind::AgentTeams => value.agent_teams,
+            AgentCapabilityKind::BackgroundAgents => value.background_agents,
+        })
+    };
+    let unavailable_reasons = [
+        AgentCapabilityKind::Subagents,
+        AgentCapabilityKind::AgentTeams,
+        AgentCapabilityKind::BackgroundAgents,
+    ]
+    .into_iter()
+    .filter(|capability| !supported(*capability))
+    .map(
+        |capability| AgentCapabilityUnavailableReason::DaemonUnavailable {
+            capability,
+            message: if capabilities.is_some() {
+                "connected task daemon does not support this capability".to_owned()
+            } else {
+                "task daemon is unavailable or incompatible".to_owned()
+            },
+        },
+    )
+    .collect();
     AgentCapabilitiesPayload {
         subagents_enabled: record.subagents_enabled,
         agent_teams_enabled: record.agent_teams_enabled,
         background_agents_enabled: record.background_agents_enabled,
-        subagents_available: policy.subagents_available,
-        agent_teams_available: policy.agent_teams_available,
-        background_agents_available: policy.background_agents_available,
-        unavailable_reasons: policy.unavailable_reasons,
+        subagents_available: capabilities.is_some_and(|value| value.subagents),
+        agent_teams_available: capabilities.is_some_and(|value| value.agent_teams),
+        background_agents_available: capabilities.is_some_and(|value| value.background_agents),
+        unavailable_reasons,
     }
 }
 
 pub(crate) fn no_workspace_agent_capabilities_payload(
     record: &harness_contracts::ExecutionDefaultsRecord,
-    runtime_root: &Path,
-    context: Option<&AgentCapabilityResolutionContext>,
+    _runtime_root: &Path,
+    capabilities: Option<&harness_contracts::AgentCapabilities>,
 ) -> AgentCapabilitiesPayload {
-    no_workspace_agent_capabilities_payload_for_conversation(record, runtime_root, None, context)
-}
-
-pub(crate) fn no_workspace_agent_capabilities_payload_for_conversation(
-    record: &harness_contracts::ExecutionDefaultsRecord,
-    runtime_root: &Path,
-    _conversation_id: Option<SessionId>,
-    context: Option<&AgentCapabilityResolutionContext>,
-) -> AgentCapabilitiesPayload {
-    let stream_permission_runtime_available = context
-        .copied()
-        .unwrap_or_default()
-        .stream_permission_runtime_available;
-    let runtime_store = jyowo_harness_sdk::AgentRuntimeStore::open_runtime_dir(runtime_root);
-    let runtime_store_available = runtime_store.is_ok();
-    let environment = jyowo_harness_sdk::default_agent_capability_environment();
-
-    let subagents_available = environment.subagents_compiled
-        && runtime_store_available
-        && stream_permission_runtime_available;
-    let agent_teams_available =
-        subagents_available && environment.agent_teams_compiled && runtime_store_available;
-    let mut unavailable_reasons = Vec::new();
-    if !runtime_store_available {
-        for capability in [
-            AgentCapabilityKind::Subagents,
-            AgentCapabilityKind::AgentTeams,
-            AgentCapabilityKind::BackgroundAgents,
-        ] {
-            unavailable_reasons.push(AgentCapabilityUnavailableReason::RuntimeStoreUnavailable {
-                capability,
-                message: "runtime-scope agent store is unavailable".to_owned(),
-            });
-        }
-    }
-    if !environment.subagents_compiled {
-        unavailable_reasons.push(AgentCapabilityUnavailableReason::NotCompiled {
-            capability: AgentCapabilityKind::Subagents,
-        });
-    }
-    if subagents_available && !environment.agent_teams_compiled {
-        unavailable_reasons.push(AgentCapabilityUnavailableReason::NotCompiled {
-            capability: AgentCapabilityKind::AgentTeams,
-        });
-    }
-    unavailable_reasons.push(AgentCapabilityUnavailableReason::NotCompiled {
-        capability: AgentCapabilityKind::BackgroundAgents,
-    });
-    if !stream_permission_runtime_available {
-        unavailable_reasons.push(
-            AgentCapabilityUnavailableReason::PermissionRuntimeUnavailable {
-                capability: AgentCapabilityKind::Subagents,
-            },
-        );
-        unavailable_reasons.push(
-            AgentCapabilityUnavailableReason::PermissionRuntimeUnavailable {
-                capability: AgentCapabilityKind::BackgroundAgents,
-            },
-        );
-    }
-    let background_agents_available = !unavailable_reasons.iter().any(|reason| {
-        matches!(
-            reason,
-            AgentCapabilityUnavailableReason::NotCompiled {
-                capability: AgentCapabilityKind::BackgroundAgents,
-            } | AgentCapabilityUnavailableReason::RuntimeStoreUnavailable {
-                capability: AgentCapabilityKind::BackgroundAgents,
-                ..
-            } | AgentCapabilityUnavailableReason::PermissionRuntimeUnavailable {
-                capability: AgentCapabilityKind::BackgroundAgents,
-            } | AgentCapabilityUnavailableReason::InvalidAgentProfiles {
-                capability: AgentCapabilityKind::BackgroundAgents,
-                ..
-            } | AgentCapabilityUnavailableReason::BackgroundSupervisorUnavailable { .. }
-                | AgentCapabilityUnavailableReason::WorkspaceIsolationUnavailable {
-                    capability: AgentCapabilityKind::BackgroundAgents,
-                    ..
-                }
-        )
-    });
-    AgentCapabilitiesPayload {
-        subagents_enabled: record.subagents_enabled,
-        agent_teams_enabled: record.agent_teams_enabled,
-        background_agents_enabled: record.background_agents_enabled,
-        subagents_available,
-        agent_teams_available,
-        background_agents_available,
-        unavailable_reasons,
-    }
+    agent_capabilities_payload(record, capabilities)
 }
 
 pub(crate) fn ensure_provider_settings_record(
@@ -1309,14 +1239,14 @@ pub async fn validate_provider_settings_payload(
 
 pub fn get_execution_settings_with_store(
     store: &DesktopExecutionSettingsStore,
-    context: Option<&AgentCapabilityResolutionContext>,
+    capabilities: Option<&harness_contracts::AgentCapabilities>,
 ) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
     let record = store.load_record()?;
     execution_settings_response_from_record(
         &record,
         store.is_global_only(),
         store.workspace_root(),
-        context,
+        capabilities,
     )
 }
 
@@ -1324,13 +1254,13 @@ fn execution_settings_response_from_record(
     record: &harness_contracts::ExecutionDefaultsRecord,
     global_only: bool,
     policy_root: &Path,
-    context: Option<&AgentCapabilityResolutionContext>,
+    capabilities: Option<&harness_contracts::AgentCapabilities>,
 ) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
     let permission_mode = effective_execution_settings_permission_mode(record.permission_mode);
     let agent_capabilities = if global_only {
-        no_workspace_agent_capabilities_payload(record, policy_root, context)
+        no_workspace_agent_capabilities_payload(record, policy_root, capabilities)
     } else {
-        agent_capabilities_payload(record, policy_root, context)
+        agent_capabilities_payload(record, capabilities)
     };
     Ok(GetExecutionSettingsResponse {
         permission_mode,
@@ -1354,10 +1284,13 @@ pub fn get_execution_settings_for_state_request(
     request: GetExecutionSettingsRequest,
     state: &DesktopRuntimeState,
     project_registry: &ProjectRegistry,
-    context: Option<&AgentCapabilityResolutionContext>,
+    capabilities: Option<&harness_contracts::AgentCapabilities>,
 ) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
     let Some(workspace_path) = request.workspace_path else {
-        return get_execution_settings_with_store(state.execution_settings_store.as_ref(), context);
+        return get_execution_settings_with_store(
+            state.execution_settings_store.as_ref(),
+            capabilities,
+        );
     };
     let workspace_root =
         canonical_workspace_root(PathBuf::from(workspace_path), "workspace path".to_owned())?;
@@ -1369,17 +1302,17 @@ pub fn get_execution_settings_for_state_request(
     {
         return Err(invalid_payload("project is not registered".to_owned()));
     }
-    get_execution_settings_with_store(state.execution_settings_store.as_ref(), context)
+    get_execution_settings_with_store(state.execution_settings_store.as_ref(), capabilities)
 }
 
 pub fn get_execution_settings_for_request(
     request: GetExecutionSettingsRequest,
     active_store: &DesktopExecutionSettingsStore,
     project_registry: &ProjectRegistry,
-    context: Option<&AgentCapabilityResolutionContext>,
+    capabilities: Option<&harness_contracts::AgentCapabilities>,
 ) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
     let Some(workspace_path) = request.workspace_path else {
-        return get_execution_settings_with_store(active_store, context);
+        return get_execution_settings_with_store(active_store, capabilities);
     };
     let workspace_root =
         canonical_workspace_root(PathBuf::from(workspace_path), "workspace path".to_owned())?;
@@ -1391,13 +1324,13 @@ pub fn get_execution_settings_for_request(
     {
         return Err(invalid_payload("project is not registered".to_owned()));
     }
-    get_execution_settings_with_store(active_store, context)
+    get_execution_settings_with_store(active_store, capabilities)
 }
 
 pub fn set_execution_settings_with_store(
     request: SetExecutionSettingsRequest,
     store: &DesktopExecutionSettingsStore,
-    context: Option<&AgentCapabilityResolutionContext>,
+    capabilities: Option<&harness_contracts::AgentCapabilities>,
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload> {
     let requested_record = harness_contracts::ExecutionDefaultsRecord {
         permission_mode: request.permission_mode,
@@ -1411,10 +1344,10 @@ pub fn set_execution_settings_with_store(
         ensure_no_workspace_execution_defaults_record(
             &requested_record,
             store.workspace_root(),
-            context,
+            capabilities,
         )?;
     } else {
-        ensure_execution_defaults_record(&requested_record, store.workspace_root(), context)?;
+        ensure_execution_defaults_record(&requested_record, store.workspace_root(), capabilities)?;
     }
     if request.permission_mode == PermissionMode::Auto && !auto_mode_available() {
         return Err(invalid_payload(
@@ -1422,11 +1355,11 @@ pub fn set_execution_settings_with_store(
         ));
     }
     let record = requested_record;
-    store.save_record(&record, context)?;
+    store.save_record(&record, capabilities)?;
     let agent_capabilities = if store.is_global_only() {
-        no_workspace_agent_capabilities_payload(&record, store.workspace_root(), context)
+        no_workspace_agent_capabilities_payload(&record, store.workspace_root(), capabilities)
     } else {
-        agent_capabilities_payload(&record, store.workspace_root(), context)
+        agent_capabilities_payload(&record, capabilities)
     };
     Ok(SetExecutionSettingsResponse {
         permission_mode: record.permission_mode,
@@ -4259,16 +4192,11 @@ mod execution_settings_tests {
     }
 
     #[test]
-    fn global_only_execution_settings_can_save_available_runtime_scope_subagents() {
+    fn global_only_execution_settings_can_save_daemon_supported_subagents() {
         let home = temp_execution_settings_home();
         let layout = StorageLayout::new(JyowoHome::new(home.path().join(".jyowo")));
-        let store = DesktopExecutionSettingsStore::global_only_with_layout(layout.clone());
-        let runtime_root = layout.global_runtime_root().join("global-conversations");
-        jyowo_harness_sdk::AgentRuntimeStore::open_runtime_dir(&runtime_root)
-            .expect("runtime-scope agent store");
-        let context = AgentCapabilityResolutionContext {
-            stream_permission_runtime_available: true,
-        };
+        let store = DesktopExecutionSettingsStore::global_only_with_layout(layout);
+        let capabilities = harness_contracts::AgentCapabilities::daemon_native();
 
         let response = set_execution_settings_with_store(
             SetExecutionSettingsRequest {
@@ -4280,9 +4208,9 @@ mod execution_settings_tests {
                 background_agents_enabled: false,
             },
             &store,
-            Some(&context),
+            Some(&capabilities),
         )
-        .expect("runtime-scope subagents should be saveable when available");
+        .expect("daemon-supported subagents should be saveable");
 
         assert!(response.agent_capabilities.subagents_enabled);
         assert!(response.agent_capabilities.subagents_available);

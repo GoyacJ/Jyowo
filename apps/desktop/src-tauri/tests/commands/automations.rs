@@ -528,21 +528,21 @@ fn set_execution_settings_rejects_auto_without_runtime_support() {
     assert!(error.message.contains("unavailable"));
 }
 
-#[tokio::test]
-async fn execution_settings_agent_capabilities_reflect_resolver_with_stream_permission() {
+#[test]
+fn execution_settings_agent_capabilities_reflect_authenticated_daemon() {
     let workspace = unique_workspace("execution-settings-agent-capabilities");
-    let state = runtime_state_with_settings_runtime_for_workspace(workspace).await;
-    let context = AgentCapabilityResolutionContext {
-        stream_permission_runtime_available: true,
-    };
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+    let capabilities = harness_contracts::AgentCapabilities::daemon_native();
     let store = global_execution_settings_store(state.workspace_root());
 
-    let settings =
-        get_execution_settings_with_store(&store, Some(&context)).expect("settings should load");
+    let settings = get_execution_settings_with_store(&store, Some(&capabilities))
+        .expect("settings should load");
 
     assert!(settings.agent_capabilities.subagents_available);
     assert!(settings.agent_capabilities.agent_teams_available);
-    assert!(!settings.agent_capabilities.background_agents_available);
+    assert!(settings.agent_capabilities.background_agents_available);
 
     let saved = set_execution_settings_with_store(
         SetExecutionSettingsRequest {
@@ -554,26 +554,27 @@ async fn execution_settings_agent_capabilities_reflect_resolver_with_stream_perm
             background_agents_enabled: false,
         },
         &store,
-        Some(&context),
+        Some(&capabilities),
     )
     .expect("subagents should save when resolver reports availability");
 
     assert!(saved.agent_capabilities.subagents_enabled);
     assert!(saved.agent_capabilities.subagents_available);
 
-    let background_error = set_execution_settings_with_store(
+    let background = set_execution_settings_with_store(
         SetExecutionSettingsRequest {
             permission_mode: PermissionMode::Default,
             tool_profile: ToolProfile::Full,
             context_compression_trigger_ratio: 0.8,
-            subagents_enabled: false,
+            subagents_enabled: true,
             agent_teams_enabled: false,
             background_agents_enabled: true,
         },
         &store,
-        Some(&context),
+        Some(&capabilities),
     )
-    .expect_err("background agents remain unavailable before supervisor wiring");
+    .expect("background agents should save when daemon reports support");
 
-    assert_eq!(background_error.code, "INVALID_PAYLOAD");
+    assert!(background.agent_capabilities.background_agents_enabled);
+    assert!(background.agent_capabilities.background_agents_available);
 }

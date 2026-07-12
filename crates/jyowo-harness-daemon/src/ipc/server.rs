@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use harness_contracts::{
-    BlobPayload, ClientFrame, ClientId, ClientRequest, CommandAccepted, CommandRejected,
-    CommandRejectionReason, HandshakeResponse, ProtocolError, ProtocolErrorCode, QueueItemId,
-    RunSegmentId, ServerFrame, ServerMessage, TaskEventBatch, TaskId, TaskSnapshot,
+    AgentCapabilities, BlobPayload, ClientFrame, ClientId, ClientRequest, CommandAccepted,
+    CommandRejected, CommandRejectionReason, HandshakeResponse, ProtocolError, ProtocolErrorCode,
+    QueueItemId, RunSegmentId, ServerFrame, ServerMessage, TaskEventBatch, TaskId, TaskSnapshot,
     PROTOCOL_VERSION,
 };
 use harness_journal::{
@@ -166,6 +166,7 @@ impl IpcConnection {
                     daemon_version: self.config.daemon_version.clone(),
                     user_instance_id: self.config.user_instance_id.clone(),
                     latest_global_offset,
+                    agent_capabilities: AgentCapabilities::daemon_native(),
                 }),
             )]);
         }

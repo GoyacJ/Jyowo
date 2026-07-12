@@ -1,6 +1,6 @@
 use harness_contracts::{
-    daemon_protocol_schema, ClientFrame, ClientRequest, ServerFrame, TaskProjection, WorkspaceMode,
-    PROTOCOL_VERSION,
+    daemon_protocol_schema, AgentCapabilities, ClientFrame, ClientRequest, HandshakeResponse,
+    ServerFrame, TaskProjection, WorkspaceMode, PROTOCOL_VERSION,
 };
 use serde_json::json;
 
@@ -36,6 +36,31 @@ fn daemon_protocol_exports_one_versioned_schema() {
     assert_eq!(value["request"]["type"], "subscribe_events");
     assert_eq!(value["request"]["afterOffset"], 42);
     assert!(value["request"].get("after_offset").is_none());
+}
+
+#[test]
+fn handshake_publishes_executable_agent_capabilities() {
+    let response = HandshakeResponse {
+        daemon_version: "0.1.0".into(),
+        user_instance_id: "user-a".into(),
+        latest_global_offset: 7,
+        agent_capabilities: AgentCapabilities {
+            subagents: true,
+            agent_teams: true,
+            background_agents: true,
+        },
+    };
+
+    let value = serde_json::to_value(response).expect("serialize handshake");
+    assert_eq!(value["agentCapabilities"]["subagents"], true);
+    assert_eq!(value["agentCapabilities"]["agentTeams"], true);
+    assert_eq!(value["agentCapabilities"]["backgroundAgents"], true);
+
+    let schema = serde_json::to_value(daemon_protocol_schema()).expect("serialize schema");
+    let properties = &schema["$defs"]["AgentCapabilities"]["properties"];
+    assert!(properties.get("subagents").is_some());
+    assert!(properties.get("agentTeams").is_some());
+    assert!(properties.get("backgroundAgents").is_some());
 }
 
 #[test]

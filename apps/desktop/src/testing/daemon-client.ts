@@ -46,6 +46,11 @@ export function createE2eDaemonClient(): DaemonClient {
     async connect() {
       const state = requireRunning()
       return frame({
+        agentCapabilities: {
+          agentTeams: true,
+          backgroundAgents: true,
+          subagents: true,
+        },
         daemonVersion: 'e2e-renderer-bridge',
         latestGlobalOffset: latestOffset(state),
         type: 'handshake',

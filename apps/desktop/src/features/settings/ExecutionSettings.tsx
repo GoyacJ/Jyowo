@@ -250,7 +250,9 @@ export function ExecutionSettings() {
               {agentCapabilityOptions.map((option) => {
                 const checked = agentCapabilities[option.enabledKey]
                 const available = agentCapabilities[option.availableKey]
-                const disabled = saving || !available
+                const dependencyUnavailable =
+                  option.id !== 'subagents' && !agentCapabilities.subagentsEnabled
+                const disabled = saving || !available || dependencyUnavailable
                 const reasons = agentCapabilities.unavailableReasons.filter((reason) =>
                   reasonMatchesCapability(reason, option.id),
                 )
@@ -283,13 +285,14 @@ export function ExecutionSettings() {
                       disabled={disabled}
                       id={`execution-${option.id}`}
                       onCheckedChange={(nextEnabled) => {
-                        const nextAgentCapabilitySettings = {
-                          ...getAgentCapabilitySettings(agentCapabilities),
-                          [option.enabledKey]: nextEnabled,
-                        }
+                        const nextAgentCapabilitySettings = updateAgentCapabilitySettings(
+                          getAgentCapabilitySettings(agentCapabilities),
+                          option.id,
+                          nextEnabled,
+                        )
                         setAgentCapabilities((current) => ({
                           ...current,
-                          [option.enabledKey]: nextEnabled,
+                          ...nextAgentCapabilitySettings,
                         }))
                         void saveSettings(
                           permissionMode,
@@ -406,14 +409,30 @@ function getAgentCapabilitySettings(agentCapabilities: AgentCapabilities): Agent
   }
 }
 
+function updateAgentCapabilitySettings(
+  current: AgentCapabilitySettings,
+  capability: (typeof agentCapabilityOptions)[number]['id'],
+  enabled: boolean,
+): AgentCapabilitySettings {
+  if (capability === 'subagents' && !enabled) {
+    return {
+      agentTeamsEnabled: false,
+      backgroundAgentsEnabled: false,
+      subagentsEnabled: false,
+    }
+  }
+
+  const enabledKey = agentCapabilityOptions.find((option) => option.id === capability)?.enabledKey
+  if (!enabledKey) {
+    return current
+  }
+  return { ...current, [enabledKey]: enabled }
+}
+
 function reasonMatchesCapability(
   reason: AgentCapabilityUnavailableReason,
   capability: (typeof agentCapabilityOptions)[number]['id'],
 ) {
-  if (reason.type === 'backgroundSupervisorUnavailable') {
-    return capability === 'backgroundAgents'
-  }
-
   return reason.capability === capability
 }
 
@@ -421,26 +440,7 @@ function formatUnavailableReason(
   reason: AgentCapabilityUnavailableReason,
   t: ReturnType<typeof useTranslation<'settings'>>['t'],
 ) {
-  switch (reason.type) {
-    case 'notCompiled':
-      return t('execution.agentCapabilities.unavailable.notCompiled')
-    case 'runtimeStoreUnavailable':
-      return t('execution.agentCapabilities.unavailable.runtimeStoreUnavailable', {
-        message: reason.message,
-      })
-    case 'permissionRuntimeUnavailable':
-      return t('execution.agentCapabilities.unavailable.permissionRuntimeUnavailable')
-    case 'invalidAgentProfiles':
-      return t('execution.agentCapabilities.unavailable.invalidAgentProfiles', {
-        message: reason.message,
-      })
-    case 'backgroundSupervisorUnavailable':
-      return t('execution.agentCapabilities.unavailable.backgroundSupervisorUnavailable', {
-        message: reason.message,
-      })
-    case 'workspaceIsolationUnavailable':
-      return t('execution.agentCapabilities.unavailable.workspaceIsolationUnavailable', {
-        message: reason.message,
-      })
-  }
+  return t('execution.agentCapabilities.unavailable.daemonUnavailable', {
+    message: reason.message,
+  })
 }

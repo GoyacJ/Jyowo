@@ -50,8 +50,8 @@ use jyowo_harness_sdk::testing::{
     InMemoryEventStore, InMemoryMemoryProvider, NoopSandbox, TestModelProvider,
 };
 use jyowo_harness_sdk::{
-    AgentCapabilityResolutionContext, ConversationEventsPageRequest, DesktopSettingsRuntime,
-    HarnessOptions, McpConfig, StreamPermissionRuntime,
+    ConversationEventsPageRequest, DesktopSettingsRuntime, HarnessOptions, McpConfig,
+    StreamPermissionRuntime,
 };
 use parking_lot::RwLock as ParkingRwLock;
 use serde_json::{json, Value};

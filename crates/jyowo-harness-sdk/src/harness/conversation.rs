@@ -583,12 +583,6 @@ impl Harness {
             cancelled = true;
         }
 
-        #[cfg(feature = "agents-team")]
-        if self.has_active_run_team(run_id) {
-            self.cancel_active_run_team(run_id).await?;
-            cancelled = true;
-        }
-
         if !cancelled {
             return Err(HarnessError::Session(SessionError::Message(format!(
                 "run is not active or cannot be cancelled through this facade: {run_id}"

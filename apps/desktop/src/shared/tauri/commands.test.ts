@@ -4768,7 +4768,7 @@ describe('CommandClient', () => {
 })
 
 describe('agent orchestration contracts', () => {
-  it('accepts all capability unavailable reason variants', () => {
+  it('accepts the daemon capability unavailable reason', () => {
     expect(
       parseAgentCapabilities({
         agentTeamsAvailable: false,
@@ -4778,38 +4778,15 @@ describe('agent orchestration contracts', () => {
         subagentsAvailable: false,
         subagentsEnabled: true,
         unavailableReasons: [
-          { capability: 'subagents', type: 'notCompiled' },
           {
             capability: 'subagents',
-            type: 'runtimeStoreUnavailable',
-            message: 'open failed',
-          },
-          { capability: 'agentTeams', type: 'permissionRuntimeUnavailable' },
-          {
-            capability: 'agentTeams',
-            type: 'invalidAgentProfiles',
-            message: 'bad profile',
-          },
-          {
-            message: 'supervisor missing',
-            type: 'backgroundSupervisorUnavailable',
-          },
-          {
-            capability: 'backgroundAgents',
-            message: 'worktree unavailable',
-            type: 'workspaceIsolationUnavailable',
+            type: 'daemonUnavailable',
+            message: 'task daemon is unavailable',
           },
         ],
       }),
     ).toMatchObject({
-      unavailableReasons: [
-        { type: 'notCompiled' },
-        { type: 'runtimeStoreUnavailable' },
-        { type: 'permissionRuntimeUnavailable' },
-        { type: 'invalidAgentProfiles' },
-        { type: 'backgroundSupervisorUnavailable' },
-        { type: 'workspaceIsolationUnavailable' },
-      ],
+      unavailableReasons: [{ type: 'daemonUnavailable' }],
     })
   })
 

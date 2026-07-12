@@ -25,6 +25,7 @@ impl RunCoordinatorFactory for IdleRunFactory {
         _request: StartSegmentRequest,
         _workspace_tools: harness_daemon::WorkspaceToolDispatcher,
         _subagent_runner: Arc<dyn harness_subagent::SubagentRunner>,
+        _agent_starters: harness_daemon::AgentStarterCapabilities,
     ) -> RunningSegment {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         std::mem::forget(sender);
@@ -58,6 +59,7 @@ impl RunCoordinatorFactory for ControlledRunFactory {
         request: StartSegmentRequest,
         _workspace_tools: harness_daemon::WorkspaceToolDispatcher,
         _subagent_runner: Arc<dyn harness_subagent::SubagentRunner>,
+        _agent_starters: harness_daemon::AgentStarterCapabilities,
     ) -> RunningSegment {
         let control = RunControlHandle::new();
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -127,3 +129,5 @@ fn create(request_id: &str, command_id: CommandId, key: &str) -> ClientFrame {
 
 #[path = "ipc/ipc_cases.rs"]
 mod ipc_cases;
+#[path = "ipc/ipc_task_and_transport_cases.rs"]
+mod ipc_task_and_transport_cases;

@@ -163,6 +163,10 @@ impl DaemonBridgeState {
             .clone()
             .ok_or_else(|| "task daemon is not connected".into())
     }
+
+    pub async fn agent_capabilities(&self) -> Option<harness_contracts::AgentCapabilities> {
+        self.client.read().await.as_ref()?.agent_capabilities()
+    }
 }
 
 #[tauri::command]

@@ -141,17 +141,6 @@ impl Harness {
         }
         features
     }
-
-    #[must_use]
-    pub fn resolve_agent_capabilities(
-        &self,
-        context: crate::AgentCapabilityResolutionContext,
-    ) -> harness_agent_runtime::ResolvedAgentCapabilityPolicy {
-        crate::agent_runtime::resolve_agent_capabilities_with_context(
-            &self.inner.options.workspace_root,
-            context,
-        )
-    }
 }
 
 fn compiled_features() -> Vec<&'static str> {
