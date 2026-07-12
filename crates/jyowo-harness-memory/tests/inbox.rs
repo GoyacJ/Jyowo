@@ -200,7 +200,12 @@ fn candidate_promotion_rechecks_policy_in_its_write_transaction() {
         },
     );
 
-    assert!(result.is_err());
+    assert!(matches!(
+        result,
+        Err(harness_memory::MemoryCandidateMutationError::PolicyDenied(
+            _
+        ))
+    ));
     assert_eq!(
         inbox.list(None).unwrap()[0].state,
         MemoryCandidateState::Proposed
@@ -223,15 +228,25 @@ fn candidate_merge_rechecks_policy_in_its_write_transaction() {
     let mut global = settings.get_global(TenantId::SINGLE).unwrap();
     global.generate_memories = false;
     settings.update_global(TenantId::SINGLE, global).unwrap();
+    let merged_evidence = harness_memory::derive_merged_candidate_evidence(
+        &[first.clone(), second.clone()],
+        "merged",
+    )
+    .unwrap();
 
     let result = inbox.merge_into_memory(
         &[first.id, second.id],
-        &make_record("merged", evidence),
+        &make_record("merged", merged_evidence),
         &MemoryActor::User { user_label: None },
         &manual_permission(),
     );
 
-    assert!(result.is_err());
+    assert!(matches!(
+        result,
+        Err(harness_memory::MemoryCandidateMutationError::PolicyDenied(
+            _
+        ))
+    ));
     assert!(inbox
         .list(None)
         .unwrap()

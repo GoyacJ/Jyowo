@@ -10,8 +10,9 @@ use std::sync::Mutex;
 use chrono::Utc;
 use harness_contracts::{
     MemoryActor, MemoryActorContext, MemoryCandidate, MemoryCandidateId, MemoryCandidateOperation,
-    MemoryCandidateState, MemoryEvidence, MemoryId, MemoryKind, MemoryPermissionContext,
-    MemoryPolicyDecision, MemoryRecordDraft, MemorySource, MemoryVisibility, SessionId, TenantId,
+    MemoryCandidateState, MemoryEvidence, MemoryEvidenceOrigin, MemoryId, MemoryKind,
+    MemoryPermissionContext, MemoryPolicyDecision, MemoryRecordDraft, MemorySource,
+    MemoryVisibility, SessionId, TenantId,
 };
 use rusqlite::{Connection, TransactionBehavior};
 use thiserror::Error;
@@ -224,7 +225,8 @@ impl MemoryInbox {
                 .map_err(MemoryCandidateMutationError::Store)?;
             candidates.push(candidate);
         }
-        let evidence = authoritative_candidate_evidence(&candidates)?;
+        let evidence = derive_merged_candidate_evidence(&candidates, &record.content)
+            .map_err(MemoryCandidateMutationError::Invalid)?;
         if record.metadata.evidence.as_ref() != Some(&evidence)
             || record.metadata.source != evidence.source
         {
@@ -631,24 +633,154 @@ fn policy_in_transaction(
     Ok((MemoryPolicyEngine::new(global), thread))
 }
 
-fn authoritative_candidate_evidence(
+pub fn derive_merged_candidate_evidence(
     candidates: &[MemoryCandidate],
-) -> Result<MemoryEvidence, MemoryCandidateMutationError> {
+    merged_content: &str,
+) -> Result<MemoryEvidence, String> {
     let evidence = candidates
         .first()
         .map(|candidate| candidate.evidence.clone())
-        .ok_or_else(|| {
-            MemoryCandidateMutationError::Invalid("merge candidates are missing".to_owned())
-        })?;
-    if candidates
-        .iter()
-        .any(|candidate| candidate.evidence != evidence)
-    {
-        return Err(MemoryCandidateMutationError::Invalid(
-            "merge candidates must have identical authoritative evidence".to_owned(),
-        ));
+        .ok_or_else(|| "merge candidates are missing".to_owned())?;
+    let tenant_id = candidates[0].tenant_id;
+    if candidates.iter().any(|candidate| {
+        candidate.tenant_id != tenant_id
+            || !evidence_provenance_compatible(&evidence, &candidate.evidence)
+    }) {
+        return Err("merge candidates have incompatible authoritative provenance".to_owned());
     }
-    Ok(evidence)
+    let mut merged = evidence;
+    merged.content_hash =
+        harness_contracts::ContentHash(*blake3::hash(merged_content.as_bytes()).as_bytes());
+    Ok(merged)
+}
+
+fn evidence_provenance_compatible(left: &MemoryEvidence, right: &MemoryEvidence) -> bool {
+    left.source == right.source
+        && left.session_id == right.session_id
+        && left.run_id == right.run_id
+        && origin_provenance_compatible(&left.origin, &right.origin)
+}
+
+fn origin_provenance_compatible(left: &MemoryEvidenceOrigin, right: &MemoryEvidenceOrigin) -> bool {
+    match (left, right) {
+        (
+            MemoryEvidenceOrigin::UserMessage {
+                session_id: left_session,
+                run_id: left_run,
+                ..
+            },
+            MemoryEvidenceOrigin::UserMessage {
+                session_id: right_session,
+                run_id: right_run,
+                ..
+            },
+        )
+        | (
+            MemoryEvidenceOrigin::AssistantMessage {
+                session_id: left_session,
+                run_id: left_run,
+                ..
+            },
+            MemoryEvidenceOrigin::AssistantMessage {
+                session_id: right_session,
+                run_id: right_run,
+                ..
+            },
+        ) => left_session == right_session && left_run == right_run,
+        (
+            MemoryEvidenceOrigin::SubagentOutput {
+                parent_session_id: left_parent,
+                child_session_id: left_child,
+                run_id: left_run,
+                agent_id: left_agent,
+            },
+            MemoryEvidenceOrigin::SubagentOutput {
+                parent_session_id: right_parent,
+                child_session_id: right_child,
+                run_id: right_run,
+                agent_id: right_agent,
+            },
+        ) => {
+            left_parent == right_parent
+                && left_child == right_child
+                && left_run == right_run
+                && left_agent == right_agent
+        }
+        (
+            MemoryEvidenceOrigin::BuiltinToolOutput {
+                tool_name: left_tool,
+                ..
+            },
+            MemoryEvidenceOrigin::BuiltinToolOutput {
+                tool_name: right_tool,
+                ..
+            },
+        ) => left_tool == right_tool,
+        (
+            MemoryEvidenceOrigin::McpToolOutput {
+                server_id: left_server,
+                tool_name: left_tool,
+                ..
+            },
+            MemoryEvidenceOrigin::McpToolOutput {
+                server_id: right_server,
+                tool_name: right_tool,
+                ..
+            },
+        ) => left_server == right_server && left_tool == right_tool,
+        (
+            MemoryEvidenceOrigin::PluginOutput {
+                plugin_id: left_plugin,
+                tool_name: left_tool,
+                ..
+            },
+            MemoryEvidenceOrigin::PluginOutput {
+                plugin_id: right_plugin,
+                tool_name: right_tool,
+                ..
+            },
+        ) => left_plugin == right_plugin && left_tool == right_tool,
+        (
+            MemoryEvidenceOrigin::WebRetrieval {
+                url_hash: left_url, ..
+            },
+            MemoryEvidenceOrigin::WebRetrieval {
+                url_hash: right_url,
+                ..
+            },
+        ) => left_url == right_url,
+        (
+            MemoryEvidenceOrigin::WorkspaceFile {
+                workspace_id: left_workspace,
+                path_hash: left_path,
+                snapshot_id: left_snapshot,
+            },
+            MemoryEvidenceOrigin::WorkspaceFile {
+                workspace_id: right_workspace,
+                path_hash: right_path,
+                snapshot_id: right_snapshot,
+            },
+        ) => {
+            left_workspace == right_workspace
+                && left_path == right_path
+                && left_snapshot == right_snapshot
+        }
+        (
+            MemoryEvidenceOrigin::Imported {
+                importer: left_importer,
+                import_id: left_id,
+            },
+            MemoryEvidenceOrigin::Imported {
+                importer: right_importer,
+                import_id: right_id,
+            },
+        ) => left_importer == right_importer && left_id == right_id,
+        (
+            MemoryEvidenceOrigin::Consolidated { from: left_from },
+            MemoryEvidenceOrigin::Consolidated { from: right_from },
+        ) => left_from == right_from,
+        _ => false,
+    }
 }
 
 fn read_visible_memory_visibility(

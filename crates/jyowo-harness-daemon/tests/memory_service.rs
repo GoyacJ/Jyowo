@@ -7,7 +7,7 @@ use harness_contracts::{
     ListMemoryRecallTracesRequest, MemoryCandidateId, MemoryCandidateOperation, MemoryEvidence,
     MemoryEvidenceOrigin, MemoryGlobalSettings, MemoryKind, MemoryModelRequestPreview,
     MemoryModelRequestPreviewSection, MemoryRecordDraft, MemorySource, MemoryThreadMode,
-    MemoryThreadSettings, MemoryTraceId, MemoryVisibility, MergeMemoryCandidateRequest,
+    MemoryThreadSettings, MemoryTraceId, MemoryVisibility, MergeMemoryCandidateRequest, MessageId,
     RejectMemoryCandidateRequest, RunId, ServerMessage, SessionId, TenantId,
     UpdateMemorySettingsRequest, UpdateThreadMemorySettingsRequest,
 };
@@ -471,7 +471,7 @@ async fn explicit_memory_mutations_accept_action_plan_context() {
                 tenant_id: TenantId::SINGLE,
                 candidate_ids: vec![merge_one.id, merge_two.id],
                 merged_record: candidate_draft("merged"),
-                evidence: candidate_evidence(),
+                evidence: merged_evidence_claim(candidate_evidence(), "merged"),
                 action_plan_id: Some(action_plan_id),
             },
         })
@@ -582,7 +582,7 @@ async fn action_plan_context_does_not_bypass_memory_policy() {
                 tenant_id: TenantId::SINGLE,
                 candidate_ids: vec![merge_one.id, merge_two.id],
                 merged_record: candidate_draft("denied merge"),
-                evidence: candidate_evidence(),
+                evidence: merged_evidence_claim(candidate_evidence(), "denied merge"),
                 action_plan_id: Some(action_plan_id),
             },
         })
@@ -798,6 +798,152 @@ async fn candidate_merge_rejects_forged_evidence_without_writing_memory() {
                 candidate_ids: vec![first.id, second.id],
                 merged_record: candidate_draft("forged merge"),
                 evidence: candidate_evidence(),
+                action_plan_id: None,
+            },
+        })
+        .await;
+
+    assert!(matches!(result, Err(MemoryServiceError::Invalid(_))));
+    let provider = LocalMemoryProvider::open(&db_path.to_string_lossy(), TenantId::SINGLE)
+        .expect("local provider");
+    assert!(provider
+        .list(harness_memory::MemoryListScope::All)
+        .await
+        .expect("list memories")
+        .is_empty());
+    assert!(inbox
+        .list(None)
+        .expect("candidates remain")
+        .iter()
+        .all(|candidate| candidate.state == harness_contracts::MemoryCandidateState::Proposed));
+}
+
+#[tokio::test]
+async fn candidate_merge_accepts_same_run_with_different_messages_and_hashes() {
+    let fixture = Fixture::new();
+    let db_path = fixture
+        .service
+        .database_path(Some(&fixture.workspace))
+        .expect("workspace database");
+    let inbox = MemoryInbox::open(&db_path.to_string_lossy(), TenantId::SINGLE).expect("inbox");
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let first_evidence = run_candidate_evidence(session_id, run_id, MessageId::new(), 1);
+    let second_evidence = run_candidate_evidence(session_id, run_id, MessageId::new(), 2);
+    let first = inbox
+        .propose(candidate_draft("first"), first_evidence.clone())
+        .expect("first candidate");
+    let second = inbox
+        .propose(candidate_draft("second"), second_evidence)
+        .expect("second candidate");
+    let merged_content = "merged from two messages";
+    let claimed = merged_evidence_claim(first_evidence, merged_content);
+
+    let result = fixture
+        .service
+        .handle(ClientRequest::MergeMemoryCandidate {
+            workspace_root: Some(fixture.workspace_string()),
+            request: MergeMemoryCandidateRequest {
+                tenant_id: TenantId::SINGLE,
+                candidate_ids: vec![first.id, second.id],
+                merged_record: candidate_draft(merged_content),
+                evidence: claimed,
+                action_plan_id: None,
+            },
+        })
+        .await;
+
+    assert!(matches!(
+        result,
+        Ok(ServerMessage::MemoryCandidatesMerged(_))
+    ));
+}
+
+#[tokio::test]
+async fn candidate_merge_persists_hash_of_merged_content() {
+    let fixture = Fixture::new();
+    let db_path = fixture
+        .service
+        .database_path(Some(&fixture.workspace))
+        .expect("workspace database");
+    let inbox = MemoryInbox::open(&db_path.to_string_lossy(), TenantId::SINGLE).expect("inbox");
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let evidence = run_candidate_evidence(session_id, run_id, MessageId::new(), 3);
+    let first = inbox
+        .propose(candidate_draft("first"), evidence.clone())
+        .expect("first candidate");
+    let second = inbox
+        .propose(
+            candidate_draft("second"),
+            run_candidate_evidence(session_id, run_id, MessageId::new(), 4),
+        )
+        .expect("second candidate");
+    let merged_content = "authoritative merged content";
+    let expected_hash = ContentHash(*blake3::hash(merged_content.as_bytes()).as_bytes());
+
+    let response = fixture
+        .service
+        .handle(ClientRequest::MergeMemoryCandidate {
+            workspace_root: Some(fixture.workspace_string()),
+            request: MergeMemoryCandidateRequest {
+                tenant_id: TenantId::SINGLE,
+                candidate_ids: vec![first.id, second.id],
+                merged_record: candidate_draft(merged_content),
+                evidence: merged_evidence_claim(evidence, merged_content),
+                action_plan_id: None,
+            },
+        })
+        .await
+        .expect("merge candidates");
+    let ServerMessage::MemoryCandidatesMerged(response) = response else {
+        panic!("expected merged candidates response");
+    };
+    let provider = LocalMemoryProvider::open(&db_path.to_string_lossy(), TenantId::SINGLE)
+        .expect("local provider");
+    let record = provider
+        .get(response.memory_id)
+        .await
+        .expect("merged memory");
+
+    assert_eq!(
+        record
+            .metadata
+            .evidence
+            .expect("merged evidence")
+            .content_hash,
+        expected_hash
+    );
+}
+
+#[tokio::test]
+async fn candidate_merge_rejects_incompatible_provenance_without_writing() {
+    let fixture = Fixture::new();
+    let db_path = fixture
+        .service
+        .database_path(Some(&fixture.workspace))
+        .expect("workspace database");
+    let inbox = MemoryInbox::open(&db_path.to_string_lossy(), TenantId::SINGLE).expect("inbox");
+    let session_id = SessionId::new();
+    let first_evidence = run_candidate_evidence(session_id, RunId::new(), MessageId::new(), 5);
+    let second_evidence = run_candidate_evidence(session_id, RunId::new(), MessageId::new(), 6);
+    let first = inbox
+        .propose(candidate_draft("first"), first_evidence.clone())
+        .expect("first candidate");
+    let second = inbox
+        .propose(candidate_draft("second"), second_evidence)
+        .expect("second candidate");
+    let merged_content = "must not be written";
+
+    let result = fixture
+        .service
+        .handle(ClientRequest::MergeMemoryCandidate {
+            workspace_root: Some(fixture.workspace_string()),
+            request: MergeMemoryCandidateRequest {
+                tenant_id: TenantId::SINGLE,
+                candidate_ids: vec![first.id, second.id],
+                merged_record: candidate_draft(merged_content),
+                evidence: merged_evidence_claim(first_evidence, merged_content),
                 action_plan_id: None,
             },
         })
@@ -1319,7 +1465,7 @@ async fn candidate_merge_rolls_back_all_writes_when_one_transition_fails() {
                 tenant_id: TenantId::SINGLE,
                 candidate_ids: vec![first.id, second.id],
                 merged_record: candidate_draft("atomic merge"),
-                evidence: candidate_evidence(),
+                evidence: merged_evidence_claim(candidate_evidence(), "atomic merge"),
                 action_plan_id: None,
             },
         })
@@ -1482,6 +1628,32 @@ fn external_candidate_evidence() -> MemoryEvidence {
         message_id: None,
         tool_use_id: None,
     }
+}
+
+fn run_candidate_evidence(
+    session_id: SessionId,
+    run_id: RunId,
+    message_id: MessageId,
+    hash_byte: u8,
+) -> MemoryEvidence {
+    MemoryEvidence {
+        source: MemorySource::AgentDerived,
+        origin: MemoryEvidenceOrigin::AssistantMessage {
+            session_id,
+            run_id,
+            message_id,
+        },
+        content_hash: ContentHash([hash_byte; 32]),
+        session_id: Some(session_id),
+        run_id: Some(run_id),
+        message_id: Some(message_id),
+        tool_use_id: None,
+    }
+}
+
+fn merged_evidence_claim(mut evidence: MemoryEvidence, merged_content: &str) -> MemoryEvidence {
+    evidence.content_hash = ContentHash(*blake3::hash(merged_content.as_bytes()).as_bytes());
+    evidence
 }
 
 async fn assert_invalid_merge_content(content: &str) {

@@ -14,9 +14,9 @@ use harness_contracts::{
     UpdateThreadMemorySettingsResponse,
 };
 use harness_memory::{
-    default_thread_settings, local::LocalMemoryProvider, MemoryCandidateMutationError, MemoryInbox,
-    MemoryListScope, MemoryMetadata, MemoryPolicyEngine, MemoryRecallTraceCollector, MemoryRecord,
-    MemorySettingsStore, MemoryStore,
+    default_thread_settings, derive_merged_candidate_evidence, local::LocalMemoryProvider,
+    MemoryCandidateMutationError, MemoryInbox, MemoryListScope, MemoryMetadata, MemoryPolicyEngine,
+    MemoryRecallTraceCollector, MemoryRecord, MemorySettingsStore, MemoryStore,
 };
 use thiserror::Error;
 
@@ -298,7 +298,11 @@ impl MemoryService {
                     }
                     candidates.push(candidate);
                 }
-                let evidence = authoritative_merge_evidence(&candidates, &request.evidence)?;
+                let evidence = authoritative_merge_evidence(
+                    &candidates,
+                    &request.evidence,
+                    &request.merged_record.content,
+                )?;
                 let now = Utc::now();
                 let record = MemoryRecord {
                     id: MemoryId::new(),
@@ -458,19 +462,10 @@ fn validate_memory_content(content: &str) -> Result<(), MemoryServiceError> {
 fn authoritative_merge_evidence(
     candidates: &[MemoryCandidate],
     claimed: &MemoryEvidence,
+    merged_content: &str,
 ) -> Result<MemoryEvidence, MemoryServiceError> {
-    let authoritative = candidates
-        .first()
-        .map(|candidate| candidate.evidence.clone())
-        .ok_or_else(|| MemoryServiceError::Invalid("merge candidates are missing".to_owned()))?;
-    if candidates
-        .iter()
-        .any(|candidate| candidate.evidence != authoritative)
-    {
-        return Err(MemoryServiceError::Invalid(
-            "merge candidates must have identical authoritative evidence".to_owned(),
-        ));
-    }
+    let authoritative = derive_merged_candidate_evidence(candidates, merged_content)
+        .map_err(MemoryServiceError::Invalid)?;
     if claimed != &authoritative {
         return Err(MemoryServiceError::Invalid(
             "merge evidence does not match authoritative candidate evidence".to_owned(),
