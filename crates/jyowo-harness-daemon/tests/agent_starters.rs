@@ -12,9 +12,10 @@ use harness_contracts::{
     ToolProfile, ToolSearchMode, ToolUseId, TurnInput, WorkspaceMode,
 };
 use harness_daemon::{
-    DaemonAgentStarter, SubagentParentBinding, SubagentSupervisor, WorkspaceAccess,
-    WorkspaceCoordinator, WorkspaceExecutionKind, WorkspaceLeaseRequest,
-    WorkspaceSubagentRunContext, WorkspaceSubagentRunnerFactory,
+    AgentStarterCapabilities, DaemonAgentStarter, RunCoordinatorFactory, RunningSegment,
+    StartSegmentRequest, SubagentParentBinding, SubagentSupervisor, Supervisor, SupervisorQuotas,
+    WorkspaceAccess, WorkspaceCoordinator, WorkspaceExecutionKind, WorkspaceLeaseRequest,
+    WorkspaceSubagentRunContext, WorkspaceSubagentRunnerFactory, WorkspaceToolDispatcher,
 };
 use harness_journal::{
     AcceptedCommand, CommandOutcome, EventStore, NewTaskEvent, ReplayCursor, TaskEventStoreAdapter,
@@ -29,6 +30,21 @@ use tokio::sync::Semaphore;
 struct BlockingRunner {
     started: Semaphore,
     release: Semaphore,
+}
+
+struct IdleFactory;
+
+impl RunCoordinatorFactory for IdleFactory {
+    fn spawn_idempotent(
+        &self,
+        _request: StartSegmentRequest,
+        _workspace_tools: WorkspaceToolDispatcher,
+        _subagent_runner: Arc<dyn SubagentRunner>,
+        _agent_starters: AgentStarterCapabilities,
+    ) -> RunningSegment {
+        let (_sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        RunningSegment::new(receiver)
+    }
 }
 
 impl BlockingRunner {
@@ -251,6 +267,85 @@ async fn team_starter_validates_before_side_effects_and_enforces_one_active_team
     );
     fixture.runner.wait_started(2).await;
     fixture.runner.release.add_permits(2);
+}
+
+#[tokio::test]
+async fn daemon_restart_recovers_background_and_team_child_projections() {
+    let background = Fixture::new();
+    let response = background
+        .starter
+        .start_background_agent(background_request(background.session_id))
+        .await
+        .expect("background child should start");
+    background.runner.wait_started(1).await;
+    let child_task_id = response.background_agent_id.parse::<TaskId>().unwrap();
+    let _restarted = Supervisor::start(
+        Arc::clone(&background.store),
+        Arc::new(IdleFactory),
+        SupervisorQuotas::new(1, 8),
+    )
+    .expect("daemon restart should recover detached children");
+    let child = background
+        .store
+        .task_projection(background.parent_task_id)
+        .unwrap()
+        .unwrap()
+        .subagents
+        .into_iter()
+        .find(|child| child.child_task_id == child_task_id)
+        .unwrap();
+    assert_eq!(child.state, SubagentActorState::Failed);
+    assert!(child.detached);
+    background.runner.release.add_permits(1);
+
+    let team = Fixture::new();
+    let response = team
+        .starter
+        .start_agent_team(team_request(team.session_id))
+        .await
+        .expect("team should start");
+    team.runner.wait_started(2).await;
+    let _restarted = Supervisor::start(
+        Arc::clone(&team.store),
+        Arc::new(IdleFactory),
+        SupervisorQuotas::new(1, 8),
+    )
+    .expect("daemon restart should recover team members");
+    let parent = team
+        .store
+        .task_projection(team.parent_task_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(parent.subagents.len(), 2);
+    assert!(parent
+        .subagents
+        .iter()
+        .all(|child| child.state == SubagentActorState::Failed && child.detached));
+
+    let event_store = TaskEventStoreAdapter::new(
+        Arc::clone(&team.store),
+        team.parent_task_id,
+        TenantId::SINGLE,
+        team.session_id,
+        Arc::new(harness_contracts::NoopRedactor),
+    );
+    let events = event_store
+        .read_envelopes(TenantId::SINGLE, team.session_id, ReplayCursor::FromStart)
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.iter().any(
+        |event| matches!(&event.payload, Event::TeamCreated(created) if created.team_id == response.team_id)
+    ));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(&event.payload, Event::TeamMemberJoined(joined) if joined.team_id == response.team_id))
+            .count(),
+        2
+    );
+    team.runner.release.add_permits(2);
 }
 
 fn background_request(session_id: SessionId) -> BackgroundAgentToolStartRequest {

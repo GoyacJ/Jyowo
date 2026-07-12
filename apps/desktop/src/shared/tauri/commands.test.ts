@@ -4782,9 +4782,7 @@ describe('agent orchestration contracts', () => {
         ],
       }),
     ).toMatchObject({
-      unavailableReasons: [
-        { type: 'daemonUnavailable' },
-      ],
+      unavailableReasons: [{ type: 'daemonUnavailable' }],
     })
   })
 

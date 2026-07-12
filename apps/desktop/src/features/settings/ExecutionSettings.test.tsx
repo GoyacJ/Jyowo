@@ -267,8 +267,12 @@ describe('ExecutionSettings', () => {
     )
 
     expect(await screen.findByRole('switch', { name: 'Subagents' })).toBeChecked()
+    expect(screen.getByRole('switch', { name: 'Subagents' })).toBeEnabled()
     expect(screen.getByRole('switch', { name: 'Agent teams' })).toBeChecked()
+    expect(screen.getByRole('switch', { name: 'Agent teams' })).toBeEnabled()
     expect(screen.getByRole('switch', { name: 'Background agents' })).toBeChecked()
+    expect(screen.getByRole('switch', { name: 'Background agents' })).toBeEnabled()
+    expect(screen.queryByText(/Task daemon unavailable/i)).not.toBeInTheDocument()
   })
 
   it('disables unavailable agent switches and renders backend reasons', async () => {

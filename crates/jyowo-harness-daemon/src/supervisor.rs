@@ -870,7 +870,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn supervisor_start_terminates_unreconnectable_children_and_releases_their_lease() {
+    async fn supervisor_start_recovers_detached_children_and_releases_their_lease() {
         let root = tempfile::tempdir().unwrap();
         let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
         let parent_task_id = TaskId::new();
@@ -976,6 +976,22 @@ mod tests {
                 },
             })
             .unwrap();
+        store
+            .apply_subagent_lifecycle(SubagentLifecycleCommand {
+                parent_task_id,
+                child_task_id,
+                actor_id: child_actor_id,
+                authority: SubagentLifecycleAuthority::Supervisor,
+                transition: SubagentLifecycleTransition::Background,
+            })
+            .unwrap();
+        let detached = &store
+            .task_projection(parent_task_id)
+            .unwrap()
+            .unwrap()
+            .subagents[0];
+        assert_eq!(detached.state, SubagentActorState::Background);
+        assert!(detached.detached);
 
         let _supervisor = Supervisor::start(
             Arc::clone(&store),
@@ -990,6 +1006,7 @@ mod tests {
             .unwrap()
             .subagents[0];
         assert_eq!(child.state, SubagentActorState::Failed);
+        assert!(child.detached);
         assert_eq!(
             store.workspace_lease(lease_id).unwrap().unwrap().state,
             TaskWorkspaceLeaseState::Released
