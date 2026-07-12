@@ -1,21 +1,45 @@
 use harness_contracts::{
-    validate_agent_profile, validate_agent_tool_policy, AgentCapabilitiesPayload,
-    AgentCapabilityKind, AgentCapabilityUnavailableReason, AgentOrchestrationValidationError,
-    AgentProfile, AgentProfileContextMode, AgentProfileMemoryScope, AgentProfileModelOverride,
-    AgentProfileSandboxInheritance, AgentProfileScope, AgentTeamRunConfig,
-    AgentTeamSharedMemoryPolicy, AgentTeamTopology, AgentToolPolicy, AgentUsePolicy,
-    AgentWorkspaceIsolationMode, BackgroundAgentArchivedEvent, BackgroundAgentCancelledEvent,
-    BackgroundAgentCompletedEvent, BackgroundAgentDeletedEvent, BackgroundAgentFailedEvent,
-    BackgroundAgentId, BackgroundAgentInputRequestedEvent, BackgroundAgentInputSubmittedEvent,
-    BackgroundAgentInterruptedEvent, BackgroundAgentPermissionRequestedEvent,
-    BackgroundAgentPermissionResolvedEvent, BackgroundAgentStartedEvent, BackgroundAgentState,
-    BackgroundAgentStateChangedEvent, Decision, Event, RequestId, RunId, SessionId, TenantId,
-    UiSafeText,
+    validate_agent_profile, validate_agent_tool_policy, validate_execution_defaults_dependencies,
+    AgentCapabilitiesPayload, AgentCapabilityKind, AgentCapabilityUnavailableReason,
+    AgentOrchestrationValidationError, AgentProfile, AgentProfileContextMode,
+    AgentProfileMemoryScope, AgentProfileModelOverride, AgentProfileSandboxInheritance,
+    AgentProfileScope, AgentTeamRunConfig, AgentTeamSharedMemoryPolicy, AgentTeamTopology,
+    AgentToolPolicy, AgentUsePolicy, AgentWorkspaceIsolationMode, BackgroundAgentArchivedEvent,
+    BackgroundAgentCancelledEvent, BackgroundAgentCompletedEvent, BackgroundAgentDeletedEvent,
+    BackgroundAgentFailedEvent, BackgroundAgentId, BackgroundAgentInputRequestedEvent,
+    BackgroundAgentInputSubmittedEvent, BackgroundAgentInterruptedEvent,
+    BackgroundAgentPermissionRequestedEvent, BackgroundAgentPermissionResolvedEvent,
+    BackgroundAgentStartedEvent, BackgroundAgentState, BackgroundAgentStateChangedEvent, Decision,
+    Event, RequestId, RunId, SessionId, TenantId, UiSafeText,
 };
 use serde_json::json;
 
 fn ui(value: &str) -> UiSafeText {
     UiSafeText::from_trusted_redacted(value)
+}
+
+#[test]
+fn execution_defaults_require_subagents_for_dependent_capabilities() {
+    for record in [
+        harness_contracts::ExecutionDefaultsRecord {
+            agent_teams_enabled: true,
+            ..Default::default()
+        },
+        harness_contracts::ExecutionDefaultsRecord {
+            background_agents_enabled: true,
+            ..Default::default()
+        },
+    ] {
+        assert!(validate_execution_defaults_dependencies(&record).is_err());
+    }
+
+    validate_execution_defaults_dependencies(&harness_contracts::ExecutionDefaultsRecord {
+        subagents_enabled: true,
+        agent_teams_enabled: true,
+        background_agents_enabled: true,
+        ..Default::default()
+    })
+    .expect("subagent-backed capabilities should validate");
 }
 
 #[test]

@@ -250,7 +250,9 @@ export function ExecutionSettings() {
               {agentCapabilityOptions.map((option) => {
                 const checked = agentCapabilities[option.enabledKey]
                 const available = agentCapabilities[option.availableKey]
-                const disabled = saving || !available
+                const dependencyUnavailable =
+                  option.id !== 'subagents' && !agentCapabilities.subagentsEnabled
+                const disabled = saving || !available || dependencyUnavailable
                 const reasons = agentCapabilities.unavailableReasons.filter((reason) =>
                   reasonMatchesCapability(reason, option.id),
                 )
@@ -283,13 +285,14 @@ export function ExecutionSettings() {
                       disabled={disabled}
                       id={`execution-${option.id}`}
                       onCheckedChange={(nextEnabled) => {
-                        const nextAgentCapabilitySettings = {
-                          ...getAgentCapabilitySettings(agentCapabilities),
-                          [option.enabledKey]: nextEnabled,
-                        }
+                        const nextAgentCapabilitySettings = updateAgentCapabilitySettings(
+                          getAgentCapabilitySettings(agentCapabilities),
+                          option.id,
+                          nextEnabled,
+                        )
                         setAgentCapabilities((current) => ({
                           ...current,
-                          [option.enabledKey]: nextEnabled,
+                          ...nextAgentCapabilitySettings,
                         }))
                         void saveSettings(
                           permissionMode,
@@ -404,6 +407,26 @@ function getAgentCapabilitySettings(agentCapabilities: AgentCapabilities): Agent
     backgroundAgentsEnabled: agentCapabilities.backgroundAgentsEnabled,
     subagentsEnabled: agentCapabilities.subagentsEnabled,
   }
+}
+
+function updateAgentCapabilitySettings(
+  current: AgentCapabilitySettings,
+  capability: (typeof agentCapabilityOptions)[number]['id'],
+  enabled: boolean,
+): AgentCapabilitySettings {
+  if (capability === 'subagents' && !enabled) {
+    return {
+      agentTeamsEnabled: false,
+      backgroundAgentsEnabled: false,
+      subagentsEnabled: false,
+    }
+  }
+
+  const enabledKey = agentCapabilityOptions.find((option) => option.id === capability)?.enabledKey
+  if (!enabledKey) {
+    return current
+  }
+  return { ...current, [enabledKey]: enabled }
 }
 
 function reasonMatchesCapability(

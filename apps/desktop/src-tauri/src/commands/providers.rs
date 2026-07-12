@@ -737,6 +737,8 @@ fn execution_settings_home_dir() -> PathBuf {
 pub(crate) fn ensure_execution_defaults_structure(
     record: &harness_contracts::ExecutionDefaultsRecord,
 ) -> Result<(), CommandErrorPayload> {
+    harness_contracts::validate_execution_defaults_dependencies(record)
+        .map_err(|error| invalid_payload(error.to_string()))?;
     match record.permission_mode {
         PermissionMode::Default | PermissionMode::Auto | PermissionMode::BypassPermissions => {
             Ok(())

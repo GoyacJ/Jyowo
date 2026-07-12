@@ -235,7 +235,7 @@ describe('ExecutionSettings', () => {
     expect(screen.queryByText('Project overrides')).not.toBeInTheDocument()
   })
 
-  it('renders available agent switches off', async () => {
+  it('renders available agent switches off with dependents disabled', async () => {
     uiStore.getState().setLocale('en-US')
 
     renderExecutionSettings(
@@ -246,9 +246,9 @@ describe('ExecutionSettings', () => {
 
     expect(await screen.findByRole('switch', { name: 'Subagents' })).toBeEnabled()
     expect(screen.getByRole('switch', { name: 'Subagents' })).not.toBeChecked()
-    expect(screen.getByRole('switch', { name: 'Agent teams' })).toBeEnabled()
+    expect(screen.getByRole('switch', { name: 'Agent teams' })).toBeDisabled()
     expect(screen.getByRole('switch', { name: 'Agent teams' })).not.toBeChecked()
-    expect(screen.getByRole('switch', { name: 'Background agents' })).toBeEnabled()
+    expect(screen.getByRole('switch', { name: 'Background agents' })).toBeDisabled()
     expect(screen.getByRole('switch', { name: 'Background agents' })).not.toBeChecked()
   })
 
@@ -322,6 +322,58 @@ describe('ExecutionSettings', () => {
       })
     })
     expect(screen.getByRole('switch', { name: 'Subagents' })).toBeChecked()
+  })
+
+  it('disabling subagents atomically disables dependent capabilities', async () => {
+    uiStore.getState().setLocale('en-US')
+
+    const enabledCapabilities = createAgentCapabilities({
+      ...availableAgentCapabilities,
+      agentTeamsEnabled: true,
+      backgroundAgentsEnabled: true,
+      subagentsEnabled: true,
+    })
+    const setExecutionSettings = vi.fn(async () =>
+      createExecutionSettings({
+        ...availableAgentCapabilities,
+        agentTeamsEnabled: false,
+        backgroundAgentsEnabled: false,
+        subagentsEnabled: false,
+      }),
+    )
+    const commandClient = {
+      ...createTestCommandClient(),
+      getExecutionSettings: async () => createExecutionSettings(enabledCapabilities),
+      setExecutionSettings,
+    } satisfies CommandClient
+
+    renderExecutionSettings(commandClient)
+    fireEvent.click(await screen.findByRole('switch', { name: 'Subagents' }))
+
+    await waitFor(() => {
+      expect(setExecutionSettings).toHaveBeenCalledWith({
+        agentTeamsEnabled: false,
+        backgroundAgentsEnabled: false,
+        contextCompressionTriggerRatio: 0.8,
+        permissionMode: 'default',
+        subagentsEnabled: false,
+        toolProfile: 'full',
+      })
+    })
+  })
+
+  it('keeps dependent capability switches disabled until subagents are enabled', async () => {
+    uiStore.getState().setLocale('en-US')
+
+    renderExecutionSettings(
+      createTestCommandClient({
+        executionSettings: createExecutionSettings(availableAgentCapabilities),
+      }),
+    )
+
+    expect(await screen.findByRole('switch', { name: 'Subagents' })).toBeEnabled()
+    expect(screen.getByRole('switch', { name: 'Agent teams' })).toBeDisabled()
+    expect(screen.getByRole('switch', { name: 'Background agents' })).toBeDisabled()
   })
 
   it('refetches backend truth and shows a safe error when saving agent switches fails', async () => {

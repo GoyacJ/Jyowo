@@ -277,6 +277,45 @@ fn set_execution_settings_rejects_unavailable_agent_capabilities() {
 }
 
 #[test]
+fn set_execution_settings_rejects_capabilities_without_subagents_before_persistence() {
+    let capabilities = harness_contracts::AgentCapabilities::daemon_native();
+
+    for (name, agent_teams_enabled, background_agents_enabled) in [
+        ("execution-settings-teams-require-subagents", true, false),
+        (
+            "execution-settings-background-requires-subagents",
+            false,
+            true,
+        ),
+    ] {
+        let workspace = unique_workspace(name);
+        std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+        let store = global_execution_settings_store(&workspace);
+        let settings_path = global_execution_settings_path(&workspace);
+
+        let error = set_execution_settings_with_store(
+            SetExecutionSettingsRequest {
+                permission_mode: PermissionMode::Default,
+                tool_profile: ToolProfile::Full,
+                context_compression_trigger_ratio: 0.8,
+                subagents_enabled: false,
+                agent_teams_enabled,
+                background_agents_enabled,
+            },
+            &store,
+            Some(&capabilities),
+        )
+        .expect_err("dependent capabilities should require subagents");
+
+        assert_eq!(error.code, "INVALID_PAYLOAD");
+        assert!(
+            !settings_path.exists(),
+            "invalid settings must not be persisted"
+        );
+    }
+}
+
+#[test]
 fn set_execution_settings_serializes_agent_capability_fields() {
     let workspace = unique_workspace("execution-settings-agent-capability-serialization");
     std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
