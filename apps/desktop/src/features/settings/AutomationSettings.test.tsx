@@ -5,14 +5,51 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
+import type { AutomationRunRecord, AutomationSpec } from '@/generated/daemon-protocol'
+import type { DaemonClient } from '@/shared/daemon/client'
 import { AppI18nProvider } from '@/shared/i18n/i18n'
-import type { AutomationSpec, CommandClient } from '@/shared/tauri/commands'
-import { CommandClientProvider } from '@/shared/tauri/react'
-import { createRejectedTestCommandClient, createTestCommandClient } from '@/testing/command-client'
+import { DaemonClientProvider } from '@/shared/tauri/react'
 
 import { AutomationSettings } from './AutomationSettings'
 
-function renderAutomationSettings(commandClient: CommandClient = createTestCommandClient()) {
+function createAutomationDaemonClient(
+  options: { automations?: AutomationSpec[]; error?: Error; runs?: AutomationRunRecord[] } = {},
+) {
+  const reject = options.error ? () => Promise.reject(options.error) : undefined
+  return {
+    deleteAutomation: vi.fn(async (_workspaceRoot, automationId) => ({
+      automationId,
+      type: 'automation_deleted' as const,
+    })),
+    listAutomationRuns:
+      reject ?? vi.fn(async () => ({ runs: options.runs ?? [], type: 'automation_runs' as const })),
+    listAutomations:
+      reject ??
+      vi.fn(async () => ({
+        automations: options.automations ?? [],
+        type: 'automations' as const,
+      })),
+    runAutomationNow: vi.fn(async (_workspaceRoot, automationId) => ({
+      run: {
+        automationId,
+        id: '01J00000000000000000000001',
+        startedAt: '2026-06-30T01:00:00Z',
+        status: 'started' as const,
+      },
+      type: 'automation_run' as const,
+    })),
+    saveAutomation: vi.fn(async (_workspaceRoot, record) => ({
+      automation: record,
+      type: 'automation_saved' as const,
+    })),
+    setAutomationEnabled: vi.fn(async (_workspaceRoot, automationId, enabled) => ({
+      automation: automation({ enabled, id: automationId }),
+      type: 'automation_enabled' as const,
+    })),
+  } as unknown as DaemonClient
+}
+
+function renderAutomationSettings(daemonClient: DaemonClient = createAutomationDaemonClient()) {
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -22,11 +59,11 @@ function renderAutomationSettings(commandClient: CommandClient = createTestComma
 
   function Wrapper({ children }: { children: ReactNode }) {
     return (
-      <CommandClientProvider client={commandClient}>
+      <DaemonClientProvider client={daemonClient}>
         <QueryClientProvider client={queryClient}>
           <AppI18nProvider>{children}</AppI18nProvider>
         </QueryClientProvider>
-      </CommandClientProvider>
+      </DaemonClientProvider>
     )
   }
 
@@ -54,16 +91,18 @@ function automation(overrides: Partial<AutomationSpec> = {}): AutomationSpec {
 describe('AutomationSettings', () => {
   it('renders loading state while automations load', () => {
     renderAutomationSettings({
-      ...createTestCommandClient(),
+      ...createAutomationDaemonClient(),
       listAutomations: vi.fn(() => new Promise<never>(() => undefined)),
-    })
+    } as DaemonClient)
 
     expect(screen.getByText('正在加载自动化任务。')).toBeInTheDocument()
   })
 
   it('renders sanitized error state when automations cannot load', async () => {
     renderAutomationSettings(
-      createRejectedTestCommandClient(new Error('Authorization=Bearer automation-secret-token')),
+      createAutomationDaemonClient({
+        error: new Error('Authorization=Bearer automation-secret-token'),
+      }),
     )
 
     expect(await screen.findByText('自动化任务无法加载。')).toBeInTheDocument()
@@ -71,24 +110,13 @@ describe('AutomationSettings', () => {
   })
 
   it('renders empty state when no automations exist', async () => {
-    renderAutomationSettings(
-      createTestCommandClient({
-        automationRuns: { runs: [] },
-        automations: { automations: [] },
-      }),
-    )
+    renderAutomationSettings(createAutomationDaemonClient())
 
     expect(await screen.findByText('暂无自动化任务。')).toBeInTheDocument()
   })
 
   it('shows global write controls when no project is active', async () => {
-    renderAutomationSettings(
-      createTestCommandClient({
-        automationRuns: { runs: [] },
-        automations: { automations: [] },
-        projects: { activePath: null, projects: [] },
-      }),
-    )
+    renderAutomationSettings(createAutomationDaemonClient())
 
     expect(await screen.findByLabelText('任务 ID')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '保存自动化任务' })).toBeInTheDocument()
@@ -97,17 +125,14 @@ describe('AutomationSettings', () => {
   })
 
   it('saves an automation without credentials or raw output', async () => {
-    const saveAutomation = vi.fn(async (request) => ({
-      automation: request.automation,
-      status: 'saved' as const,
+    const saveAutomation = vi.fn(async (_workspaceRoot, record) => ({
+      automation: record,
+      type: 'automation_saved' as const,
     }))
     const client = {
-      ...createTestCommandClient({
-        automationRuns: { runs: [] },
-        automations: { automations: [] },
-      }),
+      ...createAutomationDaemonClient(),
       saveAutomation,
-    } satisfies CommandClient
+    } as DaemonClient
 
     renderAutomationSettings(client)
 
@@ -120,8 +145,9 @@ describe('AutomationSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存自动化任务' }))
 
     await waitFor(() => {
-      expect(saveAutomation).toHaveBeenCalledWith({
-        automation: expect.objectContaining({
+      expect(saveAutomation).toHaveBeenCalledWith(
+        undefined,
+        expect.objectContaining({
           enabled: false,
           id: 'nightly',
           missedRunPolicy: 'run_once',
@@ -133,7 +159,7 @@ describe('AutomationSettings', () => {
           workspaceAccess: 'read_only',
           workspaceScope: 'current_workspace',
         }),
-      })
+      )
     })
     expect(JSON.stringify(saveAutomation.mock.calls)).not.toContain('token')
     expect(JSON.stringify(saveAutomation.mock.calls)).not.toContain('raw')
@@ -142,12 +168,9 @@ describe('AutomationSettings', () => {
   it('rejects secret-like prompts before saving', async () => {
     const saveAutomation = vi.fn()
     const client = {
-      ...createTestCommandClient({
-        automationRuns: { runs: [] },
-        automations: { automations: [] },
-      }),
+      ...createAutomationDaemonClient(),
       saveAutomation,
-    } satisfies CommandClient
+    } as DaemonClient
 
     renderAutomationSettings(client)
 
@@ -163,15 +186,12 @@ describe('AutomationSettings', () => {
 
   it('withholds secret-like prompts from saved automation cards', async () => {
     renderAutomationSettings(
-      createTestCommandClient({
-        automationRuns: { runs: [] },
-        automations: {
-          automations: [
-            automation({
-              prompt: 'Use token=automation-secret-123456',
-            }),
-          ],
-        },
+      createAutomationDaemonClient({
+        automations: [
+          automation({
+            prompt: 'Use token=automation-secret-123456',
+          }),
+        ],
       }),
     )
 
@@ -182,12 +202,12 @@ describe('AutomationSettings', () => {
   })
 
   it('toggles, runs, deletes, and displays recent records', async () => {
-    const setAutomationEnabled = vi.fn(async (id, enabled) => ({
+    const setAutomationEnabled = vi.fn(async (_workspaceRoot, id, enabled) => ({
       automation: automation({ enabled, id }),
-      status: 'saved' as const,
+      type: 'automation_enabled' as const,
     }))
-    const runAutomationNow = vi.fn(async (id) => ({
-      record: {
+    const runAutomationNow = vi.fn(async (_workspaceRoot, id) => ({
+      run: {
         automationId: id,
         completedAt: '2026-06-30T01:01:00Z',
         id: 'automation-run-002',
@@ -195,28 +215,30 @@ describe('AutomationSettings', () => {
         startedAt: '2026-06-30T01:00:00Z',
         status: 'rejected' as const,
       },
+      type: 'automation_run' as const,
     }))
-    const deleteAutomation = vi.fn(async (id) => ({ id, status: 'deleted' as const }))
+    const deleteAutomation = vi.fn(async (_workspaceRoot, automationId) => ({
+      automationId,
+      type: 'automation_deleted' as const,
+    }))
     const client = {
-      ...createTestCommandClient({
-        automationRuns: {
-          runs: [
-            {
-              automationId: 'checks',
-              completedAt: '2026-06-30T01:01:00Z',
-              id: 'automation-run-001',
-              message: 'Permission/profile snapshot is missing.',
-              startedAt: '2026-06-30T01:00:00Z',
-              status: 'rejected',
-            },
-          ],
-        },
-        automations: { automations: [automation()] },
+      ...createAutomationDaemonClient({
+        automations: [automation()],
+        runs: [
+          {
+            automationId: 'checks',
+            completedAt: '2026-06-30T01:01:00Z',
+            id: 'automation-run-001',
+            message: 'Permission/profile snapshot is missing.',
+            startedAt: '2026-06-30T01:00:00Z',
+            status: 'rejected',
+          },
+        ],
       }),
       deleteAutomation,
       runAutomationNow,
       setAutomationEnabled,
-    } satisfies CommandClient
+    } as DaemonClient
 
     renderAutomationSettings(client)
 
@@ -229,8 +251,10 @@ describe('AutomationSettings', () => {
     fireEvent.click(within(card).getByRole('button', { name: '立即运行 checks' }))
     fireEvent.click(within(card).getByRole('button', { name: '删除 checks' }))
 
-    await waitFor(() => expect(setAutomationEnabled).toHaveBeenCalledWith('checks', true))
-    await waitFor(() => expect(runAutomationNow).toHaveBeenCalledWith('checks'))
-    await waitFor(() => expect(deleteAutomation).toHaveBeenCalledWith('checks'))
+    await waitFor(() =>
+      expect(setAutomationEnabled).toHaveBeenCalledWith(undefined, 'checks', true),
+    )
+    await waitFor(() => expect(runAutomationNow).toHaveBeenCalledWith(undefined, 'checks'))
+    await waitFor(() => expect(deleteAutomation).toHaveBeenCalledWith(undefined, 'checks'))
   })
 })

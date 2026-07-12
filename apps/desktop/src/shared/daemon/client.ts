@@ -3,6 +3,7 @@ import { listen as tauriListen } from '@tauri-apps/api/event'
 
 import type {
   ApproveMemoryCandidateRequest,
+  AutomationSpec,
   ClientRequest,
   ExportMemoryItemsRequest,
   GetMemoryRecallTraceRequest,
@@ -56,6 +57,30 @@ export interface DaemonClient {
   loadTask: (taskId: TypedUlid) => Promise<TaskSnapshot>
   loadTaskEvents: (taskId: TypedUlid, beforeGlobalOffset?: number) => Promise<TaskEventPage>
   listTasks: () => Promise<Extract<ServerMessage, { type: 'task_list' }>>
+  listAutomations: (
+    workspaceRoot?: string,
+  ) => Promise<Extract<ServerMessage, { type: 'automations' }>>
+  saveAutomation: (
+    workspaceRoot: string | undefined,
+    automation: AutomationSpec,
+  ) => Promise<Extract<ServerMessage, { type: 'automation_saved' }>>
+  setAutomationEnabled: (
+    workspaceRoot: string | undefined,
+    automationId: string,
+    enabled: boolean,
+  ) => Promise<Extract<ServerMessage, { type: 'automation_enabled' }>>
+  deleteAutomation: (
+    workspaceRoot: string | undefined,
+    automationId: string,
+  ) => Promise<Extract<ServerMessage, { type: 'automation_deleted' }>>
+  runAutomationNow: (
+    workspaceRoot: string | undefined,
+    automationId: string,
+  ) => Promise<Extract<ServerMessage, { type: 'automation_run' }>>
+  listAutomationRuns: (
+    workspaceRoot: string | undefined,
+    automationId?: string,
+  ) => Promise<Extract<ServerMessage, { type: 'automation_runs' }>>
   listMemoryItems: (
     workspaceRoot?: string,
   ) => Promise<Extract<ServerMessage, { type: 'memory_items' }>>
@@ -213,6 +238,42 @@ export function createDaemonClient(
         throw new Error(`Expected task_list, received ${frame.message.type}`)
       }
       return frame.message
+    },
+    async listAutomations(workspaceRoot) {
+      return expectDaemonMessage(
+        await request({ type: 'list_automations', workspaceRoot }),
+        'automations',
+      )
+    },
+    async saveAutomation(workspaceRoot, automation) {
+      return expectDaemonMessage(
+        await request({ automation, type: 'save_automation', workspaceRoot }),
+        'automation_saved',
+      )
+    },
+    async setAutomationEnabled(workspaceRoot, automationId, enabled) {
+      return expectDaemonMessage(
+        await request({ automationId, enabled, type: 'set_automation_enabled', workspaceRoot }),
+        'automation_enabled',
+      )
+    },
+    async deleteAutomation(workspaceRoot, automationId) {
+      return expectDaemonMessage(
+        await request({ automationId, type: 'delete_automation', workspaceRoot }),
+        'automation_deleted',
+      )
+    },
+    async runAutomationNow(workspaceRoot, automationId) {
+      return expectDaemonMessage(
+        await request({ automationId, type: 'run_automation_now', workspaceRoot }),
+        'automation_run',
+      )
+    },
+    async listAutomationRuns(workspaceRoot, automationId) {
+      return expectDaemonMessage(
+        await request({ automationId, type: 'list_automation_runs', workspaceRoot }),
+        'automation_runs',
+      )
     },
     async listMemoryItems(workspaceRoot) {
       return expectDaemonMessage(

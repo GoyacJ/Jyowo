@@ -7,17 +7,9 @@ import type {
   AutomationSpec,
   PermissionMode,
   ToolProfile,
-} from '@/shared/tauri/commands'
-import {
-  deleteAutomation,
-  hasObviousUnredactedSecret,
-  listAutomationRuns,
-  listAutomations,
-  runAutomationNow,
-  saveAutomation,
-  setAutomationEnabled,
-} from '@/shared/tauri/commands'
-import { useCommandClient } from '@/shared/tauri/react'
+} from '@/generated/daemon-protocol'
+import { hasObviousUnredactedSecret } from '@/shared/tauri/commands'
+import { useDaemonClient } from '@/shared/tauri/react'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 import { Checkbox } from '@/shared/ui/checkbox'
@@ -31,12 +23,14 @@ import { Textarea } from '@/shared/ui/textarea'
 
 const automationQueryKeys = {
   all: ['automations'] as const,
-  list: () => [...automationQueryKeys.all, 'list'] as const,
+  list: (workspaceRoot: string | undefined) =>
+    [...automationQueryKeys.all, workspaceRoot ?? null, 'list'] as const,
 }
 
 const automationRunQueryKeys = {
   all: ['automation-runs'] as const,
-  list: () => [...automationRunQueryKeys.all, 'list'] as const,
+  list: (workspaceRoot: string | undefined) =>
+    [...automationRunQueryKeys.all, workspaceRoot ?? null, 'list'] as const,
 }
 
 const toolProfileOptions = ['minimal', 'coding', 'full'] as const
@@ -46,23 +40,24 @@ const permissionModeOptions = ['default', 'auto', 'bypass_permissions'] as const
 const missedRunPolicyOptions = ['skip', 'run_once'] as const
 const automationIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
-export function AutomationSettings() {
+export function AutomationSettings({ workspaceRoot }: { workspaceRoot?: string }) {
   const { t } = useTranslation('settings')
-  const commandClient = useCommandClient()
+  const daemonClient = useDaemonClient()
   const queryClient = useQueryClient()
   const formRef = useRef<HTMLFormElement>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [operationError, setOperationError] = useState<string | null>(null)
   const automationsQuery = useQuery({
-    queryKey: automationQueryKeys.list(),
-    queryFn: () => listAutomations(commandClient),
+    queryKey: automationQueryKeys.list(workspaceRoot),
+    queryFn: () => daemonClient.listAutomations(workspaceRoot),
   })
   const runsQuery = useQuery({
-    queryKey: automationRunQueryKeys.list(),
-    queryFn: () => listAutomationRuns(undefined, commandClient),
+    queryKey: automationRunQueryKeys.list(workspaceRoot),
+    queryFn: () => daemonClient.listAutomationRuns(workspaceRoot),
   })
   const saveMutation = useMutation({
-    mutationFn: (automation: AutomationSpec) => saveAutomation({ automation }, commandClient),
+    mutationFn: (automation: AutomationSpec) =>
+      daemonClient.saveAutomation(workspaceRoot, automation),
     onSuccess: async () => {
       formRef.current?.reset()
       setFormError(null)
@@ -71,19 +66,19 @@ export function AutomationSettings() {
   })
   const toggleMutation = useMutation({
     mutationFn: ({ enabled, id }: { enabled: boolean; id: string }) =>
-      setAutomationEnabled(id, enabled, commandClient),
+      daemonClient.setAutomationEnabled(workspaceRoot, id, enabled),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: automationQueryKeys.all })
     },
   })
   const runNowMutation = useMutation({
-    mutationFn: (id: string) => runAutomationNow(id, commandClient),
+    mutationFn: (id: string) => daemonClient.runAutomationNow(workspaceRoot, id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: automationRunQueryKeys.all })
     },
   })
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteAutomation(id, commandClient),
+    mutationFn: (id: string) => daemonClient.deleteAutomation(workspaceRoot, id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: automationQueryKeys.all })
     },

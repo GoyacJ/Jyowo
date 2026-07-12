@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod agent_starters;
+mod automation;
 mod checkpoint;
 mod ipc;
 mod lifecycle;
@@ -20,6 +21,7 @@ mod task_actor;
 mod workspace;
 
 pub use agent_starters::*;
+pub use automation::*;
 pub use checkpoint::*;
 pub use ipc::*;
 pub use lifecycle::*;

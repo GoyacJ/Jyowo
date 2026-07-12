@@ -18,8 +18,8 @@ use tokio::task::JoinHandle;
 
 use super::IpcError;
 use crate::{
-    MemoryService, MemoryServiceError, PermissionDecisionInput, QueueCommand, Supervisor,
-    TaskMetadataMutation, ValidatedTaskCommand,
+    AutomationScheduler, AutomationSchedulerError, MemoryService, MemoryServiceError,
+    PermissionDecisionInput, QueueCommand, Supervisor, TaskMetadataMutation, ValidatedTaskCommand,
 };
 
 #[derive(Debug, Clone)]
@@ -36,6 +36,7 @@ pub struct IpcConnection {
     config: IpcServerConfig,
     supervisor: Option<Arc<Supervisor>>,
     memory_service: Option<Arc<MemoryService>>,
+    automation_scheduler: Option<Arc<AutomationScheduler>>,
     client_id: Option<ClientId>,
     subscription_offset: Option<u64>,
 }
@@ -48,6 +49,7 @@ impl IpcConnection {
             config,
             supervisor: None,
             memory_service: None,
+            automation_scheduler: None,
             client_id: None,
             subscription_offset: None,
         }
@@ -64,6 +66,7 @@ impl IpcConnection {
             config,
             supervisor: Some(supervisor),
             memory_service: None,
+            automation_scheduler: None,
             client_id: None,
             subscription_offset: None,
         }
@@ -72,6 +75,15 @@ impl IpcConnection {
     #[must_use]
     pub fn with_memory_service(mut self, memory_service: Arc<MemoryService>) -> Self {
         self.memory_service = Some(memory_service);
+        self
+    }
+
+    #[must_use]
+    pub fn with_automation_scheduler(
+        mut self,
+        automation_scheduler: Arc<AutomationScheduler>,
+    ) -> Self {
+        self.automation_scheduler = Some(automation_scheduler);
         self
     }
 
@@ -86,6 +98,15 @@ impl IpcConnection {
                 let message = match memory_service.handle(request).await {
                     Ok(message) => message,
                     Err(error) => memory_service_error(error),
+                };
+                return Ok(vec![server_frame(Some(request_id), message)]);
+            }
+        }
+        if is_automation_request(&request) && valid_runtime_frame && self.client_id.is_some() {
+            if let Some(automation_scheduler) = self.automation_scheduler.as_ref() {
+                let message = match automation_scheduler.handle(request).await {
+                    Ok(message) => message,
+                    Err(error) => automation_scheduler_error(error),
                 };
                 return Ok(vec![server_frame(Some(request_id), message)]);
             }
@@ -458,6 +479,35 @@ fn memory_service_error(error: MemoryServiceError) -> ServerMessage {
             message,
         }),
         _ => protocol_error(ProtocolErrorCode::Internal, "memory operation failed"),
+    }
+}
+
+fn is_automation_request(request: &ClientRequest) -> bool {
+    matches!(
+        request,
+        ClientRequest::ListAutomations { .. }
+            | ClientRequest::SaveAutomation { .. }
+            | ClientRequest::SetAutomationEnabled { .. }
+            | ClientRequest::DeleteAutomation { .. }
+            | ClientRequest::RunAutomationNow { .. }
+            | ClientRequest::ListAutomationRuns { .. }
+    )
+}
+
+fn automation_scheduler_error(error: AutomationSchedulerError) -> ServerMessage {
+    match error {
+        AutomationSchedulerError::NotFound => {
+            protocol_error(ProtocolErrorCode::NotFound, "automation not found")
+        }
+        AutomationSchedulerError::InvalidConfiguration => protocol_error(
+            ProtocolErrorCode::InvalidFrame,
+            "automation configuration is invalid",
+        ),
+        AutomationSchedulerError::Io(_)
+        | AutomationSchedulerError::Json(_)
+        | AutomationSchedulerError::Store(_) => {
+            protocol_error(ProtocolErrorCode::Internal, "automation operation failed")
+        }
     }
 }
 

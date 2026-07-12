@@ -10,10 +10,10 @@ use chrono::{DateTime, Utc};
 #[cfg(feature = "blob-file")]
 use fs2::FileExt;
 use harness_contracts::{
-    now, ActorId, BlobId, CheckpointId, ChildAttachment, ClientId, CommandId, Event, EventId,
-    EventSource, EventSourceKind, IdParseError, IndeterminateToolDecision, PermissionMode,
-    QueueItemId, QueueItemProjection, RedactRules, Redactor, RequestId, RunId, RunSegmentId,
-    RunState, RunTerminalReason, SessionId, SubagentActorState, SubagentId,
+    now, ActorId, AutomationRunRecord, BlobId, CheckpointId, ChildAttachment, ClientId, CommandId,
+    Event, EventId, EventSource, EventSourceKind, IdParseError, IndeterminateToolDecision,
+    PermissionMode, QueueItemId, QueueItemProjection, RedactRules, Redactor, RequestId, RunId,
+    RunSegmentId, RunState, RunTerminalReason, SessionId, SubagentActorState, SubagentId,
     SubagentParentProjection, SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection,
     TenantId, TimelineItemProjection, ToolUseId, WorkspaceLeaseId, WorkspaceLeaseProjection,
     WorkspaceLeaseState, WorkspaceMode, WorkspaceSelection, MAX_DAEMON_TASK_EVENT_PAGE_BYTES,
@@ -160,6 +160,13 @@ pub struct SegmentExecutionTerminal {
     pub terminal_reason: RunTerminalReason,
     pub incomplete_output: bool,
     pub ended_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutomationScheduleState {
+    pub cursor_at: DateTime<Utc>,
+    pub next_due_at: DateTime<Utc>,
+    pub active_task_id: Option<TaskId>,
 }
 
 #[derive(Deserialize)]
@@ -515,6 +522,138 @@ struct StagedBlobMetadata {
 impl TaskStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, TaskStoreError> {
         Self::open_with_projector(path, Arc::new(SynchronousTaskProjector))
+    }
+
+    pub fn register_automation_scope(
+        &self,
+        workspace_root: Option<&Path>,
+    ) -> Result<String, TaskStoreError> {
+        let (scope_key, workspace_root) = automation_scope_parts(workspace_root);
+        self.lock()?.execute(
+            "INSERT INTO automation_scope(scope_key, workspace_root) VALUES (?1, ?2)\n             ON CONFLICT(scope_key) DO UPDATE SET workspace_root = excluded.workspace_root",
+            params![scope_key, workspace_root],
+        )?;
+        Ok(scope_key)
+    }
+
+    pub fn automation_scopes(&self) -> Result<Vec<Option<PathBuf>>, TaskStoreError> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare("SELECT workspace_root FROM automation_scope ORDER BY scope_key ASC")?;
+        let rows = statement.query_map([], |row| row.get::<_, Option<String>>(0))?;
+        rows.map(|row| row.map(|value| value.map(PathBuf::from)))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn automation_schedule_state(
+        &self,
+        scope_key: &str,
+        automation_id: &str,
+    ) -> Result<Option<AutomationScheduleState>, TaskStoreError> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT cursor_at, next_due_at, active_task_id\n                 FROM automation_schedule_state\n                 WHERE scope_key = ?1 AND automation_id = ?2",
+                params![scope_key, automation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+            .map(|(cursor_at, next_due_at, active_task_id)| {
+                Ok(AutomationScheduleState {
+                    cursor_at: parse_task_timestamp(&cursor_at)?,
+                    next_due_at: parse_task_timestamp(&next_due_at)?,
+                    active_task_id: active_task_id
+                        .map(|task_id| TaskId::parse(&task_id))
+                        .transpose()?,
+                })
+            })
+            .transpose()
+    }
+
+    pub fn save_automation_schedule_state(
+        &self,
+        scope_key: &str,
+        automation_id: &str,
+        state: &AutomationScheduleState,
+    ) -> Result<(), TaskStoreError> {
+        self.lock()?.execute(
+            "INSERT INTO automation_schedule_state(\n                 scope_key, automation_id, cursor_at, next_due_at, active_task_id\n             ) VALUES (?1, ?2, ?3, ?4, ?5)\n             ON CONFLICT(scope_key, automation_id) DO UPDATE SET\n                 cursor_at = excluded.cursor_at,\n                 next_due_at = excluded.next_due_at,\n                 active_task_id = excluded.active_task_id",
+            params![
+                scope_key,
+                automation_id,
+                state.cursor_at.to_rfc3339(),
+                state.next_due_at.to_rfc3339(),
+                state.active_task_id.map(|task_id| task_id.to_string()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn append_automation_run(
+        &self,
+        scope_key: &str,
+        record: &AutomationRunRecord,
+    ) -> Result<(), TaskStoreError> {
+        self.lock()?.execute(
+            "INSERT INTO automation_run(\n                 scope_key, run_id, automation_id, started_at, record_json\n             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                scope_key,
+                record.id,
+                record.automation_id,
+                record.started_at.to_rfc3339(),
+                serde_json::to_string(record)?,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn automation_runs(
+        &self,
+        scope_key: &str,
+        automation_id: Option<&str>,
+    ) -> Result<Vec<AutomationRunRecord>, TaskStoreError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT record_json FROM automation_run\n             WHERE scope_key = ?1 AND (?2 IS NULL OR automation_id = ?2)\n             ORDER BY started_at DESC, run_id DESC",
+        )?;
+        let rows = statement.query_map(params![scope_key, automation_id], |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    }
+
+    pub fn complete_automation_run_for_task(
+        &self,
+        scope_key: &str,
+        task_id: TaskId,
+        completed_at: DateTime<Utc>,
+    ) -> Result<(), TaskStoreError> {
+        let connection = self.lock()?;
+        let task_id = task_id.to_string();
+        let record_json = connection
+            .query_row(
+                "SELECT record_json FROM automation_run\n                 WHERE scope_key = ?1 AND json_extract(record_json, '$.runId') = ?2\n                 ORDER BY started_at DESC LIMIT 1",
+                params![scope_key, task_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(record_json) = record_json else {
+            return Ok(());
+        };
+        let mut record: AutomationRunRecord = serde_json::from_str(&record_json)?;
+        record.completed_at = Some(completed_at);
+        connection.execute(
+            "UPDATE automation_run SET record_json = ?1\n             WHERE scope_key = ?2 AND run_id = ?3",
+            params![serde_json::to_string(&record)?, scope_key, record.id],
+        )?;
+        Ok(())
     }
 
     pub fn create_subagent_actor_checked(
@@ -5335,6 +5474,22 @@ pub enum TaskStoreError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Filesystem(#[from] harness_fs::FsError),
+}
+
+fn automation_scope_parts(workspace_root: Option<&Path>) -> (String, Option<String>) {
+    match workspace_root {
+        Some(workspace_root) => {
+            let root = workspace_root.to_string_lossy().into_owned();
+            (format!("workspace:{root}"), Some(root))
+        }
+        None => ("global".to_owned(), None),
+    }
+}
+
+fn parse_task_timestamp(value: &str) -> Result<DateTime<Utc>, TaskStoreError> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|timestamp| timestamp.with_timezone(&Utc))
+        .map_err(|error| TaskStoreError::InvalidTimestamp(error.to_string()))
 }
 
 fn workspace_mode_wire(mode: &WorkspaceMode) -> &'static str {

@@ -19,7 +19,7 @@ impl LocalIpcServer {
         store: Arc<TaskStore>,
         config: IpcServerConfig,
     ) -> Result<Self, IpcError> {
-        Self::bind_named_pipe_inner(pipe_name.into(), store, config, None, None).await
+        Self::bind_named_pipe_inner(pipe_name.into(), store, config, None, None, None).await
     }
 
     pub async fn bind_named_pipe_with_supervisor(
@@ -28,7 +28,15 @@ impl LocalIpcServer {
         config: IpcServerConfig,
         supervisor: Arc<crate::Supervisor>,
     ) -> Result<Self, IpcError> {
-        Self::bind_named_pipe_inner(pipe_name.into(), store, config, Some(supervisor), None).await
+        Self::bind_named_pipe_inner(
+            pipe_name.into(),
+            store,
+            config,
+            Some(supervisor),
+            None,
+            None,
+        )
+        .await
     }
 
     pub async fn bind_named_pipe_with_runtime_services(
@@ -37,6 +45,7 @@ impl LocalIpcServer {
         config: IpcServerConfig,
         supervisor: Arc<crate::Supervisor>,
         memory_service: Arc<crate::MemoryService>,
+        automation_scheduler: Arc<crate::AutomationScheduler>,
     ) -> Result<Self, IpcError> {
         Self::bind_named_pipe_inner(
             pipe_name.into(),
@@ -44,6 +53,7 @@ impl LocalIpcServer {
             config,
             Some(supervisor),
             Some(memory_service),
+            Some(automation_scheduler),
         )
         .await
     }
@@ -54,6 +64,7 @@ impl LocalIpcServer {
         config: IpcServerConfig,
         supervisor: Option<Arc<crate::Supervisor>>,
         memory_service: Option<Arc<crate::MemoryService>>,
+        automation_scheduler: Option<Arc<crate::AutomationScheduler>>,
     ) -> Result<Self, IpcError> {
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
         let clients = Arc::new(AtomicUsize::new(0));
@@ -82,6 +93,9 @@ impl LocalIpcServer {
                         );
                         if let Some(memory_service) = memory_service.as_ref() {
                             connection = connection.with_memory_service(Arc::clone(memory_service));
+                        }
+                        if let Some(automation_scheduler) = automation_scheduler.as_ref() {
+                            connection = connection.with_automation_scheduler(Arc::clone(automation_scheduler));
                         }
                         let client_lease = ClientLease::new(Arc::clone(&server_clients));
                         client_tasks.spawn(async move {
