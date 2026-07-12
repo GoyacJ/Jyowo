@@ -39,8 +39,14 @@ pub(crate) enum TaskEvent {
     TaskTitleChanged {
         title: String,
     },
+    TaskPinned {
+        pinned: bool,
+    },
     TaskArchived {
         archived: bool,
+    },
+    TaskRemoved {
+        removed: bool,
     },
     TaskActorFailed {
         segment_id: Option<RunSegmentId>,
@@ -218,6 +224,18 @@ struct TaskCreatedPayload {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ArchivedPayload {
     archived: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PinnedPayload {
+    pinned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RemovedPayload {
+    removed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -413,9 +431,23 @@ impl NewTaskEvent {
     }
 
     #[must_use]
+    pub const fn task_pinned(pinned: bool) -> Self {
+        Self {
+            event: TaskEvent::TaskPinned { pinned },
+        }
+    }
+
+    #[must_use]
     pub const fn task_archived(archived: bool) -> Self {
         Self {
             event: TaskEvent::TaskArchived { archived },
+        }
+    }
+
+    #[must_use]
+    pub const fn task_removed(removed: bool) -> Self {
+        Self {
+            event: TaskEvent::TaskRemoved { removed },
         }
     }
 
@@ -1075,10 +1107,22 @@ impl TaskEvent {
                 let value: TitlePayload = serde_json::from_value(payload)?;
                 Ok(Self::TaskTitleChanged { title: value.title })
             }
+            "task.pinned" => {
+                let value: PinnedPayload = serde_json::from_value(payload)?;
+                Ok(Self::TaskPinned {
+                    pinned: value.pinned,
+                })
+            }
             "task.archived" => {
                 let value: ArchivedPayload = serde_json::from_value(payload)?;
                 Ok(Self::TaskArchived {
                     archived: value.archived,
+                })
+            }
+            "task.removed" => {
+                let value: RemovedPayload = serde_json::from_value(payload)?;
+                Ok(Self::TaskRemoved {
+                    removed: value.removed,
                 })
             }
             "task.actor_failed" => {
@@ -1301,7 +1345,9 @@ impl TaskEvent {
         match self {
             Self::TaskCreated { .. } => "task.created",
             Self::TaskTitleChanged { .. } => "task.title_changed",
+            Self::TaskPinned { .. } => "task.pinned",
             Self::TaskArchived { .. } => "task.archived",
+            Self::TaskRemoved { .. } => "task.removed",
             Self::TaskActorFailed { .. } => "task.actor_failed",
             Self::RunStarted { .. } => "run.started",
             Self::RunCompleted { .. } => "run.completed",
@@ -1344,9 +1390,13 @@ impl TaskEvent {
             Self::TaskTitleChanged { title } => serde_json::to_value(TitlePayload {
                 title: title.clone(),
             })?,
+            Self::TaskPinned { pinned } => serde_json::to_value(PinnedPayload { pinned: *pinned })?,
             Self::TaskArchived { archived } => serde_json::to_value(ArchivedPayload {
                 archived: *archived,
             })?,
+            Self::TaskRemoved { removed } => {
+                serde_json::to_value(RemovedPayload { removed: *removed })?
+            }
             Self::TaskActorFailed {
                 segment_id,
                 failed_at,
@@ -1561,7 +1611,9 @@ impl TaskEvent {
         let allowed = match self {
             Self::TaskCreated { .. }
             | Self::TaskTitleChanged { .. }
+            | Self::TaskPinned { .. }
             | Self::TaskArchived { .. }
+            | Self::TaskRemoved { .. }
             | Self::MessageQueued { .. }
             | Self::MessageEdited { .. }
             | Self::MessagePromoted { .. }

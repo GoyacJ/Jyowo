@@ -869,6 +869,72 @@ fn task_stream_must_start_with_task_created() {
 }
 
 #[test]
+fn task_metadata_projects_and_rebuilds() {
+    let root = temp_root("task-metadata");
+    let path = root.join("tasks.db");
+    let task_id = TaskId::new();
+    let store = TaskStore::open(&path).unwrap();
+
+    transact(
+        &store,
+        task_id,
+        0,
+        user_source(),
+        NewTaskEvent::task_created("Original"),
+    );
+    transact_events(
+        &store,
+        task_id,
+        1,
+        user_source(),
+        vec![
+            NewTaskEvent::task_pinned(true),
+            NewTaskEvent::task_title_changed("Renamed"),
+            NewTaskEvent::task_archived(true),
+            NewTaskEvent::task_removed(true),
+        ],
+    );
+
+    let projection = store.task_projection(task_id).unwrap().unwrap();
+    assert_eq!(projection.title, "Renamed");
+    assert!(projection.pinned);
+    assert!(projection.archived);
+    assert!(projection.removed);
+
+    store.rebuild_projections().unwrap();
+    let rebuilt = store.task_projection(task_id).unwrap().unwrap();
+    assert_eq!(rebuilt.title, "Renamed");
+    assert!(rebuilt.pinned);
+    assert!(rebuilt.archived);
+    assert!(rebuilt.removed);
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn task_metadata_requires_an_existing_task() {
+    let root = temp_root("task-metadata-create-first");
+    let path = root.join("tasks.db");
+    let store = TaskStore::open(&path).unwrap();
+
+    for event in [
+        NewTaskEvent::task_pinned(true),
+        NewTaskEvent::task_removed(true),
+    ] {
+        let task_id = TaskId::new();
+        assert!(matches!(
+            store.append(task_id, 0, &user_source(), vec![event]),
+            Err(TaskStoreError::Projector(_))
+        ));
+        assert!(store.task_projection(task_id).unwrap().is_none());
+    }
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn rebuild_preserves_all_non_projection_tables() {
     let root = temp_root("rebuild-preserves-truth");
     let path = root.join("tasks.db");

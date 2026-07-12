@@ -109,7 +109,9 @@ fn reduce_task(
             }
             projection.title.clone_from(title);
         }
+        TaskEvent::TaskPinned { pinned } => projection.pinned = *pinned,
         TaskEvent::TaskArchived { archived } => projection.archived = *archived,
+        TaskEvent::TaskRemoved { removed } => projection.removed = *removed,
         TaskEvent::TaskActorFailed {
             segment_id,
             failed_at,
@@ -778,7 +780,9 @@ fn project_entity_tables(
         TaskEvent::WorkspaceOverrideApplied { .. } => {}
         TaskEvent::TaskCreated { .. }
         | TaskEvent::TaskTitleChanged { .. }
+        | TaskEvent::TaskPinned { .. }
         | TaskEvent::TaskArchived { .. }
+        | TaskEvent::TaskRemoved { .. }
         | TaskEvent::ToolIndeterminate { .. }
         | TaskEvent::Engine { .. } => {}
     }
@@ -841,10 +845,32 @@ fn project_timeline(
             None,
             false,
         ),
+        TaskEvent::TaskPinned { pinned } => (
+            TimelineEventKind::Notice,
+            if *pinned {
+                "Task pinned"
+            } else {
+                "Task unpinned"
+            }
+            .into(),
+            None,
+            false,
+        ),
         TaskEvent::TaskArchived { archived } => (
             TimelineEventKind::Notice,
             if *archived {
                 "Task archived"
+            } else {
+                "Task restored"
+            }
+            .into(),
+            None,
+            false,
+        ),
+        TaskEvent::TaskRemoved { removed } => (
+            TimelineEventKind::Notice,
+            if *removed {
+                "Task removed"
             } else {
                 "Task restored"
             }
@@ -1210,7 +1236,9 @@ pub(crate) fn empty_task_projection(task_id: TaskId) -> TaskProjection {
         task_id,
         title: String::new(),
         state: TaskState::Idle,
+        pinned: false,
         archived: false,
+        removed: false,
         stream_version: 0,
         last_global_offset: 0,
         current_run: None,

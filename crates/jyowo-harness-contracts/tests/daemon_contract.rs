@@ -137,8 +137,33 @@ fn task_projection_persists_its_workspace_selection() {
     .expect("task projection with workspace");
 
     let workspace = projection.workspace.expect("workspace persisted");
+    assert!(!projection.pinned);
+    assert!(!projection.removed);
     assert_eq!(workspace.mode, WorkspaceMode::Current);
     assert_eq!(workspace.root, "/tmp/project");
+}
+
+#[test]
+fn task_projection_serializes_durable_sidebar_metadata() {
+    let projection = serde_json::from_value::<TaskProjection>(json!({
+        "taskId": "00000000000000000000000002",
+        "title": "sidebar task",
+        "state": "idle",
+        "pinned": true,
+        "archived": true,
+        "removed": true,
+        "streamVersion": 4,
+        "lastGlobalOffset": 4,
+        "currentRun": null,
+        "pendingPermission": null,
+        "queue": []
+    }))
+    .expect("task projection with sidebar metadata");
+
+    let encoded = serde_json::to_value(projection).expect("serialize task projection");
+    assert_eq!(encoded["pinned"], true);
+    assert_eq!(encoded["archived"], true);
+    assert_eq!(encoded["removed"], true);
 }
 
 #[test]

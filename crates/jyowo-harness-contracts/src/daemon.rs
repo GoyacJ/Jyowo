@@ -456,7 +456,11 @@ pub struct TaskProjection {
     pub task_id: TaskId,
     pub title: String,
     pub state: TaskState,
+    #[serde(default)]
+    pub pinned: bool,
     pub archived: bool,
+    #[serde(default)]
+    pub removed: bool,
     pub stream_version: u64,
     pub last_global_offset: u64,
     pub current_run: Option<RunProjection>,
