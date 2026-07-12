@@ -43,11 +43,13 @@ type SettingsCommandKeys =
   | 'listOfficialQuotaSnapshots'
   | 'listModelProviderCatalog'
   | 'listProjects'
+  | 'getDefaultWorkspace'
   | 'listProviderCapabilityRouteOptions'
   | 'listProviderCapabilityRoutes'
   | 'listProviderProbeSnapshots'
   | 'listProviderSettings'
   | 'moveProject'
+  | 'renameProject'
   | 'probeProviderConfig'
   | 'refreshModelProviderCatalog'
   | 'refreshOfficialQuota'
@@ -107,6 +109,10 @@ export function createSettingsCommandHandlers(
         path,
         status: 'deleted',
       } satisfies DeleteProjectResponse
+    },
+    async getDefaultWorkspace() {
+      await wait(state.options.delayMs)
+      return { path: '/Users/test/.jyowo/workspaces/default' }
     },
     async deleteProviderCapabilityRoute(request) {
       await wait(state.options.delayMs)
@@ -437,6 +443,13 @@ export function createSettingsCommandHandlers(
           ),
       }
       return state.projects
+    },
+    async renameProject(path, name) {
+      await wait(state.options.delayMs)
+      const project = state.projects.projects.find((entry) => entry.path === path)
+      if (!project) throw new Error(`Project not found: ${path}`)
+      project.name = name.trim()
+      return { project }
     },
     async validateProviderSettings() {
       await wait(state.options.delayMs)

@@ -92,6 +92,18 @@ export function createE2eDaemonClient(): DaemonClient {
       requireRunning()
       return frame({ code: 'invalid_frame', message: 'not used by recovery E2E', type: 'error' })
     },
+    async renameTask() {
+      throw new Error('task metadata is outside the renderer recovery fixture')
+    },
+    async setTaskPinned() {
+      throw new Error('task metadata is outside the renderer recovery fixture')
+    },
+    async setTaskArchived() {
+      throw new Error('task metadata is outside the renderer recovery fixture')
+    },
+    async removeTask() {
+      throw new Error('task metadata is outside the renderer recovery fixture')
+    },
     async stageBlobFromPath() {
       requireRunning()
       throw new Error('path staging is outside the renderer recovery fixture')

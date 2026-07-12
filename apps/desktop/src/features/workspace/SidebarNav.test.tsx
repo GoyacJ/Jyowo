@@ -2,15 +2,20 @@ import '@testing-library/jest-dom/vitest'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DaemonClient } from '@/shared/daemon/client'
+import { uiStore } from '@/shared/state/ui-store'
+import type { CommandClient } from '@/shared/tauri/commands'
 
 import { SidebarNav } from './SidebarNav'
 
 const mocks = vi.hoisted(() => ({
+  commandClient: null as unknown as CommandClient,
   daemonClient: null as unknown as DaemonClient,
   navigate: vi.fn(),
+  pickProjectDirectory: vi.fn(),
   selectedTaskId: undefined as string | undefined,
 }))
 
@@ -21,78 +26,144 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 
 vi.mock('@/shared/tauri/react', () => ({
+  useCommandClient: () => mocks.commandClient,
   useDaemonClient: () => mocks.daemonClient,
 }))
 
-vi.mock('./use-active-project-path', () => ({
-  useActiveProjectPath: () => ({ data: '/workspace' }),
+vi.mock('@/shared/tauri/file-dialog', () => ({
+  pickProjectDirectory: mocks.pickProjectDirectory,
 }))
 
 describe('SidebarNav task navigation', () => {
   beforeEach(() => {
     mocks.navigate.mockReset().mockResolvedValue(undefined)
+    mocks.pickProjectDirectory.mockReset().mockResolvedValue(null)
     mocks.selectedTaskId = undefined
+    mocks.commandClient = commandClient()
+    mocks.daemonClient = daemonClient()
+    uiStore.getState().setSidebarSectionExpanded('pinned', true)
+    uiStore.getState().setSidebarSectionExpanded('projects', true)
+    uiStore.getState().setSidebarSectionExpanded('conversations', true)
+    uiStore.getState().setProjectExpanded('/repo/alpha', true)
   })
 
   it('lists daemon task projections and navigates by task ID', async () => {
-    const listTasks = vi.fn().mockResolvedValue({ tasks: [taskProjection()], type: 'task_list' })
-    mocks.daemonClient = client({ listTasks })
+    const listTasks = vi.fn().mockResolvedValue({
+      tasks: [taskProjection({ root: defaultRoot })],
+      type: 'task_list',
+    })
+    mocks.daemonClient = daemonClient({ listTasks })
 
     renderSidebar()
 
-    fireEvent.click(await screen.findByRole('button', { name: /Daemon task/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Daemon conversation' }))
     expect(listTasks).toHaveBeenCalledOnce()
     expect(mocks.navigate).toHaveBeenCalledWith({ search: { taskId }, to: '/' })
   })
 
-  it('creates a daemon task in the active workspace and navigates to the accepted task', async () => {
-    const listTasks = vi.fn().mockResolvedValue({ tasks: [], type: 'task_list' })
-    const request = vi.fn().mockResolvedValue({
-      message: {
-        commandId: taskId,
-        committedOffset: 1,
-        streamVersion: 1,
-        taskId,
-        type: 'command_accepted',
-      },
-      protocolVersion: 1,
-    })
-    mocks.daemonClient = client({ listTasks, request })
+  it('creates the primary conversation in the default workspace', async () => {
+    const request = vi.fn().mockResolvedValue(acceptedFrame())
+    mocks.daemonClient = daemonClient({ request })
 
     renderSidebar()
-    fireEvent.click(await screen.findByRole('button', { name: 'New task' }))
+    const newConversation = await screen.findByRole('button', { name: 'New conversation' })
+    await waitFor(() => expect(newConversation).toBeEnabled())
+    fireEvent.click(newConversation)
 
     await waitFor(() =>
       expect(request).toHaveBeenCalledWith({
-        metadata: expect.objectContaining({
-          commandId: expect.stringMatching(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/),
-          expectedStreamVersion: 0,
-          idempotencyKey: expect.any(String),
-        }),
-        title: 'New task',
+        metadata: expect.objectContaining({ expectedStreamVersion: 0 }),
+        title: 'New conversation',
         type: 'create_task',
-        workspace: { mode: 'current', root: '/workspace' },
+        workspace: { mode: 'current', root: defaultRoot },
       }),
     )
     expect(mocks.navigate).toHaveBeenCalledWith({ search: { taskId }, to: '/' })
   })
 
-  it('navigates after task creation even when refreshing the list fails', async () => {
-    const listTasks = vi
-      .fn()
-      .mockResolvedValueOnce({ tasks: [], type: 'task_list' })
-      .mockRejectedValueOnce(new Error('refresh failed'))
-    mocks.daemonClient = client({
-      listTasks,
-      request: vi.fn().mockResolvedValue(acceptedFrame()),
+  it('creates a conversation inside its project workspace', async () => {
+    const request = vi.fn().mockResolvedValue(acceptedFrame())
+    mocks.daemonClient = daemonClient({
+      listTasks: vi.fn().mockResolvedValue({
+        tasks: [taskProjection({ root: '/repo/alpha' })],
+        type: 'task_list',
+      }),
+      request,
     })
 
     renderSidebar()
-    fireEvent.click(await screen.findByRole('button', { name: 'New task' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'New conversation in Alpha' }))
 
     await waitFor(() =>
-      expect(mocks.navigate).toHaveBeenCalledWith({ search: { taskId }, to: '/' }),
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({ workspace: { mode: 'current', root: '/repo/alpha' } }),
+      ),
     )
+  })
+
+  it('adds a selected project folder and refreshes the project list', async () => {
+    const addProject = vi.fn().mockResolvedValue({ project: projects[0] })
+    const listProjects = vi.fn().mockResolvedValue({ activePath: null, projects })
+    mocks.commandClient = commandClient({ addProject, listProjects })
+    mocks.pickProjectDirectory.mockResolvedValue('/repo/new')
+
+    renderSidebar()
+    fireEvent.click(await screen.findByRole('button', { name: 'Add project' }))
+
+    await waitFor(() => expect(addProject).toHaveBeenCalledWith('/repo/new'))
+    await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(2))
+  })
+
+  it('pins a task, refreshes task projections, and removes the active task safely', async () => {
+    const user = userEvent.setup()
+    const listTasks = vi.fn().mockResolvedValue({
+      tasks: [taskProjection({ root: '/repo/alpha' })],
+      type: 'task_list',
+    })
+    const setTaskPinned = vi.fn().mockResolvedValue(acceptedMessage())
+    const removeTask = vi.fn().mockResolvedValue(acceptedMessage())
+    mocks.daemonClient = daemonClient({ listTasks, removeTask, setTaskPinned })
+    mocks.selectedTaskId = taskId
+
+    renderSidebar()
+    await user.click(await screen.findByRole('button', { name: 'Daemon conversation actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Pin' }))
+    expect(setTaskPinned).toHaveBeenCalledWith(taskId, 1, true)
+    await waitFor(() => expect(listTasks).toHaveBeenCalledTimes(2))
+
+    await user.click(screen.getByRole('button', { name: 'Daemon conversation actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Remove' }))
+    await user.click(screen.getByRole('button', { name: 'Remove conversation' }))
+    expect(removeTask).toHaveBeenCalledWith(taskId, 1)
+    await waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith({ search: {}, to: '/' }))
+  })
+
+  it('renames, moves, and removes projects through registry commands', async () => {
+    const user = userEvent.setup()
+    const renameProject = vi.fn().mockResolvedValue({ project: projects[0] })
+    const moveProject = vi.fn().mockResolvedValue({ activePath: null, projects })
+    const deleteProject = vi
+      .fn()
+      .mockResolvedValue({ activePath: null, path: '/repo/alpha', status: 'deleted' })
+    mocks.commandClient = commandClient({ deleteProject, moveProject, renameProject })
+
+    renderSidebar()
+    await user.click(await screen.findByRole('button', { name: 'Alpha actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Rename' }))
+    const input = screen.getByRole('textbox', { name: 'Project name' })
+    await user.clear(input)
+    await user.type(input, 'Alpha renamed')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(renameProject).toHaveBeenCalledWith('/repo/alpha', 'Alpha renamed')
+
+    await user.click(screen.getByRole('button', { name: 'Alpha actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Move down' }))
+    expect(moveProject).toHaveBeenCalledWith('/repo/alpha', 'down')
+
+    await user.click(screen.getByRole('button', { name: 'Alpha actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Remove project' }))
+    await user.click(screen.getByRole('button', { name: 'Remove project' }))
+    expect(deleteProject).toHaveBeenCalledWith('/repo/alpha')
   })
 
   it('refreshes task projections when the daemon publishes events', async () => {
@@ -102,25 +173,19 @@ describe('SidebarNav task navigation', () => {
       return async () => undefined
     })
     const listTasks = vi.fn().mockResolvedValue({
-      tasks: [taskProjection()],
+      tasks: [taskProjection({ root: defaultRoot })],
       type: 'task_list',
     })
-    mocks.daemonClient = client({ listTasks, subscribe })
+    mocks.daemonClient = daemonClient({ listTasks, subscribe })
 
     renderSidebar()
-    await screen.findByRole('button', { name: /Daemon task/ })
+    await screen.findByRole('button', { name: 'Daemon conversation' })
     await waitFor(() =>
       expect(subscribe).toHaveBeenCalledWith(1, expect.any(Function), expect.any(Function)),
     )
 
     onFrame?.({
-      message: {
-        afterOffset: 1,
-        events: [],
-        gap: false,
-        latestOffset: 2,
-        type: 'event_batch',
-      },
+      message: { afterOffset: 1, events: [], gap: false, latestOffset: 2, type: 'event_batch' },
       protocolVersion: 1,
     })
 
@@ -138,41 +203,68 @@ function renderSidebar() {
   )
 }
 
-function client(overrides: Partial<DaemonClient>): DaemonClient {
+function daemonClient(overrides: Partial<DaemonClient> = {}): DaemonClient {
   return {
-    connect: vi.fn().mockResolvedValue(undefined),
-    listTasks: vi.fn(),
+    connect: vi.fn().mockResolvedValue({}),
+    listReferenceCandidates: vi.fn(),
+    listTasks: vi.fn().mockResolvedValue({ tasks: [], type: 'task_list' }),
     loadTask: vi.fn(),
     readBlob: vi.fn(),
+    removeTask: vi.fn(),
+    renameTask: vi.fn(),
     request: vi.fn(),
+    setTaskArchived: vi.fn(),
+    setTaskPinned: vi.fn(),
+    stageBlobFromPath: vi.fn(),
     subscribe: vi.fn().mockResolvedValue(async () => undefined),
     ...overrides,
   } as DaemonClient
 }
 
-const taskId = '01J00000000000000000000001'
+function commandClient(overrides: Partial<CommandClient> = {}): CommandClient {
+  return {
+    addProject: vi.fn(),
+    deleteProject: vi.fn(),
+    getDefaultWorkspace: vi.fn().mockResolvedValue({ path: defaultRoot }),
+    listProjects: vi.fn().mockResolvedValue({ activePath: null, projects }),
+    moveProject: vi.fn(),
+    renameProject: vi.fn(),
+    ...overrides,
+  } as CommandClient
+}
 
-function taskProjection() {
+const taskId = '01J00000000000000000000001'
+const defaultRoot = '/home/me/.jyowo/workspaces/default'
+const projects = [
+  { lastOpenedAt: '2026-07-12T00:00:00Z', name: 'Alpha', path: '/repo/alpha' },
+  { lastOpenedAt: '2026-07-11T00:00:00Z', name: 'Beta', path: '/repo/beta' },
+]
+
+function taskProjection({ root }: { root: string }) {
   return {
     archived: false,
     lastGlobalOffset: 1,
+    pinned: false,
     queue: [],
+    removed: false,
     state: 'completed' as const,
     streamVersion: 1,
     taskId,
-    title: 'Daemon task',
+    title: 'Daemon conversation',
+    workspace: { mode: 'current' as const, root },
+  }
+}
+
+function acceptedMessage() {
+  return {
+    commandId: taskId,
+    committedOffset: 1,
+    streamVersion: 2,
+    taskId,
+    type: 'command_accepted' as const,
   }
 }
 
 function acceptedFrame() {
-  return {
-    message: {
-      commandId: taskId,
-      committedOffset: 1,
-      streamVersion: 1,
-      taskId,
-      type: 'command_accepted' as const,
-    },
-    protocolVersion: 1,
-  }
+  return { message: acceptedMessage(), protocolVersion: 1 }
 }

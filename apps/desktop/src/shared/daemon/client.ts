@@ -10,6 +10,7 @@ import type {
 import type { AttachmentReference, ListReferenceCandidatesResponse } from '@/shared/tauri/commands'
 
 import { parseClientFrame, parseServerFrame } from './protocol'
+import { createTaskCommandMetadata, requireAcceptedCommand } from './task-command'
 
 const PROTOCOL_VERSION = 1
 const DAEMON_EVENT_NAME = 'jyowo://daemon-events'
@@ -43,6 +44,25 @@ export interface DaemonClient {
   request: (request: DaemonRequest) => Promise<ServerFrame>
   loadTask: (taskId: TypedUlid) => Promise<TaskSnapshot>
   listTasks: () => Promise<Extract<ServerMessage, { type: 'task_list' }>>
+  renameTask: (
+    taskId: TypedUlid,
+    expectedStreamVersion: number,
+    title: string,
+  ) => Promise<Extract<ServerMessage, { type: 'command_accepted' }>>
+  setTaskPinned: (
+    taskId: TypedUlid,
+    expectedStreamVersion: number,
+    pinned: boolean,
+  ) => Promise<Extract<ServerMessage, { type: 'command_accepted' }>>
+  setTaskArchived: (
+    taskId: TypedUlid,
+    expectedStreamVersion: number,
+    archived: boolean,
+  ) => Promise<Extract<ServerMessage, { type: 'command_accepted' }>>
+  removeTask: (
+    taskId: TypedUlid,
+    expectedStreamVersion: number,
+  ) => Promise<Extract<ServerMessage, { type: 'command_accepted' }>>
   listReferenceCandidates: (taskId: TypedUlid) => Promise<ListReferenceCandidatesResponse>
   readBlob: (blobId: TypedUlid) => Promise<DaemonBlob>
   stageBlobFromPath: (
@@ -99,6 +119,41 @@ export function createDaemonClient(
         throw new Error(`Expected task_list, received ${frame.message.type}`)
       }
       return frame.message
+    },
+    async renameTask(taskId, expectedStreamVersion, title) {
+      const frame = await request({
+        metadata: createTaskCommandMetadata(taskId, expectedStreamVersion, 'rename'),
+        taskId,
+        title,
+        type: 'rename_task',
+      })
+      return requireAcceptedCommand(frame, taskId)
+    },
+    async setTaskPinned(taskId, expectedStreamVersion, pinned) {
+      const frame = await request({
+        metadata: createTaskCommandMetadata(taskId, expectedStreamVersion, 'pin'),
+        pinned,
+        taskId,
+        type: 'set_task_pinned',
+      })
+      return requireAcceptedCommand(frame, taskId)
+    },
+    async setTaskArchived(taskId, expectedStreamVersion, archived) {
+      const frame = await request({
+        archived,
+        metadata: createTaskCommandMetadata(taskId, expectedStreamVersion, 'archive'),
+        taskId,
+        type: 'set_task_archived',
+      })
+      return requireAcceptedCommand(frame, taskId)
+    },
+    async removeTask(taskId, expectedStreamVersion) {
+      const frame = await request({
+        metadata: createTaskCommandMetadata(taskId, expectedStreamVersion, 'remove'),
+        taskId,
+        type: 'remove_task',
+      })
+      return requireAcceptedCommand(frame, taskId)
     },
     async listReferenceCandidates(taskId) {
       return parseReferenceCandidates(

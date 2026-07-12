@@ -9,6 +9,76 @@ const blobId = '00000000000000000000000002'
 const contentHash = Array.from({ length: 32 }, (_, index) => index)
 
 describe('daemon client', () => {
+  it('sends typed task metadata commands with optimistic concurrency', async () => {
+    const requests: unknown[] = []
+    const invoke = vi.fn(async (_command: string, args?: Record<string, unknown>) => {
+      const frame = args?.frame as { request: unknown; requestId: string }
+      requests.push(frame.request)
+      return {
+        message: {
+          commandId: taskId,
+          committedOffset: 5,
+          streamVersion: 8,
+          taskId,
+          type: 'command_accepted',
+        },
+        protocolVersion: 1,
+        requestId: frame.requestId,
+      }
+    })
+    const client = createDaemonClient(transport(invoke), { requestId: () => 'metadata-request' })
+
+    await client.renameTask(taskId, 4, 'Renamed')
+    await client.setTaskPinned(taskId, 5, true)
+    await client.setTaskArchived(taskId, 6, true)
+    await client.removeTask(taskId, 7)
+
+    expect(requests).toEqual([
+      {
+        metadata: expect.objectContaining({ expectedStreamVersion: 4 }),
+        taskId,
+        title: 'Renamed',
+        type: 'rename_task',
+      },
+      {
+        metadata: expect.objectContaining({ expectedStreamVersion: 5 }),
+        pinned: true,
+        taskId,
+        type: 'set_task_pinned',
+      },
+      {
+        archived: true,
+        metadata: expect.objectContaining({ expectedStreamVersion: 6 }),
+        taskId,
+        type: 'set_task_archived',
+      },
+      {
+        metadata: expect.objectContaining({ expectedStreamVersion: 7 }),
+        taskId,
+        type: 'remove_task',
+      },
+    ])
+  })
+
+  it('rejects task metadata mutations that the daemon does not accept', async () => {
+    const invoke = vi.fn(async (_command: string, args?: Record<string, unknown>) => {
+      const frame = args?.frame as { requestId: string }
+      return {
+        message: {
+          commandId: taskId,
+          reason: 'wrong_expected_version',
+          taskId,
+          type: 'command_rejected',
+        },
+        protocolVersion: 1,
+        requestId: frame.requestId,
+      }
+    })
+    const client = createDaemonClient(transport(invoke))
+
+    await expect(client.setTaskPinned(taskId, 1, true)).rejects.toThrow('wrong expected version')
+  })
+
   it('validates every response and builds generated request frames', async () => {
     const invoke = vi.fn(async (_command: string, args?: Record<string, unknown>) => {
       if (_command === 'daemon_connect') {
