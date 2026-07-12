@@ -885,7 +885,13 @@ pub(crate) async fn remove_mcp_server_from_settings_runtime(
     }
     match config.registry.remove_server(&server_id).await {
         Ok(()) | Err(jyowo_harness_sdk::ext::McpError::ServerNotFound(_)) => Ok(()),
-        Err(error) => Err(runtime_operation_failed(error.to_string())),
+        Err(_) => {
+            // The registry removes the entry before attempting shutdown. A
+            // bounded shutdown failure must not leave disable/restart stuck
+            // after the runtime state has already been removed.
+            log::warn!("MCP registry entry removed with an incomplete connection shutdown");
+            Ok(())
+        }
     }
 }
 

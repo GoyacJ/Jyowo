@@ -112,7 +112,9 @@ where
     T: Send + 'static,
 {
     let command_task = tokio::spawn(command);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    // Restart first gives the previous MCP connection up to one second to
+    // shut down before the replacement requests transport permission.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     let pending = loop {
         if let Some(pending) = settings_permission_resolver(state)
             .pending_permission_requests()
