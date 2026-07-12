@@ -17,6 +17,9 @@ export const enUS = {
     },
   },
   tasks: {
+    model: {
+      default: 'default',
+    },
     composer: {
       disconnected: 'Connection lost. Your draft is preserved.',
       queue: 'Queue',
@@ -106,8 +109,11 @@ export const enUS = {
         taskActorFailed: 'Task actor failed',
         taskArchived: 'Task archived',
         taskCreated: 'Task created',
+        taskPinned: 'Task pinned',
+        taskRemoved: 'Task removed',
         taskRestored: 'Task restored',
         taskTitleChanged: 'Task title changed',
+        taskUnpinned: 'Task unpinned',
         toolCompleted: 'Tool completed',
         toolDenied: 'Tool denied',
         toolIndeterminate: 'Tool outcome is indeterminate after restart',
@@ -155,6 +161,15 @@ export const enUS = {
       title: 'Workbench',
       useCollaborationWidth: 'Use collaboration width',
       useInspectorWidth: 'Use inspector width',
+      agentState: {
+        background: 'background',
+        cancelled: 'cancelled',
+        completed: 'completed',
+        failed: 'failed',
+        running: 'running',
+        starting: 'starting',
+        yielding: 'yielding',
+      },
       tabs: {
         agents: 'Agents',
         audit: 'Audit',
@@ -171,6 +186,12 @@ export const enUS = {
       artifact: {
         loading: 'Loading artifact…',
         unavailable: 'Artifact is unavailable',
+      },
+      audit: {
+        loading: 'Loading audit events…',
+        newer: 'Newer events',
+        older: 'Older events',
+        unavailable: 'Audit events are unavailable',
       },
       empty: {
         agents: 'No subagents are linked to this task.',

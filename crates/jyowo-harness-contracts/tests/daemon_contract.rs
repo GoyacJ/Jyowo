@@ -22,6 +22,7 @@ fn daemon_protocol_exports_one_versioned_schema() {
         "remove_task",
         "resolve_permission",
         "subscribe_events",
+        "load_task_events",
         "read_blob",
     ] {
         assert!(text.contains(required), "missing {required}");
@@ -36,6 +37,27 @@ fn daemon_protocol_exports_one_versioned_schema() {
     assert_eq!(value["request"]["type"], "subscribe_events");
     assert_eq!(value["request"]["afterOffset"], 42);
     assert!(value["request"].get("after_offset").is_none());
+}
+
+#[test]
+fn task_audit_events_use_a_task_scoped_backward_cursor() {
+    let frame = json!({
+        "requestId": "req-audit",
+        "protocolVersion": PROTOCOL_VERSION,
+        "request": {
+            "type": "load_task_events",
+            "taskId": "00000000000000000000000002",
+            "beforeGlobalOffset": 42,
+            "limit": 16
+        }
+    });
+
+    let parsed = serde_json::from_value::<ClientFrame>(frame).expect("audit page request parses");
+    let encoded = serde_json::to_value(parsed).expect("audit page request serializes");
+
+    assert_eq!(encoded["request"]["type"], "load_task_events");
+    assert_eq!(encoded["request"]["beforeGlobalOffset"], 42);
+    assert_eq!(encoded["request"]["limit"], 16);
 }
 
 #[test]

@@ -901,6 +901,121 @@ fn task_snapshot_uses_the_global_cursor_even_when_other_tasks_advanced_it() {
 }
 
 #[tokio::test]
+async fn task_snapshot_uses_the_real_journal_projector_and_audit_pages_preserve_raw_engine_history()
+{
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let mut connection = IpcConnection::new(Arc::clone(&store), config());
+    connection.handle(handshake("token-a")).unwrap();
+    let created = connection
+        .handle(create("create-engine", CommandId::new(), "create-engine"))
+        .unwrap();
+    let task_id = match &created[0].message {
+        ServerMessage::CommandAccepted(accepted) => accepted.task_id,
+        other => panic!("unexpected {other:?}"),
+    };
+    let segment_id = RunSegmentId::new();
+    store
+        .transact_command(
+            AcceptedCommand {
+                command_id: CommandId::new(),
+                task_id,
+                idempotency_key: "start-engine-projection".into(),
+                expected_stream_version: 1,
+                authority: TaskStore::supervisor_authority(),
+                payload: json!({ "type": "test_start" }),
+            },
+            |_| Ok(vec![NewTaskEvent::run_started(segment_id, now())]),
+        )
+        .unwrap();
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let message_id = MessageId::new();
+    let adapter = TaskEventStoreAdapter::new(
+        Arc::clone(&store),
+        task_id,
+        TenantId::SINGLE,
+        session_id,
+        Arc::new(NoopRedactor),
+    )
+    .with_run_segment_id(segment_id);
+    adapter
+        .append_with_metadata(
+            TenantId::SINGLE,
+            session_id,
+            AppendMetadata {
+                run_id: Some(run_id),
+                ..AppendMetadata::default()
+            },
+            &[
+                Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                    run_id,
+                    message_id,
+                    delta: DeltaChunk::Text("Real ".into()),
+                    at: now(),
+                }),
+                Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {
+                    run_id,
+                    message_id,
+                    content: MessageContent::Text("Real projector".into()),
+                    tool_uses: Vec::new(),
+                    usage: UsageSnapshot::default(),
+                    pricing_snapshot_id: None,
+                    stop_reason: StopReason::EndTurn,
+                    at: now(),
+                }),
+                Event::RunEnded(RunEndedEvent {
+                    run_id,
+                    reason: EndReason::Completed,
+                    usage: Some(UsageSnapshot::default()),
+                    ended_at: now(),
+                }),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let loaded = connection
+        .handle(frame("load-engine", ClientRequest::LoadTask { task_id }))
+        .unwrap();
+    let ServerMessage::TaskSnapshot(snapshot) = &loaded[0].message else {
+        panic!("unexpected {:?}", loaded[0].message);
+    };
+    let assistant = snapshot
+        .timeline
+        .iter()
+        .filter(|item| item.kind == harness_contracts::TimelineEventKind::AssistantText)
+        .collect::<Vec<_>>();
+    assert_eq!(assistant.len(), 1);
+    assert_eq!(assistant[0].summary, "Real ");
+    assert_eq!(assistant[0].run_segment_id, Some(segment_id));
+    assert!(!assistant[0].incomplete);
+    assert!(!snapshot
+        .timeline
+        .iter()
+        .any(|item| item.summary == "Run ended"));
+
+    let audit = connection
+        .handle(frame(
+            "load-engine-events",
+            ClientRequest::LoadTaskEvents {
+                task_id,
+                before_global_offset: None,
+                limit: 16,
+            },
+        ))
+        .unwrap();
+    let ServerMessage::TaskEventPage(page) = &audit[0].message else {
+        panic!("unexpected {:?}", audit[0].message);
+    };
+    assert_eq!(page.task_id, task_id);
+    assert!(page
+        .events
+        .iter()
+        .any(|event| event.event_type == "engine.run_ended"));
+}
+
+#[tokio::test]
 async fn task_metadata_commands_update_projection_and_hide_removed_tasks() {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
@@ -1368,6 +1483,104 @@ fn largest_task_blob_encodes_within_one_daemon_frame() {
     let encoded = encode_frame(&response[0]).unwrap();
 
     assert!(encoded.len() <= MAX_FRAME_BYTES + 4);
+}
+
+#[tokio::test]
+async fn task_event_pages_with_large_legal_payloads_fit_daemon_frames_without_skipping_events() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let mut connection = IpcConnection::new(Arc::clone(&store), config());
+    connection.handle(handshake("token-a")).unwrap();
+    let created = connection
+        .handle(create(
+            "create-large-audit",
+            CommandId::new(),
+            "create-large-audit",
+        ))
+        .unwrap();
+    let task_id = match &created[0].message {
+        ServerMessage::CommandAccepted(accepted) => accepted.task_id,
+        other => panic!("unexpected {other:?}"),
+    };
+    let segment_id = RunSegmentId::new();
+    store
+        .transact_command(
+            AcceptedCommand {
+                command_id: CommandId::new(),
+                task_id,
+                idempotency_key: "start-large-audit".into(),
+                expected_stream_version: 1,
+                authority: TaskStore::supervisor_authority(),
+                payload: json!({ "type": "test_start" }),
+            },
+            |_| Ok(vec![NewTaskEvent::run_started(segment_id, now())]),
+        )
+        .unwrap();
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let adapter = TaskEventStoreAdapter::new(
+        Arc::clone(&store),
+        task_id,
+        TenantId::SINGLE,
+        session_id,
+        Arc::new(NoopRedactor),
+    )
+    .with_run_segment_id(segment_id);
+    for _ in 0..9 {
+        adapter
+            .append_with_metadata(
+                TenantId::SINGLE,
+                session_id,
+                AppendMetadata {
+                    run_id: Some(run_id),
+                    ..AppendMetadata::default()
+                },
+                &[Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                    run_id,
+                    message_id: MessageId::new(),
+                    delta: DeltaChunk::Text("x".repeat(1_000_000)),
+                    at: now(),
+                })],
+            )
+            .await
+            .unwrap();
+    }
+
+    let expected_offsets = store
+        .task_events_after(task_id, 0, usize::MAX)
+        .unwrap()
+        .into_iter()
+        .map(|event| event.global_offset)
+        .collect::<Vec<_>>();
+    assert_eq!(expected_offsets.len(), 11);
+    let mut loaded_offsets = Vec::new();
+    let mut before_global_offset = None;
+    loop {
+        let response = connection
+            .handle(frame(
+                &"r".repeat(128),
+                ClientRequest::LoadTaskEvents {
+                    task_id,
+                    before_global_offset,
+                    limit: 16,
+                },
+            ))
+            .unwrap();
+        let encoded = encode_frame(&response[0]).expect("audit page must fit one daemon frame");
+        assert!(encoded.len() <= MAX_FRAME_BYTES + 4);
+        let ServerMessage::TaskEventPage(page) = &response[0].message else {
+            panic!("unexpected {:?}", response[0].message);
+        };
+        assert!(page.events.len() <= 16);
+        assert!(page.events.iter().all(|event| event.task_id == task_id));
+        loaded_offsets.extend(page.events.iter().map(|event| event.global_offset));
+        let Some(next_before_offset) = page.next_before_offset else {
+            break;
+        };
+        before_global_offset = Some(next_before_offset);
+    }
+    loaded_offsets.sort_unstable();
+    assert_eq!(loaded_offsets, expected_offsets);
 }
 
 #[cfg(unix)]

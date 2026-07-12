@@ -32,11 +32,13 @@ export function TaskWorkbench({
   client,
   events,
   projection,
+  snapshotOffset = projection.lastGlobalOffset,
   timeline = [],
 }: {
-  client: Pick<DaemonClient, 'readBlob'>
+  client: Pick<DaemonClient, 'loadTaskEvents' | 'readBlob'>
   events: TaskEventEnvelope[]
   projection: TaskProjection
+  snapshotOffset?: number
   timeline?: TimelineItemProjection[]
 }) {
   const { t } = useTranslation('tasks')
@@ -190,7 +192,15 @@ export function TaskWorkbench({
         {activePanel === 'sources' ? (
           <SourcesPanel events={events} timeline={timeline} {...artifact} />
         ) : null}
-        {activePanel === 'audit' ? <AuditPanel events={events} timeline={timeline} /> : null}
+        {activePanel === 'audit' ? (
+          <AuditPanel
+            client={client}
+            liveEvents={events}
+            snapshotOffset={snapshotOffset}
+            taskId={projection.taskId}
+            timeline={timeline}
+          />
+        ) : null}
       </div>
     </aside>
   )

@@ -174,6 +174,16 @@ function handleRequest(
     if (request.taskId !== taskId) return errorFrame('not_found', 'task not found')
     return frame({ ...snapshot(state), type: 'task_snapshot' })
   }
+  if (request.type === 'load_task_events') {
+    if (request.taskId !== taskId) return errorFrame('not_found', 'task not found')
+    const recovered = state.recovered || state.published
+    return frame({
+      events: recovered ? [committedEvent] : [],
+      nextBeforeOffset: null,
+      taskId,
+      type: 'task_event_page',
+    })
+  }
   if (request.type === 'submit_message') {
     if (request.taskId !== taskId) return errorFrame('not_found', 'task not found')
     publishMessage(request.content)
@@ -326,6 +336,7 @@ function engineEvent(
       event: { type, ...event },
       journalOffset: globalOffset - 6,
       runId,
+      runSegmentId: segmentId,
       sessionId,
       tenantId: '00000000000000000000000000',
     }),

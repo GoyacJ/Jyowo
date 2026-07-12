@@ -31,6 +31,7 @@ import { TaskWorkbench } from './workbench/TaskWorkbench'
 export const timelineItems = liveTimelineItems
 
 export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
+  const { t } = useTranslation('tasks')
   const task = useTask(taskId)
   const daemonClient = useDaemonClient()
   const commandClient = useCommandClient()
@@ -70,7 +71,7 @@ export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
       modelConfigs={configuredModels.map((config) => ({
         id: config.id,
         label: `${config.displayName} / ${config.modelId}${
-          config.id === providerSettings?.defaultConfigId ? ' (default)' : ''
+          config.id === providerSettings?.defaultConfigId ? ` (${t('model.default')})` : ''
         }`,
       }))}
       onListReferenceCandidates={() => daemonClient.listReferenceCandidates(taskId)}
@@ -99,7 +100,7 @@ export function TaskWorkspaceView({
   snapshot,
 }: {
   client?: Pick<DaemonClient, 'connect' | 'request'> &
-    Partial<Pick<DaemonClient, 'readBlob' | 'stageBlobFromPath'>>
+    Partial<Pick<DaemonClient, 'loadTaskEvents' | 'readBlob' | 'stageBlobFromPath'>>
   connectionError?: string | null
   connectionState: TaskConnectionState
   events?: TaskEventEnvelope[]
@@ -180,7 +181,10 @@ export function TaskWorkspaceView({
   const queue = liveSnapshot.projection.queue
   const taskId = liveSnapshot.projection.taskId
   const showWorkbench =
-    workbenchMode !== 'closed' && workbenchSelection?.taskId === taskId && client?.readBlob
+    workbenchMode !== 'closed' &&
+    workbenchSelection?.taskId === taskId &&
+    client?.loadTaskEvents &&
+    client.readBlob
 
   function selectTimelineItem(item: TimelineItemProjection) {
     const panel = workbenchPanel(item)
@@ -260,11 +264,12 @@ export function TaskWorkspaceView({
             </div>
           ) : null}
         </div>
-        {showWorkbench && client.readBlob ? (
+        {showWorkbench && client.loadTaskEvents && client.readBlob ? (
           <TaskWorkbench
-            client={{ readBlob: client.readBlob }}
+            client={{ loadTaskEvents: client.loadTaskEvents, readBlob: client.readBlob }}
             events={events}
             projection={liveSnapshot.projection}
+            snapshotOffset={snapshot.snapshotOffset}
             timeline={items}
           />
         ) : null}

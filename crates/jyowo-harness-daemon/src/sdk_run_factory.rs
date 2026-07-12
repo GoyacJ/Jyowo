@@ -365,13 +365,16 @@ impl SdkRunCoordinatorFactory {
             return Err(SdkRunFactoryError::WorkspaceLeaseInactive);
         }
         let workspace_root = execution_root(&lease)?;
-        let event_store: Arc<dyn EventStore> = Arc::new(TaskEventStoreAdapter::new(
-            Arc::clone(&store),
-            request.task_id,
-            TenantId::SINGLE,
-            request.input.session_id,
-            Arc::clone(&redactor),
-        ));
+        let event_store: Arc<dyn EventStore> = Arc::new(
+            TaskEventStoreAdapter::new(
+                Arc::clone(&store),
+                request.task_id,
+                TenantId::SINGLE,
+                request.input.session_id,
+                Arc::clone(&redactor),
+            )
+            .with_run_segment_id(request.segment_id),
+        );
         let replay_calls =
             apply_indeterminate_tool_decisions(event_store.as_ref(), &request).await?;
         let provider = provider_configs

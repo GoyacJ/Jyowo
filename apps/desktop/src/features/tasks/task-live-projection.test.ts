@@ -96,6 +96,163 @@ describe('deriveLiveTaskSnapshot', () => {
     })
   })
 
+  it('scopes engine output and assistant completion to the originating run segment', () => {
+    const messageId = id(50)
+    const firstSegmentId = id(30)
+    const secondSegmentId = id(33)
+    const result = deriveLiveTaskSnapshot(snapshot, [
+      taskEvent(3, 'run.started', {
+        segmentId: firstSegmentId,
+        startedAt: '2026-07-12T01:00:00Z',
+      }),
+      engineEvent(
+        4,
+        'assistant_delta_produced',
+        {
+          at: '2026-07-12T01:00:01Z',
+          delta: { text: 'First run' },
+          message_id: messageId,
+          run_id: id(31),
+        },
+        firstSegmentId,
+      ),
+      taskEvent(5, 'run.completed', {
+        endedAt: '2026-07-12T01:00:02Z',
+        incompleteOutput: false,
+        segmentId: firstSegmentId,
+        terminalReason: 'completed',
+      }),
+      taskEvent(6, 'run.started', {
+        segmentId: secondSegmentId,
+        startedAt: '2026-07-12T01:00:03Z',
+      }),
+      engineEvent(
+        7,
+        'assistant_message_completed',
+        {
+          at: '2026-07-12T01:00:04Z',
+          content: { text: 'Second run' },
+          message_id: messageId,
+          pricing_snapshot_id: null,
+          run_id: id(34),
+          stop_reason: 'end_turn',
+          tool_uses: [],
+          usage: usage(),
+        },
+        secondSegmentId,
+      ),
+      engineEvent(
+        8,
+        'assistant_delta_produced',
+        {
+          at: '2026-07-12T01:00:05Z',
+          delta: { text: ' late' },
+          message_id: messageId,
+          run_id: id(31),
+        },
+        firstSegmentId,
+      ),
+    ])
+
+    expect(
+      result.timeline
+        .filter((item) => item.kind === 'assistant_text')
+        .map((item) => [item.summary, item.runSegmentId, item.incomplete]),
+    ).toEqual([
+      ['First run', firstSegmentId, true],
+      ['Second run', secondSegmentId, false],
+      [' late', firstSegmentId, true],
+    ])
+  })
+
+  it('matches canonical transient state transitions for safe points, permissions, and actor failure', () => {
+    const segmentId = id(30)
+    const queueItemId = id(60)
+    const permission = { requestId: id(61), revision: 1, route: 'foreground_task' as const }
+    const result = deriveLiveTaskSnapshot(snapshot, [
+      taskEvent(3, 'run.started', { segmentId, startedAt: '2026-07-12T01:00:00Z' }),
+      taskEvent(4, 'message.queued', {
+        attachments: [],
+        content: 'queued prompt',
+        contextReferences: [],
+        createdAt: '2026-07-12T01:00:01Z',
+        queueItemId,
+      }),
+      taskEvent(5, 'run.yield_requested', { force: true, segmentId }),
+      taskEvent(6, 'message.promoted', { queueItemId, revision: 1 }),
+      taskEvent(7, 'run.safe_point_reached', {
+        forced: true,
+        incompleteOutput: true,
+        segmentId,
+      }),
+    ])
+
+    expect(result.projection.state).toBe('running')
+    expect(result.projection.currentRun?.state).toBe('yielding')
+
+    const failed = deriveLiveTaskSnapshot(snapshot, [
+      taskEvent(3, 'run.started', { segmentId, startedAt: '2026-07-12T01:00:00Z' }),
+      taskEvent(4, 'message.queued', {
+        attachments: [],
+        content: 'queued prompt',
+        contextReferences: [],
+        createdAt: '2026-07-12T01:00:01Z',
+        queueItemId,
+      }),
+      taskEvent(5, 'run.yield_requested', { force: false, segmentId }),
+      taskEvent(6, 'message.promoted', { queueItemId, revision: 1 }),
+      taskEvent(7, 'task.actor_failed', { failedAt: '2026-07-12T01:00:02Z', segmentId }),
+    ])
+    expect(failed.projection.queue).toEqual([
+      expect.objectContaining({ queueItemId, state: 'queued' }),
+    ])
+
+    const permissionOnly = deriveLiveTaskSnapshot(snapshot, [
+      taskEvent(3, 'permission.requested', permission),
+      taskEvent(4, 'permission.resolved', { requestId: permission.requestId, revision: 1 }),
+    ])
+    expect(permissionOnly.projection.state).toBe('idle')
+  })
+
+  it('does not rewrite a completed run when the idle actor later fails', () => {
+    const completedRun = {
+      endedAt: '2026-07-12T01:00:01Z',
+      incompleteOutput: false,
+      segmentId: id(30),
+      startedAt: '2026-07-12T01:00:00Z',
+      state: 'completed' as const,
+      terminalReason: 'completed' as const,
+    }
+    const result = deriveLiveTaskSnapshot(
+      {
+        ...snapshot,
+        projection: {
+          ...snapshot.projection,
+          currentRun: completedRun,
+          state: 'completed',
+        },
+      },
+      [taskEvent(3, 'task.actor_failed', { failedAt: '2026-07-12T01:00:02Z' })],
+    )
+
+    expect(result.projection.state).toBe('failed')
+    expect(result.projection.currentRun).toEqual(completedRun)
+  })
+
+  it('keeps live metadata timeline projection in parity with reload', () => {
+    const result = deriveLiveTaskSnapshot(snapshot, [
+      taskEvent(3, 'task.pinned', { pinned: true }),
+      taskEvent(4, 'task.pinned', { pinned: false }),
+      taskEvent(5, 'task.removed', { removed: true }),
+    ])
+
+    expect(result.timeline.map((item) => item.summary)).toEqual([
+      'Task pinned',
+      'Task unpinned',
+      'Task removed',
+    ])
+  })
+
   it('updates queue and permission state from committed live events without replaying the snapshot', () => {
     const queueItemId = id(60)
     const permission = { requestId: id(61), revision: 1, route: 'foreground_task' as const }
@@ -191,6 +348,7 @@ function engineEvent(
   globalOffset: number,
   type: string,
   event: Record<string, unknown>,
+  runSegmentId = id(30),
 ): TaskEventEnvelope {
   return {
     ...taskEvent(globalOffset, `engine.${type}`, {
@@ -199,6 +357,7 @@ function engineEvent(
       event: { type, ...event },
       journalOffset: globalOffset - 4,
       runId: id(31),
+      runSegmentId,
       sessionId: id(32),
       tenantId: id(0),
     }),

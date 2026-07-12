@@ -354,6 +354,40 @@ describe('daemon client', () => {
 
     await expect(client.loadTask(taskId)).rejects.toThrow('another task')
   })
+
+  it('loads bounded task audit pages with a backward cursor', async () => {
+    const invoke = vi.fn(async (_command: string, args?: Record<string, unknown>) => {
+      const frame = args?.frame as { request: unknown; requestId: string }
+      return {
+        requestId: frame.requestId,
+        protocolVersion: 1,
+        message: {
+          events: [],
+          nextBeforeOffset: 20,
+          taskId,
+          type: 'task_event_page',
+        },
+      }
+    })
+    const client = createDaemonClient(transport(invoke), { requestId: () => 'audit-request' })
+
+    await expect(client.loadTaskEvents(taskId, 42)).resolves.toMatchObject({
+      nextBeforeOffset: 20,
+      taskId,
+    })
+    expect(invoke).toHaveBeenCalledWith('daemon_request', {
+      frame: {
+        protocolVersion: 1,
+        request: {
+          beforeGlobalOffset: 42,
+          limit: 16,
+          taskId,
+          type: 'load_task_events',
+        },
+        requestId: 'audit-request',
+      },
+    })
+  })
 })
 
 function transport(invoke: DaemonTransport['invoke']): DaemonTransport {

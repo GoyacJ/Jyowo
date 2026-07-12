@@ -10,7 +10,7 @@ use harness_contracts::{
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
-use crate::task_event::TaskEvent;
+use crate::task_event::{EngineEventPayload, TaskEvent};
 use crate::TaskStoreError;
 
 const MAX_TIMELINE_SUMMARY_CHARS: usize = 4096;
@@ -824,7 +824,19 @@ fn project_timeline(
     reduced: &ReducedTask,
 ) -> Result<(), TaskStoreError> {
     if let TaskEvent::Engine { payload, .. } = event {
-        return project_engine_timeline(transaction, envelope, &payload.event, reduced);
+        let active_segment_id = reduced.projection.current_run.as_ref().and_then(|run| {
+            matches!(
+                run.state,
+                RunState::Running | RunState::WaitingPermission | RunState::Yielding
+            )
+            .then_some(run.segment_id)
+        });
+        let legacy_segment_id = if payload.run_segment_id.is_none() {
+            legacy_engine_run_segment_id(transaction, envelope, payload, active_segment_id)?
+        } else {
+            None
+        };
+        return project_engine_timeline(transaction, envelope, payload, legacy_segment_id);
     }
     if matches!(
         event,
@@ -1084,18 +1096,84 @@ fn project_timeline(
     insert_timeline_item(transaction, envelope, &timeline)
 }
 
+fn legacy_engine_run_segment_id(
+    transaction: &Transaction<'_>,
+    envelope: &TaskEventEnvelope,
+    payload: &EngineEventPayload,
+    active_segment_id: Option<harness_contracts::RunSegmentId>,
+) -> Result<Option<harness_contracts::RunSegmentId>, TaskStoreError> {
+    let run_id = match payload.run_id {
+        Some(run_id) => Some(run_id.to_string()),
+        None => transaction
+            .query_row(
+                "SELECT json_extract(payload_json, '$.event.run_id')
+                 FROM event_log
+                 WHERE task_id = ?1 AND global_offset = ?2",
+                params![
+                    envelope.task_id.to_string(),
+                    sqlite_integer(envelope.global_offset)?,
+                ],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten(),
+    };
+    let Some(run_id) = run_id else {
+        return Ok(active_segment_id);
+    };
+    let first_engine_offset = transaction.query_row(
+        "SELECT MIN(global_offset)
+         FROM event_log
+         WHERE task_id = ?1
+           AND event_type GLOB 'engine.*'
+           AND COALESCE(
+                 json_extract(payload_json, '$.runId'),
+                 json_extract(payload_json, '$.event.run_id')
+               ) = ?2
+           AND global_offset <= ?3",
+        params![
+            envelope.task_id.to_string(),
+            run_id,
+            sqlite_integer(envelope.global_offset)?,
+        ],
+        |row| row.get::<_, Option<i64>>(0),
+    )?;
+    let Some(first_engine_offset) = first_engine_offset else {
+        return Ok(active_segment_id);
+    };
+    transaction
+        .query_row(
+            "SELECT json_extract(payload_json, '$.segmentId')
+             FROM event_log
+             WHERE task_id = ?1
+               AND event_type = 'run.started'
+               AND global_offset < ?2
+             ORDER BY global_offset DESC
+             LIMIT 1",
+            params![envelope.task_id.to_string(), first_engine_offset],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|segment_id| {
+            harness_contracts::RunSegmentId::parse(&segment_id).map_err(TaskStoreError::from)
+        })
+        .transpose()
+        .map(|segment_id| segment_id.or(active_segment_id))
+}
+
 fn project_engine_timeline(
     transaction: &Transaction<'_>,
     envelope: &TaskEventEnvelope,
-    event: &Event,
-    reduced: &ReducedTask,
+    payload: &EngineEventPayload,
+    legacy_segment_id: Option<harness_contracts::RunSegmentId>,
 ) -> Result<(), TaskStoreError> {
-    let run_segment_id = reduced
-        .projection
-        .current_run
-        .as_ref()
-        .map(|run| run.segment_id);
-    let item = match event {
+    // Pre-binding journals did not persist runSegmentId. Their runId is resolved
+    // against the run.started that preceded that run's first engine envelope.
+    let Some(run_segment_id) = payload.run_segment_id.or(legacy_segment_id) else {
+        return Ok(());
+    };
+    let run_segment_id = Some(run_segment_id);
+    let item = match &payload.event {
         Event::AssistantDeltaProduced(delta) => {
             let DeltaChunk::Text(text) = &delta.delta else {
                 return Ok(());
@@ -1116,7 +1194,12 @@ fn project_engine_timeline(
         }
         Event::AssistantMessageCompleted(completed) => {
             let semantic_group_id = completed.message_id.to_string();
-            if complete_assistant_group(transaction, envelope.task_id, &semantic_group_id)? {
+            if complete_assistant_group(
+                transaction,
+                envelope.task_id,
+                run_segment_id,
+                &semantic_group_id,
+            )? {
                 return Ok(());
             }
             let Some(text) = message_content_text(&completed.content) else {
@@ -1292,6 +1375,7 @@ fn message_content_text(content: &MessageContent) -> Option<String> {
 fn complete_assistant_group(
     transaction: &Transaction<'_>,
     task_id: TaskId,
+    run_segment_id: Option<harness_contracts::RunSegmentId>,
     semantic_group_id: &str,
 ) -> Result<bool, TaskStoreError> {
     let mut completed = {
@@ -1304,6 +1388,7 @@ fn complete_assistant_group(
         for row in rows {
             let item: TimelineItemProjection = serde_json::from_str(&row?)?;
             if item.kind == TimelineEventKind::AssistantText
+                && item.run_segment_id == run_segment_id
                 && item.semantic_group_id.as_deref() == Some(semantic_group_id)
             {
                 found = Some(item);

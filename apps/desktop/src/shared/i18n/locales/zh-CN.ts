@@ -19,6 +19,9 @@ export const zhCN = {
     },
   },
   tasks: {
+    model: {
+      default: '默认',
+    },
     composer: {
       disconnected: '连接已断开。草稿已保留。',
       queue: '排队',
@@ -108,8 +111,11 @@ export const zhCN = {
         taskActorFailed: '任务执行器失败',
         taskArchived: '任务已归档',
         taskCreated: '任务已创建',
+        taskPinned: '任务已置顶',
+        taskRemoved: '任务已移除',
         taskRestored: '任务已恢复',
         taskTitleChanged: '任务标题已更改',
+        taskUnpinned: '任务已取消置顶',
         toolCompleted: '工具执行完成',
         toolDenied: '工具执行被拒绝',
         toolIndeterminate: '重启后无法确定工具执行结果',
@@ -157,6 +163,15 @@ export const zhCN = {
       title: '工作台',
       useCollaborationWidth: '使用协作宽度',
       useInspectorWidth: '使用检查器宽度',
+      agentState: {
+        background: '后台运行',
+        cancelled: '已取消',
+        completed: '已完成',
+        failed: '失败',
+        running: '运行中',
+        starting: '正在启动',
+        yielding: '正在让出',
+      },
       tabs: {
         agents: '代理',
         audit: '审计',
@@ -173,6 +188,12 @@ export const zhCN = {
       artifact: {
         loading: '正在加载产物…',
         unavailable: '产物不可用',
+      },
+      audit: {
+        loading: '正在加载审计事件…',
+        newer: '较新事件',
+        older: '较早事件',
+        unavailable: '审计事件不可用',
       },
       empty: {
         agents: '此任务未关联子代理。',

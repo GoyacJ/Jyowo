@@ -11,7 +11,7 @@ export function SubagentsPanel({ subagents }: { subagents: SubagentProjection[] 
           <div className="flex items-center justify-between gap-3">
             <span className="truncate text-sm">{agent.summary ?? agent.childTaskId}</span>
             <span className="shrink-0 text-muted-foreground text-xs">
-              {agent.state.replace('_', ' ')}
+              {t(`workbench.agentState.${agent.state}`)}
             </span>
           </div>
           <p className="truncate font-mono text-[11px] text-muted-foreground">

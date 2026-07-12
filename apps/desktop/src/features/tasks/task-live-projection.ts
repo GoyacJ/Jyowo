@@ -43,7 +43,7 @@ export function deriveLiveTaskSnapshot(
     projection.lastGlobalOffset = Math.max(projection.lastGlobalOffset, event.globalOffset)
     projection.streamVersion = Math.max(projection.streamVersion, event.streamSequence)
     applyProjectionEvent(projection, queue, queueContent, event)
-    projectTimelineEvent(projection, timeline, queueContent, event)
+    projectTimelineEvent(timeline, queueContent, event)
   }
 
   projection.queue = [...queue.values()].sort(
@@ -85,19 +85,33 @@ function applyProjectionEvent(
     case 'task.removed':
       if (typeof payload.removed === 'boolean') projection.removed = payload.removed
       return
-    case 'task.actor_failed':
+    case 'task.actor_failed': {
+      const segmentId = typedId(payload.segmentId)
+      const activeRun =
+        segmentId &&
+        projection.currentRun?.segmentId === segmentId &&
+        ['running', 'waiting_permission', 'yielding'].includes(projection.currentRun.state)
+          ? projection.currentRun
+          : null
+      const wasYielding = activeRun?.state === 'yielding'
       projection.state = 'failed'
-      if (projection.currentRun) {
+      if (activeRun) {
         projection.currentRun = {
-          ...projection.currentRun,
+          ...activeRun,
           endedAt: stringValue(payload.failedAt) ?? event.recordedAt,
           incompleteOutput: true,
           state: 'failed',
           terminalReason: 'failed',
         }
       }
+      if (wasYielding) {
+        for (const [queueItemId, item] of queue) {
+          if (item.state === 'promoting') queue.set(queueItemId, { ...item, state: 'queued' })
+        }
+      }
       projection.pendingPermission = null
       return
+    }
     case 'run.started': {
       const segmentId = typedId(payload.segmentId)
       const startedAt = stringValue(payload.startedAt)
@@ -130,14 +144,9 @@ function applyProjectionEvent(
     }
     case 'run.yield_requested':
       if (projection.currentRun) projection.currentRun.state = 'yielding'
-      projection.state = 'yielding'
+      projection.state = 'running'
       return
     case 'run.safe_point_reached':
-      if (payload.forced && projection.currentRun) {
-        projection.currentRun.state = 'interrupted'
-        projection.currentRun.incompleteOutput = Boolean(payload.incompleteOutput)
-        projection.state = 'interrupted'
-      }
       return
     case 'permission.requested':
       {
@@ -154,6 +163,8 @@ function applyProjectionEvent(
       if (projection.currentRun?.state === 'waiting_permission') {
         projection.currentRun.state = 'running'
         projection.state = 'running'
+      } else if (!projection.currentRun) {
+        projection.state = 'idle'
       }
       return
     case 'subagent.spawned': {
@@ -245,14 +256,13 @@ function applyQueueEvent(
 }
 
 function projectTimelineEvent(
-  projection: TaskProjection,
   timeline: Map<number, TimelineItemProjection>,
   queueContent: Map<string, string>,
   event: TaskEventEnvelope,
 ) {
   if (timeline.has(event.globalOffset)) return
   if (event.eventType.startsWith('engine.')) {
-    projectEngineEvent(projection, timeline, event)
+    projectEngineEvent(timeline, event)
     return
   }
   const payload = record(event.payload)
@@ -270,7 +280,6 @@ function projectTimelineEvent(
 }
 
 function projectEngineEvent(
-  projection: TaskProjection,
   timeline: Map<number, TimelineItemProjection>,
   envelope: TaskEventEnvelope,
 ) {
@@ -278,7 +287,8 @@ function projectEngineEvent(
   const event = record(payload?.event)
   const type = stringValue(event?.type)
   if (!event || !type) return
-  const runSegmentId = projection.currentRun?.segmentId
+  const runSegmentId = typedId(payload?.runSegmentId)
+  if (!runSegmentId) return
   if (type === 'assistant_delta_produced') {
     const messageId = stringValue(event.message_id)
     const text = stringValue(record(event.delta)?.text)
@@ -299,7 +309,12 @@ function projectEngineEvent(
     if (!messageId) return
     const previous = [...timeline.values()]
       .reverse()
-      .find((item) => item.kind === 'assistant_text' && item.semanticGroupId === messageId)
+      .find(
+        (item) =>
+          item.kind === 'assistant_text' &&
+          item.runSegmentId === runSegmentId &&
+          item.semanticGroupId === messageId,
+      )
     if (previous) {
       previous.incomplete = false
       return
@@ -410,6 +425,10 @@ function taskTimelineDescription(
       return description('notice', 'Task title changed')
     case 'task.archived':
       return description('notice', payload.archived ? 'Task archived' : 'Task restored')
+    case 'task.pinned':
+      return description('notice', payload.pinned ? 'Task pinned' : 'Task unpinned')
+    case 'task.removed':
+      return description('notice', payload.removed ? 'Task removed' : 'Task restored')
     case 'tool.indeterminate':
       return description('tool_activity', 'Tool outcome is indeterminate after restart', true)
     case 'subagent.spawned':

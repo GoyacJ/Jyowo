@@ -122,6 +122,33 @@ describe('TaskTimeline', () => {
     expect(narratives[1]).toHaveTextContent('Second message')
   })
 
+  it('does not split one assistant narrative at a virtualization chunk boundary', () => {
+    const { container } = render(
+      <TaskTimeline
+        items={Array.from({ length: 17 }, (_, index) => ({
+          ...item(80 + index, 'assistant_text', String(index), 'segment-streamed'),
+          semanticGroupId: 'one-message',
+        }))}
+      />,
+    )
+
+    expect(container.querySelectorAll('[data-narrative]')).toHaveLength(1)
+  })
+
+  it('coalesces a long streamed assistant message into one rendered timeline node', () => {
+    const streamed = Array.from({ length: 500 }, (_, index) => ({
+      ...item(1_000 + index, 'assistant_text', String(index % 10), 'segment-streamed'),
+      semanticGroupId: 'one-long-message',
+    }))
+
+    render(<TaskTimeline items={streamed} />)
+
+    expect(screen.getAllByTestId('timeline-item')).toHaveLength(1)
+    expect(screen.getByTestId('timeline-item')).toHaveTextContent(
+      streamed.map((entry) => entry.summary).join(''),
+    )
+  })
+
   it('virtualizes a long single-run history instead of mounting every event', () => {
     const longRun = Array.from({ length: 500 }, (_, index) =>
       item(100 + index, 'tool_activity', `Read file ${index}`, 'segment-long'),
@@ -144,6 +171,8 @@ describe('TaskTimeline', () => {
             item(701, 'assistant_text', 'Run completed', 'segment-localized'),
             item(702, 'notice', 'Run completed', 'segment-localized'),
             item(703, 'diff', 'Artifact updated', 'segment-localized', true),
+            item(704, 'notice', 'Task pinned'),
+            item(705, 'notice', 'Task removed'),
           ]}
           onSelectItem={() => undefined}
         />
@@ -156,6 +185,8 @@ describe('TaskTimeline', () => {
     expect(screen.getByText('未完成')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '打开更改' })).toHaveTextContent('打开')
     expect(screen.getByText('详情')).toBeInTheDocument()
+    expect(screen.getByText('任务已置顶')).toBeInTheDocument()
+    expect(screen.getByText('任务已移除')).toBeInTheDocument()
   })
 })
 

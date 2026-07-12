@@ -204,6 +204,47 @@ fn task_store_bounds_public_event_pages() {
 }
 
 #[test]
+fn task_audit_event_pages_walk_backwards_without_cross_task_leaks() {
+    let root = temp_root("task-audit-event-pages");
+    std::fs::create_dir_all(&root).expect("create temp root");
+    let path = root.join("tasks.db");
+    let store = TaskStore::open(&path).unwrap();
+    let task_id = TaskId::new();
+    let other_task_id = TaskId::new();
+    let mut task_events = vec![NewTaskEvent::task_created("audit page")];
+    task_events.extend((0..20).map(|index| NewTaskEvent::task_title_changed(index.to_string())));
+    store.append(task_id, 0, &authority(), task_events).unwrap();
+    store
+        .append(
+            other_task_id,
+            0,
+            &authority(),
+            vec![NewTaskEvent::task_created("other task")],
+        )
+        .unwrap();
+
+    let (latest, next_before_offset) = store
+        .task_event_page_before(task_id, None, usize::MAX)
+        .unwrap();
+    assert_eq!(latest.len(), 16);
+    assert!(latest
+        .windows(2)
+        .all(|pair| pair[0].global_offset < pair[1].global_offset));
+    assert!(latest.iter().all(|event| event.task_id == task_id));
+
+    let (older, final_cursor) = store
+        .task_event_page_before(task_id, next_before_offset, usize::MAX)
+        .unwrap();
+    assert_eq!(older.len(), 5);
+    assert!(older.iter().all(|event| event.task_id == task_id));
+    assert_eq!(final_cursor, None);
+    assert!(older.last().unwrap().global_offset < latest.first().unwrap().global_offset);
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn nonterminal_task_projection_pages_are_bounded_and_exclude_terminal_tasks() {
     let root = temp_root("nonterminal-projection-pages");
     std::fs::create_dir_all(&root).expect("create temp root");

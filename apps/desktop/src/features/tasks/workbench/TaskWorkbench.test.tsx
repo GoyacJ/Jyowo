@@ -36,7 +36,7 @@ describe('TaskWorkbench', () => {
     })
 
     const { rerender } = render(
-      <TaskWorkbench client={{ readBlob }} events={events} projection={projection} />,
+      <TaskWorkbench client={workbenchClient(readBlob)} events={events} projection={projection} />,
     )
 
     expect(screen.getByRole('tab', { name: 'Changes' })).toHaveAttribute('aria-selected', 'true')
@@ -46,13 +46,17 @@ describe('TaskWorkbench', () => {
     expect(screen.getByText(segmentId)).toBeInTheDocument()
     expect(screen.getByText(eventId)).toBeInTheDocument()
 
-    rerender(<TaskWorkbench client={{ readBlob }} events={events} projection={projection} />)
+    rerender(
+      <TaskWorkbench client={workbenchClient(readBlob)} events={events} projection={projection} />,
+    )
     expect(readBlob).toHaveBeenCalledOnce()
   })
 
   it('switches projection-driven command, agent, environment, source, and audit panels', async () => {
     const readBlob = vi.fn().mockResolvedValue(blob('artifact body'))
-    render(<TaskWorkbench client={{ readBlob }} events={events} projection={projection} />)
+    render(
+      <TaskWorkbench client={workbenchClient(readBlob)} events={events} projection={projection} />,
+    )
 
     await select('commands', { blobId })
     expect(await screen.findByText('artifact body')).toBeInTheDocument()
@@ -77,9 +81,9 @@ describe('TaskWorkbench', () => {
     uiStore.setState({ taskWorkbenchSelection: selection('commands', { blobId }) })
     render(
       <TaskWorkbench
-        client={{
-          readBlob: vi.fn().mockResolvedValue({ ...blob(''), bytes: null, missing: true }),
-        }}
+        client={workbenchClient(
+          vi.fn().mockResolvedValue({ ...blob(''), bytes: null, missing: true }),
+        )}
         events={events}
         projection={projection}
       />,
@@ -91,7 +95,9 @@ describe('TaskWorkbench', () => {
   it('clears the selected artifact when switching to a different panel', async () => {
     const readBlob = vi.fn().mockResolvedValue(blob('diff --git a/a.rs b/a.rs\n+fixed'))
     uiStore.setState({ taskWorkbenchSelection: selection('changes', { blobId }) })
-    render(<TaskWorkbench client={{ readBlob }} events={events} projection={projection} />)
+    render(
+      <TaskWorkbench client={workbenchClient(readBlob)} events={events} projection={projection} />,
+    )
 
     expect(await screen.findByText(/diff --git/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('tab', { name: 'Commands' }))
@@ -105,7 +111,7 @@ describe('TaskWorkbench', () => {
     uiStore.setState({ taskWorkbenchSelection: selection('commands', { blobId }) })
     render(
       <TaskWorkbench
-        client={{ readBlob: vi.fn().mockResolvedValue(blob('output')) }}
+        client={workbenchClient(vi.fn().mockResolvedValue(blob('output')))}
         events={events}
         projection={projection}
       />,
@@ -121,7 +127,7 @@ describe('TaskWorkbench', () => {
 
   it('hides decorative workbench icons from assistive technology', () => {
     const { container } = render(
-      <TaskWorkbench client={{ readBlob: vi.fn() }} events={events} projection={projection} />,
+      <TaskWorkbench client={workbenchClient()} events={events} projection={projection} />,
     )
 
     expect(container.querySelectorAll('header svg')).not.toHaveLength(0)
@@ -133,7 +139,7 @@ describe('TaskWorkbench', () => {
   it('localizes workbench controls and empty state in Chinese', () => {
     render(
       <I18nextProvider i18n={createAppI18n('zh-CN')}>
-        <TaskWorkbench client={{ readBlob: vi.fn() }} events={[]} projection={projection} />
+        <TaskWorkbench client={workbenchClient()} events={[]} projection={projection} />
       </I18nextProvider>,
     )
 
@@ -143,10 +149,22 @@ describe('TaskWorkbench', () => {
     expect(screen.queryByText('Workbench')).not.toBeInTheDocument()
   })
 
+  it('localizes subagent state in Chinese', async () => {
+    render(
+      <I18nextProvider i18n={createAppI18n('zh-CN')}>
+        <TaskWorkbench client={workbenchClient()} events={[]} projection={projection} />
+      </I18nextProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: '代理' }))
+    expect(screen.getByText('运行中')).toBeInTheDocument()
+    expect(screen.queryByText('running')).not.toBeInTheDocument()
+  })
+
   it('renders historical environment, source, and audit projections from the snapshot', async () => {
     render(
       <TaskWorkbench
-        client={{ readBlob: vi.fn() }}
+        client={workbenchClient()}
         events={[]}
         projection={projection}
         timeline={historicalTimeline}
@@ -163,9 +181,23 @@ describe('TaskWorkbench', () => {
     expect(screen.getByText('Command failed')).toBeInTheDocument()
   })
 
+  it('keeps historical audit envelopes when live events arrive', async () => {
+    render(
+      <TaskWorkbench
+        client={workbenchClient(vi.fn(), [historicalAuditEvent])}
+        events={events}
+        projection={projection}
+      />,
+    )
+
+    await select('audit')
+    expect(screen.getByText('engine.run_started')).toBeInTheDocument()
+    expect(screen.getByText('permission.requested')).toBeInTheDocument()
+  })
+
   it('stacks narrow layouts and uses the selected desktop width mode', () => {
     const { rerender } = render(
-      <TaskWorkbench client={{ readBlob: vi.fn() }} events={events} projection={projection} />,
+      <TaskWorkbench client={workbenchClient()} events={events} projection={projection} />,
     )
 
     const workbench = screen.getByRole('complementary', { name: 'Task workbench' })
@@ -173,9 +205,7 @@ describe('TaskWorkbench', () => {
     expect(workbench).toHaveAttribute('data-mode', 'inspector')
 
     act(() => uiStore.setState({ taskWorkbenchMode: 'collaboration' }))
-    rerender(
-      <TaskWorkbench client={{ readBlob: vi.fn() }} events={events} projection={projection} />,
-    )
+    rerender(<TaskWorkbench client={workbenchClient()} events={events} projection={projection} />)
     expect(workbench).toHaveAttribute('data-mode', 'collaboration')
   })
 })
@@ -228,6 +258,17 @@ function blob(text: string) {
   }
 }
 
+function workbenchClient(readBlob = vi.fn(), auditEvents: TaskEventEnvelope[] = []) {
+  return {
+    loadTaskEvents: vi.fn().mockResolvedValue({
+      events: auditEvents,
+      nextBeforeOffset: null,
+      taskId,
+    }),
+    readBlob,
+  }
+}
+
 const taskId = '01J00000000000000000000001'
 const segmentId = '01J00000000000000000000002'
 const eventId = '01J00000000000000000000003'
@@ -263,6 +304,8 @@ const events: TaskEventEnvelope[] = [
   event(2, 'permission.requested'),
   event(3, 'engine.tool_use_completed'),
 ]
+
+const historicalAuditEvent = event(0, 'engine.run_started')
 
 const historicalTimeline = [
   item(1, 'notice', 'Workspace acquired'),

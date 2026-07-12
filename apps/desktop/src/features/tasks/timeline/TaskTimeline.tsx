@@ -42,7 +42,7 @@ export function TaskTimeline({
   )
   const latest = orderedItems.at(-1)
   const first = orderedItems.at(0)
-  const blocks = createBlocks(orderedItems)
+  const blocks = createBlocks(coalesceAssistantItems(orderedItems))
   const { endRef, jumpToLatest, onScroll, showJumpToLatest, viewportRef } =
     useConversationScrollAnchor(latest ? `${latest.id}:${latest.incomplete}` : null, {
       prependAnchorKey: first?.id,
@@ -160,8 +160,9 @@ function createBlocks(items: TimelineItemProjection[]): TimelineBlock[] {
       segmentItems.push(items[index] as TimelineItemProjection)
       index += 1
     }
-    for (let start = 0; start < segmentItems.length; start += segmentChunkSize) {
-      const chunk = segmentItems.slice(start, start + segmentChunkSize)
+    for (let start = 0; start < segmentItems.length; ) {
+      const end = Math.min(start + segmentChunkSize, segmentItems.length)
+      const chunk = segmentItems.slice(start, end)
       blocks.push({
         items: chunk,
         key: `${segmentId}:${chunk[0]?.globalOffset}`,
@@ -170,9 +171,29 @@ function createBlocks(items: TimelineItemProjection[]): TimelineBlock[] {
         showHeader: start === 0,
         statusItems: segmentItems,
       })
+      start = end
     }
   }
   return blocks
+}
+
+function coalesceAssistantItems(items: TimelineItemProjection[]) {
+  const coalesced: TimelineItemProjection[] = []
+  for (const item of items) {
+    const previous = coalesced.at(-1)
+    if (
+      item.kind === 'assistant_text' &&
+      previous?.kind === 'assistant_text' &&
+      item.runSegmentId === previous.runSegmentId &&
+      item.semanticGroupId === previous.semanticGroupId
+    ) {
+      previous.summary += item.summary
+      previous.incomplete = item.incomplete
+      continue
+    }
+    coalesced.push({ ...item })
+  }
+  return coalesced
 }
 
 function TimelineBlockView({
