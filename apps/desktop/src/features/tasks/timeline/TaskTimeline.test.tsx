@@ -94,6 +94,32 @@ describe('TaskTimeline', () => {
     expect(screen.getByRole('region', { name: 'Run cancelled' })).toBeInTheDocument()
   })
 
+  it('keeps adjacent assistant messages in separate narrative groups', () => {
+    const { container } = render(
+      <TaskTimeline
+        items={[
+          {
+            ...item(70, 'assistant_text', 'First ', 'segment-grouped'),
+            semanticGroupId: 'message-a',
+          },
+          {
+            ...item(71, 'assistant_text', 'message', 'segment-grouped'),
+            semanticGroupId: 'message-a',
+          },
+          {
+            ...item(72, 'assistant_text', 'Second message', 'segment-grouped'),
+            semanticGroupId: 'message-b',
+          },
+        ]}
+      />,
+    )
+
+    const narratives = container.querySelectorAll('[data-narrative]')
+    expect(narratives).toHaveLength(2)
+    expect(narratives[0]).toHaveTextContent('First message')
+    expect(narratives[1]).toHaveTextContent('Second message')
+  })
+
   it('virtualizes a long single-run history instead of mounting every event', () => {
     const longRun = Array.from({ length: 500 }, (_, index) =>
       item(100 + index, 'tool_activity', `Read file ${index}`, 'segment-long'),

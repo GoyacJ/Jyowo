@@ -76,7 +76,11 @@ function renderItems(
     }
 
     const narrative: TimelineItemProjection[] = []
-    while (items[index]?.kind === 'assistant_text') {
+    while (
+      items[index]?.kind === 'assistant_text' &&
+      items[index]?.runSegmentId === item.runSegmentId &&
+      items[index]?.semanticGroupId === item.semanticGroupId
+    ) {
       narrative.push(items[index] as TimelineItemProjection)
       index += 1
     }
