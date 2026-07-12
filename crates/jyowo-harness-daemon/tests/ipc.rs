@@ -129,3 +129,5 @@ fn create(request_id: &str, command_id: CommandId, key: &str) -> ClientFrame {
 
 #[path = "ipc/ipc_cases.rs"]
 mod ipc_cases;
+#[path = "ipc/ipc_task_and_transport_cases.rs"]
+mod ipc_task_and_transport_cases;
