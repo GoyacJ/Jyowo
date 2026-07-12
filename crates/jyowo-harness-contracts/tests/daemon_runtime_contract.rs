@@ -3,10 +3,11 @@ use harness_contracts::{
     AutomationDeletedResponse, AutomationEnabledResponse, AutomationRunRecord,
     AutomationRunResponse, AutomationRunStatus, AutomationRunsResponse, AutomationSavedResponse,
     AutomationSchedule, AutomationSpec, AutomationWorkspaceScope, AutomationsResponse,
-    ChildAttachment, ClientFrame, ClientRequest, DeleteMemoryItemResponse, GetMemoryItemResponse,
-    ListMemoryItemsResponse, ListRuntimeToolsResponse, MemoryId, MissedRunPolicy, PermissionMode,
-    RuntimeToolServiceBindingSummary, RuntimeToolSummary, SandboxMode, ServerFrame, ServerMessage,
-    SubagentParentProjection, TaskId, ToolProfile, WorkspaceAccess, PROTOCOL_VERSION,
+    ChildAttachment, ClientFrame, ClientRequest, DaemonMemoryItem, DeleteMemoryItemResponse,
+    GetMemoryItemResponse, ListMemoryItemsResponse, ListRuntimeToolsResponse, MemoryId,
+    MissedRunPolicy, PermissionMode, RuntimeToolServiceBindingSummary, RuntimeToolSummary,
+    SandboxMode, ServerFrame, ServerMessage, SubagentParentProjection, TaskId, ToolProfile,
+    WorkspaceAccess, PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
 
@@ -42,6 +43,27 @@ fn automation_run() -> AutomationRunRecord {
         run_id: Some("01J00000000000000000000000".to_owned()),
         started_at: Utc.with_ymd_and_hms(2026, 7, 12, 1, 5, 0).unwrap(),
         status: AutomationRunStatus::Started,
+    }
+}
+
+fn memory_item(memory_id: MemoryId) -> DaemonMemoryItem {
+    let timestamp = Utc.with_ymd_and_hms(2026, 7, 12, 1, 0, 0).unwrap();
+    DaemonMemoryItem {
+        id: memory_id,
+        provider_id: Some("local".to_owned()),
+        kind: "semantic".to_owned(),
+        visibility: "workspace".to_owned(),
+        content: "Remember this".to_owned(),
+        content_hash: "memory-hash".to_owned(),
+        source: "user".to_owned(),
+        tags: Vec::new(),
+        confidence: 1.0,
+        access_count: 0,
+        last_accessed_at: None,
+        expires_at: None,
+        deleted: false,
+        created_at: timestamp,
+        updated_at: timestamp,
     }
 }
 
@@ -84,6 +106,7 @@ fn runtime_and_memory_requests_use_workspace_scoped_camel_case_payloads() {
             ClientRequest::DeleteMemoryItem {
                 workspace_root: workspace_root(),
                 memory_id,
+                action_plan_id: None,
             },
             "delete_memory_item",
             Some(memory_id.to_string()),
@@ -172,7 +195,9 @@ fn runtime_server_responses_are_typed_and_camel_case() {
             }],
         }),
         ServerMessage::MemoryItems(ListMemoryItemsResponse { items: Vec::new() }),
-        ServerMessage::MemoryItem(GetMemoryItemResponse { item: None }),
+        ServerMessage::MemoryItem(GetMemoryItemResponse {
+            item: memory_item(memory_id),
+        }),
         ServerMessage::MemoryDeleted(DeleteMemoryItemResponse { memory_id }),
         ServerMessage::Automations(AutomationsResponse {
             automations: vec![automation()],
