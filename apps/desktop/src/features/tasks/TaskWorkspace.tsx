@@ -35,9 +35,10 @@ export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
   const task = useTask(taskId)
   const daemonClient = useDaemonClient()
   const commandClient = useCommandClient()
+  const workspaceRoot = task.snapshot?.projection.workspace?.root
   const providerSettings = useQuery({
-    queryFn: () => commandClient.listProviderSettings(),
-    queryKey: ['task-model-configs'],
+    queryFn: () => commandClient.listProviderSettings(workspaceRoot),
+    queryKey: ['task-model-configs', workspaceRoot],
   }).data
   const [modelOverride, setModelOverride] = useState<{ taskId: TypedUlid; value: string } | null>(
     null,

@@ -209,7 +209,7 @@ pub use contracts::{
     SetExecutionSettingsRequest, SetExecutionSettingsResponse, SetMcpServerEnabledRequest,
     SetMcpServerEnabledResponse, SetPluginEnabledRequest, SetProjectPluginsEnabledRequest,
     SetProjectPluginsEnabledResponse, SetSkillEnabledRequest, SetSkillEnabledResponse,
-    SkillCatalogInstallProgressEmitter, SkillCatalogInstallProgressPayload,
+    SettingsScope, SkillCatalogInstallProgressEmitter, SkillCatalogInstallProgressPayload,
     SkillCatalogInstallTaskPayload, SkillDetailPayload, SkillFileContentPayload, SkillFilePayload,
     SkillParameterPayload, SkillStore, SkillStoreRecord, SkillSummaryPayload, StartRunRequest,
     StartRunResponse, SubscribeMcpDiagnosticsRequest, SubscribeMcpDiagnosticsResponse,
@@ -274,7 +274,8 @@ pub use providers::{
     get_provider_config_api_key_with_store, list_model_provider_catalog_payload,
     list_model_provider_catalog_payload_with_remote,
     list_provider_capability_route_options_from_inputs, list_provider_capability_routes_with_store,
-    list_provider_settings_with_store, request_provider_config_api_key_reveal_with_runtime_state,
+    list_provider_settings_for_workspace_with_store, list_provider_settings_with_store,
+    request_provider_config_api_key_reveal_with_runtime_state,
     request_provider_config_api_key_reveal_with_store, resolve_effective_execution_settings,
     save_provider_capability_route_settings_with_store, save_provider_capability_route_with_store,
     save_provider_settings_with_runtime_state, save_provider_settings_with_store,
@@ -464,12 +465,28 @@ pub async fn list_automation_runs(
     list_automation_runs_with_runtime_state(automation_id, &runtime_state).await
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn list_provider_settings(
+    workspace_root: Option<String>,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListProviderSettingsResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
-    list_provider_settings_with_store(runtime_state.provider_settings_store.as_ref()).await
+    let workspace_root = workspace_root
+        .map(|workspace_root| {
+            runtime::canonical_workspace_root(
+                PathBuf::from(workspace_root),
+                "provider settings workspace root".to_owned(),
+            )
+        })
+        .transpose()?;
+    let project_store = workspace_root
+        .as_deref()
+        .map(runtime::project_config_store_for_workspace);
+    list_provider_settings_for_workspace_with_store(
+        runtime_state.provider_settings_store.as_ref(),
+        project_store.as_ref(),
+    )
+    .await
 }
 
 #[tauri::command]

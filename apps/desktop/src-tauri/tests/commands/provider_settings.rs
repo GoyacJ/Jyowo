@@ -1230,6 +1230,96 @@ async fn list_provider_settings_payload_returns_profiles_without_raw_keys() {
     assert!(!serialized.contains("provider-test-token"));
 }
 
+fn provider_config(id: &str, model_id: &str) -> ProviderConfigRecord {
+    ProviderConfigRecord {
+        api_key: "provider-test-token".to_owned(),
+        protocol: ModelProtocol::Responses,
+        base_url: None,
+        display_name: id.to_owned(),
+        id: id.to_owned(),
+        model_id: model_id.to_owned(),
+        model_options: harness_contracts::ModelRequestOptions::default(),
+        official_quota_api_key: None,
+        provider_id: "openai".to_owned(),
+        provider_defaults: None,
+        model_descriptor: openai_descriptor_record(model_id),
+    }
+}
+
+#[tokio::test]
+async fn list_provider_settings_uses_project_selection_with_global_profiles() {
+    use harness_contracts::ProviderSelectionRecord;
+    use jyowo_desktop_shell::commands::stores::ProjectConfigStore;
+    use jyowo_desktop_shell::storage_layout::{JyowoHome, StorageLayout};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace");
+    let project_store = ProjectConfigStore::new(
+        StorageLayout::new(JyowoHome::new(root.join(".jyowo"))),
+        workspace,
+    );
+    project_store
+        .save_project_provider_selection(&ProviderSelectionRecord {
+            default_config_id: Some("project-text".to_owned()),
+        })
+        .expect("save project provider selection");
+
+    let store = RecordingProviderSettingsStore {
+        record: Mutex::new(Some(ProviderSettingsRecord {
+            default_config_id: Some("global-image".to_owned()),
+            configs: vec![
+                provider_config("global-image", "gpt-5.4-mini"),
+                provider_config("project-text", "gpt-5.4-mini"),
+            ],
+        })),
+        ..RecordingProviderSettingsStore::default()
+    };
+
+    let payload = list_provider_settings_for_workspace_with_store(&store, Some(&project_store))
+        .await
+        .expect("list effective provider settings");
+
+    assert_eq!(payload.default_config_id.as_deref(), Some("project-text"));
+    assert_eq!(payload.selection_scope, SettingsScope::Project);
+    assert_eq!(payload.configs.len(), 2);
+    assert!(payload
+        .configs
+        .iter()
+        .any(|config| { config.id == "project-text" && config.is_default }));
+}
+
+#[tokio::test]
+async fn list_provider_settings_rejects_empty_project_selection() {
+    use harness_contracts::ProviderSelectionRecord;
+    use jyowo_desktop_shell::commands::stores::ProjectConfigStore;
+    use jyowo_desktop_shell::storage_layout::{JyowoHome, StorageLayout};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace");
+    let project_store = ProjectConfigStore::new(
+        StorageLayout::new(JyowoHome::new(root.join(".jyowo"))),
+        workspace,
+    );
+    project_store
+        .save_project_provider_selection(&ProviderSelectionRecord::default())
+        .expect("save empty project provider selection");
+    let store = RecordingProviderSettingsStore {
+        record: Mutex::new(Some(ProviderSettingsRecord {
+            default_config_id: Some("global-image".to_owned()),
+            configs: vec![provider_config("global-image", "gpt-5.4-mini")],
+        })),
+        ..RecordingProviderSettingsStore::default()
+    };
+
+    list_provider_settings_for_workspace_with_store(&store, Some(&project_store))
+        .await
+        .expect_err("present empty project provider selection must fail closed");
+}
+
 #[tokio::test]
 async fn list_provider_settings_payload_returns_saved_openrouter_dynamic_descriptor() {
     let store = RecordingProviderSettingsStore {

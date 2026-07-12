@@ -230,7 +230,7 @@ export function createSettingsCommandHandlers(
         state.options.providerProbeSnapshots ?? fixtureListProviderProbeSnapshots,
       )
     },
-    async listProviderSettings() {
+    async listProviderSettings(_workspaceRoot?: string) {
       await wait(state.options.delayMs)
       return cloneResponse(state.providerSettings)
     },

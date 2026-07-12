@@ -103,43 +103,49 @@ describe('TaskWorkspace', () => {
     expect(submitted).not.toHaveProperty('permissionMode')
   })
 
-  it.each([
-    'global',
-    'project',
-  ] as const)('uses the resolved %s provider model capability while the task inherits it', async (selectionScope) => {
-    const providerSettings = await createTestCommandClient().listProviderSettings()
-    const defaultConfig = providerSettings.configs[0]
-    if (!defaultConfig) throw new Error('provider settings fixture requires a default config')
-    const textOnlyConfig = {
-      ...defaultConfig,
+  it('uses project provider capability until the task explicitly overrides it', async () => {
+    const workspaceRoot = '/workspace/project-provider-selection'
+    const globalSettings = await createTestCommandClient().listProviderSettings()
+    const imageConfig = globalSettings.configs[0]
+    if (!imageConfig) throw new Error('provider settings fixture requires a default config')
+    const textOnlyConfig: Awaited<
+      ReturnType<CommandClient['listProviderSettings']>
+    >['configs'][number] = {
+      ...imageConfig,
       id: 'text-only-config',
-      isDefault: false,
+      isDefault: true,
       modelDescriptor: {
-        ...defaultConfig.modelDescriptor,
+        ...imageConfig.modelDescriptor,
         conversationCapability: {
-          ...defaultConfig.modelDescriptor.conversationCapability,
-          inputModalities:
-            defaultConfig.modelDescriptor.conversationCapability.inputModalities.filter(
-              (modality) => modality === 'text',
-            ),
+          ...imageConfig.modelDescriptor.conversationCapability,
+          inputModalities: ['text'],
         },
       },
     }
+    const listProviderSettings = vi.fn(async (requestedWorkspaceRoot?: string) =>
+      requestedWorkspaceRoot === workspaceRoot
+        ? {
+            configs: [{ ...imageConfig, isDefault: false }, textOnlyConfig],
+            defaultConfigId: textOnlyConfig.id,
+            selectionScope: 'project' as const,
+          }
+        : globalSettings,
+    )
     useTask.mockReturnValue({
       connectionError: null,
       connectionState: 'connected',
       events: [],
-      snapshot: idleSnapshot,
+      snapshot: {
+        ...idleSnapshot,
+        projection: {
+          ...idleSnapshot.projection,
+          workspace: { mode: 'current', root: workspaceRoot },
+        },
+      },
     })
 
     renderTaskWorkspace(
-      createTestCommandClient({
-        providerSettingsList: {
-          ...providerSettings,
-          configs: [textOnlyConfig, defaultConfig],
-          selectionScope,
-        },
-      }),
+      { ...createTestCommandClient(), listProviderSettings },
       {
         connect: vi.fn().mockResolvedValue(undefined),
         request: vi.fn(),
@@ -147,6 +153,12 @@ describe('TaskWorkspace', () => {
     )
 
     await screen.findByRole('option', { name: /\(default\)$/ })
+    expect(listProviderSettings).toHaveBeenCalledWith(workspaceRoot)
+    expect(screen.getByRole('button', { name: 'Attach file' })).toBeDisabled()
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Model' }), {
+      target: { value: imageConfig.id },
+    })
     expect(screen.getByRole('button', { name: 'Attach file' })).not.toBeDisabled()
   })
 

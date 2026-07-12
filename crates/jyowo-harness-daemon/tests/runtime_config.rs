@@ -781,6 +781,68 @@ fn disabled_corrupt_plugin_package_does_not_block_runtime_resolution() {
 }
 
 #[test]
+fn disabled_global_plugin_with_invalid_identity_is_absent_from_runtime_resolution() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fs::create_dir_all(fixture.home.join("plugins")).expect("global plugin index parent");
+    write_json(
+        &fixture.home.join("plugins/index.json"),
+        &plugin_index_with_invalid_record(false, false),
+    );
+
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("disabled global plugin must be filtered before identity or path parsing");
+}
+
+#[test]
+fn disabled_project_plugin_with_invalid_identity_is_absent_from_runtime_resolution() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fs::create_dir_all(fixture.workspace.join(".jyowo/plugins"))
+        .expect("project plugin index parent");
+    write_json(
+        &fixture.workspace.join(".jyowo/plugins/index.json"),
+        &plugin_index_with_invalid_record(true, false),
+    );
+
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("disabled project plugin must be filtered before identity or path parsing");
+}
+
+#[test]
+fn disallowed_project_plugin_with_invalid_identity_is_absent_from_runtime_resolution() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fs::create_dir_all(fixture.workspace.join(".jyowo/plugins"))
+        .expect("project plugin index parent");
+    write_json(
+        &fixture.workspace.join(".jyowo/plugins/index.json"),
+        &plugin_index_with_invalid_record(false, true),
+    );
+
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("disallowed project plugin must be filtered before identity or path parsing");
+}
+
+#[test]
+fn enabled_global_plugin_with_invalid_identity_fails_closed() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fs::create_dir_all(fixture.home.join("plugins")).expect("global plugin index parent");
+    write_json(
+        &fixture.home.join("plugins/index.json"),
+        &plugin_index_with_invalid_record(false, true),
+    );
+
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("enabled invalid plugin identity must fail closed");
+}
+
+#[test]
 fn enabled_corrupt_plugin_package_fails_closed() {
     let fixture = RuntimeFixture::new();
     fixture.write_global_provider_files();
@@ -795,6 +857,27 @@ fn enabled_corrupt_plugin_package_fails_closed() {
     RuntimeConfigResolver::new(fixture.config_root())
         .resolve(fixture.workspace(), None)
         .expect_err("enabled corrupt package must fail closed");
+}
+
+fn plugin_index_with_invalid_record(
+    allow_project_plugins: bool,
+    enabled: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "allowProjectPlugins": allow_project_plugins,
+        "records": [{
+            "pluginId": "invalid-record@0.1.0",
+            "name": "invalid/name",
+            "version": "0.1.0",
+            "enabled": enabled,
+            "packageDir": "../must-not-be-read",
+            "sourcePath": "fixture",
+            "contentHash": "fixture",
+            "importedAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z",
+            "config": { "mustNotAppear": true }
+        }]
+    })
 }
 
 #[cfg(unix)]

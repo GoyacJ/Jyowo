@@ -2253,8 +2253,12 @@ describe('CommandClient', () => {
       'configs.0.baseUrl',
       'https://gateway.example.com',
     )
+    await client.listProviderSettings('/workspace/project')
     expect(invoke).toHaveBeenCalledWith('list_model_provider_catalog')
     expect(invoke).toHaveBeenCalledWith('list_provider_settings')
+    expect(invoke).toHaveBeenCalledWith('list_provider_settings', {
+      workspaceRoot: '/workspace/project',
+    })
   })
 
   it('rejects provider service categories outside the Rust contract', async () => {

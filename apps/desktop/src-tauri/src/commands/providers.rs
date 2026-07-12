@@ -1440,11 +1440,44 @@ fn apply_execution_overrides(
 pub async fn list_provider_settings_with_store(
     store: &dyn ProviderSettingsStore,
 ) -> Result<ListProviderSettingsResponse, CommandErrorPayload> {
-    let record = store.load_record()?.unwrap_or_default();
+    list_provider_settings_for_workspace_with_store(store, None).await
+}
+
+pub async fn list_provider_settings_for_workspace_with_store(
+    store: &dyn ProviderSettingsStore,
+    project_store: Option<&ProjectConfigStore>,
+) -> Result<ListProviderSettingsResponse, CommandErrorPayload> {
+    let mut record = store.load_record()?.unwrap_or_default();
+    let mut selection_scope = store.selection_scope();
+    if let Some(selection) = project_store
+        .map(ProjectConfigStore::load_project_provider_selection_optional)
+        .transpose()?
+        .flatten()
+    {
+        let default_config_id = selection
+            .default_config_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                invalid_payload("project provider selection defaultConfigId is empty".to_owned())
+            })?;
+        if !record
+            .configs
+            .iter()
+            .any(|config| config.id == default_config_id)
+        {
+            return Err(invalid_payload(
+                "project provider selection references an unknown provider config".to_owned(),
+            ));
+        }
+        record.default_config_id = Some(default_config_id.to_owned());
+        selection_scope = SettingsScope::Project;
+    }
 
     Ok(ListProviderSettingsResponse {
         default_config_id: record.default_config_id.clone(),
-        selection_scope: store.selection_scope(),
+        selection_scope,
         configs: provider_config_payloads(&record)?,
     })
 }

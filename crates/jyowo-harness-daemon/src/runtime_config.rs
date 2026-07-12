@@ -1491,9 +1491,16 @@ fn build_plugin_snapshot(
     allow_project_plugins: bool,
 ) -> Result<RuntimePluginSnapshot, RuntimeConfigError> {
     let mut allowed_user_plugins = BTreeSet::new();
-    let mut disabled_plugins = BTreeSet::new();
     let mut entries = BTreeMap::new();
-    for record in global.records.iter().chain(project.records.iter()) {
+    for (record, source_enabled) in global.records.iter().map(|record| (record, true)).chain(
+        project
+            .records
+            .iter()
+            .map(|record| (record, allow_project_plugins)),
+    ) {
+        if !source_enabled || !record.enabled || !enabled_ids.contains(&record.plugin_id.0) {
+            continue;
+        }
         let _ = (
             &record.version,
             &record.package_dir,
@@ -1509,16 +1516,12 @@ fn build_plugin_snapshot(
                 reason: source.to_string(),
             })?;
         entries.insert(name.clone(), record.config.clone());
-        if enabled_ids.contains(&record.plugin_id.0) && record.enabled {
-            allowed_user_plugins.insert(name);
-        } else {
-            disabled_plugins.insert(name);
-        }
+        allowed_user_plugins.insert(name);
     }
     let config = PluginConfig {
         allow_project_plugins,
         allowed_user_plugins: Some(allowed_user_plugins),
-        disabled_plugins,
+        disabled_plugins: BTreeSet::new(),
         entries,
         workspace_root: Some(workspace_root.to_owned()),
         ..PluginConfig::default()

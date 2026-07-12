@@ -42,14 +42,19 @@ impl ProjectConfigStore {
     pub fn load_project_provider_selection(
         &self,
     ) -> Result<ProviderSelectionRecord, CommandErrorPayload> {
+        Ok(self
+            .load_project_provider_selection_optional()?
+            .unwrap_or_default())
+    }
+
+    pub fn load_project_provider_selection_optional(
+        &self,
+    ) -> Result<Option<ProviderSelectionRecord>, CommandErrorPayload> {
         let path = self
             .layout
             .project_provider_selection_file(&self.workspace_root);
         ensure_config_dir(&path, "project provider selection")?;
-        Ok(
-            read_json_file::<ProviderSelectionRecord>(&path, "project provider selection")?
-                .unwrap_or_default(),
-        )
+        read_json_file::<ProviderSelectionRecord>(&path, "project provider selection")
     }
 
     pub fn save_project_provider_selection(
@@ -221,6 +226,15 @@ mod tests {
         let (store, _temp) = store("project-b");
         let loaded = store.load_project_provider_selection().expect("load");
         assert_eq!(loaded.default_config_id, None);
+    }
+
+    #[test]
+    fn optional_project_provider_selection_distinguishes_missing_file() {
+        let (store, _temp) = store("project-optional");
+        let loaded = store
+            .load_project_provider_selection_optional()
+            .expect("load optional");
+        assert_eq!(loaded, None);
     }
 
     #[test]

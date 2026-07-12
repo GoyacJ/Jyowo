@@ -4642,7 +4642,7 @@ export interface CommandClient {
   ) => Promise<GetModelRequestPreviewResponse>
   listMemoryItems: () => Promise<ListMemoryItemsResponse>
   listPlugins: () => Promise<ListPluginsResponse>
-  listProviderSettings: () => Promise<ListProviderSettingsResponse>
+  listProviderSettings: (workspaceRoot?: string) => Promise<ListProviderSettingsResponse>
   listProviderCapabilityRoutes: () => Promise<ListProviderCapabilityRoutesResponse>
   listProviderCapabilityRouteOptions: () => Promise<ListProviderCapabilityRouteOptionsResponse>
   listProviderProbeSnapshots: () => Promise<ListProviderProbeSnapshotsResponse>
@@ -5340,9 +5340,15 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const command = 'list_skill_catalog_sources'
       return parsePayload(command, listSkillCatalogSourcesResponseSchema, await invoke(command))
     },
-    async listProviderSettings() {
+    async listProviderSettings(workspaceRoot) {
       const command = 'list_provider_settings'
-      return parsePayload(command, listProviderSettingsResponseSchema, await invoke(command))
+      return parsePayload(
+        command,
+        listProviderSettingsResponseSchema,
+        workspaceRoot === undefined
+          ? await invoke(command)
+          : await invoke(command, { workspaceRoot }),
+      )
     },
     async listProviderCapabilityRoutes() {
       const command = 'list_provider_capability_routes'
@@ -6341,8 +6347,9 @@ export function saveProviderSettings(
 
 export function listProviderSettings(
   client: CommandClient = tauriCommandClient,
+  workspaceRoot?: string,
 ): Promise<ListProviderSettingsResponse> {
-  return client.listProviderSettings()
+  return client.listProviderSettings(workspaceRoot)
 }
 
 export function listProviderCapabilityRoutes(
