@@ -567,6 +567,7 @@ export const zhCN = {
           description: '允许 AI 在需要时启动后台代理工具。',
         },
         unavailable: {
+          daemonUnavailable: '任务守护进程不可用：{{message}}',
           notCompiled: '当前桌面版本未编译此能力。',
           runtimeStoreUnavailable: '运行时存储不可用：{{message}}',
           permissionRuntimeUnavailable: '权限运行时不可用。',

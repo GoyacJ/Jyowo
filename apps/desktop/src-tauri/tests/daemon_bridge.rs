@@ -89,6 +89,10 @@ async fn bridge_forwards_validated_frames_over_one_persistent_connection() {
         let response = client.request(ClientRequest::ListTasks).await.unwrap();
         assert!(matches!(response.message, ServerMessage::TaskList { .. }));
     }
+    assert_eq!(
+        client.agent_capabilities(),
+        Some(AgentCapabilities::daemon_native())
+    );
     server.await.unwrap();
 }
 

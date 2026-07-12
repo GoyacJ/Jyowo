@@ -570,6 +570,7 @@ export const enUS = {
           description: 'Allow AI to start a background agent tool when needed.',
         },
         unavailable: {
+          daemonUnavailable: 'Task daemon unavailable: {{message}}',
           notCompiled: 'Capability is not compiled into this desktop build.',
           runtimeStoreUnavailable: 'Runtime store unavailable: {{message}}',
           permissionRuntimeUnavailable: 'Permission runtime unavailable.',

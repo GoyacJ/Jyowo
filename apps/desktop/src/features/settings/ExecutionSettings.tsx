@@ -422,6 +422,10 @@ function formatUnavailableReason(
   t: ReturnType<typeof useTranslation<'settings'>>['t'],
 ) {
   switch (reason.type) {
+    case 'daemonUnavailable':
+      return t('execution.agentCapabilities.unavailable.daemonUnavailable', {
+        message: reason.message,
+      })
     case 'notCompiled':
       return t('execution.agentCapabilities.unavailable.notCompiled')
     case 'runtimeStoreUnavailable':

@@ -71,6 +71,37 @@ fn get_execution_settings_defaults_to_standard_mode() {
 }
 
 #[test]
+fn get_execution_settings_reports_only_capabilities_missing_from_daemon() {
+    let workspace = unique_workspace("execution-settings-partial-daemon-capabilities");
+    std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+    let capabilities = harness_contracts::AgentCapabilities {
+        subagents: true,
+        agent_teams: false,
+        background_agents: true,
+    };
+
+    let settings = get_execution_settings_with_store(
+        &global_execution_settings_store(state.workspace_root()),
+        Some(&capabilities),
+    )
+    .expect("execution settings should load");
+
+    assert!(settings.agent_capabilities.subagents_available);
+    assert!(!settings.agent_capabilities.agent_teams_available);
+    assert!(settings.agent_capabilities.background_agents_available);
+    assert_eq!(settings.agent_capabilities.unavailable_reasons.len(), 1);
+    assert!(matches!(
+        settings.agent_capabilities.unavailable_reasons[0],
+        harness_contracts::AgentCapabilityUnavailableReason::DaemonUnavailable {
+            capability: harness_contracts::AgentCapabilityKind::AgentTeams,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn get_execution_settings_ignores_old_runtime_record() {
     let workspace = unique_workspace("execution-settings-ignore-old-runtime");
     std::fs::create_dir_all(&workspace).expect("workspace directory should exist");

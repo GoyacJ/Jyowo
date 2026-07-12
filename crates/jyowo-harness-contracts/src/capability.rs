@@ -31,6 +31,10 @@ pub enum AgentCapabilityKind {
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AgentCapabilityUnavailableReason {
+    DaemonUnavailable {
+        capability: AgentCapabilityKind,
+        message: String,
+    },
     NotCompiled {
         capability: AgentCapabilityKind,
     },

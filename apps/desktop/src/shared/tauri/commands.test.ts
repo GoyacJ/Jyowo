@@ -4774,6 +4774,11 @@ describe('agent orchestration contracts', () => {
         subagentsAvailable: false,
         subagentsEnabled: true,
         unavailableReasons: [
+          {
+            capability: 'subagents',
+            type: 'daemonUnavailable',
+            message: 'task daemon is unavailable',
+          },
           { capability: 'subagents', type: 'notCompiled' },
           {
             capability: 'subagents',
@@ -4799,6 +4804,7 @@ describe('agent orchestration contracts', () => {
       }),
     ).toMatchObject({
       unavailableReasons: [
+        { type: 'daemonUnavailable' },
         { type: 'notCompiled' },
         { type: 'runtimeStoreUnavailable' },
         { type: 'permissionRuntimeUnavailable' },

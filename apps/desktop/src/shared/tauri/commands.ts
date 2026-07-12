@@ -1871,6 +1871,13 @@ const agentCapabilityUnavailableReasonSchema = z.discriminatedUnion('type', [
   z
     .object({
       capability: agentCapabilityKindSchema,
+      message: z.string(),
+      type: z.literal('daemonUnavailable'),
+    })
+    .strict(),
+  z
+    .object({
+      capability: agentCapabilityKindSchema,
       type: z.literal('notCompiled'),
     })
     .strict(),

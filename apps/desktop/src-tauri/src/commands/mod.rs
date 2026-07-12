@@ -369,17 +369,19 @@ pub async fn list_model_provider_catalog() -> ModelProviderCatalogResponse {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub fn get_execution_settings(
+pub async fn get_execution_settings(
     workspace_path: Option<String>,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
     project_registry: tauri::State<'_, ProjectRegistry>,
+    daemon_bridge: tauri::State<'_, daemon::DaemonBridgeState>,
 ) -> Result<GetExecutionSettingsResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.blocking_read();
+    let capabilities = daemon_bridge.agent_capabilities().await;
+    let runtime_state = runtime_handle.read().await;
     get_execution_settings_for_state_request(
         GetExecutionSettingsRequest { workspace_path },
         &runtime_state,
         &project_registry,
-        None,
+        capabilities.as_ref(),
     )
 }
 
@@ -392,7 +394,9 @@ pub async fn set_execution_settings(
     agent_teams_enabled: bool,
     background_agents_enabled: bool,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+    daemon_bridge: tauri::State<'_, daemon::DaemonBridgeState>,
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload> {
+    let capabilities = daemon_bridge.agent_capabilities().await;
     let runtime_state = runtime_handle.read().await;
     let _execution_settings_guard = runtime_state.execution_settings_lock.lock().await;
     set_execution_settings_with_store(
@@ -405,7 +409,7 @@ pub async fn set_execution_settings(
             background_agents_enabled,
         },
         runtime_state.execution_settings_store.as_ref(),
-        None,
+        capabilities.as_ref(),
     )
 }
 
