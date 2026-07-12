@@ -661,6 +661,87 @@ fn validate_existing_directory_chain(
     Ok(())
 }
 
+#[cfg(unix)]
+fn ensure_secure_directory_chain(
+    root: &Path,
+    relative: &Path,
+    kind: &'static str,
+) -> Result<PathBuf, RuntimeConfigError> {
+    let root_fd = rustix::fs::open(
+        root,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|error| {
+        if matches!(error, rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR) {
+            RuntimeConfigError::ConfigSymlink {
+                kind,
+                path: root.to_owned(),
+            }
+        } else {
+            RuntimeConfigError::Read {
+                kind,
+                path: root.to_owned(),
+                source: std::io::Error::other(error.to_string()),
+            }
+        }
+    })?;
+    let mut directory = fs::File::from(root_fd);
+    let mut current = root.to_owned();
+    for component in relative.components() {
+        let std::path::Component::Normal(component) = component else {
+            return Err(RuntimeConfigError::Invalid {
+                kind,
+                reason: "path must contain only relative directory components".to_owned(),
+            });
+        };
+        current.push(component);
+        match rustix::fs::mkdirat(
+            &directory,
+            Path::new(component),
+            rustix::fs::Mode::from_raw_mode(0o700),
+        ) {
+            Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+            Err(error) => {
+                return Err(RuntimeConfigError::Read {
+                    kind,
+                    path: current.clone(),
+                    source: std::io::Error::other(error.to_string()),
+                });
+            }
+        }
+        let fd = rustix::fs::openat(
+            &directory,
+            Path::new(component),
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|error| {
+            if matches!(error, rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR) {
+                RuntimeConfigError::ConfigSymlink {
+                    kind,
+                    path: current.clone(),
+                }
+            } else {
+                RuntimeConfigError::Read {
+                    kind,
+                    path: current.clone(),
+                    source: std::io::Error::other(error.to_string()),
+                }
+            }
+        })?;
+        directory = fs::File::from(fd);
+    }
+    Ok(current)
+}
+
+#[cfg(not(unix))]
 fn ensure_secure_directory_chain(
     root: &Path,
     relative: &Path,
@@ -695,18 +776,6 @@ fn ensure_secure_directory_chain(
                     path: current.clone(),
                     source,
                 })?;
-                let metadata =
-                    fs::symlink_metadata(&current).map_err(|source| RuntimeConfigError::Read {
-                        kind,
-                        path: current.clone(),
-                        source,
-                    })?;
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                    return Err(RuntimeConfigError::ConfigSymlink {
-                        kind,
-                        path: current,
-                    });
-                }
             }
             Err(source) => {
                 return Err(RuntimeConfigError::Read {
@@ -975,25 +1044,63 @@ fn build_plugin_snapshot(
         ..PluginConfig::default()
     };
     let loader = FileManifestLoader;
-    let sources = [
-        DiscoverySource::User(global_home.join("plugins/packages")),
-        DiscoverySource::Workspace(workspace_root.join(".jyowo/plugins/packages")),
-    ]
-    .into_iter()
-    .map(|source| {
-        let report = loader.load_source_report(&source).map_err(|source| {
-            RuntimeConfigError::PluginRegistry {
-                source: source.into(),
-            }
-        })?;
-        Ok(FrozenPluginSource { source, report })
-    })
-    .collect::<Result<Vec<_>, RuntimeConfigError>>()?;
+    let sources = vec![
+        freeze_plugin_source(
+            &loader,
+            DiscoverySource::User(global_home.join("plugins/packages")),
+            &global_home.join("plugins/packages"),
+            global,
+            "global plugin index",
+        )?,
+        freeze_plugin_source(
+            &loader,
+            DiscoverySource::Project(workspace_root.join(".jyowo/plugins/packages")),
+            &workspace_root.join(".jyowo/plugins/packages"),
+            project,
+            "project plugin index",
+        )?,
+    ];
     Ok(RuntimePluginSnapshot {
         config,
         sources,
         runtime_loaders: Vec::new(),
     })
+}
+
+fn freeze_plugin_source(
+    loader: &FileManifestLoader,
+    source: DiscoverySource,
+    packages_root: &Path,
+    settings: &PluginSettingsFile,
+    kind: &'static str,
+) -> Result<FrozenPluginSource, RuntimeConfigError> {
+    let mut report = ManifestLoadReport::default();
+    for index_record in &settings.records {
+        let package_report = loader
+            .load_package_report_sync(&packages_root.join(&index_record.package_dir))
+            .map_err(|source| RuntimeConfigError::PluginRegistry {
+                source: source.into(),
+            })?;
+        if package_report.records.is_empty() && package_report.failures.is_empty() {
+            return Err(RuntimeConfigError::Invalid {
+                kind,
+                reason: "indexed plugin package has no manifest".to_owned(),
+            });
+        }
+        for manifest_record in &package_report.records {
+            if manifest_record.manifest.plugin_id() != index_record.plugin_id
+                || manifest_record.manifest.name.as_str() != index_record.name
+            {
+                return Err(RuntimeConfigError::Invalid {
+                    kind,
+                    reason: "indexed plugin identity does not match package manifest".to_owned(),
+                });
+            }
+        }
+        report.records.extend(package_report.records);
+        report.failures.extend(package_report.failures);
+    }
+    Ok(FrozenPluginSource { source, report })
 }
 
 fn validate_provider_routes(

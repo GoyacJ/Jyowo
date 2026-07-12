@@ -418,6 +418,55 @@ fn plugin_directory_symlink_escape_is_rejected() {
     assert!(matches!(error, RuntimeConfigError::ConfigSymlink { .. }));
 }
 
+#[cfg(unix)]
+#[test]
+fn selected_skill_package_symlink_escape_is_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_project(
+        "skills.json",
+        &SkillSelectionRecord {
+            enabled: vec!["escaped-skill".into()],
+        },
+    );
+    let external = fixture.root.path().join("external-skill-package");
+    fs::create_dir_all(&external).expect("external skill package");
+    fs::write(
+        external.join("SKILL.md"),
+        "---\nname: escaped-skill\ndescription: escaped\n---\noutside\n",
+    )
+    .expect("external skill");
+    let packages = fixture.workspace.join(".jyowo/skills/packages");
+    fs::create_dir_all(&packages).expect("skill packages");
+    symlink(&external, packages.join("escaped-skill")).expect("skill package symlink");
+
+    let error = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect_err("selected skill package symlink must fail closed");
+
+    assert!(matches!(error, RuntimeConfigError::Invalid { .. }));
+}
+
+#[cfg(unix)]
+#[test]
+fn unindexed_plugin_package_symlink_is_not_scanned() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    let packages = fixture.workspace.join(".jyowo/plugins/packages");
+    fs::create_dir_all(&packages).expect("plugin packages");
+    let external = fixture.root.path().join("external-unindexed-plugin");
+    fs::create_dir_all(&external).expect("external plugin");
+    symlink(&external, packages.join("unindexed")).expect("unindexed plugin symlink");
+
+    RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("unindexed plugin package must not be scanned");
+}
+
 struct RuntimeFixture {
     root: TempDir,
     home: std::path::PathBuf,

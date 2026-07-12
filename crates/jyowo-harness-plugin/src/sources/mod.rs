@@ -23,6 +23,13 @@ impl FileManifestLoader {
         &self,
         plugin_dir: &Path,
     ) -> Result<ManifestLoadReport, ManifestLoaderError> {
+        self.load_package_report_sync(plugin_dir)
+    }
+
+    pub fn load_package_report_sync(
+        &self,
+        plugin_dir: &Path,
+    ) -> Result<ManifestLoadReport, ManifestLoaderError> {
         let metadata = secure_plugin_directory(plugin_dir)?;
         if !metadata.is_dir() {
             return Ok(ManifestLoadReport::default());
@@ -43,7 +50,7 @@ impl FileManifestLoader {
         }
     }
 
-    pub fn load_source_report(
+    fn load_source_report(
         &self,
         source: &DiscoverySource,
     ) -> Result<ManifestLoadReport, ManifestLoaderError> {
