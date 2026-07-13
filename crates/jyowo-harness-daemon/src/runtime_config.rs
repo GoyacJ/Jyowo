@@ -177,7 +177,10 @@ impl RuntimeConfigResolver {
         };
         let selected_config_id = model_config_id.or(project_selected_config_id);
         let provider_resolver = ProviderConfigResolver::new(&global_config_root);
-        let provider = provider_resolver.resolve(selected_config_id)?;
+        let provider_generation_guard = provider_resolver.lock_generation_shared()?;
+        let provider = provider_resolver.resolve_unlocked(selected_config_id)?;
+        let credentials = load_provider_credentials(&global_config_root)?;
+        drop(provider_generation_guard);
 
         let mut execution_defaults = provider_resolver.resolve_execution_defaults()?;
         if let Some(overrides) = read_optional_json::<ExecutionOverridesRecord>(
@@ -201,7 +204,6 @@ impl RuntimeConfigResolver {
             validate_provider_routes(routes, "project provider capability routes")?;
         }
         let provider_routes = merge_provider_routes(global_routes, project_routes);
-        let credentials = load_provider_credentials(&global_config_root)?;
         validate_provider_route_integrity(&provider_routes, &credentials)?;
 
         let mut global_mcp = read_optional_json::<Vec<RuntimeMcpServerConfig>>(

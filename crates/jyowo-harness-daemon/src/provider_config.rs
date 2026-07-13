@@ -45,6 +45,21 @@ impl ProviderConfigResolver {
         &self,
         model_config_id: Option<&str>,
     ) -> Result<ResolvedProviderConfig, ProviderConfigError> {
+        let _generation_guard = self.lock_generation_shared()?;
+        self.resolve_unlocked(model_config_id)
+    }
+
+    pub(crate) fn lock_generation_shared(
+        &self,
+    ) -> Result<harness_fs::AdvisoryFileLock, ProviderConfigError> {
+        harness_fs::lock_provider_generation_for_read(&self.config_root)
+            .map_err(|source| ProviderConfigError::GenerationLock { source })
+    }
+
+    pub(crate) fn resolve_unlocked(
+        &self,
+        model_config_id: Option<&str>,
+    ) -> Result<ResolvedProviderConfig, ProviderConfigError> {
         let profiles = read_json::<Vec<ProviderProfileDefinition>>(
             &self.config_root.join(PROFILES_FILE),
             "provider profiles",
@@ -170,6 +185,11 @@ impl fmt::Debug for ResolvedProviderConfig {
 
 #[derive(Debug, Error)]
 pub enum ProviderConfigError {
+    #[error("provider generation lock failed")]
+    GenerationLock {
+        #[source]
+        source: harness_fs::FsError,
+    },
     #[error("failed to read {kind} from {path}")]
     Read {
         kind: &'static str,

@@ -300,6 +300,7 @@ impl ProviderSettingsStore for DesktopProviderSettingsStore {
             runtime_operation_failed("provider settings process lock is poisoned".to_owned())
         })?;
         let global_config = self.global_config_store();
+        let _generation_guard = global_config.lock_provider_generation_shared()?;
         let profiles = global_config.load_provider_profiles()?;
         if profiles.is_empty() {
             return Ok(None);

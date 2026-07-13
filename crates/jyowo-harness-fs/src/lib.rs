@@ -13,6 +13,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
+use fs2::FileExt;
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
 
@@ -383,6 +384,233 @@ pub fn sync_directory(path: &Path) -> Result<(), FsError> {
         let _ = path;
     }
     Ok(())
+}
+
+/// An advisory file lock held until this guard is dropped.
+#[derive(Debug)]
+pub struct AdvisoryFileLock {
+    file: File,
+}
+
+const PROVIDER_GENERATION_LOCK_FILE: &str = "provider-generation.lock";
+const PROVIDER_GENERATION_RECOVERY_FILE: &str = "provider-generation.recovery.json";
+
+#[derive(serde::Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderGenerationRecoveryMarker {
+    version: u32,
+    profiles: Option<Vec<u8>>,
+    secrets: Option<Vec<u8>>,
+    selection: Option<Vec<u8>>,
+}
+
+/// The recovery marker is absent, so readers must treat the generation as committed.
+#[derive(Debug)]
+#[must_use]
+pub enum ProviderGenerationFinishOutcome {
+    Committed,
+    /// The marker unlink succeeded, but syncing its parent directory failed.
+    /// The generation is already visible and cannot be reported as uncommitted.
+    CommittedWithoutDirectorySync {
+        source: FsError,
+    },
+}
+
+impl Drop for AdvisoryFileLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
+/// Acquire a shared advisory lock on an owner-only regular file.
+pub fn lock_file_shared(path: &Path) -> Result<AdvisoryFileLock, FsError> {
+    lock_file(path, false)
+}
+
+/// Acquire an exclusive advisory lock on an owner-only regular file.
+pub fn lock_file_exclusive(path: &Path) -> Result<AdvisoryFileLock, FsError> {
+    lock_file(path, true)
+}
+
+/// Lock one provider generation for reading, recovering an interrupted write first.
+pub fn lock_provider_generation_for_read(config_root: &Path) -> Result<AdvisoryFileLock, FsError> {
+    let lock_path = config_root.join(PROVIDER_GENERATION_LOCK_FILE);
+    let shared = lock_file_shared(&lock_path)?;
+    if !provider_generation_recovery_pending(config_root)? {
+        return Ok(shared);
+    }
+    drop(shared);
+
+    let exclusive = lock_file_exclusive(&lock_path)?;
+    recover_provider_generation_if_needed(config_root)?;
+    Ok(exclusive)
+}
+
+/// Lock one provider generation for writing, recovering an interrupted write first.
+pub fn lock_provider_generation_for_write(config_root: &Path) -> Result<AdvisoryFileLock, FsError> {
+    let exclusive = lock_file_exclusive(&config_root.join(PROVIDER_GENERATION_LOCK_FILE))?;
+    recover_provider_generation_if_needed(config_root)?;
+    Ok(exclusive)
+}
+
+/// Persist the rollback state before replacing any provider generation file.
+pub fn begin_provider_generation_write(
+    config_root: &Path,
+    profiles: Option<&[u8]>,
+    secrets: Option<&[u8]>,
+    selection: Option<&[u8]>,
+) -> Result<(), FsError> {
+    write_json_file_atomic(
+        &config_root.join(PROVIDER_GENERATION_RECOVERY_FILE),
+        &ProviderGenerationRecoveryMarker {
+            version: 1,
+            profiles: profiles.map(<[u8]>::to_vec),
+            secrets: secrets.map(<[u8]>::to_vec),
+            selection: selection.map(<[u8]>::to_vec),
+        },
+        true,
+    )
+}
+
+/// Remove the recovery marker and commit the currently visible generation.
+///
+/// Once this returns an outcome, callers must treat the generation as committed.
+/// A directory-sync failure after unlink is reported as an outcome rather than
+/// an error because the marker is already absent and readers can see the generation.
+pub fn finish_provider_generation_write(
+    config_root: &Path,
+) -> Result<ProviderGenerationFinishOutcome, FsError> {
+    #[cfg(unix)]
+    {
+        return finish_provider_generation_write_with_directory_sync(config_root, |parent| {
+            parent.sync_all()
+        });
+    }
+
+    #[cfg(not(unix))]
+    {
+        remove_file_no_follow(&config_root.join(PROVIDER_GENERATION_RECOVERY_FILE))?;
+        Ok(ProviderGenerationFinishOutcome::Committed)
+    }
+}
+
+#[cfg(unix)]
+fn finish_provider_generation_write_with_directory_sync<F>(
+    config_root: &Path,
+    sync_directory: F,
+) -> Result<ProviderGenerationFinishOutcome, FsError>
+where
+    F: FnOnce(&NoFollowParentDir) -> Result<(), FsError>,
+{
+    let marker_path = config_root.join(PROVIDER_GENERATION_RECOVERY_FILE);
+    let Some(parent) = open_parent_dir_no_symlink_for_read(&marker_path)? else {
+        return Ok(ProviderGenerationFinishOutcome::Committed);
+    };
+    let Some(file) = parent.try_open_existing_file(parent.file_name())? else {
+        return Ok(ProviderGenerationFinishOutcome::Committed);
+    };
+    if !file.metadata()?.is_file() {
+        return Err(FsError::InvalidPath("target path is not a file".to_owned()));
+    }
+    drop(file);
+    match parent.unlink_file(parent.file_name()) {
+        Ok(()) | Err(rustix::io::Errno::NOENT) => {}
+        Err(error) => {
+            return Err(FsError::Io(std::io::Error::other(format!(
+                "cleanup failed: {error}"
+            ))));
+        }
+    }
+    match sync_directory(&parent) {
+        Ok(()) => Ok(ProviderGenerationFinishOutcome::Committed),
+        Err(source) => {
+            Ok(ProviderGenerationFinishOutcome::CommittedWithoutDirectorySync { source })
+        }
+    }
+}
+
+fn provider_generation_recovery_pending(config_root: &Path) -> Result<bool, FsError> {
+    let marker_path = config_root.join(PROVIDER_GENERATION_RECOVERY_FILE);
+    set_owner_only_if_exists_unix(&marker_path)?;
+    Ok(read_file_no_follow(&marker_path)?.is_some())
+}
+
+fn recover_provider_generation_if_needed(config_root: &Path) -> Result<(), FsError> {
+    let marker_path = config_root.join(PROVIDER_GENERATION_RECOVERY_FILE);
+    let Some(marker) = read_secret_json_file::<ProviderGenerationRecoveryMarker>(&marker_path)?
+    else {
+        return Ok(());
+    };
+    if marker.version != 1 {
+        return Err(FsError::InvalidPath(
+            "provider generation recovery marker version is unsupported".to_owned(),
+        ));
+    }
+    restore_provider_generation_file(
+        &config_root.join("provider-profiles.json"),
+        marker.profiles.as_deref(),
+        false,
+    )?;
+    restore_provider_generation_file(
+        &config_root.join("provider-secrets.json"),
+        marker.secrets.as_deref(),
+        true,
+    )?;
+    restore_provider_generation_file(
+        &config_root.join("provider-selection.json"),
+        marker.selection.as_deref(),
+        false,
+    )?;
+    finish_provider_generation_write(config_root).map(|_| ())
+}
+
+fn restore_provider_generation_file(
+    path: &Path,
+    bytes: Option<&[u8]>,
+    owner_only: bool,
+) -> Result<(), FsError> {
+    match bytes {
+        Some(bytes) if read_file_no_follow(path)?.as_deref() == Some(bytes) => {
+            if owner_only {
+                set_owner_only_if_exists_unix(path)?;
+            }
+            Ok(())
+        }
+        Some(bytes) => write_bytes_file_atomic(path, bytes, owner_only),
+        None => remove_file_no_follow(path),
+    }
+}
+
+fn lock_file(path: &Path, exclusive: bool) -> Result<AdvisoryFileLock, FsError> {
+    #[cfg(unix)]
+    let file = {
+        let parent = open_parent_dir_no_symlink_for_write(path)?;
+        let file = parent.open_or_create_read_write_file(parent.file_name())?;
+        set_owner_only_file_if_unix(&file)?;
+        parent.sync_all()?;
+        file
+    };
+
+    #[cfg(not(unix))]
+    let file = {
+        let parent = path
+            .parent()
+            .ok_or_else(|| FsError::InvalidPath("lock path has no parent".to_owned()))?;
+        ensure_app_dir_no_symlink(parent)?;
+        ensure_no_symlink_components(path)?;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(path)?
+    };
+
+    if exclusive {
+        file.lock_exclusive()?;
+    } else {
+        file.lock_shared()?;
+    }
+    Ok(AdvisoryFileLock { file })
 }
 
 // ── Unix: NoFollowParentDir ─────────────────────────────────────────
@@ -1318,5 +1546,99 @@ mod tests {
 
         let resolved = resolve_canonical_prefix(&path).expect("should resolve");
         assert_eq!(resolved, temp_root.join("new_dir").join("subdir"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_generation_lock_and_recovery_marker_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_root = canonical_temp_root(&temp);
+        let profiles_path = config_root.join("provider-profiles.json");
+        let secrets_path = config_root.join("provider-secrets.json");
+        let selection_path = config_root.join("provider-selection.json");
+        std::fs::write(&profiles_path, b"old-profiles").unwrap();
+        std::fs::write(&secrets_path, b"old-secrets").unwrap();
+        std::fs::write(&selection_path, b"old-selection").unwrap();
+
+        let writer = lock_provider_generation_for_write(&config_root).unwrap();
+        begin_provider_generation_write(
+            &config_root,
+            Some(b"old-profiles"),
+            Some(b"old-secrets"),
+            Some(b"old-selection"),
+        )
+        .unwrap();
+        write_bytes_file_atomic(&profiles_path, b"mixed-profiles", false).unwrap();
+        write_bytes_file_atomic(&secrets_path, b"mixed-secrets", true).unwrap();
+        write_bytes_file_atomic(&selection_path, b"mixed-selection", false).unwrap();
+        let lock_mode = std::fs::metadata(config_root.join(PROVIDER_GENERATION_LOCK_FILE))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let marker_mode = std::fs::metadata(config_root.join(PROVIDER_GENERATION_RECOVERY_FILE))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(lock_mode, 0o600);
+        assert_eq!(marker_mode, 0o600);
+        drop(writer);
+
+        let _reader = lock_provider_generation_for_read(&config_root).unwrap();
+        assert_eq!(std::fs::read(profiles_path).unwrap(), b"old-profiles");
+        assert_eq!(std::fs::read(&secrets_path).unwrap(), b"old-secrets");
+        assert_eq!(std::fs::read(selection_path).unwrap(), b"old-selection");
+        assert_eq!(
+            std::fs::metadata(secrets_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(!config_root.join(PROVIDER_GENERATION_RECOVERY_FILE).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_generation_lock_rejects_symlink_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_root = canonical_temp_root(&temp);
+        let target = tempfile::NamedTempFile::new().expect("lock target");
+        std::os::unix::fs::symlink(
+            target.path(),
+            config_root.join(PROVIDER_GENERATION_LOCK_FILE),
+        )
+        .expect("symlink lock");
+
+        let error = lock_provider_generation_for_read(&config_root)
+            .expect_err("symlink lock must be rejected");
+
+        assert!(matches!(error, FsError::Symlink(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_generation_finish_stays_committed_after_marker_unlink() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_root = canonical_temp_root(&temp);
+        begin_provider_generation_write(&config_root, None, None, None)
+            .expect("persist recovery marker");
+
+        let outcome = finish_provider_generation_write_with_directory_sync(&config_root, |_| {
+            Err(FsError::Io(std::io::Error::other(
+                "injected directory sync failure",
+            )))
+        })
+        .expect("marker unlink is already the commit point");
+
+        assert!(matches!(
+            outcome,
+            ProviderGenerationFinishOutcome::CommittedWithoutDirectorySync { .. }
+        ));
+        assert!(!config_root.join(PROVIDER_GENERATION_RECOVERY_FILE).exists());
     }
 }
