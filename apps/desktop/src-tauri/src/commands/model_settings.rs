@@ -17,22 +17,25 @@ use harness_observability::{
     WorkspaceTimezoneResolver,
 };
 
-use jyowo_harness_sdk::ext::{inventory_from_models_api_json, runnable_inventory_models};
+use jyowo_harness_sdk::ext::{
+    inventory_from_models_api_json, runnable_inventory_models, ModelInventoryEntry,
+    ModelRuntimeStatus,
+};
 
 use super::contracts::{
     ConversationModelCapabilityRecord, ModelCatalogEntry, ModelLifecyclePayload,
     ModelRuntimeStatusPayload, ModelSettingsCatalogSnapshotPayload, ModelSettingsPageResponse,
     ModelSettingsPageSlice, ModelUsageDayModelRecord, ModelUsageDayRecord, ModelUsageRollupRecord,
-    ModelUsageRollupStore, ProviderCatalogSnapshotRecord, ProviderModelModalityRecord,
-    ProviderProbeSnapshotPayload, RefreshModelProviderCatalogResponse,
-    RefreshOfficialQuotaResponse,
+    ModelUsageRollupStore, ProviderCatalogSnapshotRecord, ProviderProbeSnapshotPayload,
+    RefreshModelProviderCatalogResponse, RefreshOfficialQuotaResponse,
 };
 use super::error::{invalid_payload, runtime_operation_failed, CommandErrorPayload};
 use super::providers::{
-    build_provider_for_config, desktop_provider_service_adapter_availability,
-    list_model_provider_catalog_payload, list_provider_capability_route_options_from_inputs,
-    list_provider_capability_routes_with_store, list_provider_settings_with_store,
-    model_descriptor_catalog_entry, provider_config_by_id,
+    build_provider_for_config, conversation_capability_record,
+    desktop_provider_service_adapter_availability, list_model_provider_catalog_payload,
+    list_provider_capability_route_options_from_inputs, list_provider_capability_routes_with_store,
+    list_provider_settings_with_store, model_descriptor_catalog_entry, model_lifecycle_payload,
+    provider_config_by_id,
 };
 use super::{
     DesktopRuntimeState, GetModelUsageSummaryResponse, ListOfficialQuotaSnapshotsResponse,
@@ -184,7 +187,6 @@ pub async fn refresh_model_provider_catalog_with_runtime_state(
     let models_api_json = fetch_openrouter_models_api_json().await?;
     let anthropic_models_api_json =
         fetch_anthropic_models_api_json_for_runtime_state(runtime_state).await?;
-    let deepseek_models_api_json = fetch_deepseek_models_api_json().await.ok();
     let bytes = serde_json::to_vec(&models_api_json).map_err(|error| {
         runtime_operation_failed(format!(
             "provider catalog refresh serialization failed: {error}"
@@ -193,15 +195,11 @@ pub async fn refresh_model_provider_catalog_with_runtime_state(
     inventory_from_models_api_json(&bytes).map_err(|error| {
         runtime_operation_failed(format!("provider catalog refresh parse failed: {error}"))
     })?;
-    if let Some(deepseek_models_api_json) = &deepseek_models_api_json {
-        validate_deepseek_models_api_json(deepseek_models_api_json)?;
-    }
     runtime_state
         .provider_catalog_snapshot_store
         .save_record(&ProviderCatalogSnapshotRecord {
             openrouter_models_api_json: models_api_json,
             anthropic_models_api_json,
-            deepseek_models_api_json,
             last_successful_refresh_at: now,
             last_attempt_at: now,
         })?;
@@ -283,68 +281,6 @@ async fn fetch_anthropic_models_api_json(
     serde_json::from_slice(&bytes).map_err(|error| {
         runtime_operation_failed(format!("Anthropic model catalog parse failed: {error}"))
     })
-}
-
-async fn fetch_deepseek_models_api_json() -> Result<serde_json::Value, CommandErrorPayload> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .map_err(|error| {
-            runtime_operation_failed(format!("provider catalog client failed: {error}"))
-        })?;
-    let mut response = client
-        .get("https://api.deepseek.com/models")
-        .send()
-        .await
-        .map_err(|error| {
-            runtime_operation_failed(format!("DeepSeek catalog fetch failed: {error}"))
-        })?
-        .error_for_status()
-        .map_err(|error| {
-            runtime_operation_failed(format!("DeepSeek catalog fetch failed: {error}"))
-        })?;
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_OPENROUTER_MODELS_API_BYTES as u64)
-    {
-        return Err(runtime_operation_failed(
-            "DeepSeek catalog response is too large".to_owned(),
-        ));
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|error| {
-        runtime_operation_failed(format!("DeepSeek catalog read failed: {error}"))
-    })? {
-        if bytes.len().saturating_add(chunk.len()) > MAX_OPENROUTER_MODELS_API_BYTES {
-            return Err(runtime_operation_failed(
-                "DeepSeek catalog response is too large".to_owned(),
-            ));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    serde_json::from_slice(&bytes).map_err(|error| {
-        runtime_operation_failed(format!("DeepSeek catalog parse failed: {error}"))
-    })
-}
-
-fn validate_deepseek_models_api_json(value: &serde_json::Value) -> Result<(), CommandErrorPayload> {
-    let Some(models) = value.get("data").and_then(serde_json::Value::as_array) else {
-        return Err(runtime_operation_failed(
-            "DeepSeek catalog response did not include data".to_owned(),
-        ));
-    };
-    for model in models {
-        if model
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .is_none()
-        {
-            return Err(runtime_operation_failed(
-                "DeepSeek catalog response included a model without id".to_owned(),
-            ));
-        }
-    }
-    Ok(())
 }
 
 async fn fetch_openrouter_models_api_json() -> Result<serde_json::Value, CommandErrorPayload> {
@@ -440,9 +376,9 @@ pub(crate) fn local_model_provider_catalog(
         .iter_mut()
         .find(|provider| provider.provider_id == "openrouter")
     {
-        openrouter.models = runnable_inventory_models(&inventory)
-            .into_iter()
-            .map(model_descriptor_catalog_entry)
+        openrouter.models = inventory
+            .iter()
+            .filter_map(model_inventory_catalog_entry)
             .collect();
     }
     if let Some(anthropic_models_api_json) = snapshot.anthropic_models_api_json.as_ref() {
@@ -457,6 +393,31 @@ pub(crate) fn local_model_provider_catalog(
             last_attempt_at: Some(snapshot.last_attempt_at.to_rfc3339()),
         },
     ))
+}
+
+fn model_inventory_catalog_entry(model: &ModelInventoryEntry) -> Option<ModelCatalogEntry> {
+    match &model.runtime_status {
+        ModelRuntimeStatus::Runnable => runnable_inventory_models(std::slice::from_ref(model))
+            .into_iter()
+            .next()
+            .map(model_descriptor_catalog_entry),
+        ModelRuntimeStatus::Unsupported { reason } => Some(ModelCatalogEntry {
+            protocol: model.protocol,
+            supported_protocols: vec![model.protocol],
+            supported_parameters: model.supported_parameters.clone(),
+            provider_capability_metadata: None,
+            conversation_capability: conversation_capability_record(&model.conversation_capability),
+            context_window: model.context_window,
+            display_name: model.display_name.clone(),
+            lifecycle: model_lifecycle_payload(model.lifecycle.clone()),
+            max_output_tokens: model.max_output_tokens,
+            model_id: model.model_id.clone(),
+            runtime_status: ModelRuntimeStatusPayload {
+                kind: "unsupported",
+                reason: Some(reason.clone()),
+            },
+        }),
+    }
 }
 
 fn merge_anthropic_models_api_catalog(
@@ -476,12 +437,6 @@ fn merge_anthropic_models_api_catalog(
     else {
         return;
     };
-    let default_supported_parameters = anthropic
-        .models
-        .first()
-        .map(|model| model.supported_parameters.clone())
-        .unwrap_or_default();
-
     for api_model in models {
         let Some(model_id) = api_model
             .get("id")
@@ -495,24 +450,78 @@ fn merge_anthropic_models_api_catalog(
             .models
             .iter()
             .position(|model| model.model_id == model_id);
-        let existing = existing_index.and_then(|index| anthropic.models.get(index));
-        let Some(entry) =
-            anthropic_models_api_catalog_entry(api_model, existing, &default_supported_parameters)
-        else {
-            continue;
-        };
-        if let Some(index) = existing_index {
-            anthropic.models[index] = entry;
-        } else {
+        if let Some(existing_index) = existing_index {
+            let Some(existing) = anthropic.models.get(existing_index) else {
+                continue;
+            };
+            let Some(entry) = anthropic_models_api_catalog_entry(api_model, existing) else {
+                continue;
+            };
+            anthropic.models[existing_index] = entry;
+        } else if let Some(entry) = unsupported_anthropic_models_api_catalog_entry(api_model) {
             anthropic.models.push(entry);
         }
     }
 }
 
+fn unsupported_anthropic_models_api_catalog_entry(
+    api_model: &serde_json::Value,
+) -> Option<ModelCatalogEntry> {
+    let model_id = api_model
+        .get("id")
+        .and_then(serde_json::Value::as_str)?
+        .trim()
+        .to_owned();
+    if model_id.is_empty() {
+        return None;
+    }
+    let display_name = api_model
+        .get("display_name")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            api_model
+                .get("displayName")
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| model_id.clone());
+
+    Some(ModelCatalogEntry {
+        protocol: ModelProtocol::Messages,
+        supported_protocols: Vec::new(),
+        supported_parameters: Vec::new(),
+        provider_capability_metadata: Some(anthropic_models_api_metadata(api_model, None)),
+        conversation_capability: ConversationModelCapabilityRecord {
+            input_modalities: Vec::new(),
+            output_modalities: Vec::new(),
+            context_window: 0,
+            max_output_tokens: 0,
+            streaming: false,
+            tool_calling: false,
+            reasoning: false,
+            prompt_cache: false,
+            structured_output: false,
+        },
+        context_window: 0,
+        display_name,
+        lifecycle: ModelLifecyclePayload {
+            kind: "stable",
+            retirement_date: None,
+        },
+        max_output_tokens: 0,
+        model_id,
+        runtime_status: ModelRuntimeStatusPayload {
+            kind: "unsupported",
+            reason: Some("model descriptor is not registered and cannot be constructed".to_owned()),
+        },
+    })
+}
+
 fn anthropic_models_api_catalog_entry(
     api_model: &serde_json::Value,
-    existing: Option<&ModelCatalogEntry>,
-    default_supported_parameters: &[String],
+    existing: &ModelCatalogEntry,
 ) -> Option<ModelCatalogEntry> {
     let model_id = api_model
         .get("id")
@@ -530,108 +539,14 @@ fn anthropic_models_api_catalog_entry(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
-        .or_else(|| existing.map(|model| model.display_name.clone()))
-        .unwrap_or_else(|| model_id.clone());
-    let context_window = u32_field(api_model, &["max_input_tokens", "context_window"])
-        .or_else(|| existing.map(|model| model.context_window))
-        .unwrap_or(200_000);
-    let max_output_tokens = u32_field(api_model, &["max_tokens", "max_output_tokens"])
-        .or_else(|| existing.map(|model| model.max_output_tokens))
-        .unwrap_or(64_000);
-    let conversation_capability = anthropic_models_api_conversation_capability(
-        api_model,
-        existing,
-        context_window,
-        max_output_tokens,
-    );
+        .unwrap_or_else(|| existing.display_name.clone());
 
-    Some(ModelCatalogEntry {
-        protocol: existing
-            .map(|model| model.protocol)
-            .unwrap_or(ModelProtocol::Messages),
-        supported_protocols: existing
-            .map(|model| model.supported_protocols.clone())
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| vec![ModelProtocol::Messages]),
-        supported_parameters: existing
-            .map(|model| model.supported_parameters.clone())
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| default_supported_parameters.to_vec()),
-        provider_capability_metadata: Some(anthropic_models_api_metadata(api_model, existing)),
-        conversation_capability,
-        context_window,
-        display_name,
-        lifecycle: existing
-            .map(|model| model.lifecycle.clone())
-            .unwrap_or(ModelLifecyclePayload {
-                kind: "stable",
-                retirement_date: None,
-            }),
-        max_output_tokens,
-        model_id,
-        runtime_status: ModelRuntimeStatusPayload {
-            kind: "runnable",
-            reason: None,
-        },
-    })
-}
-
-fn anthropic_models_api_conversation_capability(
-    api_model: &serde_json::Value,
-    existing: Option<&ModelCatalogEntry>,
-    context_window: u32,
-    max_output_tokens: u32,
-) -> ConversationModelCapabilityRecord {
-    let existing_capability = existing.map(|model| &model.conversation_capability);
-    let capabilities = api_model.get("capabilities");
-    let mut input_modalities = existing_capability
-        .map(|capability| capability.input_modalities.clone())
-        .unwrap_or_else(|| vec![ProviderModelModalityRecord::Text]);
-    if capability_bool(capabilities, &["image_input"]).unwrap_or(false)
-        && !input_modalities.contains(&ProviderModelModalityRecord::Image)
-    {
-        input_modalities.push(ProviderModelModalityRecord::Image);
-    }
-    if (capability_bool(capabilities, &["pdf_input", "document_input", "files_api"])
-        .unwrap_or(false))
-        && !input_modalities.contains(&ProviderModelModalityRecord::File)
-    {
-        input_modalities.push(ProviderModelModalityRecord::File);
-    }
-
-    ConversationModelCapabilityRecord {
-        input_modalities,
-        output_modalities: existing_capability
-            .map(|capability| capability.output_modalities.clone())
-            .unwrap_or_else(|| vec![ProviderModelModalityRecord::Text]),
-        context_window,
-        max_output_tokens,
-        streaming: existing_capability
-            .map(|capability| capability.streaming)
-            .unwrap_or(true),
-        tool_calling: capability_bool(capabilities, &["tool_use", "tools"])
-            .or_else(|| existing_capability.map(|capability| capability.tool_calling))
-            .unwrap_or(true),
-        reasoning: capability_bool(
-            capabilities,
-            &["thinking", "extended_thinking", "reasoning"],
-        )
-        .or_else(|| {
-            capability_string_array(capabilities, &["effort_levels", "effortLevels"])
-                .map(|values| !values.is_empty())
-        })
-        .or_else(|| existing_capability.map(|capability| capability.reasoning))
-        .unwrap_or(false),
-        prompt_cache: capability_bool(capabilities, &["prompt_caching", "prompt_cache"])
-            .or_else(|| existing_capability.map(|capability| capability.prompt_cache))
-            .unwrap_or(true),
-        structured_output: capability_bool(
-            capabilities,
-            &["structured_outputs", "structured_output"],
-        )
-        .or_else(|| existing_capability.map(|capability| capability.structured_output))
-        .unwrap_or(false),
-    }
+    let mut entry = existing.clone();
+    entry.display_name = display_name;
+    entry.provider_capability_metadata =
+        Some(anthropic_models_api_metadata(api_model, Some(existing)));
+    debug_assert_eq!(entry.model_id, model_id);
+    Some(entry)
 }
 
 fn anthropic_models_api_metadata(
@@ -728,16 +643,6 @@ fn set_metadata_bool(
     if let Some(value) = capability_bool(capabilities, names) {
         metadata.insert(key.to_owned(), serde_json::Value::Bool(value));
     }
-}
-
-fn u32_field(value: &serde_json::Value, names: &[&str]) -> Option<u32> {
-    names.iter().find_map(|name| {
-        let raw = value.get(*name)?;
-        let number = raw
-            .as_u64()
-            .or_else(|| raw.as_str().and_then(|value| value.parse::<u64>().ok()))?;
-        u32::try_from(number).ok()
-    })
 }
 
 fn capability_bool(capabilities: Option<&serde_json::Value>, names: &[&str]) -> Option<bool> {

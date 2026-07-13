@@ -2537,8 +2537,6 @@ pub struct ProviderCatalogSnapshotRecord {
     pub openrouter_models_api_json: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anthropic_models_api_json: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deepseek_models_api_json: Option<serde_json::Value>,
     pub last_successful_refresh_at: chrono::DateTime<chrono::Utc>,
     pub last_attempt_at: chrono::DateTime<chrono::Utc>,
 }
