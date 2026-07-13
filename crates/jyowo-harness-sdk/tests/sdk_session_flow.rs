@@ -1,13 +1,19 @@
 #![cfg(feature = "testing")]
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
 use harness_contracts::{
-    ConversationContextReference, DeltaChunk, EndReason, Event, MemoryId, TenantId,
+    ConversationContextReference, DeltaChunk, EndReason, Event, MemoryId, SkillSourceKind,
+    TenantId, CURRENT_CONTEXT_REFERENCE_VERSION,
 };
 use harness_journal::{EventStore, ReplayCursor};
 use harness_model::{ContentDelta, ModelStreamEvent, ScriptedProvider, ScriptedResponse};
+use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
+use jyowo_harness_sdk::skill_config::{
+    SecretString, SkillConfigSnapshot, SkillConfigStoreError, SkillSecretStore,
+};
 use jyowo_harness_sdk::{prelude::*, testing::*};
 
 #[tokio::test]
@@ -128,6 +134,113 @@ async fn sdk_session_flow_runs_turn_and_writes_journal_events() {
         event,
         Event::RunEnded(ended) if matches!(ended.reason, EndReason::Completed)
     )));
+}
+
+#[tokio::test]
+async fn selected_skill_is_rendered_once_as_transient_first_turn_context() {
+    let workspace = unique_workspace("sdk-selected-skill-context");
+    let session_id = SessionId::new();
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let model = Arc::new(ScriptedProvider::new(vec![ScriptedResponse::Stream(vec![
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::Text("done".to_owned()),
+        },
+        ModelStreamEvent::MessageStop,
+    ])]));
+    let skill = parse_skill_markdown(
+        "---\nname: selected-review\ndescription: Review selected code\nparameters:\n  - name: topic\n    type: string\n    required: true\nconfig:\n  - key: apiToken\n    type: string\n    secret: true\n    required: true\n---\nSELECTED SKILL BODY: review ${topic}.\n",
+        SkillSource::Bundled,
+        None,
+        SkillPlatform::Macos,
+    )
+    .expect("skill should parse");
+    let skill_id = skill.id.clone();
+    let secret_store = Arc::new(TestSecretStore::default());
+    secret_store
+        .set(
+            &skill_id.0,
+            "apiToken",
+            SecretString::from("do-not-leak-secret".to_owned()),
+        )
+        .unwrap();
+    let config = SkillConfigSnapshot::new()
+        .with_skill_secret_presence(&skill_id.0, "apiToken")
+        .with_secret_store(secret_store);
+    let harness = Harness::builder()
+        .with_workspace_root(&workspace)
+        .with_model_arc(model.clone())
+        .with_store_arc(store.clone())
+        .with_sandbox(NoopSandbox::new())
+        .with_skill_config_snapshot(config)
+        .build()
+        .await
+        .expect("harness should build");
+    harness
+        .skill_registry()
+        .register(skill)
+        .expect("skill should register");
+    let options = SessionOptions::new(&workspace).with_session_id(session_id);
+    harness
+        .open_or_create_conversation_session(options.clone())
+        .await
+        .expect("session should be created");
+    let mut request = ConversationTurnRequest::from_prompt(
+        options,
+        ConversationRunOptions::default(),
+        "review this change",
+    );
+    request.input.context_references = vec![ConversationContextReference::Skill {
+        version: CURRENT_CONTEXT_REFERENCE_VERSION,
+        skill_id,
+        label: "label-only placeholder".to_owned(),
+        parameters: BTreeMap::from([("topic".to_owned(), serde_json::json!("lifecycles"))]),
+        source: Some(SkillSourceKind::Bundled),
+    }];
+
+    harness
+        .submit_conversation_turn(request)
+        .await
+        .expect("selected skill turn should run");
+
+    let requests = model.requests().await;
+    assert_eq!(requests.len(), 1);
+    let request_text = requests[0]
+        .messages
+        .iter()
+        .flat_map(|message| &message.parts)
+        .filter_map(|part| match part {
+            harness_contracts::MessagePart::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(request_text.matches("SELECTED SKILL BODY").count(), 1);
+    assert!(request_text.contains("review lifecycles"));
+    assert!(!request_text.contains("label-only placeholder"));
+    assert!(!request_text.contains("do-not-leak-secret"));
+
+    let events = store
+        .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .expect("journal should be readable")
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, Event::SkillContextPrepared(_))));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, Event::SkillContextAssembled(_))));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, Event::SkillContextProviderAccepted(_))));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, Event::SkillContextConsumed(_))));
+    let serialized_events = serde_json::to_string(&events).unwrap();
+    assert!(!serialized_events.contains("SELECTED SKILL BODY"));
+    assert!(!serialized_events.contains("do-not-leak-secret"));
 }
 
 #[tokio::test]
@@ -286,4 +399,45 @@ fn unique_workspace(name: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("{name}-{}", SessionId::new()));
     std::fs::create_dir_all(&path).expect("workspace should be creatable");
     path
+}
+
+#[derive(Default)]
+struct TestSecretStore {
+    values: Mutex<BTreeMap<(String, String), SecretString>>,
+}
+
+impl SkillSecretStore for TestSecretStore {
+    fn get(
+        &self,
+        skill_id: &str,
+        key: &str,
+    ) -> Result<Option<SecretString>, SkillConfigStoreError> {
+        Ok(self
+            .values
+            .lock()
+            .unwrap()
+            .get(&(skill_id.to_owned(), key.to_owned()))
+            .cloned())
+    }
+
+    fn set(
+        &self,
+        skill_id: &str,
+        key: &str,
+        value: SecretString,
+    ) -> Result<(), SkillConfigStoreError> {
+        self.values
+            .lock()
+            .unwrap()
+            .insert((skill_id.to_owned(), key.to_owned()), value);
+        Ok(())
+    }
+
+    fn delete(&self, skill_id: &str, key: &str) -> Result<(), SkillConfigStoreError> {
+        self.values
+            .lock()
+            .unwrap()
+            .remove(&(skill_id.to_owned(), key.to_owned()));
+        Ok(())
+    }
 }

@@ -787,6 +787,11 @@ pub enum ContextPatchSource {
         tool_use_id: ToolUseId,
         consumed_config_keys: Vec<String>,
     },
+    SkillReference {
+        skill_id: SkillId,
+        skill_name: String,
+        delivery_key: String,
+    },
     HookAddContext {
         handler_id: String,
         hook_event_kind: HookEventKind,

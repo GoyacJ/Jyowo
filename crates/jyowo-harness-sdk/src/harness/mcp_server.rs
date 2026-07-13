@@ -625,9 +625,11 @@ impl Harness {
                 active_conversation_sessions: Arc::clone(&self.inner.active_conversation_sessions),
                 process_registry: self.run_scoped_process_registry(),
                 skill_registry: Some(self.inner.skill_registry.clone()),
+                skill_registry_snapshot: None,
                 skill_metrics_sink: self.skill_metrics_sink(),
                 skill_render_policy: self.skill_render_policy(),
                 skill_config_snapshot: self.skill_config_snapshot(),
+                pending_skill_context_deliveries: parking_lot::Mutex::new(HashMap::new()),
             }))
             .with_skill_reload_cap(Arc::new(SdkSkillReloadCap {
                 inner: Arc::clone(&self.inner),

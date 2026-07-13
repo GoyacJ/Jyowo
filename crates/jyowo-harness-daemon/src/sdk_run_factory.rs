@@ -974,6 +974,9 @@ impl SdkRunCoordinatorFactory {
             .await
             .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?;
 
+        let skill_context_delivery_keys = (0..request.input.context_references.len())
+            .map(|reference_index| request.skill_context_delivery_key(reference_index))
+            .collect();
         let mut input = ConversationTurnInput::ask(request.input.content);
         input.client_message_id = Some(request.segment_id.to_string());
         input.context_references = request.input.context_references;
@@ -991,7 +994,7 @@ impl SdkRunCoordinatorFactory {
             .with_model_options(provider.model_options.clone());
         run_options.agent_tool_policy = Some(agent_tool_policy);
         let run_result = harness
-            .submit_conversation_turn_with_run_control(
+            .submit_conversation_turn_with_run_control_and_skill_context_delivery_keys(
                 ConversationTurnRequest {
                     options: session_options,
                     run_options,
@@ -1000,6 +1003,7 @@ impl SdkRunCoordinatorFactory {
                 },
                 request.input.run_id,
                 control,
+                skill_context_delivery_keys,
             )
             .await
             .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()));

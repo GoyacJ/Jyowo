@@ -16,6 +16,7 @@ pub(crate) fn projection_snapshot_id(projection: &SessionProjection) -> Snapshot
         end_reason: &projection.end_reason,
         last_offset: projection.last_offset.0,
         discovered_tools: projection.discovered_tools.iter().collect(),
+        skill_context_deliveries: &projection.skill_context_deliveries,
         pending_deferred_tools_delta: projection.pending_deferred_tools_delta(),
     };
     let bytes = serde_json::to_vec(&canonical).unwrap_or_default();
@@ -37,6 +38,8 @@ struct CanonicalProjection<'a> {
     end_reason: &'a Option<harness_contracts::EndReason>,
     last_offset: u64,
     discovered_tools: Vec<&'a String>,
+    skill_context_deliveries:
+        &'a std::collections::BTreeMap<String, crate::SkillContextDeliveryRecord>,
     pending_deferred_tools_delta: Option<&'a harness_contracts::DeferredToolsDeltaAttachment>,
 }
 

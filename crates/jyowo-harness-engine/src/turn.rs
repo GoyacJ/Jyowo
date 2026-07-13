@@ -21,10 +21,11 @@ use harness_contracts::{
     MemoryModelRequestPreviewSection, MemorySource, MemoryTraceId, Message, MessageContent,
     MessageId, MessageMetadata, MessagePart, MessageRole, ModelError, ModelRef,
     ModelRequestOptions, PermissionMode, PricingSnapshotId, RedactRules, Redactor, RequestId,
-    RunEndedEvent, RunId, RunModelSnapshot, RunStartedEvent, SessionId, TeamId, TenantId,
-    ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolResultPart, ToolUseCompletedEvent,
-    ToolUseDeniedEvent, ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseStartedEvent,
-    TrustLevel, TurnInput, UsageAccumulatedEvent, UsageSnapshot,
+    RunEndedEvent, RunId, RunModelSnapshot, RunStartedEvent, SessionId, SkillContextConsumedEvent,
+    SkillContextProviderAcceptedEvent, TeamId, TenantId, ToolDescriptor, ToolError,
+    ToolErrorPayload, ToolResult, ToolResultPart, ToolUseCompletedEvent, ToolUseDeniedEvent,
+    ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseStartedEvent, TrustLevel,
+    TurnInput, UsageAccumulatedEvent, UsageSnapshot,
 };
 use harness_execution::{AuthorizationContext, ExecutionError};
 use harness_hook::{
@@ -77,6 +78,18 @@ pub(crate) async fn run_turn(
         .get("clientMessageId")
         .and_then(serde_json::Value::as_str)
         .map(ToOwned::to_owned);
+    let mut skill_context_delivery_keys = input
+        .metadata
+        .get("skillContextDeliveryKeys")
+        .and_then(Value::as_array)
+        .map(|keys| {
+            keys.iter()
+                .filter_map(Value::as_str)
+                .filter(|key| !key.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let correlation_id = ctx.correlation_id;
     let run_started = Event::RunStarted(RunStartedEvent {
         run_id: ctx.run_id,
@@ -505,6 +518,47 @@ pub(crate) async fn run_turn(
                 return Err(engine_error(error));
             }
         };
+        if !skill_context_delivery_keys.is_empty() {
+            let skill_context_delivery_keys = std::mem::take(&mut skill_context_delivery_keys);
+            let accepted_at = harness_contracts::now();
+            append(
+                engine,
+                session.tenant_id,
+                session.session_id,
+                &mut emitted,
+                skill_context_delivery_keys
+                    .iter()
+                    .map(|delivery_key| {
+                        Event::SkillContextProviderAccepted(SkillContextProviderAcceptedEvent {
+                            session_id: session.session_id,
+                            run_id: ctx.run_id,
+                            delivery_key: delivery_key.clone(),
+                            at: accepted_at,
+                        })
+                    })
+                    .collect(),
+            )
+            .await?;
+            let consumed_at = harness_contracts::now();
+            append(
+                engine,
+                session.tenant_id,
+                session.session_id,
+                &mut emitted,
+                skill_context_delivery_keys
+                    .iter()
+                    .map(|delivery_key| {
+                        Event::SkillContextConsumed(SkillContextConsumedEvent {
+                            session_id: session.session_id,
+                            run_id: ctx.run_id,
+                            delivery_key: delivery_key.clone(),
+                            at: consumed_at,
+                        })
+                    })
+                    .collect(),
+            )
+            .await?;
+        }
         stream = wrap_stream_with_middlewares(stream, &infer_ctx);
 
         let mut assembly = TurnAssembly::new(MessageId::new());

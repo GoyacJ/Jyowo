@@ -856,13 +856,6 @@ fn conversation_turn_input_renders_references_and_attachments_context_block() {
                             path: "Cargo.toml".to_owned(),
                             label: "Cargo manifest".to_owned(),
                         },
-                        ConversationContextReference::Skill {
-                            version: CURRENT_CONTEXT_REFERENCE_VERSION,
-                            skill_id: SkillId("skill-review".to_owned()),
-                            label: "Code review skill".to_owned(),
-                            parameters: Default::default(),
-                            source: None,
-                        },
                         ConversationContextReference::Tool {
                             id: "builtin.grep".to_owned(),
                             label: "Search files".to_owned(),
@@ -891,7 +884,6 @@ fn conversation_turn_input_renders_references_and_attachments_context_block() {
         let text = request_text(&requests[0]);
         assert!(text.contains("<conversation-context>"));
         assert!(text.contains("workspace_file: Cargo manifest (Cargo.toml)"));
-        assert!(text.contains("skill: Code review skill (skill-review)"));
         assert!(text.contains("tool: Search files (builtin.grep)"));
         assert!(text.contains("mcp_server: Filesystem MCP (mcp-filesystem)"));
         assert!(text.contains("attachment: notes.txt text/plain 12 bytes attachment-001"));

@@ -1,10 +1,11 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use harness_contracts::{
-    Decision, DecisionScope, DeferredToolsDeltaAttachment, EndReason, Event, JournalOffset,
-    Message, MessageContent, MessagePart, MessageRole, PermissionDecisionOption, PermissionSubject,
-    RequestId, SessionError, SessionId, SnapshotId, TenantId, ToolErrorPayload, ToolName,
-    ToolResult, ToolUseId, UsageSnapshot,
+    ContentHash, ConversationContextReference, Decision, DecisionScope,
+    DeferredToolsDeltaAttachment, EndReason, Event, JournalOffset, Message, MessageContent,
+    MessagePart, MessageRole, PermissionDecisionOption, PermissionSubject, RequestId, RunId,
+    SessionError, SessionId, SnapshotId, TenantId, ToolErrorPayload, ToolName, ToolResult,
+    ToolUseId, UsageSnapshot,
 };
 use harness_journal::EventEnvelope;
 use serde::{Deserialize, Serialize};
@@ -22,7 +23,29 @@ pub struct SessionProjection {
     pub last_offset: JournalOffset,
     pub snapshot_id: SnapshotId,
     pub discovered_tools: DiscoveredToolProjection,
+    #[serde(default)]
+    pub skill_context_deliveries: BTreeMap<String, SkillContextDeliveryRecord>,
     pending_deferred_tools_delta: Option<DeferredToolsDeltaAttachment>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillContextDeliveryStage {
+    Prepared,
+    ContextAssembled,
+    ProviderAccepted,
+    Consumed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillContextDeliveryRecord {
+    pub delivery_key: String,
+    pub reference: ConversationContextReference,
+    pub body_hash: ContentHash,
+    pub stage: SkillContextDeliveryStage,
+    pub prepared_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub run_id: RunId,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -84,6 +107,7 @@ impl SessionProjection {
             last_offset: JournalOffset(0),
             snapshot_id: SnapshotId::from_u128(0),
             discovered_tools: DiscoveredToolProjection::default(),
+            skill_context_deliveries: BTreeMap::new(),
             pending_deferred_tools_delta: None,
         };
         projection.refresh_snapshot_id();
@@ -100,7 +124,7 @@ impl SessionProjection {
         let mut pending_permissions = HashMap::<RequestId, PermissionRecord>::new();
         for envelope in envelopes {
             state.last_offset = envelope.offset;
-            state.apply_event(envelope.payload, &mut pending_permissions);
+            state.apply_event(envelope.payload, &mut pending_permissions)?;
         }
         state.refresh_snapshot_id();
         Ok(state)
@@ -110,7 +134,7 @@ impl SessionProjection {
         &mut self,
         event: Event,
         pending_permissions: &mut HashMap<RequestId, PermissionRecord>,
-    ) {
+    ) -> Result<(), SessionError> {
         match event {
             Event::SessionCreated(event) => {
                 self.session_id = event.session_id;
@@ -230,14 +254,74 @@ impl SessionProjection {
             Event::CompactionApplied(_) => {
                 self.discovered_tools.materialized.clear();
             }
+            Event::SkillContextPrepared(event) => {
+                if event.session_id != self.session_id {
+                    return Err(projection_error(
+                        "skill context prepared event has a different session id",
+                    ));
+                }
+                if !matches!(&event.reference, ConversationContextReference::Skill { .. }) {
+                    return Err(projection_error(
+                        "skill context prepared event requires a skill reference",
+                    ));
+                }
+                if self
+                    .skill_context_deliveries
+                    .contains_key(&event.delivery_key)
+                {
+                    return Err(projection_error(
+                        "skill context delivery was prepared more than once",
+                    ));
+                }
+                self.skill_context_deliveries.insert(
+                    event.delivery_key.clone(),
+                    SkillContextDeliveryRecord {
+                        delivery_key: event.delivery_key,
+                        reference: event.reference,
+                        body_hash: event.body_hash,
+                        stage: SkillContextDeliveryStage::Prepared,
+                        prepared_at: event.at,
+                        updated_at: event.at,
+                        run_id: event.run_id,
+                    },
+                );
+            }
+            Event::SkillContextAssembled(event) => self.advance_skill_context_delivery(
+                event.session_id,
+                &event.delivery_key,
+                SkillContextDeliveryStage::Prepared,
+                SkillContextDeliveryStage::ContextAssembled,
+                event.run_id,
+                event.at,
+            )?,
+            Event::SkillContextProviderAccepted(event) => self.advance_skill_context_delivery(
+                event.session_id,
+                &event.delivery_key,
+                SkillContextDeliveryStage::ContextAssembled,
+                SkillContextDeliveryStage::ProviderAccepted,
+                event.run_id,
+                event.at,
+            )?,
+            Event::SkillContextConsumed(event) => self.advance_skill_context_delivery(
+                event.session_id,
+                &event.delivery_key,
+                SkillContextDeliveryStage::ProviderAccepted,
+                SkillContextDeliveryStage::Consumed,
+                event.run_id,
+                event.at,
+            )?,
             _ => {}
         }
+        Ok(())
     }
 
     pub(crate) fn apply_events(&mut self, events: &[Event]) {
         let mut pending_permissions = HashMap::<RequestId, PermissionRecord>::new();
         for event in events {
-            self.apply_event(event.clone(), &mut pending_permissions);
+            // Task-backed stores reject invalid skill delivery transitions before
+            // committing them. Keep live projection updates infallible for the
+            // existing session API while replay remains strict.
+            let _ = self.apply_event(event.clone(), &mut pending_permissions);
         }
         self.refresh_snapshot_id();
     }
@@ -267,6 +351,67 @@ impl SessionProjection {
             }
         }
     }
+
+    #[must_use]
+    pub fn skill_context_delivery(
+        &self,
+        delivery_key: &str,
+    ) -> Option<&SkillContextDeliveryRecord> {
+        self.skill_context_deliveries.get(delivery_key)
+    }
+
+    pub fn unconsumed_skill_context_deliveries(
+        &self,
+    ) -> impl Iterator<Item = &SkillContextDeliveryRecord> {
+        self.skill_context_deliveries
+            .values()
+            .filter(|delivery| delivery.stage != SkillContextDeliveryStage::Consumed)
+    }
+
+    fn advance_skill_context_delivery(
+        &mut self,
+        session_id: SessionId,
+        delivery_key: &str,
+        required: SkillContextDeliveryStage,
+        next: SkillContextDeliveryStage,
+        run_id: RunId,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), SessionError> {
+        if session_id != self.session_id {
+            return Err(projection_error(
+                "skill context lifecycle event has a different session id",
+            ));
+        }
+        let delivery = self
+            .skill_context_deliveries
+            .get_mut(delivery_key)
+            .ok_or_else(|| projection_error("skill context delivery was not prepared"))?;
+        if delivery.stage == next
+            && matches!(
+                next,
+                SkillContextDeliveryStage::ContextAssembled
+                    | SkillContextDeliveryStage::ProviderAccepted
+            )
+        {
+            delivery.run_id = run_id;
+            delivery.updated_at = at;
+            return Ok(());
+        }
+        if delivery.stage != required {
+            return Err(projection_error(format!(
+                "skill context delivery cannot advance from {:?} to {next:?}",
+                delivery.stage
+            )));
+        }
+        delivery.stage = next;
+        delivery.run_id = run_id;
+        delivery.updated_at = at;
+        Ok(())
+    }
+}
+
+fn projection_error(message: impl Into<String>) -> SessionError {
+    SessionError::Message(message.into())
 }
 
 fn message_parts(content: MessageContent) -> Vec<MessagePart> {

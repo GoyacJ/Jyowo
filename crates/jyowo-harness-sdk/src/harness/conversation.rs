@@ -5,12 +5,22 @@ use super::*;
 struct HydratedConversationInput {
     input: ConversationTurnInput,
     memory_patches: Vec<HydratedMemoryPatch>,
+    skill_patches: Vec<HydratedSkillPatch>,
+    skill_turn_snapshot: Option<SkillTurnSnapshot>,
 }
 
 struct HydratedMemoryPatch {
     memory_id: MemoryId,
     provider_id: String,
     fence: String,
+}
+
+struct HydratedSkillPatch {
+    delivery_key: String,
+    skill_id: SkillId,
+    skill_name: String,
+    body: String,
+    stage: SkillContextDeliveryStage,
 }
 
 fn render_conversation_turn_prompt(
@@ -136,15 +146,7 @@ fn render_context_reference(reference: &ConversationContextReference) -> String 
                 String::new()
             }
         }
-        ConversationContextReference::Skill {
-            skill_id, label, ..
-        } => {
-            format!(
-                "- skill: {} ({})",
-                sanitize_context_line(label),
-                sanitize_context_line(&skill_id.0)
-            )
-        }
+        ConversationContextReference::Skill { .. } => String::new(),
         ConversationContextReference::Tool { id, label } => {
             format!(
                 "- tool: {} ({})",
@@ -176,11 +178,65 @@ fn sanitize_context_line(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn fallback_skill_context_delivery_key(
+    session_id: SessionId,
+    client_message_id: Option<&str>,
+    run_id: RunId,
+    reference_index: usize,
+) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"jyowo.sdk.skill-context-delivery.v1\0");
+    hasher.update(&session_id.as_bytes());
+    match client_message_id {
+        Some(client_message_id) => hasher.update(client_message_id.as_bytes()),
+        None => hasher.update(&run_id.as_bytes()),
+    };
+    hasher.update(&(reference_index as u64).to_be_bytes());
+    format!("sdk-skill-context-v1:{}", hasher.finalize().to_hex())
+}
+
+fn selected_skill_render_error(skill_id: &SkillId, error: RenderError) -> HarnessError {
+    let error = match error {
+        RenderError::MissingParam(parameter) => SkillContextError::MissingParameter {
+            skill_id: skill_id.0.clone(),
+            parameter,
+        },
+        RenderError::InvalidParam { name, expected } => SkillContextError::InvalidParameter {
+            skill_id: skill_id.0.clone(),
+            parameter: name,
+            expected: expected.to_owned(),
+        },
+        RenderError::SkillNotVisible(_) => SkillContextError::NotVisible {
+            skill_id: skill_id.0.clone(),
+        },
+        RenderError::MissingConfig { config_keys, .. } => SkillContextError::MissingConfig {
+            skill_id: skill_id.0.clone(),
+            config_keys,
+        },
+        RenderError::UnknownConfigKey(_) | RenderError::ConfigResolve(_) => {
+            SkillContextError::RenderFailed {
+                skill_id: skill_id.0.clone(),
+                reason: "configuration resolution failed".to_owned(),
+            }
+        }
+        RenderError::ShellNotAllowed(_) | RenderError::ShellExec(_) => {
+            SkillContextError::RenderFailed {
+                skill_id: skill_id.0.clone(),
+                reason: "render policy rejected selected skill".to_owned(),
+            }
+        }
+    };
+    error.into()
+}
+
 impl Harness {
     async fn hydrate_memory_references(
         &self,
         mut input: ConversationTurnInput,
         options: &SessionOptions,
+        projection: &SessionProjection,
+        run_id: RunId,
+        delivery_keys: &[Option<String>],
     ) -> Result<HydratedConversationInput, HarnessError> {
         #[cfg(not(feature = "memory-provider-registry"))]
         let _ = options;
@@ -282,13 +338,172 @@ impl Harness {
             }
         }
 
-        input
+        let skill_turn_snapshot = input
             .context_references
-            .retain(|reference| !matches!(reference, ConversationContextReference::Memory { .. }));
+            .iter()
+            .any(|reference| matches!(reference, ConversationContextReference::Skill { .. }))
+            .then(|| self.capture_skill_turn_snapshot(options, None));
+        let skill_turn_snapshot = match skill_turn_snapshot {
+            Some(snapshot) => Some(snapshot.await?),
+            None => None,
+        };
+        let mut skill_patches = Vec::new();
+        if let Some(snapshot) = &skill_turn_snapshot {
+            let service = snapshot.service();
+            let agent = AgentId::from_u128(1);
+            for (reference_index, requested_reference) in
+                input.context_references.iter().enumerate()
+            {
+                if !matches!(
+                    requested_reference,
+                    ConversationContextReference::Skill { .. }
+                ) {
+                    continue;
+                }
+                let delivery_key = delivery_keys
+                    .get(reference_index)
+                    .and_then(Clone::clone)
+                    .unwrap_or_else(|| {
+                        fallback_skill_context_delivery_key(
+                            options.session_id,
+                            input.client_message_id.as_deref(),
+                            run_id,
+                            reference_index,
+                        )
+                    });
+                let existing = projection.skill_context_delivery(&delivery_key);
+                if existing
+                    .is_some_and(|delivery| delivery.stage == SkillContextDeliveryStage::Consumed)
+                {
+                    continue;
+                }
+                let reference = existing
+                    .map(|delivery| delivery.reference.clone())
+                    .unwrap_or_else(|| requested_reference.clone());
+                let ConversationContextReference::Skill {
+                    version,
+                    skill_id,
+                    label,
+                    parameters,
+                    source,
+                } = reference
+                else {
+                    return Err(SkillContextError::InvalidPersistedReference.into());
+                };
+                let skill = snapshot
+                    .registry_snapshot
+                    .entries
+                    .values()
+                    .find(|skill| skill.id == skill_id)
+                    .cloned()
+                    .ok_or_else(|| SkillContextError::Unavailable {
+                        skill_id: skill_id.0.clone(),
+                    })?;
+                let actual_source = skill.source.to_kind();
+                if source
+                    .as_ref()
+                    .is_some_and(|source| source != &actual_source)
+                {
+                    return Err(SkillContextError::SourceMismatch {
+                        skill_id: skill_id.0.clone(),
+                    }
+                    .into());
+                }
+                let normalized_reference = ConversationContextReference::Skill {
+                    version,
+                    skill_id: skill_id.clone(),
+                    label,
+                    parameters: parameters.clone(),
+                    source: Some(actual_source),
+                };
+                if let Some(existing) = existing {
+                    if existing.reference != normalized_reference {
+                        return Err(SkillContextError::ReferenceMismatch {
+                            delivery_key: delivery_key.clone(),
+                        }
+                        .into());
+                    }
+                }
+                for parameter in parameters.keys() {
+                    if !skill
+                        .frontmatter
+                        .parameters
+                        .iter()
+                        .any(|declaration| declaration.name == *parameter)
+                    {
+                        return Err(SkillContextError::UnknownParameter {
+                            skill_id: skill_id.0.clone(),
+                            parameter: parameter.clone(),
+                        }
+                        .into());
+                    }
+                }
+                if service.view(&agent, &skill.name, false).is_none() {
+                    return Err(SkillContextError::NotVisible {
+                        skill_id: skill_id.0.clone(),
+                    }
+                    .into());
+                }
+                let rendered = service
+                    .render(
+                        &agent,
+                        &skill.name,
+                        Value::Object(parameters.into_iter().collect()),
+                    )
+                    .await
+                    .map_err(|error| selected_skill_render_error(&skill_id, error))?;
+                let body_hash = ContentHash(*blake3::hash(rendered.content.as_bytes()).as_bytes());
+                let stage = existing
+                    .map(|delivery| delivery.stage)
+                    .unwrap_or(SkillContextDeliveryStage::Prepared);
+                if let Some(existing) = existing {
+                    if existing.body_hash != body_hash {
+                        return Err(SkillContextError::IntegrityMismatch {
+                            delivery_key: delivery_key.clone(),
+                        }
+                        .into());
+                    }
+                } else {
+                    self.inner
+                        .event_store
+                        .append(
+                            options.tenant_id,
+                            options.session_id,
+                            &[Event::SkillContextPrepared(SkillContextPreparedEvent {
+                                session_id: options.session_id,
+                                run_id,
+                                delivery_key: delivery_key.clone(),
+                                reference: normalized_reference,
+                                body_hash,
+                                at: harness_contracts::now(),
+                            })],
+                        )
+                        .await
+                        .map_err(HarnessError::Journal)?;
+                }
+                skill_patches.push(HydratedSkillPatch {
+                    delivery_key,
+                    skill_id,
+                    skill_name: skill.name.clone(),
+                    body: rendered.content,
+                    stage,
+                });
+            }
+        }
+
+        input.context_references.retain(|reference| {
+            !matches!(
+                reference,
+                ConversationContextReference::Memory { .. }
+                    | ConversationContextReference::Skill { .. }
+            )
+        });
 
         Ok(HydratedConversationInput {
             input,
             memory_patches,
+            skill_patches,
+            skill_turn_snapshot,
         })
     }
 
@@ -424,7 +639,8 @@ impl Harness {
         &self,
         request: ConversationTurnRequest,
     ) -> Result<ConversationTurnReceipt, HarnessError> {
-        self.submit_conversation_turn_inner(request, None).await
+        self.submit_conversation_turn_inner(request, None, Vec::new())
+            .await
     }
 
     pub async fn submit_conversation_turn_with_run_control(
@@ -433,14 +649,30 @@ impl Harness {
         run_id: RunId,
         run_control: RunControlHandle,
     ) -> Result<ConversationTurnReceipt, HarnessError> {
-        self.submit_conversation_turn_inner(request, Some((run_id, run_control)))
+        self.submit_conversation_turn_inner(request, Some((run_id, run_control)), Vec::new())
             .await
+    }
+
+    pub async fn submit_conversation_turn_with_run_control_and_skill_context_delivery_keys(
+        &self,
+        request: ConversationTurnRequest,
+        run_id: RunId,
+        run_control: RunControlHandle,
+        skill_context_delivery_keys: Vec<Option<String>>,
+    ) -> Result<ConversationTurnReceipt, HarnessError> {
+        self.submit_conversation_turn_inner(
+            request,
+            Some((run_id, run_control)),
+            skill_context_delivery_keys,
+        )
+        .await
     }
 
     async fn submit_conversation_turn_inner(
         &self,
         request: ConversationTurnRequest,
         controlled_run: Option<(RunId, RunControlHandle)>,
+        skill_context_delivery_keys: Vec<Option<String>>,
     ) -> Result<ConversationTurnReceipt, HarnessError> {
         if request.input.prompt.trim().is_empty() {
             return Err(HarnessError::Session(SessionError::Message(
@@ -481,7 +713,13 @@ impl Harness {
             .unwrap_or_else(|| self.inner.options.model_id.clone());
         let model_snapshot = snapshot_for_supported_model(self.inner.model.as_ref(), &model_id)?;
         let hydrated = self
-            .hydrate_memory_references(request.input, &options)
+            .hydrate_memory_references(
+                request.input,
+                &options,
+                &projection,
+                run_id,
+                &skill_context_delivery_keys,
+            )
             .await?;
         let parts = conversation_turn_parts(
             &hydrated.input,
@@ -493,6 +731,7 @@ impl Harness {
                 &run_options,
                 projection,
                 run_control.map(|run_control| (run_id, run_control)),
+                hydrated.skill_turn_snapshot.clone(),
             )
             .await?;
         for patch in hydrated.memory_patches {
@@ -509,6 +748,41 @@ impl Harness {
                     lifecycle: harness_contracts::ContextPatchLifecycle::Transient,
                 })
                 .await?;
+        }
+        for patch in &hydrated.skill_patches {
+            session
+                .push_context_patch(harness_contracts::ContextPatchRequest {
+                    tenant_id: options.tenant_id,
+                    session_id: options.session_id,
+                    run_id,
+                    source: harness_contracts::ContextPatchSource::SkillReference {
+                        skill_id: patch.skill_id.clone(),
+                        skill_name: patch.skill_name.clone(),
+                        delivery_key: patch.delivery_key.clone(),
+                    },
+                    body: patch.body.clone(),
+                    lifecycle: harness_contracts::ContextPatchLifecycle::Transient,
+                })
+                .await?;
+            if matches!(
+                patch.stage,
+                SkillContextDeliveryStage::Prepared | SkillContextDeliveryStage::ContextAssembled
+            ) {
+                self.inner
+                    .event_store
+                    .append(
+                        options.tenant_id,
+                        options.session_id,
+                        &[Event::SkillContextAssembled(SkillContextAssembledEvent {
+                            session_id: options.session_id,
+                            run_id,
+                            delivery_key: patch.delivery_key.clone(),
+                            at: harness_contracts::now(),
+                        })],
+                    )
+                    .await
+                    .map_err(HarnessError::Journal)?;
+            }
         }
         let run_id = session
             .run_turn_parts_with_client_message_id_attachments_permission_mode_actor_source_and_run_id(

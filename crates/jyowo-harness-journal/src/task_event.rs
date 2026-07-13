@@ -1768,6 +1768,7 @@ impl TaskEvent {
                         "engine event payload type {actual} does not match {event_type}"
                     )));
                 }
+                validate_skill_context_event_shape(payload)?;
             }
             Self::RunSafePointReached {
                 non_revertible_tool_use_ids,
@@ -1839,6 +1840,37 @@ impl TaskEvent {
         }
         Ok(())
     }
+}
+
+fn validate_skill_context_event_shape(payload: &EngineEventPayload) -> Result<(), TaskStoreError> {
+    let (session_id, delivery_key) = match &payload.event {
+        Event::SkillContextPrepared(event) => {
+            if !matches!(&event.reference, ConversationContextReference::Skill { .. }) {
+                return Err(TaskStoreError::InvalidInput(
+                    "skill context prepared requires a typed skill reference".into(),
+                ));
+            }
+            validate_context_reference(&event.reference)?;
+            (event.session_id, event.delivery_key.as_str())
+        }
+        Event::SkillContextAssembled(event) => (event.session_id, event.delivery_key.as_str()),
+        Event::SkillContextProviderAccepted(event) => {
+            (event.session_id, event.delivery_key.as_str())
+        }
+        Event::SkillContextConsumed(event) => (event.session_id, event.delivery_key.as_str()),
+        _ => return Ok(()),
+    };
+    if session_id != payload.session_id {
+        return Err(TaskStoreError::InvalidInput(
+            "skill context event session does not match its engine envelope".into(),
+        ));
+    }
+    if delivery_key.trim().is_empty() || delivery_key.len() > 256 {
+        return Err(TaskStoreError::InvalidInput(
+            "skill context delivery key must be non-empty and at most 256 bytes".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_context_reference(

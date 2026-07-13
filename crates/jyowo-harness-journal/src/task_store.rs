@@ -3138,6 +3138,13 @@ impl TaskStore {
             })
             .collect::<Result<Vec<_>, _>>()?;
         validate_events(authority.source(), &events)?;
+        validate_skill_context_lifecycle_in_transaction(
+            &transaction,
+            task_id,
+            tenant_id,
+            session_id,
+            &events,
+        )?;
         promote_blob_references_in_transaction(&transaction, task_id, &events)?;
         validate_blob_references_in_transaction(&transaction, task_id, &events)?;
 
@@ -3647,6 +3654,128 @@ fn reconcile_blob_root_in_transaction(
             }
         }
     }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillContextLifecycleStage {
+    Prepared,
+    ContextAssembled,
+    ProviderAccepted,
+    Consumed,
+}
+
+fn validate_skill_context_lifecycle_in_transaction(
+    transaction: &Transaction<'_>,
+    task_id: TaskId,
+    tenant_id: TenantId,
+    session_id: SessionId,
+    new_events: &[NewTaskEvent],
+) -> Result<(), TaskStoreError> {
+    let stored_events = {
+        let mut statement = transaction.prepare(
+            "SELECT event_type, schema_version, payload_json
+             FROM event_log
+             WHERE task_id = ?1
+               AND event_type IN (
+                   'engine.skill_context_prepared',
+                   'engine.skill_context_assembled',
+                   'engine.skill_context_provider_accepted',
+                   'engine.skill_context_consumed'
+               )
+               AND json_extract(payload_json, '$.tenantId') = ?2
+               AND json_extract(payload_json, '$.sessionId') = ?3
+             ORDER BY stream_sequence ASC",
+        )?;
+        let rows = statement
+            .query_map(
+                params![
+                    task_id.to_string(),
+                    tenant_id.to_string(),
+                    session_id.to_string()
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+
+    let mut stages = HashMap::<String, SkillContextLifecycleStage>::new();
+    for (event_type, schema_version, payload_json) in stored_events {
+        let schema_version =
+            u16::try_from(schema_version).map_err(|_| TaskStoreError::IntegerOutOfRange)?;
+        let payload = serde_json::from_str(&payload_json)?;
+        let event = TaskEvent::decode(&event_type, schema_version, payload)?;
+        let TaskEvent::Engine { payload, .. } = event else {
+            return Err(TaskStoreError::ProjectionIntegrity(
+                "skill context lifecycle row is not an engine event".into(),
+            ));
+        };
+        apply_skill_context_lifecycle_event(&mut stages, &payload.event)?;
+    }
+
+    for event in new_events {
+        let TaskEvent::Engine { payload, .. } = &event.event else {
+            continue;
+        };
+        apply_skill_context_lifecycle_event(&mut stages, &payload.event)?;
+    }
+    Ok(())
+}
+
+fn apply_skill_context_lifecycle_event(
+    stages: &mut HashMap<String, SkillContextLifecycleStage>,
+    event: &Event,
+) -> Result<(), TaskStoreError> {
+    let (delivery_key, next) = match event {
+        Event::SkillContextPrepared(event) => (
+            event.delivery_key.as_str(),
+            SkillContextLifecycleStage::Prepared,
+        ),
+        Event::SkillContextAssembled(event) => (
+            event.delivery_key.as_str(),
+            SkillContextLifecycleStage::ContextAssembled,
+        ),
+        Event::SkillContextProviderAccepted(event) => (
+            event.delivery_key.as_str(),
+            SkillContextLifecycleStage::ProviderAccepted,
+        ),
+        Event::SkillContextConsumed(event) => (
+            event.delivery_key.as_str(),
+            SkillContextLifecycleStage::Consumed,
+        ),
+        _ => return Ok(()),
+    };
+    let current = stages.get(delivery_key).copied();
+    let allowed = matches!(
+        (current, next),
+        (None, SkillContextLifecycleStage::Prepared)
+            | (
+                Some(SkillContextLifecycleStage::Prepared),
+                SkillContextLifecycleStage::ContextAssembled
+            )
+            | (
+                Some(SkillContextLifecycleStage::ContextAssembled),
+                SkillContextLifecycleStage::ContextAssembled
+                    | SkillContextLifecycleStage::ProviderAccepted
+            )
+            | (
+                Some(SkillContextLifecycleStage::ProviderAccepted),
+                SkillContextLifecycleStage::ProviderAccepted | SkillContextLifecycleStage::Consumed
+            )
+    );
+    if !allowed {
+        return Err(TaskStoreError::InvalidInput(format!(
+            "invalid skill context lifecycle transition for delivery {delivery_key}: {current:?} -> {next:?}"
+        )));
+    }
+    stages.insert(delivery_key.to_owned(), next);
     Ok(())
 }
 

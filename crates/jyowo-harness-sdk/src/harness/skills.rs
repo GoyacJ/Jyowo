@@ -1,11 +1,45 @@
 use super::*;
 
+#[derive(Clone)]
+pub(super) struct SkillTurnSnapshot {
+    pub(super) registry: SkillRegistry,
+    pub(super) registry_snapshot: Arc<SkillRegistrySnapshot>,
+    pub(super) config_snapshot: SkillConfigSnapshot,
+    metrics_sink: Option<Arc<dyn SkillMetricsSink>>,
+    render_policy: SkillRenderPolicy,
+}
+
+impl SkillTurnSnapshot {
+    pub(super) fn service(&self) -> SkillRegistryService {
+        let resolver_snapshot = self.config_snapshot.clone();
+        let mut renderer = SkillRenderer::new_with_config_resolver_factory(Arc::new(
+            move |skill: &Skill| -> Arc<dyn harness_skill::SkillConfigResolver> {
+                Arc::new(SkillConfigSnapshotResolver::for_skill(
+                    skill.id.0.clone(),
+                    resolver_snapshot.clone(),
+                    skill.frontmatter.config.clone(),
+                ))
+            },
+        ))
+        .with_policy(self.render_policy.clone());
+        if let Some(metrics_sink) = &self.metrics_sink {
+            renderer = renderer.with_metrics_sink(Arc::clone(metrics_sink));
+        }
+        let mut service = SkillRegistryService::new(self.registry.clone(), renderer)
+            .with_snapshot(Arc::clone(&self.registry_snapshot));
+        if let Some(metrics_sink) = &self.metrics_sink {
+            service = service.with_metrics_sink(Arc::clone(metrics_sink));
+        }
+        service
+    }
+}
+
 impl Harness {
-    pub(super) async fn skill_registry_service(
+    pub(super) async fn capture_skill_turn_snapshot(
         &self,
         options: &SessionOptions,
         pending_session_events: Option<Arc<PendingSessionEvents>>,
-    ) -> Result<Option<SkillRegistryService>, HarnessError> {
+    ) -> Result<SkillTurnSnapshot, HarnessError> {
         let registry = self.inner.skill_registry.clone();
         let metrics_sink = self.skill_metrics_sink();
         if let Some(loader) = &self.inner.skill_loader {
@@ -59,26 +93,25 @@ impl Harness {
                 "resolve skill configuration status failed: {error}"
             ))
         })?;
-        let snapshot = Arc::new(snapshot);
-        let resolver_snapshot = skill_config_snapshot.clone();
-        let mut renderer = SkillRenderer::new_with_config_resolver_factory(Arc::new(
-            move |skill: &Skill| -> Arc<dyn harness_skill::SkillConfigResolver> {
-                Arc::new(SkillConfigSnapshotResolver::for_skill(
-                    skill.id.0.clone(),
-                    resolver_snapshot.clone(),
-                    skill.frontmatter.config.clone(),
-                ))
-            },
+        Ok(SkillTurnSnapshot {
+            registry,
+            registry_snapshot: Arc::new(snapshot),
+            config_snapshot: skill_config_snapshot,
+            metrics_sink,
+            render_policy: self.skill_render_policy(),
+        })
+    }
+
+    pub(super) async fn skill_registry_service(
+        &self,
+        options: &SessionOptions,
+        pending_session_events: Option<Arc<PendingSessionEvents>>,
+    ) -> Result<Option<SkillRegistryService>, HarnessError> {
+        Ok(Some(
+            self.capture_skill_turn_snapshot(options, pending_session_events)
+                .await?
+                .service(),
         ))
-        .with_policy(self.skill_render_policy());
-        if let Some(metrics_sink) = &metrics_sink {
-            renderer = renderer.with_metrics_sink(Arc::clone(metrics_sink));
-        }
-        let mut service = SkillRegistryService::new(registry, renderer).with_snapshot(snapshot);
-        if let Some(metrics_sink) = metrics_sink {
-            service = service.with_metrics_sink(metrics_sink);
-        }
-        Ok(Some(service))
     }
 
     pub(super) fn skill_metrics_sink(&self) -> Option<Arc<dyn SkillMetricsSink>> {
