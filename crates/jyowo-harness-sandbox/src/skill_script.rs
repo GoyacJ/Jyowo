@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,6 +26,12 @@ use crate::{
 static TEMP_WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(100);
 const BACKEND_TIMEOUT_GRACE: Duration = Duration::from_millis(250);
+
+#[derive(Clone, Copy)]
+struct ArtifactBaseline {
+    byte_size: u64,
+    content_hash: [u8; 32],
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillScriptPackFile {
@@ -89,6 +95,19 @@ pub async fn execute_skill_script(
 ) -> Result<SkillScriptSandboxResult, SandboxError> {
     validate_declaration(&request.declaration)?;
     validate_environment(&request)?;
+    if !backend
+        .capabilities()
+        .supports_synchronous_kill_scope
+        .contains(&KillScope::ProcessGroup)
+    {
+        return Err(SandboxError::CapabilityMismatch {
+            capability: "synchronous_kill".to_owned(),
+            detail: format!(
+                "sandbox backend `{}` cannot synchronously cancel a skill script process group",
+                backend.backend_id()
+            ),
+        });
+    }
 
     let workspace = TempSkillWorkspace::create(&ctx.workspace_root)?;
     let root = workspace.path().to_path_buf();
@@ -97,16 +116,24 @@ pub async fn execute_skill_script(
     }
     let script_path = safe_relative_path(&request.declaration.path)?;
     let mut mounted_files = Vec::with_capacity(request.files.len());
-    let mut baseline = BTreeSet::new();
+    let mut baseline = BTreeMap::new();
 
     for file in &request.files {
         let relative = safe_relative_path(Path::new(&file.path))?;
         let normalized = path_to_string(&relative);
-        if !baseline.insert(normalized.clone()) {
+        if baseline.contains_key(&normalized) {
             return Err(SandboxError::HostPathDenied {
                 path: file.path.clone(),
             });
         }
+        let content = file.content.as_bytes();
+        baseline.insert(
+            normalized.clone(),
+            ArtifactBaseline {
+                byte_size: content.len() as u64,
+                content_hash: *blake3::hash(content).as_bytes(),
+            },
+        );
         let target = root.join(&relative);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(io_error)?;
@@ -117,7 +144,7 @@ pub async fn execute_skill_script(
     mounted_files.sort();
 
     let script_path_string = path_to_string(&script_path);
-    if !baseline.contains(&script_path_string) || !root.join(&script_path).is_file() {
+    if !baseline.contains_key(&script_path_string) || !root.join(&script_path).is_file() {
         return Err(SandboxError::HostPathDenied {
             path: script_path_string,
         });
@@ -272,13 +299,7 @@ impl Drop for ProcessGroupKillOnDrop {
         if !self.armed {
             return;
         }
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let activity = Arc::clone(&self.activity);
-        handle.spawn(async move {
-            let _ = activity.kill(9, KillScope::ProcessGroup).await;
-        });
+        let _ = self.activity.kill_sync(9, KillScope::ProcessGroup);
     }
 }
 
@@ -428,7 +449,7 @@ fn result_status(
 
 fn collect_artifacts(
     root: &Path,
-    baseline: &BTreeSet<String>,
+    baseline: &BTreeMap<String, ArtifactBaseline>,
     max_count: u64,
     max_bytes: u64,
 ) -> Result<(Vec<SkillScriptArtifact>, bool), SandboxError> {
@@ -443,14 +464,21 @@ fn collect_artifacts(
             .strip_prefix(root)
             .map_err(|error| SandboxError::Message(error.to_string()))?;
         let relative_string = path_to_string(relative);
-        if relative_string.starts_with(".jyowo-") || baseline.contains(&relative_string) {
+        if relative_string.starts_with(".jyowo-") {
+            continue;
+        }
+        let metadata = std::fs::metadata(&path).map_err(io_error)?;
+        if baseline
+            .get(&relative_string)
+            .is_some_and(|baseline| file_matches_baseline(&path, &metadata, *baseline))
+        {
             continue;
         }
         if artifacts.len() as u64 >= max_count || remaining_bytes == 0 {
             limited = true;
             break;
         }
-        let original_size = std::fs::metadata(&path).map_err(io_error)?.len();
+        let original_size = metadata.len();
         let take = original_size.min(remaining_bytes);
         let mut bytes = Vec::with_capacity(to_usize(take));
         std::fs::File::open(&path)
@@ -469,6 +497,28 @@ fn collect_artifacts(
         });
     }
     Ok((artifacts, limited))
+}
+
+fn file_matches_baseline(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+    baseline: ArtifactBaseline,
+) -> bool {
+    metadata.len() == baseline.byte_size
+        && file_content_hash(path).is_ok_and(|hash| hash == baseline.content_hash)
+}
+
+fn file_content_hash(path: &Path) -> Result<[u8; 32], SandboxError> {
+    let mut file = std::fs::File::open(path).map_err(io_error)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = file.read(&mut buffer).map_err(io_error)?;
+        if read == 0 {
+            return Ok(*hasher.finalize().as_bytes());
+        }
+        hasher.update(&buffer[..read]);
+    }
 }
 
 fn list_files(root: &Path) -> Result<Vec<PathBuf>, SandboxError> {

@@ -238,6 +238,7 @@ impl SandboxBackend for SshSandbox {
             supports_session_snapshot: true,
             max_concurrent_execs: u32::MAX,
             supports_kill_scope: vec![KillScope::Process],
+            supports_synchronous_kill_scope: Vec::new(),
             snapshot_kinds: BTreeSet::from([SessionSnapshotKind::FilesystemImage]),
             resource_limit_support: ResourceLimitSupport {
                 wall_clock: true,

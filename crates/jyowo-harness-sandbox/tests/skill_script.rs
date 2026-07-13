@@ -18,6 +18,8 @@ use harness_sandbox::{
     SessionSnapshotFile, SkillScriptPackFile, SkillScriptSandboxRequest, SkillScriptStatus,
     SnapshotSpec,
 };
+#[cfg(all(feature = "local", target_os = "macos"))]
+use harness_sandbox::{LocalIsolation, LocalSandbox};
 use harness_skill::{SkillScriptDecl, SkillScriptNetworkPolicy};
 use serde_json::json;
 
@@ -61,12 +63,12 @@ impl ActivityHandle for TestActivity {
     }
 
     async fn kill(&self, _signal: i32, scope: KillScope) -> Result<(), SandboxError> {
-        self.killed.fetch_add(1, Ordering::SeqCst);
-        self.kill_scopes.lock().unwrap().push(scope);
-        if scope == KillScope::ProcessGroup {
-            self.background_alive.store(false, Ordering::SeqCst);
-        }
-        self.terminated.notify_waiters();
+        self.record_kill(scope);
+        Ok(())
+    }
+
+    fn kill_sync(&self, _signal: i32, scope: KillScope) -> Result<(), SandboxError> {
+        self.record_kill(scope);
         Ok(())
     }
 
@@ -77,10 +79,22 @@ impl ActivityHandle for TestActivity {
     }
 }
 
+impl TestActivity {
+    fn record_kill(&self, scope: KillScope) {
+        self.killed.fetch_add(1, Ordering::SeqCst);
+        self.kill_scopes.lock().unwrap().push(scope);
+        if scope == KillScope::ProcessGroup {
+            self.background_alive.store(false, Ordering::SeqCst);
+        }
+        self.terminated.notify_waiters();
+    }
+}
+
 struct TestBackend {
     network_deny: bool,
     per_exec_env: bool,
     kill_scopes_supported: Vec<KillScope>,
+    synchronous_kill_scopes_supported: Vec<KillScope>,
     executed: AtomicUsize,
     recorded: Mutex<Vec<ExecSpec>>,
     stdout: Vec<u8>,
@@ -103,6 +117,7 @@ impl TestBackend {
             network_deny: true,
             per_exec_env: true,
             kill_scopes_supported: vec![KillScope::Process, KillScope::ProcessGroup],
+            synchronous_kill_scopes_supported: vec![KillScope::ProcessGroup],
             executed: AtomicUsize::new(0),
             recorded: Mutex::new(Vec::new()),
             stdout: Vec::new(),
@@ -144,6 +159,7 @@ impl SandboxBackend for TestBackend {
             },
             max_concurrent_execs: 1,
             supports_kill_scope: self.kill_scopes_supported.clone(),
+            supports_synchronous_kill_scope: self.synchronous_kill_scopes_supported.clone(),
             snapshot_kinds: BTreeSet::new(),
             resource_limit_support: ResourceLimitSupport {
                 wall_clock: true,
@@ -315,6 +331,42 @@ async fn rejects_backend_that_cannot_kill_the_process_group() {
 }
 
 #[tokio::test]
+async fn rejects_backend_without_synchronous_process_group_kill_before_execute() {
+    let backend = Arc::new(TestBackend {
+        synchronous_kill_scopes_supported: Vec::new(),
+        ..TestBackend::accepting()
+    });
+
+    let error = execute_skill_script(backend.clone(), request(script_decl()), test_context())
+        .await
+        .expect_err("backend without deterministic cancellation must be rejected");
+
+    assert!(matches!(
+        error,
+        SandboxError::CapabilityMismatch { ref capability, .. }
+            if capability == "synchronous_kill"
+    ));
+    assert_eq!(backend.executed.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(all(feature = "local", target_os = "macos"))]
+#[tokio::test]
+async fn seatbelt_rejects_skill_scripts_without_process_tree_containment() {
+    let backend =
+        Arc::new(LocalSandbox::new(std::env::temp_dir()).with_isolation(LocalIsolation::Seatbelt));
+
+    let error = execute_skill_script(backend, request(script_decl()), test_context())
+        .await
+        .expect_err("seatbelt process groups do not contain setsid descendants");
+
+    assert!(matches!(
+        error,
+        SandboxError::CapabilityMismatch { ref capability, .. }
+            if capability == "synchronous_kill"
+    ));
+}
+
+#[tokio::test]
 async fn rejects_undeclared_environment_values() {
     let backend = Arc::new(TestBackend::accepting());
     let mut request = request(script_decl());
@@ -405,6 +457,40 @@ async fn cancelling_a_skill_script_reaps_its_process_group() {
     assert!(!backend.background_alive.load(Ordering::SeqCst));
 }
 
+#[test]
+fn runtime_shutdown_cancels_a_skill_script_before_returning() {
+    let backend = Arc::new(TestBackend {
+        pending_wait: true,
+        pending_output: true,
+        ..TestBackend::accepting()
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime must build");
+
+    runtime.block_on(async {
+        tokio::spawn(execute_skill_script(
+            backend.clone(),
+            request(script_decl()),
+            test_context(),
+        ));
+        wait_for_count(&backend.executed, 1).await;
+    });
+    drop(runtime);
+
+    assert_eq!(
+        backend.killed.load(Ordering::SeqCst),
+        1,
+        "runtime shutdown must synchronously kill the owned process group"
+    );
+    assert_eq!(
+        backend.kill_scopes.lock().unwrap().as_slice(),
+        &[KillScope::ProcessGroup]
+    );
+    assert!(!backend.background_alive.load(Ordering::SeqCst));
+}
+
 #[tokio::test]
 async fn timeout_stays_bounded_when_backend_output_never_closes() {
     let backend = Arc::new(TestBackend {
@@ -477,6 +563,59 @@ async fn bounds_artifact_count_and_total_bytes() {
         6
     );
     assert!(result.artifacts[1].truncated);
+}
+
+#[tokio::test]
+async fn treats_overwritten_package_file_as_byte_bounded_artifact() {
+    let backend = Arc::new(TestBackend {
+        artifacts: vec![("payload.txt".to_owned(), b"changed".to_vec())],
+        ..TestBackend::accepting()
+    });
+    let mut declaration = script_decl();
+    declaration.max_artifact_bytes = 3;
+    let mut request = request(declaration);
+    request.files.push(SkillScriptPackFile {
+        path: "payload.txt".to_owned(),
+        content: "initial".to_owned(),
+    });
+
+    let result = execute_skill_script(backend, request, test_context())
+        .await
+        .expect("overwritten package file should be returned within the artifact bound");
+
+    assert_eq!(result.status, SkillScriptStatus::ArtifactLimitExceeded);
+    assert_eq!(result.artifacts.len(), 1);
+    assert_eq!(result.artifacts[0].path, "payload.txt");
+    assert_eq!(result.artifacts[0].content, "cha");
+    assert_eq!(result.artifacts[0].byte_size, 3);
+    assert!(result.artifacts[0].truncated);
+}
+
+#[tokio::test]
+async fn counts_overwritten_package_file_toward_artifact_limit() {
+    let backend = Arc::new(TestBackend {
+        artifacts: vec![
+            ("payload.txt".to_owned(), b"changed".to_vec()),
+            ("result.txt".to_owned(), b"result".to_vec()),
+        ],
+        ..TestBackend::accepting()
+    });
+    let mut declaration = script_decl();
+    declaration.max_artifact_count = 1;
+    let mut request = request(declaration);
+    request.files.push(SkillScriptPackFile {
+        path: "payload.txt".to_owned(),
+        content: "initial".to_owned(),
+    });
+
+    let result = execute_skill_script(backend, request, test_context())
+        .await
+        .expect("overwritten package file should consume the artifact count budget");
+
+    assert_eq!(result.status, SkillScriptStatus::ArtifactLimitExceeded);
+    assert_eq!(result.artifacts.len(), 1);
+    assert_eq!(result.artifacts[0].path, "payload.txt");
+    assert_eq!(result.artifacts[0].content, "changed");
 }
 
 #[tokio::test]

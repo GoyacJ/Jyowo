@@ -243,6 +243,13 @@ pub trait ActivityHandle: Send + Sync + 'static {
 
     async fn kill(&self, signal: Signal, scope: KillScope) -> Result<(), SandboxError>;
 
+    fn kill_sync(&self, _signal: Signal, scope: KillScope) -> Result<(), SandboxError> {
+        Err(SandboxError::CapabilityMismatch {
+            capability: "synchronous_kill".to_owned(),
+            detail: format!("activity cannot synchronously kill execution scope: {scope:?}"),
+        })
+    }
+
     fn touch(&self);
 
     fn last_activity(&self) -> Instant;
@@ -454,6 +461,10 @@ impl ActivityHandle for LifecycleActivity {
 
     async fn kill(&self, signal: Signal, scope: KillScope) -> Result<(), SandboxError> {
         self.inner.kill(signal, scope).await
+    }
+
+    fn kill_sync(&self, signal: Signal, scope: KillScope) -> Result<(), SandboxError> {
+        self.inner.kill_sync(signal, scope)
     }
 
     fn touch(&self) {
@@ -685,6 +696,7 @@ pub struct SandboxCapabilities {
     pub supports_session_snapshot: bool,
     pub max_concurrent_execs: u32,
     pub supports_kill_scope: Vec<KillScope>,
+    pub supports_synchronous_kill_scope: Vec<KillScope>,
     pub snapshot_kinds: BTreeSet<SessionSnapshotKind>,
     pub resource_limit_support: ResourceLimitSupport,
     pub default_timeout: Duration,
@@ -709,6 +721,7 @@ impl Default for SandboxCapabilities {
             supports_session_snapshot: false,
             max_concurrent_execs: 0,
             supports_kill_scope: vec![KillScope::Process],
+            supports_synchronous_kill_scope: Vec::new(),
             snapshot_kinds: BTreeSet::new(),
             resource_limit_support: ResourceLimitSupport::default(),
             default_timeout: Duration::from_secs(300),

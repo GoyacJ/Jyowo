@@ -18,7 +18,7 @@ use harness_sandbox::{
 };
 
 #[cfg(feature = "local")]
-use harness_sandbox::LocalSandbox;
+use harness_sandbox::{LocalIsolation, LocalSandbox};
 
 #[derive(Default)]
 struct NullSink;
@@ -55,15 +55,78 @@ struct SecretRedactor;
 #[cfg(feature = "local")]
 #[test]
 fn local_process_group_capability_matches_platform_enforcement() {
-    let sandbox = LocalSandbox::new(std::env::temp_dir());
+    let sandbox = LocalSandbox::new(std::env::temp_dir())
+        .with_isolation(LocalIsolation::for_current_platform());
 
+    let helpers_available = host_binary_available("sleep")
+        && host_binary_available("kill")
+        && absolute_host_binary_available("/bin/sh");
     assert_eq!(
         sandbox
             .capabilities()
             .supports_kill_scope
             .contains(&KillScope::ProcessGroup),
-        cfg!(unix)
+        cfg!(target_os = "linux") && helpers_available
     );
+}
+
+#[cfg(feature = "local")]
+fn absolute_host_binary_available(path: &str) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+#[cfg(feature = "local")]
+fn host_binary_available(binary: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|directory| {
+        let path = directory.join(binary);
+        let Ok(metadata) = path.metadata() else {
+            return false;
+        };
+        if !metadata.is_file() {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        {
+            true
+        }
+    })
+}
+
+#[cfg(all(feature = "local", target_os = "macos"))]
+#[test]
+fn seatbelt_does_not_claim_process_tree_containment() {
+    let capabilities = LocalSandbox::new(std::env::temp_dir())
+        .with_isolation(LocalIsolation::Seatbelt)
+        .capabilities();
+
+    assert!(!capabilities
+        .supports_kill_scope
+        .contains(&KillScope::ProcessGroup));
+    assert!(!capabilities
+        .supports_synchronous_kill_scope
+        .contains(&KillScope::ProcessGroup));
 }
 
 impl Redactor for SecretRedactor {

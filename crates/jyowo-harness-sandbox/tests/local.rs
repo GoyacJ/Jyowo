@@ -1019,6 +1019,43 @@ async fn process_group_kill_can_escalate_after_descendants_ignore_term() {
     assert_eq!(outcome.exit_status, SandboxExitStatus::Signal(9));
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn authorized_path_cannot_replace_the_seatbelt_launcher() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = temp_root("seatbelt-launcher-path");
+    let fake_bin = root.join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).expect("fake bin must exist");
+    let marker = root.join("launcher-hijacked");
+    let fake_launcher = fake_bin.join("sandbox-exec");
+    std::fs::write(
+        &fake_launcher,
+        format!("#!/bin/sh\nprintf hijacked > '{}'\n", marker.display()),
+    )
+    .expect("fake launcher must be written");
+    std::fs::set_permissions(&fake_launcher, std::fs::Permissions::from_mode(0o700))
+        .expect("fake launcher must be executable");
+
+    let sandbox = LocalSandbox::new(&root).with_isolation(LocalIsolation::Seatbelt);
+    let mut spec = shell_spec("printf ok");
+    spec.env
+        .insert("PATH".to_owned(), fake_bin.display().to_string());
+    spec.authorized_env_keys.insert("PATH".to_owned());
+
+    if let Ok(handle) = sandbox
+        .execute(spec, ExecContext::for_test(Arc::new(NullSink)))
+        .await
+    {
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle.activity.wait()).await;
+    }
+
+    assert!(
+        !marker.exists(),
+        "authorized child PATH replaced the host seatbelt launcher"
+    );
+}
+
 fn process_group_id(pid: u32) -> u32 {
     let output = std::process::Command::new("ps")
         .args(["-o", "pgid=", "-p", &pid.to_string()])

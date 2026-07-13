@@ -506,6 +506,7 @@ impl SandboxBackend for DockerSandbox {
                 _ => 1,
             },
             supports_kill_scope: vec![KillScope::Process],
+            supports_synchronous_kill_scope: Vec::new(),
             snapshot_kinds,
             resource_limit_support: match self.lifecycle {
                 ContainerLifecycle::EphemeralPerExec => ResourceLimitSupport {

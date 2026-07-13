@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::future::Future;
 use std::io::{Read, Write};
@@ -42,8 +42,6 @@ use crate::{
 
 const BACKEND_ID: &str = "local";
 const NO_CACHED_SIGNAL: i32 = i32::MIN;
-#[cfg(unix)]
-const PROCESS_GROUP_REAP_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[async_trait]
 impl SandboxBackend for LocalSandbox {
@@ -72,7 +70,8 @@ impl SandboxBackend for LocalSandbox {
             supports_workspace_sync: false,
             supports_session_snapshot: true,
             max_concurrent_execs: u32::MAX,
-            supports_kill_scope: local_kill_scopes(),
+            supports_kill_scope: local_kill_scopes(self.isolation),
+            supports_synchronous_kill_scope: local_synchronous_kill_scopes(self.isolation),
             snapshot_kinds: BTreeSet::from([
                 SessionSnapshotKind::FilesystemImage,
                 SessionSnapshotKind::ShellState,
@@ -98,8 +97,12 @@ impl SandboxBackend for LocalSandbox {
         apply_supported_resource_limits(&mut spec, &self.base.default_resource_limits);
 
         let cwd = resolve_cwd(&self.root, spec.cwd.as_deref(), &spec.policy.scope)?;
+        let environment = filtered_env(&self.base.passthrough_env_keys, &spec)
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<BTreeMap<_, _>>();
         let (mut command, cwd_marker) =
-            wrapped_command_for_local(&spec, self.isolation, &self.root, &cwd)?.into_parts();
+            wrapped_command_for_local(&spec, self.isolation, &self.root, &cwd, &environment)?
+                .into_parts();
         let process_group = ProcessGroupKeeper::for_spec(&spec)?;
         configure_process_group(&mut command, process_group.as_ref());
         command
@@ -107,8 +110,10 @@ impl SandboxBackend for LocalSandbox {
             .stdin(stdio(&spec.stdin)?)
             .stdout(stdio(&spec.stdout)?)
             .stderr(stdio(&spec.stderr)?)
-            .env_clear()
-            .envs(filtered_env(&self.base.passthrough_env_keys, &spec));
+            .env_clear();
+        if !self.isolation.is_os_level() {
+            command.envs(&environment);
+        }
 
         let mut child = command.spawn().map_err(sandbox_error)?;
         let pid = child.id();
@@ -213,6 +218,7 @@ fn validate_local_exec(sandbox: &LocalSandbox, spec: &ExecSpec) -> Result<(), Sa
 pub struct LocalActivity {
     pub(crate) child: AsyncMutex<Option<Child>>,
     process_group: AsyncMutex<Option<ProcessGroupKeeper>>,
+    process_group_target: Option<ProcessGroupTarget>,
     spec: ExecSpec,
     ctx: ExecContext,
     started_at: chrono::DateTime<Utc>,
@@ -312,9 +318,11 @@ impl LocalActivity {
         ctx: ExecContext,
         fingerprint: ExecFingerprint,
     ) -> Self {
+        let process_group_target = process_group.as_ref().map(ProcessGroupKeeper::target);
         Self {
             child: AsyncMutex::new(Some(child)),
             process_group: AsyncMutex::new(process_group),
+            process_group_target,
             spec,
             ctx,
             started_at: Utc::now(),
@@ -665,6 +673,17 @@ impl ActivityHandle for LocalActivity {
         Ok(())
     }
 
+    fn kill_sync(&self, signal: Signal, scope: KillScope) -> Result<(), SandboxError> {
+        self.killed_signal.store(signal, Ordering::Relaxed);
+        match (scope, &self.process_group_target) {
+            (KillScope::ProcessGroup, Some(target)) => target.signal_sync(signal),
+            _ => Err(SandboxError::CapabilityMismatch {
+                capability: "synchronous_kill".to_owned(),
+                detail: format!("local activity cannot synchronously kill scope: {scope:?}"),
+            }),
+        }
+    }
+
     fn touch(&self) {
         self.last_activity_ms
             .store(self.elapsed_since_start_ms(), Ordering::Relaxed);
@@ -918,6 +937,7 @@ fn wrapped_command_for_local(
     isolation: LocalIsolation,
     root: &Path,
     cwd: &Path,
+    environment: &BTreeMap<String, String>,
 ) -> Result<WrappedCommand, SandboxError> {
     let (program, args, cwd_marker_reader) = command_argv_with_cwd_marker(spec)?;
     let mut command = isolated_command(
@@ -927,6 +947,7 @@ fn wrapped_command_for_local(
         &spec.policy.network,
         &spec.policy.scope,
         &spec.workspace_access,
+        environment,
         program,
         args,
     )?;
@@ -985,6 +1006,7 @@ fn isolated_command(
     network: &NetworkAccess,
     scope: &SandboxScope,
     access: &WorkspaceAccess,
+    environment: &BTreeMap<String, String>,
     program: String,
     args: Vec<String>,
 ) -> Result<Command, SandboxError> {
@@ -994,10 +1016,19 @@ fn isolated_command(
             command.args(args);
             Ok(command)
         }
-        LocalIsolation::Bubblewrap => {
-            bubblewrap_command(root, cwd, network, scope, access, program, args)
+        LocalIsolation::Bubblewrap => bubblewrap_command(
+            root,
+            cwd,
+            network,
+            scope,
+            access,
+            environment,
+            program,
+            args,
+        ),
+        LocalIsolation::Seatbelt => {
+            seatbelt_command(root, network, scope, access, environment, program, args)
         }
-        LocalIsolation::Seatbelt => seatbelt_command(root, network, scope, access, program, args),
         LocalIsolation::JobObject => jobobject_command(program, args),
     }
 }
@@ -1009,12 +1040,20 @@ fn bubblewrap_command(
     network: &NetworkAccess,
     scope: &SandboxScope,
     access: &WorkspaceAccess,
+    environment: &BTreeMap<String, String>,
     program: String,
     args: Vec<String>,
 ) -> Result<Command, SandboxError> {
-    let mut command = Command::new("bwrap");
+    let mut command = Command::new(resolve_host_binary_path("bwrap")?);
     command.args(bubblewrap_args_for_workspace_policy(
-        root, cwd, network, scope, access, &program, &args,
+        root,
+        cwd,
+        network,
+        scope,
+        access,
+        environment,
+        &program,
+        &args,
     )?);
     Ok(command)
 }
@@ -1026,6 +1065,7 @@ fn bubblewrap_command(
     _network: &NetworkAccess,
     _scope: &SandboxScope,
     _access: &WorkspaceAccess,
+    _environment: &BTreeMap<String, String>,
     _program: String,
     _args: Vec<String>,
 ) -> Result<Command, SandboxError> {
@@ -1041,12 +1081,20 @@ fn seatbelt_command(
     network: &NetworkAccess,
     scope: &SandboxScope,
     access: &WorkspaceAccess,
+    environment: &BTreeMap<String, String>,
     program: String,
     args: Vec<String>,
 ) -> Result<Command, SandboxError> {
     let profile = seatbelt_profile_for_workspace_policy(root, network, scope, access)?;
-    let mut command = Command::new("sandbox-exec");
-    command.arg("-p").arg(profile).arg(program).args(args);
+    let env = resolve_absolute_host_binary(&["/usr/bin/env", "/bin/env"])?;
+    let mut command = Command::new(resolve_host_binary_path("sandbox-exec")?);
+    command.arg("-p").arg(profile).arg(env).arg("-i");
+    command.args(
+        environment
+            .iter()
+            .map(|(key, value)| format!("{key}={value}")),
+    );
+    command.arg(program).args(args);
     Ok(command)
 }
 
@@ -1056,6 +1104,7 @@ fn seatbelt_command(
     _network: &NetworkAccess,
     _scope: &SandboxScope,
     _access: &WorkspaceAccess,
+    _environment: &BTreeMap<String, String>,
     _program: String,
     _args: Vec<String>,
 ) -> Result<Command, SandboxError> {
@@ -1080,12 +1129,26 @@ fn jobobject_command(_program: String, _args: Vec<String>) -> Result<Command, Sa
     })
 }
 
-fn local_kill_scopes() -> Vec<KillScope> {
-    if cfg!(unix) {
+fn local_kill_scopes(isolation: LocalIsolation) -> Vec<KillScope> {
+    if local_process_group_supported(isolation) {
         vec![KillScope::Process, KillScope::ProcessGroup]
     } else {
         vec![KillScope::Process]
     }
+}
+
+fn local_synchronous_kill_scopes(isolation: LocalIsolation) -> Vec<KillScope> {
+    if local_process_group_supported(isolation) {
+        vec![KillScope::ProcessGroup]
+    } else {
+        Vec::new()
+    }
+}
+
+fn local_process_group_supported(isolation: LocalIsolation) -> bool {
+    cfg!(unix)
+        && !matches!(isolation, LocalIsolation::Seatbelt)
+        && ProcessGroupTools::resolve().is_ok()
 }
 
 fn local_timeout_kill_scope() -> KillScope {
@@ -1101,6 +1164,48 @@ struct ProcessGroupKeeper {
     id: u32,
     #[cfg(unix)]
     child: Child,
+    #[cfg(unix)]
+    kill: PathBuf,
+    #[cfg(unix)]
+    terminal_kill_sent: Arc<SyncMutex<bool>>,
+}
+
+#[cfg(unix)]
+#[derive(Clone)]
+struct ProcessGroupTools {
+    shell: PathBuf,
+    sleep: PathBuf,
+    kill: PathBuf,
+}
+
+#[cfg(unix)]
+impl ProcessGroupTools {
+    fn resolve() -> Result<Self, SandboxError> {
+        Ok(Self {
+            shell: resolve_absolute_host_binary(&["/bin/sh"])?,
+            sleep: resolve_host_binary_path("sleep")?,
+            kill: resolve_host_binary_path("kill")?,
+        })
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone)]
+struct ProcessGroupTarget {
+    id: u32,
+    kill: PathBuf,
+    terminal_kill_sent: Arc<SyncMutex<bool>>,
+}
+
+#[cfg(not(unix))]
+#[derive(Clone)]
+struct ProcessGroupTarget;
+
+#[cfg(unix)]
+impl ProcessGroupTarget {
+    fn signal_sync(&self, signal: Signal) -> Result<(), SandboxError> {
+        signal_process_group_sync(&self.kill, self.id, signal, &self.terminal_kill_sent)
+    }
 }
 
 impl ProcessGroupKeeper {
@@ -1110,9 +1215,15 @@ impl ProcessGroupKeeper {
         }
         #[cfg(unix)]
         {
-            let mut command = Command::new("/bin/sleep");
+            let tools = ProcessGroupTools::resolve()?;
+            let mut command = Command::new(&tools.shell);
             command
-                .arg("2147483647")
+                .args([
+                    "-c",
+                    "trap '' HUP INT QUIT TERM; exec \"$1\" 2147483647",
+                    "jyowo-process-group-keeper",
+                ])
+                .arg(&tools.sleep)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -1122,7 +1233,12 @@ impl ProcessGroupKeeper {
             let id = child.id().ok_or_else(|| {
                 SandboxError::Message("local process group keeper has no pid".to_owned())
             })?;
-            return Ok(Some(Self { id, child }));
+            return Ok(Some(Self {
+                id,
+                child,
+                kill: tools.kill,
+                terminal_kill_sent: Arc::new(SyncMutex::new(false)),
+            }));
         }
         #[cfg(not(unix))]
         {
@@ -1137,7 +1253,7 @@ impl ProcessGroupKeeper {
     async fn signal(&mut self, signal: Signal) -> Result<(), SandboxError> {
         #[cfg(unix)]
         {
-            signal_process_group(self.id, signal).await
+            signal_process_group(&self.kill, self.id, signal, &self.terminal_kill_sent).await
         }
         #[cfg(not(unix))]
         {
@@ -1153,12 +1269,26 @@ impl ProcessGroupKeeper {
     async fn reap(&mut self) -> Result<(), SandboxError> {
         #[cfg(unix)]
         {
-            let _ = self.child.wait().await;
-            wait_for_process_group_exit(self.id).await
+            self.child.wait().await.map(|_| ()).map_err(sandbox_error)
         }
         #[cfg(not(unix))]
         {
             Ok(())
+        }
+    }
+
+    fn target(&self) -> ProcessGroupTarget {
+        #[cfg(unix)]
+        {
+            ProcessGroupTarget {
+                id: self.id,
+                kill: self.kill.clone(),
+                terminal_kill_sent: Arc::clone(&self.terminal_kill_sent),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            ProcessGroupTarget
         }
     }
 }
@@ -1172,19 +1302,38 @@ fn configure_process_group(command: &mut Command, group: Option<&ProcessGroupKee
 fn configure_process_group(_command: &mut Command, _group: Option<&ProcessGroupKeeper>) {}
 
 #[cfg(unix)]
-async fn signal_process_group(id: u32, signal: Signal) -> Result<(), SandboxError> {
-    let status = Command::new("kill")
+async fn signal_process_group(
+    kill: &Path,
+    id: u32,
+    signal: Signal,
+    terminal_kill_sent: &SyncMutex<bool>,
+) -> Result<(), SandboxError> {
+    signal_process_group_sync(kill, id, signal, terminal_kill_sent)
+}
+
+#[cfg(unix)]
+fn signal_process_group_sync(
+    kill: &Path,
+    id: u32,
+    signal: Signal,
+    terminal_kill_sent: &SyncMutex<bool>,
+) -> Result<(), SandboxError> {
+    let mut terminal_kill_sent = terminal_kill_sent.lock();
+    if signal == 9 && *terminal_kill_sent {
+        return Ok(());
+    }
+    let status = std::process::Command::new(kill)
         .arg(format!("-{signal}"))
         .arg(format!("-{id}"))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .await
         .map_err(sandbox_error)?;
     if status.success() {
-        Ok(())
-    } else if !process_group_exists(id).await? {
+        if signal == 9 {
+            *terminal_kill_sent = true;
+        }
         Ok(())
     } else {
         Err(SandboxError::Message(format!(
@@ -1193,47 +1342,12 @@ async fn signal_process_group(id: u32, signal: Signal) -> Result<(), SandboxErro
     }
 }
 
-#[cfg(unix)]
-async fn wait_for_process_group_exit(id: u32) -> Result<(), SandboxError> {
-    let started = Instant::now();
-    loop {
-        if !process_group_exists(id).await? {
-            return Ok(());
-        }
-        if started.elapsed() >= PROCESS_GROUP_REAP_TIMEOUT {
-            return Err(SandboxError::Message(format!(
-                "timed out waiting for owned process group {id} to exit"
-            )));
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-}
-
-#[cfg(unix)]
-async fn process_group_exists(id: u32) -> Result<bool, SandboxError> {
-    Ok(Command::new("kill")
-        .arg("-0")
-        .arg(format!("-{id}"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await
-        .map_err(sandbox_error)?
-        .success())
-}
-
 async fn kill_process_group(child: &mut Child, signal: Signal) -> Result<(), SandboxError> {
     #[cfg(unix)]
     {
         if let Some(pid) = child.id() {
-            let status = Command::new("kill")
-                .arg(format!("-{signal}"))
-                .arg(format!("-{pid}"))
-                .status()
-                .await
-                .map_err(sandbox_error)?;
-            if status.success() {
+            let kill = resolve_host_binary_path("kill")?;
+            if signal_process_group_sync(&kill, pid, signal, &SyncMutex::new(false)).is_ok() {
                 return Ok(());
             }
         }
@@ -1767,20 +1881,61 @@ fn validate_isolation(isolation: LocalIsolation) -> Result<(), SandboxError> {
 }
 
 fn validate_host_binary(binary: &str, isolation: LocalIsolation) -> Result<(), SandboxError> {
-    if command_exists(binary) {
-        return Ok(());
-    }
-    Err(SandboxError::Unavailable {
+    resolve_host_binary_path(binary)
+        .map(|_| ())
+        .map_err(|_| SandboxError::Unavailable {
+            backend: BACKEND_ID.to_owned(),
+            detail: format!("{isolation:?} requires host binary `{binary}`"),
+        })
+}
+
+fn resolve_host_binary_path(binary: &str) -> Result<PathBuf, SandboxError> {
+    let path = std::env::var_os("PATH").ok_or_else(|| SandboxError::Unavailable {
         backend: BACKEND_ID.to_owned(),
-        detail: format!("{isolation:?} requires host binary `{binary}`"),
+        detail: format!("host PATH is unavailable while resolving `{binary}`"),
+    })?;
+    resolve_host_binary_in_path(binary, &path).ok_or_else(|| SandboxError::Unavailable {
+        backend: BACKEND_ID.to_owned(),
+        detail: format!("host binary `{binary}` is unavailable on PATH"),
     })
 }
 
-fn command_exists(binary: &str) -> bool {
-    std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-        .any(|path| path.join(binary).is_file())
+fn resolve_host_binary_in_path(binary: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .map(|directory| directory.join(binary))
+        .find(|candidate| host_path_is_executable(candidate))
+}
+
+fn resolve_absolute_host_binary(candidates: &[&str]) -> Result<PathBuf, SandboxError> {
+    candidates
+        .iter()
+        .map(PathBuf::from)
+        .find(|candidate| candidate.is_absolute() && host_path_is_executable(candidate))
+        .ok_or_else(|| SandboxError::Unavailable {
+            backend: BACKEND_ID.to_owned(),
+            detail: format!(
+                "required host binary is unavailable at: {}",
+                candidates.join(", ")
+            ),
+        })
+}
+
+fn host_path_is_executable(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn validate_resource_policy(
@@ -1811,6 +1966,7 @@ fn bubblewrap_args_for_workspace_policy(
     network: &NetworkAccess,
     scope: &SandboxScope,
     access: &WorkspaceAccess,
+    environment: &BTreeMap<String, String>,
     program: &str,
     program_args: &[String],
 ) -> Result<Vec<String>, SandboxError> {
@@ -1825,6 +1981,7 @@ fn bubblewrap_args_for_workspace_policy(
     if matches!(network, NetworkAccess::None) {
         args.push("--unshare-net".to_owned());
     }
+    push_bubblewrap_environment(&mut args, environment);
     args.extend([
         "--proc".to_owned(),
         "/proc".to_owned(),
@@ -1851,6 +2008,13 @@ fn bubblewrap_args_for_workspace_policy(
     ]);
     args.extend(program_args.iter().cloned());
     Ok(args)
+}
+
+fn push_bubblewrap_environment(args: &mut Vec<String>, environment: &BTreeMap<String, String>) {
+    args.push("--clearenv".to_owned());
+    for (key, value) in environment {
+        args.extend(["--setenv".to_owned(), key.clone(), value.clone()]);
+    }
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -2006,6 +2170,72 @@ mod tests {
         SandboxScope::WorkspaceOnly
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn process_group_helpers_are_resolved_from_path_and_must_be_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = root("process-group-tools");
+        let executable = root.join("sleep");
+        let non_executable = root.join("kill");
+        std::fs::write(&executable, "#!/bin/sh\n").expect("helper must be written");
+        std::fs::write(&non_executable, "#!/bin/sh\n").expect("helper must be written");
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+            .expect("helper must be executable");
+        let path = std::env::join_paths([&root]).expect("test PATH must be valid");
+
+        assert_eq!(
+            resolve_host_binary_in_path("sleep", &path),
+            Some(executable)
+        );
+        assert_eq!(resolve_host_binary_in_path("kill", &path), None);
+    }
+
+    #[test]
+    fn bubblewrap_receives_request_environment_as_inner_arguments() {
+        let mut args = Vec::new();
+        push_bubblewrap_environment(
+            &mut args,
+            &BTreeMap::from([
+                ("PATH".to_owned(), "/untrusted/bin".to_owned()),
+                ("TOKEN".to_owned(), "secret".to_owned()),
+            ]),
+        );
+
+        assert_eq!(
+            args,
+            [
+                "--clearenv",
+                "--setenv",
+                "PATH",
+                "/untrusted/bin",
+                "--setenv",
+                "TOKEN",
+                "secret",
+            ]
+        );
+    }
+
+    #[test]
+    fn bubblewrap_process_tree_containment_uses_a_private_pid_namespace() {
+        let root = root("bwrap-process-tree");
+        let args = bubblewrap_args_for_workspace_policy(
+            &root,
+            &root,
+            &NetworkAccess::None,
+            &scope(),
+            &WorkspaceAccess::ReadOnly,
+            &BTreeMap::new(),
+            "/bin/sh",
+            &["-c".to_owned(), "setsid sleep 30 & wait".to_owned()],
+        )
+        .expect("bubblewrap process containment should be expressible");
+
+        assert!(args.iter().any(|arg| arg == "--die-with-parent"));
+        assert!(args.iter().any(|arg| arg == "--unshare-pid"));
+        assert!(args.iter().any(|arg| arg == "--unshare-net"));
+    }
+
     #[test]
     fn bubblewrap_read_only_workspace_uses_ro_bind_for_root() {
         let root = root("bwrap-read-only");
@@ -2015,6 +2245,7 @@ mod tests {
             &NetworkAccess::Unrestricted,
             &scope(),
             &WorkspaceAccess::ReadOnly,
+            &BTreeMap::new(),
             "tool",
             &["--flag".to_owned()],
         )
@@ -2038,6 +2269,7 @@ mod tests {
             &NetworkAccess::Unrestricted,
             &scope(),
             &access,
+            &BTreeMap::new(),
             "tool",
             &[],
         )

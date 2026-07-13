@@ -129,6 +129,16 @@ impl SandboxBackend for RoutingSandboxBackend {
                 caps.supports_workspace_sync || child.supports_workspace_sync;
             caps.supports_session_snapshot =
                 caps.supports_session_snapshot || child.supports_session_snapshot;
+            for scope in child.supports_kill_scope {
+                if !caps.supports_kill_scope.contains(&scope) {
+                    caps.supports_kill_scope.push(scope);
+                }
+            }
+            for scope in child.supports_synchronous_kill_scope {
+                if !caps.supports_synchronous_kill_scope.contains(&scope) {
+                    caps.supports_synchronous_kill_scope.push(scope);
+                }
+            }
             // Take the max of max_concurrent_execs.
             caps.max_concurrent_execs = caps.max_concurrent_execs.max(child.max_concurrent_execs);
         }
@@ -326,6 +336,10 @@ impl ActivityHandle for RoutingActivityHandle {
         let result = self.inner.kill(signal, scope).await;
         self.run_after_execute_once(&ExecOutcome::default()).await;
         result
+    }
+
+    fn kill_sync(&self, signal: Signal, scope: KillScope) -> Result<(), SandboxError> {
+        self.inner.kill_sync(signal, scope)
     }
 
     fn touch(&self) {
