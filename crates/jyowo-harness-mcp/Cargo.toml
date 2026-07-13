@@ -42,6 +42,7 @@ jsonwebtoken = { workspace = true, optional = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }
+url = { workspace = true }
 axum = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 ring = { workspace = true, optional = true }

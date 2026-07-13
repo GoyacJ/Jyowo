@@ -300,6 +300,38 @@ async fn pending_handle_exposes_peer_owned_request_id_and_waits_for_response() {
 }
 
 #[tokio::test]
+async fn transport_can_fail_one_committed_request_without_closing_the_peer() {
+    let (peer, mut outbound) = test_peer(McpClientCapabilities::default());
+    let starting_peer = peer.clone();
+    let start = tokio::spawn(async move {
+        starting_peer
+            .start_request("tools/call", json!({}), Duration::from_secs(1))
+            .await
+    });
+    let message = outbound.recv().await.unwrap();
+    let McpMessage::Request(request) = message.as_message() else {
+        panic!("expected request")
+    };
+    let request_id = request.id.clone();
+    let handle = start.await.unwrap().unwrap();
+
+    assert!(peer
+        .fail_request(
+            &request_id,
+            McpError::Transport("SSE stream failed".to_owned())
+        )
+        .unwrap());
+    assert_eq!(
+        handle.wait().await.unwrap_err(),
+        McpError::Transport("SSE stream failed".to_owned())
+    );
+    assert!(!peer
+        .fail_request(&request_id, McpError::Transport("late failure".to_owned()))
+        .unwrap());
+    assert_eq!(peer.pending_count(), 0);
+}
+
+#[tokio::test]
 async fn pending_handle_can_build_params_from_its_peer_owned_request_id() {
     let (peer, mut outbound) = test_peer(McpClientCapabilities::default());
     let starting_peer = peer.clone();

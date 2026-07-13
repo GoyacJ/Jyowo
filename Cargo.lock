@@ -3214,6 +3214,7 @@ dependencies = [
  "tokio-stream",
  "tokio-tungstenite",
  "tokio-util",
+ "url",
  "wiremock",
 ]
 

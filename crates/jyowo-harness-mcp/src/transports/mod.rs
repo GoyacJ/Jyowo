@@ -55,7 +55,7 @@ use crate::{
     McpReadResourceResult, McpResource, McpResourceContents, McpToolDescriptor, McpToolResult,
 };
 
-#[cfg(any(feature = "http", feature = "websocket", feature = "sse"))]
+#[cfg(any(feature = "websocket", feature = "sse"))]
 use crate::{InitializeParams, JsonRpcNotification, McpClientCapabilities, McpImplementation};
 
 #[cfg(feature = "http")]
@@ -64,8 +64,12 @@ mod http;
 mod in_process;
 #[cfg(feature = "sse")]
 mod sse;
+#[cfg(feature = "http")]
+mod sse_codec;
 #[cfg(feature = "stdio")]
 mod stdio;
+#[cfg(feature = "http")]
+mod streamable_http;
 #[cfg(feature = "websocket")]
 mod websocket;
 
@@ -75,6 +79,8 @@ pub use http::HttpTransport;
 pub use in_process::InProcessTransport;
 #[cfg(feature = "sse")]
 pub use sse::SseTransport;
+#[cfg(feature = "http")]
+pub use sse_codec::{SseDecoder, SseEvent, SseLimits};
 #[cfg(feature = "stdio")]
 pub use stdio::StdioTransport;
 #[cfg(feature = "websocket")]
@@ -164,12 +170,12 @@ impl JsonRpcPeer {
     }
 }
 
-#[cfg(any(feature = "http", feature = "websocket", feature = "sse"))]
+#[cfg(any(feature = "websocket", feature = "sse"))]
 pub(crate) fn initialized_notification() -> JsonRpcNotification {
     JsonRpcNotification::new("notifications/initialized", None)
 }
 
-#[cfg(any(feature = "http", feature = "websocket", feature = "sse"))]
+#[cfg(any(feature = "websocket", feature = "sse"))]
 pub(crate) fn initialize_request(peer: &JsonRpcPeer) -> JsonRpcRequest {
     // Existing transports do not yet validate and retain InitializeResult. Keep their wire
     // version at the last implemented lifecycle revision until McpSession owns the handshake.
@@ -198,7 +204,7 @@ pub(crate) fn initialize_request(peer: &JsonRpcPeer) -> JsonRpcRequest {
 mod lifecycle_compatibility_tests {
     use super::*;
 
-    #[cfg(any(feature = "http", feature = "websocket", feature = "sse"))]
+    #[cfg(any(feature = "websocket", feature = "sse"))]
     #[test]
     fn legacy_transport_helper_does_not_advertise_unwired_latest_session() {
         let request = initialize_request(&JsonRpcPeer::new());
@@ -565,7 +571,12 @@ pub(crate) fn response_key(id: &Value) -> String {
     serde_json::to_string(id).expect("json-rpc ids should serialize")
 }
 
-#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
 pub(crate) fn notification_change(
     method: &str,
     params: Option<&Value>,
@@ -618,7 +629,12 @@ pub(crate) fn notification_change(
     }
 }
 
-#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
 fn notification_token(value: &Value) -> Option<String> {
     value
         .as_str()

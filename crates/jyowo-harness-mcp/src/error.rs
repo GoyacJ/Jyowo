@@ -15,6 +15,10 @@ pub enum McpError {
     RemoteJsonRpc(crate::JsonRpcError),
     #[error("connection: {0}")]
     Connection(String),
+    #[error("MCP HTTP session expired")]
+    SessionExpired,
+    #[error("Streamable HTTP unavailable (status {0})")]
+    StreamableHttpUnavailable(u16),
     #[error("server not found: {0}")]
     ServerNotFound(String),
     #[error("tool naming violation: {0}")]

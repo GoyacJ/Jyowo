@@ -639,7 +639,7 @@ async fn http_transport_refreshes_oauth_before_short_lived_token_expires() {
                 "refresh_token": "refresh"
             }))
         })
-        .expect(3)
+        .expect(4)
         .mount(&token_server)
         .await;
 
@@ -669,13 +669,17 @@ async fn http_transport_refreshes_oauth_before_short_lived_token_expires() {
         .mount(&server)
         .await;
     Mock::given(method("POST"))
-        .and(header("authorization", "Bearer short-3"))
         .and(body_partial_json(json!({ "method": "tools/list" })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "jsonrpc": "2.0",
             "id": 2,
             "result": { "tools": [] }
         })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
         .expect(1)
         .mount(&server)
         .await;
@@ -707,11 +711,20 @@ async fn http_transport_refreshes_oauth_before_short_lived_token_expires() {
     .expect("http oauth connects");
     let tools = connection.list_tools().await.expect("tools list");
 
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while refreshes.load(Ordering::SeqCst) < 4 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("GET channel authorization refresh completes");
+
     assert!(tools.is_empty());
-    assert_eq!(refreshes.load(Ordering::SeqCst), 3);
+    assert_eq!(refreshes.load(Ordering::SeqCst), 4);
     assert_eq!(
         metrics.oauth_refresh_outcomes(),
         vec![
+            McpMetricOutcome::Success,
             McpMetricOutcome::Success,
             McpMetricOutcome::Success,
             McpMetricOutcome::Success

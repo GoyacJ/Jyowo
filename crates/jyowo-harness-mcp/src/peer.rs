@@ -17,7 +17,7 @@ use futures::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::{oneshot, Notify, Semaphore};
+use tokio::sync::{oneshot, watch, Notify, Semaphore};
 
 use crate::{
     ElicitationRequestRouter, InitializeResult, JsonRpcError, JsonRpcNotification, JsonRpcRequest,
@@ -96,7 +96,7 @@ struct McpInboundRouter {
 struct McpPeerInner {
     inbound_router: McpInboundRouter,
     next_request_id: AtomicU64,
-    pending: Mutex<HashMap<RequestIdKey, oneshot::Sender<PendingResult>>>,
+    pending: Mutex<HashMap<RequestIdKey, PendingEntry>>,
     max_pending: usize,
     inbound_permits: Arc<Semaphore>,
     next_inbound_task_id: AtomicU64,
@@ -104,13 +104,29 @@ struct McpPeerInner {
     inbound_tasks_changed: Notify,
 }
 
+struct PendingEntry {
+    result: oneshot::Sender<PendingResult>,
+    completed: watch::Sender<bool>,
+}
+
+impl PendingEntry {
+    fn finish(self, result: PendingResult) {
+        let _ = self.completed.send(true);
+        let _ = self.result.send(result);
+    }
+
+    fn cancel(self) {
+        let _ = self.completed.send(true);
+    }
+}
+
 impl Drop for McpPeerInner {
     fn drop(&mut self) {
         self.inbound_router.closed.store(true, Ordering::Release);
         let error = McpError::Connection("MCP peer dropped".to_owned());
         if let Ok(pending) = self.pending.get_mut() {
-            for (_, sender) in pending.drain() {
-                let _ = sender.send(Err(error.clone()));
+            for (_, entry) in pending.drain() {
+                entry.finish(Err(error.clone()));
             }
         }
         if let Ok(tasks) = self.inbound_tasks.get_mut() {
@@ -185,10 +201,18 @@ impl Drop for InboundTaskGuard {
 
 impl PendingGuard {
     fn remove(&self) -> bool {
-        self.inner
+        let entry = self
+            .inner
             .pending
             .lock()
-            .is_ok_and(|mut pending| pending.remove(&self.key).is_some())
+            .ok()
+            .and_then(|mut pending| pending.remove(&self.key));
+        if let Some(entry) = entry {
+            entry.cancel();
+            true
+        } else {
+            false
+        }
     }
 
     fn cancel_with_reason(&self, reason: &'static str) {
@@ -250,12 +274,10 @@ pub struct McpPeer {
 }
 
 #[derive(Clone)]
-#[cfg(feature = "stdio")]
 pub(crate) struct McpWeakPeer {
     inner: Weak<McpPeerInner>,
 }
 
-#[cfg(feature = "stdio")]
 impl McpWeakPeer {
     pub(crate) async fn close(&self, reason: impl Into<String>) {
         if let Some(inner) = self.inner.upgrade() {
@@ -288,7 +310,6 @@ impl McpPeer {
             .map_err(|_| McpError::Connection("MCP session lock poisoned".to_owned()))
     }
 
-    #[cfg(feature = "stdio")]
     pub(crate) fn downgrade(&self) -> McpWeakPeer {
         McpWeakPeer {
             inner: Arc::downgrade(&self.inner),
@@ -309,6 +330,38 @@ impl McpPeer {
             .lock()
             .map(|pending| pending.len())
             .unwrap_or_default()
+    }
+
+    pub(crate) fn request_completion(
+        &self,
+        id: &Value,
+    ) -> Result<Option<watch::Receiver<bool>>, McpError> {
+        let Some(key) = request_id_key(id) else {
+            return Ok(None);
+        };
+        self.inner
+            .pending
+            .lock()
+            .map_err(|_| McpError::Connection("MCP pending map poisoned".to_owned()))
+            .map(|pending| pending.get(&key).map(|entry| entry.completed.subscribe()))
+    }
+
+    pub(crate) async fn wait_for_inbound_tasks(&self) {
+        loop {
+            let changed = self.inner.inbound_tasks_changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let empty = self
+                .inner
+                .inbound_tasks
+                .lock()
+                .map(|tasks| tasks.is_empty())
+                .unwrap_or(true);
+            if empty {
+                return;
+            }
+            changed.await;
+        }
     }
 
     pub async fn request(
@@ -442,6 +495,7 @@ impl McpPeer {
             None => McpOutboundMessage::request_without_params(id.clone(), method.clone())?,
         };
         let (sender, mut receiver) = oneshot::channel();
+        let (completed, _) = watch::channel(false);
         let wire_committed = Arc::new(AtomicBool::new(false));
 
         {
@@ -459,7 +513,13 @@ impl McpPeer {
             if self.inner.inbound_router.closed.load(Ordering::Acquire) {
                 return Err(McpError::Connection("MCP peer is closed".to_owned()));
             }
-            pending.insert(key.clone(), sender);
+            pending.insert(
+                key.clone(),
+                PendingEntry {
+                    result: sender,
+                    completed,
+                },
+            );
         }
         let pending_guard = PendingGuard {
             inner: Arc::clone(&self.inner),
@@ -574,6 +634,15 @@ impl McpPeer {
         }
     }
 
+    /// Resolves one peer-owned pending request with a transport failure.
+    ///
+    /// Streaming transports use this after a request POST has committed but its
+    /// asynchronous response stream fails. Unknown or already-resolved IDs are ignored.
+    pub fn fail_request(&self, id: &Value, error: McpError) -> Result<bool, McpError> {
+        self.resolve_response(id.clone(), Err(error))
+            .map(|outcome| outcome == McpInboundOutcome::ResponseResolved)
+    }
+
     pub async fn close(&self, reason: impl Into<String>) {
         let first_close = !self
             .inner
@@ -582,12 +651,12 @@ impl McpPeer {
             .swap(true, Ordering::AcqRel);
         if first_close {
             let error = McpError::Connection(reason.into());
-            let senders = match self.inner.pending.lock() {
-                Ok(mut pending) => pending.drain().map(|(_, sender)| sender).collect(),
+            let entries = match self.inner.pending.lock() {
+                Ok(mut pending) => pending.drain().map(|(_, entry)| entry).collect(),
                 Err(_) => Vec::new(),
             };
-            for sender in senders {
-                let _ = sender.send(Err(error.clone()));
+            for entry in entries {
+                entry.finish(Err(error.clone()));
             }
         }
         let peer_id = Arc::as_ptr(&self.inner) as usize;
@@ -696,16 +765,16 @@ impl McpPeer {
         let Some(key) = request_id_key(&id) else {
             return Ok(McpInboundOutcome::UnknownResponse);
         };
-        let sender = self
+        let entry = self
             .inner
             .pending
             .lock()
             .map_err(|_| McpError::Connection("MCP pending map poisoned".to_owned()))?
             .remove(&key);
-        let Some(sender) = sender else {
+        let Some(entry) = entry else {
             return Ok(McpInboundOutcome::UnknownResponse);
         };
-        let _ = sender.send(result);
+        entry.finish(result);
         Ok(McpInboundOutcome::ResponseResolved)
     }
 }
