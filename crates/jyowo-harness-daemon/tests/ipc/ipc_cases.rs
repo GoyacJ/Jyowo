@@ -82,7 +82,7 @@ fn handshake_rejects_protocol_token_and_instance_mismatches() {
 }
 
 #[test]
-fn protocol_v2_client_rejects_a_protocol_v1_daemon_connection() {
+fn protocol_v3_client_rejects_a_protocol_v1_daemon_connection() {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
     let mut connection = IpcConnection::new(store, config());
