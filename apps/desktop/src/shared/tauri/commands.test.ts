@@ -1570,6 +1570,24 @@ describe('CommandClient', () => {
     expect(JSON.stringify(invoke.mock.calls)).not.toContain('cookie')
   })
 
+  it('rejects browser MCP preset summaries without a pinned version', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn(async () => ({
+        presets: [
+          {
+            description: 'Browser automation through Playwright MCP.',
+            displayName: 'Playwright Browser',
+            enabled: false,
+            id: 'playwright',
+            serverId: 'browser-playwright',
+          },
+        ],
+      })),
+    )
+
+    await expect(listBrowserMcpPresets(client)).rejects.toThrow(TauriCommandPayloadError)
+  })
+
   it('accepts MCP stdio and HTTP request shapes without storing raw secret values', async () => {
     const invoke = vi.fn(async (command: string) => {
       if (command === 'save_mcp_server') {

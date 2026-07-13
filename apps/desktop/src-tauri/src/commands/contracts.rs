@@ -934,6 +934,7 @@ pub struct BrowserMcpPresetSummaryPayload {
     pub enabled: bool,
     pub id: BrowserMcpPresetId,
     pub server_id: &'static str,
+    pub version: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

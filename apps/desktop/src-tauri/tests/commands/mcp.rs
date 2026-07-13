@@ -72,9 +72,11 @@ async fn browser_mcp_presets_are_disabled_until_saved() {
     assert_eq!(payload.presets.len(), 2);
     assert_eq!(payload.presets[0].id, BrowserMcpPresetId::Playwright);
     assert_eq!(payload.presets[0].server_id, "browser-playwright");
+    assert_eq!(payload.presets[0].version, "0.0.78");
     assert!(!payload.presets[0].enabled);
     assert_eq!(payload.presets[1].id, BrowserMcpPresetId::ChromeDevtools);
     assert_eq!(payload.presets[1].server_id, "browser-chrome-devtools");
+    assert_eq!(payload.presets[1].version, "1.5.0");
     assert!(!payload.presets[1].enabled);
 }
 
@@ -94,6 +96,7 @@ async fn browser_mcp_preset_save_writes_disabled_workspace_server_by_default() {
     let stored = store.record.lock().unwrap().clone().unwrap();
 
     assert_eq!(payload.preset.id, BrowserMcpPresetId::Playwright);
+    assert_eq!(payload.preset.version, "0.0.78");
     assert!(!payload.preset.enabled);
     assert_eq!(payload.server.status, "disabled");
     assert!(!stored.enabled);
@@ -103,7 +106,7 @@ async fn browser_mcp_preset_save_writes_disabled_workspace_server_by_default() {
         stored.transport,
         McpServerTransportConfig::Stdio { ref command, ref args, ref env, ref inherit_env, .. }
             if command == "npx"
-                && args == &vec!["-y".to_owned(), "@playwright/mcp@latest".to_owned()]
+                && args == &vec!["-y".to_owned(), "@playwright/mcp@0.0.78".to_owned()]
                 && env.is_empty()
                 && inherit_env == &vec![
                     "PATH".to_owned(),
@@ -133,6 +136,7 @@ async fn browser_mcp_preset_can_be_explicitly_enabled() {
     let stored = store.record.lock().unwrap().clone().unwrap();
 
     assert_eq!(payload.preset.id, BrowserMcpPresetId::ChromeDevtools);
+    assert_eq!(payload.preset.version, "1.5.0");
     assert!(payload.preset.enabled);
     assert!(payload.server.enabled);
     assert_eq!(stored.id, "browser-chrome-devtools");
@@ -142,7 +146,7 @@ async fn browser_mcp_preset_can_be_explicitly_enabled() {
         stored.transport,
         McpServerTransportConfig::Stdio { ref command, ref args, ref inherit_env, .. }
             if command == "npx"
-                && args == &vec!["-y".to_owned(), "chrome-devtools-mcp@latest".to_owned()]
+                && args == &vec!["-y".to_owned(), "chrome-devtools-mcp@1.5.0".to_owned()]
                 && inherit_env == &vec![
                     "PATH".to_owned(),
                     "HOME".to_owned(),

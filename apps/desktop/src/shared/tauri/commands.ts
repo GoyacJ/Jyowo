@@ -2606,7 +2606,7 @@ const browserMcpPresetSchema = z
     enabled: z.boolean(),
     id: browserMcpPresetIdSchema,
     serverId: mcpServerIdSchema,
-    version: z.string().trim().min(1).optional(),
+    version: z.string().trim().min(1),
   })
   .strict()
 

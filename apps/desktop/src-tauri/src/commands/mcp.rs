@@ -1657,6 +1657,7 @@ pub(crate) fn browser_mcp_preset_summary_from_enabled(
         enabled,
         id: preset_id,
         server_id: browser_mcp_preset_server_id(preset_id),
+        version: browser_mcp_preset_version(preset_id),
     }
 }
 
@@ -1781,8 +1782,15 @@ pub(crate) fn browser_mcp_preset_description(preset_id: BrowserMcpPresetId) -> &
 
 pub(crate) fn browser_mcp_preset_package_arg(preset_id: BrowserMcpPresetId) -> &'static str {
     match preset_id {
-        BrowserMcpPresetId::Playwright => "@playwright/mcp@latest",
-        BrowserMcpPresetId::ChromeDevtools => "chrome-devtools-mcp@latest",
+        BrowserMcpPresetId::Playwright => "@playwright/mcp@0.0.78",
+        BrowserMcpPresetId::ChromeDevtools => "chrome-devtools-mcp@1.5.0",
+    }
+}
+
+pub(crate) fn browser_mcp_preset_version(preset_id: BrowserMcpPresetId) -> &'static str {
+    match preset_id {
+        BrowserMcpPresetId::Playwright => "0.0.78",
+        BrowserMcpPresetId::ChromeDevtools => "1.5.0",
     }
 }
 

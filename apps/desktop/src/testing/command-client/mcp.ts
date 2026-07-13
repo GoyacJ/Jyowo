@@ -39,6 +39,7 @@ export const fixtureListBrowserMcpPresets: ListBrowserMcpPresetsResponse = {
       enabled: false,
       id: 'playwright',
       serverId: 'browser-playwright',
+      version: '0.0.78',
     },
     {
       description: 'Browser inspection through Chrome DevTools MCP.',
@@ -46,6 +47,7 @@ export const fixtureListBrowserMcpPresets: ListBrowserMcpPresetsResponse = {
       enabled: false,
       id: 'chrome-devtools',
       serverId: 'browser-chrome-devtools',
+      version: '1.5.0',
     },
   ],
 }

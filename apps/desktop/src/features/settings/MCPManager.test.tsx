@@ -465,6 +465,7 @@ describe('MCPManager', () => {
         enabled: true,
         id: 'playwright',
         serverId: 'browser-playwright',
+        version: '0.0.78',
       },
       server: mcpServer({
         displayName: 'Playwright Browser',
@@ -483,6 +484,7 @@ describe('MCPManager', () => {
               enabled: false,
               id: 'playwright',
               serverId: 'browser-playwright',
+              version: '0.0.78',
             },
           ],
         },
@@ -514,6 +516,7 @@ describe('MCPManager', () => {
         enabled: false,
         id: 'playwright',
         serverId: 'browser-playwright',
+        version: '0.0.78',
       },
       server: mcpServer({
         displayName: 'Playwright Browser',
@@ -532,6 +535,7 @@ describe('MCPManager', () => {
               enabled: true,
               id: 'playwright',
               serverId: 'browser-playwright',
+              version: '0.0.78',
             },
           ],
         },

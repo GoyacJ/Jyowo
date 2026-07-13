@@ -38,7 +38,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 jsonschema = { workspace = true }
-jsonwebtoken = { workspace = true, optional = true }
+jsonwebtoken = { workspace = true, optional = true, features = ["aws_lc_rs"] }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }
