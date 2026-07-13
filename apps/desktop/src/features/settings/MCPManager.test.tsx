@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type {
   CommandClient,
   McpDiagnosticBatchPayload,
+  McpServerConfig,
   McpServerSummary,
 } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
@@ -33,11 +34,20 @@ function renderMCPManager(
     )
   }
 
-  return render(
+  const result = render(
     <Wrapper>
       <MCPManager onOpenPlugin={onOpenPlugin} />
     </Wrapper>,
   )
+  return { ...result, queryClient }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
 }
 
 function mcpServer(overrides: Partial<McpServerSummary> = {}): McpServerSummary {
@@ -57,6 +67,29 @@ function mcpServer(overrides: Partial<McpServerSummary> = {}): McpServerSummary 
     statusSource: 'settings',
     transport: 'stdio',
     ...overrides,
+  }
+}
+
+function mcpConfig(server: McpServerSummary, command: string): { server: McpServerConfig } {
+  return {
+    server: {
+      configLayer: server.configLayer,
+      displayName: server.displayName,
+      effective: server.effective,
+      enabled: server.enabled,
+      id: server.id,
+      manageable: server.manageable,
+      overridesGlobal: server.overridesGlobal,
+      required: server.required,
+      scope: server.scope,
+      transport: {
+        args: [],
+        command,
+        env: [],
+        inheritEnv: [],
+        kind: 'stdio',
+      },
+    },
   }
 }
 
@@ -141,6 +174,77 @@ describe('MCPManager', () => {
     expect(listMcpServers).toHaveBeenCalledWith('project')
   })
 
+  it('keys project state by active path and closes stale project dialogs', async () => {
+    const projectA = mcpServer({
+      configLayer: 'project',
+      displayName: 'Project A server',
+      id: 'project-a',
+      origin: 'project',
+    })
+    const projectB = mcpServer({
+      configLayer: 'project',
+      displayName: 'Project B server',
+      id: 'project-b',
+      origin: 'project',
+    })
+    let projectListCall = 0
+    const listMcpServers = vi.fn(async (configLayer: 'global' | 'project') => {
+      if (configLayer === 'global') {
+        return { configLayer, servers: [] }
+      }
+      projectListCall += 1
+      return { configLayer, servers: projectListCall === 1 ? [projectA] : [projectB] }
+    })
+    const saveMcpServer = vi.fn().mockResolvedValue({ server: projectA })
+    const client = {
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [] },
+        projects: {
+          activePath: '/project/a',
+          projects: [
+            { lastOpenedAt: '2026-07-13T00:00:00Z', name: 'A', path: '/project/a' },
+            { lastOpenedAt: '2026-07-13T00:00:00Z', name: 'B', path: '/project/b' },
+          ],
+        },
+      }),
+      getMcpServerConfig: vi.fn().mockResolvedValue(mcpConfig(projectA, 'project-a-command')),
+      listMcpServers,
+      saveMcpServer,
+    }
+    const { queryClient } = renderMCPManager(client)
+
+    const projectSettings = await screen.findByRole('button', { name: 'Project settings' })
+    await waitFor(() => expect(projectSettings).toBeEnabled())
+    fireEvent.click(projectSettings)
+    const projectACard = await screen.findByRole('article', { name: 'Project A server' })
+    fireEvent.click(
+      within(projectACard).getByRole('button', { name: 'Configure Project A server' }),
+    )
+    expect(await screen.findByDisplayValue('project-a-command')).toBeInTheDocument()
+    const staleSaveButton = screen.getByRole('button', { name: 'Save MCP server' })
+
+    act(() => {
+      queryClient.setQueryData(['projects', 'list'], {
+        activePath: '/project/b',
+        projects: [
+          { lastOpenedAt: '2026-07-13T00:00:00Z', name: 'A', path: '/project/a' },
+          { lastOpenedAt: '2026-07-13T00:00:00Z', name: 'B', path: '/project/b' },
+        ],
+      })
+    })
+
+    expect(await screen.findByRole('article', { name: 'Project B server' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    fireEvent.click(staleSaveButton)
+    expect(saveMcpServer).not.toHaveBeenCalled()
+    expect(queryClient.getQueryData(['mcp-servers', 'list', 'project', '/project/a'])).toEqual(
+      expect.objectContaining({ servers: [projectA] }),
+    )
+    expect(queryClient.getQueryData(['mcp-servers', 'list', 'project', '/project/b'])).toEqual(
+      expect.objectContaining({ servers: [projectB] }),
+    )
+  })
+
   it('does not present plugin servers as inherited global overrides', async () => {
     const pluginServer = mcpServer({
       displayName: 'Plugin Context',
@@ -169,14 +273,14 @@ describe('MCPManager', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('copies an inherited global server into a project override with required retained', async () => {
-    const inherited = mcpServer({ manageable: false, required: true })
+  it('copies a disabled inherited global server into a project override without enabling it', async () => {
+    const inherited = mcpServer({ enabled: false, manageable: false, required: true })
     const getMcpServerConfig = vi.fn().mockResolvedValue({
       server: {
         configLayer: 'global',
         displayName: inherited.displayName,
         effective: true,
-        enabled: true,
+        enabled: false,
         id: inherited.id,
         manageable: false,
         overridesGlobal: false,
@@ -226,6 +330,7 @@ describe('MCPManager', () => {
       expect(saveMcpServer).toHaveBeenCalledWith(
         expect.objectContaining({
           configLayer: 'project',
+          enabled: false,
           id: 'github',
           required: true,
           scope: 'session',
@@ -792,6 +897,46 @@ describe('MCPManager', () => {
     )
   })
 
+  it('ignores stale config detail responses after opening another server', async () => {
+    const serverA = mcpServer({ displayName: 'Server A', id: 'server-a' })
+    const serverB = mcpServer({ displayName: 'Server B', id: 'server-b' })
+    const configA = deferred<{ server: McpServerConfig }>()
+    const configB = deferred<{ server: McpServerConfig }>()
+    const getMcpServerConfig = vi.fn((_: 'global' | 'project', id: string) => {
+      return id === serverA.id ? configA.promise : configB.promise
+    })
+    renderMCPManager({
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [] },
+        mcpServers: { configLayer: 'global', servers: [serverA, serverB] },
+      }),
+      getMcpServerConfig,
+    })
+
+    const cardA = await screen.findByRole('article', { name: 'Server A' })
+    fireEvent.click(within(cardA).getByRole('button', { name: 'Configure Server A' }))
+    await waitFor(() => expect(getMcpServerConfig).toHaveBeenCalledWith('global', 'server-a'))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    const cardB = screen.getByRole('article', { name: 'Server B' })
+    fireEvent.click(within(cardB).getByRole('button', { name: 'Configure Server B' }))
+    await waitFor(() => expect(getMcpServerConfig).toHaveBeenCalledWith('global', 'server-b'))
+    await act(async () => {
+      configB.resolve(mcpConfig(serverB, 'server-b-command'))
+      await configB.promise
+    })
+    expect(await screen.findByDisplayValue('server-b-command')).toBeInTheDocument()
+
+    await act(async () => {
+      configA.resolve(mcpConfig(serverA, 'server-a-command'))
+      await configA.promise
+    })
+    expect(screen.getByDisplayValue('server-b-command')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('server-a-command')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save MCP server' })).toBeEnabled()
+  })
+
   it('preserves redacted inline env values when saving unchanged config details', async () => {
     const getMcpServerConfig = vi.fn().mockResolvedValue({
       server: {
@@ -890,6 +1035,64 @@ describe('MCPManager', () => {
     expect(await screen.findByText('OAuth refresh completed.')).toBeInTheDocument()
     expect(screen.getByText('OAuth refresh')).toBeInTheDocument()
     expect(screen.queryByText(/mcp-secret-token/)).not.toBeInTheDocument()
+  })
+
+  it('keeps replay and live diagnostics when an older list query resolves', async () => {
+    const listResult = deferred<{ events: McpDiagnosticBatchPayload['events'] }>()
+    let emitBatch: ((batch: McpDiagnosticBatchPayload) => void) | undefined
+    const replayEvent: McpDiagnosticBatchPayload['events'][number] = {
+      eventType: 'connection_lost',
+      id: 'replayed-event',
+      plane: 'settings',
+      serverId: 'github',
+      severity: 'warning',
+      summary: 'Replay diagnostic.',
+      timestamp: '2026-07-13T00:00:00.000Z',
+    }
+    const liveEvent: McpDiagnosticBatchPayload['events'][number] = {
+      eventType: 'connection_recovered',
+      id: 'live-event',
+      plane: 'settings',
+      serverId: 'github',
+      severity: 'info',
+      summary: 'Live diagnostic.',
+      timestamp: '2026-07-13T00:00:01.000Z',
+    }
+    const client = {
+      ...createTestCommandClient({
+        mcpServers: { configLayer: 'global', servers: [mcpServer()] },
+        subscribeMcpDiagnostics: {
+          replayEvents: [replayEvent],
+          subscriptionId: 'mcp-diagnostic-subscription-race',
+        },
+      }),
+      listMcpDiagnostics: vi.fn(() => listResult.promise),
+      listenMcpDiagnosticBatches: vi.fn(
+        async (onBatch: (batch: McpDiagnosticBatchPayload) => void) => {
+          emitBatch = onBatch
+          return () => undefined
+        },
+      ),
+    }
+    renderMCPManager(client)
+
+    await waitFor(() => expect(client.listenMcpDiagnosticBatches).toHaveBeenCalled())
+    act(() => {
+      emitBatch?.({
+        events: [replayEvent, liveEvent],
+        phase: 'live',
+        subscriptionId: 'mcp-diagnostic-subscription-race',
+      })
+    })
+    expect(await screen.findByText('Live diagnostic.')).toBeInTheDocument()
+
+    await act(async () => {
+      listResult.resolve({ events: [] })
+      await listResult.promise
+    })
+    expect(screen.getByText('Replay diagnostic.')).toBeInTheDocument()
+    expect(screen.getByText('Live diagnostic.')).toBeInTheDocument()
+    expect(screen.getAllByText('Replay diagnostic.')).toHaveLength(1)
   })
 
   it('filters diagnostics by settings and task planes', async () => {

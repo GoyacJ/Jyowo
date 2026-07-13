@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { TFunction } from 'i18next'
 import { Activity, ExternalLink, Plus, Power, Save, Server, Telescope, Trash2 } from 'lucide-react'
-import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { useFieldArray, useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { z } from 'zod'
@@ -46,7 +46,13 @@ import { MCPServerCard } from './MCPServerCard'
 
 const mcpServerQueryKeys = {
   all: ['mcp-servers'] as const,
-  list: (configLayer: McpConfigLayer) => [...mcpServerQueryKeys.all, 'list', configLayer] as const,
+  list: (configLayer: McpConfigLayer, activeProjectPath: string | null) =>
+    [
+      ...mcpServerQueryKeys.all,
+      'list',
+      configLayer,
+      configLayer === 'project' ? activeProjectPath : null,
+    ] as const,
 }
 
 const mcpDiagnosticQueryKeys = {
@@ -64,6 +70,7 @@ type MCPServerFormValues = {
   bearerTokenEnvVar: string
   command: string
   displayName: string
+  enabled: boolean
   env: Array<{ key: string; preserveExisting?: boolean; value: string }>
   headers: Array<{ key: string; preserveExisting?: boolean; value: string }>
   headersFromEnv: Array<{ envVar: string; key: string }>
@@ -80,6 +87,7 @@ const defaultFormValues: MCPServerFormValues = {
   bearerTokenEnvVar: '',
   command: '',
   displayName: '',
+  enabled: true,
   env: [],
   headers: [],
   headersFromEnv: [],
@@ -96,8 +104,13 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
   const commandClient = useCommandClient()
   const queryClient = useQueryClient()
   const activeProjectPathQuery = useActiveProjectPath()
+  const activeProjectPath = activeProjectPathQuery.data ?? null
   const [configLayer, setConfigLayer] = useState<McpConfigLayer>('global')
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [dialogIdentity, setDialogIdentity] = useState<{
+    configLayer: McpConfigLayer
+    projectPath: string | null
+  } | null>(null)
   const [editingServer, setEditingServer] = useState<{
     configLayer: McpConfigLayer
     id: string
@@ -106,6 +119,16 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
   const [diagnosticPlane, setDiagnosticPlane] = useState<'all' | 'settings' | 'task'>('all')
   const [configLoadError, setConfigLoadError] = useState(false)
   const [loadingConfigId, setLoadingConfigId] = useState<string | null>(null)
+  const activeProjectPathRef = useRef(activeProjectPath)
+  const configRequestGeneration = useRef(0)
+  const configRequestIdentity = useRef<{
+    generation: number
+    id: string
+    projectPath: string | null
+    sourceConfigLayer: McpConfigLayer
+    targetConfigLayer: McpConfigLayer
+  } | null>(null)
+  activeProjectPathRef.current = activeProjectPath
   const {
     control,
     formState: { errors, isSubmitting },
@@ -125,9 +148,9 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
   const inheritEnvFields = useFieldArray({ control, name: 'inheritEnv' })
   const transportKind = watch('transportKind')
   const isConfigLoading = loadingConfigId !== null
-  const activeProjectPath = activeProjectPathQuery.data ?? null
   const serversQuery = useQuery({
-    queryKey: mcpServerQueryKeys.list(configLayer),
+    enabled: configLayer === 'global' || activeProjectPath !== null,
+    queryKey: mcpServerQueryKeys.list(configLayer, activeProjectPath),
     queryFn: () => listMcpServers(configLayer, commandClient),
   })
   const diagnosticsQuery = useQuery({
@@ -139,12 +162,30 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     queryFn: () => listBrowserMcpPresets(commandClient),
   })
   const saveMutation = useMutation({
-    mutationFn: (request: SaveMcpServerRequest) => saveMcpServer(request, commandClient),
-    onSuccess: async () => {
+    mutationFn: ({
+      projectPath,
+      request,
+    }: {
+      projectPath: string | null
+      request: SaveMcpServerRequest
+    }) => {
+      if (request.configLayer === 'project' && projectPath !== activeProjectPathRef.current) {
+        throw new Error('Stale MCP project identity')
+      }
+      return saveMcpServer(request, commandClient)
+    },
+    onSuccess: async (_, { projectPath, request }) => {
+      await queryClient.invalidateQueries({
+        exact: true,
+        queryKey: mcpServerQueryKeys.list(request.configLayer, projectPath),
+      })
+      if (request.configLayer === 'project' && projectPath !== activeProjectPathRef.current) {
+        return
+      }
       reset(defaultFormValues)
       setEditingServer(null)
+      setDialogIdentity(null)
       setDialogOpen(false)
-      await queryClient.invalidateQueries({ queryKey: mcpServerQueryKeys.all })
     },
   })
   const saveBrowserPresetMutation = useMutation({
@@ -207,6 +248,25 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
   }, [activeProjectPath, configLayer])
 
   useEffect(() => {
+    if (!dialogOpen || !dialogIdentity) {
+      return
+    }
+    const currentProjectPath = dialogIdentity.configLayer === 'project' ? activeProjectPath : null
+    if (
+      dialogIdentity.configLayer === configLayer &&
+      dialogIdentity.projectPath === currentProjectPath
+    ) {
+      return
+    }
+    configRequestGeneration.current += 1
+    configRequestIdentity.current = null
+    setLoadingConfigId(null)
+    setEditingServer(null)
+    setDialogIdentity(null)
+    setDialogOpen(false)
+  }, [activeProjectPath, configLayer, dialogIdentity, dialogOpen])
+
+  useEffect(() => {
     let active = true
     let subscriptionId: string | null = null
     let unlisten: (() => void) | undefined
@@ -221,17 +281,25 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           return
         }
         subscriptionId = subscription.subscriptionId
-        queryClient.setQueryData(mcpDiagnosticQueryKeys.list(diagnosticServerId), {
-          events: subscription.replayEvents,
-        })
+        const queryKey = mcpDiagnosticQueryKeys.list(diagnosticServerId)
+        await queryClient.cancelQueries({ exact: true, queryKey })
+        if (!active) {
+          return
+        }
+        queryClient.setQueryData(
+          queryKey,
+          (current: { events: McpDiagnosticRecord[] } | undefined) => ({
+            events: mergeMcpDiagnosticEvents(current?.events ?? [], subscription.replayEvents),
+          }),
+        )
         unlisten = await commandClient.listenMcpDiagnosticBatches((batch) => {
           if (!active || batch.subscriptionId !== subscription.subscriptionId) {
             return
           }
           queryClient.setQueryData(
-            mcpDiagnosticQueryKeys.list(diagnosticServerId),
+            queryKey,
             (current: { events: McpDiagnosticRecord[] } | undefined) => ({
-              events: [...(current?.events ?? []), ...batch.events].slice(-500),
+              events: mergeMcpDiagnosticEvents(current?.events ?? [], batch.events).slice(-500),
             }),
           )
         })
@@ -259,6 +327,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           bearerTokenEnvVar: z.string(),
           command: z.string(),
           displayName: z.string().trim().min(1, t('mcp.errors.serverNameRequired')),
+          enabled: z.boolean(),
           env: z.array(
             z.object({
               key: z.string(),
@@ -324,6 +393,15 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
       return
     }
 
+    const identity = dialogIdentity
+    if (
+      !identity ||
+      (identity.configLayer === 'project' && identity.projectPath !== activeProjectPathRef.current)
+    ) {
+      closeDialog()
+      return
+    }
+
     const payload = mcpServerPayload(
       parsed.data,
       editingServer?.id ??
@@ -331,7 +409,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           parsed.data.displayName,
           servers.map((server) => server.id),
         ),
-      editingServer?.configLayer ?? configLayer,
+      identity.configLayer,
       { rowIncomplete: t('mcp.errors.rowIncomplete') },
     )
     if (!payload.ok) {
@@ -340,15 +418,24 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     }
 
     try {
-      await saveMutation.mutateAsync(payload.request)
+      await saveMutation.mutateAsync({
+        projectPath: identity.projectPath,
+        request: payload.request,
+      })
     } catch {
       // The rendered message is intentionally sanitized and does not use backend error text.
     }
   }
 
   function openCreateDialog() {
+    const projectPath = configLayer === 'project' ? activeProjectPath : null
+    if (configLayer === 'project' && !projectPath) {
+      return
+    }
+    invalidateConfigRequest()
     reset(defaultFormValues)
     setEditingServer(null)
+    setDialogIdentity({ configLayer, projectPath })
     setConfigLoadError(false)
     setLoadingConfigId(null)
     setDialogOpen(true)
@@ -363,26 +450,92 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
   }
 
   async function openConfigDialog(server: McpServerSummary, targetConfigLayer: McpConfigLayer) {
+    const projectPath = targetConfigLayer === 'project' ? activeProjectPath : null
+    if (targetConfigLayer === 'project' && !projectPath) {
+      return
+    }
+    const requestIdentity = {
+      generation: invalidateConfigRequest(),
+      id: server.id,
+      projectPath,
+      sourceConfigLayer: server.configLayer,
+      targetConfigLayer,
+    }
+    configRequestIdentity.current = requestIdentity
     reset({
       ...defaultFormValues,
       displayName: server.displayName,
+      enabled: server.enabled,
       required: server.required,
       scope: server.scope,
       transportKind: server.transport === 'http' ? 'http' : 'stdio',
     })
     setEditingServer({ configLayer: targetConfigLayer, id: server.id })
+    setDialogIdentity({ configLayer: targetConfigLayer, projectPath })
     setConfigLoadError(false)
     setLoadingConfigId(`${server.configLayer}:${server.id}`)
     setDialogOpen(true)
     try {
       const payload = await getMcpServerConfig(server.configLayer, server.id, commandClient)
+      if (!isCurrentConfigRequest(requestIdentity)) {
+        return
+      }
       reset(mcpFormValuesFromConfig(payload.server))
       setEditingServer({ configLayer: targetConfigLayer, id: payload.server.id })
     } catch {
+      if (!isCurrentConfigRequest(requestIdentity)) {
+        return
+      }
       setConfigLoadError(true)
     } finally {
-      setLoadingConfigId(null)
+      if (isCurrentConfigRequest(requestIdentity)) {
+        configRequestIdentity.current = null
+        setLoadingConfigId(null)
+      }
     }
+  }
+
+  function invalidateConfigRequest(): number {
+    configRequestGeneration.current += 1
+    configRequestIdentity.current = null
+    return configRequestGeneration.current
+  }
+
+  function isCurrentConfigRequest(request: NonNullable<typeof configRequestIdentity.current>) {
+    const current = configRequestIdentity.current
+    return (
+      current?.generation === request.generation &&
+      current.id === request.id &&
+      current.sourceConfigLayer === request.sourceConfigLayer &&
+      current.targetConfigLayer === request.targetConfigLayer &&
+      current.projectPath === request.projectPath &&
+      (request.targetConfigLayer !== 'project' ||
+        request.projectPath === activeProjectPathRef.current)
+    )
+  }
+
+  function closeDialog() {
+    invalidateConfigRequest()
+    setLoadingConfigId(null)
+    setEditingServer(null)
+    setDialogIdentity(null)
+    setDialogOpen(false)
+  }
+
+  function handleDialogOpenChange(open: boolean) {
+    if (!open) {
+      closeDialog()
+      return
+    }
+    setDialogOpen(true)
+  }
+
+  function selectConfigLayer(nextConfigLayer: McpConfigLayer) {
+    if (nextConfigLayer === configLayer) {
+      return
+    }
+    closeDialog()
+    setConfigLayer(nextConfigLayer)
   }
 
   function updateDisplayName(value: string) {
@@ -420,7 +573,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           </div>
         </SectionHeader>
 
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
           <DialogTrigger asChild>
             <Button onClick={openCreateDialog} size="sm" type="button">
               <Plus className="size-4" />
@@ -757,7 +910,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
               <DialogFooter>
                 <Button
                   disabled={isSubmitting || isConfigLoading}
-                  onClick={() => setDialogOpen(false)}
+                  onClick={closeDialog}
                   type="button"
                   variant="outline"
                 >
@@ -776,7 +929,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
       <div className="space-y-2">
         <fieldset aria-label={t('mcp.configViews')} className="flex gap-2">
           <Button
-            onClick={() => setConfigLayer('global')}
+            onClick={() => selectConfigLayer('global')}
             size="sm"
             type="button"
             variant={configLayer === 'global' ? 'default' : 'outline'}
@@ -785,7 +938,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           </Button>
           <Button
             disabled={!activeProjectPath}
-            onClick={() => setConfigLayer('project')}
+            onClick={() => selectConfigLayer('project')}
             size="sm"
             type="button"
             variant={configLayer === 'project' ? 'default' : 'outline'}
@@ -1152,7 +1305,7 @@ function mcpServerPayload(
   const base = {
     configLayer,
     displayName: values.displayName.trim(),
-    enabled: true,
+    enabled: values.enabled,
     id: serverId,
     required: values.required,
     scope: values.scope,
@@ -1256,6 +1409,7 @@ function mcpFormValuesFromConfig(server: McpServerConfig): MCPServerFormValues {
       ...defaultFormValues,
       bearerTokenEnvVar: server.transport.bearerTokenEnvVar ?? '',
       displayName: server.displayName,
+      enabled: server.enabled,
       headers: server.transport.headers.map((header) => ({
         key: header.key,
         preserveExisting: header.hasValue && header.value == null,
@@ -1278,6 +1432,7 @@ function mcpFormValuesFromConfig(server: McpServerConfig): MCPServerFormValues {
     args: server.transport.args.map((value) => ({ value })),
     command: server.transport.command,
     displayName: server.displayName,
+    enabled: server.enabled,
     env: server.transport.env.map((item) => ({
       key: item.key,
       preserveExisting: item.hasValue && item.value == null,
@@ -1289,6 +1444,17 @@ function mcpFormValuesFromConfig(server: McpServerConfig): MCPServerFormValues {
     transportKind: 'stdio',
     workingDir: server.transport.workingDir ?? '',
   }
+}
+
+function mergeMcpDiagnosticEvents(
+  current: McpDiagnosticRecord[],
+  incoming: McpDiagnosticRecord[],
+): McpDiagnosticRecord[] {
+  const events = new Map(current.map((event) => [event.id, event]))
+  for (const event of incoming) {
+    events.set(event.id, event)
+  }
+  return [...events.values()]
 }
 
 function slugFromName(value: string): string {
