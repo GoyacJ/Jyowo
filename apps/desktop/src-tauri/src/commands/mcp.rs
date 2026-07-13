@@ -27,6 +27,8 @@ use super::stores::*;
 #[allow(unused_imports)]
 use super::validation::*;
 use super::*;
+use crate::daemon_client::DaemonClient;
+use harness_contracts::{ClientRequest, RunSegmentId, ServerMessage, TaskEventEnvelope};
 
 pub async fn list_mcp_servers_with_runtime_state(
     state: &DesktopRuntimeState,
@@ -104,6 +106,45 @@ fn mcp_store_for_layer<'a>(
             .project_mcp_server_store
             .as_deref()
             .ok_or_else(|| invalid_payload("no active project for MCP settings".to_owned())),
+    }
+}
+
+pub fn ensure_mcp_config_layer_identity(
+    config_layer: McpConfigLayer,
+    project_path: Option<&str>,
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
+    match config_layer {
+        McpConfigLayer::Global => {
+            if project_path.is_some() {
+                return Err(invalid_payload(
+                    "global MCP mutations must not include a project identity".to_owned(),
+                ));
+            }
+            Ok(())
+        }
+        McpConfigLayer::Project => {
+            let project_path = project_path
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .ok_or_else(|| {
+                    invalid_payload("project MCP mutations require a project identity".to_owned())
+                })?;
+            let active_project = state.project_workspace_root().ok_or_else(|| {
+                invalid_payload("no active project for MCP project identity".to_owned())
+            })?;
+            let requested_project = canonical_workspace_root(
+                PathBuf::from(project_path),
+                "MCP project identity".to_owned(),
+            )
+            .map_err(|error| invalid_payload(error.message))?;
+            if requested_project != active_project {
+                return Err(invalid_payload(
+                    "stale MCP project identity does not match the active project".to_owned(),
+                ));
+            }
+            Ok(())
+        }
     }
 }
 
@@ -687,7 +728,132 @@ pub async fn list_mcp_diagnostics_with_runtime_state(
     request: ListMcpDiagnosticsRequest,
     state: &DesktopRuntimeState,
 ) -> Result<ListMcpDiagnosticsResponse, CommandErrorPayload> {
-    list_mcp_diagnostics_with_store(request.server_id, state.mcp_diagnostic_store.as_ref()).await
+    list_mcp_diagnostics_with_runtime_state_and_daemon(request, state, None).await
+}
+
+pub async fn list_mcp_diagnostics_with_runtime_state_and_daemon(
+    request: ListMcpDiagnosticsRequest,
+    state: &DesktopRuntimeState,
+    daemon_client: Option<&DaemonClient>,
+) -> Result<ListMcpDiagnosticsResponse, CommandErrorPayload> {
+    let settings = list_mcp_diagnostics_with_store(
+        request.server_id.clone(),
+        state.mcp_diagnostic_store.as_ref(),
+    )
+    .await?
+    .events;
+    let clear_watermarks = state.mcp_diagnostic_store.load_task_clear_watermarks()?;
+    let task = load_task_mcp_diagnostics(
+        daemon_client,
+        request.server_id.as_deref(),
+        &clear_watermarks,
+    )
+    .await;
+    Ok(ListMcpDiagnosticsResponse {
+        events: merge_mcp_diagnostics(settings, task),
+    })
+}
+
+async fn load_task_mcp_diagnostics(
+    daemon_client: Option<&DaemonClient>,
+    server_id: Option<&str>,
+    clear_watermarks: &McpTaskDiagnosticClearWatermarks,
+) -> Vec<McpDiagnosticRecord> {
+    let Some(daemon_client) = daemon_client else {
+        return Vec::new();
+    };
+    let Ok(frame) = daemon_client.request(ClientRequest::ListTasks).await else {
+        return Vec::new();
+    };
+    let ServerMessage::TaskList { mut tasks } = frame.message else {
+        return Vec::new();
+    };
+    tasks.sort_by_key(|task| std::cmp::Reverse(task.last_global_offset));
+
+    let mut diagnostics = Vec::new();
+    for task in tasks.into_iter().take(MCP_DIAGNOSTIC_TASK_SCAN_LIMIT) {
+        let mut before_global_offset = None;
+        for _ in 0..MCP_DIAGNOSTIC_TASK_PAGE_LIMIT {
+            let Ok(frame) = daemon_client
+                .request(ClientRequest::LoadTaskEvents {
+                    task_id: task.task_id,
+                    before_global_offset,
+                    limit: MCP_DIAGNOSTIC_TASK_PAGE_SIZE,
+                })
+                .await
+            else {
+                break;
+            };
+            let ServerMessage::TaskEventPage(page) = frame.message else {
+                break;
+            };
+            if page.task_id != task.task_id {
+                break;
+            }
+            diagnostics.extend(
+                page.events
+                    .into_iter()
+                    .filter_map(|envelope| {
+                        let recorded_at = envelope.recorded_at;
+                        let record = mcp_task_diagnostic_record_from_envelope(envelope)?;
+                        (!task_mcp_diagnostic_was_cleared(
+                            &record.server_id,
+                            recorded_at,
+                            clear_watermarks,
+                        ))
+                        .then_some(record)
+                    })
+                    .filter(|record| server_id.is_none_or(|id| record.server_id == id)),
+            );
+            if diagnostics.len() >= MCP_DIAGNOSTIC_RETENTION_LIMIT {
+                break;
+            }
+            let Some(next_before_offset) = page.next_before_offset else {
+                break;
+            };
+            if before_global_offset == Some(next_before_offset) {
+                break;
+            }
+            before_global_offset = Some(next_before_offset);
+        }
+        if diagnostics.len() >= MCP_DIAGNOSTIC_RETENTION_LIMIT {
+            break;
+        }
+    }
+    diagnostics
+}
+
+fn task_mcp_diagnostic_was_cleared(
+    server_id: &str,
+    recorded_at: DateTime<Utc>,
+    clear_watermarks: &McpTaskDiagnosticClearWatermarks,
+) -> bool {
+    clear_watermarks
+        .all
+        .iter()
+        .chain(clear_watermarks.servers.get(server_id))
+        .max()
+        .is_some_and(|cleared_at| recorded_at <= *cleared_at)
+}
+
+fn merge_mcp_diagnostics(
+    mut settings: Vec<McpDiagnosticRecord>,
+    task: Vec<McpDiagnosticRecord>,
+) -> Vec<McpDiagnosticRecord> {
+    settings.extend(task);
+    settings.sort_by(|left, right| {
+        diagnostic_timestamp(left)
+            .cmp(&diagnostic_timestamp(right))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    if settings.len() > MCP_DIAGNOSTIC_RETENTION_LIMIT {
+        settings.drain(..settings.len() - MCP_DIAGNOSTIC_RETENTION_LIMIT);
+    }
+    settings
+}
+
+fn diagnostic_timestamp(record: &McpDiagnosticRecord) -> Option<DateTime<chrono::FixedOffset>> {
+    DateTime::parse_from_rfc3339(&record.timestamp).ok()
 }
 
 pub async fn clear_mcp_diagnostics_with_runtime_state(
@@ -699,7 +865,7 @@ pub async fn clear_mcp_diagnostics_with_runtime_state(
     }
     state
         .mcp_diagnostic_store
-        .clear_records(request.server_id.as_deref())?;
+        .clear_records(request.server_id.as_deref(), Utc::now())?;
     Ok(ClearMcpDiagnosticsResponse { status: "cleared" })
 }
 
@@ -722,13 +888,33 @@ pub async fn subscribe_mcp_diagnostics_for_window_with_runtime_state(
     emitter: McpDiagnosticBatchEmitter,
     state: &DesktopRuntimeState,
 ) -> Result<SubscribeMcpDiagnosticsResponse, CommandErrorPayload> {
+    subscribe_mcp_diagnostics_for_window_with_runtime_state_and_daemon(
+        request,
+        window_label,
+        emitter,
+        state,
+        None,
+    )
+    .await
+}
+
+pub async fn subscribe_mcp_diagnostics_for_window_with_runtime_state_and_daemon(
+    request: SubscribeMcpDiagnosticsRequest,
+    window_label: String,
+    emitter: McpDiagnosticBatchEmitter,
+    state: &DesktopRuntimeState,
+    daemon_client: Option<&DaemonClient>,
+) -> Result<SubscribeMcpDiagnosticsResponse, CommandErrorPayload> {
     ensure_non_empty("windowLabel", &window_label)?;
     if let Some(server_id) = request.server_id.as_deref() {
         ensure_mcp_server_id(server_id)?;
     }
-    let replay_events = list_mcp_diagnostics_with_store(
-        request.server_id.clone(),
-        state.mcp_diagnostic_store.as_ref(),
+    let replay_events = list_mcp_diagnostics_with_runtime_state_and_daemon(
+        ListMcpDiagnosticsRequest {
+            server_id: request.server_id.clone(),
+        },
+        state,
+        daemon_client,
     )
     .await?
     .events;
@@ -740,6 +926,7 @@ pub async fn subscribe_mcp_diagnostics_for_window_with_runtime_state(
         window_label.clone(),
         Arc::clone(&emitter),
         state.clone(),
+        daemon_client.cloned(),
     );
     state.mcp_diagnostic_subscriptions.lock().await.insert(
         subscription_id.clone(),
@@ -804,22 +991,42 @@ pub(crate) fn spawn_mcp_diagnostic_subscription(
     window_label: String,
     emitter: McpDiagnosticBatchEmitter,
     state: DesktopRuntimeState,
+    daemon_client: Option<DaemonClient>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let mut task_records = Vec::new();
+        let mut next_task_scan = Instant::now();
         loop {
             tokio::time::sleep(MCP_DIAGNOSTIC_SUBSCRIPTION_POLL_INTERVAL).await;
             let records = match state.mcp_diagnostic_store.load_records() {
                 Ok(records) => records,
                 Err(_) => break,
             };
-            let events = records
+            let settings = records
                 .into_iter()
                 .filter(|record| {
                     server_id
                         .as_deref()
                         .is_none_or(|server_id| record.server_id == server_id)
-                        && !seen_ids.contains(&record.id)
                 })
+                .collect::<Vec<_>>();
+            if daemon_client.is_some() && Instant::now() >= next_task_scan {
+                let clear_watermarks = match state.mcp_diagnostic_store.load_task_clear_watermarks()
+                {
+                    Ok(watermarks) => watermarks,
+                    Err(_) => break,
+                };
+                task_records = load_task_mcp_diagnostics(
+                    daemon_client.as_ref(),
+                    server_id.as_deref(),
+                    &clear_watermarks,
+                )
+                .await;
+                next_task_scan = Instant::now() + MCP_DIAGNOSTIC_TASK_POLL_INTERVAL;
+            }
+            let events = merge_mcp_diagnostics(settings, task_records.clone())
+                .into_iter()
+                .filter(|record| !seen_ids.contains(&record.id))
                 .collect::<Vec<_>>();
             if events.is_empty() {
                 continue;
@@ -1427,7 +1634,15 @@ impl McpEventSink for DesktopMcpEventSink {
     }
 }
 
-pub fn mcp_diagnostic_record_from_event(event: Event) -> Option<McpDiagnosticRecord> {
+struct McpDiagnosticFields {
+    server_id: String,
+    event_type: &'static str,
+    severity: McpDiagnosticSeverity,
+    summary: &'static str,
+    timestamp: String,
+}
+
+fn mcp_diagnostic_fields_from_event(event: Event) -> Option<McpDiagnosticFields> {
     let (server_id, event_type, severity, summary, timestamp) = match event {
         Event::McpToolInjected(event) => (
             event.server_id.0,
@@ -1456,6 +1671,20 @@ pub fn mcp_diagnostic_record_from_event(event: Event) -> Option<McpDiagnosticRec
             "connection_recovered",
             McpDiagnosticSeverity::Info,
             "MCP server connection recovered.",
+            event.at.to_rfc3339(),
+        ),
+        Event::McpActivationFailed(event) => (
+            event.server_id.0,
+            "activation_failed",
+            McpDiagnosticSeverity::Error,
+            match event.reason {
+                harness_contracts::McpActivationFailureReason::CredentialUnavailable => {
+                    "MCP server credential is unavailable."
+                }
+                harness_contracts::McpActivationFailureReason::Runtime => {
+                    "MCP server activation failed."
+                }
+            },
             event.at.to_rfc3339(),
         ),
         Event::McpOAuthRefresh(event) => (
@@ -1534,18 +1763,63 @@ pub fn mcp_diagnostic_record_from_event(event: Event) -> Option<McpDiagnosticRec
         _ => return None,
     };
 
-    Some(McpDiagnosticRecord {
-        event_type: event_type.to_owned(),
-        id: format!("mcp-diagnostic-{}", EventId::new()),
+    Some(McpDiagnosticFields {
         server_id,
+        event_type,
         severity,
-        summary: summary.to_owned(),
+        summary,
         timestamp,
+    })
+}
+
+pub fn mcp_diagnostic_record_from_event(event: Event) -> Option<McpDiagnosticRecord> {
+    let fields = mcp_diagnostic_fields_from_event(event)?;
+
+    Some(McpDiagnosticRecord {
+        event_type: fields.event_type.to_owned(),
+        id: format!("mcp-diagnostic-{}", EventId::new()),
+        server_id: fields.server_id,
+        severity: fields.severity,
+        summary: fields.summary.to_owned(),
+        timestamp: fields.timestamp,
         plane: McpDiagnosticPlane::Settings,
         task_id: None,
         session_id: None,
         run_id: None,
         run_segment_id: None,
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskEngineDiagnosticPayload {
+    session_id: SessionId,
+    run_id: Option<RunId>,
+    #[serde(default)]
+    run_segment_id: Option<RunSegmentId>,
+    event: Event,
+}
+
+pub fn mcp_task_diagnostic_record_from_envelope(
+    envelope: TaskEventEnvelope,
+) -> Option<McpDiagnosticRecord> {
+    if !envelope.event_type.starts_with("engine.mcp_") {
+        return None;
+    }
+    let payload = serde_json::from_value::<TaskEngineDiagnosticPayload>(envelope.payload).ok()?;
+    let fields = mcp_diagnostic_fields_from_event(payload.event)?;
+    Some(McpDiagnosticRecord {
+        event_type: fields.event_type.to_owned(),
+        id: envelope.event_id.to_string(),
+        server_id: fields.server_id,
+        severity: fields.severity,
+        summary: fields.summary.to_owned(),
+        timestamp: fields.timestamp,
+        plane: McpDiagnosticPlane::Task,
+        task_id: Some(envelope.task_id.to_string()),
+        session_id: Some(payload.session_id.to_string()),
+        run_id: payload.run_id.map(|id| id.to_string()),
+        run_segment_id: payload.run_segment_id.map(|id| id.to_string()),
     })
 }
 

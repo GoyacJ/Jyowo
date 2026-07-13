@@ -2503,6 +2503,28 @@ const mcpServerScopeSchema = z.enum(['agent', 'global', 'session'])
 
 const mcpConfigLayerSchema = z.enum(['global', 'project'])
 
+const mcpProjectPathSchema = z.string().trim().min(1)
+
+function requireMcpProjectIdentity(
+  value: { configLayer: z.infer<typeof mcpConfigLayerSchema>; projectPath?: string | null },
+  context: z.RefinementCtx,
+): void {
+  if (value.configLayer === 'project' && !value.projectPath) {
+    context.addIssue({
+      code: 'custom',
+      message: 'MCP project mutations require projectPath',
+      path: ['projectPath'],
+    })
+  }
+  if (value.configLayer === 'global' && value.projectPath != null) {
+    context.addIssue({
+      code: 'custom',
+      message: 'MCP global mutations must not include projectPath',
+      path: ['projectPath'],
+    })
+  }
+}
+
 const mcpServerTransportKindSchema = z.enum(['http', 'inProcess', 'sse', 'stdio', 'websocket'])
 
 const mcpServerStatusSchema = z.enum([
@@ -2925,11 +2947,13 @@ const saveMcpServerRequestSchema = z
       .refine((value) => !hasNul(value)),
     enabled: z.boolean().default(true),
     id: mcpServerIdSchema,
+    projectPath: mcpProjectPathSchema.nullable().optional(),
     required: z.boolean().default(false),
     scope: mcpServerScopeSchema,
     transport: mcpServerTransportRequestSchema,
   })
   .strict()
+  .superRefine(requireMcpProjectIdentity)
 
 const saveMcpServerResponseSchema = z
   .object({
@@ -2982,8 +3006,10 @@ const deleteMcpServerRequestSchema = z
   .object({
     configLayer: mcpConfigLayerSchema,
     id: mcpServerIdSchema,
+    projectPath: mcpProjectPathSchema.nullable().optional(),
   })
   .strict()
+  .superRefine(requireMcpProjectIdentity)
 
 const deleteMcpServerResponseSchema = z
   .object({
@@ -2998,8 +3024,10 @@ const setMcpServerEnabledRequestSchema = z
     configLayer: mcpConfigLayerSchema,
     enabled: z.boolean(),
     id: mcpServerIdSchema,
+    projectPath: mcpProjectPathSchema.nullable().optional(),
   })
   .strict()
+  .superRefine(requireMcpProjectIdentity)
 
 const setMcpServerEnabledResponseSchema = z
   .object({
@@ -3011,8 +3039,10 @@ const restartMcpServerRequestSchema = z
   .object({
     configLayer: mcpConfigLayerSchema,
     id: mcpServerIdSchema,
+    projectPath: mcpProjectPathSchema.nullable().optional(),
   })
   .strict()
+  .superRefine(requireMcpProjectIdentity)
 
 const restartMcpServerResponseSchema = z
   .object({
@@ -3974,7 +4004,11 @@ export type ListReferenceCandidatesRequest = z.infer<typeof listReferenceCandida
 
 export interface CommandClient {
   deleteAgentProfile: (id: string) => Promise<DeleteAgentProfileResponse>
-  deleteMcpServer: (configLayer: McpConfigLayer, id: string) => Promise<DeleteMcpServerResponse>
+  deleteMcpServer: (
+    configLayer: McpConfigLayer,
+    id: string,
+    projectPath?: string | null,
+  ) => Promise<DeleteMcpServerResponse>
   uninstallPlugin: (pluginId: string) => Promise<PluginOperationResult>
   deleteSkill: (id: string) => Promise<DeleteSkillResponse>
   getAppInfo: () => Promise<AppInfo>
@@ -4050,10 +4084,15 @@ export interface CommandClient {
     configLayer: McpConfigLayer,
     id: string,
     enabled: boolean,
+    projectPath?: string | null,
   ) => Promise<SetMcpServerEnabledResponse>
   setPluginEnabled: (pluginId: string, enabled: boolean) => Promise<PluginOperationResult>
   setProjectPluginsEnabled: (enabled: boolean) => Promise<SetProjectPluginsEnabledResponse>
-  restartMcpServer: (configLayer: McpConfigLayer, id: string) => Promise<RestartMcpServerResponse>
+  restartMcpServer: (
+    configLayer: McpConfigLayer,
+    id: string,
+    projectPath?: string | null,
+  ) => Promise<RestartMcpServerResponse>
   clearMcpDiagnostics: (serverId?: string) => Promise<ClearMcpDiagnosticsResponse>
   saveProviderSettings: (request: ProviderSettingsRequest) => Promise<SaveProviderSettingsResponse>
   saveProviderCapabilityRoute: (
@@ -4116,9 +4155,13 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, deleteAgentProfileRequestSchema, { id })
       return parsePayload(command, deleteAgentProfileResponseSchema, await invoke(command, args))
     },
-    async deleteMcpServer(configLayer, id) {
+    async deleteMcpServer(configLayer, id, projectPath = null) {
       const command = 'delete_mcp_server'
-      const args = parseArgs(command, deleteMcpServerRequestSchema, { configLayer, id })
+      const args = parseArgs(command, deleteMcpServerRequestSchema, {
+        configLayer,
+        id,
+        ...(projectPath === null ? {} : { projectPath }),
+      })
       return parsePayload(command, deleteMcpServerResponseSchema, await invoke(command, args))
     },
     async uninstallPlugin(pluginId) {
@@ -4434,12 +4477,13 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, saveMcpServerRequestSchema, request)
       return parsePayload(command, saveMcpServerResponseSchema, await invoke(command, args))
     },
-    async setMcpServerEnabled(configLayer, id, enabled) {
+    async setMcpServerEnabled(configLayer, id, enabled, projectPath = null) {
       const command = 'set_mcp_server_enabled'
       const args = parseArgs(command, setMcpServerEnabledRequestSchema, {
         configLayer,
         enabled,
         id,
+        ...(projectPath === null ? {} : { projectPath }),
       })
       return parsePayload(command, setMcpServerEnabledResponseSchema, await invoke(command, args))
     },
@@ -4462,9 +4506,13 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         await invoke(command, args),
       )
     },
-    async restartMcpServer(configLayer, id) {
+    async restartMcpServer(configLayer, id, projectPath = null) {
       const command = 'restart_mcp_server'
-      const args = parseArgs(command, restartMcpServerRequestSchema, { configLayer, id })
+      const args = parseArgs(command, restartMcpServerRequestSchema, {
+        configLayer,
+        id,
+        ...(projectPath === null ? {} : { projectPath }),
+      })
       return parsePayload(command, restartMcpServerResponseSchema, await invoke(command, args))
     },
     async clearMcpDiagnostics(serverId) {
@@ -4624,16 +4672,18 @@ export function setMcpServerEnabled(
   id: string,
   enabled: boolean,
   client: CommandClient = tauriCommandClient,
+  projectPath: string | null = null,
 ): Promise<SetMcpServerEnabledResponse> {
-  return client.setMcpServerEnabled(configLayer, id, enabled)
+  return client.setMcpServerEnabled(configLayer, id, enabled, projectPath)
 }
 
 export function restartMcpServer(
   configLayer: McpConfigLayer,
   id: string,
   client: CommandClient = tauriCommandClient,
+  projectPath: string | null = null,
 ): Promise<RestartMcpServerResponse> {
-  return client.restartMcpServer(configLayer, id)
+  return client.restartMcpServer(configLayer, id, projectPath)
 }
 
 export function clearMcpDiagnostics(
@@ -4668,8 +4718,9 @@ export function deleteMcpServer(
   configLayer: McpConfigLayer,
   id: string,
   client: CommandClient = tauriCommandClient,
+  projectPath: string | null = null,
 ): Promise<DeleteMcpServerResponse> {
-  return client.deleteMcpServer(configLayer, id)
+  return client.deleteMcpServer(configLayer, id, projectPath)
 }
 
 export function listPlugins(

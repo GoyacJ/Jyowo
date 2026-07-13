@@ -4,7 +4,7 @@ use std::{
     net::SocketAddr,
     path::Path,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -41,7 +41,7 @@ use jsonwebtoken::{
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::{broadcast, oneshot, watch};
 #[cfg(feature = "websocket")]
 use tokio_tungstenite::{
     accept_hdr_async,
@@ -68,6 +68,8 @@ const MCP_SERVER_NOT_INITIALIZED: i32 = -32002;
 const JSONRPC_RATE_LIMITED: i32 = -32029;
 const JSONRPC_UNAUTHORIZED: i32 = -32040;
 const JSONRPC_TENANT_MAPPING: i32 = -32041;
+const DEFAULT_HTTP_SESSION_CAPACITY: usize = 128;
+const DEFAULT_HTTP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 #[cfg(feature = "oauth")]
 const JWKS_CACHE_TTL: Duration = Duration::from_secs(300);
 
@@ -435,6 +437,8 @@ pub struct McpServerPolicy {
     pub tenant_mapping: TenantMapping,
     pub tenant_isolation: TenantIsolationPolicy,
     pub rate_limit: McpServerRateLimit,
+    pub http_session_capacity: usize,
+    pub http_session_idle_timeout: Duration,
 }
 
 impl Default for McpServerPolicy {
@@ -447,6 +451,8 @@ impl Default for McpServerPolicy {
             tenant_mapping: TenantMapping::Single(TenantId::SINGLE),
             tenant_isolation: TenantIsolationPolicy::default(),
             rate_limit: McpServerRateLimit::default(),
+            http_session_capacity: DEFAULT_HTTP_SESSION_CAPACITY,
+            http_session_idle_timeout: DEFAULT_HTTP_SESSION_IDLE_TIMEOUT,
         }
     }
 }
@@ -853,17 +859,69 @@ pub struct McpServerDispatcher {
     next_request_id: Arc<AtomicU64>,
     outbound: broadcast::Sender<McpMessage>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, JsonRpcError>>>>>,
+    disconnected: Arc<AtomicBool>,
+    disconnect_signal: watch::Sender<bool>,
+    client_connection_published: Arc<AtomicBool>,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpServerClientTransport {
+    Stdio,
+    StreamableHttp,
+    WebSocket,
+}
+
+#[derive(Clone)]
+pub struct McpServerClientConnection {
+    transport: McpServerClientTransport,
+    session_id: Option<String>,
+    dispatcher: McpServerDispatcher,
+}
+
+struct McpServerTransportDisconnectGuard {
+    dispatcher: McpServerDispatcher,
+}
+
+impl Drop for McpServerTransportDisconnectGuard {
+    fn drop(&mut self) {
+        self.dispatcher.disconnect();
+    }
+}
+
+impl McpServerClientConnection {
+    #[must_use]
+    pub fn transport(&self) -> McpServerClientTransport {
+        self.transport
+    }
+
+    #[must_use]
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
+    pub async fn request_client(
+        &self,
+        method: impl Into<String>,
+        params: Option<Value>,
+    ) -> Result<Value, JsonRpcError> {
+        self.dispatcher.request_client(method, params).await
+    }
 }
 
 impl McpServerDispatcher {
     fn new(router: Arc<dyn McpServerRequestRouter>) -> Self {
         let (outbound, _) = broadcast::channel(64);
+        let (disconnect_signal, _) = watch::channel(false);
         Self {
             router,
             phase: Arc::new(Mutex::new(McpServerSessionPhase::Uninitialized)),
             next_request_id: Arc::new(AtomicU64::new(0)),
             outbound,
             pending: Arc::new(Mutex::new(HashMap::new())),
+            disconnected: Arc::new(AtomicBool::new(false)),
+            disconnect_signal,
+            client_connection_published: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -877,6 +935,12 @@ impl McpServerDispatcher {
         method: impl Into<String>,
         params: Option<Value>,
     ) -> Result<Value, JsonRpcError> {
+        if self.disconnected.load(Ordering::Acquire) {
+            return Err(jsonrpc_error(
+                JSONRPC_INTERNAL_ERROR,
+                "client transport is disconnected",
+            ));
+        }
         if !self.is_ready() {
             return Err(jsonrpc_error(
                 MCP_SERVER_NOT_INITIALIZED,
@@ -890,6 +954,16 @@ impl McpServerDispatcher {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .insert(key.clone(), sender);
+        if self.disconnected.load(Ordering::Acquire) {
+            self.pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&key);
+            return Err(jsonrpc_error(
+                JSONRPC_INTERNAL_ERROR,
+                "client transport is disconnected",
+            ));
+        }
         let request = McpMessage::Request(JsonRpcRequest::new(id, method, params));
         if self.outbound.send(request).is_err() {
             self.pending
@@ -1031,6 +1105,14 @@ impl McpServerDispatcher {
         )
     }
 
+    fn mark_client_connection_published_if_ready(&self) -> bool {
+        self.is_ready()
+            && self
+                .client_connection_published
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+    }
+
     fn protocol_version(&self) -> Option<String> {
         match &*self.phase.lock().unwrap_or_else(|error| error.into_inner()) {
             McpServerSessionPhase::AwaitingInitialized { protocol_version }
@@ -1047,6 +1129,29 @@ impl McpServerDispatcher {
             .remove(&request_id_key(&id))
         {
             let _ = sender.send(result);
+        }
+    }
+
+    fn subscribe_disconnect(&self) -> watch::Receiver<bool> {
+        self.disconnect_signal.subscribe()
+    }
+
+    fn disconnect(&self) {
+        if self.disconnected.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.disconnect_signal.send_replace(true);
+        let pending = std::mem::take(
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+        for (_, sender) in pending {
+            let _ = sender.send(Err(jsonrpc_error(
+                JSONRPC_INTERNAL_ERROR,
+                "client transport is disconnected",
+            )));
         }
     }
 }
@@ -1463,6 +1568,7 @@ pub struct HarnessMcpServer<H> {
     rate_limit: Arc<Mutex<RateLimitState>>,
     audit_sink: Arc<dyn McpServerAuditSink>,
     metrics_sink: Arc<dyn McpMetricsSink>,
+    client_connections: broadcast::Sender<McpServerClientConnection>,
 }
 
 impl<H> Clone for HarnessMcpServer<H> {
@@ -1473,13 +1579,133 @@ impl<H> Clone for HarnessMcpServer<H> {
             rate_limit: Arc::clone(&self.rate_limit),
             audit_sink: Arc::clone(&self.audit_sink),
             metrics_sink: Arc::clone(&self.metrics_sink),
+            client_connections: self.client_connections.clone(),
         }
     }
 }
 
 struct HarnessHttpState<H> {
     server: HarnessMcpServer<H>,
-    sessions: Arc<Mutex<HashMap<String, McpServerDispatcher>>>,
+    sessions: Arc<Mutex<HarnessHttpSessionStore>>,
+}
+
+struct HarnessHttpSession {
+    dispatcher: McpServerDispatcher,
+    last_accessed: Instant,
+    active_get: Arc<AtomicBool>,
+}
+
+struct HarnessHttpGetGuard {
+    active: Arc<AtomicBool>,
+}
+
+impl Drop for HarnessHttpGetGuard {
+    fn drop(&mut self) {
+        self.active.store(false, Ordering::Release);
+    }
+}
+
+struct HarnessHttpSessionStore {
+    sessions: HashMap<String, HarnessHttpSession>,
+    capacity: usize,
+    idle_timeout: Duration,
+}
+
+impl HarnessHttpSessionStore {
+    fn new(capacity: usize, idle_timeout: Duration) -> Self {
+        Self {
+            sessions: HashMap::new(),
+            capacity,
+            idle_timeout,
+        }
+    }
+
+    fn insert(&mut self, session_id: String, dispatcher: McpServerDispatcher) -> bool {
+        let now = Instant::now();
+        self.remove_expired(now);
+        if self.sessions.len() >= self.capacity {
+            return false;
+        }
+        self.sessions.insert(
+            session_id,
+            HarnessHttpSession {
+                dispatcher,
+                last_accessed: now,
+                active_get: Arc::new(AtomicBool::new(false)),
+            },
+        );
+        true
+    }
+
+    fn get(&mut self, session_id: &str) -> Option<McpServerDispatcher> {
+        let now = Instant::now();
+        self.remove_expired(now);
+        let session = self.sessions.get_mut(session_id)?;
+        session.last_accessed = now;
+        Some(session.dispatcher.clone())
+    }
+
+    fn acquire_get(
+        &mut self,
+        session_id: &str,
+    ) -> Option<
+        Result<
+            (
+                McpServerDispatcher,
+                broadcast::Receiver<McpMessage>,
+                HarnessHttpGetGuard,
+            ),
+            (),
+        >,
+    > {
+        let now = Instant::now();
+        self.remove_expired(now);
+        let session = self.sessions.get_mut(session_id)?;
+        session.last_accessed = now;
+        if session
+            .active_get
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Some(Err(()));
+        }
+        let outbound = session.dispatcher.subscribe_outbound();
+        Some(Ok((
+            session.dispatcher.clone(),
+            outbound,
+            HarnessHttpGetGuard {
+                active: Arc::clone(&session.active_get),
+            },
+        )))
+    }
+
+    fn has_active_get(&self, session_id: &str) -> bool {
+        self.sessions
+            .get(session_id)
+            .is_some_and(|session| session.active_get.load(Ordering::Acquire))
+    }
+
+    fn remove(&mut self, session_id: &str) -> Option<McpServerDispatcher> {
+        self.remove_expired(Instant::now());
+        let dispatcher = self
+            .sessions
+            .remove(session_id)
+            .map(|session| session.dispatcher)?;
+        dispatcher.disconnect();
+        Some(dispatcher)
+    }
+
+    fn remove_expired(&mut self, now: Instant) {
+        let idle_timeout = self.idle_timeout;
+        self.sessions.retain(|_, session| {
+            let keep = session.active_get.load(Ordering::Acquire)
+                || now.saturating_duration_since(session.last_accessed) < idle_timeout;
+            if !keep {
+                session.dispatcher.disconnect();
+            }
+            keep
+        });
+    }
 }
 
 impl<H> Clone for HarnessHttpState<H> {
@@ -1517,6 +1743,35 @@ where
 
     pub fn dispatcher(&self) -> McpServerDispatcher {
         McpServerDispatcher::new(Arc::new(self.clone()))
+    }
+
+    #[must_use]
+    pub fn subscribe_client_connections(&self) -> broadcast::Receiver<McpServerClientConnection> {
+        self.client_connections.subscribe()
+    }
+
+    fn publish_client_connection(
+        &self,
+        transport: McpServerClientTransport,
+        session_id: Option<String>,
+        dispatcher: McpServerDispatcher,
+    ) {
+        let _ = self.client_connections.send(McpServerClientConnection {
+            transport,
+            session_id,
+            dispatcher,
+        });
+    }
+
+    fn publish_client_connection_if_ready(
+        &self,
+        transport: McpServerClientTransport,
+        session_id: Option<String>,
+        dispatcher: &McpServerDispatcher,
+    ) {
+        if dispatcher.mark_client_connection_published_if_ready() {
+            self.publish_client_connection(transport, session_id, dispatcher.clone());
+        }
     }
 
     pub async fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponse {
@@ -1567,6 +1822,9 @@ where
         let mut stdout = tokio::io::stdout();
         let dispatcher = self.dispatcher();
         let mut outbound = dispatcher.subscribe_outbound();
+        let _disconnect_guard = McpServerTransportDisconnectGuard {
+            dispatcher: dispatcher.clone(),
+        };
         loop {
             let response = tokio::select! {
                 line = lines.next_line() => {
@@ -1617,6 +1875,11 @@ where
                     }
                 }
             };
+            self.publish_client_connection_if_ready(
+                McpServerClientTransport::Stdio,
+                None,
+                &dispatcher,
+            );
             let Some(response) = response else {
                 continue;
             };
@@ -1648,9 +1911,14 @@ where
 
     pub async fn serve_http_listener(self, listener: TcpListener) -> Result<(), McpServerError> {
         self.ensure_public_serving_allowed()?;
+        let session_capacity = self.policy.http_session_capacity;
+        let session_idle_timeout = self.policy.http_session_idle_timeout;
         let state = HarnessHttpState {
             server: self,
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(HarnessHttpSessionStore::new(
+                session_capacity,
+                session_idle_timeout,
+            ))),
         };
         let app = Router::new()
             .route(
@@ -1896,11 +2164,14 @@ where
             return (StatusCode::OK, Json(response)).into_response();
         }
         let session_id = ToolUseId::new().to_string();
-        state
+        let inserted = state
             .sessions
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .insert(session_id.clone(), dispatcher);
+            .insert(session_id.clone(), dispatcher.clone());
+        if !inserted {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
         let mut response = (StatusCode::OK, Json(response)).into_response();
         response.headers_mut().insert(
             "mcp-session-id",
@@ -1915,12 +2186,22 @@ where
     if !valid_protocol_version(&dispatcher, &headers) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    match dispatcher.dispatch(message, context).await {
+    let response = dispatcher.dispatch(message, context).await;
+    if state
+        .sessions
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .has_active_get(&session_id)
+    {
+        state.server.publish_client_connection_if_ready(
+            McpServerClientTransport::StreamableHttp,
+            Some(session_id),
+            &dispatcher,
+        );
+    }
+    match response {
         Some(response) => (StatusCode::OK, Json(response)).into_response(),
-        None => {
-            let _ = session_id;
-            StatusCode::ACCEPTED.into_response()
-        }
+        None => StatusCode::ACCEPTED.into_response(),
     }
 }
 
@@ -1940,24 +2221,50 @@ where
     {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let Some((_session_id, dispatcher)) = http_session(&state, &headers) else {
-        return StatusCode::NOT_FOUND.into_response();
+    let Some(session_id) = headers
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let get = state
+        .sessions
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .acquire_get(session_id);
+    let (dispatcher, mut outbound, get_guard) = match get {
+        None => return StatusCode::NOT_FOUND.into_response(),
+        Some(Err(())) => return StatusCode::CONFLICT.into_response(),
+        Some(Ok(get)) => get,
     };
     if !valid_protocol_version(&dispatcher, &headers) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    let mut outbound = dispatcher.subscribe_outbound();
+    let mut disconnected = dispatcher.subscribe_disconnect();
+    state.server.publish_client_connection_if_ready(
+        McpServerClientTransport::StreamableHttp,
+        Some(session_id.to_owned()),
+        &dispatcher,
+    );
     let stream = async_stream::stream! {
+        let _get_guard = get_guard;
         loop {
-            match outbound.recv().await {
-                Ok(message) => {
-                    let Ok(payload) = serde_json::to_string(&message) else {
-                        continue;
-                    };
-                    yield Ok::<_, std::convert::Infallible>(SseEvent::default().data(payload));
+            tokio::select! {
+                changed = disconnected.changed() => {
+                    if changed.is_err() || *disconnected.borrow() {
+                        break;
+                    }
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => break,
+                message = outbound.recv() => match message {
+                    Ok(message) => {
+                        let Ok(payload) = serde_json::to_string(&message) else {
+                            continue;
+                        };
+                        yield Ok::<_, std::convert::Infallible>(SseEvent::default().data(payload));
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
             }
         }
     };
@@ -2008,8 +2315,7 @@ fn http_session<H>(
         .sessions
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .get(&session_id)?
-        .clone();
+        .get(&session_id)?;
     Some((session_id, dispatcher))
 }
 
@@ -2092,7 +2398,9 @@ where
         .await?;
     let dispatcher = server.dispatcher();
     let mut outbound = dispatcher.subscribe_outbound();
-
+    let _disconnect_guard = McpServerTransportDisconnectGuard {
+        dispatcher: dispatcher.clone(),
+    };
     loop {
         tokio::select! {
             incoming = socket.next() => {
@@ -2114,6 +2422,11 @@ where
                         ),
                     )),
                 };
+                server.publish_client_connection_if_ready(
+                    McpServerClientTransport::WebSocket,
+                    None,
+                    &dispatcher,
+                );
                 let Some(response) = response else {
                     continue;
                 };
@@ -2200,12 +2513,24 @@ where
     }
 
     pub fn build(self) -> Result<HarnessMcpServer<H>, McpServerError> {
+        if self.policy.http_session_capacity == 0 {
+            return Err(McpServerError::InvalidParams(
+                "HTTP session capacity must be greater than zero".to_owned(),
+            ));
+        }
+        if self.policy.http_session_idle_timeout.is_zero() {
+            return Err(McpServerError::InvalidParams(
+                "HTTP session idle timeout must be greater than zero".to_owned(),
+            ));
+        }
+        let (client_connections, _) = broadcast::channel(64);
         Ok(HarnessMcpServer {
             harness: self.harness,
             policy: self.policy,
             rate_limit: Arc::new(Mutex::new(RateLimitState::default())),
             audit_sink: self.audit_sink,
             metrics_sink: self.metrics_sink,
+            client_connections,
         })
     }
 }

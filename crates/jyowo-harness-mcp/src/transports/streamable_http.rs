@@ -1351,16 +1351,6 @@ async fn run_get_channel(
             }
         }
         if last_event_id.is_none() {
-            let inbound = generation.peer.wait_for_inbound_tasks();
-            tokio::select! {
-                _ = wait_for_cancel(&mut cancel) => return,
-                _ = wait_for_cancel(&mut lifetime_cancel) => return,
-                _ = tokio::time::sleep(connection.timeouts.cancel_ack) => {},
-                _ = inbound => {},
-            }
-            lifecycle
-                .close("MCP HTTP GET SSE ended without a resumable event id")
-                .await;
             return;
         }
         tokio::select! {
@@ -1995,6 +1985,48 @@ mod tests {
             "dropping the last handle did not drop the active GET response body",
         )
         .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn optional_get_sse_eof_without_an_event_id_keeps_the_peer_open() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let mut chunk = [0_u8; 1024];
+                let size = stream.read(&mut chunk).unwrap();
+                assert!(size > 0 && request.len() + size <= 16 * 1024);
+                request.extend_from_slice(&chunk[..size]);
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+        let generation = test_generation(1);
+        let connection = test_connection_at(Arc::clone(&generation), endpoint);
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            run_get_channel(
+                connection.clone(),
+                generation.clone(),
+                generation.cancel.subscribe(),
+                connection.lifetime_cancel.subscribe(),
+            ),
+        )
+        .await
+        .expect("GET channel returns after a normal EOF");
+        worker.join().unwrap();
+
+        generation
+            .peer
+            .notify("notifications/test", serde_json::json!({}))
+            .await
+            .expect("normal optional GET EOF must not close the shared peer");
     }
 
     #[test]

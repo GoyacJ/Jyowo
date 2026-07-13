@@ -35,6 +35,8 @@ pub enum McpError {
     OAuth(String),
     #[error("elicitation: {0}")]
     Elicitation(String),
+    #[error("MCP server requires {count} URL elicitation request(s)", count = .0.len())]
+    UrlElicitationRequired(Vec<crate::ElicitUrlRequestParams>),
     #[error("permission denied: {0}")]
     PermissionDenied(String),
 }

@@ -20,9 +20,9 @@ use serde_json::{json, Value};
 use tokio::sync::{oneshot, watch, Notify, Semaphore};
 
 use crate::{
-    ElicitationRequestRouter, InitializeResult, JsonRpcError, JsonRpcNotification, JsonRpcRequest,
-    McpError, McpLifecycleState, McpMessage, McpMessageSink, McpOutboundMessage, McpSession,
-    SamplingRequestRouter,
+    url_elicitations_from_jsonrpc_error, ElicitationRequestRouter, InitializeResult, JsonRpcError,
+    JsonRpcNotification, JsonRpcRequest, McpError, McpLifecycleState, McpMessage, McpMessageSink,
+    McpOutboundMessage, McpSession, SamplingRequestRouter,
 };
 
 const METHOD_NOT_FOUND: i32 = -32601;
@@ -350,7 +350,7 @@ impl McpPeer {
             .map(|pending| pending.get(&key).map(|entry| entry.completed.subscribe()))
     }
 
-    #[cfg(any(feature = "http", feature = "sse"))]
+    #[cfg(all(test, any(feature = "http", feature = "sse")))]
     pub(crate) async fn wait_for_inbound_tasks(&self) {
         loop {
             let changed = self.inner.inbound_tasks_changed.notified();
@@ -594,7 +594,7 @@ impl McpPeer {
                 let Some(id) = response.id else {
                     return Ok(McpInboundOutcome::UnknownResponse);
                 };
-                self.resolve_response(id, Err(McpError::RemoteJsonRpc(response.error)))
+                self.resolve_error_response(id, response.error)
             }
             McpMessage::Request(request) => {
                 let router = self.inner.inbound_router.clone();
@@ -602,6 +602,20 @@ impl McpPeer {
                 Ok(McpInboundOutcome::RequestHandled)
             }
             McpMessage::Notification(notification) => {
+                if notification.method == "notifications/elicitation/complete"
+                    && self.elicitation_completion_advertised()
+                {
+                    let handler = self
+                        .inner
+                        .inbound_router
+                        .elicitation_handler
+                        .clone()
+                        .expect("advertised elicitation capability requires a handler");
+                    self.dispatch_inbound(async move {
+                        handler.route_elicitation_completion(notification).await
+                    })?;
+                    return Ok(McpInboundOutcome::NotificationHandled);
+                }
                 let ordered_handler = self
                     .inner
                     .inbound_router
@@ -637,6 +651,21 @@ impl McpPeer {
                 Ok(McpInboundOutcome::NotificationHandled)
             }
         }
+    }
+
+    fn elicitation_completion_advertised(&self) -> bool {
+        self.inner
+            .inbound_router
+            .session
+            .lock()
+            .is_ok_and(|session| {
+                session.negotiated_protocol_version() == Some("2025-11-25")
+                    && session
+                        .offered_client_capabilities()
+                        .elicitation
+                        .as_ref()
+                        .is_some_and(|capability| capability.url.is_some())
+            })
     }
 
     /// Resolves one peer-owned pending request with a transport failure.
@@ -780,6 +809,38 @@ impl McpPeer {
             return Ok(McpInboundOutcome::UnknownResponse);
         };
         entry.finish(result);
+        Ok(McpInboundOutcome::ResponseResolved)
+    }
+
+    fn resolve_error_response(
+        &self,
+        id: Value,
+        error: JsonRpcError,
+    ) -> Result<McpInboundOutcome, McpError> {
+        let Some(key) = request_id_key(&id) else {
+            return Ok(McpInboundOutcome::UnknownResponse);
+        };
+        let entry = self
+            .inner
+            .pending
+            .lock()
+            .map_err(|_| McpError::Connection("MCP pending map poisoned".to_owned()))?
+            .remove(&key);
+        let Some(entry) = entry else {
+            return Ok(McpInboundOutcome::UnknownResponse);
+        };
+        if self.elicitation_completion_advertised() {
+            if let (Some(handler), Some(elicitations)) = (
+                self.inner.inbound_router.elicitation_handler.as_ref(),
+                url_elicitations_from_jsonrpc_error(&error),
+            ) {
+                if let Err(registration_error) = handler.remember_url_elicitations(&elicitations) {
+                    entry.finish(Err(registration_error.clone()));
+                    return Err(registration_error);
+                }
+            }
+        }
+        entry.finish(Err(McpError::RemoteJsonRpc(error)));
         Ok(McpInboundOutcome::ResponseResolved)
     }
 }

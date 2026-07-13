@@ -2022,6 +2022,7 @@ describe('CommandClient', () => {
         displayName: 'Project MCP',
         enabled: false,
         id: 'project-mcp',
+        projectPath: '/workspace/project-a',
         required: true,
         scope: 'global',
         transport: { command: 'node', kind: 'stdio' },
@@ -2032,8 +2033,77 @@ describe('CommandClient', () => {
     expect(invoke).toHaveBeenCalledWith('list_mcp_servers', { configLayer: 'project' })
     expect(invoke).toHaveBeenCalledWith(
       'save_mcp_server',
-      expect.objectContaining({ configLayer: 'project', required: true }),
+      expect.objectContaining({
+        configLayer: 'project',
+        projectPath: '/workspace/project-a',
+        required: true,
+      }),
     )
+  })
+
+  it('carries project identity on every MCP project mutation', async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'delete_mcp_server') {
+        return { configLayer: 'project', id: 'project-mcp', status: 'deleted' }
+      }
+      return {
+        server: {
+          configLayer: 'project',
+          displayName: 'Project MCP',
+          effective: true,
+          enabled: true,
+          exposedToolCount: 0,
+          id: 'project-mcp',
+          manageable: true,
+          origin: 'project',
+          overridesGlobal: false,
+          required: false,
+          scope: 'global',
+          status: 'configured',
+          statusSource: 'settings',
+          transport: 'stdio',
+        },
+      }
+    })
+    const client = createInvokeCommandClient(invoke)
+    const projectPath = '/workspace/project-a'
+
+    await client.deleteMcpServer('project', 'project-mcp', projectPath)
+    await client.setMcpServerEnabled('project', 'project-mcp', true, projectPath)
+    await client.restartMcpServer('project', 'project-mcp', projectPath)
+
+    expect(invoke).toHaveBeenCalledWith('delete_mcp_server', {
+      configLayer: 'project',
+      id: 'project-mcp',
+      projectPath,
+    })
+    expect(invoke).toHaveBeenCalledWith('set_mcp_server_enabled', {
+      configLayer: 'project',
+      enabled: true,
+      id: 'project-mcp',
+      projectPath,
+    })
+    expect(invoke).toHaveBeenCalledWith('restart_mcp_server', {
+      configLayer: 'project',
+      id: 'project-mcp',
+      projectPath,
+    })
+  })
+
+  it('rejects MCP project mutations without the project identity', async () => {
+    const invoke = vi.fn()
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(client.deleteMcpServer('project', 'project-mcp', null)).rejects.toThrow(
+      TauriCommandPayloadError,
+    )
+    await expect(client.setMcpServerEnabled('project', 'project-mcp', true, null)).rejects.toThrow(
+      TauriCommandPayloadError,
+    )
+    await expect(client.restartMcpServer('project', 'project-mcp', null)).rejects.toThrow(
+      TauriCommandPayloadError,
+    )
+    expect(invoke).not.toHaveBeenCalled()
   })
 
   it('rejects MCP values outside Rust persistence constraints before invoking Tauri', async () => {

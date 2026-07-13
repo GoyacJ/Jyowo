@@ -5,9 +5,9 @@ use harness_contracts::{
 };
 use harness_mcp::{
     summarize_elicitation_schema, url_elicitations_from_jsonrpc_error, DirectElicitationHandler,
-    ElicitationError, ElicitationHandler, ElicitationJsonRpcHandler, ElicitationMode,
-    ElicitationRequest, JsonRpcError, JsonRpcRequest, RejectAllElicitationHandler,
-    StreamElicitationHandler, MCP_ELICITATION_REQUIRED_CODE,
+    ElicitationCompletion, ElicitationError, ElicitationHandler, ElicitationJsonRpcHandler,
+    ElicitationMode, ElicitationRequest, JsonRpcError, JsonRpcNotification, JsonRpcRequest,
+    RejectAllElicitationHandler, StreamElicitationHandler, MCP_ELICITATION_REQUIRED_CODE,
 };
 use parking_lot::Mutex;
 use serde_json::json;
@@ -122,6 +122,96 @@ async fn url_elicitation_has_no_form_content_and_error_code_only_carries_urls() 
         extra: Default::default(),
     };
     assert!(url_elicitations_from_jsonrpc_error(&legacy_form_error).is_none());
+
+    for invalid in [
+        json!({
+            "mode": "url",
+            "message": "Authorize access",
+            "elicitationId": "   ",
+            "url": "https://example.com/authorize"
+        }),
+        json!({
+            "mode": "url",
+            "message": "\t",
+            "elicitationId": "oauth-1",
+            "url": "https://example.com/authorize"
+        }),
+    ] {
+        let error = JsonRpcError {
+            code: MCP_ELICITATION_REQUIRED_CODE,
+            message: "URL interaction required".to_owned(),
+            data: Some(json!({ "elicitations": [invalid] })),
+            extra: Default::default(),
+        };
+        assert!(url_elicitations_from_jsonrpc_error(&error).is_none());
+    }
+}
+
+#[tokio::test]
+async fn url_completion_is_correlated_with_the_original_url_request() {
+    #[derive(Default)]
+    struct CompletionHandler {
+        completion: Mutex<Option<ElicitationCompletion>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ElicitationHandler for CompletionHandler {
+        fn handler_id(&self) -> &'static str {
+            "completion"
+        }
+
+        async fn handle(
+            &self,
+            _request: ElicitationRequest,
+        ) -> Result<serde_json::Value, ElicitationError> {
+            Ok(json!(null))
+        }
+
+        async fn handle_url_completion(
+            &self,
+            completion: ElicitationCompletion,
+        ) -> Result<(), ElicitationError> {
+            *self.completion.lock() = Some(completion);
+            Ok(())
+        }
+    }
+
+    let completion_handler = Arc::new(CompletionHandler::default());
+    let handler = ElicitationJsonRpcHandler::new(
+        McpServerId("github".to_owned()),
+        PermissionMode::Default,
+        completion_handler.clone(),
+    );
+    handler
+        .route_elicitation_request(JsonRpcRequest::new(
+            json!(2),
+            "elicitation/create",
+            Some(json!({
+                "mode": "url",
+                "message": "Authorize access",
+                "elicitationId": "oauth-1",
+                "url": "https://example.com/authorize"
+            })),
+        ))
+        .await
+        .expect("url result");
+
+    handler
+        .route_elicitation_completion(JsonRpcNotification::new(
+            "notifications/elicitation/complete",
+            Some(json!({ "elicitationId": "oauth-1" })),
+        ))
+        .await
+        .expect("completion notification");
+
+    let completion = completion_handler
+        .completion
+        .lock()
+        .clone()
+        .expect("completion delivered");
+    assert_eq!(completion.server_id, McpServerId("github".to_owned()));
+    assert_eq!(completion.elicitation.elicitation_id, "oauth-1");
+    assert_eq!(completion.elicitation.url, "https://example.com/authorize");
 }
 
 #[tokio::test]

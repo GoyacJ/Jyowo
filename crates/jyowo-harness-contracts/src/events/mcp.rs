@@ -41,6 +41,24 @@ pub struct McpConnectionRecoveredEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct McpActivationFailedEvent {
+    pub session_id: Option<SessionId>,
+    pub run_id: Option<RunId>,
+    pub server_id: McpServerId,
+    pub server_source: McpServerSource,
+    pub required: bool,
+    pub reason: McpActivationFailureReason,
+    pub at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum McpActivationFailureReason {
+    CredentialUnavailable,
+    Runtime,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct McpOAuthRefreshEvent {
     pub server_id: McpServerId,
     pub transport: String,

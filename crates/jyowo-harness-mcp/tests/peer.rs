@@ -8,13 +8,17 @@ use std::{
 };
 
 use async_trait::async_trait;
+use harness_contracts::{McpServerId, PermissionMode};
 use harness_mcp::{
-    ClientTasksCapability, ElicitationClientCapability, ElicitationRequestRouter,
-    EmptyClientCapability, InitializeResult, JsonRpcError, JsonRpcNotification, JsonRpcRequest,
-    McpClientCapabilities, McpError, McpExpectedCapabilities, McpImplementation, McpInboundOutcome,
-    McpMessage, McpMessageSink, McpOrderedNotificationHandler, McpOutboundMessage, McpPeer,
-    McpRoot, McpRootsListHandler, McpServerCapabilities, McpSession, RootsClientCapability,
+    ClientTasksCapability, ElicitUrlRequestParams, ElicitationClientCapability,
+    ElicitationCompletion, ElicitationError, ElicitationHandler as UserElicitationHandler,
+    ElicitationJsonRpcHandler, ElicitationRequest, ElicitationRequestRouter, EmptyClientCapability,
+    InitializeResult, JsonRpcError, JsonRpcNotification, JsonRpcRequest, McpClientCapabilities,
+    McpError, McpExpectedCapabilities, McpImplementation, McpInboundOutcome, McpMessage,
+    McpMessageSink, McpOrderedNotificationHandler, McpOutboundMessage, McpPeer, McpRoot,
+    McpRootsListHandler, McpServerCapabilities, McpSession, RootsClientCapability,
     SamplingClientCapability, SamplingRequestRouter, ToolsServerCapability,
+    MCP_ELICITATION_REQUIRED_CODE,
 };
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, Barrier, Notify};
@@ -1314,6 +1318,204 @@ async fn protocol_2025_06_18_allows_legacy_form_elicitation() {
     let value = serde_json::to_value(outbound.recv().await.unwrap().as_message()).unwrap();
     assert_eq!(value["result"]["action"], "accept");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+struct CompletionRecordingHandler {
+    completions: mpsc::UnboundedSender<ElicitationCompletion>,
+}
+
+struct UrlRegistrationRecordingRouter {
+    registrations: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl ElicitationRequestRouter for UrlRegistrationRecordingRouter {
+    async fn route_elicitation_request(
+        &self,
+        _request: JsonRpcRequest,
+    ) -> Result<Value, JsonRpcError> {
+        Ok(json!({ "action": "decline" }))
+    }
+
+    fn remember_url_elicitations(
+        &self,
+        elicitations: &[ElicitUrlRequestParams],
+    ) -> Result<(), McpError> {
+        self.registrations
+            .fetch_add(elicitations.len(), Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl UserElicitationHandler for CompletionRecordingHandler {
+    fn handler_id(&self) -> &'static str {
+        "completion-recorder"
+    }
+
+    async fn handle(&self, _request: ElicitationRequest) -> Result<Value, ElicitationError> {
+        Ok(Value::Null)
+    }
+
+    async fn handle_url_completion(
+        &self,
+        completion: ElicitationCompletion,
+    ) -> Result<(), ElicitationError> {
+        self.completions
+            .send(completion)
+            .map_err(|_| ElicitationError::Invalid("completion receiver closed".to_owned()))
+    }
+}
+
+#[tokio::test]
+async fn url_required_errors_are_not_registered_without_advertised_completion_support() {
+    for (protocol_version, capabilities) in [
+        (
+            "2025-11-25",
+            McpClientCapabilities {
+                elicitation: Some(ElicitationClientCapability::default()),
+                ..Default::default()
+            },
+        ),
+        (
+            "2025-06-18",
+            McpClientCapabilities {
+                elicitation: Some(ElicitationClientCapability {
+                    url: Some(EmptyClientCapability::default()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ),
+    ] {
+        let (sender, mut outbound) = mpsc::unbounded_channel();
+        let registrations = Arc::new(AtomicUsize::new(0));
+        let peer = McpPeer::builder(
+            Arc::new(ChannelSink { sender }),
+            ready_session_at(protocol_version, capabilities),
+        )
+        .elicitation_handler(Arc::new(UrlRegistrationRecordingRouter {
+            registrations: Arc::clone(&registrations),
+        }))
+        .build()
+        .unwrap();
+        let pending = peer
+            .start_request("tools/call", json!({}), Duration::from_secs(1))
+            .await
+            .unwrap();
+        let request = serde_json::to_value(outbound.recv().await.unwrap().as_message()).unwrap();
+        peer.receive(incoming(json!({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "error": {
+                "code": MCP_ELICITATION_REQUIRED_CODE,
+                "message": "authorization required",
+                "data": {
+                    "elicitations": [{
+                        "mode": "url",
+                        "message": "Authorize access",
+                        "elicitationId": "oauth-1",
+                        "url": "https://example.com/authorize"
+                    }]
+                }
+            }
+        })))
+        .await
+        .unwrap();
+        assert!(matches!(
+            pending.wait().await,
+            Err(McpError::RemoteJsonRpc(_))
+        ));
+        assert_eq!(registrations.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn shared_peer_correlates_url_required_errors_with_completion_notifications() {
+    let (sender, mut outbound) = mpsc::unbounded_channel();
+    let (completions, mut completion_rx) = mpsc::unbounded_channel();
+    let handler = Arc::new(ElicitationJsonRpcHandler::new(
+        McpServerId("fixture".to_owned()),
+        PermissionMode::Default,
+        Arc::new(CompletionRecordingHandler { completions }),
+    ));
+    let peer = McpPeer::builder(
+        Arc::new(ChannelSink { sender }),
+        ready_session(McpClientCapabilities {
+            elicitation: Some(ElicitationClientCapability {
+                url: Some(EmptyClientCapability::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+    )
+    .elicitation_handler(handler)
+    .build()
+    .unwrap();
+
+    let pending = peer
+        .start_request(
+            "tools/call",
+            json!({ "name": "search" }),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+    let request = serde_json::to_value(outbound.recv().await.unwrap().as_message()).unwrap();
+    peer.receive(incoming(json!({
+        "jsonrpc": "2.0",
+        "id": request["id"],
+        "error": {
+            "code": MCP_ELICITATION_REQUIRED_CODE,
+            "message": "authorization required",
+            "data": {
+                "elicitations": [{
+                    "mode": "url",
+                    "message": "Authorize access",
+                    "elicitationId": "oauth-1",
+                    "url": "https://example.com/authorize"
+                }]
+            }
+        }
+    })))
+    .await
+    .unwrap();
+    assert!(matches!(
+        pending.wait().await,
+        Err(McpError::RemoteJsonRpc(_))
+    ));
+
+    assert_eq!(
+        peer.receive(incoming(json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/elicitation/complete",
+            "params": { "elicitationId": "oauth-1" }
+        })))
+        .await
+        .unwrap(),
+        McpInboundOutcome::NotificationHandled
+    );
+    let completion = tokio::time::timeout(Duration::from_secs(1), completion_rx.recv())
+        .await
+        .expect("completion handler timed out")
+        .expect("completion delivered");
+    assert_eq!(completion.elicitation.elicitation_id, "oauth-1");
+    assert_eq!(completion.elicitation.url, "https://example.com/authorize");
+
+    for elicitation_id in ["oauth-1", "unknown"] {
+        peer.receive(incoming(json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/elicitation/complete",
+            "params": { "elicitationId": elicitation_id }
+        })))
+        .await
+        .unwrap();
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), completion_rx.recv())
+            .await
+            .is_err()
+    );
 }
 
 struct NotificationHandler(Arc<AtomicUsize>);

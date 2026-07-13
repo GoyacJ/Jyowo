@@ -471,10 +471,7 @@ where
 {
     if let Some(error) = response.error {
         if let Some(requests) = url_elicitations_from_jsonrpc_error(&error) {
-            return Err(McpError::Elicitation(format!(
-                "mcp server requires {} URL elicitation request(s)",
-                requests.len()
-            )));
+            return Err(McpError::UrlElicitationRequired(requests));
         }
         return Err(McpError::Protocol(format!(
             "{} ({})",

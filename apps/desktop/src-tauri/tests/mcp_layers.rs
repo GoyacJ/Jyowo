@@ -1,12 +1,18 @@
+use harness_contracts::{
+    now, CorrelationId, Event, EventId, EventSource, EventSourceKind, McpActivationFailedEvent,
+    McpActivationFailureReason, McpConnectionLostEvent, McpConnectionLostReason, McpServerId,
+    McpServerSource, RunId, RunSegmentId, SessionId, TaskEventEnvelope, TaskId, TenantId,
+};
 use jyowo_desktop_shell::commands::{
-    delete_mcp_server_for_layer_with_runtime_state,
+    delete_mcp_server_for_layer_with_runtime_state, ensure_mcp_config_layer_identity,
     get_mcp_server_config_for_layer_with_runtime_state,
-    list_mcp_servers_for_layer_with_runtime_state, save_mcp_server_for_layer_with_runtime_state,
+    list_mcp_servers_for_layer_with_runtime_state, mcp_task_diagnostic_record_from_envelope,
+    save_mcp_server_for_layer_with_runtime_state,
     set_mcp_server_enabled_for_layer_with_runtime_state, DeleteMcpServerRequest,
-    DesktopRuntimeState, GetMcpServerConfigRequest, McpConfigLayer, McpDiagnosticPlane,
-    McpDiagnosticRecord, McpNameValueSaveRecord, McpServerConfigRecord, McpServerStore,
-    McpServerTransportConfig, SaveMcpServerRequest, SaveMcpServerTransportConfig,
-    SetMcpServerEnabledRequest,
+    DesktopMcpDiagnosticStore, DesktopRuntimeState, GetMcpServerConfigRequest, McpConfigLayer,
+    McpDiagnosticPlane, McpDiagnosticRecord, McpDiagnosticSeverity, McpDiagnosticStore,
+    McpNameValueSaveRecord, McpServerConfigRecord, McpServerStore, McpServerTransportConfig,
+    SaveMcpServerRequest, SaveMcpServerTransportConfig, SetMcpServerEnabledRequest,
 };
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -404,4 +410,207 @@ fn mcp_diagnostic_plane_defaults_to_settings_and_preserves_task_context() {
     assert_eq!(task.session_id.as_deref(), Some("session-1"));
     assert_eq!(task.run_id.as_deref(), Some("run-1"));
     assert_eq!(task.run_segment_id.as_deref(), Some("segment-1"));
+}
+
+#[test]
+fn task_journal_mcp_event_converts_with_envelope_identity_and_runtime_context() {
+    let task_id = TaskId::new();
+    let event_id = EventId::new();
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let run_segment_id = RunSegmentId::new();
+    let at = now();
+    let envelope = TaskEventEnvelope {
+        global_offset: 42,
+        task_id,
+        stream_sequence: 7,
+        event_id,
+        event_type: "engine.mcp_connection_lost".to_owned(),
+        schema_version: 1,
+        recorded_at: at,
+        source: EventSource {
+            kind: EventSourceKind::Engine,
+            actor_id: None,
+            client_id: None,
+        },
+        payload: json!({
+            "tenantId": TenantId::SINGLE,
+            "sessionId": session_id,
+            "journalOffset": 41,
+            "runId": run_id,
+            "runSegmentId": run_segment_id,
+            "correlationId": CorrelationId::new(),
+            "causationId": null,
+            "event": Event::McpConnectionLost(McpConnectionLostEvent {
+                session_id: Some(session_id),
+                server_id: McpServerId("github".to_owned()),
+                server_source: McpServerSource::Project,
+                reason: McpConnectionLostReason::Other("closed".to_owned()),
+                attempts_so_far: 1,
+                terminal: false,
+                at,
+            }),
+        }),
+    };
+
+    let diagnostic =
+        mcp_task_diagnostic_record_from_envelope(envelope).expect("task MCP diagnostic");
+    assert_eq!(diagnostic.id, event_id.to_string());
+    assert_eq!(diagnostic.server_id, "github");
+    assert_eq!(diagnostic.plane, McpDiagnosticPlane::Task);
+    assert_eq!(diagnostic.task_id, Some(task_id.to_string()));
+    assert_eq!(diagnostic.session_id, Some(session_id.to_string()));
+    assert_eq!(diagnostic.run_id, Some(run_id.to_string()));
+    assert_eq!(diagnostic.run_segment_id, Some(run_segment_id.to_string()));
+}
+
+#[test]
+fn task_journal_activation_failure_converts_to_desktop_diagnostic() {
+    let task_id = TaskId::new();
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let run_segment_id = RunSegmentId::new();
+    let at = now();
+    let envelope = TaskEventEnvelope {
+        global_offset: 43,
+        task_id,
+        stream_sequence: 8,
+        event_id: EventId::new(),
+        event_type: "engine.mcp_activation_failed".to_owned(),
+        schema_version: 1,
+        recorded_at: at,
+        source: EventSource {
+            kind: EventSourceKind::Engine,
+            actor_id: None,
+            client_id: None,
+        },
+        payload: json!({
+            "tenantId": TenantId::SINGLE,
+            "sessionId": session_id,
+            "journalOffset": 42,
+            "runId": run_id,
+            "runSegmentId": run_segment_id,
+            "correlationId": CorrelationId::new(),
+            "causationId": null,
+            "event": Event::McpActivationFailed(McpActivationFailedEvent {
+                session_id: Some(session_id),
+                run_id: Some(run_id),
+                server_id: McpServerId("github".to_owned()),
+                server_source: McpServerSource::Project,
+                required: false,
+                reason: McpActivationFailureReason::CredentialUnavailable,
+                at,
+            }),
+        }),
+    };
+
+    let diagnostic =
+        mcp_task_diagnostic_record_from_envelope(envelope).expect("activation diagnostic");
+    assert_eq!(diagnostic.event_type, "activation_failed");
+    assert_eq!(diagnostic.server_id, "github");
+    assert_eq!(diagnostic.summary, "MCP server credential is unavailable.");
+    assert_eq!(diagnostic.plane, McpDiagnosticPlane::Task);
+    assert_eq!(diagnostic.task_id, Some(task_id.to_string()));
+    assert_eq!(diagnostic.run_id, Some(run_id.to_string()));
+    assert_eq!(diagnostic.run_segment_id, Some(run_segment_id.to_string()));
+}
+
+#[test]
+fn diagnostic_clear_without_daemon_persists_task_watermark() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let runtime_root = temp
+        .path()
+        .canonicalize()
+        .expect("canonical tempdir")
+        .join("runtime");
+    let store = DesktopMcpDiagnosticStore::new_runtime_root(runtime_root.clone());
+    store
+        .append_record(&McpDiagnosticRecord {
+            event_type: "connected".to_owned(),
+            id: "diagnostic-1".to_owned(),
+            server_id: "server-a".to_owned(),
+            severity: McpDiagnosticSeverity::Info,
+            summary: "connected".to_owned(),
+            timestamp: "2026-07-13T00:00:00Z".to_owned(),
+            plane: McpDiagnosticPlane::Settings,
+            task_id: None,
+            session_id: None,
+            run_id: None,
+            run_segment_id: None,
+        })
+        .expect("append settings diagnostic");
+    let cleared_at = now();
+
+    store
+        .clear_records(None, cleared_at)
+        .expect("clear without daemon");
+
+    assert!(store
+        .load_records()
+        .expect("load settings records")
+        .is_empty());
+    drop(store);
+    let reopened = DesktopMcpDiagnosticStore::new_runtime_root(runtime_root);
+    let watermarks = reopened
+        .load_task_clear_watermarks()
+        .expect("load persisted task watermark");
+    assert_eq!(watermarks.all, Some(cleared_at));
+    assert!(watermarks.servers.is_empty());
+}
+
+#[test]
+fn task_journal_non_mcp_engine_event_is_not_a_diagnostic() {
+    let envelope = TaskEventEnvelope {
+        global_offset: 1,
+        task_id: TaskId::new(),
+        stream_sequence: 1,
+        event_id: EventId::new(),
+        event_type: "engine.run_started".to_owned(),
+        schema_version: 1,
+        recorded_at: now(),
+        source: EventSource {
+            kind: EventSourceKind::Engine,
+            actor_id: None,
+            client_id: None,
+        },
+        payload: json!({}),
+    };
+
+    assert!(mcp_task_diagnostic_record_from_envelope(envelope).is_none());
+}
+
+#[test]
+fn project_mcp_mutations_reject_a_stale_project_identity() {
+    let active = tempfile::tempdir().expect("active project");
+    let stale = tempfile::tempdir().expect("stale project");
+    let state = DesktopRuntimeState::with_workspace_for_test(active.path().to_path_buf())
+        .expect("runtime state");
+
+    ensure_mcp_config_layer_identity(
+        McpConfigLayer::Project,
+        Some(active.path().to_str().expect("active path")),
+        &state,
+    )
+    .expect("active identity");
+    let error = ensure_mcp_config_layer_identity(
+        McpConfigLayer::Project,
+        Some(stale.path().to_str().expect("stale path")),
+        &state,
+    )
+    .expect_err("stale identity must fail");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
+    assert!(error.message.contains("project identity"));
+
+    let missing = ensure_mcp_config_layer_identity(McpConfigLayer::Project, None, &state)
+        .expect_err("project mutation without identity must fail");
+    assert_eq!(missing.code, "INVALID_PAYLOAD");
+
+    let unexpected = ensure_mcp_config_layer_identity(
+        McpConfigLayer::Global,
+        Some(active.path().to_str().expect("active path")),
+        &state,
+    )
+    .expect_err("global mutation with project identity must fail");
+    assert_eq!(unexpected.code, "INVALID_PAYLOAD");
 }

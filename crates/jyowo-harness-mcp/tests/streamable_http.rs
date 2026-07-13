@@ -1199,12 +1199,22 @@ async fn get_sse_reconnects_with_its_own_last_event_id() {
 }
 
 #[tokio::test]
-async fn get_sse_without_a_checkpoint_closes_the_peer() {
+async fn get_sse_without_a_checkpoint_keeps_the_peer_open() {
     let server = MockServer::start().await;
     mount_initialize(&server, Some("get-no-checkpoint-session")).await;
     let get = CountedNoCheckpointGet::default();
     Mock::given(method("GET"))
         .respond_with(get.clone())
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({ "method": "tools/list" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": { "tools": [] }
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -1214,10 +1224,11 @@ async fn get_sse_without_a_checkpoint_closes_the_peer() {
         .await
         .expect("streamable HTTP connects");
     wait_for_count(&get.requests, 1, "GET SSE response is delivered").await;
-    let result = tokio::time::timeout(Duration::from_secs(1), connection.list_tools())
+    let tools = tokio::time::timeout(Duration::from_secs(1), connection.list_tools())
         .await
-        .expect("peer closure is observed");
-    assert!(matches!(result, Err(McpError::Connection(_))));
+        .expect("request completes after normal GET SSE EOF")
+        .expect("peer remains open");
+    assert!(tools.is_empty());
 }
 
 #[tokio::test]

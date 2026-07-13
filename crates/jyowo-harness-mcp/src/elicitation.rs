@@ -1,4 +1,9 @@
-use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    future::Future,
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use harness_contracts::{
@@ -9,9 +14,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tokio::sync::{oneshot, Mutex};
 
-use crate::{JsonRpcError, JsonRpcRequest, McpEventSink, NoopMcpEventSink};
+use crate::{
+    JsonRpcError, JsonRpcNotification, JsonRpcRequest, McpError, McpEventSink, NoopMcpEventSink,
+};
 
 pub const MCP_ELICITATION_REQUIRED_CODE: i32 = -32042;
+const MAX_PENDING_URL_ELICITATIONS: usize = 1_024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ElicitationRequest {
@@ -47,6 +55,13 @@ pub trait ElicitationHandler: Send + Sync + 'static {
     fn handler_id(&self) -> &str;
 
     async fn handle(&self, request: ElicitationRequest) -> Result<Value, ElicitationError>;
+
+    async fn handle_url_completion(
+        &self,
+        _completion: ElicitationCompletion,
+    ) -> Result<(), ElicitationError> {
+        Ok(())
+    }
 }
 
 /// Routing boundary used by [`McpPeer`](crate::McpPeer) for server-initiated elicitation.
@@ -59,9 +74,23 @@ pub trait ElicitationRequestRouter: Send + Sync + 'static {
         &self,
         request: JsonRpcRequest,
     ) -> Result<Value, JsonRpcError>;
+
+    fn remember_url_elicitations(
+        &self,
+        _elicitations: &[ElicitUrlRequestParams],
+    ) -> Result<(), McpError> {
+        Ok(())
+    }
+
+    async fn route_elicitation_completion(
+        &self,
+        _notification: JsonRpcNotification,
+    ) -> Result<(), McpError> {
+        Ok(())
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "lowercase")]
 pub enum ElicitRequestParams {
     Form {
@@ -74,7 +103,7 @@ pub enum ElicitRequestParams {
     Url(ElicitUrlRequestParams),
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ElicitUrlRequestParams {
     pub message: String,
@@ -84,12 +113,19 @@ pub struct ElicitUrlRequestParams {
     pub extra: Map<String, Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElicitationCompletion {
+    pub server_id: McpServerId,
+    pub elicitation: ElicitUrlRequestParams,
+}
+
 #[derive(Clone)]
 pub struct ElicitationJsonRpcHandler {
     server_id: McpServerId,
     permission_mode: PermissionMode,
     handler: Arc<dyn ElicitationHandler>,
     timeout: Option<Duration>,
+    pending_urls: Arc<StdMutex<HashMap<String, ElicitUrlRequestParams>>>,
 }
 
 impl ElicitationJsonRpcHandler {
@@ -103,6 +139,7 @@ impl ElicitationJsonRpcHandler {
             permission_mode,
             handler,
             timeout: None,
+            pending_urls: Arc::new(StdMutex::new(HashMap::new())),
         }
     }
 
@@ -129,14 +166,14 @@ impl ElicitationJsonRpcHandler {
                 &format!("invalid elicitation/create params: {error}"),
             )
         })?;
-        let (subject, schema, mode) = match wire {
+        let (subject, schema, mode, url_elicitation) = match wire {
             ElicitRequestParams::Form {
                 message,
                 requested_schema,
                 ..
             } => {
                 validate_form_schema(&requested_schema)?;
-                (message, requested_schema, ElicitationMode::Form)
+                (message, requested_schema, ElicitationMode::Form, None)
             }
             ElicitRequestParams::Url(params) => {
                 if url::Url::parse(&params.url).is_err() {
@@ -146,10 +183,10 @@ impl ElicitationJsonRpcHandler {
                     ));
                 }
                 let mode = ElicitationMode::Url {
-                    elicitation_id: params.elicitation_id,
-                    url: params.url,
+                    elicitation_id: params.elicitation_id.clone(),
+                    url: params.url.clone(),
                 };
-                (params.message, Value::Null, mode)
+                (params.message.clone(), Value::Null, mode, Some(params))
             }
         };
         let form = matches!(mode, ElicitationMode::Form);
@@ -173,7 +210,13 @@ impl ElicitationJsonRpcHandler {
                 validate_form_content(&content)?;
                 Ok(json!({ "action": "accept", "content": content }))
             }
-            Ok(_) => Ok(json!({ "action": "accept" })),
+            Ok(_) => {
+                if let Some(elicitation) = url_elicitation {
+                    self.remember_url_elicitations(std::slice::from_ref(&elicitation))
+                        .map_err(|error| elicitation_error(-32603, &error.to_string()))?;
+                }
+                Ok(json!({ "action": "accept" }))
+            }
             Err(ElicitationError::UserDeclined) => Ok(json!({ "action": "decline" })),
             Err(ElicitationError::Timeout) => Ok(json!({ "action": "cancel" })),
             Err(ElicitationError::Invalid(message)) => Err(elicitation_error(-32602, &message)),
@@ -182,6 +225,67 @@ impl ElicitationJsonRpcHandler {
                 "no elicitation handler registered",
             )),
         }
+    }
+
+    pub async fn route_elicitation_completion(
+        &self,
+        notification: JsonRpcNotification,
+    ) -> Result<(), McpError> {
+        if notification.method != "notifications/elicitation/complete" {
+            return Err(McpError::Protocol(
+                "unexpected elicitation notification method".to_owned(),
+            ));
+        }
+        let elicitation_id = notification
+            .params
+            .as_ref()
+            .and_then(|params| params.get("elicitationId"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                McpError::Protocol(
+                    "notifications/elicitation/complete missing elicitationId".to_owned(),
+                )
+            })?;
+        let elicitation = self
+            .pending_urls
+            .lock()
+            .map_err(|_| McpError::Connection("MCP elicitation URL map poisoned".to_owned()))?
+            .remove(elicitation_id);
+        let Some(elicitation) = elicitation else {
+            return Ok(());
+        };
+        self.handler
+            .handle_url_completion(ElicitationCompletion {
+                server_id: self.server_id.clone(),
+                elicitation,
+            })
+            .await
+            .map_err(|error| McpError::Elicitation(error.to_string()))
+    }
+
+    fn remember_url_elicitations(
+        &self,
+        elicitations: &[ElicitUrlRequestParams],
+    ) -> Result<(), McpError> {
+        let mut pending = self
+            .pending_urls
+            .lock()
+            .map_err(|_| McpError::Connection("MCP elicitation URL map poisoned".to_owned()))?;
+        let additions = elicitations
+            .iter()
+            .map(|elicitation| elicitation.elicitation_id.as_str())
+            .filter(|elicitation_id| !pending.contains_key(*elicitation_id))
+            .collect::<HashSet<_>>()
+            .len();
+        if pending.len().saturating_add(additions) > MAX_PENDING_URL_ELICITATIONS {
+            return Err(McpError::Protocol(format!(
+                "MCP pending URL elicitation limit reached ({MAX_PENDING_URL_ELICITATIONS})"
+            )));
+        }
+        for elicitation in elicitations {
+            pending.insert(elicitation.elicitation_id.clone(), elicitation.clone());
+        }
+        Ok(())
     }
 }
 
@@ -192,6 +296,20 @@ impl ElicitationRequestRouter for ElicitationJsonRpcHandler {
         request: JsonRpcRequest,
     ) -> Result<Value, JsonRpcError> {
         ElicitationJsonRpcHandler::route_elicitation_request(self, request).await
+    }
+
+    fn remember_url_elicitations(
+        &self,
+        elicitations: &[ElicitUrlRequestParams],
+    ) -> Result<(), McpError> {
+        ElicitationJsonRpcHandler::remember_url_elicitations(self, elicitations)
+    }
+
+    async fn route_elicitation_completion(
+        &self,
+        notification: JsonRpcNotification,
+    ) -> Result<(), McpError> {
+        ElicitationJsonRpcHandler::route_elicitation_completion(self, notification).await
     }
 }
 
@@ -439,7 +557,19 @@ pub fn url_elicitations_from_jsonrpc_error(
     if error.code != MCP_ELICITATION_REQUIRED_CODE {
         return None;
     }
-    serde_json::from_value(error.data.as_ref()?.get("elicitations")?.clone()).ok()
+    let elicitations: Vec<ElicitUrlRequestParams> =
+        serde_json::from_value(error.data.as_ref()?.get("elicitations")?.clone()).ok()?;
+    if elicitations.is_empty()
+        || elicitations.iter().any(|elicitation| {
+            elicitation.extra.get("mode").and_then(Value::as_str) != Some("url")
+                || elicitation.elicitation_id.trim().is_empty()
+                || elicitation.message.trim().is_empty()
+                || url::Url::parse(&elicitation.url).is_err()
+        })
+    {
+        return None;
+    }
+    Some(elicitations)
 }
 
 fn outcome_for_result(result: &Result<Value, ElicitationError>) -> ElicitationOutcome {

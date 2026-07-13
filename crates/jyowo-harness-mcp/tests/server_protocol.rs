@@ -1010,6 +1010,319 @@ async fn harness_mcp_server_serves_streamable_http_sessions() {
 }
 
 #[tokio::test]
+async fn harness_mcp_server_can_request_the_connected_http_client() {
+    let mut policy = McpServerPolicy::default();
+    policy.auth = McpServerAuth::StaticBearer("secret".to_owned());
+    let server = HarnessMcpServer::new(Arc::new(TestHarness))
+        .with_policy(policy)
+        .build()
+        .expect("server");
+    let mut connections = server.subscribe_client_connections();
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    let task = tokio::spawn(server.serve_http_listener(listener));
+    let client = reqwest::Client::new();
+
+    let initialized = client
+        .post(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 40,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": LATEST_PROTOCOL_VERSION,
+                "capabilities": { "roots": {} },
+                "clientInfo": { "name": "fixture", "version": "1.0.0" }
+            }
+        }))
+        .send()
+        .await
+        .expect("initialize response");
+    let session_id = initialized.headers()["mcp-session-id"]
+        .to_str()
+        .expect("session id")
+        .to_owned();
+    assert!(matches!(
+        connections.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+
+    client
+        .post(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .header("mcp-session-id", &session_id)
+        .header("mcp-protocol-version", LATEST_PROTOCOL_VERSION)
+        .json(&JsonRpcNotification::new("notifications/initialized", None))
+        .send()
+        .await
+        .expect("initialized notification");
+    assert!(matches!(
+        connections.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    let mut stream = client
+        .get(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .header("mcp-session-id", &session_id)
+        .header("mcp-protocol-version", LATEST_PROTOCOL_VERSION)
+        .send()
+        .await
+        .expect("SSE stream");
+    let connection = connections
+        .recv()
+        .await
+        .expect("ready HTTP client connection");
+    assert_eq!(
+        connection.transport(),
+        harness_mcp::McpServerClientTransport::StreamableHttp
+    );
+    assert_eq!(connection.session_id(), Some(session_id.as_str()));
+    let duplicate_stream = client
+        .get(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .header("mcp-session-id", &session_id)
+        .header("mcp-protocol-version", LATEST_PROTOCOL_VERSION)
+        .send()
+        .await
+        .expect("duplicate SSE response");
+    assert_eq!(duplicate_stream.status(), reqwest::StatusCode::CONFLICT);
+    let connection_after_delete = connection.clone();
+    let requesting = tokio::spawn(async move {
+        connection
+            .request_client("roots/list", Some(json!({})))
+            .await
+    });
+    let event = stream
+        .chunk()
+        .await
+        .expect("SSE chunk")
+        .expect("server request event");
+    let event = std::str::from_utf8(&event).expect("UTF-8 SSE event");
+    let payload = event
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .expect("SSE data");
+    let McpMessage::Request(request) = serde_json::from_str(payload).expect("server request")
+    else {
+        panic!("expected server request")
+    };
+    assert_eq!(request.method, "roots/list");
+
+    let accepted = client
+        .post(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .header("mcp-session-id", &session_id)
+        .header("mcp-protocol-version", LATEST_PROTOCOL_VERSION)
+        .json(&JsonRpcResultResponse {
+            jsonrpc: "2.0".to_owned(),
+            id: request.id,
+            result: json!({ "roots": [] }),
+            extra: Default::default(),
+        })
+        .send()
+        .await
+        .expect("client response acknowledgement");
+    assert_eq!(accepted.status(), reqwest::StatusCode::ACCEPTED);
+    assert_eq!(
+        requesting
+            .await
+            .expect("request task")
+            .expect("client result"),
+        json!({ "roots": [] })
+    );
+    let deleted = client
+        .delete(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .header("mcp-session-id", &session_id)
+        .send()
+        .await
+        .expect("delete session");
+    assert_eq!(deleted.status(), reqwest::StatusCode::NO_CONTENT);
+    assert!(connection_after_delete
+        .request_client("roots/list", Some(json!({})))
+        .await
+        .is_err());
+    let end_of_stream = tokio::time::timeout(std::time::Duration::from_millis(100), stream.chunk())
+        .await
+        .expect("deleted session closes SSE")
+        .expect("SSE close");
+    assert!(end_of_stream.is_none());
+    task.abort();
+}
+
+#[tokio::test]
+async fn harness_mcp_server_publishes_http_client_when_get_precedes_initialized() {
+    let mut policy = McpServerPolicy::default();
+    policy.auth = McpServerAuth::StaticBearer("secret".to_owned());
+    let server = HarnessMcpServer::new(Arc::new(TestHarness))
+        .with_policy(policy)
+        .build()
+        .expect("server");
+    let mut connections = server.subscribe_client_connections();
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    let task = tokio::spawn(server.serve_http_listener(listener));
+    let client = reqwest::Client::new();
+
+    let initialized = client
+        .post(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 43,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": LATEST_PROTOCOL_VERSION,
+                "capabilities": { "roots": {} },
+                "clientInfo": { "name": "fixture", "version": "1.0.0" }
+            }
+        }))
+        .send()
+        .await
+        .expect("initialize response");
+    let session_id = initialized.headers()["mcp-session-id"]
+        .to_str()
+        .expect("session id")
+        .to_owned();
+    let mut stream = client
+        .get(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .header("mcp-session-id", &session_id)
+        .header("mcp-protocol-version", LATEST_PROTOCOL_VERSION)
+        .send()
+        .await
+        .expect("SSE stream");
+    assert!(matches!(
+        connections.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+
+    client
+        .post(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .header("mcp-session-id", &session_id)
+        .header("mcp-protocol-version", LATEST_PROTOCOL_VERSION)
+        .json(&JsonRpcNotification::new("notifications/initialized", None))
+        .send()
+        .await
+        .expect("initialized notification");
+    let connection = connections
+        .recv()
+        .await
+        .expect("ready HTTP client connection");
+    let requesting = tokio::spawn(async move {
+        connection
+            .request_client("roots/list", Some(json!({})))
+            .await
+    });
+    let event = stream
+        .chunk()
+        .await
+        .expect("SSE chunk")
+        .expect("server request event");
+    let event = std::str::from_utf8(&event).expect("UTF-8 SSE event");
+    let payload = event
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .expect("SSE data");
+    let McpMessage::Request(request) = serde_json::from_str(payload).expect("server request")
+    else {
+        panic!("expected server request")
+    };
+    client
+        .post(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .header("mcp-session-id", &session_id)
+        .header("mcp-protocol-version", LATEST_PROTOCOL_VERSION)
+        .json(&JsonRpcResultResponse {
+            jsonrpc: "2.0".to_owned(),
+            id: request.id,
+            result: json!({ "roots": [] }),
+            extra: Default::default(),
+        })
+        .send()
+        .await
+        .expect("client response");
+    assert_eq!(
+        requesting
+            .await
+            .expect("request task")
+            .expect("client result"),
+        json!({ "roots": [] })
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn harness_mcp_server_bounds_and_expires_http_sessions() {
+    let mut policy = McpServerPolicy::default();
+    policy.auth = McpServerAuth::StaticBearer("secret".to_owned());
+    policy.http_session_capacity = 1;
+    policy.http_session_idle_timeout = std::time::Duration::from_millis(25);
+    let server = HarnessMcpServer::new(Arc::new(TestHarness))
+        .with_policy(policy)
+        .build()
+        .expect("server");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    let task = tokio::spawn(server.serve_http_listener(listener));
+    let client = reqwest::Client::new();
+    let initialize = || {
+        client
+            .post(format!("http://{addr}"))
+            .header("authorization", "Bearer secret")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": 41,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": LATEST_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": { "name": "fixture", "version": "1.0.0" }
+                }
+            }))
+            .send()
+    };
+
+    let first = initialize().await.expect("first initialize");
+    assert_eq!(first.status(), reqwest::StatusCode::OK);
+    let first_session = first.headers()["mcp-session-id"]
+        .to_str()
+        .expect("session id")
+        .to_owned();
+    client
+        .post(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .header("mcp-session-id", &first_session)
+        .header("mcp-protocol-version", LATEST_PROTOCOL_VERSION)
+        .json(&JsonRpcNotification::new("notifications/initialized", None))
+        .send()
+        .await
+        .expect("initialized notification");
+    let at_capacity = initialize().await.expect("capacity response");
+    assert_eq!(
+        at_capacity.status(),
+        reqwest::StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    let after_expiry = initialize().await.expect("initialize after expiry");
+    assert_eq!(after_expiry.status(), reqwest::StatusCode::OK);
+    let expired = client
+        .post(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .header("mcp-session-id", first_session)
+        .header("mcp-protocol-version", LATEST_PROTOCOL_VERSION)
+        .json(&JsonRpcRequest::new(json!(42), "ping", Some(json!({}))))
+        .send()
+        .await
+        .expect("expired session response");
+    assert_eq!(expired.status(), reqwest::StatusCode::NOT_FOUND);
+    task.abort();
+}
+
+#[tokio::test]
 #[cfg(feature = "websocket")]
 async fn harness_mcp_server_serves_websocket_jsonrpc_with_request_headers() {
     use futures::{SinkExt, StreamExt};
@@ -1026,6 +1339,7 @@ async fn harness_mcp_server_serves_websocket_jsonrpc_with_request_headers() {
         .with_policy(policy)
         .build()
         .expect("server");
+    let mut connections = server.subscribe_client_connections();
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local addr");
     let task = tokio::spawn(server.serve_websocket_listener(listener));
@@ -1041,6 +1355,10 @@ async fn harness_mcp_server_serves_websocket_jsonrpc_with_request_headers() {
         TenantId::SINGLE.to_string().parse().expect("tenant"),
     );
     let (mut socket, _) = connect_async(request).await.expect("connect");
+    assert!(matches!(
+        connections.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
     socket
         .send(Message::text(
             serde_json::to_string(&JsonRpcRequest::new(
@@ -1081,6 +1399,68 @@ async fn harness_mcp_server_serves_websocket_jsonrpc_with_request_headers() {
         ))
         .await
         .expect("send initialized");
+    let connection = connections
+        .recv()
+        .await
+        .expect("ready WebSocket client connection");
+    assert_eq!(
+        connection.transport(),
+        harness_mcp::McpServerClientTransport::WebSocket
+    );
+    assert_eq!(connection.session_id(), None);
+    socket
+        .send(Message::text(
+            serde_json::to_string(&JsonRpcRequest::new(json!(33), "ping", Some(json!({}))))
+                .expect("ping JSON"),
+        ))
+        .await
+        .expect("send ping");
+    let ping = socket
+        .next()
+        .await
+        .expect("ping response message")
+        .expect("ping response")
+        .into_text()
+        .expect("ping response text");
+    let ping: JsonRpcResponse = serde_json::from_str(&ping).expect("ping response JSON");
+    assert!(ping.error.is_none());
+    let connection_after_close = connection.clone();
+    let requesting = tokio::spawn(async move {
+        connection
+            .request_client("roots/list", Some(json!({})))
+            .await
+    });
+    let request = socket
+        .next()
+        .await
+        .expect("server request message")
+        .expect("server request")
+        .into_text()
+        .expect("server request text");
+    let McpMessage::Request(request) = serde_json::from_str(&request).expect("server request JSON")
+    else {
+        panic!("expected server request")
+    };
+    assert_eq!(request.method, "roots/list");
+    socket
+        .send(Message::text(
+            serde_json::to_string(&JsonRpcResultResponse {
+                jsonrpc: "2.0".to_owned(),
+                id: request.id,
+                result: json!({ "roots": [] }),
+                extra: Default::default(),
+            })
+            .expect("client response JSON"),
+        ))
+        .await
+        .expect("send client response");
+    assert_eq!(
+        requesting
+            .await
+            .expect("request task")
+            .expect("client result"),
+        json!({ "roots": [] })
+    );
     socket
         .send(Message::text(
             serde_json::to_string(&JsonRpcRequest::new(
@@ -1133,6 +1513,35 @@ async fn harness_mcp_server_serves_websocket_jsonrpc_with_request_headers() {
         "unexpected error: {:?}",
         called.error
     );
+    let pending_connection = connection_after_close.clone();
+    let pending = tokio::spawn(async move {
+        pending_connection
+            .request_client("roots/list", Some(json!({})))
+            .await
+    });
+    let pending_request = socket
+        .next()
+        .await
+        .expect("pending request message")
+        .expect("pending request")
+        .into_text()
+        .expect("pending request text");
+    assert!(matches!(
+        serde_json::from_str::<McpMessage>(&pending_request).expect("pending request JSON"),
+        McpMessage::Request(_)
+    ));
+    drop(socket);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), pending)
+            .await
+            .expect("pending request must resolve when transport disconnects")
+            .expect("pending request task")
+            .is_err()
+    );
+    assert!(connection_after_close
+        .request_client("roots/list", Some(json!({})))
+        .await
+        .is_err());
     task.abort();
 }
 

@@ -115,7 +115,7 @@ The HTTP transport implements:
 - reinitialization after session 404;
 - existing authorization refresh, redirect, DNS pinning, timeout, and cancellation behavior.
 
-The reverse HTTP Server Adapter validates `Origin`, binds locally by default, supports GET/POST/DELETE, isolates sessions, and returns 202 for accepted notifications and responses.
+The reverse HTTP Server Adapter validates `Origin`, binds locally by default, supports GET/POST/DELETE, isolates sessions, and returns 202 for accepted notifications and responses. Its session store is capped at 128 entries by default, expires sessions after 30 minutes of inactivity, does not expire an active SSE stream, and rejects new initialization with 503 when the cap is reached. DELETE and expiry close pending requests, new client-request subscriptions, and SSE streams.
 
 ### Deprecated HTTP+SSE
 
@@ -153,6 +153,8 @@ Elicitation is split into standard mechanisms:
 - `elicitation/create` for form and URL modes;
 - `-32042` only for URL elicitation required errors;
 - `notifications/elicitation/complete` as a separate notification.
+
+URL-required errors preserve the validated URL and elicitation identifier. Completion notifications are correlated through the shared peer only when the negotiated revision is 2025-11-25 and URL elicitation completion was advertised.
 
 The current custom behavior that merges form data into the original tool arguments and retries is removed.
 
@@ -193,10 +195,12 @@ required: bool
 
 Old records become optional. Disabled records are never connected and never block startup.
 
-Configuration parsing, validation, and unsafe working-directory errors remain fail-closed. After a valid record has entered runtime construction:
+Configuration parsing, validation, unsupported transports, empty commands, and unsafe working-directory errors remain fail-closed. Missing runtime header or bearer environment variables are classified separately as credential unavailability. After a valid record has entered runtime construction:
 
-- optional connection, initialization, capability, list, or injection failures register a failed server, emit task diagnostics, skip tool injection, and allow the run to start;
+- optional credential, connection, initialization, capability, list, or injection failures register a failed server, emit task diagnostics, skip tool injection, and allow the run to start;
 - required failures emit the same diagnostics, close already-connected servers, and stop run construction with a redacted boundary error.
+
+Activation failures use the explicit `McpActivationFailed` lifecycle event. Its reason distinguishes unavailable credentials from runtime activation failures without retaining raw connection errors. The task journal records it as `engine.mcp_activation_failed` with the run metadata supplied to the diagnostic writer.
 
 Foreground and child runs use the same policy but retain separate registries and authorization contexts.
 
@@ -204,7 +208,7 @@ Foreground and child runs use the same policy but retain separate registries and
 
 Settings diagnostics use `plane=settings`. Daemon diagnostics use `plane=task` and carry task, session, run, and segment identifiers when available.
 
-The daemon replaces `NoopMcpEventSink` with a bounded asynchronous writer into the task event journal. Runtime shutdown follows this order:
+The daemon replaces `NoopMcpEventSink` with a bounded asynchronous writer into the task event journal. Writer flush has a five-second deadline; timeout aborts the writer instead of blocking cleanup indefinitely. Runtime shutdown follows this order:
 
 1. stop accepting new MCP work;
 2. close registry connections;
@@ -214,6 +218,10 @@ The daemon replaces `NoopMcpEventSink` with a bounded asynchronous writer into t
 The primary run error is preserved. A shutdown error is returned only when no earlier error exists. Drop remains a cancellation and panic fallback, not the normal cleanup path.
 
 The settings UI labels registry state as a settings connection check. It does not present that state as proof of task availability.
+
+Desktop diagnostic reads merge the settings JSONL with MCP events loaded from the daemon through `ListTasks` and paged `LoadTaskEvents`. The scan is bounded to the eight most recent tasks and eight pages of sixteen events per task. Live subscriptions poll task journals every eight seconds, keep the existing 100 ms settings-file check, sort both planes by timestamp, and retain the newest 500 records. If the daemon is unavailable, settings diagnostics remain available.
+
+Clearing diagnostics physically removes matching settings records and persists a local task-plane clear watermark, globally or per server. Task journal events recorded at or before that watermark are filtered from later lists and subscription replays, including after Desktop restarts. The daemon journal remains append-only, and events recorded after the watermark remain visible.
 
 ## Source and Trust
 
@@ -232,7 +240,7 @@ configLayer: global | project
 runtimeScope: global | session | agent
 ```
 
-All get, save, delete, toggle, and restart commands address `(configLayer, id)`. The backend derives the active project root from desktop runtime state and never accepts an arbitrary project path from the renderer.
+All get, save, delete, toggle, and restart commands address `(configLayer, id)`. Project mutations also carry the renderer's current project path as an identity token. While holding the runtime read lock, the backend canonicalizes that token and compares it with the active project root derived from desktop runtime state. The token never selects a project store, stale project mutations are rejected, and global mutations reject project identity fields.
 
 A project record with the same ID overrides its global record. Deleting the project record reveals the global record again. Inherited global records are read-only in the project view until copied into a project override.
 
@@ -259,6 +267,10 @@ Browser presets use exact versions:
 The reverse adapter shares protocol types and the server dispatcher across stdio, Streamable HTTP, and custom WebSocket frontends.
 
 The dispatcher enforces initialization before operation, accepts notifications without generating responses, negotiates capabilities, and does not accept a non-standard `shutdown` method.
+
+`HarnessMcpServer::subscribe_client_connections()` publishes the live dispatcher once per stdio, Streamable HTTP, or WebSocket frontend, only after `notifications/initialized` moves it to `Ready`. Streamable HTTP also requires an active GET SSE outbound receiver. The session-store mutex makes receiver installation and active-GET visibility atomic with respect to the initialized POST, so publication cannot consume its one-shot flag before the transport can carry reverse requests. Subscribers can issue server-to-client requests immediately through the actual peer rather than receiving a dispatcher that still rejects operations or has no outbound receiver.
+
+A Streamable HTTP session permits one active GET SSE stream. A second concurrent GET for the same session returns `409 Conflict`, preventing duplicate delivery of server-to-client sampling or elicitation requests. Active GET streams are not idle-expired.
 
 Existing authentication, tenant mapping, tenant isolation, rate limiting, audit, and default-disabled write operations remain intact.
 
@@ -306,6 +318,7 @@ Desktop tests cover:
 - required-field backward compatibility;
 - source and trust consistency;
 - diagnostic plane compatibility for old JSONL records;
+- activation-failure conversion and persistent task-diagnostic clear watermarks;
 - strict TypeScript/Rust validation parity;
 - UI configuration layer, status source, and diagnostic source behavior.
 

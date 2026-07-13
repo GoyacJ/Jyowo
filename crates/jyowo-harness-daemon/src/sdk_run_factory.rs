@@ -18,12 +18,12 @@ use harness_contracts::{
     AgentTeamTopology, AgentToolPolicy, AgentUsePolicy, AgentWorkspaceIsolationMode,
     CapabilityRegistry, ConversationAttachmentReference, ConversationContextReference,
     ConversationTurnInput, Event, ExecutionDefaultsRecord, FallbackPolicy,
-    IndeterminateToolResolution, InteractivityLevel, McpServerId, McpServerScope, ModelError,
-    PermissionMode, PromotionMode, QueueItemState, Redactor, RunId, RunSegmentId,
-    RunTerminalReason, StopReason, TaskId, TenantId, ToolActionPlan, ToolCapability,
-    ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolUseFailedEvent, ToolUseId,
-    UnexpectedErrorEvent, UsageSnapshot, WorkspaceAccess as ToolWorkspaceAccess, WorkspaceLeaseId,
-    WorkspaceLeaseState, WorkspaceMode,
+    IndeterminateToolResolution, InteractivityLevel, McpActivationFailedEvent,
+    McpActivationFailureReason, McpServerId, McpServerScope, ModelError, PermissionMode,
+    PromotionMode, QueueItemState, Redactor, RunId, RunSegmentId, RunTerminalReason, StopReason,
+    TaskId, TenantId, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolErrorPayload,
+    ToolResult, ToolUseFailedEvent, ToolUseId, UsageSnapshot,
+    WorkspaceAccess as ToolWorkspaceAccess, WorkspaceLeaseId, WorkspaceLeaseState, WorkspaceMode,
 };
 use harness_engine::{EngineBoundSubagentFactory, RunControlHandle, TurnOutcome};
 use harness_execution::{
@@ -212,7 +212,8 @@ async fn mcp_config_from_runtime_snapshot(
         session_id,
         run_id,
     );
-    let event_writer = spawn_daemon_mcp_event_writer(event_receiver, event_store, session_id);
+    let event_writer =
+        spawn_daemon_mcp_event_writer(event_receiver, event_store, session_id, Some(run_id));
     let event_sink: Arc<dyn McpEventSink> = daemon_event_sink.clone();
     let build_result = async {
         let mut server_ids_to_inject = Vec::new();
@@ -222,7 +223,6 @@ async fn mcp_config_from_runtime_snapshot(
             .iter()
             .filter(|record| should_activate_mcp_server(record))
         {
-            let (spec, transport) = mcp_server_runtime(record, execution_root)?;
             let scope = match record.scope.as_str() {
                 "global" => McpServerScope::Global,
                 "session" => McpServerScope::Session(session_id),
@@ -232,6 +232,19 @@ async fn mcp_config_from_runtime_snapshot(
                         "invalid persisted MCP server scope".to_owned(),
                     ));
                 }
+            };
+            let Some((spec, transport)) = resolve_daemon_mcp_server_runtime(
+                &registry,
+                record,
+                scope.clone(),
+                Arc::clone(&event_sink),
+                execution_root,
+                session_id,
+                run_id,
+            )
+            .await?
+            else {
+                continue;
             };
             let authorization = McpAuthorizationContext {
                 authorization_service: Arc::clone(&authorization_service),
@@ -276,7 +289,11 @@ async fn mcp_config_from_runtime_snapshot(
         Err(error) => {
             let _ = registry.shutdown_all().await;
             daemon_event_sink.close();
-            let _ = event_writer.await;
+            let _ = shutdown_daemon_mcp_event_writer(
+                event_writer,
+                DAEMON_MCP_EVENT_WRITER_FLUSH_TIMEOUT,
+            )
+            .await;
             Err(error)
         }
     }
@@ -284,6 +301,62 @@ async fn mcp_config_from_runtime_snapshot(
 
 fn should_activate_mcp_server(record: &RuntimeMcpServerConfig) -> bool {
     record.enabled
+}
+
+async fn resolve_daemon_mcp_server_runtime(
+    registry: &McpRegistry,
+    record: &RuntimeMcpServerConfig,
+    scope: McpServerScope,
+    event_sink: Arc<dyn McpEventSink>,
+    execution_root: &Path,
+    session_id: harness_contracts::SessionId,
+    run_id: RunId,
+) -> Result<Option<(McpServerSpec, Arc<dyn McpTransport>)>, SdkRunFactoryError> {
+    match mcp_server_runtime(record, execution_root) {
+        Ok(runtime) => Ok(Some(runtime)),
+        Err(SdkRunFactoryError::McpCredentialUnavailable) => {
+            register_daemon_mcp_activation_failure(
+                registry,
+                unresolved_mcp_server_spec(record),
+                scope,
+                event_sink,
+                Some(session_id),
+                Some(run_id),
+                McpActivationFailureReason::CredentialUnavailable,
+            )
+            .await?;
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn unresolved_mcp_server_spec(record: &RuntimeMcpServerConfig) -> McpServerSpec {
+    let transport = match &record.transport {
+        harness_contracts::McpServerTransportConfig::Stdio { command, args, .. } => {
+            TransportChoice::Stdio {
+                command: command.clone(),
+                args: args.clone(),
+                env: StdioEnv::Empty {
+                    extra: BTreeMap::new(),
+                },
+                policy: StdioPolicy::default(),
+            }
+        }
+        harness_contracts::McpServerTransportConfig::Http { url, .. } => TransportChoice::Http {
+            url: url.clone(),
+            headers: BTreeMap::new(),
+        },
+        harness_contracts::McpServerTransportConfig::InProcess => TransportChoice::InProcess,
+    };
+    let mut spec = McpServerSpec::new(
+        McpServerId(record.id.clone()),
+        record.display_name.clone(),
+        transport,
+        record.source.clone(),
+    );
+    spec.required = record.required;
+    spec
 }
 
 async fn activate_daemon_mcp_server(
@@ -303,7 +376,6 @@ async fn activate_daemon_mcp_server(
         .as_ref()
         .map(|authorization| authorization.run_id);
     let server_id = spec.server_id.clone();
-    let required = spec.required;
     if registry
         .add_managed_server_with_context(
             spec.clone(),
@@ -318,11 +390,37 @@ async fn activate_daemon_mcp_server(
         return Ok(Some(server_id));
     }
 
-    let reason = "MCP server activation failed".to_owned();
-    event_sink.emit(Event::UnexpectedError(UnexpectedErrorEvent {
+    register_daemon_mcp_activation_failure(
+        registry,
+        spec,
+        scope,
+        event_sink,
         session_id,
         run_id,
-        error: reason.clone(),
+        McpActivationFailureReason::Runtime,
+    )
+    .await?;
+    Ok(None)
+}
+
+async fn register_daemon_mcp_activation_failure(
+    registry: &McpRegistry,
+    spec: McpServerSpec,
+    scope: McpServerScope,
+    event_sink: Arc<dyn McpEventSink>,
+    session_id: Option<harness_contracts::SessionId>,
+    run_id: Option<RunId>,
+    failure_reason: McpActivationFailureReason,
+) -> Result<(), SdkRunFactoryError> {
+    let required = spec.required;
+    let reason = "MCP server activation failed".to_owned();
+    event_sink.emit(Event::McpActivationFailed(McpActivationFailedEvent {
+        session_id,
+        run_id,
+        server_id: spec.server_id.clone(),
+        server_source: spec.source.clone(),
+        required,
+        reason: failure_reason,
         at: now(),
     }));
     registry
@@ -340,7 +438,7 @@ async fn activate_daemon_mcp_server(
             "required MCP server failed during activation".to_owned(),
         ));
     }
-    Ok(None)
+    Ok(())
 }
 
 struct DaemonMcpRuntimeGuard {
@@ -359,11 +457,10 @@ impl DaemonMcpRuntimeGuard {
         let registry_result = self.config.registry.shutdown_all().await;
         self.event_sink.close();
         let writer_result = match self.event_writer.take() {
-            Some(writer) => writer.await.map_err(|_| {
-                SdkRunFactoryError::RuntimeConfig(
-                    "MCP diagnostic writer did not shut down cleanly".to_owned(),
-                )
-            })?,
+            Some(writer) => {
+                shutdown_daemon_mcp_event_writer(writer, DAEMON_MCP_EVENT_WRITER_FLUSH_TIMEOUT)
+                    .await
+            }
             None => Ok(()),
         };
         self.shutdown_complete = true;
@@ -381,20 +478,31 @@ impl Drop for DaemonMcpRuntimeGuard {
             return;
         }
         let registry = self.config.registry.clone();
-        self.event_sink.close();
+        let event_sink = Arc::clone(&self.event_sink);
         let writer = self.event_writer.take();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
                 let _ = registry.shutdown_all().await;
+                event_sink.close();
                 if let Some(writer) = writer {
-                    let _ = writer.await;
+                    let _ = shutdown_daemon_mcp_event_writer(
+                        writer,
+                        DAEMON_MCP_EVENT_WRITER_FLUSH_TIMEOUT,
+                    )
+                    .await;
                 }
             });
+        } else if let Some(writer) = writer {
+            event_sink.close();
+            writer.abort();
+        } else {
+            event_sink.close();
         }
     }
 }
 
 const DAEMON_MCP_EVENT_CHANNEL_CAPACITY: usize = 128;
+const DAEMON_MCP_EVENT_WRITER_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct DaemonMcpEventSink {
     sender: Mutex<Option<mpsc::Sender<Event>>>,
@@ -469,11 +577,20 @@ fn spawn_daemon_mcp_event_writer(
     mut receiver: mpsc::Receiver<Event>,
     event_store: Arc<dyn EventStore>,
     session_id: harness_contracts::SessionId,
+    run_id: Option<RunId>,
 ) -> tokio::task::JoinHandle<Result<(), SdkRunFactoryError>> {
     tokio::spawn(async move {
         while let Some(event) = receiver.recv().await {
             event_store
-                .append(TenantId::SINGLE, session_id, &[event])
+                .append_with_metadata(
+                    TenantId::SINGLE,
+                    session_id,
+                    AppendMetadata {
+                        run_id,
+                        ..AppendMetadata::default()
+                    },
+                    &[event],
+                )
                 .await
                 .map_err(|_| {
                     SdkRunFactoryError::RuntimeConfig(
@@ -483,6 +600,26 @@ fn spawn_daemon_mcp_event_writer(
         }
         Ok(())
     })
+}
+
+async fn shutdown_daemon_mcp_event_writer(
+    mut writer: tokio::task::JoinHandle<Result<(), SdkRunFactoryError>>,
+    timeout: Duration,
+) -> Result<(), SdkRunFactoryError> {
+    match tokio::time::timeout(timeout, &mut writer).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err(SdkRunFactoryError::RuntimeConfig(
+            "MCP diagnostic writer did not shut down cleanly".to_owned(),
+        )),
+        Err(_) => {
+            writer.abort();
+            let abort_timeout = timeout.min(Duration::from_millis(100));
+            let _ = tokio::time::timeout(abort_timeout, writer).await;
+            Err(SdkRunFactoryError::RuntimeConfig(
+                "MCP diagnostic writer flush timed out".to_owned(),
+            ))
+        }
+    }
 }
 
 fn mcp_server_runtime(
@@ -546,19 +683,13 @@ fn mcp_server_runtime(
                     .map(|entry| (entry.key.trim().to_owned(), entry.value.clone()))
                     .collect::<BTreeMap<_, _>>();
                 for header in headers_from_env {
-                    let value = std::env::var(&header.env_var).map_err(|_| {
-                        SdkRunFactoryError::RuntimeConfig(
-                            "configured MCP header environment variable is unavailable".to_owned(),
-                        )
-                    })?;
+                    let value = std::env::var(&header.env_var)
+                        .map_err(|_| SdkRunFactoryError::McpCredentialUnavailable)?;
                     resolved_headers.insert(header.key.trim().to_owned(), value);
                 }
                 if let Some(env_var) = bearer_token_env_var {
-                    let token = std::env::var(env_var).map_err(|_| {
-                        SdkRunFactoryError::RuntimeConfig(
-                            "configured MCP bearer environment variable is unavailable".to_owned(),
-                        )
-                    })?;
+                    let token = std::env::var(env_var)
+                        .map_err(|_| SdkRunFactoryError::McpCredentialUnavailable)?;
                     resolved_headers.insert("Authorization".to_owned(), format!("Bearer {token}"));
                 }
                 (
@@ -2244,6 +2375,8 @@ enum SdkRunFactoryError {
     Workspace(String),
     #[error("runtime configuration failed: {0}")]
     RuntimeConfig(String),
+    #[error("runtime MCP credential is unavailable")]
+    McpCredentialUnavailable,
     #[error("execution defaults failed: {0}")]
     ExecutionDefaults(String),
     #[error("attachment could not be loaded: {0}")]
@@ -2268,7 +2401,9 @@ impl SdkRunFactoryError {
             | Self::WorkspaceSandboxUnavailable
             | Self::ManagedWorkspacePathMissing
             | Self::Workspace(_) => "workspace",
-            Self::RuntimeConfig(_) | Self::ExecutionDefaults(_) => "runtime_config",
+            Self::RuntimeConfig(_)
+            | Self::McpCredentialUnavailable
+            | Self::ExecutionDefaults(_) => "runtime_config",
             Self::Attachment(_) | Self::AttachmentMissing => "attachment",
             Self::RecoveryDecision(_) => "recovery",
             Self::Sdk(_) => "sdk",
@@ -2290,19 +2425,20 @@ mod tests {
     use async_trait::async_trait;
     use harness_contracts::{
         ClientId, CommandId, DeferPolicy, Event, EventId, ExecutionDefaultsRecord,
-        ExecutionOverridesRecord, IndeterminateToolDecision, IndeterminateToolResolution,
-        ModelError, ModelProtocol, NoopRedactor, PermissionMode,
-        ProviderProfileConversationCapability, ProviderProfileDefinition,
-        ProviderProfileModelDescriptor, ProviderProfileModelLifecycle, ProviderSecretEntry,
-        ProviderSecretsRecord, ProviderSelectionRecord, QueueItemId, RunId, RunSegmentId,
-        RunTerminalReason, SessionId, StopReason, TaskId, TenantId, ToolProfile, ToolProperties,
-        ToolUseId, ToolUseRequestedEvent, ToolUseStartedEvent, TrustLevel, UsageSnapshot,
-        WorkspaceMode,
+        ExecutionOverridesRecord, ForkReason, IndeterminateToolDecision,
+        IndeterminateToolResolution, JournalError, JournalOffset, ModelError, ModelProtocol,
+        NoopRedactor, PermissionMode, ProviderProfileConversationCapability,
+        ProviderProfileDefinition, ProviderProfileModelDescriptor, ProviderProfileModelLifecycle,
+        ProviderSecretEntry, ProviderSecretsRecord, ProviderSelectionRecord, QueueItemId, RunId,
+        RunSegmentId, RunTerminalReason, SessionId, StopReason, TaskId, TenantId, ToolProfile,
+        ToolProperties, ToolUseId, ToolUseRequestedEvent, ToolUseStartedEvent, TrustLevel,
+        UsageSnapshot, WorkspaceMode,
     };
     use harness_engine::{RunControl, TurnOutcome};
     use harness_journal::{
-        AcceptedCommand, CommandOutcome, EventStore, NewTaskEvent, ReplayCursor, SegmentRunInput,
-        TaskEventStoreAdapter, TaskStore,
+        AcceptedCommand, AppendMetadata, CommandOutcome, EventEnvelope, EventStore, NewTaskEvent,
+        PrunePolicy, PruneReport, ReplayCursor, SegmentRunInput, SessionFilter, SessionSnapshot,
+        SessionSummary, TaskEventStoreAdapter, TaskStore,
     };
     use harness_mcp::{
         McpConnectContext, McpConnection, McpError, McpEventSink, McpRegistry, McpServerScope,
@@ -2322,6 +2458,7 @@ mod tests {
     };
     use jyowo_harness_sdk::testing::{InMemoryEventStore, NoopSandbox, TestTool};
     use serde_json::json;
+    use tokio::sync::Notify;
 
     use crate::{
         AgentStarterCapabilities, PermissionBroker, RunCoordinatorEvent, RunCoordinatorFactory,
@@ -2381,7 +2518,117 @@ mod tests {
         shutdown: AtomicBool,
     }
 
+    struct DiagnosticOnShutdownMcpConnection {
+        event_sink: Arc<dyn McpEventSink>,
+    }
+
     struct FailingMcpTransport;
+
+    #[derive(Default)]
+    struct BlockingAppendEventStore {
+        append_started: Notify,
+        append_dropped: AtomicBool,
+    }
+
+    struct AppendPendingGuard<'a>(&'a AtomicBool);
+
+    impl Drop for AppendPendingGuard<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl EventStore for BlockingAppendEventStore {
+        async fn append(
+            &self,
+            _tenant: TenantId,
+            _session_id: SessionId,
+            _events: &[Event],
+        ) -> Result<JournalOffset, JournalError> {
+            let _guard = AppendPendingGuard(&self.append_dropped);
+            self.append_started.notify_one();
+            futures::future::pending().await
+        }
+
+        async fn append_with_metadata_expect_next_offset(
+            &self,
+            _tenant: TenantId,
+            _session_id: SessionId,
+            _metadata: AppendMetadata,
+            _expected_next_offset: JournalOffset,
+            _events: &[Event],
+        ) -> Result<JournalOffset, JournalError> {
+            panic!("unexpected append with metadata")
+        }
+
+        async fn read_envelopes(
+            &self,
+            _tenant: TenantId,
+            _session_id: SessionId,
+            _cursor: ReplayCursor,
+        ) -> Result<futures::stream::BoxStream<'static, EventEnvelope>, JournalError> {
+            panic!("unexpected read")
+        }
+
+        async fn query_after(
+            &self,
+            _tenant: TenantId,
+            _after: Option<EventId>,
+            _limit: usize,
+        ) -> Result<Vec<EventEnvelope>, JournalError> {
+            panic!("unexpected query")
+        }
+
+        async fn snapshot(
+            &self,
+            _tenant: TenantId,
+            _session_id: SessionId,
+        ) -> Result<Option<SessionSnapshot>, JournalError> {
+            panic!("unexpected snapshot")
+        }
+
+        async fn save_snapshot(
+            &self,
+            _tenant: TenantId,
+            _snapshot: SessionSnapshot,
+        ) -> Result<(), JournalError> {
+            panic!("unexpected snapshot save")
+        }
+
+        async fn compact_link(
+            &self,
+            _parent: SessionId,
+            _child: SessionId,
+            _reason: ForkReason,
+        ) -> Result<(), JournalError> {
+            panic!("unexpected compact")
+        }
+
+        async fn delete_session(
+            &self,
+            _tenant: TenantId,
+            _session_id: SessionId,
+        ) -> Result<bool, JournalError> {
+            panic!("unexpected delete")
+        }
+
+        async fn list_sessions(
+            &self,
+            _tenant: TenantId,
+            _filter: SessionFilter,
+        ) -> Result<Vec<SessionSummary>, JournalError> {
+            panic!("unexpected list")
+        }
+
+        async fn prune(
+            &self,
+            _tenant: TenantId,
+            _policy: PrunePolicy,
+        ) -> Result<PruneReport, JournalError> {
+            panic!("unexpected prune")
+        }
+    }
 
     #[async_trait]
     impl McpTransport for FailingMcpTransport {
@@ -2397,6 +2644,7 @@ mod tests {
     #[tokio::test]
     async fn optional_mcp_connect_failure_is_registered_without_injection() {
         let registry = McpRegistry::new();
+        let (event_sink, mut events) = super::DaemonMcpEventSink::channel(4);
         let spec = McpServerSpec::new(
             harness_contracts::McpServerId("optional-server".to_owned()),
             "optional server",
@@ -2409,7 +2657,7 @@ mod tests {
             spec.clone(),
             McpServerScope::Global,
             Arc::new(FailingMcpTransport),
-            Arc::new(NoopMcpEventSink),
+            event_sink,
             McpConnectContext::default(),
         )
         .await
@@ -2420,11 +2668,19 @@ mod tests {
             registry.connection_state(&spec.server_id).await,
             Some(harness_mcp::McpConnectionState::Failed { .. })
         ));
+        assert!(matches!(
+            events.recv().await,
+            Some(Event::McpActivationFailed(event))
+                if event.server_id == spec.server_id
+                    && event.reason == harness_contracts::McpActivationFailureReason::Runtime
+                    && !event.required
+        ));
     }
 
     #[tokio::test]
     async fn required_mcp_connect_failure_closes_previously_registered_servers() {
         let registry = McpRegistry::new();
+        let (event_sink, mut events) = super::DaemonMcpEventSink::channel(4);
         let existing = Arc::new(ShutdownTrackingMcpConnection::default());
         registry
             .add_ready_server(
@@ -2452,15 +2708,195 @@ mod tests {
             required,
             McpServerScope::Global,
             Arc::new(FailingMcpTransport),
-            Arc::new(NoopMcpEventSink),
+            event_sink,
             McpConnectContext::default(),
         )
         .await
         .expect_err("required failure must abort activation");
 
         assert!(!error.to_string().contains("private-server-id"));
+        assert!(matches!(
+            events.recv().await,
+            Some(Event::McpActivationFailed(event))
+                if event.reason == harness_contracts::McpActivationFailureReason::Runtime
+                    && event.required
+        ));
         assert!(existing.shutdown.load(Ordering::SeqCst));
         assert!(registry.server_ids().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn optional_mcp_missing_runtime_credential_is_registered_and_skipped() {
+        let registry = McpRegistry::new();
+        let (event_sink, mut events) = super::DaemonMcpEventSink::channel(4);
+        let record = runtime_http_server_with_missing_credential("optional-env", false);
+
+        let outcome = super::resolve_daemon_mcp_server_runtime(
+            &registry,
+            &record,
+            McpServerScope::Global,
+            event_sink,
+            Path::new("/tmp"),
+            SessionId::new(),
+            RunId::new(),
+        )
+        .await
+        .expect("optional credential failure must not abort activation");
+
+        assert!(outcome.is_none());
+        assert!(matches!(
+            registry
+                .connection_state(&harness_contracts::McpServerId("optional-env".to_owned()))
+                .await,
+            Some(harness_mcp::McpConnectionState::Failed { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(Event::McpActivationFailed(event))
+                if event.server_id.0 == "optional-env"
+                    && event.reason
+                        == harness_contracts::McpActivationFailureReason::CredentialUnavailable
+                    && !event.required
+        ));
+    }
+
+    #[tokio::test]
+    async fn required_mcp_missing_runtime_credential_fails_and_cleans_registry() {
+        let registry = McpRegistry::new();
+        let (event_sink, mut events) = super::DaemonMcpEventSink::channel(4);
+        let existing = Arc::new(ShutdownTrackingMcpConnection::default());
+        registry
+            .add_ready_server(
+                McpServerSpec::new(
+                    harness_contracts::McpServerId("existing-env".to_owned()),
+                    "existing env",
+                    TransportChoice::InProcess,
+                    harness_contracts::McpServerSource::User,
+                ),
+                McpServerScope::Global,
+                existing.clone(),
+            )
+            .await
+            .expect("register existing server");
+        let record = runtime_http_server_with_missing_credential("required-env", true);
+
+        let result = super::resolve_daemon_mcp_server_runtime(
+            &registry,
+            &record,
+            McpServerScope::Global,
+            event_sink,
+            Path::new("/tmp"),
+            SessionId::new(),
+            RunId::new(),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "required credential failure must abort activation"
+        );
+        assert!(matches!(
+            events.recv().await,
+            Some(Event::McpActivationFailed(event))
+                if event.server_id.0 == "required-env"
+                    && event.reason
+                        == harness_contracts::McpActivationFailureReason::CredentialUnavailable
+                    && event.required
+        ));
+
+        assert!(existing.shutdown.load(Ordering::SeqCst));
+        assert!(registry.server_ids().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn optional_mcp_unsafe_working_directory_remains_fail_closed() {
+        let root = tempfile::tempdir().expect("temp root");
+        let workspace = root.path().join("workspace");
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&workspace).expect("workspace");
+        std::fs::create_dir(&outside).expect("outside");
+        let record = serde_json::from_value::<crate::RuntimeMcpServerConfig>(json!({
+            "enabled": true,
+            "required": false,
+            "displayName": "unsafe working directory",
+            "id": "optional-unsafe-working-dir",
+            "scope": "global",
+            "transport": {
+                "kind": "stdio",
+                "command": "node",
+                "working_dir": "../outside"
+            }
+        }))
+        .expect("runtime MCP fixture");
+        let registry = McpRegistry::new();
+
+        let result = super::resolve_daemon_mcp_server_runtime(
+            &registry,
+            &record,
+            McpServerScope::Global,
+            Arc::new(NoopMcpEventSink),
+            &workspace,
+            SessionId::new(),
+            RunId::new(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(registry.server_ids().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn optional_mcp_invalid_runtime_configuration_remains_fail_closed() {
+        for transport in [
+            json!({ "kind": "stdio", "command": "" }),
+            json!({ "kind": "inProcess" }),
+        ] {
+            let record = serde_json::from_value::<crate::RuntimeMcpServerConfig>(json!({
+                "enabled": true,
+                "required": false,
+                "displayName": "invalid optional server",
+                "id": "optional-invalid-runtime",
+                "scope": "global",
+                "transport": transport
+            }))
+            .expect("runtime MCP fixture");
+            let registry = McpRegistry::new();
+
+            let result = super::resolve_daemon_mcp_server_runtime(
+                &registry,
+                &record,
+                McpServerScope::Global,
+                Arc::new(NoopMcpEventSink),
+                Path::new("/tmp"),
+                SessionId::new(),
+                RunId::new(),
+            )
+            .await;
+
+            assert!(result.is_err());
+            assert!(registry.server_ids().await.is_empty());
+        }
+    }
+
+    fn runtime_http_server_with_missing_credential(
+        id: &str,
+        required: bool,
+    ) -> crate::RuntimeMcpServerConfig {
+        serde_json::from_value(json!({
+            "enabled": true,
+            "required": required,
+            "displayName": "environment fixture",
+            "id": id,
+            "scope": "global",
+            "transport": {
+                "kind": "http",
+                "url": "https://example.com",
+                "headers_from_env": [{
+                    "key": "X-Test",
+                    "envVar": format!("JYOWO_MISSING_MCP_CREDENTIAL_{id}")
+                }]
+            }
+        }))
+        .expect("runtime MCP fixture")
     }
 
     #[tokio::test]
@@ -2498,13 +2934,17 @@ mod tests {
         );
         let (sink, receiver) =
             super::DaemonMcpEventSink::channel_with_context(8, session_id, run_id);
-        let writer = super::spawn_daemon_mcp_event_writer(receiver, event_store, session_id);
+        let writer =
+            super::spawn_daemon_mcp_event_writer(receiver, event_store, session_id, Some(run_id));
 
-        sink.emit(Event::UnexpectedError(
-            harness_contracts::UnexpectedErrorEvent {
-                session_id: None,
-                run_id: None,
-                error: "MCP server activation failed".to_owned(),
+        sink.emit(Event::McpActivationFailed(
+            harness_contracts::McpActivationFailedEvent {
+                session_id: Some(session_id),
+                run_id: Some(run_id),
+                server_id: harness_contracts::McpServerId("fixture".to_owned()),
+                server_source: harness_contracts::McpServerSource::User,
+                required: false,
+                reason: harness_contracts::McpActivationFailureReason::Runtime,
                 at: chrono::Utc::now(),
             },
         ));
@@ -2520,12 +2960,52 @@ mod tests {
             .expect("read task journal");
         let diagnostic = events
             .iter()
-            .find(|event| event.event_type == "engine.unexpected_error")
+            .find(|event| event.event_type == "engine.mcp_activation_failed")
             .expect("flushed MCP diagnostic");
         let payload = diagnostic.payload.to_string();
         assert!(payload.contains(&session_id.to_string()));
         assert!(payload.contains(&run_id.to_string()));
         assert!(payload.contains(&segment_id.to_string()));
+    }
+
+    #[tokio::test]
+    async fn daemon_mcp_event_writer_shutdown_aborts_a_blocked_append_without_masking_run_error() {
+        let store = Arc::new(BlockingAppendEventStore::default());
+        let event_store: Arc<dyn EventStore> = store.clone();
+        let session_id = SessionId::new();
+        let (sink, receiver) = super::DaemonMcpEventSink::channel(1);
+        let writer = super::spawn_daemon_mcp_event_writer(receiver, event_store, session_id, None);
+        sink.emit(Event::UnexpectedError(
+            harness_contracts::UnexpectedErrorEvent {
+                session_id: None,
+                run_id: None,
+                error: "fixture".to_owned(),
+                at: chrono::Utc::now(),
+            },
+        ));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            store.append_started.notified(),
+        )
+        .await
+        .expect("writer must enter append");
+        sink.close();
+
+        let writer_error = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            super::shutdown_daemon_mcp_event_writer(writer, std::time::Duration::from_millis(20)),
+        )
+        .await
+        .expect("writer shutdown must be bounded")
+        .expect_err("blocked writer must report timeout");
+        assert!(writer_error.to_string().contains("writer"));
+        assert!(store.append_dropped.load(Ordering::SeqCst));
+
+        let result = super::complete_after_mcp_shutdown::<(), _>(
+            Err("primary failure"),
+            Err("writer timeout"),
+        );
+        assert_eq!(result, Err("primary failure"));
     }
 
     #[test]
@@ -2562,6 +3042,37 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl McpConnection for DiagnosticOnShutdownMcpConnection {
+        fn connection_id(&self) -> &'static str {
+            "daemon-diagnostic-on-shutdown"
+        }
+
+        async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
+            Ok(Vec::new())
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _args: serde_json::Value,
+        ) -> Result<McpToolResult, McpError> {
+            Ok(McpToolResult::text("ok"))
+        }
+
+        async fn shutdown(&self) -> Result<(), McpError> {
+            self.event_sink.emit(Event::UnexpectedError(
+                harness_contracts::UnexpectedErrorEvent {
+                    session_id: None,
+                    run_id: None,
+                    error: "shutdown diagnostic".to_owned(),
+                    at: chrono::Utc::now(),
+                },
+            ));
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn daemon_mcp_runtime_shutdown_closes_and_clears_registry() {
         let registry = McpRegistry::new();
@@ -2584,7 +3095,8 @@ mod tests {
         let (event_sink, receiver) = super::DaemonMcpEventSink::channel(8);
         let event_store: Arc<dyn EventStore> =
             Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
-        let event_writer = super::spawn_daemon_mcp_event_writer(receiver, event_store, session_id);
+        let event_writer =
+            super::spawn_daemon_mcp_event_writer(receiver, event_store, session_id, None);
         let guard = super::DaemonMcpRuntimeGuard {
             config: jyowo_harness_sdk::McpConfig {
                 registry: registry.clone(),
@@ -2603,6 +3115,59 @@ mod tests {
 
         assert!(connection.shutdown.load(Ordering::SeqCst));
         assert!(registry.server_ids().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn daemon_mcp_runtime_shutdown_flushes_registry_shutdown_diagnostics() {
+        use futures::StreamExt;
+
+        let registry = McpRegistry::new();
+        let session_id = SessionId::new();
+        let (event_sink, receiver) = super::DaemonMcpEventSink::channel(8);
+        let event_store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+        let event_store_cap: Arc<dyn EventStore> = event_store.clone();
+        let event_writer =
+            super::spawn_daemon_mcp_event_writer(receiver, event_store_cap, session_id, None);
+        let connection = Arc::new(DiagnosticOnShutdownMcpConnection {
+            event_sink: event_sink.clone(),
+        });
+        let server_id = harness_contracts::McpServerId("shutdown-diagnostic".to_owned());
+        registry
+            .add_ready_server(
+                McpServerSpec::new(
+                    server_id.clone(),
+                    "shutdown diagnostic",
+                    TransportChoice::InProcess,
+                    harness_contracts::McpServerSource::Workspace,
+                ),
+                McpServerScope::Global,
+                connection,
+            )
+            .await
+            .expect("register daemon MCP fixture");
+        let guard = super::DaemonMcpRuntimeGuard {
+            config: jyowo_harness_sdk::McpConfig {
+                registry,
+                server_ids_to_inject: vec![server_id],
+                event_sink: event_sink.clone(),
+            },
+            event_sink,
+            event_writer: Some(event_writer),
+            shutdown_complete: false,
+        };
+
+        guard.shutdown().await.expect("shutdown MCP runtime");
+
+        let events = event_store
+            .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+            .await
+            .expect("read diagnostics")
+            .collect::<Vec<_>>()
+            .await;
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Event::UnexpectedError(event) if event.error == "shutdown diagnostic"
+        )));
     }
 
     #[test]

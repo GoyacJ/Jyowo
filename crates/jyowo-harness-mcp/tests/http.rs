@@ -184,10 +184,12 @@ async fn http_transport_decodes_url_elicitation_required_error() {
         .await
         .expect_err("elicitation required");
 
-    assert!(matches!(
-        error,
-        McpError::Elicitation(message) if message.contains("1 URL elicitation request")
-    ));
+    let McpError::UrlElicitationRequired(elicitations) = error else {
+        panic!("expected structured URL elicitation error");
+    };
+    assert_eq!(elicitations.len(), 1);
+    assert_eq!(elicitations[0].elicitation_id, "auth-42");
+    assert_eq!(elicitations[0].url, "https://example.com/authorize");
 }
 
 #[tokio::test]

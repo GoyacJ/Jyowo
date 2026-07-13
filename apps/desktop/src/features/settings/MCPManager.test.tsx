@@ -374,7 +374,13 @@ describe('MCPManager', () => {
       await screen.findByRole('button', { name: 'Delete project override Workspace GitHub' }),
     )
 
-    await waitFor(() => expect(deleteMcpServer).toHaveBeenCalledWith('project', 'github'))
+    await waitFor(() =>
+      expect(deleteMcpServer).toHaveBeenCalledWith(
+        'project',
+        'github',
+        '/Users/goya/Repo/Git/Jyowo',
+      ),
+    )
     expect(await screen.findByText('Inherited global configuration')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Override Workspace GitHub' })).toBeInTheDocument()
   })

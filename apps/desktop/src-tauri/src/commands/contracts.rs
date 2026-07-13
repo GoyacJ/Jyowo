@@ -805,6 +805,14 @@ pub struct McpDiagnosticRecord {
     pub run_segment_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpTaskDiagnosticClearWatermarks {
+    pub all: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub servers: BTreeMap<String, DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerSummaryPayload {
@@ -1347,7 +1355,14 @@ pub trait McpServerStore: Send + Sync {
 pub trait McpDiagnosticStore: Send + Sync {
     fn load_records(&self) -> Result<Vec<McpDiagnosticRecord>, CommandErrorPayload>;
     fn append_record(&self, record: &McpDiagnosticRecord) -> Result<(), CommandErrorPayload>;
-    fn clear_records(&self, server_id: Option<&str>) -> Result<(), CommandErrorPayload>;
+    fn load_task_clear_watermarks(
+        &self,
+    ) -> Result<McpTaskDiagnosticClearWatermarks, CommandErrorPayload>;
+    fn clear_records(
+        &self,
+        server_id: Option<&str>,
+        task_cleared_at: DateTime<Utc>,
+    ) -> Result<(), CommandErrorPayload>;
 }
 
 pub trait SkillStore: Send + Sync {

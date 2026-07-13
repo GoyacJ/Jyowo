@@ -182,7 +182,13 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
       if (request.configLayer === 'project' && projectPath !== activeProjectPathRef.current) {
         throw new Error('Stale MCP project identity')
       }
-      return saveMcpServer(request, commandClient)
+      return saveMcpServer(
+        {
+          ...request,
+          ...(request.configLayer === 'project' ? { projectPath } : {}),
+        },
+        commandClient,
+      )
     },
     onSuccess: async (_, { dialogGeneration, dialogIdentity, projectPath, request }) => {
       await queryClient.invalidateQueries({
@@ -213,8 +219,22 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     },
   })
   const deleteMutation = useMutation({
-    mutationFn: ({ configLayer, id }: { configLayer: McpConfigLayer; id: string }) =>
-      commandClient.deleteMcpServer(configLayer, id),
+    mutationFn: ({
+      configLayer,
+      id,
+      projectPath,
+    }: {
+      configLayer: McpConfigLayer
+      id: string
+      projectPath: string | null
+    }) => {
+      if (configLayer === 'project' && projectPath !== activeProjectPathRef.current) {
+        throw new Error('Stale MCP project identity')
+      }
+      return configLayer === 'project'
+        ? commandClient.deleteMcpServer(configLayer, id, projectPath)
+        : commandClient.deleteMcpServer(configLayer, id)
+    },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: mcpServerQueryKeys.all })
     },
@@ -224,18 +244,41 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
       configLayer,
       enabled,
       id,
+      projectPath,
     }: {
       configLayer: McpConfigLayer
       enabled: boolean
       id: string
-    }) => commandClient.setMcpServerEnabled(configLayer, id, enabled),
+      projectPath: string | null
+    }) => {
+      if (configLayer === 'project' && projectPath !== activeProjectPathRef.current) {
+        throw new Error('Stale MCP project identity')
+      }
+      return configLayer === 'project'
+        ? commandClient.setMcpServerEnabled(configLayer, id, enabled, projectPath)
+        : commandClient.setMcpServerEnabled(configLayer, id, enabled)
+    },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: mcpServerQueryKeys.all })
     },
   })
   const restartMutation = useMutation({
-    mutationFn: ({ configLayer, id }: { configLayer: McpConfigLayer; id: string }) =>
-      commandClient.restartMcpServer(configLayer, id),
+    mutationFn: ({
+      configLayer,
+      id,
+      projectPath,
+    }: {
+      configLayer: McpConfigLayer
+      id: string
+      projectPath: string | null
+    }) => {
+      if (configLayer === 'project' && projectPath !== activeProjectPathRef.current) {
+        throw new Error('Stale MCP project identity')
+      }
+      return configLayer === 'project'
+        ? commandClient.restartMcpServer(configLayer, id, projectPath)
+        : commandClient.restartMcpServer(configLayer, id)
+    },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: mcpServerQueryKeys.all })
     },
@@ -1079,18 +1122,27 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
             empty={t('mcp.groupEmpty')}
             onConfigure={openConfigureDialog}
             onDelete={(server) =>
-              deleteMutation.mutate({ configLayer: server.configLayer, id: server.id })
+              deleteMutation.mutate({
+                configLayer: server.configLayer,
+                id: server.id,
+                projectPath: server.configLayer === 'project' ? activeProjectPath : null,
+              })
             }
             onOpenPlugin={onOpenPlugin}
             onOverride={openOverrideDialog}
             onRestart={(server) =>
-              restartMutation.mutate({ configLayer: server.configLayer, id: server.id })
+              restartMutation.mutate({
+                configLayer: server.configLayer,
+                id: server.id,
+                projectPath: server.configLayer === 'project' ? activeProjectPath : null,
+              })
             }
             onToggle={(server, enabled) =>
               toggleMutation.mutate({
                 configLayer: server.configLayer,
                 enabled,
                 id: server.id,
+                projectPath: server.configLayer === 'project' ? activeProjectPath : null,
               })
             }
             servers={workspaceServers}
@@ -1101,18 +1153,27 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
             empty={t('mcp.pluginsEmpty')}
             onConfigure={openConfigureDialog}
             onDelete={(server) =>
-              deleteMutation.mutate({ configLayer: server.configLayer, id: server.id })
+              deleteMutation.mutate({
+                configLayer: server.configLayer,
+                id: server.id,
+                projectPath: server.configLayer === 'project' ? activeProjectPath : null,
+              })
             }
             onOpenPlugin={onOpenPlugin}
             onOverride={openOverrideDialog}
             onRestart={(server) =>
-              restartMutation.mutate({ configLayer: server.configLayer, id: server.id })
+              restartMutation.mutate({
+                configLayer: server.configLayer,
+                id: server.id,
+                projectPath: server.configLayer === 'project' ? activeProjectPath : null,
+              })
             }
             onToggle={(server, enabled) =>
               toggleMutation.mutate({
                 configLayer: server.configLayer,
                 enabled,
                 id: server.id,
+                projectPath: server.configLayer === 'project' ? activeProjectPath : null,
               })
             }
             servers={pluginServers}
