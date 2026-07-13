@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -64,8 +64,6 @@ impl SkillConfigResolverBinding {
 #[derive(Clone)]
 pub struct SkillRenderer {
     config_resolver: SkillConfigResolverBinding,
-    shell_allowlist: HashSet<String>,
-    max_shell_output: usize,
     metrics_sink: Option<Arc<dyn SkillMetricsSink>>,
 }
 
@@ -90,11 +88,6 @@ impl SkillRenderer {
     pub fn new(config_resolver: Arc<dyn SkillConfigResolver>) -> Self {
         Self {
             config_resolver: SkillConfigResolverBinding::Shared(config_resolver),
-            shell_allowlist: SkillRenderPolicy::default()
-                .shell_allowlist
-                .into_iter()
-                .collect(),
-            max_shell_output: 4_000,
             metrics_sink: None,
         }
     }
@@ -105,31 +98,22 @@ impl SkillRenderer {
     ) -> Self {
         Self {
             config_resolver: SkillConfigResolverBinding::PerSkill(config_resolver_factory),
-            shell_allowlist: SkillRenderPolicy::default()
-                .shell_allowlist
-                .into_iter()
-                .collect(),
-            max_shell_output: 4_000,
             metrics_sink: None,
         }
     }
 
     #[must_use]
-    pub fn with_policy(mut self, policy: SkillRenderPolicy) -> Self {
-        self.shell_allowlist = policy.shell_allowlist.into_iter().collect();
-        self.max_shell_output = policy.max_shell_output;
+    pub fn with_policy(self, _policy: SkillRenderPolicy) -> Self {
         self
     }
 
     #[must_use]
-    pub fn with_shell_allowlist(mut self, cmds: impl IntoIterator<Item = String>) -> Self {
-        self.shell_allowlist = cmds.into_iter().collect();
+    pub fn with_shell_allowlist(self, _cmds: impl IntoIterator<Item = String>) -> Self {
         self
     }
 
     #[must_use]
-    pub fn with_max_shell_output(mut self, max_shell_output: usize) -> Self {
-        self.max_shell_output = max_shell_output;
+    pub fn with_max_shell_output(self, _max_shell_output: usize) -> Self {
         self
     }
 
@@ -270,7 +254,7 @@ impl SkillRenderer {
     ) -> Result<(String, Vec<ShellInvocation>), RenderError> {
         let mut output = String::with_capacity(content.len());
         let mut remaining = content;
-        let mut invocations = Vec::new();
+        let invocations = Vec::new();
 
         while let Some(start) = remaining.find("!`") {
             output.push_str(&remaining[..start]);
@@ -280,48 +264,15 @@ impl SkillRenderer {
                 return Ok((output, invocations));
             };
             let command = &after_start[..end];
-            if let Some(command) = self.allowed_command(command) {
-                let rendered = self.execute_shell(&command)?;
-                output.push_str(&rendered.0);
-                invocations.push(rendered.1);
-            } else {
-                if let Some(metrics) = &self.metrics_sink {
-                    metrics.skill_shell_blocked(command);
-                }
-                output.push_str("[SHELL_NOT_ALLOWED]");
+            if let Some(metrics) = &self.metrics_sink {
+                metrics.skill_shell_blocked(command);
             }
+            output.push_str("[SHELL_NOT_ALLOWED]");
             remaining = &after_start[end + 1..];
         }
 
         output.push_str(remaining);
         Ok((output, invocations))
-    }
-
-    fn allowed_command(&self, command: &str) -> Option<StructuredShellCommand> {
-        let command = parse_shell_command(command).ok()?;
-        self.shell_allowlist
-            .contains(&command.program)
-            .then_some(command)
-    }
-
-    fn execute_shell(
-        &self,
-        command: &StructuredShellCommand,
-    ) -> Result<(String, ShellInvocation), RenderError> {
-        let output = std::process::Command::new(&command.program)
-            .args(&command.args)
-            .output()?;
-        let exit_code = output.status.code().unwrap_or(-1);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let (stdout, stdout_truncated) = truncate_chars(&stdout, self.max_shell_output);
-        Ok((
-            stdout,
-            ShellInvocation {
-                command: command.original.clone(),
-                stdout_truncated,
-                exit_code,
-            },
-        ))
     }
 }
 
@@ -334,13 +285,6 @@ fn script_config_type_matches(value: &Value, value_type: SkillParamType) -> bool
         SkillParamType::Number => value.is_number(),
         SkillParamType::Boolean => value.is_boolean(),
     }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-struct StructuredShellCommand {
-    original: String,
-    program: String,
-    args: Vec<String>,
 }
 
 fn validate_value_type(
@@ -376,53 +320,6 @@ fn expected_type_label(param_type: SkillParamType) -> &'static str {
     }
 }
 
-fn parse_shell_command(input: &str) -> Result<StructuredShellCommand, RenderError> {
-    let original = input.trim().to_owned();
-    let mut args = Vec::new();
-    let mut current = String::new();
-    let mut chars = original.chars().peekable();
-    let mut quote: Option<char> = None;
-
-    while let Some(ch) = chars.next() {
-        match (quote, ch) {
-            (None, '\n' | '\r') => return Err(RenderError::ShellNotAllowed(original)),
-            (None, ch) if ch.is_whitespace() => {
-                if !current.is_empty() {
-                    args.push(std::mem::take(&mut current));
-                }
-            }
-            (None, '\'' | '"') => quote = Some(ch),
-            (Some(active), ch) if ch == active => quote = None,
-            (None, '\\') | (Some('"'), '\\') => {
-                if let Some(next) = chars.next() {
-                    current.push(next);
-                }
-            }
-            (None, ';' | '|' | '&' | '<' | '>' | '$' | '(' | ')') => {
-                return Err(RenderError::ShellNotAllowed(original));
-            }
-            _ => current.push(ch),
-        }
-    }
-
-    if quote.is_some() {
-        return Err(RenderError::ShellNotAllowed(original));
-    }
-    if !current.is_empty() {
-        args.push(current);
-    }
-    if args.is_empty() {
-        return Err(RenderError::ShellNotAllowed(original));
-    }
-
-    let program = args.remove(0);
-    Ok(StructuredShellCommand {
-        original,
-        program,
-        args,
-    })
-}
-
 fn render_value_for_template(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
@@ -431,13 +328,4 @@ fn render_value_for_template(value: &Value) -> String {
         Value::Null => String::new(),
         Value::Array(_) | Value::Object(_) => value.to_string(),
     }
-}
-
-fn truncate_chars(value: &str, max_chars: usize) -> (String, bool) {
-    if value.chars().count() <= max_chars {
-        return (value.to_owned(), false);
-    }
-
-    let truncated = value.chars().take(max_chars).collect::<String>();
-    (format!("{truncated}[...truncated]"), true)
 }

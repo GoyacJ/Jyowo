@@ -181,11 +181,6 @@ impl SkillRegistryService {
                 ))
             })?;
         let package = collect_script_package(&skill, &declaration.path)?;
-        let (env, secret_env_keys) = self
-            .renderer
-            .resolve_script_environment(&skill, &declaration)
-            .await
-            .map_err(|error| ToolError::Validation(error.to_string()))?;
         let network_access = match declaration.network {
             SkillScriptNetworkPolicy::Deny => NetworkAccess::None,
         };
@@ -209,11 +204,55 @@ impl SkillRegistryService {
                     .iter()
                     .map(|(env_name, mapping)| (env_name.clone(), mapping.config.clone()))
                     .collect(),
-                secret_env_keys,
+                secret_env_keys: declaration
+                    .env
+                    .iter()
+                    .filter(|(_, mapping)| mapping.secret)
+                    .map(|(env_name, _)| env_name.clone())
+                    .collect(),
             },
             files: package.files,
-            env,
+            env: Default::default(),
         })
+    }
+
+    pub async fn prepare_script_authorized(
+        &self,
+        agent: &AgentId,
+        name: &str,
+        script_id: &str,
+        arguments: Value,
+    ) -> Result<SkillScriptRunPreparation, ToolError> {
+        let mut prepared = self
+            .prepare_script(agent, name, script_id, arguments)
+            .await?;
+        let skill = self
+            .visible_skill(agent, name)
+            .ok_or_else(|| ToolError::Validation(format!("skill not visible: {name}")))?;
+        let declaration = skill
+            .frontmatter
+            .scripts
+            .iter()
+            .find(|declaration| declaration.id == script_id)
+            .ok_or_else(|| {
+                ToolError::Validation(format!(
+                    "undeclared script `{script_id}` for skill `{name}`"
+                ))
+            })?;
+        let (env, secret_env_keys) = self
+            .renderer
+            .resolve_script_environment(&skill, declaration)
+            .await
+            .map_err(|error| ToolError::Validation(error.to_string()))?;
+        if secret_env_keys != prepared.declaration.secret_env_keys
+            || env.keys().ne(prepared.declaration.env_config_keys.keys())
+        {
+            return Err(ToolError::Validation(
+                "resolved skill script environment does not match its declaration".to_owned(),
+            ));
+        }
+        prepared.env = env;
+        Ok(prepared)
     }
 
     fn visible_skill(&self, agent: &AgentId, name: &str) -> Option<Arc<Skill>> {
@@ -268,6 +307,22 @@ impl SkillRegistryCap for SkillRegistryService {
         Box::pin(async move {
             service
                 .prepare_script(&agent, &name, &script_id, arguments)
+                .await
+        })
+    }
+
+    fn prepare_script_authorized(
+        &self,
+        agent: &AgentId,
+        name: String,
+        script_id: String,
+        arguments: Value,
+    ) -> BoxFuture<'static, Result<SkillScriptRunPreparation, ToolError>> {
+        let service = self.clone();
+        let agent = *agent;
+        Box::pin(async move {
+            service
+                .prepare_script_authorized(&agent, &name, &script_id, arguments)
                 .await
         })
     }

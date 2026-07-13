@@ -1,6 +1,9 @@
 #![allow(clippy::needless_raw_string_hashes)]
 
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 use async_trait::async_trait;
 use harness_contracts::AgentId;
@@ -317,9 +320,12 @@ Token ${config.apiToken:secret}
     )
     .unwrap();
     let registry = registry_with_skill(skill);
+    let secret_reads = Arc::new(AtomicUsize::new(0));
     let service = SkillRegistryService::new(
         registry,
-        harness_skill::SkillRenderer::new(Arc::new(ScriptConfigResolver)),
+        harness_skill::SkillRenderer::new(Arc::new(ScriptConfigResolver {
+            secret_reads: Arc::clone(&secret_reads),
+        })),
     );
 
     let prepared = service
@@ -336,8 +342,8 @@ Token ${config.apiToken:secret}
     assert_eq!(prepared.script_id, "collect");
     assert!(!prepared.package_hash.is_empty());
     assert_eq!(prepared.arguments, json!({ "query": "open" }));
-    assert_eq!(prepared.env["REGION"], "cn-east");
-    assert_eq!(prepared.env["API_TOKEN"], "secret-token");
+    assert!(prepared.env.is_empty());
+    assert_eq!(secret_reads.load(Ordering::SeqCst), 0);
     assert_eq!(
         prepared.declaration.secret_env_keys,
         std::collections::BTreeSet::from(["API_TOKEN".to_owned()])
@@ -347,6 +353,19 @@ Token ${config.apiToken:secret}
         .iter()
         .any(|file| file.path == "scripts/collect.sh"));
     assert!(!format!("{prepared:?}").contains("secret-token"));
+
+    let authorized = service
+        .prepare_script_authorized(
+            &AgentId::from_u128(1),
+            "collector",
+            "collect",
+            json!({ "query": "open" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(authorized.env["REGION"], "cn-east");
+    assert_eq!(authorized.env["API_TOKEN"], "secret-token");
+    assert_eq!(secret_reads.load(Ordering::SeqCst), 1);
 
     let undeclared = service
         .prepare_script(&AgentId::from_u128(1), "collector", "missing", json!({}))
@@ -405,7 +424,9 @@ Collector
 
 struct TestConfigResolver;
 
-struct ScriptConfigResolver;
+struct ScriptConfigResolver {
+    secret_reads: Arc<AtomicUsize>,
+}
 
 #[async_trait]
 impl SkillConfigResolver for ScriptConfigResolver {
@@ -430,7 +451,10 @@ impl SkillConfigResolver for ScriptConfigResolver {
     ) -> Result<secrecy::SecretString, ConfigResolveError> {
         assert_eq!(skill_id.0, "workspace:collector");
         match key {
-            "apiToken" => Ok(secrecy::SecretString::from("secret-token".to_owned())),
+            "apiToken" => {
+                self.secret_reads.fetch_add(1, Ordering::SeqCst);
+                Ok(secrecy::SecretString::from("secret-token".to_owned()))
+            }
             other => Err(ConfigResolveError::UnknownKey(other.to_owned())),
         }
     }

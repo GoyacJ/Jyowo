@@ -370,35 +370,49 @@ impl SkillRegistryCap for TestSkillRegistryCap {
         assert_eq!(*agent, AgentId::from_u128(7));
         assert_eq!(name, "daily");
         assert_eq!(script_id, "collect");
-        Box::pin(async move {
-            Ok(SkillScriptRunPreparation {
-                skill_id: SkillId("skill-daily".to_owned()),
-                skill_name: "daily".to_owned(),
-                script_id: "collect".to_owned(),
-                package_hash: "package-hash".to_owned(),
-                arguments,
-                declaration: SkillScriptRunDeclaration {
-                    path: PathBuf::from("scripts/collect.sh"),
-                    timeout_seconds: 30,
-                    max_stdout_bytes: 1024,
-                    max_stderr_bytes: 1024,
-                    max_output_bytes: 2048,
-                    max_artifact_count: 4,
-                    max_artifact_bytes: 4096,
-                    network_access: NetworkAccess::None,
-                    env_config_keys: BTreeMap::from([(
-                        "API_TOKEN".to_owned(),
-                        "apiToken".to_owned(),
-                    )]),
-                    secret_env_keys: BTreeSet::from(["API_TOKEN".to_owned()]),
-                },
-                files: vec![SkillScriptRunFile {
-                    path: "scripts/collect.sh".to_owned(),
-                    content: "#!/bin/sh\n".to_owned(),
-                }],
-                env: BTreeMap::from([("API_TOKEN".to_owned(), "secret".to_owned())]),
-            })
-        })
+        Box::pin(async move { Ok(test_script_preparation(arguments, false)) })
+    }
+
+    fn prepare_script_authorized(
+        &self,
+        agent: &AgentId,
+        name: String,
+        script_id: String,
+        arguments: Value,
+    ) -> BoxFuture<'static, Result<SkillScriptRunPreparation, ToolError>> {
+        assert_eq!(*agent, AgentId::from_u128(7));
+        assert_eq!(name, "daily");
+        assert_eq!(script_id, "collect");
+        Box::pin(async move { Ok(test_script_preparation(arguments, true)) })
+    }
+}
+
+fn test_script_preparation(arguments: Value, authorized: bool) -> SkillScriptRunPreparation {
+    SkillScriptRunPreparation {
+        skill_id: SkillId("skill-daily".to_owned()),
+        skill_name: "daily".to_owned(),
+        script_id: "collect".to_owned(),
+        package_hash: "package-hash".to_owned(),
+        arguments,
+        declaration: SkillScriptRunDeclaration {
+            path: PathBuf::from("scripts/collect.sh"),
+            timeout_seconds: 30,
+            max_stdout_bytes: 1024,
+            max_stderr_bytes: 1024,
+            max_output_bytes: 2048,
+            max_artifact_count: 4,
+            max_artifact_bytes: 4096,
+            network_access: NetworkAccess::None,
+            env_config_keys: BTreeMap::from([("API_TOKEN".to_owned(), "apiToken".to_owned())]),
+            secret_env_keys: BTreeSet::from(["API_TOKEN".to_owned()]),
+        },
+        files: vec![SkillScriptRunFile {
+            path: "scripts/collect.sh".to_owned(),
+            content: "#!/bin/sh\n".to_owned(),
+        }],
+        env: authorized
+            .then(|| BTreeMap::from([("API_TOKEN".to_owned(), "secret".to_owned())]))
+            .unwrap_or_default(),
     }
 }
 

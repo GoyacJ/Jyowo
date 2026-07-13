@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+#[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use futures::{stream::BoxStream, StreamExt};
 use harness_contracts::{
@@ -23,6 +24,7 @@ use crate::{
     SandboxBackend, StdioSpec,
 };
 
+#[cfg(test)]
 static TEMP_WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(100);
 const BACKEND_TIMEOUT_GRACE: Duration = Duration::from_millis(250);
@@ -107,15 +109,6 @@ pub async fn execute_skill_script(
         .first()
         .map_or(0, |value| value.len().saturating_sub(1) as u64);
     let capabilities = backend.capabilities();
-    if !capabilities.host_filesystem_isolation {
-        return Err(SandboxError::CapabilityMismatch {
-            capability: "host_filesystem".to_owned(),
-            detail: format!(
-                "sandbox backend `{}` cannot isolate skill scripts from host files",
-                backend.backend_id()
-            ),
-        });
-    }
     if !capabilities
         .supports_synchronous_kill_scope
         .contains(&KillScope::ProcessGroup)
@@ -124,6 +117,15 @@ pub async fn execute_skill_script(
             capability: "synchronous_kill".to_owned(),
             detail: format!(
                 "sandbox backend `{}` cannot synchronously cancel a skill script process group",
+                backend.backend_id()
+            ),
+        });
+    }
+    if !capabilities.host_filesystem_isolation {
+        return Err(SandboxError::CapabilityMismatch {
+            capability: "host_filesystem".to_owned(),
+            detail: format!(
+                "sandbox backend `{}` cannot isolate skill scripts from host files",
                 backend.backend_id()
             ),
         });
@@ -775,40 +777,51 @@ fn io_error(error: std::io::Error) -> SandboxError {
 }
 
 struct TempSkillWorkspace {
-    path: PathBuf,
+    directory: tempfile::TempDir,
 }
 
 impl TempSkillWorkspace {
-    fn create(workspace_root: &Path) -> Result<Self, SandboxError> {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| SandboxError::Message(error.to_string()))?
-            .as_nanos();
-        let sequence = TEMP_WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let name = format!(
-            "jyowo-skill-script-{}-{unique}-{sequence}",
-            std::process::id()
-        );
-        let (base, relative_path) = if workspace_root.as_os_str().is_empty() {
-            (std::env::temp_dir(), PathBuf::from(name))
-        } else {
-            (
-                workspace_root.to_path_buf(),
-                PathBuf::from(".jyowo").join("skill-script-runs").join(name),
-            )
-        };
-        let path = base.join(&relative_path);
-        std::fs::create_dir_all(&path).map_err(io_error)?;
-        Ok(Self { path })
+    fn create(_workspace_root: &Path) -> Result<Self, SandboxError> {
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("jyowo-skill-script-");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o700));
+        }
+        let directory = builder.tempdir().map_err(io_error)?;
+        Ok(Self { directory })
     }
 
     fn path(&self) -> &Path {
-        &self.path
+        self.directory.path()
     }
 }
 
-impl Drop for TempSkillWorkspace {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
+#[cfg(all(test, unix))]
+mod temp_skill_workspace_tests {
+    use super::*;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[test]
+    fn workspace_is_atomic_private_and_ignores_attacker_symlinks() {
+        let caller_workspace = tempfile::tempdir().unwrap();
+        let attacker_target = tempfile::tempdir().unwrap();
+        std::fs::create_dir(caller_workspace.path().join(".jyowo")).unwrap();
+        symlink(
+            attacker_target.path(),
+            caller_workspace.path().join(".jyowo/skill-script-runs"),
+        )
+        .unwrap();
+
+        let workspace = TempSkillWorkspace::create(caller_workspace.path()).unwrap();
+        let path = workspace.path().to_path_buf();
+        let metadata = std::fs::symlink_metadata(&path).unwrap();
+        assert!(!metadata.file_type().is_symlink());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+        assert!(!path.starts_with(attacker_target.path()));
+
+        drop(workspace);
+        assert!(!path.exists());
     }
 }

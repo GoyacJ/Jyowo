@@ -288,7 +288,7 @@ impl Tool for SkillsRunScriptTool {
             })?;
         let registry = ctx.capability::<dyn SkillRegistryCap>(ToolCapability::SkillRegistry)?;
         let prepared = registry
-            .prepare_script(
+            .prepare_script_authorized(
                 &ctx.agent_id,
                 name.to_owned(),
                 script_id.to_owned(),
@@ -512,7 +512,7 @@ fn script_permission_payload(prepared: &harness_contracts::SkillScriptRunPrepara
         "script_id": prepared.script_id,
         "package_hash": prepared.package_hash,
         "arguments": prepared.arguments,
-        "environment_keys": prepared.env.keys().collect::<Vec<_>>(),
+        "environment_keys": prepared.declaration.env_config_keys.keys().collect::<Vec<_>>(),
         "environment_config_keys": prepared.declaration.env_config_keys,
         "secret_environment_keys": prepared.declaration.secret_env_keys,
         "workspace_access": "none",

@@ -608,6 +608,20 @@ pub trait SkillRegistryCap: Send + Sync + 'static {
             ))
         })
     }
+
+    fn prepare_script_authorized(
+        &self,
+        _agent: &AgentId,
+        _name: String,
+        _script_id: String,
+        _arguments: Value,
+    ) -> BoxFuture<'static, Result<SkillScriptRunPreparation, ToolError>> {
+        Box::pin(async {
+            Err(ToolError::PermissionDenied(
+                "authorized skill script preparation is unavailable".to_owned(),
+            ))
+        })
+    }
 }
 
 #[derive(Clone, PartialEq)]
