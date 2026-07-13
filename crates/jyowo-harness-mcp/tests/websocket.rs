@@ -2,7 +2,7 @@
 
 #[cfg(feature = "oauth")]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use futures::{SinkExt, StreamExt};
 use harness_contracts::{McpServerId, McpServerSource, RequestId};
@@ -32,6 +32,79 @@ use wiremock::{
 mod support;
 
 #[tokio::test]
+async fn websocket_upgrade_respects_handshake_timeout() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept");
+        let _stream = stream;
+        std::future::pending::<()>().await;
+    });
+    let mut spec = McpServerSpec::new(
+        McpServerId("ws-timeout".into()),
+        "websocket timeout fixture",
+        TransportChoice::WebSocket {
+            url: format!("ws://{addr}"),
+            headers: BTreeMap::default(),
+        },
+        McpServerSource::Workspace,
+    );
+    spec.timeouts.handshake = Duration::from_millis(50);
+
+    let result = tokio::time::timeout(
+        Duration::from_millis(250),
+        McpClient::new(Arc::new(WebsocketTransport::new()))
+            .connect_with_context(spec, support::authorized_connect_context()),
+    )
+    .await;
+    server.abort();
+    let result = result.expect("transport handshake timeout must bound websocket upgrade");
+    let error = match result {
+        Ok(_) => panic!("stalled websocket upgrade unexpectedly connected"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, McpError::Connection(message) if message.contains("timed out")));
+}
+
+#[tokio::test]
+async fn websocket_transport_rejects_transport_owned_headers() {
+    for owned in [
+        "authorization",
+        "connection",
+        "host",
+        "proxy-authorization",
+        "sec-websocket-key",
+        "sec-websocket-protocol",
+        "sec-websocket-version",
+        "upgrade",
+    ] {
+        let mut headers = BTreeMap::new();
+        headers.insert(owned.to_owned(), "injected".to_owned());
+        let spec = McpServerSpec::new(
+            McpServerId(format!("ws-owned-{owned}")),
+            "websocket owned header fixture",
+            TransportChoice::WebSocket {
+                url: "ws://127.0.0.1:9".into(),
+                headers,
+            },
+            McpServerSource::Workspace,
+        );
+
+        let error = match McpClient::new(Arc::new(WebsocketTransport::new()))
+            .connect_with_context(spec, support::authorized_connect_context())
+            .await
+        {
+            Ok(_) => panic!("transport-owned header {owned} must be rejected"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, McpError::Protocol(ref message) if message.contains(owned)),
+            "unexpected error for {owned}: {error}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn websocket_transport_handles_requests_and_list_changed_notifications() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local addr");
@@ -44,12 +117,12 @@ async fn websocket_transport_handles_requests_and_list_changed_notifications() {
             match value.get("method").and_then(Value::as_str) {
                 Some("initialize") => {
                     socket
-                        .send(Message::Text(
+                        .send(Message::text(
                             json!({
                                 "jsonrpc": "2.0",
                                 "id": value["id"].clone(),
                                 "result": {
-                                    "protocolVersion": "2025-03-26",
+                                    "protocolVersion": "2025-11-25",
                                     "capabilities": { "tools": {} },
                                     "serverInfo": { "name": "fixture", "version": "0.1.0" }
                                 }
@@ -61,7 +134,7 @@ async fn websocket_transport_handles_requests_and_list_changed_notifications() {
                 }
                 Some("tools/list") => {
                     socket
-                        .send(Message::Text(json!({
+                        .send(Message::text(json!({
                             "jsonrpc": "2.0",
                             "id": value["id"].clone(),
                             "result": {
@@ -73,7 +146,7 @@ async fn websocket_transport_handles_requests_and_list_changed_notifications() {
                         .await
                         .expect("send tools list");
                     socket
-                        .send(Message::Text(
+                        .send(Message::text(
                             json!({
                                 "jsonrpc": "2.0",
                                 "method": "notifications/tools/list_changed"
@@ -85,7 +158,7 @@ async fn websocket_transport_handles_requests_and_list_changed_notifications() {
                 }
                 Some("tools/call") => {
                     socket
-                        .send(Message::Text(
+                        .send(Message::text(
                             json!({
                                 "jsonrpc": "2.0",
                                 "id": value["id"].clone(),
@@ -132,6 +205,175 @@ async fn websocket_transport_handles_requests_and_list_changed_notifications() {
 }
 
 #[tokio::test]
+async fn websocket_transport_routes_binary_responses_and_replies_to_server_requests() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept");
+        let mut socket = accept_async(stream).await.expect("websocket accept");
+
+        let initialize = socket
+            .next()
+            .await
+            .expect("initialize frame")
+            .expect("initialize message")
+            .into_text()
+            .expect("initialize text");
+        let initialize: Value = serde_json::from_str(&initialize).expect("initialize json");
+        assert_eq!(initialize["params"]["protocolVersion"], "2025-11-25");
+        socket
+            .send(Message::binary(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": initialize["id"].clone(),
+                    "result": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": { "tools": {} },
+                        "serverInfo": { "name": "fixture", "version": "0.1.0" }
+                    }
+                })
+                .to_string()
+                .into_bytes(),
+            ))
+            .await
+            .expect("send binary initialize response");
+
+        let initialized = socket
+            .next()
+            .await
+            .expect("initialized frame")
+            .expect("initialized message")
+            .into_text()
+            .expect("initialized text");
+        let initialized: Value = serde_json::from_str(&initialized).expect("initialized json");
+        assert_eq!(initialized["method"], "notifications/initialized");
+
+        let list = socket
+            .next()
+            .await
+            .expect("list frame")
+            .expect("list message")
+            .into_text()
+            .expect("list text");
+        let list: Value = serde_json::from_str(&list).expect("list json");
+        assert_eq!(list["method"], "tools/list");
+
+        socket
+            .send(Message::text(
+                json!({ "jsonrpc": "2.0", "id": "server-ping", "method": "ping" }).to_string(),
+            ))
+            .await
+            .expect("send server ping");
+        let ping_response = socket
+            .next()
+            .await
+            .expect("ping response frame")
+            .expect("ping response message")
+            .into_text()
+            .expect("ping response text");
+        let ping_response: Value =
+            serde_json::from_str(&ping_response).expect("ping response json");
+        assert_eq!(ping_response["id"], "server-ping");
+        assert_eq!(ping_response["result"], json!({}));
+
+        socket
+            .send(Message::binary(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": list["id"].clone(),
+                    "result": {
+                        "tools": [
+                            { "name": "binary_lookup", "inputSchema": { "type": "object" } }
+                        ]
+                    }
+                })
+                .to_string()
+                .into_bytes(),
+            ))
+            .await
+            .expect("send binary tools response");
+    });
+
+    let spec = McpServerSpec::new(
+        McpServerId("ws-binary-peer".into()),
+        "websocket binary peer fixture",
+        TransportChoice::WebSocket {
+            url: format!("ws://{addr}"),
+            headers: BTreeMap::default(),
+        },
+        McpServerSource::Workspace,
+    );
+    let connection = McpClient::new(Arc::new(WebsocketTransport::new()))
+        .connect_with_context(spec, support::authorized_connect_context())
+        .await
+        .expect("websocket connects");
+    let tools = connection
+        .list_tools()
+        .await
+        .expect("binary tools response");
+    assert_eq!(tools[0].name, "binary_lookup");
+    connection.shutdown().await.expect("shutdown");
+    server.await.expect("server task");
+}
+
+#[tokio::test]
+async fn websocket_close_frame_wakes_pending_request_without_jsonrpc_shutdown() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept");
+        let mut socket = accept_async(stream).await.expect("websocket accept");
+        while let Some(frame) = socket.next().await {
+            let frame = frame.expect("message");
+            let value: Value = serde_json::from_slice(frame.into_data().as_ref()).expect("json");
+            match value.get("method").and_then(Value::as_str) {
+                Some("initialize") => {
+                    socket
+                        .send(Message::text(
+                            json!({
+                                "jsonrpc": "2.0",
+                                "id": value["id"].clone(),
+                                "result": {
+                                    "protocolVersion": "2025-11-25",
+                                    "capabilities": { "tools": {} },
+                                    "serverInfo": { "name": "fixture", "version": "0.1.0" }
+                                }
+                            })
+                            .to_string(),
+                        ))
+                        .await
+                        .expect("initialize response");
+                }
+                Some("tools/list") => {
+                    socket.close(None).await.expect("close frame");
+                    break;
+                }
+                Some("shutdown") => panic!("must not send JSON-RPC shutdown"),
+                _ => {}
+            }
+        }
+    });
+
+    let spec = McpServerSpec::new(
+        McpServerId("ws-close".into()),
+        "websocket close fixture",
+        TransportChoice::WebSocket {
+            url: format!("ws://{addr}"),
+            headers: BTreeMap::default(),
+        },
+        McpServerSource::Workspace,
+    );
+    let connection = McpClient::new(Arc::new(WebsocketTransport::new()))
+        .connect_with_context(spec, support::authorized_connect_context())
+        .await
+        .expect("websocket connects");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), connection.list_tools())
+        .await
+        .expect("close wakes pending request");
+    assert!(matches!(result, Err(McpError::Connection(_))));
+}
+
+#[tokio::test]
 async fn websocket_transport_continues_tool_call_after_elicitation_resolution() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local addr");
@@ -145,12 +387,12 @@ async fn websocket_transport_continues_tool_call_after_elicitation_resolution() 
             match value.get("method").and_then(Value::as_str) {
                 Some("initialize") => {
                     socket
-                        .send(Message::Text(
+                        .send(Message::text(
                             json!({
                                 "jsonrpc": "2.0",
                                 "id": value["id"].clone(),
                                 "result": {
-                                    "protocolVersion": "2025-03-26",
+                                    "protocolVersion": "2025-11-25",
                                     "capabilities": { "tools": {} },
                                     "serverInfo": { "name": "fixture", "version": "0.1.0" }
                                 }
@@ -164,7 +406,7 @@ async fn websocket_transport_continues_tool_call_after_elicitation_resolution() 
                     call_count += 1;
                     if call_count == 1 {
                         socket
-                            .send(Message::Text(
+                            .send(Message::text(
                                 json!({
                                     "jsonrpc": "2.0",
                                     "id": value["id"].clone(),
@@ -186,7 +428,7 @@ async fn websocket_transport_continues_tool_call_after_elicitation_resolution() 
                     } else {
                         assert_eq!(value["params"]["arguments"]["token"], "resolved");
                         socket
-                            .send(Message::Text(
+                            .send(Message::text(
                                 json!({
                                     "jsonrpc": "2.0",
                                     "id": value["id"].clone(),
@@ -254,13 +496,16 @@ async fn websocket_transport_sends_resource_subscription_requests() {
             match method {
                 "initialize" => {
                     socket
-                        .send(Message::Text(
+                        .send(Message::text(
                             json!({
                                 "jsonrpc": "2.0",
                                 "id": value["id"].clone(),
                                 "result": {
-                                    "protocolVersion": "2025-03-26",
-                                    "capabilities": { "resources": { "subscribe": true } },
+                                    "protocolVersion": "2025-11-25",
+                                    "capabilities": {
+                                        "tools": {},
+                                        "resources": { "subscribe": true }
+                                    },
                                     "serverInfo": { "name": "fixture", "version": "0.1.0" }
                                 }
                             })
@@ -271,7 +516,7 @@ async fn websocket_transport_sends_resource_subscription_requests() {
                 }
                 "resources/subscribe" | "resources/unsubscribe" => {
                     socket
-                        .send(Message::Text(
+                        .send(Message::text(
                             json!({
                                 "jsonrpc": "2.0",
                                 "id": value["id"].clone(),
@@ -335,12 +580,12 @@ async fn websocket_tool_call_stream_filters_progress_by_request_id_and_finishes(
             match value.get("method").and_then(Value::as_str) {
                 Some("initialize") => {
                     socket
-                        .send(Message::Text(
+                        .send(Message::text(
                             json!({
                                 "jsonrpc": "2.0",
                                 "id": value["id"].clone(),
                                 "result": {
-                                    "protocolVersion": "2025-03-26",
+                                    "protocolVersion": "2025-11-25",
                                     "capabilities": { "tools": {} },
                                     "serverInfo": { "name": "fixture", "version": "0.1.0" }
                                 }
@@ -353,7 +598,7 @@ async fn websocket_tool_call_stream_filters_progress_by_request_id_and_finishes(
                 Some("tools/call") => {
                     let id = value["id"].clone();
                     socket
-                        .send(Message::Text(
+                        .send(Message::text(
                             json!({
                                 "jsonrpc": "2.0",
                                 "method": "notifications/progress",
@@ -369,7 +614,7 @@ async fn websocket_tool_call_stream_filters_progress_by_request_id_and_finishes(
                         .await
                         .expect("send unrelated progress");
                     socket
-                        .send(Message::Text(
+                        .send(Message::text(
                             json!({
                                 "jsonrpc": "2.0",
                                 "method": "notifications/progress",
@@ -385,7 +630,7 @@ async fn websocket_tool_call_stream_filters_progress_by_request_id_and_finishes(
                         .await
                         .expect("send progress");
                     socket
-                        .send(Message::Text(
+                        .send(Message::text(
                             json!({
                                 "jsonrpc": "2.0",
                                 "id": id,
@@ -483,12 +728,12 @@ async fn websocket_transport_refreshes_oauth_for_handshake_authorization() {
             let value: Value = serde_json::from_str(&text).expect("json");
             if value.get("method").and_then(Value::as_str) == Some("initialize") {
                 socket
-                    .send(Message::Text(
+                    .send(Message::text(
                         json!({
                             "jsonrpc": "2.0",
                             "id": value["id"].clone(),
                             "result": {
-                                "protocolVersion": "2025-03-26",
+                                "protocolVersion": "2025-11-25",
                                 "capabilities": { "tools": {} },
                                 "serverInfo": { "name": "fixture", "version": "0.1.0" }
                             }
@@ -585,12 +830,12 @@ async fn websocket_transport_retries_handshake_after_unauthorized_oauth_refresh(
                 match value.get("method").and_then(Value::as_str) {
                     Some("initialize") => {
                         socket
-                            .send(Message::Text(
+                            .send(Message::text(
                                 json!({
                                     "jsonrpc": "2.0",
                                     "id": value["id"].clone(),
                                     "result": {
-                                        "protocolVersion": "2025-03-26",
+                                        "protocolVersion": "2025-11-25",
                                         "capabilities": { "tools": {} },
                                         "serverInfo": { "name": "fixture", "version": "0.1.0" }
                                     }

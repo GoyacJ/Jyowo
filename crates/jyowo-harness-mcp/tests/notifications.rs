@@ -31,7 +31,7 @@ async fn websocket_transport_maps_mcp_notifications_to_changes() {
             match value.get("method").and_then(Value::as_str) {
                 Some("initialize") => {
                     socket
-                        .send(Message::Text(
+                        .send(Message::text(
                             json!({
                                 "jsonrpc": "2.0",
                                 "id": value["id"].clone(),
@@ -48,7 +48,7 @@ async fn websocket_transport_maps_mcp_notifications_to_changes() {
                 }
                 Some("tools/list") => {
                     socket
-                        .send(Message::Text(
+                        .send(Message::text(
                             json!({
                                 "jsonrpc": "2.0",
                                 "id": value["id"].clone(),
@@ -84,7 +84,7 @@ async fn websocket_transport_maps_mcp_notifications_to_changes() {
                         }),
                     ] {
                         socket
-                            .send(Message::Text(notification.to_string()))
+                            .send(Message::text(notification.to_string()))
                             .await
                             .expect("send notification");
                     }

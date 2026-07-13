@@ -274,10 +274,12 @@ pub struct McpPeer {
 }
 
 #[derive(Clone)]
+#[cfg(any(feature = "stdio", feature = "http", feature = "sse"))]
 pub(crate) struct McpWeakPeer {
     inner: Weak<McpPeerInner>,
 }
 
+#[cfg(any(feature = "stdio", feature = "http", feature = "sse"))]
 impl McpWeakPeer {
     pub(crate) async fn close(&self, reason: impl Into<String>) {
         if let Some(inner) = self.inner.upgrade() {
@@ -310,6 +312,7 @@ impl McpPeer {
             .map_err(|_| McpError::Connection("MCP session lock poisoned".to_owned()))
     }
 
+    #[cfg(any(feature = "stdio", feature = "http", feature = "sse"))]
     pub(crate) fn downgrade(&self) -> McpWeakPeer {
         McpWeakPeer {
             inner: Arc::downgrade(&self.inner),
@@ -332,6 +335,7 @@ impl McpPeer {
             .unwrap_or_default()
     }
 
+    #[cfg(any(feature = "http", feature = "sse"))]
     pub(crate) fn request_completion(
         &self,
         id: &Value,
@@ -346,6 +350,7 @@ impl McpPeer {
             .map(|pending| pending.get(&key).map(|entry| entry.completed.subscribe()))
     }
 
+    #[cfg(any(feature = "http", feature = "sse"))]
     pub(crate) async fn wait_for_inbound_tasks(&self) {
         loop {
             let changed = self.inner.inbound_tasks_changed.notified();

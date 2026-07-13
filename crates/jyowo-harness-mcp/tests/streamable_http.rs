@@ -12,8 +12,8 @@ use std::{
 use futures::StreamExt;
 use harness_contracts::{McpServerId, McpServerSource};
 use harness_mcp::{
-    HttpTransport, McpChange, McpClient, McpError, McpServerSpec, McpTimeouts, ReconnectPolicy,
-    TransportChoice,
+    HttpTransport, McpChange, McpClient, McpClientAuth, McpConnectContext, McpError, McpServerSpec,
+    McpTimeouts, ReconnectPolicy, TransportChoice,
 };
 use serde_json::{json, Value};
 use wiremock::{
@@ -283,11 +283,15 @@ async fn initialize_request_has_no_session_or_protocol_headers() {
 async fn transport_owned_headers_cannot_be_injected_by_configuration() {
     for owned in [
         "accept",
+        "authorization",
+        "content-length",
         "content-type",
         "host",
         "mcp-session-id",
         "mcp-protocol-version",
         "last-event-id",
+        "proxy-authorization",
+        "transfer-encoding",
     ] {
         let server = MockServer::start().await;
         let mut headers = BTreeMap::new();
@@ -386,11 +390,154 @@ async fn transport_errors_do_not_expose_endpoint_query_secrets() {
 }
 
 #[tokio::test]
-async fn legacy_fallback_status_is_preserved_as_a_typed_error() {
+async fn falls_back_to_legacy_sse_only_after_unavailable_initialize_status() {
+    use std::convert::Infallible;
+
+    use axum::{
+        body::Bytes,
+        extract::State,
+        http::{HeaderMap, StatusCode},
+        response::{sse::Event, Sse},
+        routing::{get, post},
+        Router,
+    };
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::UnboundedReceiverStream;
+
+    #[derive(Clone, Default)]
+    struct StateData {
+        events: Arc<parking_lot::Mutex<Option<mpsc::UnboundedSender<String>>>>,
+        streamable_attempts: Arc<AtomicUsize>,
+    }
+
+    fn require_bearer(headers: &HeaderMap) {
+        assert_eq!(
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer fallback-token")
+        );
+    }
+
+    async fn stream(
+        State(state): State<StateData>,
+        headers: HeaderMap,
+    ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+        require_bearer(&headers);
+        let (sender, receiver) = mpsc::unbounded_channel();
+        *state.events.lock() = Some(sender);
+        let endpoint =
+            futures::stream::once(async { Ok(Event::default().event("endpoint").data("/rpc")) });
+        let messages =
+            UnboundedReceiverStream::new(receiver).map(|data| Ok(Event::default().data(data)));
+        Sse::new(endpoint.chain(messages))
+    }
+
+    async fn unavailable(State(state): State<StateData>, headers: HeaderMap) -> StatusCode {
+        require_bearer(&headers);
+        state.streamable_attempts.fetch_add(1, Ordering::SeqCst);
+        StatusCode::METHOD_NOT_ALLOWED
+    }
+
+    async fn rpc(State(state): State<StateData>, headers: HeaderMap, body: Bytes) -> StatusCode {
+        require_bearer(&headers);
+        let message: Value = serde_json::from_slice(&body).expect("legacy message");
+        let response = match message.get("method").and_then(Value::as_str) {
+            Some("initialize") => Some(json!({
+                "jsonrpc": "2.0",
+                "id": message["id"].clone(),
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "legacy", "version": "0.1.0" }
+                }
+            })),
+            Some("tools/list") => Some(json!({
+                "jsonrpc": "2.0",
+                "id": message["id"].clone(),
+                "result": {
+                    "tools": [
+                        { "name": "legacy_lookup", "inputSchema": { "type": "object" } }
+                    ]
+                }
+            })),
+            Some("notifications/initialized") => None,
+            other => panic!("unexpected legacy method: {other:?}"),
+        };
+        if let Some(response) = response {
+            state
+                .events
+                .lock()
+                .as_ref()
+                .expect("event stream")
+                .send(response.to_string())
+                .expect("send response event");
+        }
+        StatusCode::ACCEPTED
+    }
+
+    let state = StateData::default();
+    let attempts = Arc::clone(&state.streamable_attempts);
+    let app = Router::new()
+        .route("/mcp", get(stream).post(unavailable))
+        .route("/rpc", post(rpc))
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+
+    let mut fallback_spec = McpServerSpec::new(
+        McpServerId("legacy-fallback".into()),
+        "legacy fallback fixture",
+        TransportChoice::Http {
+            url: format!("http://localhost:{}/mcp", addr.port()),
+            headers: BTreeMap::new(),
+        },
+        McpServerSource::Workspace,
+    );
+    fallback_spec.auth = McpClientAuth::Bearer("fallback-token".into());
+    let authorization_events = Arc::new(support::RecordingAuthorizationEventSink::default());
+    let event_sink: Arc<dyn harness_execution::AuthorizationEventSink> =
+        authorization_events.clone();
+    let context = McpConnectContext::default().with_authorization(
+        support::mcp_authorization_context_allowing_tool_with_sink("mcp_transport", event_sink),
+    );
+    let connection = McpClient::new(Arc::new(
+        HttpTransport::new().with_pinned_resolution("LOCALHOST.", vec![addr]),
+    ))
+    .connect_with_context(fallback_spec, context)
+    .await
+    .expect("legacy fallback connects");
+    let tools = connection.list_tools().await.expect("legacy tools");
+    assert_eq!(tools[0].name, "legacy_lookup");
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        authorization_events
+            .events()
+            .iter()
+            .filter(|event| matches!(event, harness_contracts::Event::PermissionRequested(_)))
+            .count(),
+        1
+    );
+    connection.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn does_not_fallback_to_legacy_sse_for_server_error() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(body_partial_json(json!({ "method": "initialize" })))
-        .respond_with(ResponseTemplate::new(405))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/event-stream"))
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -398,10 +545,137 @@ async fn legacy_fallback_status_is_preserved_as_a_typed_error() {
         .connect_with_context(spec(&server), support::authorized_connect_context())
         .await
     {
-        Ok(_) => panic!("streamable initialization should fail"),
+        Ok(_) => panic!("server error must not fall back"),
         Err(error) => error,
     };
-    assert_eq!(error, McpError::StreamableHttpUnavailable(405));
+    assert!(matches!(error, McpError::Transport(_)));
+}
+
+#[tokio::test]
+async fn does_not_fallback_to_legacy_sse_for_authentication_or_authorization_errors() {
+    for status in [401, 403] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({ "method": "initialize" })))
+            .respond_with(ResponseTemplate::new(status))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200).insert_header("content-type", "text/event-stream"),
+            )
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let error = match McpClient::new(Arc::new(HttpTransport::new()))
+            .connect_with_context(spec(&server), support::authorized_connect_context())
+            .await
+        {
+            Ok(_) => panic!("status {status} must not fall back"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, McpError::Transport(_)));
+    }
+}
+
+#[tokio::test]
+async fn does_not_fallback_to_legacy_sse_for_json_rpc_initialize_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({ "method": "initialize" })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": { "code": -32602, "message": "unsupported client capabilities" }
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/event-stream"))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let error = match McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(spec(&server), support::authorized_connect_context())
+        .await
+    {
+        Ok(_) => panic!("JSON-RPC initialize error must not fall back"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, McpError::RemoteJsonRpc(_)));
+}
+
+#[tokio::test]
+async fn network_failure_does_not_trigger_legacy_sse_get() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    let methods = Arc::new(StdMutex::new(Vec::new()));
+    let observed = Arc::clone(&methods);
+    let server = tokio::spawn(async move {
+        loop {
+            let accepted =
+                tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
+            let Ok(Ok((stream, _))) = accepted else {
+                return;
+            };
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 512];
+            loop {
+                stream.readable().await.expect("request readable");
+                match stream.try_read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        request.extend_from_slice(&chunk[..read]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(error) => panic!("read request: {error}"),
+                }
+            }
+            if let Some(method) = request.split(|byte| *byte == b' ').next() {
+                observed
+                    .lock()
+                    .expect("methods lock")
+                    .push(String::from_utf8_lossy(method).into_owned());
+            }
+            drop(stream);
+        }
+    });
+
+    let mut failing = McpServerSpec::new(
+        McpServerId("network-failure".into()),
+        "network failure fixture",
+        TransportChoice::Http {
+            url: format!("http://{addr}/mcp"),
+            headers: BTreeMap::new(),
+        },
+        McpServerSource::Workspace,
+    );
+    failing.timeouts.handshake = Duration::from_millis(500);
+    let error = match McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(failing, support::authorized_connect_context())
+        .await
+    {
+        Ok(_) => panic!("network failure unexpectedly connected"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, McpError::Transport(_)));
+    server.await.expect("server task");
+    let methods = methods.lock().expect("methods lock");
+    assert!(methods.iter().any(|method| method == "POST"));
+    assert!(!methods.iter().any(|method| method == "GET"));
 }
 
 #[tokio::test]

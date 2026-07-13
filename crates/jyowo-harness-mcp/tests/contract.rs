@@ -281,13 +281,13 @@ async fn websocket_transport_satisfies_client_contract() {
             };
             if let Some(response) = response {
                 socket
-                    .send(Message::Text(response.to_string()))
+                    .send(Message::text(response.to_string()))
                     .await
                     .expect("send response");
             }
             if method == Some("tools/list") {
                 socket
-                    .send(Message::Text(
+                    .send(Message::text(
                         json!({
                             "jsonrpc": "2.0",
                             "method": "notifications/tools/list_changed"
@@ -517,15 +517,20 @@ async fn spawn_sse_contract_fixture() -> (SocketAddr, tokio::sync::oneshot::Send
     ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
         let (sender, receiver) = mpsc::unbounded_channel();
         *state.events.lock() = Some(sender);
-        Sse::new(UnboundedReceiverStream::new(receiver).map(|data| Ok(Event::default().data(data))))
+        let endpoint = futures::stream::once(async {
+            Ok(Event::default().event("endpoint").data("/mcp/rpc"))
+        });
+        let messages =
+            UnboundedReceiverStream::new(receiver).map(|data| Ok(Event::default().data(data)));
+        Sse::new(endpoint.chain(messages))
     }
 
     let state = AppState {
         events: Arc::new(Mutex::new(None)),
     };
     let app = Router::new()
-        .route("/mcp", post(rpc))
-        .route("/mcp/events", get(events))
+        .route("/mcp", get(events))
+        .route("/mcp/rpc", post(rpc))
         .with_state(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");

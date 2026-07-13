@@ -786,7 +786,7 @@ async fn harness_mcp_server_serves_websocket_jsonrpc_with_request_headers() {
     );
     let (mut socket, _) = connect_async(request).await.expect("connect");
     socket
-        .send(Message::Text(
+        .send(Message::text(
             serde_json::to_string(&JsonRpcRequest::new(
                 json!(32),
                 "initialize",
@@ -816,7 +816,7 @@ async fn harness_mcp_server_serves_websocket_jsonrpc_with_request_headers() {
         "jyowo-harness-mcp"
     );
     socket
-        .send(Message::Text(
+        .send(Message::text(
             serde_json::to_string(&JsonRpcRequest::new(
                 json!(34),
                 "tools/list",
@@ -841,7 +841,7 @@ async fn harness_mcp_server_serves_websocket_jsonrpc_with_request_headers() {
     );
 
     socket
-        .send(Message::Text(
+        .send(Message::text(
             serde_json::to_string(&JsonRpcRequest::new(
                 json!(35),
                 "tools/call",

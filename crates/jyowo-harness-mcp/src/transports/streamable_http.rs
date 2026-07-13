@@ -1,3 +1,5 @@
+#![cfg_attr(not(feature = "http"), allow(dead_code))]
+
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{
@@ -281,6 +283,7 @@ fn is_transport_owned_header(name: &HeaderName) -> bool {
     matches!(
         name.as_str(),
         "accept"
+            | "authorization"
             | "content-length"
             | "content-type"
             | "host"
@@ -290,6 +293,45 @@ fn is_transport_owned_header(name: &HeaderName) -> bool {
             | "proxy-authorization"
             | "transfer-encoding"
     )
+}
+
+pub(super) async fn prepare_http_endpoint(
+    raw_url: &str,
+    headers: std::collections::BTreeMap<String, String>,
+    pinned_resolutions: &[(String, Vec<SocketAddr>)],
+) -> Result<(reqwest::Url, reqwest::Client), McpError> {
+    let endpoint = parse_http_endpoint(raw_url)?;
+    let mut default_headers = HeaderMap::new();
+    for (key, value) in headers {
+        let name = HeaderName::try_from(key.as_str())
+            .map_err(|error| McpError::Transport(error.to_string()))?;
+        if is_transport_owned_header(&name) {
+            return Err(McpError::Protocol(format!(
+                "HTTP header {name} is owned by the MCP transport"
+            )));
+        }
+        let value = HeaderValue::try_from(value.as_str())
+            .map_err(|error| McpError::Transport(error.to_string()))?;
+        default_headers.insert(name, value);
+    }
+    let resolved = resolve_http_endpoint(
+        &endpoint,
+        pinned_resolutions
+            .iter()
+            .rev()
+            .find(|(host, _)| host.eq_ignore_ascii_case(&endpoint.host))
+            .map(|(_, addrs)| addrs.as_slice()),
+    )
+    .await?;
+    let client = reqwest::Client::builder()
+        .default_headers(default_headers)
+        .pool_max_idle_per_host(0)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .resolve_to_addrs(&endpoint.host, &resolved)
+        .build()
+        .map_err(|error| McpError::Transport(error.to_string()))?;
+    Ok((endpoint.url, client))
 }
 
 #[async_trait]
@@ -314,38 +356,8 @@ impl McpTransport for HttpTransport {
                 "HttpTransport requires TransportChoice::Http".into(),
             ));
         };
-        let endpoint = parse_http_endpoint(&url)?;
-        let mut default_headers = HeaderMap::new();
-        for (key, value) in headers {
-            let name = HeaderName::try_from(key.as_str())
-                .map_err(|error| McpError::Transport(error.to_string()))?;
-            if is_transport_owned_header(&name) {
-                return Err(McpError::Protocol(format!(
-                    "HTTP header {name} is owned by the MCP transport"
-                )));
-            }
-            let value = HeaderValue::try_from(value.as_str())
-                .map_err(|error| McpError::Transport(error.to_string()))?;
-            default_headers.insert(name, value);
-        }
-        let resolved = resolve_http_endpoint(
-            &endpoint,
-            self.pinned_resolutions
-                .iter()
-                .rev()
-                .find(|(host, _)| host.eq_ignore_ascii_case(&endpoint.host))
-                .map(|(_, addrs)| addrs.as_slice()),
-        )
-        .await?;
-        let builder = reqwest::Client::builder()
-            .default_headers(default_headers)
-            .pool_max_idle_per_host(0)
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .resolve_to_addrs(&endpoint.host, &resolved);
-        let client = builder
-            .build()
-            .map_err(|error| McpError::Transport(error.to_string()))?;
+        let (endpoint, client) =
+            prepare_http_endpoint(&url, headers, &self.pinned_resolutions).await?;
         let auth_provider = client_auth::McpClientAuthProvider::new(&spec.auth)
             .with_metrics_sink(context.metrics_sink_or(Arc::clone(&self.metrics_sink)))
             .with_lifecycle_events(
@@ -357,13 +369,13 @@ impl McpTransport for HttpTransport {
         let (changes, _) = broadcast::channel(64);
         let connection = Arc::new(HttpConnection {
             connection_id: format!("http:{}", spec.server_id.0),
-            endpoint: endpoint.url.to_string(),
+            endpoint: endpoint.to_string(),
             client,
             auth_provider,
             expected: spec.capabilities_expected,
             timeouts: spec.timeouts,
             reconnect: spec.reconnect,
-            elicitation_handler: context.elicitation_handler,
+            elicitation_handler: context.elicitation_handler.clone(),
             permission_mode: context.permission_mode,
             state,
             changes,
@@ -372,8 +384,22 @@ impl McpTransport for HttpTransport {
             next_generation_id: AtomicU64::new(1),
             lifetime_cancel: watch::channel(false).0,
         });
-        connection.install_generation().await?;
-        Ok(Arc::new(HttpConnectionHandle { inner: connection }))
+        match connection.install_generation().await {
+            Ok(_) => Ok(Arc::new(HttpConnectionHandle { inner: connection })),
+            Err(McpError::StreamableHttpUnavailable(400 | 404 | 405)) => {
+                connection.lifetime_cancel.send_replace(true);
+                super::sse::connect_prepared(
+                    format!("http:{}", spec.server_id.0),
+                    spec,
+                    context,
+                    endpoint,
+                    connection.client.clone(),
+                    connection.auth_provider.clone(),
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -1142,7 +1168,7 @@ async fn send_http(
     unreachable!()
 }
 
-fn sanitize_reqwest_error(error: &reqwest::Error) -> String {
+pub(super) fn sanitize_reqwest_error(error: &reqwest::Error) -> String {
     if let Some(status) = error.status() {
         format!("HTTP request failed with status {status}")
     } else if error.is_timeout() {

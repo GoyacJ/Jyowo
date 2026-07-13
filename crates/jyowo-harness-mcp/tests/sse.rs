@@ -5,9 +5,10 @@ use std::{
     convert::Infallible,
     net::SocketAddr,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
+    time::Duration,
 };
 
 use futures::StreamExt;
@@ -142,9 +143,143 @@ async fn sse_transport_posts_resource_subscription_requests() {
             "notifications/initialized",
             "resources/subscribe",
             "resources/unsubscribe",
-            "shutdown",
         ]
     );
+}
+
+#[tokio::test]
+async fn sse_connect_waits_until_initialized_is_accepted() {
+    let (addr, shutdown, initialized) = spawn_sse_fixture_with_options(SseFixtureOptions {
+        initialized_delay: Duration::from_millis(150),
+        ..SseFixtureOptions::default()
+    })
+    .await;
+    let mut spec = McpServerSpec::new(
+        McpServerId("sse-initialized-order".into()),
+        "sse initialized ordering fixture",
+        TransportChoice::Sse {
+            url: format!("http://{addr}/mcp"),
+            headers: BTreeMap::new(),
+        },
+        McpServerSource::Workspace,
+    );
+    spec.auth = McpClientAuth::Bearer("token".into());
+
+    let connection = McpClient::new(Arc::new(SseTransport::new()))
+        .connect_with_context(spec, support::authorized_connect_context())
+        .await
+        .expect("sse connects after initialized is accepted");
+
+    assert!(initialized.load(Ordering::SeqCst));
+    connection.shutdown().await.expect("shutdown");
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn sse_accepts_case_insensitive_event_stream_content_type() {
+    let (addr, shutdown, _) = spawn_sse_fixture_with_options(SseFixtureOptions {
+        uppercase_content_type: true,
+        ..SseFixtureOptions::default()
+    })
+    .await;
+    let mut spec = McpServerSpec::new(
+        McpServerId("sse-content-type".into()),
+        "sse content type fixture",
+        TransportChoice::Sse {
+            url: format!("http://{addr}/mcp"),
+            headers: BTreeMap::new(),
+        },
+        McpServerSource::Workspace,
+    );
+    spec.auth = McpClientAuth::Bearer("token".into());
+
+    let connection = McpClient::new(Arc::new(SseTransport::new()))
+        .connect_with_context(spec, support::authorized_connect_context())
+        .await
+        .expect("case-insensitive event stream content type");
+    connection.shutdown().await.expect("shutdown");
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn sse_post_timeout_closes_the_transport() {
+    let (addr, shutdown, _) = spawn_sse_fixture_with_options(SseFixtureOptions {
+        hang_tools_post: true,
+        ..SseFixtureOptions::default()
+    })
+    .await;
+    let mut spec = McpServerSpec::new(
+        McpServerId("sse-post-timeout".into()),
+        "sse post timeout fixture",
+        TransportChoice::Sse {
+            url: format!("http://{addr}/mcp"),
+            headers: BTreeMap::new(),
+        },
+        McpServerSource::Workspace,
+    );
+    spec.timeouts.call_default = Duration::from_millis(50);
+    spec.auth = McpClientAuth::Bearer("token".into());
+
+    let connection = McpClient::new(Arc::new(SseTransport::new()))
+        .connect_with_context(spec, support::authorized_connect_context())
+        .await
+        .expect("sse connects");
+    connection
+        .list_tools()
+        .await
+        .expect("streamed response completes before POST headers");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(connection.subscribe_changes().await.is_err());
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn sse_transport_rejects_cross_origin_discovered_endpoint() {
+    use axum::{
+        response::{sse::Event, Sse},
+        routing::get,
+        Router,
+    };
+    use futures::stream;
+    use std::convert::Infallible;
+
+    let app = Router::new().route(
+        "/configured-stream",
+        get(|| async {
+            Sse::new(stream::once(async {
+                Ok::<_, Infallible>(
+                    Event::default()
+                        .event("endpoint")
+                        .data("https://other.example.test/rpc"),
+                )
+            }))
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+
+    let spec = McpServerSpec::new(
+        McpServerId("sse-cross-origin".into()),
+        "cross-origin fixture",
+        TransportChoice::Sse {
+            url: format!("http://{addr}/configured-stream"),
+            headers: BTreeMap::new(),
+        },
+        McpServerSource::Workspace,
+    );
+
+    let error = match McpClient::new(Arc::new(SseTransport::new()))
+        .connect_with_context(spec, support::authorized_connect_context())
+        .await
+    {
+        Ok(_) => panic!("cross-origin endpoint must be rejected"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("origin"), "{error}");
 }
 
 #[tokio::test]
@@ -214,6 +349,51 @@ async fn spawn_sse_fixture_with_auth_and_elicitation(
     expected_authorization: &'static str,
     require_elicitation: bool,
 ) -> (SocketAddr, oneshot::Sender<()>, Arc<Mutex<Vec<String>>>) {
+    let (addr, shutdown, initialized) = spawn_sse_fixture_with_options(SseFixtureOptions {
+        expected_authorization,
+        require_elicitation,
+        ..SseFixtureOptions::default()
+    })
+    .await;
+    let methods = initialized.methods.clone();
+    (addr, shutdown, methods)
+}
+
+#[derive(Clone, Copy)]
+struct SseFixtureOptions {
+    expected_authorization: &'static str,
+    require_elicitation: bool,
+    initialized_delay: Duration,
+    uppercase_content_type: bool,
+    hang_tools_post: bool,
+}
+
+impl Default for SseFixtureOptions {
+    fn default() -> Self {
+        Self {
+            expected_authorization: "Bearer token",
+            require_elicitation: false,
+            initialized_delay: Duration::ZERO,
+            uppercase_content_type: false,
+            hang_tools_post: false,
+        }
+    }
+}
+
+struct SseFixtureStateHandle {
+    initialized: Arc<AtomicBool>,
+    methods: Arc<Mutex<Vec<String>>>,
+}
+
+impl SseFixtureStateHandle {
+    fn load(&self, ordering: Ordering) -> bool {
+        self.initialized.load(ordering)
+    }
+}
+
+async fn spawn_sse_fixture_with_options(
+    options: SseFixtureOptions,
+) -> (SocketAddr, oneshot::Sender<()>, SseFixtureStateHandle) {
     use axum::{
         body::Bytes,
         extract::State,
@@ -231,6 +411,10 @@ async fn spawn_sse_fixture_with_auth_and_elicitation(
         tool_calls: Arc<AtomicUsize>,
         expected_authorization: &'static str,
         require_elicitation: bool,
+        initialized: Arc<AtomicBool>,
+        initialized_delay: Duration,
+        uppercase_content_type: bool,
+        hang_tools_post: bool,
     }
 
     fn authorized(headers: &HeaderMap, expected_authorization: &str) -> bool {
@@ -275,7 +459,7 @@ async fn spawn_sse_fixture_with_auth_and_elicitation(
                 "jsonrpc": "2.0",
                 "id": request["id"].clone(),
                 "result": {
-                    "protocolVersion": "2025-03-26",
+                    "protocolVersion": "2025-11-25",
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "fixture", "version": "0.1.0" }
                 }
@@ -333,7 +517,9 @@ async fn spawn_sse_fixture_with_auth_and_elicitation(
                 "id": request["id"].clone(),
                 "result": {}
             }),
-            Some("notifications/initialized") | Some("shutdown") => {
+            Some("notifications/initialized") => {
+                tokio::time::sleep(state.initialized_delay).await;
+                state.initialized.store(true, Ordering::SeqCst);
                 return Ok(([(CONNECTION, "close")], StatusCode::ACCEPTED));
             }
             other => json!({
@@ -343,34 +529,55 @@ async fn spawn_sse_fixture_with_auth_and_elicitation(
             }),
         };
         send_event(&state, response.to_string()).await;
+        if state.hang_tools_post
+            && request.get("method").and_then(Value::as_str) == Some("tools/list")
+        {
+            std::future::pending::<()>().await;
+        }
         Ok(([(CONNECTION, "close")], StatusCode::ACCEPTED))
     }
 
     async fn real_stream(
         State(state): State<AppState>,
         headers: HeaderMap,
-    ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    ) -> Result<axum::response::Response, StatusCode> {
         if !authorized(&headers, state.expected_authorization) {
             return Err(StatusCode::UNAUTHORIZED);
         }
         let (sender, receiver) = mpsc::unbounded_channel();
         *state.events.lock() = Some(sender);
-        let stream =
+        let endpoint = futures::stream::once(async {
+            Ok::<_, Infallible>(Event::default().event("endpoint").data("/rpc"))
+        });
+        let messages =
             UnboundedReceiverStream::new(receiver).map(|data| Ok(Event::default().data(data)));
-        Ok(Sse::new(stream))
+        let stream = endpoint.chain(messages);
+        let mut response = Sse::new(stream).into_response();
+        if state.uppercase_content_type {
+            response.headers_mut().insert(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("Text/Event-Stream; charset=utf-8"),
+            );
+        }
+        Ok(response)
     }
 
     let state = AppState {
         events: Arc::new(Mutex::new(None)),
         methods: Arc::new(Mutex::new(Vec::new())),
         tool_calls: Arc::new(AtomicUsize::new(0)),
-        expected_authorization,
-        require_elicitation,
+        expected_authorization: options.expected_authorization,
+        require_elicitation: options.require_elicitation,
+        initialized: Arc::new(AtomicBool::new(false)),
+        initialized_delay: options.initialized_delay,
+        uppercase_content_type: options.uppercase_content_type,
+        hang_tools_post: options.hang_tools_post,
     };
     let methods = state.methods.clone();
+    let initialized = state.initialized.clone();
     let app = Router::new()
-        .route("/mcp", post(rpc))
-        .route("/mcp/events", get(real_stream))
+        .route("/mcp", get(real_stream))
+        .route("/rpc", post(rpc))
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -385,7 +592,14 @@ async fn spawn_sse_fixture_with_auth_and_elicitation(
             .expect("serve");
     });
     wait_for_listener(addr).await;
-    (addr, shutdown_tx, methods)
+    (
+        addr,
+        shutdown_tx,
+        SseFixtureStateHandle {
+            initialized,
+            methods,
+        },
+    )
 }
 
 async fn wait_for_listener(addr: SocketAddr) {
