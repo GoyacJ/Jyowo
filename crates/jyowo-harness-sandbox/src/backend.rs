@@ -94,6 +94,11 @@ pub struct ExecSpec {
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
     pub authorized_env_keys: BTreeSet<String>,
+    /// Explicitly authorized environment keys whose values are secret.
+    ///
+    /// Secret values are injected into the target process but are excluded from
+    /// deterministic fingerprints and host-visible launcher arguments.
+    pub secret_env_keys: BTreeSet<String>,
     pub cwd: Option<PathBuf>,
     pub stdin: StdioSpec,
     pub stdout: StdioSpec,
@@ -104,12 +109,13 @@ pub struct ExecSpec {
     pub workspace_access: WorkspaceAccess,
     pub output_policy: OutputPolicy,
     pub required_kill_scope: Option<KillScope>,
+    pub required_synchronous_kill_scope: Option<KillScope>,
 }
 
 impl ExecSpec {
     pub fn canonical_fingerprint(&self, base: &SandboxBaseConfig) -> ExecFingerprint {
         let mut hasher = blake3::Hasher::new();
-        write_field(&mut hasher, b"jyowo.exec_fingerprint.v1");
+        write_field(&mut hasher, b"jyowo.exec_fingerprint.v2");
         write_string(&mut hasher, &self.command);
         write_usize(&mut hasher, self.args.len());
         for arg in &self.args {
@@ -120,13 +126,22 @@ impl ExecSpec {
         for key in &self.authorized_env_keys {
             write_string(&mut hasher, key);
         }
+        write_usize(&mut hasher, self.secret_env_keys.len());
+        for key in &self.secret_env_keys {
+            write_string(&mut hasher, key);
+        }
         let filtered_env = self.env.iter().filter(|(key, _)| {
             base.passthrough_env_keys.contains(*key) || self.authorized_env_keys.contains(*key)
         });
         write_usize(&mut hasher, filtered_env.clone().count());
         for (key, value) in filtered_env {
             write_string(&mut hasher, key);
-            write_string(&mut hasher, value);
+            if self.secret_env_keys.contains(key) {
+                write_field(&mut hasher, b"env:secret:present");
+            } else {
+                write_field(&mut hasher, b"env:public");
+                write_string(&mut hasher, value);
+            }
         }
 
         match &self.cwd {
@@ -150,6 +165,7 @@ impl Default for ExecSpec {
             args: Vec::new(),
             env: BTreeMap::new(),
             authorized_env_keys: BTreeSet::new(),
+            secret_env_keys: BTreeSet::new(),
             cwd: None,
             stdin: StdioSpec::Piped,
             stdout: StdioSpec::Piped,
@@ -160,6 +176,7 @@ impl Default for ExecSpec {
             workspace_access: WorkspaceAccess::None,
             output_policy: OutputPolicy::default(),
             required_kill_scope: None,
+            required_synchronous_kill_scope: None,
         }
     }
 }
@@ -527,6 +544,8 @@ pub fn validate_preflight_capabilities(
         });
     }
 
+    validate_secret_environment(backend_id, spec)?;
+
     if !spec.authorized_env_keys.is_empty() && !capabilities.supports_per_exec_env {
         return Err(SandboxError::CapabilityMismatch {
             capability: "environment".to_owned(),
@@ -547,8 +566,42 @@ pub fn validate_preflight_capabilities(
         }
     }
 
+    if let Some(required_scope) = spec.required_synchronous_kill_scope {
+        if !capabilities
+            .supports_synchronous_kill_scope
+            .contains(&required_scope)
+        {
+            return Err(SandboxError::CapabilityMismatch {
+                capability: "synchronous_kill".to_owned(),
+                detail: format!(
+                    "sandbox backend `{backend_id}` cannot synchronously kill execution scope: {required_scope:?}"
+                ),
+            });
+        }
+    }
+
     validate_resource_preflight(capabilities, &spec.policy.resource_limits)?;
     Ok(())
+}
+
+pub(crate) fn validate_secret_environment(
+    backend_id: &str,
+    spec: &ExecSpec,
+) -> Result<(), SandboxError> {
+    if spec.secret_env_keys.is_subset(&spec.authorized_env_keys)
+        && spec
+            .secret_env_keys
+            .iter()
+            .all(|key| spec.env.contains_key(key))
+    {
+        return Ok(());
+    }
+    Err(SandboxError::CapabilityMismatch {
+        capability: "secret_environment".to_owned(),
+        detail: format!(
+            "sandbox backend `{backend_id}` requires every secret environment key to be explicitly authorized and present"
+        ),
+    })
 }
 
 fn validate_resource_preflight(

@@ -14,9 +14,9 @@ use harness_contracts::{
 };
 use harness_sandbox::{
     execute_skill_script, ActivityHandle, EventSink, ExecContext, ExecOutcome, ExecSpec,
-    NetworkPolicySupport, ProcessHandle, ResourceLimitSupport, SandboxBackend, SandboxCapabilities,
-    SessionSnapshotFile, SkillScriptPackFile, SkillScriptSandboxRequest, SkillScriptStatus,
-    SnapshotSpec,
+    NetworkPolicySupport, ProcessHandle, ResourceLimitSupport, RoutingSandboxBackend,
+    SandboxBackend, SandboxCapabilities, SessionSnapshotFile, SkillScriptPackFile,
+    SkillScriptSandboxRequest, SkillScriptStatus, SnapshotSpec,
 };
 #[cfg(all(feature = "local", target_os = "macos"))]
 use harness_sandbox::{LocalIsolation, LocalSandbox};
@@ -277,6 +277,10 @@ async fn injects_only_explicit_declared_environment_values() {
         specs[0].env,
         BTreeMap::from([("TOKEN".to_owned(), "secret".to_owned())])
     );
+    assert_eq!(
+        specs[0].secret_env_keys,
+        BTreeSet::from(["TOKEN".to_owned()])
+    );
     assert_eq!(specs[0].policy.network, NetworkAccess::None);
     assert!(matches!(
         &specs[0].workspace_access,
@@ -347,6 +351,26 @@ async fn rejects_backend_without_synchronous_process_group_kill_before_execute()
             if capability == "synchronous_kill"
     ));
     assert_eq!(backend.executed.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn routing_skips_child_without_synchronous_process_group_kill() {
+    let asynchronous_only = Arc::new(TestBackend {
+        synchronous_kill_scopes_supported: Vec::new(),
+        ..TestBackend::accepting()
+    });
+    let synchronous = Arc::new(TestBackend::accepting());
+    let backend = Arc::new(
+        RoutingSandboxBackend::new(vec![asynchronous_only.clone(), synchronous.clone()])
+            .expect("router should accept child backends"),
+    );
+
+    execute_skill_script(backend, request(script_decl()), test_context())
+        .await
+        .expect("router should select the child with deterministic cancellation");
+
+    assert_eq!(asynchronous_only.executed.load(Ordering::SeqCst), 0);
+    assert_eq!(synchronous.executed.load(Ordering::SeqCst), 1);
 }
 
 #[cfg(all(feature = "local", target_os = "macos"))]

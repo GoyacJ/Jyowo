@@ -75,3 +75,48 @@ fn fingerprint_changes_when_workspace_access_changes() {
         changed.canonical_fingerprint(&base_config())
     );
 }
+
+#[test]
+fn fingerprint_binds_secret_presence_without_hashing_its_value() {
+    let mut first = exec_spec();
+    first
+        .env
+        .insert("TOKEN".to_owned(), "first-secret".to_owned());
+    first.authorized_env_keys.insert("TOKEN".to_owned());
+    first.secret_env_keys.insert("TOKEN".to_owned());
+
+    let mut changed_secret = first.clone();
+    changed_secret
+        .env
+        .insert("TOKEN".to_owned(), "second-secret".to_owned());
+    assert_eq!(
+        first.canonical_fingerprint(&base_config()),
+        changed_secret.canonical_fingerprint(&base_config())
+    );
+
+    let mut missing_secret = first.clone();
+    missing_secret.env.remove("TOKEN");
+    assert_ne!(
+        first.canonical_fingerprint(&base_config()),
+        missing_secret.canonical_fingerprint(&base_config())
+    );
+}
+
+#[test]
+fn fingerprint_still_binds_public_environment_values() {
+    let mut first = exec_spec();
+    first
+        .env
+        .insert("PUBLIC_CONFIG".to_owned(), "first".to_owned());
+    first.authorized_env_keys.insert("PUBLIC_CONFIG".to_owned());
+
+    let mut changed = first.clone();
+    changed
+        .env
+        .insert("PUBLIC_CONFIG".to_owned(), "second".to_owned());
+
+    assert_ne!(
+        first.canonical_fingerprint(&base_config()),
+        changed.canonical_fingerprint(&base_config())
+    );
+}

@@ -705,6 +705,7 @@ async fn run_extension_command_sandboxed(
         args,
         env: BTreeMap::new(),
         authorized_env_keys: Default::default(),
+        secret_env_keys: Default::default(),
         cwd: Some(cwd),
         stdin: if input.is_some() {
             StdioSpec::Piped
@@ -731,6 +732,7 @@ async fn run_extension_command_sandboxed(
         workspace_access: WorkspaceAccess::ReadOnly,
         output_policy: Default::default(),
         required_kill_scope: None,
+        required_synchronous_kill_scope: None,
     };
     let ctx = ExecContext {
         session_id: SessionId::new(),

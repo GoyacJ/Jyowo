@@ -191,6 +191,37 @@ async fn selects_first_backend_capable_of_network_none() {
     assert_eq!(selected.backend_id(), "a");
 }
 
+#[test]
+fn selects_child_that_supports_required_synchronous_kill_scope() {
+    let common_caps = SandboxCapabilities {
+        network: NetworkPolicySupport {
+            unrestricted: true,
+            ..NetworkPolicySupport::default()
+        },
+        supports_kill_scope: vec![KillScope::ProcessGroup],
+        max_concurrent_execs: 1,
+        ..SandboxCapabilities::default()
+    };
+    let asynchronous_only = MinimalStub::new("asynchronous", common_caps.clone());
+    let synchronous = MinimalStub::new(
+        "synchronous",
+        SandboxCapabilities {
+            supports_synchronous_kill_scope: vec![KillScope::ProcessGroup],
+            ..common_caps
+        },
+    );
+    let router = RoutingSandboxBackend::new(vec![asynchronous_only, synchronous]).unwrap();
+    let spec = ExecSpec {
+        required_kill_scope: Some(KillScope::ProcessGroup),
+        required_synchronous_kill_scope: Some(KillScope::ProcessGroup),
+        ..spec_with_network(NetworkAccess::Unrestricted)
+    };
+
+    let selected = router.select_backend(&spec).unwrap();
+
+    assert_eq!(selected.backend_id(), "synchronous");
+}
+
 #[tokio::test]
 async fn refuses_restricted_network_when_only_unrestricted_available() {
     let caps = stub_caps_with_network(NetworkPolicySupport {

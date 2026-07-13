@@ -26,11 +26,17 @@ use crate::{
 static TEMP_WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(100);
 const BACKEND_TIMEOUT_GRACE: Duration = Duration::from_millis(250);
+const MAX_ARTIFACT_SCAN_ENTRIES: usize = 4096;
 
 #[derive(Clone, Copy)]
 struct ArtifactBaseline {
     byte_size: u64,
     content_hash: [u8; 32],
+}
+
+struct ArtifactFileScan {
+    paths: Vec<PathBuf>,
+    limited: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,11 +171,24 @@ pub async fn execute_skill_script(
         .max_stdout_bytes
         .max(request.declaration.max_stderr_bytes);
     let authorized_env_keys = request.env.keys().cloned().collect();
+    let secret_env_keys = request
+        .env
+        .keys()
+        .filter(|name| {
+            request
+                .declaration
+                .env
+                .get(*name)
+                .is_some_and(|declaration| declaration.secret)
+        })
+        .cloned()
+        .collect();
     let spec = ExecSpec {
         command: command_for_script(&script_path).to_owned(),
         args: vec![script_path_string],
         env: request.env,
         authorized_env_keys,
+        secret_env_keys,
         cwd: Some(root.clone()),
         stdin: StdioSpec::Null,
         stdout: StdioSpec::Piped,
@@ -198,6 +217,7 @@ pub async fn execute_skill_script(
             redact_secrets: true,
         },
         required_kill_scope: Some(KillScope::ProcessGroup),
+        required_synchronous_kill_scope: Some(KillScope::ProcessGroup),
     };
 
     let backend_id = backend.backend_id().to_owned();
@@ -453,11 +473,12 @@ fn collect_artifacts(
     max_count: u64,
     max_bytes: u64,
 ) -> Result<(Vec<SkillScriptArtifact>, bool), SandboxError> {
-    let mut paths = list_files(root)?;
+    let scan = list_files_bounded(root, MAX_ARTIFACT_SCAN_ENTRIES)?;
+    let mut paths = scan.paths;
     paths.sort();
     let mut artifacts = Vec::new();
     let mut remaining_bytes = max_bytes;
-    let mut limited = false;
+    let mut limited = scan.limited;
 
     for path in paths {
         let relative = path
@@ -521,12 +542,20 @@ fn file_content_hash(path: &Path) -> Result<[u8; 32], SandboxError> {
     }
 }
 
-fn list_files(root: &Path) -> Result<Vec<PathBuf>, SandboxError> {
+fn list_files_bounded(root: &Path, max_entries: usize) -> Result<ArtifactFileScan, SandboxError> {
     let mut pending = vec![root.to_path_buf()];
     let mut files = Vec::new();
+    let mut entries_scanned = 0_usize;
     while let Some(path) = pending.pop() {
         for entry in std::fs::read_dir(path).map_err(io_error)? {
+            if entries_scanned >= max_entries {
+                return Ok(ArtifactFileScan {
+                    paths: files,
+                    limited: true,
+                });
+            }
             let entry = entry.map_err(io_error)?;
+            entries_scanned += 1;
             let entry_path = entry.path();
             let file_type = entry.file_type().map_err(io_error)?;
             if file_type.is_dir() {
@@ -536,7 +565,35 @@ fn list_files(root: &Path) -> Result<Vec<PathBuf>, SandboxError> {
             }
         }
     }
-    Ok(files)
+    Ok(ArtifactFileScan {
+        paths: files,
+        limited: false,
+    })
+}
+
+#[cfg(test)]
+mod artifact_scan_tests {
+    use super::*;
+
+    #[test]
+    fn artifact_scan_stops_at_its_entry_budget() {
+        let root = std::env::temp_dir().join(format!(
+            "jyowo-artifact-scan-budget-{}-{}",
+            std::process::id(),
+            TEMP_WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).expect("scan root must be created");
+        for index in 0..64 {
+            std::fs::write(root.join(format!("artifact-{index:03}.txt")), [])
+                .expect("artifact must be created");
+        }
+
+        let scan = list_files_bounded(&root, 8).expect("bounded scan must succeed");
+
+        assert!(scan.limited);
+        assert!(scan.paths.len() <= 8);
+        std::fs::remove_dir_all(root).expect("scan root must be removed");
+    }
 }
 
 fn safe_relative_path(value: &Path) -> Result<PathBuf, SandboxError> {

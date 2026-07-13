@@ -27,6 +27,10 @@ struct RecordingSink {
 
 struct NullSink;
 
+struct RejectStartedSink {
+    pid_file: PathBuf,
+}
+
 #[derive(Default)]
 struct ReplacementRedactor;
 
@@ -91,6 +95,21 @@ impl BlobStore for RecordingBlobStore {
 
 impl EventSink for NullSink {
     fn emit(&self, _event: Event) -> Result<(), SandboxError> {
+        Ok(())
+    }
+}
+
+impl EventSink for RejectStartedSink {
+    fn emit(&self, event: Event) -> Result<(), SandboxError> {
+        if matches!(event, Event::SandboxExecutionStarted(_)) {
+            let started = std::time::Instant::now();
+            while !self.pid_file.exists() && started.elapsed() < Duration::from_secs(1) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            return Err(SandboxError::Message(
+                "sandbox execution started event rejected".to_owned(),
+            ));
+        }
         Ok(())
     }
 }
@@ -974,6 +993,53 @@ async fn local_wait_reaps_background_processes_after_the_root_exits() {
     }
 
     assert!(reaped, "background process survived the root activity wait");
+}
+
+#[tokio::test]
+async fn local_execute_reaps_process_group_when_started_event_is_rejected() {
+    let root = temp_root("started-event-rejected");
+    let pid_file = root.join("processes.pid");
+    let sandbox = LocalSandbox::new(&root);
+    let mut spec = shell_spec(
+        "trap '' TERM; sleep 30 </dev/null >/dev/null 2>&1 & background=$!; printf '%s %s' \"$$\" \"$background\" > processes.pid; wait",
+    );
+    spec.timeout = Some(Duration::from_secs(5));
+    spec.required_kill_scope = Some(KillScope::ProcessGroup);
+
+    let error = match sandbox
+        .execute(
+            spec,
+            ExecContext::for_test(Arc::new(RejectStartedSink {
+                pid_file: pid_file.clone(),
+            })),
+        )
+        .await
+    {
+        Ok(_) => panic!("started event rejection must fail execute"),
+        Err(error) => error,
+    };
+
+    assert!(
+        matches!(error, SandboxError::Message(ref message) if message.contains("started event"))
+    );
+    let pids = std::fs::read_to_string(&pid_file)
+        .expect("sink must wait until the script records its processes")
+        .split_whitespace()
+        .map(|pid| pid.parse::<u32>().expect("recorded pid must be numeric"))
+        .collect::<Vec<_>>();
+    assert_eq!(pids.len(), 2);
+
+    for pid in pids {
+        let reaped = wait_for_process_exit(pid, Duration::from_millis(500)).await;
+        if !reaped {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+        assert!(reaped, "process {pid} survived failed execute handoff");
+    }
 }
 
 #[tokio::test]

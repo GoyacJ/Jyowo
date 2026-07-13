@@ -33,7 +33,9 @@ use super::LocalIsolation;
 use super::LocalSandbox;
 use crate::cwd::CwdMarkerLine;
 use crate::{
-    backend::{apply_wall_clock_resource_limit, lexical_normalize_path},
+    backend::{
+        apply_wall_clock_resource_limit, lexical_normalize_path, validate_secret_environment,
+    },
     ActivityHandle, CwdMarkerSupport, ExecContext, ExecOutcome, ExecSpec, NetworkPolicySupport,
     OutputOverflow, OutputOverflowPolicy, OutputStream, ProcessHandle, ResourceLimitSupport,
     SandboxBackend, SandboxBaseConfig, SandboxCapabilities, SessionSnapshotFile, Signal,
@@ -42,6 +44,46 @@ use crate::{
 
 const BACKEND_ID: &str = "local";
 const NO_CACHED_SIGNAL: i32 = i32::MIN;
+const PRE_HANDOFF_CLEANUP_TIMEOUT: Duration = Duration::from_millis(250);
+const MAX_SECRET_ENV_PAYLOAD_BYTES: usize = 64 * 1024;
+#[cfg(unix)]
+const SECRET_ENV_WRAPPER: &str = r#"
+__jyowo_env_fd=$1
+shift
+IFS= read -r __jyowo_expected <&"$__jyowo_env_fd" || exit 125
+case $__jyowo_expected in
+    ''|*[!0-9]*) exit 125 ;;
+esac
+__jyowo_seen=0
+while [ "$__jyowo_seen" -lt "$__jyowo_expected" ]; do
+    IFS=' ' read -r __jyowo_key __jyowo_encoded <&"$__jyowo_env_fd" || exit 125
+    __jyowo_decoded=$(printf '%b_' "$__jyowo_encoded") || exit 125
+    __jyowo_decoded=${__jyowo_decoded%_}
+    export "$__jyowo_key=$__jyowo_decoded" || exit 125
+    __jyowo_seen=$((__jyowo_seen + 1))
+done
+eval "exec ${__jyowo_env_fd}<&-"
+unset __jyowo_env_fd __jyowo_expected __jyowo_seen __jyowo_key __jyowo_encoded __jyowo_decoded
+exec "$@"
+"#;
+
+struct SecretEnvironmentWriter {
+    writer: os_pipe::PipeWriter,
+    payload: Vec<u8>,
+}
+
+impl SecretEnvironmentWriter {
+    fn new(writer: os_pipe::PipeWriter, payload: Vec<u8>) -> Self {
+        Self { writer, payload }
+    }
+
+    fn start(self) {
+        std::thread::spawn(move || {
+            let mut writer = self.writer;
+            let _ = writer.write_all(&self.payload);
+        });
+    }
+}
 
 #[async_trait]
 impl SandboxBackend for LocalSandbox {
@@ -100,9 +142,17 @@ impl SandboxBackend for LocalSandbox {
         let environment = filtered_env(&self.base.passthrough_env_keys, &spec)
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect::<BTreeMap<_, _>>();
-        let (mut command, cwd_marker) =
-            wrapped_command_for_local(&spec, self.isolation, &self.root, &cwd, &environment)?
-                .into_parts();
+        let (public_environment, secret_environment) =
+            partition_environment(environment, &spec.secret_env_keys);
+        let (wrapped, secret_environment_writer) = wrapped_command_for_local(
+            &spec,
+            self.isolation,
+            &self.root,
+            &cwd,
+            &public_environment,
+            &secret_environment,
+        )?;
+        let (mut command, cwd_marker) = wrapped.into_parts();
         let process_group = ProcessGroupKeeper::for_spec(&spec)?;
         configure_process_group(&mut command, process_group.as_ref());
         command
@@ -112,10 +162,15 @@ impl SandboxBackend for LocalSandbox {
             .stderr(stdio(&spec.stderr)?)
             .env_clear();
         if !self.isolation.is_os_level() {
-            command.envs(&environment);
+            command.envs(&public_environment).envs(&secret_environment);
         }
 
-        let mut child = command.spawn().map_err(sandbox_error)?;
+        let child = command.spawn();
+        drop(command);
+        let mut child = child.map_err(sandbox_error)?;
+        if let Some(writer) = secret_environment_writer {
+            writer.start();
+        }
         let pid = child.id();
         let stdin = child
             .stdin
@@ -132,26 +187,28 @@ impl SandboxBackend for LocalSandbox {
             ctx.clone(),
             fingerprint,
         ));
+        let started_event = Event::SandboxExecutionStarted(SandboxExecutionStartedEvent {
+            session_id: ctx.session_id,
+            run_id: ctx.run_id,
+            tool_use_id: ctx.tool_use_id,
+            backend_id: BACKEND_ID.to_owned(),
+            fingerprint,
+            policy: SandboxPolicySummary {
+                mode: spec.policy.mode.clone(),
+                scope: spec.policy.scope.clone(),
+                network: spec.policy.network.clone(),
+                resource_limits: spec.policy.resource_limits.clone(),
+            },
+            at: Utc::now(),
+        });
+        if let Err(error) = ctx.event_sink.emit(started_event) {
+            activity.abort_before_handoff().await?;
+            return Err(error);
+        }
+
         LocalActivity::start_periodic_heartbeat(&activity);
         let stdout = child_stream(stdout_reader, Arc::clone(&activity), OutputStream::Stdout);
         let stderr = child_stream(stderr_reader, Arc::clone(&activity), OutputStream::Stderr);
-
-        ctx.event_sink.emit(Event::SandboxExecutionStarted(
-            SandboxExecutionStartedEvent {
-                session_id: ctx.session_id,
-                run_id: ctx.run_id,
-                tool_use_id: ctx.tool_use_id,
-                backend_id: BACKEND_ID.to_owned(),
-                fingerprint,
-                policy: SandboxPolicySummary {
-                    mode: spec.policy.mode.clone(),
-                    scope: spec.policy.scope.clone(),
-                    network: spec.policy.network.clone(),
-                    resource_limits: spec.policy.resource_limits.clone(),
-                },
-                at: Utc::now(),
-            },
-        ))?;
 
         Ok(ProcessHandle {
             pid,
@@ -199,6 +256,7 @@ impl SandboxBackend for LocalSandbox {
 }
 
 fn validate_local_exec(sandbox: &LocalSandbox, spec: &ExecSpec) -> Result<(), SandboxError> {
+    validate_secret_environment(BACKEND_ID, spec)?;
     let cwd = resolve_cwd(&sandbox.root, spec.cwd.as_deref(), &spec.policy.scope)?;
     validate_network_policy(sandbox.isolation, &spec.policy.network)?;
     validate_resource_policy(sandbox.isolation, &spec.policy.resource_limits)?;
@@ -728,6 +786,49 @@ impl LocalActivity {
 }
 
 impl LocalActivity {
+    async fn abort_before_handoff(&self) -> Result<(), SandboxError> {
+        self.killed_signal.store(9, Ordering::Relaxed);
+        let mut child = self
+            .child
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| SandboxError::Message("local process already claimed".to_owned()))?;
+        let signal_result = self.signal_process_group(&mut child, 9).await;
+        let (child_kill_result, keeper_kill_result) = if signal_result.is_err() {
+            (
+                child.start_kill().map_err(sandbox_error),
+                self.force_kill_owned_process_group_keeper().await,
+            )
+        } else {
+            (Ok(()), Ok(()))
+        };
+        let wait_result =
+            match tokio::time::timeout(PRE_HANDOFF_CLEANUP_TIMEOUT, child.wait()).await {
+                Ok(result) => result.map(|_| ()).map_err(sandbox_error),
+                Err(_) => Err(SandboxError::Message(
+                    "timed out reaping local process after failed execute handoff".to_owned(),
+                )),
+            };
+        let reap_result = match tokio::time::timeout(
+            PRE_HANDOFF_CLEANUP_TIMEOUT,
+            self.reap_owned_process_group(),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(SandboxError::Message(
+                "timed out reaping process group keeper after failed execute handoff".to_owned(),
+            )),
+        };
+
+        signal_result?;
+        child_kill_result?;
+        keeper_kill_result?;
+        wait_result?;
+        reap_result
+    }
+
     async fn wait_child(&self, child: &mut Child) -> Result<SandboxExitStatus, SandboxError> {
         let timeout = timeout_future(self.spec.timeout, self.started_instant);
         let activity_timeout = activity_timeout_future(self.spec.activity_timeout, self);
@@ -810,6 +911,14 @@ impl LocalActivity {
         let mut group = self.process_group.lock().await.take();
         match group.as_mut() {
             Some(group) => group.reap().await,
+            None => Ok(()),
+        }
+    }
+
+    async fn force_kill_owned_process_group_keeper(&self) -> Result<(), SandboxError> {
+        let mut group = self.process_group.lock().await;
+        match group.as_mut() {
+            Some(group) => group.start_kill(),
             None => Ok(()),
         }
     }
@@ -937,9 +1046,30 @@ fn wrapped_command_for_local(
     isolation: LocalIsolation,
     root: &Path,
     cwd: &Path,
-    environment: &BTreeMap<String, String>,
-) -> Result<WrappedCommand, SandboxError> {
+    public_environment: &BTreeMap<String, String>,
+    secret_environment: &BTreeMap<String, String>,
+) -> Result<(WrappedCommand, Option<SecretEnvironmentWriter>), SandboxError> {
     let (program, args, cwd_marker_reader) = command_argv_with_cwd_marker(spec)?;
+    let use_secret_transport = matches!(
+        isolation,
+        LocalIsolation::Bubblewrap | LocalIsolation::Seatbelt
+    ) && !secret_environment.is_empty();
+    #[cfg(unix)]
+    let secret_environment_fd =
+        use_secret_transport.then_some(if cwd_marker_reader.is_some() { 4 } else { 3 });
+    #[cfg(not(unix))]
+    let secret_environment_fd = None;
+    if use_secret_transport && secret_environment_fd.is_none() {
+        return Err(SandboxError::CapabilityMismatch {
+            capability: "secret_environment".to_owned(),
+            detail: "OS-isolated secret environment transport requires Unix file descriptors"
+                .to_owned(),
+        });
+    }
+    let (program, args) = match secret_environment_fd {
+        Some(fd) => wrap_program_for_secret_environment(fd, program, args)?,
+        None => (program, args),
+    };
     let mut command = isolated_command(
         isolation,
         root,
@@ -947,22 +1077,42 @@ fn wrapped_command_for_local(
         &spec.policy.network,
         &spec.policy.scope,
         &spec.workspace_access,
-        environment,
+        public_environment,
+        secret_environment_fd,
         program,
         args,
     )?;
-    if let Some(writer) = cwd_marker_reader.as_ref().map(|(_, writer)| writer) {
-        #[cfg(unix)]
-        command
-            .fd_mappings(vec![FdMapping {
+    let mut secret_environment_writer = None;
+    #[cfg(unix)]
+    {
+        let mut fd_mappings = Vec::new();
+        if let Some(writer) = cwd_marker_reader.as_ref().map(|(_, writer)| writer) {
+            fd_mappings.push(FdMapping {
                 parent_fd: writer.try_clone().map_err(sandbox_error)?.into(),
                 child_fd: 3,
-            }])
-            .map_err(|error| SandboxError::Message(error.to_string()))?;
+            });
+        }
+        if let Some(fd) = secret_environment_fd {
+            let payload = encode_secret_environment(secret_environment)?;
+            let (reader, writer) = os_pipe::pipe().map_err(sandbox_error)?;
+            fd_mappings.push(FdMapping {
+                parent_fd: reader.into(),
+                child_fd: fd,
+            });
+            secret_environment_writer = Some(SecretEnvironmentWriter::new(writer, payload));
+        }
+        if !fd_mappings.is_empty() {
+            command
+                .fd_mappings(fd_mappings)
+                .map_err(|error| SandboxError::Message(error.to_string()))?;
+        }
     }
-    Ok(WrappedCommand::new(
-        command,
-        cwd_marker_reader.map(|(reader, _)| cwd_marker_stream(reader)),
+    Ok((
+        WrappedCommand::new(
+            command,
+            cwd_marker_reader.map(|(reader, _)| cwd_marker_stream(reader)),
+        ),
+        secret_environment_writer,
     ))
 }
 
@@ -999,6 +1149,91 @@ fn command_argv_with_cwd_marker(
     Ok((spec.command.clone(), spec.args.clone(), None))
 }
 
+fn partition_environment(
+    environment: BTreeMap<String, String>,
+    secret_keys: &BTreeSet<String>,
+) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+    let mut public = BTreeMap::new();
+    let mut secrets = BTreeMap::new();
+    for (key, value) in environment {
+        if secret_keys.contains(&key) {
+            secrets.insert(key, value);
+        } else {
+            public.insert(key, value);
+        }
+    }
+    (public, secrets)
+}
+
+#[cfg(unix)]
+fn encode_secret_environment(
+    environment: &BTreeMap<String, String>,
+) -> Result<Vec<u8>, SandboxError> {
+    let mut payload = format!("{}\n", environment.len());
+    for (key, value) in environment {
+        if !valid_shell_environment_key(key) || value.contains('\0') {
+            return Err(SandboxError::CapabilityMismatch {
+                capability: "secret_environment".to_owned(),
+                detail: "secret environment contains a key or value unsupported by the isolated transport"
+                    .to_owned(),
+            });
+        }
+        payload.push_str(key);
+        payload.push(' ');
+        for byte in value.as_bytes() {
+            write!(&mut payload, "\\0{byte:03o}")
+                .map_err(|error| SandboxError::Message(error.to_string()))?;
+        }
+        payload.push('\n');
+        if payload.len() > MAX_SECRET_ENV_PAYLOAD_BYTES {
+            return Err(SandboxError::CapabilityMismatch {
+                capability: "secret_environment".to_owned(),
+                detail: format!(
+                    "encoded secret environment exceeds the {MAX_SECRET_ENV_PAYLOAD_BYTES}-byte transport limit"
+                ),
+            });
+        }
+    }
+    Ok(payload.into_bytes())
+}
+
+#[cfg(unix)]
+fn valid_shell_environment_key(key: &str) -> bool {
+    let mut bytes = key.bytes();
+    matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+        && bytes.all(|byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_'))
+}
+
+#[cfg(unix)]
+fn wrap_program_for_secret_environment(
+    secret_environment_fd: i32,
+    program: String,
+    args: Vec<String>,
+) -> Result<(String, Vec<String>), SandboxError> {
+    let shell = resolve_absolute_host_binary(&["/bin/sh"])?;
+    let mut wrapped_args = vec![
+        "-c".to_owned(),
+        SECRET_ENV_WRAPPER.to_owned(),
+        "jyowo-secret-environment".to_owned(),
+        secret_environment_fd.to_string(),
+        program,
+    ];
+    wrapped_args.extend(args);
+    Ok((shell.display().to_string(), wrapped_args))
+}
+
+#[cfg(not(unix))]
+fn wrap_program_for_secret_environment(
+    _secret_environment_fd: i32,
+    _program: String,
+    _args: Vec<String>,
+) -> Result<(String, Vec<String>), SandboxError> {
+    Err(SandboxError::CapabilityMismatch {
+        capability: "secret_environment".to_owned(),
+        detail: "isolated secret environment transport requires Unix file descriptors".to_owned(),
+    })
+}
+
 fn isolated_command(
     isolation: LocalIsolation,
     root: &Path,
@@ -1006,7 +1241,8 @@ fn isolated_command(
     network: &NetworkAccess,
     scope: &SandboxScope,
     access: &WorkspaceAccess,
-    environment: &BTreeMap<String, String>,
+    public_environment: &BTreeMap<String, String>,
+    secret_environment_fd: Option<i32>,
     program: String,
     args: Vec<String>,
 ) -> Result<Command, SandboxError> {
@@ -1022,13 +1258,20 @@ fn isolated_command(
             network,
             scope,
             access,
-            environment,
+            public_environment,
+            secret_environment_fd,
             program,
             args,
         ),
-        LocalIsolation::Seatbelt => {
-            seatbelt_command(root, network, scope, access, environment, program, args)
-        }
+        LocalIsolation::Seatbelt => seatbelt_command(
+            root,
+            network,
+            scope,
+            access,
+            public_environment,
+            program,
+            args,
+        ),
         LocalIsolation::JobObject => jobobject_command(program, args),
     }
 }
@@ -1040,7 +1283,8 @@ fn bubblewrap_command(
     network: &NetworkAccess,
     scope: &SandboxScope,
     access: &WorkspaceAccess,
-    environment: &BTreeMap<String, String>,
+    public_environment: &BTreeMap<String, String>,
+    secret_environment_fd: Option<i32>,
     program: String,
     args: Vec<String>,
 ) -> Result<Command, SandboxError> {
@@ -1051,7 +1295,8 @@ fn bubblewrap_command(
         network,
         scope,
         access,
-        environment,
+        public_environment,
+        secret_environment_fd,
         &program,
         &args,
     )?);
@@ -1065,7 +1310,8 @@ fn bubblewrap_command(
     _network: &NetworkAccess,
     _scope: &SandboxScope,
     _access: &WorkspaceAccess,
-    _environment: &BTreeMap<String, String>,
+    _public_environment: &BTreeMap<String, String>,
+    _secret_environment_fd: Option<i32>,
     _program: String,
     _args: Vec<String>,
 ) -> Result<Command, SandboxError> {
@@ -1270,6 +1516,17 @@ impl ProcessGroupKeeper {
         #[cfg(unix)]
         {
             self.child.wait().await.map(|_| ()).map_err(sandbox_error)
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(())
+        }
+    }
+
+    fn start_kill(&mut self) -> Result<(), SandboxError> {
+        #[cfg(unix)]
+        {
+            self.child.start_kill().map_err(sandbox_error)
         }
         #[cfg(not(unix))]
         {
@@ -1967,6 +2224,7 @@ fn bubblewrap_args_for_workspace_policy(
     scope: &SandboxScope,
     access: &WorkspaceAccess,
     environment: &BTreeMap<String, String>,
+    secret_environment_fd: Option<i32>,
     program: &str,
     program_args: &[String],
 ) -> Result<Vec<String>, SandboxError> {
@@ -1980,6 +2238,12 @@ fn bubblewrap_args_for_workspace_policy(
     ];
     if matches!(network, NetworkAccess::None) {
         args.push("--unshare-net".to_owned());
+    }
+    if let Some(fd) = secret_environment_fd {
+        let preserved_fds = fd.checked_sub(2).ok_or_else(|| {
+            SandboxError::Message("invalid secret environment file descriptor".to_owned())
+        })?;
+        args.extend(["--preserve-fds".to_owned(), preserved_fds.to_string()]);
     }
     push_bubblewrap_environment(&mut args, environment);
     args.extend([
@@ -2216,6 +2480,117 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn secret_environment_uses_a_closed_fd_and_preserves_legal_values() {
+        let environment = BTreeMap::from([
+            ("EMPTY".to_owned(), String::new()),
+            (
+                "TOKEN".to_owned(),
+                "spaces ' \" equals= backslash=\\ newline\ntrailing\n\n".to_owned(),
+            ),
+        ]);
+        let payload = encode_secret_environment(&environment)
+            .expect("legal secret environment should encode");
+        let (reader, writer) = os_pipe::pipe().expect("secret environment pipe should open");
+        let secret_fd = 3;
+        let (program, args) = wrap_program_for_secret_environment(
+            secret_fd,
+            "/bin/sh".to_owned(),
+            vec![
+                "-c".to_owned(),
+                "if (true <&3) 2>/dev/null; then printf open; else printf closed; fi; printf '\\037%s\\037%s' \"$EMPTY\" \"$TOKEN\"".to_owned(),
+            ],
+        )
+        .expect("secret environment wrapper should be available");
+        let mut command = Command::new(program);
+        command.args(args);
+        command
+            .fd_mappings(vec![FdMapping {
+                parent_fd: reader.into(),
+                child_fd: secret_fd,
+            }])
+            .expect("secret environment fd should map");
+        let output = command
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("wrapped command should spawn");
+        drop(command);
+        SecretEnvironmentWriter::new(writer, payload).start();
+        let output = output
+            .wait_with_output()
+            .await
+            .expect("wrapped command should finish");
+
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).expect("output should be utf8"),
+            format!("closed\u{1f}\u{1f}{}", environment["TOKEN"])
+        );
+    }
+
+    #[test]
+    fn secret_environment_is_separated_from_host_visible_launcher_data() {
+        let secret = "host-visible-secret";
+        let environment = BTreeMap::from([
+            ("PUBLIC".to_owned(), "visible".to_owned()),
+            ("TOKEN".to_owned(), secret.to_owned()),
+        ]);
+        let (public, secrets) =
+            partition_environment(environment, &BTreeSet::from(["TOKEN".to_owned()]));
+
+        assert_eq!(
+            public,
+            BTreeMap::from([("PUBLIC".to_owned(), "visible".to_owned())])
+        );
+        assert_eq!(secrets.get("TOKEN").map(String::as_str), Some(secret));
+
+        let (program, args) = wrap_program_for_secret_environment(
+            3,
+            "/bin/tool".to_owned(),
+            vec!["--flag".to_owned()],
+        )
+        .expect("secret environment wrapper should be available");
+        let mut launcher_data = vec![program];
+        launcher_data.extend(args);
+        push_bubblewrap_environment(&mut launcher_data, &public);
+
+        assert!(launcher_data.iter().all(|value| !value.contains(secret)));
+        assert!(launcher_data.iter().any(|value| value == "visible"));
+
+        let root = root("bwrap-secret-fd");
+        let args = bubblewrap_args_for_workspace_policy(
+            &root,
+            &root,
+            &NetworkAccess::None,
+            &scope(),
+            &WorkspaceAccess::ReadOnly,
+            &public,
+            Some(3),
+            "/bin/sh",
+            &[],
+        )
+        .expect("bubblewrap should preserve the secret environment fd");
+        assert!(args.windows(2).any(|pair| pair == ["--preserve-fds", "1"]));
+        assert!(args.iter().all(|value| !value.contains(secret)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_environment_transport_rejects_oversized_payloads() {
+        let environment =
+            BTreeMap::from([("TOKEN".to_owned(), "x".repeat(MAX_SECRET_ENV_PAYLOAD_BYTES))]);
+
+        let error = encode_secret_environment(&environment)
+            .expect_err("oversized secret environment must fail closed");
+
+        assert!(matches!(
+            error,
+            SandboxError::CapabilityMismatch { ref capability, .. }
+                if capability == "secret_environment"
+        ));
+    }
+
     #[test]
     fn bubblewrap_process_tree_containment_uses_a_private_pid_namespace() {
         let root = root("bwrap-process-tree");
@@ -2226,6 +2601,7 @@ mod tests {
             &scope(),
             &WorkspaceAccess::ReadOnly,
             &BTreeMap::new(),
+            None,
             "/bin/sh",
             &["-c".to_owned(), "setsid sleep 30 & wait".to_owned()],
         )
@@ -2246,6 +2622,7 @@ mod tests {
             &scope(),
             &WorkspaceAccess::ReadOnly,
             &BTreeMap::new(),
+            None,
             "tool",
             &["--flag".to_owned()],
         )
@@ -2270,6 +2647,7 @@ mod tests {
             &scope(),
             &access,
             &BTreeMap::new(),
+            None,
             "tool",
             &[],
         )

@@ -12,9 +12,9 @@ use harness_contracts::{
 };
 use harness_sandbox::{
     execute_with_lifecycle, preflight_exec, restore_with_lifecycle, shutdown_with_lifecycle,
-    snapshot_with_lifecycle, ActivityHandle, EventSink, ExecContext, ExecOutcome, ExecSpec,
-    NetworkPolicySupport, ProcessHandle, SandboxBackend, SandboxCapabilities, SessionSnapshotFile,
-    SnapshotSpec,
+    snapshot_with_lifecycle, validate_preflight_capabilities, ActivityHandle, EventSink,
+    ExecContext, ExecOutcome, ExecSpec, NetworkPolicySupport, ProcessHandle, SandboxBackend,
+    SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
 };
 
 #[cfg(feature = "local")]
@@ -132,6 +132,52 @@ fn seatbelt_does_not_claim_process_tree_containment() {
 impl Redactor for SecretRedactor {
     fn redact(&self, input: &str, _rules: &RedactRules) -> String {
         input.replace("secret", "[MASK]")
+    }
+}
+
+#[test]
+fn preflight_rejects_secret_environment_keys_that_are_not_explicitly_authorized() {
+    let capabilities = environment_capabilities();
+    let mut spec = ExecSpec::default();
+    spec.env.insert("TOKEN".to_owned(), "secret".to_owned());
+    spec.secret_env_keys.insert("TOKEN".to_owned());
+
+    let error = validate_preflight_capabilities("test", &capabilities, &spec)
+        .expect_err("secret keys must be explicitly authorized");
+
+    assert!(matches!(
+        error,
+        SandboxError::CapabilityMismatch { ref capability, .. }
+            if capability == "secret_environment"
+    ));
+}
+
+#[test]
+fn preflight_rejects_declared_secret_environment_keys_without_values() {
+    let capabilities = environment_capabilities();
+    let mut spec = ExecSpec::default();
+    spec.authorized_env_keys.insert("TOKEN".to_owned());
+    spec.secret_env_keys.insert("TOKEN".to_owned());
+
+    let error = validate_preflight_capabilities("test", &capabilities, &spec)
+        .expect_err("secret keys must have a value to inject");
+
+    assert!(matches!(
+        error,
+        SandboxError::CapabilityMismatch { ref capability, .. }
+            if capability == "secret_environment"
+    ));
+}
+
+fn environment_capabilities() -> SandboxCapabilities {
+    SandboxCapabilities {
+        supports_per_exec_env: true,
+        network: NetworkPolicySupport {
+            none: true,
+            ..NetworkPolicySupport::default()
+        },
+        max_concurrent_execs: 1,
+        ..SandboxCapabilities::default()
     }
 }
 
