@@ -234,6 +234,7 @@ pub(crate) async fn runtime_state_with_mcp_registry_for_workspace(
                 .with_mcp_config(McpConfig {
                     registry,
                     server_ids_to_inject,
+                    event_sink: Arc::new(NoopMcpEventSink),
                 })
                 .build()
                 .await

@@ -26,7 +26,7 @@ use harness_contracts::MemdirFileTag;
 #[cfg(not(feature = "observability-redactor"))]
 use harness_contracts::RedactPatternKind;
 use harness_contracts::{
-    BlobReaderCapAdapter, BlobRef, BlobRetention, BlobStore, BlobWriterCapAdapter,
+    now, BlobReaderCapAdapter, BlobRef, BlobRetention, BlobStore, BlobWriterCapAdapter,
     CapabilityRegistry, ContextPatchRequest, ContextPatchSinkCap, ConversationAttachmentReference,
     ConversationContextReference, ConversationCursor, ConversationEventRef, ConversationTurnInput,
     Decision, Event, EventId, EvidenceRedactionState, EvidenceRefId, EvidenceRefKind, HarnessError,
@@ -68,7 +68,8 @@ use harness_journal::{
 };
 use harness_mcp::{
     ElicitationHandler, McpEventSink, McpMetric, McpMetricConnectionState, McpMetricsSink,
-    McpRegistry, SamplingProvider, SamplingRequest, SamplingResponse, StreamElicitationHandler,
+    McpRegistry, NoopMcpEventSink, SamplingProvider, SamplingRequest, SamplingResponse,
+    StreamElicitationHandler,
 };
 #[cfg(feature = "mcp-server-adapter")]
 use harness_mcp::{ExposedCapability, HarnessMcpBackend, McpServerError, McpServerRequestContext};
@@ -191,8 +192,8 @@ use self::tool_pool::{apply_tenant_tool_filter, filter_unavailable_tools};
 pub use self::types::{
     ConversationEventsPage, ConversationEventsPageRequest, ConversationRunOptions,
     ConversationSession, ConversationSessionSummary, ConversationTurnReceipt,
-    ConversationTurnRequest, HarnessOptions, McpConfig, RuntimeSkillParameter, RuntimeSkillSummary,
-    RuntimeSkillView, TenantPolicy,
+    ConversationTurnRequest, HarnessOptions, McpConfig, McpToolInjectionOutcome,
+    RuntimeSkillParameter, RuntimeSkillSummary, RuntimeSkillView, TenantPolicy,
 };
 pub use self::workspace::WorkspaceCreateRequest;
 #[derive(Clone)]

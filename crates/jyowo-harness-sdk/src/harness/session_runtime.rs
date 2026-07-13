@@ -546,7 +546,7 @@ impl Harness {
                 Arc::new(skill_registry),
             );
         }
-        self.inject_mcp_tools().await?;
+        let _mcp_injection_outcomes = self.inject_mcp_tools().await?;
         let model_id = run_options
             .model_id
             .clone()

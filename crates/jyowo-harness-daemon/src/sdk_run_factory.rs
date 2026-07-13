@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     task::{Context, Poll},
@@ -14,14 +14,15 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::{future::BoxFuture, stream, FutureExt, Stream, StreamExt};
 use harness_contracts::{
-    ActionResource, AgentId, AgentTeamRunConfig, AgentTeamSharedMemoryPolicy, AgentTeamTopology,
-    AgentToolPolicy, AgentUsePolicy, AgentWorkspaceIsolationMode, CapabilityRegistry,
-    ConversationAttachmentReference, ConversationContextReference, ConversationTurnInput, Event,
-    ExecutionDefaultsRecord, FallbackPolicy, IndeterminateToolResolution, InteractivityLevel,
-    McpServerId, McpServerScope, ModelError, PermissionMode, PromotionMode, QueueItemState,
-    Redactor, RunId, RunSegmentId, RunTerminalReason, StopReason, TaskId, TenantId, ToolActionPlan,
-    ToolCapability, ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolUseFailedEvent,
-    ToolUseId, UsageSnapshot, WorkspaceAccess as ToolWorkspaceAccess, WorkspaceLeaseId,
+    now, ActionResource, AgentId, AgentTeamRunConfig, AgentTeamSharedMemoryPolicy,
+    AgentTeamTopology, AgentToolPolicy, AgentUsePolicy, AgentWorkspaceIsolationMode,
+    CapabilityRegistry, ConversationAttachmentReference, ConversationContextReference,
+    ConversationTurnInput, Event, ExecutionDefaultsRecord, FallbackPolicy,
+    IndeterminateToolResolution, InteractivityLevel, McpServerId, McpServerScope, ModelError,
+    PermissionMode, PromotionMode, QueueItemState, Redactor, RunId, RunSegmentId,
+    RunTerminalReason, StopReason, TaskId, TenantId, ToolActionPlan, ToolCapability,
+    ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolUseFailedEvent, ToolUseId,
+    UnexpectedErrorEvent, UsageSnapshot, WorkspaceAccess as ToolWorkspaceAccess, WorkspaceLeaseId,
     WorkspaceLeaseState, WorkspaceMode,
 };
 use harness_engine::{EngineBoundSubagentFactory, RunControlHandle, TurnOutcome};
@@ -34,8 +35,8 @@ use harness_journal::{
     TaskBlobStore, TaskEventStoreAdapter, TaskStore,
 };
 use harness_mcp::{
-    HttpTransport, McpAuthorizationContext, McpConnectContext, McpRegistry, McpServerSpec,
-    McpTransport, NoopMcpEventSink, StdioEnv, StdioPolicy, StdioTransport, TransportChoice,
+    HttpTransport, McpAuthorizationContext, McpConnectContext, McpEventSink, McpRegistry,
+    McpServerSpec, McpTransport, StdioEnv, StdioPolicy, StdioTransport, TransportChoice,
 };
 use harness_permission::{NoopDecisionPersistence, PermissionAuthority};
 use harness_sandbox::{LocalIsolation, LocalSandbox, SandboxBackend};
@@ -199,16 +200,28 @@ fn apply_runtime_snapshot<M, S, SB>(
 async fn mcp_config_from_runtime_snapshot(
     snapshot: &RuntimeConfigSnapshot,
     authorization_service: Arc<AuthorizationService>,
+    event_store: Arc<dyn EventStore>,
     execution_root: &Path,
     session_id: harness_contracts::SessionId,
     run_id: RunId,
     permission_mode: PermissionMode,
 ) -> Result<DaemonMcpRuntimeGuard, SdkRunFactoryError> {
     let registry = McpRegistry::new();
+    let (daemon_event_sink, event_receiver) = DaemonMcpEventSink::channel_with_context(
+        DAEMON_MCP_EVENT_CHANNEL_CAPACITY,
+        session_id,
+        run_id,
+    );
+    let event_writer = spawn_daemon_mcp_event_writer(event_receiver, event_store, session_id);
+    let event_sink: Arc<dyn McpEventSink> = daemon_event_sink.clone();
     let build_result = async {
         let mut server_ids_to_inject = Vec::new();
         let agent_id = AgentId::new();
-        for record in snapshot.mcp_servers.iter().filter(|record| record.enabled) {
+        for record in snapshot
+            .mcp_servers
+            .iter()
+            .filter(|record| should_activate_mcp_server(record))
+        {
             let (spec, transport) = mcp_server_runtime(record, execution_root)?;
             let scope = match record.scope.as_str() {
                 "global" => McpServerScope::Global,
@@ -220,7 +233,6 @@ async fn mcp_config_from_runtime_snapshot(
                     ));
                 }
             };
-            let server_id = spec.server_id.clone();
             let authorization = McpAuthorizationContext {
                 authorization_service: Arc::clone(&authorization_service),
                 tenant_id: TenantId::SINGLE,
@@ -232,23 +244,20 @@ async fn mcp_config_from_runtime_snapshot(
                 fallback_policy: FallbackPolicy::AskUser,
                 workspace_root: execution_root.to_owned(),
             };
-            registry
-                .add_managed_server_with_context(
-                    spec,
-                    scope,
-                    transport,
-                    Arc::new(NoopMcpEventSink),
-                    McpConnectContext::default()
-                        .with_permission_mode(permission_mode)
-                        .with_authorization(authorization),
-                )
-                .await
-                .map_err(|_| {
-                    SdkRunFactoryError::RuntimeConfig(
-                        "persisted MCP server failed to connect".to_owned(),
-                    )
-                })?;
-            server_ids_to_inject.push(server_id);
+            if let Some(server_id) = activate_daemon_mcp_server(
+                &registry,
+                spec,
+                scope,
+                transport,
+                Arc::clone(&event_sink),
+                McpConnectContext::default()
+                    .with_permission_mode(permission_mode)
+                    .with_authorization(authorization),
+            )
+            .await?
+            {
+                server_ids_to_inject.push(server_id);
+            }
         }
         Ok(server_ids_to_inject)
     }
@@ -258,18 +267,86 @@ async fn mcp_config_from_runtime_snapshot(
             config: McpConfig {
                 registry,
                 server_ids_to_inject,
+                event_sink,
             },
+            event_sink: daemon_event_sink,
+            event_writer: Some(event_writer),
             shutdown_complete: false,
         }),
         Err(error) => {
             let _ = registry.shutdown_all().await;
+            daemon_event_sink.close();
+            let _ = event_writer.await;
             Err(error)
         }
     }
 }
 
+fn should_activate_mcp_server(record: &RuntimeMcpServerConfig) -> bool {
+    record.enabled
+}
+
+async fn activate_daemon_mcp_server(
+    registry: &McpRegistry,
+    spec: McpServerSpec,
+    scope: McpServerScope,
+    transport: Arc<dyn McpTransport>,
+    event_sink: Arc<dyn McpEventSink>,
+    context: McpConnectContext,
+) -> Result<Option<McpServerId>, SdkRunFactoryError> {
+    let session_id = context
+        .authorization
+        .as_ref()
+        .map(|authorization| authorization.session_id);
+    let run_id = context
+        .authorization
+        .as_ref()
+        .map(|authorization| authorization.run_id);
+    let server_id = spec.server_id.clone();
+    let required = spec.required;
+    if registry
+        .add_managed_server_with_context(
+            spec.clone(),
+            scope.clone(),
+            transport,
+            Arc::clone(&event_sink),
+            context,
+        )
+        .await
+        .is_ok()
+    {
+        return Ok(Some(server_id));
+    }
+
+    let reason = "MCP server activation failed".to_owned();
+    event_sink.emit(Event::UnexpectedError(UnexpectedErrorEvent {
+        session_id,
+        run_id,
+        error: reason.clone(),
+        at: now(),
+    }));
+    registry
+        .add_failed_server(spec, scope, reason)
+        .await
+        .map_err(|_| {
+            SdkRunFactoryError::RuntimeConfig(
+                "persisted MCP server state could not be registered".to_owned(),
+            )
+        })?;
+
+    if required {
+        let _ = registry.shutdown_all().await;
+        return Err(SdkRunFactoryError::RuntimeConfig(
+            "required MCP server failed during activation".to_owned(),
+        ));
+    }
+    Ok(None)
+}
+
 struct DaemonMcpRuntimeGuard {
     config: McpConfig,
+    event_sink: Arc<DaemonMcpEventSink>,
+    event_writer: Option<tokio::task::JoinHandle<Result<(), SdkRunFactoryError>>>,
     shutdown_complete: bool,
 }
 
@@ -279,11 +356,22 @@ impl DaemonMcpRuntimeGuard {
     }
 
     async fn shutdown(mut self) -> Result<(), SdkRunFactoryError> {
-        let result = self.config.registry.shutdown_all().await;
+        let registry_result = self.config.registry.shutdown_all().await;
+        self.event_sink.close();
+        let writer_result = match self.event_writer.take() {
+            Some(writer) => writer.await.map_err(|_| {
+                SdkRunFactoryError::RuntimeConfig(
+                    "MCP diagnostic writer did not shut down cleanly".to_owned(),
+                )
+            })?,
+            None => Ok(()),
+        };
         self.shutdown_complete = true;
-        result.map_err(|_| {
-            SdkRunFactoryError::RuntimeConfig("failed to shut down MCP runtime".to_owned())
-        })
+        registry_result
+            .map_err(|_| {
+                SdkRunFactoryError::RuntimeConfig("failed to shut down MCP runtime".to_owned())
+            })
+            .and(writer_result)
     }
 }
 
@@ -293,12 +381,108 @@ impl Drop for DaemonMcpRuntimeGuard {
             return;
         }
         let registry = self.config.registry.clone();
+        self.event_sink.close();
+        let writer = self.event_writer.take();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
                 let _ = registry.shutdown_all().await;
+                if let Some(writer) = writer {
+                    let _ = writer.await;
+                }
             });
         }
     }
+}
+
+const DAEMON_MCP_EVENT_CHANNEL_CAPACITY: usize = 128;
+
+struct DaemonMcpEventSink {
+    sender: Mutex<Option<mpsc::Sender<Event>>>,
+    dropped_events: AtomicU64,
+    default_session_id: Option<harness_contracts::SessionId>,
+    default_run_id: Option<RunId>,
+}
+
+impl DaemonMcpEventSink {
+    #[cfg(test)]
+    fn channel(capacity: usize) -> (Arc<Self>, mpsc::Receiver<Event>) {
+        Self::channel_with_optional_context(capacity, None, None)
+    }
+
+    fn channel_with_context(
+        capacity: usize,
+        session_id: harness_contracts::SessionId,
+        run_id: RunId,
+    ) -> (Arc<Self>, mpsc::Receiver<Event>) {
+        Self::channel_with_optional_context(capacity, Some(session_id), Some(run_id))
+    }
+
+    fn channel_with_optional_context(
+        capacity: usize,
+        default_session_id: Option<harness_contracts::SessionId>,
+        default_run_id: Option<RunId>,
+    ) -> (Arc<Self>, mpsc::Receiver<Event>) {
+        let (sender, receiver) = mpsc::channel(capacity);
+        (
+            Arc::new(Self {
+                sender: Mutex::new(Some(sender)),
+                dropped_events: AtomicU64::new(0),
+                default_session_id,
+                default_run_id,
+            }),
+            receiver,
+        )
+    }
+
+    fn close(&self) {
+        self.sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+
+    #[cfg(test)]
+    fn dropped_events(&self) -> u64 {
+        self.dropped_events.load(Ordering::Relaxed)
+    }
+}
+
+impl McpEventSink for DaemonMcpEventSink {
+    fn emit(&self, mut event: Event) {
+        if let Event::UnexpectedError(diagnostic) = &mut event {
+            diagnostic.session_id = diagnostic.session_id.or(self.default_session_id);
+            diagnostic.run_id = diagnostic.run_id.or(self.default_run_id);
+        }
+        let sender = self
+            .sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned();
+        if sender.is_none_or(|sender| sender.try_send(event).is_err()) {
+            self.dropped_events.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+fn spawn_daemon_mcp_event_writer(
+    mut receiver: mpsc::Receiver<Event>,
+    event_store: Arc<dyn EventStore>,
+    session_id: harness_contracts::SessionId,
+) -> tokio::task::JoinHandle<Result<(), SdkRunFactoryError>> {
+    tokio::spawn(async move {
+        while let Some(event) = receiver.recv().await {
+            event_store
+                .append(TenantId::SINGLE, session_id, &[event])
+                .await
+                .map_err(|_| {
+                    SdkRunFactoryError::RuntimeConfig(
+                        "MCP diagnostic could not be written to the task journal".to_owned(),
+                    )
+                })?;
+        }
+        Ok(())
+    })
 }
 
 fn mcp_server_runtime(
@@ -658,6 +842,7 @@ impl SubagentEngineFactory for SdkIsolatedSubagentEngineFactory {
         let mcp_runtime = mcp_config_from_runtime_snapshot(
             &self.runtime.runtime_config,
             Arc::clone(&authorization.service),
+            Arc::clone(&self.context.event_store),
             &workspace_root,
             self.context.session_id,
             request.child_run_id,
@@ -665,69 +850,66 @@ impl SubagentEngineFactory for SdkIsolatedSubagentEngineFactory {
         )
         .await
         .map_err(|error| SubagentError::Engine(error.to_string()))?;
-        let provider = &self.runtime.runtime_config.provider;
-        let engine_factory = Arc::new(EngineBoundSubagentFactory::default());
-        let harness_builder = Harness::builder()
-            .with_workspace_root(&workspace_root)
-            .with_model_arc(Arc::clone(&provider.provider))
-            .with_store_arc(Arc::clone(&self.context.event_store))
-            .with_sandbox_arc(sandbox)
-            .with_tool_registry(tool_registry)
-            .with_model_id(&provider.model_id)
-            .with_permission_authority_arc(authorization.authority)
-            .with_authorization_service_arc(authorization.service)
-            .with_capability::<dyn ToolNetworkBrokerCap>(
-                ToolCapability::NetworkBroker,
-                authorization.network_broker,
+        let primary_result = async {
+            let provider = &self.runtime.runtime_config.provider;
+            let engine_factory = Arc::new(EngineBoundSubagentFactory::default());
+            let harness_builder = Harness::builder()
+                .with_workspace_root(&workspace_root)
+                .with_model_arc(Arc::clone(&provider.provider))
+                .with_store_arc(Arc::clone(&self.context.event_store))
+                .with_sandbox_arc(sandbox)
+                .with_tool_registry(tool_registry)
+                .with_model_id(&provider.model_id)
+                .with_permission_authority_arc(authorization.authority)
+                .with_authorization_service_arc(authorization.service)
+                .with_capability::<dyn ToolNetworkBrokerCap>(
+                    ToolCapability::NetworkBroker,
+                    authorization.network_broker,
+                )
+                .with_memory_database_path(&self.runtime.runtime_config.memory_database_path)
+                .with_subagent_runner(Arc::clone(&self.context.subagent_runner))
+                .with_subagent_engine_factory(Arc::clone(&engine_factory));
+            let harness = apply_runtime_snapshot(
+                harness_builder,
+                &self.runtime.runtime_config,
+                mcp_runtime.config(),
             )
-            .with_memory_database_path(&self.runtime.runtime_config.memory_database_path)
-            .with_subagent_runner(Arc::clone(&self.context.subagent_runner))
-            .with_subagent_engine_factory(Arc::clone(&engine_factory));
-        let harness = apply_runtime_snapshot(
-            harness_builder,
-            &self.runtime.runtime_config,
-            mcp_runtime.config(),
-        )
-        .map_err(|error| SubagentError::Engine(error.to_string()))?
-        .build()
-        .await
-        .map_err(|error| SubagentError::Engine(error.to_string()))?;
-        let options = SessionOptions::new(&workspace_root)
-            .with_project_workspace_root(&self.runtime.runtime_config.workspace_root)
-            .with_tenant_id(self.context.tenant_id)
-            .with_session_id(self.context.session_id)
-            .with_tool_profile(execution_defaults.tool_profile.clone())
-            .with_model_id(&provider.model_id)
-            .with_protocol(provider.protocol)
-            .with_model_options(provider.model_options.clone())
-            .with_agent_profiles(self.runtime.runtime_config.agent_profiles.clone())
-            .with_context_compression_trigger_ratio(
-                execution_defaults.context_compression_trigger_ratio,
-            )
-            .with_permission_mode(permission_mode);
-        let mut run_options = ConversationRunOptions::from_session_options(&options)
-            .with_model_config_id(&provider.config_id)
-            .with_model_id(&provider.model_id)
-            .with_protocol(provider.protocol)
-            .with_permission_mode(permission_mode)
-            .with_model_options(provider.model_options.clone());
-        run_options.agent_tool_policy = Some(self.runtime.agent_tool_policy.clone());
-        harness
-            .prepare_external_subagent_engine(options, run_options)
+            .map_err(|error| SubagentError::Engine(error.to_string()))?
+            .build()
             .await
             .map_err(|error| SubagentError::Engine(error.to_string()))?;
-        let run_result = engine_factory.run_child_engine(request).await;
+            let options = SessionOptions::new(&workspace_root)
+                .with_project_workspace_root(&self.runtime.runtime_config.workspace_root)
+                .with_tenant_id(self.context.tenant_id)
+                .with_session_id(self.context.session_id)
+                .with_tool_profile(execution_defaults.tool_profile.clone())
+                .with_model_id(&provider.model_id)
+                .with_protocol(provider.protocol)
+                .with_model_options(provider.model_options.clone())
+                .with_agent_profiles(self.runtime.runtime_config.agent_profiles.clone())
+                .with_context_compression_trigger_ratio(
+                    execution_defaults.context_compression_trigger_ratio,
+                )
+                .with_permission_mode(permission_mode);
+            let mut run_options = ConversationRunOptions::from_session_options(&options)
+                .with_model_config_id(&provider.config_id)
+                .with_model_id(&provider.model_id)
+                .with_protocol(provider.protocol)
+                .with_permission_mode(permission_mode)
+                .with_model_options(provider.model_options.clone());
+            run_options.agent_tool_policy = Some(self.runtime.agent_tool_policy.clone());
+            harness
+                .prepare_external_subagent_engine(options, run_options)
+                .await
+                .map_err(|error| SubagentError::Engine(error.to_string()))?;
+            engine_factory.run_child_engine(request).await
+        }
+        .await;
         let shutdown_result = mcp_runtime
             .shutdown()
             .await
             .map_err(|error| SubagentError::Engine(error.to_string()));
-        match run_result {
-            Err(error) => Err(error),
-            Ok(outcome) => {
-                shutdown_result?;
-                Ok(outcome)
-            }
-        }
+        complete_after_mcp_shutdown(primary_result, shutdown_result)
     }
 }
 
@@ -884,140 +1066,149 @@ impl SdkRunCoordinatorFactory {
         let mcp_runtime = mcp_config_from_runtime_snapshot(
             &runtime_config,
             Arc::clone(&authorization.service),
+            Arc::clone(&event_store),
             &workspace_root,
             request.input.session_id,
             request.input.run_id,
             permission_mode,
         )
         .await?;
-        let agent_tool_policy = daemon_agent_tool_policy(&execution_defaults)?;
-        let subagents_enabled = agent_tool_policy.subagents == AgentUsePolicy::Allowed;
-        let memory_database_path = runtime_config.memory_database_path.clone();
-        runtime_config
-            .ensure_memory_parent()
-            .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?;
-        let _runtime_binding = subagents_enabled.then(|| {
-            subagent_engines.bind(
-                request.segment_id,
-                Arc::new(SdkSubagentRuntimeTemplate {
-                    store: Arc::clone(&store),
-                    runtime_config: runtime_config.clone(),
-                    permissions: Arc::clone(&permissions),
-                    redactor: Arc::clone(&redactor),
-                    workspace_tools: workspace_tools.clone(),
-                    agent_tool_policy: agent_tool_policy.clone(),
-                }),
-            )
-        });
-        let harness_builder = Harness::builder()
-            .with_workspace_root(&workspace_root)
-            .with_model_arc(model)
-            .with_store_arc(event_store)
-            .with_sandbox_arc(sandbox)
-            .with_tool_registry(tool_registry)
-            .with_model_id(&provider.model_id)
-            .with_permission_authority_arc(authorization.authority)
-            .with_authorization_service_arc(authorization.service)
-            .with_capability::<dyn ToolNetworkBrokerCap>(
-                ToolCapability::NetworkBroker,
-                authorization.network_broker,
-            )
-            .with_memory_database_path(memory_database_path);
-        let harness_builder = if subagents_enabled {
-            harness_builder.with_subagent_runner(subagent_runner)
-        } else {
-            harness_builder
-        };
-        let harness_builder = if agent_tool_policy.background_agents == AgentUsePolicy::Allowed {
-            harness_builder.with_capability::<dyn harness_contracts::BackgroundAgentStarterCap>(
-                harness_contracts::ToolCapability::Custom(
-                    harness_contracts::BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned(),
-                ),
-                agent_starters.background,
-            )
-        } else {
-            harness_builder
-        };
-        let harness_builder = if agent_tool_policy.agent_team == AgentUsePolicy::Allowed {
-            harness_builder.with_capability::<dyn harness_contracts::AgentTeamStarterCap>(
-                harness_contracts::ToolCapability::Custom(
-                    harness_contracts::AGENT_TEAM_STARTER_CAPABILITY.to_owned(),
-                ),
-                agent_starters.team,
-            )
-        } else {
-            harness_builder
-        };
-        let harness =
-            apply_runtime_snapshot(harness_builder, &runtime_config, mcp_runtime.config())
-                .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?
-                .build()
+        let primary_result = async {
+            let agent_tool_policy = daemon_agent_tool_policy(&execution_defaults)?;
+            let subagents_enabled = agent_tool_policy.subagents == AgentUsePolicy::Allowed;
+            let memory_database_path = runtime_config.memory_database_path.clone();
+            runtime_config
+                .ensure_memory_parent()
+                .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?;
+            let _runtime_binding = subagents_enabled.then(|| {
+                subagent_engines.bind(
+                    request.segment_id,
+                    Arc::new(SdkSubagentRuntimeTemplate {
+                        store: Arc::clone(&store),
+                        runtime_config: runtime_config.clone(),
+                        permissions: Arc::clone(&permissions),
+                        redactor: Arc::clone(&redactor),
+                        workspace_tools: workspace_tools.clone(),
+                        agent_tool_policy: agent_tool_policy.clone(),
+                    }),
+                )
+            });
+            let harness_builder = Harness::builder()
+                .with_workspace_root(&workspace_root)
+                .with_model_arc(model)
+                .with_store_arc(Arc::clone(&event_store))
+                .with_sandbox_arc(sandbox)
+                .with_tool_registry(tool_registry)
+                .with_model_id(&provider.model_id)
+                .with_permission_authority_arc(authorization.authority)
+                .with_authorization_service_arc(authorization.service)
+                .with_capability::<dyn ToolNetworkBrokerCap>(
+                    ToolCapability::NetworkBroker,
+                    authorization.network_broker,
+                )
+                .with_memory_database_path(memory_database_path);
+            let harness_builder = if subagents_enabled {
+                harness_builder.with_subagent_runner(subagent_runner)
+            } else {
+                harness_builder
+            };
+            let harness_builder = if agent_tool_policy.background_agents == AgentUsePolicy::Allowed
+            {
+                harness_builder.with_capability::<dyn harness_contracts::BackgroundAgentStarterCap>(
+                    harness_contracts::ToolCapability::Custom(
+                        harness_contracts::BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned(),
+                    ),
+                    agent_starters.background,
+                )
+            } else {
+                harness_builder
+            };
+            let harness_builder = if agent_tool_policy.agent_team == AgentUsePolicy::Allowed {
+                harness_builder.with_capability::<dyn harness_contracts::AgentTeamStarterCap>(
+                    harness_contracts::ToolCapability::Custom(
+                        harness_contracts::AGENT_TEAM_STARTER_CAPABILITY.to_owned(),
+                    ),
+                    agent_starters.team,
+                )
+            } else {
+                harness_builder
+            };
+            let harness =
+                apply_runtime_snapshot(harness_builder, &runtime_config, mcp_runtime.config())
+                    .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?
+                    .build()
+                    .await
+                    .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?;
+
+            let session_options = SessionOptions::new(&workspace_root)
+                .with_project_workspace_root(&runtime_config.workspace_root)
+                .with_tenant_id(TenantId::SINGLE)
+                .with_session_id(request.input.session_id)
+                .with_tool_profile(execution_defaults.tool_profile.clone())
+                .with_model_id(&provider.model_id)
+                .with_protocol(provider.protocol)
+                .with_model_options(provider.model_options.clone())
+                .with_agent_profiles(runtime_config.agent_profiles.clone())
+                .with_context_compression_trigger_ratio(
+                    execution_defaults.context_compression_trigger_ratio,
+                )
+                .with_permission_mode(permission_mode);
+            harness
+                .open_or_create_conversation_session(session_options.clone())
                 .await
                 .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?;
 
-        let session_options = SessionOptions::new(&workspace_root)
-            .with_project_workspace_root(&runtime_config.workspace_root)
-            .with_tenant_id(TenantId::SINGLE)
-            .with_session_id(request.input.session_id)
-            .with_tool_profile(execution_defaults.tool_profile.clone())
-            .with_model_id(&provider.model_id)
-            .with_protocol(provider.protocol)
-            .with_model_options(provider.model_options.clone())
-            .with_agent_profiles(runtime_config.agent_profiles.clone())
-            .with_context_compression_trigger_ratio(
-                execution_defaults.context_compression_trigger_ratio,
-            )
-            .with_permission_mode(permission_mode);
-        harness
-            .open_or_create_conversation_session(session_options.clone())
-            .await
-            .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?;
-
-        let mut input = ConversationTurnInput::ask(request.input.content);
-        input.client_message_id = Some(request.segment_id.to_string());
-        input.context_references = request
-            .input
-            .context_references
-            .into_iter()
-            .map(|path| ConversationContextReference::WorkspaceFile {
-                label: path.clone(),
-                path,
-            })
-            .collect();
-        input.attachments = load_attachments(
-            &store,
-            request.task_id,
-            &blob_root,
-            &request.input.attachments,
-        )?;
-        let mut run_options = ConversationRunOptions::from_session_options(&session_options)
-            .with_model_config_id(provider.config_id.clone())
-            .with_model_id(provider.model_id.clone())
-            .with_protocol(provider.protocol)
-            .with_permission_mode(permission_mode)
-            .with_model_options(provider.model_options.clone());
-        run_options.agent_tool_policy = Some(agent_tool_policy);
-        let run_result = harness
-            .submit_conversation_turn_with_run_control(
-                ConversationTurnRequest {
-                    options: session_options,
-                    run_options,
-                    input,
-                    permission_actor_source: None,
-                },
-                request.input.run_id,
-                control,
-            )
-            .await
-            .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()));
-        let shutdown_result = mcp_runtime.shutdown().await;
-        match run_result {
-            Err(error) => Err(error),
-            Ok(_) => {
-                shutdown_result?;
-                Ok(())
-            }
+            let mut input = ConversationTurnInput::ask(request.input.content);
+            input.client_message_id = Some(request.segment_id.to_string());
+            input.context_references = request
+                .input
+                .context_references
+                .into_iter()
+                .map(|path| ConversationContextReference::WorkspaceFile {
+                    label: path.clone(),
+                    path,
+                })
+                .collect();
+            input.attachments = load_attachments(
+                &store,
+                request.task_id,
+                &blob_root,
+                &request.input.attachments,
+            )?;
+            let mut run_options = ConversationRunOptions::from_session_options(&session_options)
+                .with_model_config_id(provider.config_id.clone())
+                .with_model_id(provider.model_id.clone())
+                .with_protocol(provider.protocol)
+                .with_permission_mode(permission_mode)
+                .with_model_options(provider.model_options.clone());
+            run_options.agent_tool_policy = Some(agent_tool_policy);
+            harness
+                .submit_conversation_turn_with_run_control(
+                    ConversationTurnRequest {
+                        options: session_options,
+                        run_options,
+                        input,
+                        permission_actor_source: None,
+                    },
+                    request.input.run_id,
+                    control,
+                )
+                .await
+                .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))
         }
+        .await;
+        let shutdown_result = mcp_runtime.shutdown().await;
+        complete_after_mcp_shutdown(primary_result.map(|_| ()), shutdown_result)
+    }
+}
+
+fn complete_after_mcp_shutdown<T, E>(
+    primary: Result<T, E>,
+    shutdown: Result<(), E>,
+) -> Result<T, E> {
+    match primary {
+        Err(error) => Err(error),
+        Ok(value) => shutdown.map(|()| value),
     }
 }
 
@@ -2104,8 +2295,9 @@ mod tests {
         ProviderProfileConversationCapability, ProviderProfileDefinition,
         ProviderProfileModelDescriptor, ProviderProfileModelLifecycle, ProviderSecretEntry,
         ProviderSecretsRecord, ProviderSelectionRecord, QueueItemId, RunId, RunSegmentId,
-        RunTerminalReason, SessionId, StopReason, TaskId, ToolProfile, ToolProperties, ToolUseId,
-        ToolUseRequestedEvent, ToolUseStartedEvent, TrustLevel, UsageSnapshot, WorkspaceMode,
+        RunTerminalReason, SessionId, StopReason, TaskId, TenantId, ToolProfile, ToolProperties,
+        ToolUseId, ToolUseRequestedEvent, ToolUseStartedEvent, TrustLevel, UsageSnapshot,
+        WorkspaceMode,
     };
     use harness_engine::{RunControl, TurnOutcome};
     use harness_journal::{
@@ -2113,7 +2305,9 @@ mod tests {
         TaskEventStoreAdapter, TaskStore,
     };
     use harness_mcp::{
-        McpConnection, McpError, McpRegistry, McpServerSpec, McpToolDescriptor, McpToolResult,
+        McpConnectContext, McpConnection, McpError, McpEventSink, McpRegistry, McpServerScope,
+        McpServerSpec, McpToolDescriptor, McpToolResult, McpTransport, NoopMcpEventSink,
+        TransportChoice,
     };
     use harness_model::TestModelProvider;
     use harness_plugin::{
@@ -2187,6 +2381,163 @@ mod tests {
         shutdown: AtomicBool,
     }
 
+    struct FailingMcpTransport;
+
+    #[async_trait]
+    impl McpTransport for FailingMcpTransport {
+        fn transport_id(&self) -> &str {
+            "failing"
+        }
+
+        async fn connect(&self, _spec: McpServerSpec) -> Result<Arc<dyn McpConnection>, McpError> {
+            Err(McpError::Connection("fixture failure".to_owned()))
+        }
+    }
+
+    #[tokio::test]
+    async fn optional_mcp_connect_failure_is_registered_without_injection() {
+        let registry = McpRegistry::new();
+        let spec = McpServerSpec::new(
+            harness_contracts::McpServerId("optional-server".to_owned()),
+            "optional server",
+            TransportChoice::InProcess,
+            harness_contracts::McpServerSource::User,
+        );
+
+        let outcome = super::activate_daemon_mcp_server(
+            &registry,
+            spec.clone(),
+            McpServerScope::Global,
+            Arc::new(FailingMcpTransport),
+            Arc::new(NoopMcpEventSink),
+            McpConnectContext::default(),
+        )
+        .await
+        .expect("optional failure must not abort activation");
+
+        assert_eq!(outcome, None);
+        assert!(matches!(
+            registry.connection_state(&spec.server_id).await,
+            Some(harness_mcp::McpConnectionState::Failed { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn required_mcp_connect_failure_closes_previously_registered_servers() {
+        let registry = McpRegistry::new();
+        let existing = Arc::new(ShutdownTrackingMcpConnection::default());
+        registry
+            .add_ready_server(
+                McpServerSpec::new(
+                    harness_contracts::McpServerId("existing".to_owned()),
+                    "existing",
+                    TransportChoice::InProcess,
+                    harness_contracts::McpServerSource::User,
+                ),
+                McpServerScope::Global,
+                existing.clone(),
+            )
+            .await
+            .expect("register existing server");
+        let mut required = McpServerSpec::new(
+            harness_contracts::McpServerId("sk-private-server-id".to_owned()),
+            "private server",
+            TransportChoice::InProcess,
+            harness_contracts::McpServerSource::User,
+        );
+        required.required = true;
+
+        let error = super::activate_daemon_mcp_server(
+            &registry,
+            required,
+            McpServerScope::Global,
+            Arc::new(FailingMcpTransport),
+            Arc::new(NoopMcpEventSink),
+            McpConnectContext::default(),
+        )
+        .await
+        .expect_err("required failure must abort activation");
+
+        assert!(!error.to_string().contains("private-server-id"));
+        assert!(existing.shutdown.load(Ordering::SeqCst));
+        assert!(registry.server_ids().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn daemon_mcp_event_sink_is_bounded() {
+        let (sink, mut receiver) = super::DaemonMcpEventSink::channel(1);
+        let event = Event::UnexpectedError(harness_contracts::UnexpectedErrorEvent {
+            session_id: None,
+            run_id: None,
+            error: "fixture".to_owned(),
+            at: chrono::Utc::now(),
+        });
+
+        sink.emit(event.clone());
+        sink.emit(event);
+
+        assert_eq!(sink.dropped_events(), 1);
+        assert!(receiver.recv().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn daemon_mcp_event_writer_flushes_task_run_and_segment_context() {
+        let fixture = Fixture::new();
+        let session_id = SessionId::new();
+        let run_id = RunId::new();
+        let segment_id = RunSegmentId::new();
+        let event_store: Arc<dyn EventStore> = Arc::new(
+            TaskEventStoreAdapter::new(
+                Arc::clone(&fixture.store),
+                fixture.task_id,
+                TenantId::SINGLE,
+                session_id,
+                Arc::new(NoopRedactor),
+            )
+            .with_run_segment_id(segment_id),
+        );
+        let (sink, receiver) =
+            super::DaemonMcpEventSink::channel_with_context(8, session_id, run_id);
+        let writer = super::spawn_daemon_mcp_event_writer(receiver, event_store, session_id);
+
+        sink.emit(Event::UnexpectedError(
+            harness_contracts::UnexpectedErrorEvent {
+                session_id: None,
+                run_id: None,
+                error: "MCP server activation failed".to_owned(),
+                at: chrono::Utc::now(),
+            },
+        ));
+        sink.close();
+        writer
+            .await
+            .expect("event writer task")
+            .expect("flush MCP event");
+
+        let events = fixture
+            .store
+            .task_events_after(fixture.task_id, 0, 64)
+            .expect("read task journal");
+        let diagnostic = events
+            .iter()
+            .find(|event| event.event_type == "engine.unexpected_error")
+            .expect("flushed MCP diagnostic");
+        let payload = diagnostic.payload.to_string();
+        assert!(payload.contains(&session_id.to_string()));
+        assert!(payload.contains(&run_id.to_string()));
+        assert!(payload.contains(&segment_id.to_string()));
+    }
+
+    #[test]
+    fn daemon_mcp_cleanup_preserves_the_primary_error() {
+        let result = super::complete_after_mcp_shutdown::<(), _>(
+            Err("primary failure"),
+            Err("shutdown failure"),
+        );
+
+        assert_eq!(result, Err("primary failure"));
+    }
+
     #[async_trait]
     impl McpConnection for ShutdownTrackingMcpConnection {
         fn connection_id(&self) -> &'static str {
@@ -2229,11 +2580,19 @@ mod tests {
             )
             .await
             .expect("register daemon MCP fixture");
+        let session_id = SessionId::new();
+        let (event_sink, receiver) = super::DaemonMcpEventSink::channel(8);
+        let event_store: Arc<dyn EventStore> =
+            Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+        let event_writer = super::spawn_daemon_mcp_event_writer(receiver, event_store, session_id);
         let guard = super::DaemonMcpRuntimeGuard {
             config: jyowo_harness_sdk::McpConfig {
                 registry: registry.clone(),
                 server_ids_to_inject: vec![server_id],
+                event_sink: event_sink.clone(),
             },
+            event_sink,
+            event_writer: Some(event_writer),
             shutdown_complete: false,
         };
 
@@ -2298,6 +2657,24 @@ mod tests {
         assert_eq!(spec.trust, harness_contracts::TrustLevel::UserControlled);
     }
 
+    #[test]
+    fn disabled_required_mcp_server_is_not_activated() {
+        let record = serde_json::from_value::<crate::RuntimeMcpServerConfig>(json!({
+            "enabled": false,
+            "required": true,
+            "displayName": "disabled required server",
+            "id": "disabled-required",
+            "scope": "global",
+            "transport": {
+                "kind": "stdio",
+                "command": "missing-command"
+            }
+        }))
+        .expect("runtime MCP fixture");
+
+        assert!(!super::should_activate_mcp_server(&record));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn foreground_and_subagent_harnesses_receive_the_same_runtime_snapshot() {
@@ -2332,6 +2709,25 @@ mod tests {
                 snapshot.provider_routes
             );
         }
+
+        let foreground_mcp = foreground.mcp_config().expect("foreground MCP config");
+        let subagent_mcp = subagent.mcp_config().expect("subagent MCP config");
+        foreground_mcp
+            .registry
+            .add_failed_server(
+                McpServerSpec::new(
+                    harness_contracts::McpServerId("foreground-only".to_owned()),
+                    "foreground only",
+                    TransportChoice::InProcess,
+                    harness_contracts::McpServerSource::User,
+                ),
+                McpServerScope::Global,
+                "fixture".to_owned(),
+            )
+            .await
+            .expect("register foreground-only MCP server");
+        assert_eq!(foreground_mcp.registry.server_ids().await.len(), 1);
+        assert!(subagent_mcp.registry.server_ids().await.is_empty());
 
         let foreground_registry = foreground.plugin_registry().expect("foreground registry");
         let subagent_registry = subagent.plugin_registry().expect("subagent registry");

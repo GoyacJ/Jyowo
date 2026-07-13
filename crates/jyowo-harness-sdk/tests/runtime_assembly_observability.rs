@@ -205,6 +205,7 @@ fn mcp_tools_are_injected_into_default_session() {
             .with_mcp_config(McpConfig {
                 registry: mcp_registry,
                 server_ids_to_inject: vec![server_id],
+                event_sink: Arc::new(NoopMcpEventSink),
             })
             .build()
             .await
@@ -278,6 +279,7 @@ fn mcp_metrics_are_forwarded_to_observer() {
             .with_mcp_config(McpConfig {
                 registry: mcp_registry,
                 server_ids_to_inject: vec![server_id.clone()],
+                event_sink: Arc::new(NoopMcpEventSink),
             })
             .build()
             .await
@@ -471,6 +473,7 @@ fn tool_search_pending_mcp_servers_reflect_registry_state_and_retains_deferred_d
             .with_mcp_config(McpConfig {
                 registry: mcp_registry,
                 server_ids_to_inject: vec![ready_server_id, pending_server_id],
+                event_sink: Arc::new(NoopMcpEventSink),
             })
             .build()
             .await

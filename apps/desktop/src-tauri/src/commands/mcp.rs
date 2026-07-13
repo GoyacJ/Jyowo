@@ -662,6 +662,7 @@ pub(crate) async fn mcp_config_from_records(
     Ok(McpConfig {
         registry,
         server_ids_to_inject,
+        event_sink: Arc::new(DesktopMcpEventSink { diagnostic_store }),
     })
 }
 
