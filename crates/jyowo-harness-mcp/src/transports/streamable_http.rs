@@ -1422,7 +1422,12 @@ async fn run_get_channel(
             lifecycle.close("invalid MCP HTTP GET SSE response").await;
             return;
         }
-        match consume_sse(response, &generation.peer, None, false, cancel.clone()).await {
+        let outcome = tokio::select! {
+            biased;
+            _ = wait_for_cancel(&mut lifetime_cancel) => return,
+            outcome = consume_sse(response, &generation.peer, None, false, cancel.clone()) => outcome,
+        };
+        match outcome {
             Ok(outcome) => {
                 last_event_id = outcome.last_event_id;
                 retry = outcome.retry;
@@ -1654,6 +1659,12 @@ impl McpConnection for HttpConnectionHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::atomic::AtomicBool,
+        thread,
+    };
 
     struct NoopMessageSink;
 
@@ -1685,12 +1696,15 @@ mod tests {
         })
     }
 
-    fn test_connection(generation: Arc<HttpGeneration>) -> Arc<HttpConnection> {
+    fn test_connection_at(
+        generation: Arc<HttpGeneration>,
+        endpoint: String,
+    ) -> Arc<HttpConnection> {
         let (state, _) = watch::channel(HttpConnectionState::Ready(generation));
         Arc::new(HttpConnection {
             connection_id: "http:test".to_owned(),
-            endpoint: "http://127.0.0.1:1".to_owned(),
-            client: reqwest::Client::new(),
+            endpoint,
+            client: reqwest::Client::builder().no_proxy().build().unwrap(),
             auth_provider: client_auth::McpClientAuthProvider::new(&crate::McpClientAuth::None),
             expected: crate::McpExpectedCapabilities::default(),
             timeouts: crate::McpTimeouts::default(),
@@ -1702,6 +1716,106 @@ mod tests {
             next_generation_id: AtomicU64::new(2),
             lifetime_cancel: watch::channel(false).0,
         })
+    }
+
+    fn test_connection(generation: Arc<HttpGeneration>) -> Arc<HttpConnection> {
+        test_connection_at(generation, "http://127.0.0.1:1".to_owned())
+    }
+
+    struct StreamingGetServer {
+        endpoint: String,
+        started: Arc<AtomicBool>,
+        closed: Arc<AtomicBool>,
+        stop: Arc<AtomicBool>,
+        worker: Option<thread::JoinHandle<()>>,
+    }
+
+    impl StreamingGetServer {
+        fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let started = Arc::new(AtomicBool::new(false));
+            let closed = Arc::new(AtomicBool::new(false));
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_started = Arc::clone(&started);
+            let worker_closed = Arc::clone(&closed);
+            let worker_stop = Arc::clone(&stop);
+            let worker = thread::spawn(move || loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        let mut request = Vec::new();
+                        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            let mut chunk = [0_u8; 1024];
+                            let size = stream.read(&mut chunk).unwrap();
+                            assert!(size > 0 && request.len() + size <= 16 * 1024);
+                            request.extend_from_slice(&chunk[..size]);
+                        }
+                        assert!(std::str::from_utf8(&request).unwrap().starts_with("GET "));
+                        stream
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
+                            )
+                            .unwrap();
+                        while !worker_stop.load(Ordering::SeqCst) {
+                            if stream.write_all(b"3\r\n:\n\n\r\n").is_err()
+                                || stream.flush().is_err()
+                            {
+                                worker_closed.store(true, Ordering::SeqCst);
+                                break;
+                            }
+                            worker_started.store(true, Ordering::SeqCst);
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        break;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("streaming GET server failed: {error}"),
+                }
+            });
+            Self {
+                endpoint,
+                started,
+                closed,
+                stop,
+                worker: Some(worker),
+            }
+        }
+    }
+
+    impl Drop for StreamingGetServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(worker) = self.worker.take() {
+                worker.join().unwrap();
+            }
+        }
+    }
+
+    async fn wait_for_flag(flag: &AtomicBool, message: &str) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !flag.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{message}"));
+    }
+
+    async fn start_streaming_get(
+        connection: &Arc<HttpConnection>,
+        generation: &Arc<HttpGeneration>,
+    ) {
+        let task = tokio::spawn(run_get_channel(
+            Arc::clone(connection),
+            Arc::clone(generation),
+            generation.cancel.subscribe(),
+            connection.lifetime_cancel.subscribe(),
+        ));
+        generation.track_task(task).await;
     }
 
     #[test]
@@ -1844,6 +1958,47 @@ mod tests {
             connection.install_generation().await,
             Err(McpError::Connection(message)) if message.contains("closed")
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_before_rebuild_task_poll_drops_an_active_get_body() {
+        let server = StreamingGetServer::start();
+        let generation = test_generation(1);
+        let connection = test_connection_at(Arc::clone(&generation), server.endpoint.clone());
+        start_streaming_get(&connection, &generation).await;
+        wait_for_flag(&server.started, "GET stream did not start").await;
+        request_reinitialize(Arc::clone(&connection), generation);
+
+        let handle = HttpConnectionHandle {
+            inner: Arc::clone(&connection),
+        };
+        handle.shutdown().await.expect("shutdown");
+
+        wait_for_flag(
+            &server.closed,
+            "shutdown did not drop the active GET response body",
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropping_last_handle_drops_an_active_get_body() {
+        let server = StreamingGetServer::start();
+        let generation = test_generation(1);
+        let connection = test_connection_at(Arc::clone(&generation), server.endpoint.clone());
+        start_streaming_get(&connection, &generation).await;
+        wait_for_flag(&server.started, "GET stream did not start").await;
+        let handle = HttpConnectionHandle {
+            inner: Arc::clone(&connection),
+        };
+
+        drop(handle);
+
+        wait_for_flag(
+            &server.closed,
+            "dropping the last handle did not drop the active GET response body",
+        )
+        .await;
     }
 
     #[test]
