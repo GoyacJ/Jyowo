@@ -642,7 +642,7 @@ impl HttpConnection {
             let stale_connection = attempt == 0
                 && matches!(result, Err(McpError::Connection(_)))
                 && self.generation_is_stale(generation.id);
-            if result.is_ok() {
+            if matches!(&result, Ok(_) | Err(McpError::RemoteJsonRpc(_))) {
                 self.reset_session_expiries_after_success(generation.id);
             }
             if !session_expired && !stale_connection {

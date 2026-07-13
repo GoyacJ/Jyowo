@@ -1179,6 +1179,56 @@ async fn successful_business_request_resets_the_session_expiry_budget() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_jsonrpc_error_resets_the_session_expiry_budget() {
+    let server = MockServer::start().await;
+    let post = RemoteErrorResetPostResponder::default();
+    let get = RemoteErrorThenExpiryGet::default();
+    Mock::given(method("POST"))
+        .respond_with(post.clone())
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(get.clone())
+        .mount(&server)
+        .await;
+
+    let mut reset_spec = spec(&server);
+    reset_spec.reconnect = ReconnectPolicy {
+        max_attempts: 1,
+        initial_backoff: Duration::from_millis(1),
+        max_backoff: Duration::from_millis(1),
+        backoff_jitter: 0.0,
+        ..ReconnectPolicy::default()
+    };
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(reset_spec, support::authorized_connect_context())
+        .await
+        .expect("first generation connects");
+    wait_for_count(
+        &post.initializations,
+        2,
+        "first GET expiry rebuilds the session",
+    )
+    .await;
+
+    let remote_error = connection.list_tools().await;
+    assert!(
+        matches!(
+            &remote_error,
+            Err(McpError::Protocol(message)) if message.contains("expected remote error")
+        ),
+        "unexpected business result: {remote_error:?}"
+    );
+
+    wait_for_count(
+        &post.initializations,
+        3,
+        "remote JSON-RPC round trip grants a fresh rebuild budget",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn change_subscription_survives_a_get_404_rebuild() {
     let server = MockServer::start().await;
     let post = GetExpiryPostResponder::default();
@@ -1332,6 +1382,21 @@ struct ExpiryThenListChanged {
     first_expiry_gate: Arc<(StdMutex<bool>, Condvar)>,
 }
 
+#[derive(Clone, Default)]
+struct RemoteErrorThenExpiryGet {
+    gets: Arc<AtomicUsize>,
+}
+
+impl Respond for RemoteErrorThenExpiryGet {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        match self.gets.fetch_add(1, Ordering::SeqCst) {
+            0 => ResponseTemplate::new(404),
+            1 => ResponseTemplate::new(404).set_delay(Duration::from_millis(500)),
+            _ => ResponseTemplate::new(405),
+        }
+    }
+}
+
 impl ExpiryThenListChanged {
     fn release_first_expiry(&self) {
         let (gate, wake) = &*self.first_expiry_gate;
@@ -1389,6 +1454,44 @@ struct GetExpiryPostResponder {
 struct ResettingExpiryPostResponder {
     initializations: Arc<AtomicUsize>,
     tool_requests: Arc<AtomicUsize>,
+}
+
+#[derive(Clone, Default)]
+struct RemoteErrorResetPostResponder {
+    initializations: Arc<AtomicUsize>,
+}
+
+impl Respond for RemoteErrorResetPostResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).expect("JSON-RPC request");
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+        match body.get("method").and_then(Value::as_str) {
+            Some("initialize") => {
+                let generation = self.initializations.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .insert_header("mcp-session-id", format!("remote-error-{generation}"))
+                    .set_body_json(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": { "tools": {} },
+                            "serverInfo": { "name": "fixture", "version": "0.1.0" }
+                        }
+                    }))
+            }
+            Some("notifications/initialized") => ResponseTemplate::new(202),
+            Some("tools/list") => ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32000, "message": "expected remote error" }
+                })),
+            method => panic!("unexpected request method: {method:?}"),
+        }
+    }
 }
 
 impl Respond for ResettingExpiryPostResponder {
