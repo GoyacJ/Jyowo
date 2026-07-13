@@ -202,12 +202,10 @@ impl SkillConfigSnapshot {
 
     #[must_use]
     pub fn secret_is_available_for(&self, skill_id: &str, key: &str) -> bool {
-        self.contains_secret_for(skill_id, key)
-            && self
-                .secret_store
-                .as_ref()
-                .and_then(|store| store.get(skill_id, key).ok().flatten())
-                .is_some()
+        self.secret_store
+            .as_ref()
+            .and_then(|store| store.get(skill_id, key).ok().flatten())
+            .is_some()
     }
 
     pub fn secret_for_script(
@@ -215,9 +213,6 @@ impl SkillConfigSnapshot {
         skill_id: &str,
         key: &str,
     ) -> Result<Option<SecretString>, SkillConfigStoreError> {
-        if !self.contains_secret_for(skill_id, key) {
-            return Ok(None);
-        }
         self.secret_store
             .as_ref()
             .ok_or(SkillConfigStoreError::SecretStoreUnavailable)?
@@ -286,8 +281,8 @@ impl std::error::Error for SkillConfigError {}
 #[derive(Clone, Debug)]
 pub struct SkillConfigSnapshotResolver {
     snapshot: SkillConfigSnapshot,
-    selected_skill_id: Option<String>,
-    declarations: BTreeMap<String, BTreeMap<String, SkillConfigDecl>>,
+    selected_skill_id: String,
+    declarations: BTreeMap<String, SkillConfigDecl>,
 }
 
 impl SkillConfigSnapshotResolver {
@@ -298,52 +293,19 @@ impl SkillConfigSnapshotResolver {
         declarations: impl IntoIterator<Item = SkillConfigDecl>,
     ) -> Self {
         let skill_id = skill_id.into();
-        let declarations = BTreeMap::from([(
-            skill_id.clone(),
-            declarations
-                .into_iter()
-                .map(|declaration| (declaration.key.clone(), declaration))
-                .collect(),
-        )]);
-        Self {
-            snapshot,
-            selected_skill_id: Some(skill_id),
-            declarations,
-        }
-    }
-
-    #[must_use]
-    pub fn from_registry_snapshot(
-        registry_snapshot: &SkillRegistrySnapshot,
-        snapshot: SkillConfigSnapshot,
-    ) -> Self {
-        let declarations = registry_snapshot
-            .entries
-            .values()
-            .map(|skill| {
-                (
-                    skill.id.0.clone(),
-                    skill
-                        .frontmatter
-                        .config
-                        .iter()
-                        .cloned()
-                        .map(|declaration| (declaration.key.clone(), declaration))
-                        .collect(),
-                )
-            })
+        let declarations = declarations
+            .into_iter()
+            .map(|declaration| (declaration.key.clone(), declaration))
             .collect();
         Self {
             snapshot,
-            selected_skill_id: None,
+            selected_skill_id: skill_id,
             declarations,
         }
     }
 
-    fn selected_id(&self) -> Result<&str, ConfigResolveError> {
-        self.selected_skill_id
-            .as_deref()
-            .ok_or_else(|| ConfigResolveError::Message("skill identity is required".to_owned()))
+    fn selected_id(&self) -> &str {
+        &self.selected_skill_id
     }
 
     fn declaration(
@@ -351,9 +313,14 @@ impl SkillConfigSnapshotResolver {
         skill_id: &str,
         key: &str,
     ) -> Result<&SkillConfigDecl, ConfigResolveError> {
+        if skill_id != self.selected_skill_id {
+            return Err(ConfigResolveError::SkillIdentityMismatch {
+                expected_skill_id: self.selected_skill_id.clone(),
+                actual_skill_id: skill_id.to_owned(),
+            });
+        }
         self.declarations
-            .get(skill_id)
-            .and_then(|declarations| declarations.get(key))
+            .get(key)
             .ok_or_else(|| ConfigResolveError::UnknownKey(key.to_owned()))
     }
 
@@ -388,13 +355,13 @@ impl SkillConfigSnapshotResolver {
 #[async_trait]
 impl SkillConfigResolver for SkillConfigSnapshotResolver {
     async fn resolve(&self, key: &str) -> Result<Value, ConfigResolveError> {
-        self.resolve_value(self.selected_id()?, key)
+        self.resolve_value(self.selected_id(), key)
     }
 
     async fn resolve_secret(&self, key: &str) -> Result<SecretString, ConfigResolveError> {
-        let _ = self.declaration(self.selected_id()?, key)?;
+        let _ = self.declaration(self.selected_id(), key)?;
         Err(ConfigResolveError::SecretInterpolationForbidden {
-            skill_id: self.selected_id()?.to_owned(),
+            skill_id: self.selected_id().to_owned(),
             key: key.to_owned(),
         })
     }

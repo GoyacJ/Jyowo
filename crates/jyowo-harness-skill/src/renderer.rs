@@ -32,9 +32,27 @@ pub trait SkillConfigResolver: Send + Sync + 'static {
     }
 }
 
+pub type SkillConfigResolverFactory =
+    dyn Fn(&Skill) -> Arc<dyn SkillConfigResolver> + Send + Sync + 'static;
+
+#[derive(Clone)]
+enum SkillConfigResolverBinding {
+    Shared(Arc<dyn SkillConfigResolver>),
+    PerSkill(Arc<SkillConfigResolverFactory>),
+}
+
+impl SkillConfigResolverBinding {
+    fn for_skill(&self, skill: &Skill) -> Arc<dyn SkillConfigResolver> {
+        match self {
+            Self::Shared(resolver) => Arc::clone(resolver),
+            Self::PerSkill(factory) => factory(skill),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct SkillRenderer {
-    config_resolver: Arc<dyn SkillConfigResolver>,
+    config_resolver: SkillConfigResolverBinding,
     shell_allowlist: HashSet<String>,
     max_shell_output: usize,
     metrics_sink: Option<Arc<dyn SkillMetricsSink>>,
@@ -60,7 +78,22 @@ impl SkillRenderer {
     #[must_use]
     pub fn new(config_resolver: Arc<dyn SkillConfigResolver>) -> Self {
         Self {
-            config_resolver,
+            config_resolver: SkillConfigResolverBinding::Shared(config_resolver),
+            shell_allowlist: SkillRenderPolicy::default()
+                .shell_allowlist
+                .into_iter()
+                .collect(),
+            max_shell_output: 4_000,
+            metrics_sink: None,
+        }
+    }
+
+    #[must_use]
+    pub fn new_with_config_resolver_factory(
+        config_resolver_factory: Arc<SkillConfigResolverFactory>,
+    ) -> Self {
+        Self {
+            config_resolver: SkillConfigResolverBinding::PerSkill(config_resolver_factory),
             shell_allowlist: SkillRenderPolicy::default()
                 .shell_allowlist
                 .into_iter()
@@ -97,6 +130,7 @@ impl SkillRenderer {
 
     pub async fn render(&self, skill: &Skill, params: Value) -> Result<RenderedSkill, RenderError> {
         let started = Instant::now();
+        let config_resolver = self.config_resolver.for_skill(skill);
         for parameter in &skill.frontmatter.parameters {
             let value = params
                 .get(&parameter.name)
@@ -145,10 +179,7 @@ impl SkillRenderer {
                     }
                     .into());
                 }
-                let value = self
-                    .config_resolver
-                    .resolve_for(&skill.id, &config.key)
-                    .await?;
+                let value = config_resolver.resolve_for(&skill.id, &config.key).await?;
                 content = content.replace(&pattern, &render_value_for_template(&value));
                 if !consumed_config_keys.iter().any(|key| key == &config.key) {
                     consumed_config_keys.push(config.key.clone());

@@ -7,14 +7,17 @@ use async_trait::async_trait;
 use futures::{executor::block_on, stream, StreamExt};
 use harness_contracts::{
     BudgetMetric, Decision, DeferPolicy, Event, NetworkAccess, OverflowAction, ProviderRestriction,
-    ResultBudget, SkillInjectionId, SkillInvocationReceipt, SkillRegistryCap, TenantId,
+    ResultBudget, SkillId, SkillInjectionId, SkillInvocationReceipt, SkillRegistryCap, TenantId,
     ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
     ToolOrigin, ToolProperties, ToolResult, ToolUseId, TrustLevel, WorkspaceAccess,
 };
 use harness_journal::EventStore;
 use harness_model::{ContentDelta, ModelStreamEvent};
 use harness_permission::PermissionCheck;
-use harness_skill::{ConfigResolveError, SkillConfigResolver, SkillLoader, SkillSourceConfig};
+use harness_skill::{
+    parse_skill_markdown, ConfigResolveError, SkillConfigResolver, SkillLoader, SkillPlatform,
+    SkillSource, SkillSourceConfig,
+};
 use harness_tool::{
     action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
     ToolStream, ValidationError,
@@ -24,6 +27,7 @@ use jyowo_harness_sdk::skill_config::{
     SkillSecretStore,
 };
 use jyowo_harness_sdk::{prelude::*, testing::*, KeyringSkillSecretStore};
+use secrecy::ExposeSecret;
 use serde_json::json;
 
 #[test]
@@ -89,7 +93,8 @@ fn required_secret_metadata_without_a_secret_store_entry_remains_missing() {
         });
         let config = SkillConfigSnapshot::new()
             .with_skill_value("workspace:configured", "github.org", json!("jyowo"))
-            .with_skill_secret_presence("workspace:configured", "github.token");
+            .with_skill_secret_presence("workspace:configured", "github.token")
+            .with_secret_store(Arc::new(MemorySecretStore::default()));
         let harness = Harness::builder()
             .with_workspace_root(&workspace)
             .with_model(TestModelProvider::default())
@@ -113,6 +118,88 @@ fn required_secret_metadata_without_a_secret_store_entry_remains_missing() {
                 if config_keys == &["github.token".to_owned()]
         ));
     });
+}
+
+#[test]
+fn required_secret_store_entry_without_metadata_is_ready() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-skill-config-secret-store-truth");
+        let skill_dir = workspace.join("skills");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("configured.md"), configured_skill()).unwrap();
+        let loader = SkillLoader::default().with_source(SkillSourceConfig::Directory {
+            path: skill_dir,
+            source_kind: harness_skill::DirectorySourceKind::Workspace,
+        });
+        let secret_store = Arc::new(MemorySecretStore::default());
+        secret_store
+            .set(
+                "workspace:configured",
+                "github.token",
+                SecretString::from("store-only-secret".to_owned()),
+            )
+            .unwrap();
+        let config = SkillConfigSnapshot::new()
+            .with_skill_value("workspace:configured", "github.org", json!("jyowo"))
+            .with_secret_store(secret_store);
+        let harness = Harness::builder()
+            .with_workspace_root(&workspace)
+            .with_model(TestModelProvider::default())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
+            .with_skill_loader(loader)
+            .with_skill_config_snapshot(config)
+            .build()
+            .await
+            .unwrap();
+        let _session = harness
+            .create_session(SessionOptions::new(&workspace))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            harness
+                .view_runtime_skill("configured", false)
+                .unwrap()
+                .summary
+                .status,
+            harness_contracts::SkillStatus::Ready
+        );
+    });
+}
+
+#[test]
+fn script_secret_lookup_uses_only_the_injected_store_as_runtime_truth() {
+    let populated_store = Arc::new(MemorySecretStore::default());
+    populated_store
+        .set(
+            "workspace:configured",
+            "github.token",
+            SecretString::from("store-only-secret".to_owned()),
+        )
+        .unwrap();
+    let without_metadata = SkillConfigSnapshot::new().with_secret_store(populated_store.clone());
+
+    assert!(without_metadata.secret_is_available_for("workspace:configured", "github.token"));
+    assert_eq!(
+        without_metadata
+            .secret_for_script("workspace:configured", "github.token")
+            .unwrap()
+            .unwrap()
+            .expose_secret(),
+        "store-only-secret"
+    );
+
+    let empty_store = Arc::new(MemorySecretStore::default());
+    let stale_metadata = SkillConfigSnapshot::new()
+        .with_skill_secret_presence("workspace:configured", "github.token")
+        .with_secret_store(empty_store);
+    assert!(!stale_metadata.secret_is_available_for("workspace:configured", "github.token"));
+    assert!(stale_metadata
+        .secret_for_script("workspace:configured", "github.token")
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -315,6 +402,66 @@ fn resolver_rejects_config_values_with_the_wrong_declared_type() {
                 ref key,
                 expected: "string",
             } if skill_id == "workspace:configured" && key == "github.org"
+        ));
+    });
+}
+
+#[test]
+fn per_skill_renderer_factory_never_resolves_another_skills_same_named_key() {
+    block_on(async {
+        let skill_a = parse_skill_markdown(
+            "---\nname: skill-a\ndescription: Skill A\nconfig:\n  - key: region\n    type: string\n---\nRegion ${config.region}.\n",
+            SkillSource::Workspace("test/skills".into()),
+            None,
+            SkillPlatform::Macos,
+        )
+        .unwrap();
+        let skill_b = parse_skill_markdown(
+            "---\nname: skill-b\ndescription: Skill B\nconfig:\n  - key: region\n    type: string\n---\nRegion ${config.region}.\n",
+            SkillSource::Workspace("test/skills".into()),
+            None,
+            SkillPlatform::Macos,
+        )
+        .unwrap();
+        let snapshot = SkillConfigSnapshot::new()
+            .with_skill_value("workspace:skill-a", "region", json!("a-only"))
+            .with_skill_value("workspace:skill-b", "region", json!("b-only"));
+        let factory_snapshot = snapshot.clone();
+        let renderer = harness_skill::SkillRenderer::new_with_config_resolver_factory(Arc::new(
+            move |skill: &harness_skill::Skill| -> Arc<dyn SkillConfigResolver> {
+                Arc::new(SkillConfigSnapshotResolver::for_skill(
+                    skill.id.0.clone(),
+                    factory_snapshot.clone(),
+                    skill.frontmatter.config.clone(),
+                ))
+            },
+        ));
+
+        assert_eq!(
+            renderer.render(&skill_a, json!({})).await.unwrap().content,
+            "Region a-only.\n"
+        );
+        assert_eq!(
+            renderer.render(&skill_b, json!({})).await.unwrap().content,
+            "Region b-only.\n"
+        );
+
+        let resolver_a = SkillConfigSnapshotResolver::for_skill(
+            skill_a.id.0.clone(),
+            snapshot,
+            skill_a.frontmatter.config.clone(),
+        );
+        let error = resolver_a
+            .resolve_for(&SkillId(skill_b.id.0.clone()), "region")
+            .await
+            .expect_err("an A-bound resolver must reject B even when the key name matches");
+        assert!(matches!(
+            error,
+            ConfigResolveError::SkillIdentityMismatch {
+                ref expected_skill_id,
+                ref actual_skill_id,
+            } if expected_skill_id == "workspace:skill-a"
+                && actual_skill_id == "workspace:skill-b"
         ));
     });
 }

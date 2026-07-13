@@ -57,6 +57,11 @@ pub enum RenderError {
 pub enum ConfigResolveError {
     #[error("unknown config key: {0}")]
     UnknownKey(String),
+    #[error("skill config resolver is bound to `{expected_skill_id}`, not `{actual_skill_id}`")]
+    SkillIdentityMismatch {
+        expected_skill_id: String,
+        actual_skill_id: String,
+    },
     #[error("skill `{skill_id}` is missing required config `{key}`")]
     MissingRequiredConfig { skill_id: String, key: String },
     #[error("secret config `{key}` for skill `{skill_id}` cannot be interpolated")]

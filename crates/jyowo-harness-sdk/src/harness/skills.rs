@@ -56,8 +56,15 @@ impl Harness {
         let skill_config_snapshot = self.skill_config_snapshot();
         apply_skill_config_statuses(&mut snapshot, &skill_config_snapshot);
         let snapshot = Arc::new(snapshot);
-        let mut renderer = SkillRenderer::new(Arc::new(
-            SkillConfigSnapshotResolver::from_registry_snapshot(&snapshot, skill_config_snapshot),
+        let resolver_snapshot = skill_config_snapshot.clone();
+        let mut renderer = SkillRenderer::new_with_config_resolver_factory(Arc::new(
+            move |skill: &Skill| -> Arc<dyn harness_skill::SkillConfigResolver> {
+                Arc::new(SkillConfigSnapshotResolver::for_skill(
+                    skill.id.0.clone(),
+                    resolver_snapshot.clone(),
+                    skill.frontmatter.config.clone(),
+                ))
+            },
         ))
         .with_policy(self.skill_render_policy());
         if let Some(metrics_sink) = &metrics_sink {

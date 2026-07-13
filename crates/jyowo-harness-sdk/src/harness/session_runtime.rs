@@ -1295,11 +1295,15 @@ impl EngineSessionTurnRunner {
         apply_skill_config_statuses(&mut snapshot, &self.skill_config_snapshot);
         let snapshot = Arc::new(snapshot);
         let mut cap_registry = engine.cap_registry().as_ref().clone();
-        let mut renderer = SkillRenderer::new(Arc::new(
-            SkillConfigSnapshotResolver::from_registry_snapshot(
-                &snapshot,
-                self.skill_config_snapshot.clone(),
-            ),
+        let resolver_snapshot = self.skill_config_snapshot.clone();
+        let mut renderer = SkillRenderer::new_with_config_resolver_factory(Arc::new(
+            move |skill: &Skill| -> Arc<dyn harness_skill::SkillConfigResolver> {
+                Arc::new(SkillConfigSnapshotResolver::for_skill(
+                    skill.id.0.clone(),
+                    resolver_snapshot.clone(),
+                    skill.frontmatter.config.clone(),
+                ))
+            },
         ))
         .with_policy(self.skill_render_policy.clone());
         if let Some(metrics_sink) = &self.skill_metrics_sink {
