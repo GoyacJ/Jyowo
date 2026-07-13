@@ -176,6 +176,8 @@ pub async fn execute_skill_script(
     let backend_id = backend.backend_id().to_owned();
     let started = Instant::now();
     let mut handle = execute_with_lifecycle(backend, spec, ctx).await?;
+    let activity = Arc::clone(&handle.activity);
+    let mut kill_on_drop = ProcessGroupKillOnDrop::new(Arc::clone(&activity));
     let stdout_task = tokio::spawn(collect_stream(
         handle.stdout.take(),
         request.declaration.max_stdout_bytes,
@@ -185,7 +187,6 @@ pub async fn execute_skill_script(
         request.declaration.max_stderr_bytes,
     ));
 
-    let activity = Arc::clone(&handle.activity);
     let mut wait = Box::pin(activity.wait());
     let outcome = match tokio::time::timeout(
         timeout.saturating_add(BACKEND_TIMEOUT_GRACE),
@@ -195,6 +196,7 @@ pub async fn execute_skill_script(
     {
         Ok(outcome) => {
             activity.kill(9, KillScope::ProcessGroup).await?;
+            kill_on_drop.disarm();
             Some(outcome?)
         }
         Err(_) => {
@@ -206,6 +208,7 @@ pub async fn execute_skill_script(
                         "skill script process group did not terminate after kill".to_owned(),
                     )
                 })??;
+            kill_on_drop.disarm();
             None
         }
     };
@@ -244,6 +247,39 @@ pub async fn execute_skill_script(
         mounted_files,
         artifacts,
     })
+}
+
+struct ProcessGroupKillOnDrop {
+    activity: Arc<dyn crate::ActivityHandle>,
+    armed: bool,
+}
+
+impl ProcessGroupKillOnDrop {
+    fn new(activity: Arc<dyn crate::ActivityHandle>) -> Self {
+        Self {
+            activity,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ProcessGroupKillOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let activity = Arc::clone(&self.activity);
+        handle.spawn(async move {
+            let _ = activity.kill(9, KillScope::ProcessGroup).await;
+        });
+    }
 }
 
 fn validate_declaration(declaration: &SkillScriptDecl) -> Result<(), SandboxError> {

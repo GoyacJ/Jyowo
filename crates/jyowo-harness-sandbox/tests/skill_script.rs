@@ -32,6 +32,7 @@ impl EventSink for NullSink {
 
 struct TestActivity {
     delay: Duration,
+    pending_wait: bool,
     exit_status: SandboxExitStatus,
     killed: Arc<AtomicUsize>,
     kill_scopes: Arc<Mutex<Vec<KillScope>>>,
@@ -43,6 +44,9 @@ struct TestActivity {
 #[async_trait]
 impl ActivityHandle for TestActivity {
     async fn wait(&self) -> Result<ExecOutcome, SandboxError> {
+        if self.pending_wait {
+            std::future::pending::<()>().await;
+        }
         tokio::select! {
             () = tokio::time::sleep(self.delay) => {}
             () = self.terminated.notified() => {}
@@ -82,6 +86,7 @@ struct TestBackend {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     delay: Duration,
+    pending_wait: bool,
     exit_status: SandboxExitStatus,
     artifacts: Vec<(String, Vec<u8>)>,
     pending_output: bool,
@@ -103,6 +108,7 @@ impl TestBackend {
             stdout: Vec::new(),
             stderr: Vec::new(),
             delay: Duration::ZERO,
+            pending_wait: false,
             exit_status: SandboxExitStatus::Code(0),
             artifacts: Vec::new(),
             pending_output: false,
@@ -185,6 +191,7 @@ impl SandboxBackend for TestBackend {
             cwd_marker: None,
             activity: Arc::new(TestActivity {
                 delay: self.delay,
+                pending_wait: self.pending_wait,
                 exit_status: self.exit_status.clone(),
                 killed: Arc::clone(&self.killed),
                 kill_scopes: Arc::clone(&self.kill_scopes),
@@ -371,6 +378,34 @@ async fn successful_root_exit_reaps_the_process_group_before_returning() {
 }
 
 #[tokio::test]
+async fn cancelling_a_skill_script_reaps_its_process_group() {
+    let backend = Arc::new(TestBackend {
+        pending_wait: true,
+        pending_output: true,
+        ..TestBackend::accepting()
+    });
+    let task = tokio::spawn(execute_skill_script(
+        backend.clone(),
+        request(script_decl()),
+        test_context(),
+    ));
+
+    wait_for_count(&backend.executed, 1).await;
+
+    task.abort();
+    let cancelled = task.await.expect_err("skill script task must be cancelled");
+    assert!(cancelled.is_cancelled());
+    wait_for_count(&backend.killed, 1).await;
+
+    assert_eq!(backend.killed.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        backend.kill_scopes.lock().unwrap().as_slice(),
+        &[KillScope::ProcessGroup]
+    );
+    assert!(!backend.background_alive.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
 async fn timeout_stays_bounded_when_backend_output_never_closes() {
     let backend = Arc::new(TestBackend {
         delay: Duration::from_secs(2),
@@ -529,4 +564,14 @@ fn request(declaration: SkillScriptDecl) -> SkillScriptSandboxRequest {
 
 fn test_context() -> ExecContext {
     ExecContext::for_test(Arc::new(NullSink))
+}
+
+async fn wait_for_count(value: &AtomicUsize, expected: usize) {
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while value.load(Ordering::SeqCst) < expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("condition must be observed within 500ms");
 }
