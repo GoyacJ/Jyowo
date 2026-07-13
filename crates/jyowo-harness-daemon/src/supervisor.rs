@@ -633,7 +633,8 @@ fn spawn_actor(
                 | TaskActorError::RuntimeStatePoisoned
                 | TaskActorError::SegmentStartDeliveryNotPending
                 | TaskActorError::SubagentStop(_)
-                | TaskActorError::Permission(_),
+                | TaskActorError::Permission(_)
+                | TaskActorError::Workspace(_),
             ))
             | Err(_) => true,
         };

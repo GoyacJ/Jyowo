@@ -5,13 +5,14 @@ use std::time::Duration;
 
 use chrono::Utc;
 use harness_contracts::{
-    BlobId, ClientId, CommandId, PermissionMode, QueueItemId, QueueItemState, RequestId,
+    ActorId, BlobId, ClientId, CommandId, PermissionMode, QueueItemId, QueueItemState, RequestId,
     RunSegmentId, RunState, RunTerminalReason, TaskId, TaskState, WorkspaceMode,
 };
 use harness_daemon::{
     DaemonPermissionKind, PermissionOption, PermissionRequestDraft, QueueCommand,
     RunCoordinatorEvent, RunCoordinatorFactory, RunningSegment, StartSegmentRequest, Supervisor,
-    SupervisorQuotas, ValidatedTaskCommand,
+    SupervisorQuotas, TaskMetadataMutation, ValidatedTaskCommand, WorkspaceAccess,
+    WorkspaceCoordinator, WorkspaceExecutionKind, WorkspaceLeaseRequest,
 };
 use harness_journal::{AcceptedCommand, CommandOutcome, NewTaskEvent, TaskStore};
 use serde_json::json;
@@ -249,6 +250,17 @@ fn start_command(
         ),
         segment_id,
         started_at: Utc::now(),
+    }
+}
+
+fn remove_command(store: &TaskStore, task_id: TaskId) -> ValidatedTaskCommand {
+    ValidatedTaskCommand::Metadata {
+        command: command(
+            task_id,
+            store.stream_version(task_id).unwrap(),
+            json!({ "type": "remove_task" }),
+        ),
+        mutation: TaskMetadataMutation::Remove,
     }
 }
 

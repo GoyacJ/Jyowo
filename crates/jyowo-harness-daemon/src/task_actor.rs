@@ -18,7 +18,7 @@ use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use crate::{
     decide_consume_next, decide_queue, CheckpointService, CheckpointState, PermissionBroker,
     PermissionBrokerError, QueueCommand, RunCoordinatorEvent, RunningSegment, StartSegmentRequest,
-    SubagentStopMode, WorkspaceBoundRunCoordinatorFactory,
+    SubagentStopMode, WorkspaceBoundRunCoordinatorFactory, WorkspaceCoordinatorError,
 };
 
 #[derive(Debug)]
@@ -90,6 +90,8 @@ pub(crate) enum TaskActorError {
     SubagentStop(#[source] harness_subagent::SubagentError),
     #[error("permission routing failed: {0}")]
     Permission(#[from] PermissionBrokerError),
+    #[error("workspace coordination failed: {0}")]
+    Workspace(#[from] WorkspaceCoordinatorError),
 }
 
 impl ValidatedTaskCommand {
@@ -306,7 +308,11 @@ async fn handle_command(
                 Ok(outcome) => outcome,
                 Err(error) => command_store_error(error, command_id, command_task_id)?,
             };
+            let accepted = matches!(outcome, CommandOutcome::Accepted { .. });
             let _ = reply.send(outcome);
+            if accepted && removes_task {
+                factory.release_task_leases(task_id)?;
+            }
         }
         ValidatedTaskCommand::SubmitMessage {
             command,
@@ -1090,6 +1096,7 @@ fn handle_run_event(
                 *active_segment_state
                     .lock()
                     .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = None;
+                release_terminal_task_leases(store, factory, task_id)?;
                 return Ok(true);
             }
         }
@@ -1166,6 +1173,7 @@ fn handle_run_event(
                     *active_segment_state
                         .lock()
                         .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = None;
+                    release_terminal_task_leases(store, factory, task_id)?;
                 }
                 return Ok(false);
             }
@@ -1300,10 +1308,25 @@ fn handle_run_event(
                 *active_segment_state
                     .lock()
                     .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = None;
+                release_terminal_task_leases(store, factory, task_id)?;
             }
         }
     }
     Ok(false)
+}
+
+fn release_terminal_task_leases(
+    store: &TaskStore,
+    factory: &WorkspaceBoundRunCoordinatorFactory,
+    task_id: TaskId,
+) -> Result<(), TaskActorError> {
+    let projection = store
+        .task_projection(task_id)?
+        .ok_or(TaskActorError::TaskNotFound)?;
+    if projection.queue.is_empty() {
+        factory.release_task_leases(task_id)?;
+    }
+    Ok(())
 }
 
 fn schedule_consume_next(foreground_runs: Arc<Semaphore>, mailbox: mpsc::Sender<TaskActorMessage>) {

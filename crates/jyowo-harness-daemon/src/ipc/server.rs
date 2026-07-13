@@ -732,25 +732,31 @@ fn command_message(outcome: CommandOutcome) -> ServerMessage {
             task_id,
             rejection,
         } => {
-            let (reason, current_stream_version, latest_queue_item) = match rejection {
+            let (reason, message, current_stream_version, latest_queue_item) = match rejection {
                 CommandRejection::WrongExpectedVersion { actual, .. } => (
                     CommandRejectionReason::WrongExpectedVersion,
+                    None,
                     Some(actual),
                     None,
                 ),
                 CommandRejection::StaleQueueRevision { latest } => (
                     CommandRejectionReason::StaleQueueRevision,
                     None,
+                    None,
                     Some(*latest),
                 ),
-                CommandRejection::InvalidCommand { .. } => {
-                    (CommandRejectionReason::InvalidCommand, None, None)
-                }
+                CommandRejection::InvalidCommand { message } => (
+                    CommandRejectionReason::InvalidCommand,
+                    Some(message),
+                    None,
+                    None,
+                ),
             };
             ServerMessage::CommandRejected(CommandRejected {
                 command_id: Some(command_id),
                 task_id: Some(task_id),
                 reason,
+                message,
                 current_stream_version,
                 latest_queue_item,
             })
@@ -838,5 +844,27 @@ impl EndpointCleanup {
             std::fs::remove_file(self.path)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod command_message_tests {
+    use super::*;
+    use harness_contracts::CommandId;
+
+    #[test]
+    fn invalid_command_preserves_its_message() {
+        let message = command_message(CommandOutcome::Rejected {
+            command_id: CommandId::new(),
+            task_id: TaskId::new(),
+            rejection: CommandRejection::InvalidCommand {
+                message: "workspace is busy".into(),
+            },
+        });
+
+        assert_eq!(
+            serde_json::to_value(message).unwrap()["message"],
+            "workspace is busy"
+        );
     }
 }

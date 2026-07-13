@@ -66,7 +66,8 @@ describe('daemon client', () => {
       return {
         message: {
           commandId: taskId,
-          reason: 'wrong_expected_version',
+          message: 'workspace is busy',
+          reason: 'invalid_command',
           taskId,
           type: 'command_rejected',
         },
@@ -76,7 +77,7 @@ describe('daemon client', () => {
     })
     const client = createDaemonClient(transport(invoke))
 
-    await expect(client.setTaskPinned(taskId, 1, true)).rejects.toThrow('wrong expected version')
+    await expect(client.setTaskPinned(taskId, 1, true)).rejects.toThrow('workspace is busy')
   })
 
   it('validates every response and builds generated request frames', async () => {

@@ -428,6 +428,7 @@ export type ServerMessage =
       commandId?: TypedUlid | null
       currentStreamVersion?: number | null
       latestQueueItem?: QueueItemProjection | null
+      message?: string | null
       reason: CommandRejectionReason
       taskId?: TypedUlid | null
       type: 'command_rejected'

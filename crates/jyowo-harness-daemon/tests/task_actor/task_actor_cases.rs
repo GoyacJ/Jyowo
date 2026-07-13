@@ -39,6 +39,114 @@ async fn first_submit_acquires_foreground_workspace() {
 }
 
 #[tokio::test]
+async fn completed_run_releases_workspace_for_next_task() {
+    let (store, root) = test_store();
+    let workspace_root = root.path().join("shared-workspace");
+    std::fs::create_dir(&workspace_root).unwrap();
+    let first = create_task_in_workspace(&store, "first", &workspace_root);
+    let second = create_task_in_workspace(&store, "second", &workspace_root);
+    let factory = Arc::new(ControlledFactory::default());
+    let supervisor = Supervisor::start(
+        Arc::clone(&store),
+        factory.clone(),
+        SupervisorQuotas::new(1, 1),
+    )
+    .unwrap();
+
+    assert!(accepted(
+        supervisor
+            .dispatch(first, submit_message_command(&store, first))
+            .await
+            .unwrap()
+    ));
+    wait_for_start_count(&factory, first, 1).await;
+    let segment_id = factory.requests(first)[0].segment_id;
+
+    factory.complete(first, segment_id);
+    wait_for_state(&store, first, TaskState::Completed).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if store
+                .nonterminal_workspace_leases_for_task(first)
+                .unwrap()
+                .is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("completed task should release its workspace lease");
+
+    let outcome = supervisor
+        .dispatch(second, submit_message_command(&store, second))
+        .await
+        .unwrap();
+    assert!(
+        matches!(outcome, CommandOutcome::Accepted { .. }),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn removing_idle_task_releases_its_workspace_lease() {
+    let (store, root) = test_store();
+    let workspace_root = root.path().join("remove-workspace");
+    std::fs::create_dir(&workspace_root).unwrap();
+    let task_id = create_task_in_workspace(&store, "remove", &workspace_root);
+    let coordinator =
+        WorkspaceCoordinator::new(Arc::clone(&store), root.path().join("managed-worktrees"))
+            .unwrap();
+    let lease = match coordinator
+        .acquire(WorkspaceLeaseRequest {
+            task_id,
+            actor_id: ActorId::from_u128(u128::from_be_bytes(task_id.as_bytes())),
+            root: workspace_root,
+            mode: Some(WorkspaceMode::Current),
+            access: WorkspaceAccess::Write,
+            execution_kind: WorkspaceExecutionKind::Foreground,
+            expires_at: None,
+        })
+        .unwrap()
+    {
+        harness_daemon::WorkspaceAcquireOutcome::Acquired(lease) => lease,
+        harness_daemon::WorkspaceAcquireOutcome::Waiting(_) => panic!("workspace should be free"),
+    };
+    let supervisor = Supervisor::start(
+        Arc::clone(&store),
+        Arc::new(ControlledFactory::default()),
+        SupervisorQuotas::new(1, 1),
+    )
+    .unwrap();
+
+    let outcome = supervisor
+        .dispatch(task_id, remove_command(&store, task_id))
+        .await
+        .unwrap();
+    assert!(
+        matches!(outcome, CommandOutcome::Accepted { .. }),
+        "{outcome:?}"
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if store
+                .workspace_lease(lease.lease_id)
+                .unwrap()
+                .unwrap()
+                .state
+                == harness_contracts::WorkspaceLeaseState::Released
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("removed task should release its workspace lease");
+}
+
+#[tokio::test]
 async fn missing_workspace_rejects_submit_before_run_start() {
     let (store, root) = test_store();
     let missing_root = root.path().join("missing-workspace");

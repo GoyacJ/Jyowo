@@ -283,6 +283,15 @@ impl WorkspaceBoundRunCoordinatorFactory {
     ) -> Result<(), harness_subagent::SubagentError> {
         self.subagents.request_parent_stop(task_id, mode)
     }
+
+    pub(crate) fn release_task_leases(
+        &self,
+        task_id: TaskId,
+    ) -> Result<(), WorkspaceCoordinatorError> {
+        self.workspace_tools
+            .coordinator
+            .release_task_leases(task_id)
+    }
 }
 
 #[cfg(test)]

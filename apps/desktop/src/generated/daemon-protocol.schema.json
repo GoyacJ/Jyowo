@@ -3815,6 +3815,12 @@
                 }
               ]
             },
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "reason": {
               "$ref": "#/$defs/CommandRejectionReason"
             },

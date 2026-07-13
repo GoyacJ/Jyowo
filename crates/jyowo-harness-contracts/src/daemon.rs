@@ -575,6 +575,8 @@ pub struct CommandRejected {
     pub command_id: Option<CommandId>,
     pub task_id: Option<TaskId>,
     pub reason: CommandRejectionReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
     pub current_stream_version: Option<u64>,
     pub latest_queue_item: Option<QueueItemProjection>,
 }

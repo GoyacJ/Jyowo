@@ -49,7 +49,7 @@ export function createTaskCreationMetadata(): CommandMetadata {
 
 export function requireAcceptedCommand(frame: ServerFrame, taskId: TypedUlid) {
   if (frame.message.type === 'command_rejected') {
-    throw new TaskCommandError(frame.message.reason)
+    throw new TaskCommandError(frame.message.message ?? frame.message.reason)
   }
   if (frame.message.type === 'error') {
     throw new TaskCommandError(frame.message.message)
