@@ -42,6 +42,8 @@ use crate::{
 
 const BACKEND_ID: &str = "local";
 const NO_CACHED_SIGNAL: i32 = i32::MIN;
+#[cfg(unix)]
+const PROCESS_GROUP_REAP_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[async_trait]
 impl SandboxBackend for LocalSandbox {
@@ -70,7 +72,7 @@ impl SandboxBackend for LocalSandbox {
             supports_workspace_sync: false,
             supports_session_snapshot: true,
             max_concurrent_execs: u32::MAX,
-            supports_kill_scope: vec![KillScope::Process, KillScope::ProcessGroup],
+            supports_kill_scope: local_kill_scopes(),
             snapshot_kinds: BTreeSet::from([
                 SessionSnapshotKind::FilesystemImage,
                 SessionSnapshotKind::ShellState,
@@ -98,7 +100,8 @@ impl SandboxBackend for LocalSandbox {
         let cwd = resolve_cwd(&self.root, spec.cwd.as_deref(), &spec.policy.scope)?;
         let (mut command, cwd_marker) =
             wrapped_command_for_local(&spec, self.isolation, &self.root, &cwd)?.into_parts();
-        configure_process_group(&mut command);
+        let process_group = ProcessGroupKeeper::for_spec(&spec)?;
+        configure_process_group(&mut command, process_group.as_ref());
         command
             .current_dir(cwd)
             .stdin(stdio(&spec.stdin)?)
@@ -119,6 +122,7 @@ impl SandboxBackend for LocalSandbox {
 
         let activity = Arc::new(LocalActivity::new(
             child,
+            process_group,
             spec.clone(),
             ctx.clone(),
             fingerprint,
@@ -208,6 +212,7 @@ fn validate_local_exec(sandbox: &LocalSandbox, spec: &ExecSpec) -> Result<(), Sa
 
 pub struct LocalActivity {
     pub(crate) child: AsyncMutex<Option<Child>>,
+    process_group: AsyncMutex<Option<ProcessGroupKeeper>>,
     spec: ExecSpec,
     ctx: ExecContext,
     started_at: chrono::DateTime<Utc>,
@@ -300,9 +305,16 @@ impl SpillPreview {
 }
 
 impl LocalActivity {
-    fn new(child: Child, spec: ExecSpec, ctx: ExecContext, fingerprint: ExecFingerprint) -> Self {
+    fn new(
+        child: Child,
+        process_group: Option<ProcessGroupKeeper>,
+        spec: ExecSpec,
+        ctx: ExecContext,
+        fingerprint: ExecFingerprint,
+    ) -> Self {
         Self {
             child: AsyncMutex::new(Some(child)),
+            process_group: AsyncMutex::new(process_group),
             spec,
             ctx,
             started_at: Utc::now(),
@@ -627,6 +639,18 @@ impl ActivityHandle for LocalActivity {
 
     async fn kill(&self, signal: Signal, scope: KillScope) -> Result<(), SandboxError> {
         self.killed_signal.store(signal, Ordering::Relaxed);
+        if scope == KillScope::ProcessGroup {
+            if !cfg!(unix) {
+                return Err(SandboxError::CapabilityMismatch {
+                    capability: "kill_scope".to_owned(),
+                    detail: "local sandbox cannot enforce process-group kill on this platform"
+                        .to_owned(),
+                });
+            }
+            if let Some(group) = self.process_group.lock().await.as_mut() {
+                return group.signal(signal).await;
+            }
+        }
         if let Some(child) = self.child.lock().await.as_mut() {
             match scope {
                 KillScope::Process => child.start_kill().map_err(sandbox_error)?,
@@ -691,7 +715,7 @@ impl LocalActivity {
 
         tokio::select! {
             result = child.wait() => {
-                match result {
+                let exit_status = match result {
                     Ok(status) => {
                         if let Some(signal) = self.cached_signal() {
                             Ok(SandboxExitStatus::Signal(signal))
@@ -702,13 +726,16 @@ impl LocalActivity {
                         }
                     }
                     Err(error) => Err(sandbox_error(error)),
-                }
+                }?;
+                self.terminate_owned_process_group(9).await?;
+                Ok(exit_status)
             }
             interrupt = timeout => {
                 match interrupt {
                     WaitInterrupt::Timeout => {
-                        kill_process_group(child, 9).await?;
+                        self.signal_process_group(child, 9).await?;
                         let _ = child.wait().await;
+                        self.reap_owned_process_group().await?;
                         Ok(SandboxExitStatus::Timeout)
                     }
                     WaitInterrupt::InactivityTimeout => unreachable!("timeout future cannot return inactivity"),
@@ -717,8 +744,9 @@ impl LocalActivity {
             interrupt = activity_timeout => {
                 match interrupt {
                     WaitInterrupt::InactivityTimeout => {
-                        kill_process_group(child, 9).await?;
+                        self.signal_process_group(child, 9).await?;
                         let _ = child.wait().await;
+                        self.reap_owned_process_group().await?;
                         self.ctx.event_sink.emit(Event::SandboxActivityTimeoutFired(
                             SandboxActivityTimeoutFiredEvent {
                                 session_id: self.ctx.session_id,
@@ -726,7 +754,7 @@ impl LocalActivity {
                                 tool_use_id: self.ctx.tool_use_id,
                                 backend_id: BACKEND_ID.to_owned(),
                                 configured_timeout: self.spec.activity_timeout.unwrap_or_default(),
-                                kill_scope: KillScope::ProcessGroup,
+                                kill_scope: local_timeout_kill_scope(),
                                 at: Utc::now(),
                             },
                         ))?;
@@ -735,6 +763,35 @@ impl LocalActivity {
                     WaitInterrupt::Timeout => unreachable!("activity timeout future cannot return timeout"),
                 }
             }
+        }
+    }
+
+    async fn signal_process_group(
+        &self,
+        child: &mut Child,
+        signal: Signal,
+    ) -> Result<(), SandboxError> {
+        if let Some(group) = self.process_group.lock().await.as_mut() {
+            group.signal(signal).await
+        } else {
+            kill_process_group(child, signal).await
+        }
+    }
+
+    async fn terminate_owned_process_group(&self, signal: Signal) -> Result<(), SandboxError> {
+        let mut group = self.process_group.lock().await.take();
+        let Some(group) = group.as_mut() else {
+            return Ok(());
+        };
+        group.signal(signal).await?;
+        group.reap().await
+    }
+
+    async fn reap_owned_process_group(&self) -> Result<(), SandboxError> {
+        let mut group = self.process_group.lock().await.take();
+        match group.as_mut() {
+            Some(group) => group.reap().await,
+            None => Ok(()),
         }
     }
 }
@@ -1023,13 +1080,148 @@ fn jobobject_command(_program: String, _args: Vec<String>) -> Result<Command, Sa
     })
 }
 
+fn local_kill_scopes() -> Vec<KillScope> {
+    if cfg!(unix) {
+        vec![KillScope::Process, KillScope::ProcessGroup]
+    } else {
+        vec![KillScope::Process]
+    }
+}
+
+fn local_timeout_kill_scope() -> KillScope {
+    if cfg!(unix) {
+        KillScope::ProcessGroup
+    } else {
+        KillScope::Process
+    }
+}
+
+struct ProcessGroupKeeper {
+    #[cfg(unix)]
+    id: u32,
+    #[cfg(unix)]
+    child: Child,
+}
+
+impl ProcessGroupKeeper {
+    fn for_spec(spec: &ExecSpec) -> Result<Option<Self>, SandboxError> {
+        if spec.required_kill_scope != Some(KillScope::ProcessGroup) {
+            return Ok(None);
+        }
+        #[cfg(unix)]
+        {
+            let mut command = Command::new("/bin/sleep");
+            command
+                .arg("2147483647")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(true)
+                .process_group(0);
+            let child = command.spawn().map_err(sandbox_error)?;
+            let id = child.id().ok_or_else(|| {
+                SandboxError::Message("local process group keeper has no pid".to_owned())
+            })?;
+            return Ok(Some(Self { id, child }));
+        }
+        #[cfg(not(unix))]
+        {
+            Err(SandboxError::CapabilityMismatch {
+                capability: "kill_scope".to_owned(),
+                detail: "local sandbox cannot enforce process-group kill on this platform"
+                    .to_owned(),
+            })
+        }
+    }
+
+    async fn signal(&mut self, signal: Signal) -> Result<(), SandboxError> {
+        #[cfg(unix)]
+        {
+            signal_process_group(self.id, signal).await
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = signal;
+            Err(SandboxError::CapabilityMismatch {
+                capability: "kill_scope".to_owned(),
+                detail: "local sandbox cannot enforce process-group kill on this platform"
+                    .to_owned(),
+            })
+        }
+    }
+
+    async fn reap(&mut self) -> Result<(), SandboxError> {
+        #[cfg(unix)]
+        {
+            let _ = self.child.wait().await;
+            wait_for_process_group_exit(self.id).await
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(())
+        }
+    }
+}
+
 #[cfg(unix)]
-fn configure_process_group(command: &mut Command) {
-    command.process_group(0);
+fn configure_process_group(command: &mut Command, group: Option<&ProcessGroupKeeper>) {
+    command.process_group(group.map_or(0, |group| group.id as i32));
 }
 
 #[cfg(not(unix))]
-fn configure_process_group(_command: &mut Command) {}
+fn configure_process_group(_command: &mut Command, _group: Option<&ProcessGroupKeeper>) {}
+
+#[cfg(unix)]
+async fn signal_process_group(id: u32, signal: Signal) -> Result<(), SandboxError> {
+    let status = Command::new("kill")
+        .arg(format!("-{signal}"))
+        .arg(format!("-{id}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map_err(sandbox_error)?;
+    if status.success() {
+        Ok(())
+    } else if !process_group_exists(id).await? {
+        Ok(())
+    } else {
+        Err(SandboxError::Message(format!(
+            "failed to signal owned process group {id}"
+        )))
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_process_group_exit(id: u32) -> Result<(), SandboxError> {
+    let started = Instant::now();
+    loop {
+        if !process_group_exists(id).await? {
+            return Ok(());
+        }
+        if started.elapsed() >= PROCESS_GROUP_REAP_TIMEOUT {
+            return Err(SandboxError::Message(format!(
+                "timed out waiting for owned process group {id} to exit"
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+#[cfg(unix)]
+async fn process_group_exists(id: u32) -> Result<bool, SandboxError> {
+    Ok(Command::new("kill")
+        .arg("-0")
+        .arg(format!("-{id}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map_err(sandbox_error)?
+        .success())
+}
 
 async fn kill_process_group(child: &mut Child, signal: Signal) -> Result<(), SandboxError> {
     #[cfg(unix)]

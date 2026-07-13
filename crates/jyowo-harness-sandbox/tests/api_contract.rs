@@ -17,6 +17,9 @@ use harness_sandbox::{
     SnapshotSpec,
 };
 
+#[cfg(feature = "local")]
+use harness_sandbox::LocalSandbox;
+
 #[derive(Default)]
 struct NullSink;
 
@@ -48,6 +51,20 @@ impl EventSink for RecordingSink {
 }
 
 struct SecretRedactor;
+
+#[cfg(feature = "local")]
+#[test]
+fn local_process_group_capability_matches_platform_enforcement() {
+    let sandbox = LocalSandbox::new(std::env::temp_dir());
+
+    assert_eq!(
+        sandbox
+            .capabilities()
+            .supports_kill_scope
+            .contains(&KillScope::ProcessGroup),
+        cfg!(unix)
+    );
+}
 
 impl Redactor for SecretRedactor {
     fn redact(&self, input: &str, _rules: &RedactRules) -> String {

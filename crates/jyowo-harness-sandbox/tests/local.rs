@@ -935,3 +935,119 @@ async fn local_sandbox_supports_process_and_process_group_kill_scope() {
     let outcome = handle.activity.wait().await.expect("wait should succeed");
     assert_eq!(outcome.exit_status, SandboxExitStatus::Signal(15));
 }
+
+#[tokio::test]
+async fn local_wait_reaps_background_processes_after_the_root_exits() {
+    let root = temp_root("background-process-group");
+    let sandbox = LocalSandbox::new(&root);
+    let mut spec =
+        shell_spec("sleep 30 </dev/null >/dev/null 2>&1 & printf '%s' \"$!\" > background.pid");
+    spec.timeout = Some(Duration::from_secs(2));
+    spec.required_kill_scope = Some(KillScope::ProcessGroup);
+    let handle = execute_with_lifecycle(
+        Arc::new(sandbox),
+        spec,
+        ExecContext::for_test(Arc::new(NullSink)),
+    )
+    .await
+    .expect("execute should spawn a background process");
+
+    let outcome = handle
+        .activity
+        .wait()
+        .await
+        .expect("root wait should succeed");
+    assert_eq!(outcome.exit_status, SandboxExitStatus::Code(0));
+
+    let background_pid = std::fs::read_to_string(root.join("background.pid"))
+        .expect("script should record the background pid")
+        .parse::<u32>()
+        .expect("background pid should be numeric");
+    let reaped = wait_for_process_exit(background_pid, Duration::from_millis(500)).await;
+    if !reaped {
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(background_pid.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+
+    assert!(reaped, "background process survived the root activity wait");
+}
+
+#[tokio::test]
+async fn process_group_kill_can_escalate_after_descendants_ignore_term() {
+    let root = temp_root("process-group-signal-escalation");
+    let sandbox = LocalSandbox::new(&root);
+    let mut spec = shell_spec("trap '' TERM; sleep 30 & printf '%s' \"$!\" > background.pid; wait");
+    spec.timeout = Some(Duration::from_secs(5));
+    spec.required_kill_scope = Some(KillScope::ProcessGroup);
+    let handle = execute_with_lifecycle(
+        Arc::new(sandbox),
+        spec,
+        ExecContext::for_test(Arc::new(NullSink)),
+    )
+    .await
+    .expect("execute should spawn a TERM-resistant process group");
+    let root_pid = handle.pid.expect("root process should have a pid");
+    let process_group_id = process_group_id(root_pid);
+    let activity = Arc::clone(&handle.activity);
+
+    activity
+        .kill(15, KillScope::ProcessGroup)
+        .await
+        .expect("TERM should be delivered to the process group");
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    activity
+        .kill(9, KillScope::ProcessGroup)
+        .await
+        .expect("KILL should escalate after TERM");
+    let waited = tokio::time::timeout(Duration::from_millis(500), activity.wait()).await;
+    if waited.is_err() {
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(format!("-{process_group_id}"))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    let outcome = waited
+        .expect("SIGKILL must terminate a TERM-resistant process group")
+        .expect("wait should succeed after escalation");
+
+    assert_eq!(outcome.exit_status, SandboxExitStatus::Signal(9));
+}
+
+fn process_group_id(pid: u32) -> u32 {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "pgid=", "-p", &pid.to_string()])
+        .output()
+        .expect("process group query should run");
+    assert!(output.status.success());
+    String::from_utf8(output.stdout)
+        .expect("process group should be utf8")
+        .trim()
+        .parse()
+        .expect("process group should be numeric")
+}
+
+async fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
+    let started = std::time::Instant::now();
+    loop {
+        let alive = std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !alive {
+            return true;
+        }
+        if started.elapsed() >= timeout {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}

@@ -37,6 +37,7 @@ struct TestActivity {
     kill_scopes: Arc<Mutex<Vec<KillScope>>>,
     terminal_waits: Arc<AtomicUsize>,
     terminated: Arc<tokio::sync::Notify>,
+    background_alive: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[async_trait]
@@ -58,6 +59,9 @@ impl ActivityHandle for TestActivity {
     async fn kill(&self, _signal: i32, scope: KillScope) -> Result<(), SandboxError> {
         self.killed.fetch_add(1, Ordering::SeqCst);
         self.kill_scopes.lock().unwrap().push(scope);
+        if scope == KillScope::ProcessGroup {
+            self.background_alive.store(false, Ordering::SeqCst);
+        }
         self.terminated.notify_waiters();
         Ok(())
     }
@@ -85,6 +89,7 @@ struct TestBackend {
     kill_scopes: Arc<Mutex<Vec<KillScope>>>,
     terminal_waits: Arc<AtomicUsize>,
     terminated: Arc<tokio::sync::Notify>,
+    background_alive: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TestBackend {
@@ -105,6 +110,7 @@ impl TestBackend {
             kill_scopes: Arc::new(Mutex::new(Vec::new())),
             terminal_waits: Arc::new(AtomicUsize::new(0)),
             terminated: Arc::new(tokio::sync::Notify::new()),
+            background_alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 }
@@ -158,7 +164,13 @@ impl SandboxBackend for TestBackend {
         }
         self.recorded.lock().unwrap().push(spec);
         let stdout: Option<BoxStream<'static, Bytes>> = if self.pending_output {
-            Some(Box::pin(stream::pending()))
+            let background_alive = Arc::clone(&self.background_alive);
+            Some(Box::pin(stream::once(async move {
+                while background_alive.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+                Bytes::new()
+            })))
         } else {
             (!self.stdout.is_empty())
                 .then(|| Box::pin(stream::iter(vec![Bytes::copy_from_slice(&self.stdout)])) as _)
@@ -178,6 +190,7 @@ impl SandboxBackend for TestBackend {
                 kill_scopes: Arc::clone(&self.kill_scopes),
                 terminal_waits: Arc::clone(&self.terminal_waits),
                 terminated: Arc::clone(&self.terminated),
+                background_alive: Arc::clone(&self.background_alive),
             }),
         })
     }
@@ -331,6 +344,30 @@ async fn enforces_timeout_and_kills_backend_process() {
     );
     assert_eq!(backend.terminal_waits.load(Ordering::SeqCst), 1);
     assert_eq!(result.enforced_policy.timeout_ms, 1_000);
+}
+
+#[tokio::test]
+async fn successful_root_exit_reaps_the_process_group_before_returning() {
+    let backend = Arc::new(TestBackend {
+        pending_output: true,
+        ..TestBackend::accepting()
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_millis(500),
+        execute_skill_script(backend.clone(), request(script_decl()), test_context()),
+    )
+    .await
+    .expect("background output must not keep the runner alive")
+    .expect("the root process exited successfully");
+
+    assert_eq!(backend.killed.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        backend.kill_scopes.lock().unwrap().as_slice(),
+        &[KillScope::ProcessGroup]
+    );
+    assert!(!backend.background_alive.load(Ordering::SeqCst));
+    assert_eq!(result.status, SkillScriptStatus::Succeeded);
 }
 
 #[tokio::test]

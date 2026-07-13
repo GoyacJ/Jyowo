@@ -193,10 +193,19 @@ pub async fn execute_skill_script(
     )
     .await
     {
-        Ok(outcome) => Some(outcome?),
+        Ok(outcome) => {
+            activity.kill(9, KillScope::ProcessGroup).await?;
+            Some(outcome?)
+        }
         Err(_) => {
             activity.kill(9, KillScope::ProcessGroup).await?;
-            let _ = tokio::time::timeout(BACKEND_TIMEOUT_GRACE, &mut wait).await;
+            tokio::time::timeout(BACKEND_TIMEOUT_GRACE, &mut wait)
+                .await
+                .map_err(|_| {
+                    SandboxError::Message(
+                        "skill script process group did not terminate after kill".to_owned(),
+                    )
+                })??;
             None
         }
     };
