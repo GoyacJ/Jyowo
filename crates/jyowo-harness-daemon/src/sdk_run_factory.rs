@@ -391,15 +391,14 @@ fn mcp_server_runtime(
                 ))
             }
         };
-    Ok((
-        McpServerSpec::new(
-            McpServerId(record.id.clone()),
-            record.display_name.clone(),
-            transport_choice,
-            record.source.clone(),
-        ),
-        transport,
-    ))
+    let mut spec = McpServerSpec::new(
+        McpServerId(record.id.clone()),
+        record.display_name.clone(),
+        transport_choice,
+        record.source.clone(),
+    );
+    spec.required = record.required;
+    Ok((spec, transport))
 }
 
 fn effective_stdio_inherit_env(command: &str, configured: &[String]) -> Vec<String> {
@@ -2274,6 +2273,29 @@ mod tests {
         assert!(!message.contains("diagnostic-secret"));
         assert!(!message.contains("DIAGNOSTIC_SECRET"));
         assert!(message.len() <= 256);
+    }
+
+    #[test]
+    fn runtime_mcp_spec_carries_required_policy_and_user_trust() {
+        let record = serde_json::from_value::<crate::RuntimeMcpServerConfig>(json!({
+            "enabled": true,
+            "required": true,
+            "displayName": "global server",
+            "id": "global-server",
+            "scope": "global",
+            "transport": {
+                "kind": "stdio",
+                "command": "node"
+            }
+        }))
+        .expect("runtime MCP fixture");
+
+        let (spec, _) = super::mcp_server_runtime(&record, Path::new("/tmp"))
+            .expect("build runtime MCP server");
+
+        assert!(spec.required);
+        assert_eq!(spec.source, harness_contracts::McpServerSource::User);
+        assert_eq!(spec.trust, harness_contracts::TrustLevel::UserControlled);
     }
 
     #[cfg(unix)]

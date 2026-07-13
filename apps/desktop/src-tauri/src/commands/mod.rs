@@ -699,6 +699,7 @@ pub async fn save_browser_mcp_preset(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn save_mcp_server(
     enabled: Option<bool>,
+    required: Option<bool>,
     display_name: String,
     id: String,
     scope: String,
@@ -710,6 +711,7 @@ pub async fn save_mcp_server(
     save_mcp_server_with_runtime_state(
         SaveMcpServerRequest {
             enabled: enabled.unwrap_or(true),
+            required: required.unwrap_or(false),
             display_name,
             id,
             scope,

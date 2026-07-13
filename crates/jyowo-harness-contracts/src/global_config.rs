@@ -299,6 +299,8 @@ pub struct McpPresetHeader {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct McpServerConfigRecord {
     pub enabled: bool,
+    #[serde(default)]
+    pub required: bool,
     pub display_name: String,
     pub id: String,
     pub scope: String,
@@ -310,6 +312,7 @@ impl std::fmt::Debug for McpServerConfigRecord {
         formatter
             .debug_struct("McpServerConfigRecord")
             .field("enabled", &self.enabled)
+            .field("required", &self.required)
             .field("display_name", &self.display_name)
             .field("id", &self.id)
             .field("scope", &self.scope)
@@ -779,6 +782,45 @@ mod tests {
         let parsed: McpPresetRecord = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed.id, "browser");
         assert!(matches!(parsed.transport, McpPresetTransport::Http { .. }));
+    }
+
+    #[test]
+    fn mcp_server_record_missing_required_defaults_to_optional() {
+        let record: McpServerConfigRecord = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "displayName": "Browser",
+            "id": "browser",
+            "scope": "global",
+            "transport": {
+                "kind": "stdio",
+                "command": "node",
+                "args": ["server.js"]
+            }
+        }))
+        .expect("deserialize legacy MCP server record");
+
+        assert!(!record.required);
+    }
+
+    #[test]
+    fn mcp_server_record_required_policy_roundtrips() {
+        let record: McpServerConfigRecord = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "required": true,
+            "displayName": "Browser",
+            "id": "browser",
+            "scope": "global",
+            "transport": {
+                "kind": "stdio",
+                "command": "node",
+                "args": ["server.js"]
+            }
+        }))
+        .expect("deserialize required MCP server record");
+
+        assert!(record.required);
+        let serialized = serde_json::to_value(record).expect("serialize MCP server record");
+        assert_eq!(serialized["required"], true);
     }
 
     #[test]

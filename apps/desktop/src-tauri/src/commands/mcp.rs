@@ -143,6 +143,7 @@ fn mcp_server_record_from_save_request(
 ) -> Result<McpServerConfigRecord, CommandErrorPayload> {
     let record = McpServerConfigRecord {
         enabled: request.enabled,
+        required: request.required,
         display_name: request.display_name.trim().to_owned(),
         id: request.id.trim().to_owned(),
         scope: request.scope,
@@ -820,12 +821,14 @@ fn mcp_server_spec_from_record_for_failed_registration(
         McpServerTransportConfig::InProcess => TransportChoice::InProcess,
     };
 
-    McpServerSpec::new(
+    let mut spec = McpServerSpec::new(
         McpServerId(record.id.clone()),
         record.display_name.clone(),
         transport,
-        McpServerSource::Workspace,
-    )
+        McpServerSource::User,
+    );
+    spec.required = record.required;
+    spec
 }
 
 fn mcp_authorization_context(
@@ -906,7 +909,7 @@ pub(crate) fn mcp_server_spec_from_record(
                 working_dir.as_deref(),
                 workspace_root,
             )?);
-            Ok(McpServerSpec::new(
+            let mut spec = McpServerSpec::new(
                 McpServerId(record.id.clone()),
                 record.display_name.clone(),
                 TransportChoice::Stdio {
@@ -915,27 +918,33 @@ pub(crate) fn mcp_server_spec_from_record(
                     env: mcp_stdio_env(command, env, inherit_env),
                     policy,
                 },
-                McpServerSource::Workspace,
-            ))
+                McpServerSource::User,
+            );
+            spec.required = record.required;
+            Ok(spec)
         }
         McpServerTransportConfig::Http {
             url,
             bearer_token_env_var,
             headers,
             headers_from_env,
-        } => Ok(McpServerSpec::new(
-            McpServerId(record.id.clone()),
-            record.display_name.clone(),
-            TransportChoice::Http {
-                url: url.clone(),
-                headers: mcp_http_headers(
-                    headers,
-                    headers_from_env,
-                    bearer_token_env_var.as_deref(),
-                )?,
-            },
-            McpServerSource::Workspace,
-        )),
+        } => {
+            let mut spec = McpServerSpec::new(
+                McpServerId(record.id.clone()),
+                record.display_name.clone(),
+                TransportChoice::Http {
+                    url: url.clone(),
+                    headers: mcp_http_headers(
+                        headers,
+                        headers_from_env,
+                        bearer_token_env_var.as_deref(),
+                    )?,
+                },
+                McpServerSource::User,
+            );
+            spec.required = record.required;
+            Ok(spec)
+        }
         McpServerTransportConfig::InProcess => Err(invalid_payload(
             "transport.kind must be stdio or http for workspace MCP servers".to_owned(),
         )),
@@ -1202,6 +1211,7 @@ pub(crate) async fn mcp_server_summary_from_registry(
     Some(McpServerSummaryPayload {
         display_name: spec.display_name,
         enabled: true,
+        required: spec.required,
         exposed_tool_count: exposed_tool_count.try_into().unwrap_or(u32::MAX),
         id: server_id.0.clone(),
         last_diagnostic: None,
@@ -1223,6 +1233,7 @@ pub(crate) fn mcp_server_summary_from_record(
     McpServerSummaryPayload {
         display_name: record.display_name.clone(),
         enabled: record.enabled,
+        required: record.required,
         exposed_tool_count: 0,
         id: record.id.clone(),
         last_diagnostic: None,
@@ -1230,7 +1241,7 @@ pub(crate) fn mcp_server_summary_from_record(
         last_diagnostic_severity: None,
         last_error: None,
         manageable: true,
-        origin: "workspace",
+        origin: "user",
         scope: record.scope.clone(),
         status: if record.enabled {
             "configured"
@@ -1276,6 +1287,7 @@ pub(crate) fn browser_mcp_preset_summary_from_enabled(
 fn mcp_server_config_payload_from_record(record: &McpServerConfigRecord) -> McpServerConfigPayload {
     McpServerConfigPayload {
         enabled: record.enabled,
+        required: record.required,
         display_name: record.display_name.clone(),
         id: record.id.clone(),
         scope: record.scope.clone(),
@@ -1329,6 +1341,7 @@ pub(crate) fn browser_mcp_preset_record(
 ) -> McpServerConfigRecord {
     McpServerConfigRecord {
         enabled,
+        required: false,
         display_name: browser_mcp_preset_display_name(preset_id).to_owned(),
         id: browser_mcp_preset_server_id(preset_id).to_owned(),
         scope: "global".to_owned(),

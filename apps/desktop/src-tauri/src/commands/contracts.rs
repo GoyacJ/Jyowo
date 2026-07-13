@@ -557,6 +557,8 @@ pub(crate) fn default_true() -> bool {
 pub struct SaveMcpServerRequest {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub required: bool,
     pub display_name: String,
     pub id: String,
     pub scope: String,
@@ -567,6 +569,7 @@ impl std::fmt::Debug for SaveMcpServerRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SaveMcpServerRequest")
             .field("enabled", &self.enabled)
+            .field("required", &self.required)
             .field("display_name", &self.display_name)
             .field("id", &self.id)
             .field("scope", &self.scope)
@@ -694,6 +697,7 @@ pub enum McpServerConfigTransportPayload {
 #[serde(rename_all = "camelCase")]
 pub struct McpServerConfigPayload {
     pub enabled: bool,
+    pub required: bool,
     pub display_name: String,
     pub id: String,
     pub scope: String,
@@ -776,6 +780,7 @@ pub struct McpDiagnosticRecord {
 pub struct McpServerSummaryPayload {
     pub display_name: String,
     pub enabled: bool,
+    pub required: bool,
     pub exposed_tool_count: u32,
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2807,6 +2812,7 @@ mod debug_redaction_tests {
     fn mcp_debug_redacts_inline_env_and_headers() {
         let request = SaveMcpServerRequest {
             enabled: true,
+            required: false,
             display_name: "Server".to_owned(),
             id: "server".to_owned(),
             scope: "workspace".to_owned(),
@@ -2826,6 +2832,7 @@ mod debug_redaction_tests {
         };
         let record = McpServerConfigRecord {
             enabled: request.enabled,
+            required: request.required,
             display_name: request.display_name.clone(),
             id: request.id.clone(),
             scope: request.scope.clone(),

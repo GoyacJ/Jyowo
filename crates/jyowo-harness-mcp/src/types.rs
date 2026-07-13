@@ -14,6 +14,7 @@ use crate::SamplingPolicy;
 pub struct McpServerSpec {
     pub server_id: McpServerId,
     pub display_name: String,
+    pub required: bool,
     pub transport: TransportChoice,
     pub auth: McpClientAuth,
     pub capabilities_expected: McpExpectedCapabilities,
@@ -39,6 +40,7 @@ impl McpServerSpec {
         Self {
             server_id,
             display_name: display_name.into(),
+            required: false,
             transport,
             auth: McpClientAuth::None,
             capabilities_expected: McpExpectedCapabilities::default(),
