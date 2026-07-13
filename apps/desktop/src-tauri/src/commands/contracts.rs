@@ -552,6 +552,14 @@ pub(crate) fn default_true() -> bool {
     true
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpConfigLayer {
+    #[default]
+    Global,
+    Project,
+}
+
 #[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SaveMcpServerRequest {
@@ -696,7 +704,11 @@ pub enum McpServerConfigTransportPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerConfigPayload {
+    pub config_layer: McpConfigLayer,
+    pub effective: bool,
     pub enabled: bool,
+    pub manageable: bool,
+    pub overrides_global: bool,
     pub required: bool,
     pub display_name: String,
     pub id: String,
@@ -764,6 +776,14 @@ pub enum McpDiagnosticSeverity {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpDiagnosticPlane {
+    #[default]
+    Settings,
+    Task,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpDiagnosticRecord {
@@ -773,13 +793,25 @@ pub struct McpDiagnosticRecord {
     pub severity: McpDiagnosticSeverity,
     pub summary: String,
     pub timestamp: String,
+    #[serde(default)]
+    pub plane: McpDiagnosticPlane,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_segment_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerSummaryPayload {
+    pub config_layer: McpConfigLayer,
     pub display_name: String,
     pub enabled: bool,
+    pub effective: bool,
     pub required: bool,
     pub exposed_tool_count: u32,
     pub id: String,
@@ -792,17 +824,20 @@ pub struct McpServerSummaryPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     pub manageable: bool,
+    pub overrides_global: bool,
     pub origin: &'static str,
     pub scope: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_plugin_id: Option<String>,
     pub status: &'static str,
+    pub status_source: &'static str,
     pub transport: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListMcpServersResponse {
+    pub config_layer: McpConfigLayer,
     pub servers: Vec<McpServerSummaryPayload>,
 }
 
@@ -821,6 +856,7 @@ pub struct GetMcpServerConfigResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteMcpServerResponse {
+    pub config_layer: McpConfigLayer,
     pub id: String,
     pub status: &'static str,
 }

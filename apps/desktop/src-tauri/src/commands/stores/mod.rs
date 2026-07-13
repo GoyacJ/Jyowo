@@ -2377,6 +2377,7 @@ pub struct DesktopRuntimeState {
         Arc<tokio::sync::Mutex<HashMap<String, McpDiagnosticSubscriptionHandle>>>,
     pub(crate) mcp_server_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) mcp_server_store: Arc<dyn McpServerStore>,
+    pub(crate) project_mcp_server_store: Option<Arc<dyn McpServerStore>>,
     pub(crate) provider_api_key_reveal_tokens:
         Arc<tokio::sync::Mutex<HashMap<String, ProviderConfigRevealTokenRecord>>>,
     pub(crate) plugin_store: Arc<dyn PluginStore>,
@@ -2775,6 +2776,11 @@ mod tests {
             severity: McpDiagnosticSeverity::Info,
             summary: "connected".to_owned(),
             timestamp: "2026-07-06T00:00:00Z".to_owned(),
+            plane: McpDiagnosticPlane::Settings,
+            task_id: None,
+            session_id: None,
+            run_id: None,
+            run_segment_id: None,
         };
         let second = McpDiagnosticRecord {
             id: "diagnostic-2".to_owned(),
@@ -2819,6 +2825,11 @@ mod tests {
             severity: McpDiagnosticSeverity::Info,
             summary: id.to_owned(),
             timestamp: "2026-07-06T00:00:00Z".to_owned(),
+            plane: McpDiagnosticPlane::Settings,
+            task_id: None,
+            session_id: None,
+            run_id: None,
+            run_segment_id: None,
         };
 
         append_jsonl_record_with_retention_locked(

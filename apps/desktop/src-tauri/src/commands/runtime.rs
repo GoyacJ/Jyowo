@@ -114,6 +114,10 @@ impl DesktopRuntimeState {
             mcp_diagnostic_subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             mcp_server_lock: Arc::new(tokio::sync::Mutex::new(())),
             mcp_server_store: Arc::new(DesktopMcpServerStore::global(storage_layout.clone())),
+            project_mcp_server_store: Some(Arc::new(DesktopMcpServerStore::new(
+                storage_layout.clone(),
+                workspace_root.clone(),
+            ))),
             provider_api_key_reveal_tokens: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             plugin_store: Arc::new(DesktopPluginStore::global(storage_layout.clone())),
             plugin_store_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -318,6 +322,14 @@ impl DesktopRuntimeState {
             mcp_diagnostic_subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             mcp_server_lock: Arc::new(tokio::sync::Mutex::new(())),
             mcp_server_store: mcp_server_store_for_layout(&runtime_layout),
+            project_mcp_server_store: runtime_layout.workspace_root.as_ref().map(
+                |workspace_root| {
+                    Arc::new(DesktopMcpServerStore::new(
+                        storage_layout_for_home(),
+                        workspace_root.clone(),
+                    )) as Arc<dyn McpServerStore>
+                },
+            ),
             provider_api_key_reveal_tokens: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             plugin_store: Arc::new(DesktopPluginStore::global(storage_layout_for_home())),
             plugin_store_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -378,6 +390,14 @@ impl DesktopRuntimeState {
     #[doc(hidden)]
     pub fn set_mcp_server_store_for_test(&mut self, mcp_server_store: Arc<dyn McpServerStore>) {
         self.mcp_server_store = mcp_server_store;
+    }
+
+    #[doc(hidden)]
+    pub fn set_project_mcp_server_store_for_test(
+        &mut self,
+        mcp_server_store: Option<Arc<dyn McpServerStore>>,
+    ) {
+        self.project_mcp_server_store = mcp_server_store;
     }
 
     #[doc(hidden)]
@@ -924,8 +944,17 @@ pub(crate) async fn build_desktop_settings_runtime(
     let event_store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new(Arc::new(
         DefaultRedactor::default(),
     )));
-    let mcp_server_records =
+    let global_mcp_server_records =
         DesktopMcpServerStore::global(storage_layout_for_home()).load_records()?;
+    let project_mcp_server_records = project_workspace_root
+        .map(|workspace_root| {
+            DesktopMcpServerStore::new(storage_layout_for_home(), workspace_root.to_path_buf())
+                .load_records()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let mcp_server_records =
+        effective_mcp_records(global_mcp_server_records, project_mcp_server_records);
     let mcp_diagnostic_store: Arc<dyn McpDiagnosticStore> = Arc::new(
         DesktopMcpDiagnosticStore::new_runtime_root(runtime_root.clone()),
     );
@@ -1049,7 +1078,7 @@ pub(crate) async fn build_desktop_settings_runtime(
         event_sink,
         ticket_ledger,
     ));
-    let mcp_config = mcp_config_from_records(
+    let mcp_config = mcp_config_from_layered_records(
         mcp_server_records,
         SessionId::new(),
         AgentId::new(),

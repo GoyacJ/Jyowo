@@ -31,19 +31,26 @@ use super::*;
 pub async fn list_mcp_servers_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<ListMcpServersResponse, CommandErrorPayload> {
+    list_mcp_servers_for_layer_with_runtime_state(McpConfigLayer::Global, state).await
+}
+
+pub async fn list_mcp_servers_for_layer_with_runtime_state(
+    config_layer: McpConfigLayer,
+    state: &DesktopRuntimeState,
+) -> Result<ListMcpServersResponse, CommandErrorPayload> {
     let mut servers = BTreeMap::new();
-    let records = state.mcp_server_store.load_records()?;
+    let records = mcp_records_for_layer_view(state, config_layer)?;
     let records_by_id = records
         .iter()
-        .map(|record| (record.id.clone(), record.clone()))
+        .map(|entry| (entry.record.id.clone(), entry.clone()))
         .collect::<BTreeMap<_, _>>();
     let last_diagnostics =
         mcp_last_diagnostics_by_server(&state.mcp_diagnostic_store.load_records()?);
 
-    for record in &records {
-        let mut summary = mcp_server_summary_from_record(record);
-        apply_mcp_last_diagnostic(&mut summary, last_diagnostics.get(&record.id));
-        servers.insert(record.id.clone(), summary);
+    for entry in &records {
+        let mut summary = mcp_server_summary_from_layered_record(entry);
+        apply_mcp_last_diagnostic(&mut summary, last_diagnostics.get(&entry.record.id));
+        servers.insert(entry.record.id.clone(), summary);
     }
 
     if let Some(settings_runtime) = state.settings_runtime() {
@@ -53,10 +60,14 @@ pub async fn list_mcp_servers_with_runtime_state(
                     mcp_server_summary_from_registry(&config.registry, &server_id).await
                 {
                     let mut summary = summary;
-                    if let Some(record) = records_by_id.get(&server_id.0) {
-                        summary.enabled = record.enabled;
-                        summary.manageable = true;
-                        if !record.enabled {
+                    if let Some(entry) = records_by_id.get(&server_id.0) {
+                        summary.enabled = entry.record.enabled;
+                        summary.required = entry.record.required;
+                        summary.config_layer = entry.config_layer;
+                        summary.effective = entry.effective;
+                        summary.manageable = entry.manageable;
+                        summary.overrides_global = entry.overrides_global;
+                        if !entry.record.enabled {
                             summary.status = "disabled";
                             summary.exposed_tool_count = 0;
                         }
@@ -69,8 +80,93 @@ pub async fn list_mcp_servers_with_runtime_state(
     }
 
     Ok(ListMcpServersResponse {
+        config_layer,
         servers: servers.into_values().collect(),
     })
+}
+
+#[derive(Clone)]
+struct LayeredMcpRecord {
+    record: McpServerConfigRecord,
+    config_layer: McpConfigLayer,
+    effective: bool,
+    manageable: bool,
+    overrides_global: bool,
+}
+
+fn mcp_store_for_layer<'a>(
+    state: &'a DesktopRuntimeState,
+    config_layer: McpConfigLayer,
+) -> Result<&'a dyn McpServerStore, CommandErrorPayload> {
+    match config_layer {
+        McpConfigLayer::Global => Ok(state.mcp_server_store.as_ref()),
+        McpConfigLayer::Project => state
+            .project_mcp_server_store
+            .as_deref()
+            .ok_or_else(|| invalid_payload("no active project for MCP settings".to_owned())),
+    }
+}
+
+fn mcp_records_for_layer_view(
+    state: &DesktopRuntimeState,
+    config_layer: McpConfigLayer,
+) -> Result<Vec<LayeredMcpRecord>, CommandErrorPayload> {
+    let global = state.mcp_server_store.load_records()?;
+    let project = match state.project_mcp_server_store.as_deref() {
+        Some(store) => store.load_records()?,
+        None => Vec::new(),
+    };
+    let global_ids = global
+        .iter()
+        .map(|record| record.id.clone())
+        .collect::<HashSet<_>>();
+    let project_ids = project
+        .iter()
+        .map(|record| record.id.clone())
+        .collect::<HashSet<_>>();
+
+    let mut records = match config_layer {
+        McpConfigLayer::Global => global
+            .into_iter()
+            .map(|record| {
+                let effective = !project_ids.contains(record.id.as_str());
+                LayeredMcpRecord {
+                    record,
+                    config_layer: McpConfigLayer::Global,
+                    effective,
+                    manageable: true,
+                    overrides_global: false,
+                }
+            })
+            .collect::<Vec<_>>(),
+        McpConfigLayer::Project => {
+            mcp_store_for_layer(state, McpConfigLayer::Project)?;
+            let mut effective = global
+                .into_iter()
+                .filter(|record| !project_ids.contains(record.id.as_str()))
+                .map(|record| LayeredMcpRecord {
+                    record,
+                    config_layer: McpConfigLayer::Global,
+                    effective: true,
+                    manageable: false,
+                    overrides_global: false,
+                })
+                .collect::<Vec<_>>();
+            effective.extend(project.into_iter().map(|record| {
+                let overrides_global = global_ids.contains(record.id.as_str());
+                LayeredMcpRecord {
+                    record,
+                    config_layer: McpConfigLayer::Project,
+                    effective: true,
+                    manageable: true,
+                    overrides_global,
+                }
+            }));
+            effective
+        }
+    };
+    records.sort_by(|left, right| left.record.id.cmp(&right.record.id));
+    Ok(records)
 }
 
 pub async fn save_mcp_server_with_store(
@@ -96,43 +192,47 @@ pub async fn save_mcp_server_with_runtime_state(
     request: SaveMcpServerRequest,
     state: &DesktopRuntimeState,
 ) -> Result<SaveMcpServerResponse, CommandErrorPayload> {
+    save_mcp_server_for_layer_with_runtime_state(McpConfigLayer::Global, request, state).await
+}
+
+pub async fn save_mcp_server_for_layer_with_runtime_state(
+    config_layer: McpConfigLayer,
+    request: SaveMcpServerRequest,
+    state: &DesktopRuntimeState,
+) -> Result<SaveMcpServerResponse, CommandErrorPayload> {
     ensure_mcp_server_request(&request)?;
     let id = request.id.trim().to_owned();
-    let existing = state
-        .mcp_server_store
+    let store = mcp_store_for_layer(state, config_layer)?;
+    let existing = store
         .load_records()?
         .into_iter()
         .find(|record| record.id == id);
     let record = mcp_server_record_from_save_request(request, existing.as_ref())?;
 
-    save_mcp_server_record_with_runtime_state(record, state).await
+    save_mcp_server_record_for_layer_with_runtime_state(record, config_layer, state).await
 }
 
 async fn save_mcp_server_record_with_runtime_state(
     record: McpServerConfigRecord,
     state: &DesktopRuntimeState,
 ) -> Result<SaveMcpServerResponse, CommandErrorPayload> {
-    let _ = mcp_server_spec_from_record(&record, mcp_workdir_root_for_state(state))?;
-    state.mcp_server_store.save_record(&record)?;
+    save_mcp_server_record_for_layer_with_runtime_state(record, McpConfigLayer::Global, state).await
+}
 
-    let Some(settings_runtime) = state.settings_runtime() else {
-        return Ok(SaveMcpServerResponse {
-            server: mcp_server_summary_from_record(&record),
-        });
-    };
-    remove_mcp_server_from_settings_runtime(&settings_runtime, &record.id).await?;
-    if !record.enabled {
-        return Ok(SaveMcpServerResponse {
-            server: mcp_server_summary_from_record(&record),
-        });
-    }
-    let server = register_mcp_record_with_settings_runtime(
+async fn save_mcp_server_record_for_layer_with_runtime_state(
+    record: McpServerConfigRecord,
+    config_layer: McpConfigLayer,
+    state: &DesktopRuntimeState,
+) -> Result<SaveMcpServerResponse, CommandErrorPayload> {
+    let _ = mcp_server_spec_from_record_for_layer(
         &record,
-        &settings_runtime,
-        state.default_conversation_id,
-        state,
-    )
-    .await?;
+        mcp_workdir_root_for_state(state),
+        config_layer,
+    )?;
+    mcp_store_for_layer(state, config_layer)?.save_record(&record)?;
+
+    refresh_effective_mcp_server(&record.id, state).await?;
+    let server = mcp_summary_for_persisted_record(&record, config_layer, state)?;
 
     Ok(SaveMcpServerResponse { server })
 }
@@ -319,7 +419,25 @@ pub async fn get_mcp_server_config_with_runtime_state(
     request: GetMcpServerConfigRequest,
     state: &DesktopRuntimeState,
 ) -> Result<GetMcpServerConfigResponse, CommandErrorPayload> {
-    get_mcp_server_config_with_store(request, state.mcp_server_store.as_ref()).await
+    get_mcp_server_config_for_layer_with_runtime_state(McpConfigLayer::Global, request, state).await
+}
+
+pub async fn get_mcp_server_config_for_layer_with_runtime_state(
+    config_layer: McpConfigLayer,
+    request: GetMcpServerConfigRequest,
+    state: &DesktopRuntimeState,
+) -> Result<GetMcpServerConfigResponse, CommandErrorPayload> {
+    ensure_mcp_server_id(&request.id)?;
+    let id = request.id.trim();
+    let records = mcp_records_for_layer_view(state, config_layer)?;
+    let entry = records
+        .into_iter()
+        .find(|entry| entry.record.id == id)
+        .ok_or_else(|| not_found(format!("mcp server not found: {id}")))?;
+    ensure_mcp_server_record(&entry.record)?;
+    Ok(GetMcpServerConfigResponse {
+        server: mcp_server_config_payload_from_layered_record(&entry),
+    })
 }
 
 pub async fn delete_mcp_server_with_store(
@@ -330,6 +448,7 @@ pub async fn delete_mcp_server_with_store(
     store.delete_record(request.id.trim())?;
 
     Ok(DeleteMcpServerResponse {
+        config_layer: McpConfigLayer::Global,
         id: request.id.trim().to_owned(),
         status: "deleted",
     })
@@ -339,14 +458,37 @@ pub async fn delete_mcp_server_with_runtime_state(
     request: DeleteMcpServerRequest,
     state: &DesktopRuntimeState,
 ) -> Result<DeleteMcpServerResponse, CommandErrorPayload> {
+    delete_mcp_server_for_layer_with_runtime_state(McpConfigLayer::Global, request, state).await
+}
+
+pub async fn delete_mcp_server_for_layer_with_runtime_state(
+    config_layer: McpConfigLayer,
+    request: DeleteMcpServerRequest,
+    state: &DesktopRuntimeState,
+) -> Result<DeleteMcpServerResponse, CommandErrorPayload> {
     ensure_mcp_server_id(&request.id)?;
     let id = request.id.trim();
-    state.mcp_server_store.delete_record(id)?;
-    if let Some(settings_runtime) = state.settings_runtime() {
-        remove_mcp_server_from_settings_runtime(&settings_runtime, id).await?;
+    let store = mcp_store_for_layer(state, config_layer)?;
+    let exists = store.load_records()?.iter().any(|record| record.id == id);
+    if !exists {
+        if config_layer == McpConfigLayer::Project
+            && state
+                .mcp_server_store
+                .load_records()?
+                .iter()
+                .any(|record| record.id == id)
+        {
+            return Err(invalid_payload(
+                "inherited global MCP settings are read-only in the project layer".to_owned(),
+            ));
+        }
+        return Err(not_found(format!("mcp server not found: {id}")));
     }
+    store.delete_record(id)?;
+    refresh_effective_mcp_server(id, state).await?;
 
     Ok(DeleteMcpServerResponse {
+        config_layer,
         id: id.to_owned(),
         status: "deleted",
     })
@@ -356,40 +498,46 @@ pub async fn set_mcp_server_enabled_with_runtime_state(
     request: SetMcpServerEnabledRequest,
     state: &DesktopRuntimeState,
 ) -> Result<SetMcpServerEnabledResponse, CommandErrorPayload> {
+    set_mcp_server_enabled_for_layer_with_runtime_state(McpConfigLayer::Global, request, state)
+        .await
+}
+
+pub async fn set_mcp_server_enabled_for_layer_with_runtime_state(
+    config_layer: McpConfigLayer,
+    request: SetMcpServerEnabledRequest,
+    state: &DesktopRuntimeState,
+) -> Result<SetMcpServerEnabledResponse, CommandErrorPayload> {
     ensure_mcp_server_id(&request.id)?;
     let id = request.id.trim();
-    let mut records = state.mcp_server_store.load_records()?;
+    let store = mcp_store_for_layer(state, config_layer)?;
+    let mut records = store.load_records()?;
     let Some(record) = records.iter_mut().find(|record| record.id == id) else {
+        if config_layer == McpConfigLayer::Project
+            && state
+                .mcp_server_store
+                .load_records()?
+                .iter()
+                .any(|record| record.id == id)
+        {
+            return Err(invalid_payload(
+                "inherited global MCP settings are read-only in the project layer".to_owned(),
+            ));
+        }
         return Err(not_found(format!("mcp server not found: {id}")));
     };
     record.enabled = request.enabled;
     ensure_mcp_server_record(record)?;
     let record = record.clone();
     if record.enabled {
-        let _ = mcp_server_spec_from_record(&record, mcp_workdir_root_for_state(state))?;
+        let _ = mcp_server_spec_from_record_for_layer(
+            &record,
+            mcp_workdir_root_for_state(state),
+            config_layer,
+        )?;
     }
-    state.mcp_server_store.save_record(&record)?;
-
-    let Some(settings_runtime) = state.settings_runtime() else {
-        return Ok(SetMcpServerEnabledResponse {
-            server: mcp_server_summary_from_record(&record),
-        });
-    };
-
-    remove_mcp_server_from_settings_runtime(&settings_runtime, &record.id).await?;
-    if !record.enabled {
-        return Ok(SetMcpServerEnabledResponse {
-            server: mcp_server_summary_from_record(&record),
-        });
-    }
-
-    let server = register_mcp_record_with_settings_runtime(
-        &record,
-        &settings_runtime,
-        state.default_conversation_id,
-        state,
-    )
-    .await?;
+    store.save_record(&record)?;
+    refresh_effective_mcp_server(&record.id, state).await?;
+    let server = mcp_summary_for_persisted_record(&record, config_layer, state)?;
     Ok(SetMcpServerEnabledResponse { server })
 }
 
@@ -397,37 +545,115 @@ pub async fn restart_mcp_server_with_runtime_state(
     request: RestartMcpServerRequest,
     state: &DesktopRuntimeState,
 ) -> Result<RestartMcpServerResponse, CommandErrorPayload> {
+    restart_mcp_server_for_layer_with_runtime_state(McpConfigLayer::Global, request, state).await
+}
+
+pub async fn restart_mcp_server_for_layer_with_runtime_state(
+    config_layer: McpConfigLayer,
+    request: RestartMcpServerRequest,
+    state: &DesktopRuntimeState,
+) -> Result<RestartMcpServerResponse, CommandErrorPayload> {
     ensure_mcp_server_id(&request.id)?;
     let id = request.id.trim();
-    let record = state
+    let store = mcp_store_for_layer(state, config_layer)?;
+    let record = store
+        .load_records()?
+        .into_iter()
+        .find(|record| record.id == id);
+    let Some(record) = record else {
+        if config_layer == McpConfigLayer::Project
+            && state
+                .mcp_server_store
+                .load_records()?
+                .iter()
+                .any(|record| record.id == id)
+        {
+            return Err(invalid_payload(
+                "inherited global MCP settings are read-only in the project layer".to_owned(),
+            ));
+        }
+        return Err(not_found(format!("mcp server not found: {id}")));
+    };
+    ensure_mcp_server_record(&record)?;
+    refresh_effective_mcp_server(&record.id, state).await?;
+    let server = mcp_summary_for_persisted_record(&record, config_layer, state)?;
+    Ok(RestartMcpServerResponse { server })
+}
+
+fn effective_mcp_record_by_id(
+    state: &DesktopRuntimeState,
+    id: &str,
+) -> Result<Option<(McpServerConfigRecord, McpConfigLayer)>, CommandErrorPayload> {
+    if let Some(project_store) = state.project_mcp_server_store.as_deref() {
+        if let Some(record) = project_store
+            .load_records()?
+            .into_iter()
+            .find(|record| record.id == id)
+        {
+            return Ok(Some((record, McpConfigLayer::Project)));
+        }
+    }
+    Ok(state
         .mcp_server_store
         .load_records()?
         .into_iter()
         .find(|record| record.id == id)
-        .ok_or_else(|| not_found(format!("mcp server not found: {id}")))?;
-    ensure_mcp_server_record(&record)?;
+        .map(|record| (record, McpConfigLayer::Global)))
+}
 
+async fn refresh_effective_mcp_server(
+    id: &str,
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
     let Some(settings_runtime) = state.settings_runtime() else {
-        return Ok(RestartMcpServerResponse {
-            server: mcp_server_summary_from_record(&record),
-        });
+        return Ok(());
     };
-
-    remove_mcp_server_from_settings_runtime(&settings_runtime, &record.id).await?;
-    if !record.enabled {
-        return Ok(RestartMcpServerResponse {
-            server: mcp_server_summary_from_record(&record),
-        });
+    remove_mcp_server_from_settings_runtime(&settings_runtime, id).await?;
+    let Some((record, config_layer)) = effective_mcp_record_by_id(state, id)? else {
+        return Ok(());
+    };
+    if record.enabled {
+        register_mcp_record_with_settings_runtime_for_layer(
+            &record,
+            config_layer,
+            &settings_runtime,
+            state.default_conversation_id,
+            state,
+        )
+        .await?;
     }
+    Ok(())
+}
 
-    let server = register_mcp_record_with_settings_runtime(
-        &record,
-        &settings_runtime,
-        state.default_conversation_id,
-        state,
-    )
-    .await?;
-    Ok(RestartMcpServerResponse { server })
+fn mcp_summary_for_persisted_record(
+    record: &McpServerConfigRecord,
+    config_layer: McpConfigLayer,
+    state: &DesktopRuntimeState,
+) -> Result<McpServerSummaryPayload, CommandErrorPayload> {
+    let global_ids = state
+        .mcp_server_store
+        .load_records()?
+        .into_iter()
+        .map(|record| record.id)
+        .collect::<BTreeSet<_>>();
+    let project_ids = state
+        .project_mcp_server_store
+        .as_deref()
+        .map(McpServerStore::load_records)
+        .transpose()?
+        .unwrap_or_default()
+        .into_iter()
+        .map(|record| record.id)
+        .collect::<BTreeSet<_>>();
+    let entry = LayeredMcpRecord {
+        record: record.clone(),
+        config_layer,
+        effective: config_layer == McpConfigLayer::Project || !project_ids.contains(&record.id),
+        manageable: true,
+        overrides_global: config_layer == McpConfigLayer::Project
+            && global_ids.contains(&record.id),
+    };
+    Ok(mcp_server_summary_from_layered_record(&entry))
 }
 
 pub async fn list_mcp_diagnostics_with_store(
@@ -629,18 +855,63 @@ pub(crate) async fn mcp_config_from_records(
     authorization_service: Arc<harness_execution::AuthorizationService>,
     workdir_root: &Path,
 ) -> Result<McpConfig, CommandErrorPayload> {
+    mcp_config_from_layered_records(
+        records
+            .into_iter()
+            .map(|record| (record, McpConfigLayer::Global))
+            .collect(),
+        default_session_id,
+        default_agent_id,
+        diagnostic_store,
+        authorization_service,
+        workdir_root,
+    )
+    .await
+}
+
+pub(crate) fn effective_mcp_records(
+    global: Vec<McpServerConfigRecord>,
+    project: Vec<McpServerConfigRecord>,
+) -> Vec<(McpServerConfigRecord, McpConfigLayer)> {
+    let project_ids = project
+        .iter()
+        .map(|record| record.id.clone())
+        .collect::<HashSet<_>>();
+    let mut records = global
+        .into_iter()
+        .filter(|record| !project_ids.contains(&record.id))
+        .map(|record| (record, McpConfigLayer::Global))
+        .collect::<Vec<_>>();
+    records.extend(
+        project
+            .into_iter()
+            .map(|record| (record, McpConfigLayer::Project)),
+    );
+    records.sort_by(|left, right| left.0.id.cmp(&right.0.id));
+    records
+}
+
+pub(crate) async fn mcp_config_from_layered_records(
+    records: Vec<(McpServerConfigRecord, McpConfigLayer)>,
+    default_session_id: SessionId,
+    default_agent_id: AgentId,
+    diagnostic_store: Arc<dyn McpDiagnosticStore>,
+    authorization_service: Arc<harness_execution::AuthorizationService>,
+    workdir_root: &Path,
+) -> Result<McpConfig, CommandErrorPayload> {
     let registry = McpRegistry::new();
     let mut server_ids_to_inject = Vec::new();
 
-    for record in records {
+    for (record, config_layer) in records {
         if ensure_mcp_server_record_identity(&record).is_err() {
             continue;
         }
         if !record.enabled {
             continue;
         }
-        let server_id = register_mcp_record_with_registry(
+        let server_id = register_mcp_record_with_registry_for_layer(
             &record,
+            config_layer,
             &registry,
             default_session_id,
             default_agent_id,
@@ -672,11 +943,29 @@ pub(crate) async fn register_mcp_record_with_settings_runtime(
     default_session_id: SessionId,
     state: &DesktopRuntimeState,
 ) -> Result<McpServerSummaryPayload, CommandErrorPayload> {
+    register_mcp_record_with_settings_runtime_for_layer(
+        record,
+        McpConfigLayer::Global,
+        settings_runtime,
+        default_session_id,
+        state,
+    )
+    .await
+}
+
+pub(crate) async fn register_mcp_record_with_settings_runtime_for_layer(
+    record: &McpServerConfigRecord,
+    config_layer: McpConfigLayer,
+    settings_runtime: &DesktopSettingsRuntime,
+    default_session_id: SessionId,
+    state: &DesktopRuntimeState,
+) -> Result<McpServerSummaryPayload, CommandErrorPayload> {
     let Some(config) = settings_runtime.mcp_config() else {
         return Ok(mcp_server_summary_from_record(record));
     };
-    let server_id = register_mcp_record_with_registry(
+    let server_id = register_mcp_record_with_registry_for_layer(
         record,
+        config_layer,
         &config.registry,
         default_session_id,
         AgentId::new(),
@@ -729,6 +1018,33 @@ pub(crate) async fn register_mcp_record_with_registry(
     interactivity: InteractivityLevel,
     allow_config_error_as_failed: bool,
 ) -> Result<McpServerId, CommandErrorPayload> {
+    register_mcp_record_with_registry_for_layer(
+        record,
+        McpConfigLayer::Global,
+        registry,
+        default_session_id,
+        default_agent_id,
+        diagnostic_store,
+        authorization_service,
+        workspace_root,
+        interactivity,
+        allow_config_error_as_failed,
+    )
+    .await
+}
+
+pub(crate) async fn register_mcp_record_with_registry_for_layer(
+    record: &McpServerConfigRecord,
+    config_layer: McpConfigLayer,
+    registry: &McpRegistry,
+    default_session_id: SessionId,
+    default_agent_id: AgentId,
+    diagnostic_store: Arc<dyn McpDiagnosticStore>,
+    authorization_service: Arc<harness_execution::AuthorizationService>,
+    workspace_root: &Path,
+    interactivity: InteractivityLevel,
+    allow_config_error_as_failed: bool,
+) -> Result<McpServerId, CommandErrorPayload> {
     ensure_mcp_server_record_identity(record)?;
 
     let mut config_error = if allow_config_error_as_failed {
@@ -740,13 +1056,17 @@ pub(crate) async fn register_mcp_record_with_registry(
         None
     };
     let spec = if config_error.is_some() {
-        mcp_server_spec_from_record_for_failed_registration(record, workspace_root)
+        mcp_server_spec_from_record_for_failed_registration(record, workspace_root, config_layer)
     } else {
-        match mcp_server_spec_from_record(record, workspace_root) {
+        match mcp_server_spec_from_record_for_layer(record, workspace_root, config_layer) {
             Ok(spec) => spec,
             Err(error) if allow_config_error_as_failed => {
                 config_error = Some(error.message);
-                mcp_server_spec_from_record_for_failed_registration(record, workspace_root)
+                mcp_server_spec_from_record_for_failed_registration(
+                    record,
+                    workspace_root,
+                    config_layer,
+                )
             }
             Err(error) => return Err(error),
         }
@@ -801,6 +1121,7 @@ pub(crate) async fn register_mcp_record_with_registry(
 fn mcp_server_spec_from_record_for_failed_registration(
     record: &McpServerConfigRecord,
     workspace_root: &Path,
+    config_layer: McpConfigLayer,
 ) -> McpServerSpec {
     let transport = match &record.transport {
         McpServerTransportConfig::Stdio { command, args, .. } => {
@@ -826,7 +1147,7 @@ fn mcp_server_spec_from_record_for_failed_registration(
         McpServerId(record.id.clone()),
         record.display_name.clone(),
         transport,
-        McpServerSource::User,
+        mcp_server_source_for_config_layer(config_layer),
     );
     spec.required = record.required;
     spec
@@ -897,6 +1218,15 @@ pub(crate) fn mcp_server_spec_from_record(
     record: &McpServerConfigRecord,
     workspace_root: &Path,
 ) -> Result<McpServerSpec, CommandErrorPayload> {
+    mcp_server_spec_from_record_for_layer(record, workspace_root, McpConfigLayer::Global)
+}
+
+pub(crate) fn mcp_server_spec_from_record_for_layer(
+    record: &McpServerConfigRecord,
+    workspace_root: &Path,
+    config_layer: McpConfigLayer,
+) -> Result<McpServerSpec, CommandErrorPayload> {
+    let source = mcp_server_source_for_config_layer(config_layer);
     match &record.transport {
         McpServerTransportConfig::Stdio {
             command,
@@ -919,7 +1249,7 @@ pub(crate) fn mcp_server_spec_from_record(
                     env: mcp_stdio_env(command, env, inherit_env),
                     policy,
                 },
-                McpServerSource::User,
+                source,
             );
             spec.required = record.required;
             Ok(spec)
@@ -941,7 +1271,7 @@ pub(crate) fn mcp_server_spec_from_record(
                         bearer_token_env_var.as_deref(),
                     )?,
                 },
-                McpServerSource::User,
+                source,
             );
             spec.required = record.required;
             Ok(spec)
@@ -949,6 +1279,13 @@ pub(crate) fn mcp_server_spec_from_record(
         McpServerTransportConfig::InProcess => Err(invalid_payload(
             "transport.kind must be stdio or http for workspace MCP servers".to_owned(),
         )),
+    }
+}
+
+fn mcp_server_source_for_config_layer(config_layer: McpConfigLayer) -> McpServerSource {
+    match config_layer {
+        McpConfigLayer::Global => McpServerSource::User,
+        McpConfigLayer::Project => McpServerSource::Project,
     }
 }
 
@@ -1196,6 +1533,11 @@ pub fn mcp_diagnostic_record_from_event(event: Event) -> Option<McpDiagnosticRec
         severity,
         summary: summary.to_owned(),
         timestamp,
+        plane: McpDiagnosticPlane::Settings,
+        task_id: None,
+        session_id: None,
+        run_id: None,
+        run_segment_id: None,
     })
 }
 
@@ -1210,8 +1552,13 @@ pub(crate) async fn mcp_server_summary_from_registry(
     let (status, last_error) = mcp_connection_state_payload(&connection_state);
 
     Some(McpServerSummaryPayload {
+        config_layer: match spec.source {
+            McpServerSource::Project => McpConfigLayer::Project,
+            _ => McpConfigLayer::Global,
+        },
         display_name: spec.display_name,
         enabled: true,
+        effective: true,
         required: spec.required,
         exposed_tool_count: exposed_tool_count.try_into().unwrap_or(u32::MAX),
         id: server_id.0.clone(),
@@ -1220,10 +1567,12 @@ pub(crate) async fn mcp_server_summary_from_registry(
         last_diagnostic_severity: None,
         last_error,
         manageable: false,
+        overrides_global: false,
         origin: mcp_server_origin_payload(&spec.source),
         scope: mcp_server_scope_payload(&scope),
         source_plugin_id: mcp_source_plugin_id(&spec.source),
         status,
+        status_source: "settings",
         transport: mcp_transport_payload(&spec.transport),
     })
 }
@@ -1231,9 +1580,22 @@ pub(crate) async fn mcp_server_summary_from_registry(
 pub(crate) fn mcp_server_summary_from_record(
     record: &McpServerConfigRecord,
 ) -> McpServerSummaryPayload {
+    mcp_server_summary_from_layered_record(&LayeredMcpRecord {
+        record: record.clone(),
+        config_layer: McpConfigLayer::Global,
+        effective: true,
+        manageable: true,
+        overrides_global: false,
+    })
+}
+
+fn mcp_server_summary_from_layered_record(entry: &LayeredMcpRecord) -> McpServerSummaryPayload {
+    let record = &entry.record;
     McpServerSummaryPayload {
+        config_layer: entry.config_layer,
         display_name: record.display_name.clone(),
         enabled: record.enabled,
+        effective: entry.effective,
         required: record.required,
         exposed_tool_count: 0,
         id: record.id.clone(),
@@ -1241,14 +1603,19 @@ pub(crate) fn mcp_server_summary_from_record(
         last_diagnostic_at: None,
         last_diagnostic_severity: None,
         last_error: None,
-        manageable: true,
-        origin: "user",
+        manageable: entry.manageable,
+        overrides_global: entry.overrides_global,
+        origin: match entry.config_layer {
+            McpConfigLayer::Global => "user",
+            McpConfigLayer::Project => "project",
+        },
         scope: record.scope.clone(),
         status: if record.enabled {
             "configured"
         } else {
             "disabled"
         },
+        status_source: "settings",
         source_plugin_id: None,
         transport: mcp_transport_config_payload(&record.transport),
     }
@@ -1286,8 +1653,25 @@ pub(crate) fn browser_mcp_preset_summary_from_enabled(
 }
 
 fn mcp_server_config_payload_from_record(record: &McpServerConfigRecord) -> McpServerConfigPayload {
+    mcp_server_config_payload_from_layered_record(&LayeredMcpRecord {
+        record: record.clone(),
+        config_layer: McpConfigLayer::Global,
+        effective: true,
+        manageable: true,
+        overrides_global: false,
+    })
+}
+
+fn mcp_server_config_payload_from_layered_record(
+    entry: &LayeredMcpRecord,
+) -> McpServerConfigPayload {
+    let record = &entry.record;
     McpServerConfigPayload {
+        config_layer: entry.config_layer,
+        effective: entry.effective,
         enabled: record.enabled,
+        manageable: entry.manageable,
+        overrides_global: entry.overrides_global,
         required: record.required,
         display_name: record.display_name.clone(),
         id: record.id.clone(),

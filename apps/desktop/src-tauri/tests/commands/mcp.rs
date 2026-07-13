@@ -1239,6 +1239,11 @@ async fn mcp_diagnostic_store_retains_recent_records_and_filters_by_server() {
                 severity: McpDiagnosticSeverity::Warning,
                 summary: format!("diagnostic {index}"),
                 timestamp: format!("2026-06-17T00:00:0{index}.000Z"),
+                plane: McpDiagnosticPlane::Settings,
+                task_id: None,
+                session_id: None,
+                run_id: None,
+                run_segment_id: None,
             })
             .unwrap();
     }
