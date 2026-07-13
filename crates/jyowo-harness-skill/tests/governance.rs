@@ -358,6 +358,43 @@ fn registry_concurrent_registers_do_not_lose_updates() {
 }
 
 #[test]
+fn registry_clones_share_hook_owner_but_distinct_registries_do_not() {
+    let registry = SkillRegistry::builder().build();
+    let cloned = registry.clone();
+    let distinct = SkillRegistry::builder().build();
+
+    assert_eq!(registry.hook_owner_token(), cloned.hook_owner_token());
+    assert_ne!(registry.hook_owner_token(), distinct.hook_owner_token());
+}
+
+#[test]
+fn registry_reconcile_can_query_registry_without_deadlocking() {
+    let registry = SkillRegistry::builder().build();
+    let query = registry.clone();
+    let (sent, received) = std::sync::mpsc::channel();
+
+    std::thread::spawn(move || {
+        let result = registry.try_replace_source(
+            SkillSource::Workspace("/workspace/skills".into()),
+            vec![simple_skill(
+                "reentrant-query",
+                SkillSource::Workspace("/ignored".into()),
+            )],
+            |_, _| {
+                let _ = query.snapshot();
+                Ok::<_, ()>(())
+            },
+        );
+        let _ = sent.send(result.is_ok());
+    });
+
+    assert_eq!(
+        received.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(true)
+    );
+}
+
+#[test]
 fn registry_shadow_candidate_changes_increment_generation() {
     let workspace = simple_skill("review", SkillSource::Workspace("data/skills".into()));
     let registry = SkillRegistry::builder().with_skill(workspace).build();

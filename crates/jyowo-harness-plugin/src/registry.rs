@@ -635,8 +635,17 @@ impl PluginRegistry {
             activated
         };
 
-        self.unregister_capabilities(id, &activated.registrations)
-            .await;
+        if let Err(error) = self
+            .unregister_capabilities(id, &activated.registrations)
+            .await
+        {
+            let mut inner = self.inner.write();
+            inner.activated.insert(id.clone(), activated);
+            inner
+                .state
+                .insert(id.clone(), PluginLifecycleState::Activated);
+            return Err(error);
+        }
 
         {
             let mut inner = self.inner.write();
@@ -911,6 +920,7 @@ impl PluginRegistry {
                 Arc::new(ScopedSkillRegistration::new(
                     manifest,
                     registries.skills.clone(),
+                    registries.skill_reconciler.clone(),
                     Arc::clone(&activation),
                     self.metrics_sink.clone(),
                 )) as Arc<_>
@@ -1115,7 +1125,8 @@ impl PluginRegistry {
         activation: &CapabilityRegistrationState,
     ) {
         let registrations = CapabilityRegistrations::from_state(activation);
-        self.unregister_capabilities(plugin_id, &registrations)
+        let _ = self
+            .unregister_capabilities(plugin_id, &registrations)
             .await;
     }
 
@@ -1123,8 +1134,38 @@ impl PluginRegistry {
         &self,
         plugin_id: &PluginId,
         registrations: &CapabilityRegistrations,
-    ) {
+    ) -> Result<(), PluginError> {
         let registries = self.capability_registries.read().clone();
+        if let Some(registry) = &registries.skills {
+            for name in &registrations.skills {
+                if let Some(reconciler) = &registries.skill_reconciler {
+                    registry
+                        .try_deregister_from_plugin(plugin_id, name, |current, candidate| {
+                            reconciler.reconcile(current, candidate)
+                        })
+                        .map_err(|error| {
+                            PluginError::Registration(RegistrationError::OwnerRegistry {
+                                kind: "skill",
+                                details: match error {
+                                    harness_skill::SkillRegistryUpdateError::Registry(error) => {
+                                        error.to_string()
+                                    }
+                                    harness_skill::SkillRegistryUpdateError::Reconcile(error) => {
+                                        error
+                                    }
+                                },
+                            })
+                        })?;
+                } else {
+                    let handler_ids = registry.deregister_from_plugin(plugin_id, name);
+                    if let Some(hooks) = &registries.hooks {
+                        for handler_id in handler_ids {
+                            hooks.deregister(&handler_id);
+                        }
+                    }
+                }
+            }
+        }
         if let Some(registry) = &registries.tools {
             for name in &registrations.tools {
                 let _ = registry.deregister_from_plugin(plugin_id, name);
@@ -1153,16 +1194,7 @@ impl PluginRegistry {
                 let _ = registry.remove_plugin_server(plugin_id, &server_id).await;
             }
         }
-        if let Some(registry) = &registries.skills {
-            for name in &registrations.skills {
-                let handler_ids = registry.deregister_from_plugin(plugin_id, name);
-                if let Some(hooks) = &registries.hooks {
-                    for handler_id in handler_ids {
-                        hooks.deregister(&handler_id);
-                    }
-                }
-            }
-        }
+        Ok(())
     }
 
     fn emit_plugin_loaded(

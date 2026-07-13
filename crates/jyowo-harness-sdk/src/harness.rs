@@ -186,7 +186,7 @@ use self::run_state::{
 };
 pub use self::sampling::HarnessSamplingProvider;
 use self::session_runtime::{sdk_session_not_found, snapshot_for_supported_model};
-use self::skills::SdkSkillReloadCap;
+use self::skills::{SdkSkillHookReconciler, SdkSkillReloadCap};
 pub use self::tool_pool::filter_unrouted_service_tools;
 use self::tool_pool::{apply_tenant_tool_filter, filter_unavailable_tools};
 pub use self::types::{
@@ -1304,7 +1304,11 @@ impl Harness {
             let mut capability_registries = PluginCapabilityRegistries::default()
                 .with_tool_registry(tool_registry.clone())
                 .with_hook_registry(hook_registry.clone())
-                .with_skill_registry(skill_registry.clone());
+                .with_skill_registry(skill_registry.clone())
+                .with_skill_reconciler(Arc::new(SdkSkillHookReconciler::new(
+                    skill_registry.clone(),
+                    hook_registry.clone(),
+                )));
             if let Some(config) = &mcp_config {
                 capability_registries =
                     capability_registries.with_mcp_registry(config.registry.clone());

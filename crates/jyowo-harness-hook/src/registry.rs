@@ -10,6 +10,8 @@ use crate::HookHandler;
 pub enum RegistrationError {
     #[error("duplicate hook handler id: {0}")]
     Duplicate(String),
+    #[error("hook handler is owned by another registry: {0}")]
+    OwnershipConflict(String),
     #[error("invalid hook handler: {0}")]
     InvalidHandler(String),
 }
@@ -39,6 +41,9 @@ pub enum HookOrigin {
         plugin_id: PluginId,
         trust: TrustLevel,
     },
+    Skill {
+        owner: Arc<str>,
+    },
 }
 
 impl HookRegistry {
@@ -57,6 +62,110 @@ impl HookRegistry {
         handler: Box<dyn HookHandler>,
     ) -> Result<(), RegistrationError> {
         self.register_with_origin(handler, HookOrigin::Plugin { plugin_id, trust })
+    }
+
+    pub fn register_from_skill(
+        &self,
+        owner: Arc<str>,
+        handler: Box<dyn HookHandler>,
+    ) -> Result<bool, RegistrationError> {
+        validate_handler(handler.as_ref())?;
+
+        let id = handler.handler_id().to_owned();
+        let handler: Arc<dyn HookHandler> = handler.into();
+        let mut inner = self.inner.write();
+        if inner.ids.contains(&id) {
+            if matches!(
+                inner.origins.get(&id),
+                Some(HookOrigin::Skill { owner: existing }) if existing == &owner
+            ) {
+                return Ok(false);
+            }
+            return Err(RegistrationError::Duplicate(id));
+        }
+
+        inner.ids.insert(id.clone());
+        inner.origins.insert(id, HookOrigin::Skill { owner });
+        inner.handlers.push(RegisteredHook { handler });
+        inner.generation += 1;
+        Ok(true)
+    }
+
+    pub fn reconcile_skill_handlers(
+        &self,
+        owner: Arc<str>,
+        handlers: Vec<Box<dyn HookHandler>>,
+        reusable_ids: &HashSet<String>,
+        remove_ids: &HashSet<String>,
+    ) -> Result<(), RegistrationError> {
+        let mut additions = Vec::with_capacity(handlers.len());
+        let mut addition_ids = HashSet::with_capacity(handlers.len());
+        for handler in handlers {
+            validate_handler(handler.as_ref())?;
+            let id = handler.handler_id().to_owned();
+            if !addition_ids.insert(id.clone()) {
+                return Err(RegistrationError::Duplicate(id));
+            }
+            additions.push((id, Arc::<dyn HookHandler>::from(handler)));
+        }
+        if let Some(id) = addition_ids.intersection(remove_ids).next() {
+            return Err(RegistrationError::InvalidHandler(format!(
+                "handler cannot be added and removed in one update: {id}"
+            )));
+        }
+
+        let mut inner = self.inner.write();
+        for (id, _) in &additions {
+            if !inner.ids.contains(id) {
+                continue;
+            }
+            let reusable = reusable_ids.contains(id)
+                && matches!(
+                    inner.origins.get(id),
+                    Some(HookOrigin::Skill { owner: existing }) if existing == &owner
+                );
+            if !reusable {
+                return Err(RegistrationError::Duplicate(id.clone()));
+            }
+        }
+        for id in remove_ids {
+            match inner.origins.get(id) {
+                None => {}
+                Some(HookOrigin::Skill { owner: existing }) if existing == &owner => {}
+                Some(_) => return Err(RegistrationError::OwnershipConflict(id.clone())),
+            }
+        }
+
+        let mut changed = false;
+        for (id, handler) in additions {
+            if inner.ids.contains(&id) {
+                continue;
+            }
+            inner.ids.insert(id.clone());
+            inner.origins.insert(
+                id,
+                HookOrigin::Skill {
+                    owner: Arc::clone(&owner),
+                },
+            );
+            inner.handlers.push(RegisteredHook { handler });
+            changed = true;
+        }
+        if !remove_ids.is_empty() {
+            let before = inner.handlers.len();
+            inner
+                .handlers
+                .retain(|registered| !remove_ids.contains(registered.handler.handler_id()));
+            changed |= inner.handlers.len() != before;
+            for id in remove_ids {
+                inner.ids.remove(id);
+                inner.origins.remove(id);
+            }
+        }
+        if changed {
+            inner.generation += 1;
+        }
+        Ok(())
     }
 
     fn register_with_origin(
@@ -108,6 +217,23 @@ impl HookRegistry {
                 plugin_id: owner,
                 ..
             }) if owner == plugin_id
+        ) {
+            return false;
+        }
+        inner.ids.remove(id);
+        inner.origins.remove(id);
+        inner
+            .handlers
+            .retain(|registered| registered.handler.handler_id() != id);
+        inner.generation += 1;
+        true
+    }
+
+    pub fn deregister_from_skill(&self, owner: &str, id: &str) -> bool {
+        let mut inner = self.inner.write();
+        if !matches!(
+            inner.origins.get(id),
+            Some(HookOrigin::Skill { owner: existing }) if existing.as_ref() == owner
         ) {
             return false;
         }

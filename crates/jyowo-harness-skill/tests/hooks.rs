@@ -103,6 +103,71 @@ fn hook_handler_id_changes_when_transport_changes() {
     assert_ne!(builtin_binding.handler_id, http_binding.handler_id);
 }
 
+#[cfg(unix)]
+#[test]
+fn hook_handler_id_preserves_non_utf8_source_path_bytes() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let first = hook_skill(
+        SkillSource::Workspace(std::ffi::OsString::from_vec(vec![b'a', 0x80]).into()),
+        "events: [SessionStart]",
+    );
+    let second = hook_skill(
+        SkillSource::Workspace(std::ffi::OsString::from_vec(vec![b'a', 0x81]).into()),
+        "events: [SessionStart]",
+    );
+
+    let first_id = SkillRegistry::builder()
+        .with_skill(first)
+        .build()
+        .hook_bindings()
+        .remove(0)
+        .handler_id;
+    let second_id = SkillRegistry::builder()
+        .with_skill(second)
+        .build()
+        .hook_bindings()
+        .remove(0)
+        .handler_id;
+
+    assert_ne!(first_id, second_id);
+}
+
+#[test]
+fn hook_handler_id_separates_adjacent_transport_fields() {
+    let first_args = ["ab", "c"];
+    let second_args = ["a", "bc"];
+    assert_eq!(first_args.concat(), second_args.concat());
+
+    let first = hook_skill_with_transport(
+        r"transport:
+      type: exec
+      command: /usr/bin/audit
+      args: [ab, c]",
+    );
+    let second = hook_skill_with_transport(
+        r"transport:
+      type: exec
+      command: /usr/bin/audit
+      args: [a, bc]",
+    );
+
+    let first_id = SkillRegistry::builder()
+        .with_skill(first)
+        .build()
+        .hook_bindings()
+        .remove(0)
+        .handler_id;
+    let second_id = SkillRegistry::builder()
+        .with_skill(second)
+        .build()
+        .hook_bindings()
+        .remove(0)
+        .handler_id;
+
+    assert_ne!(first_id, second_id);
+}
+
 fn hook_skill(source: SkillSource, events: &str) -> harness_skill::Skill {
     parse_skill_markdown(
         &format!(

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -104,6 +105,98 @@ fn registry_rejects_duplicate_ids_and_invalid_handlers() {
         no_events,
         Err(RegistrationError::InvalidHandler(_))
     ));
+}
+
+#[test]
+fn skill_owned_handlers_are_idempotent_only_for_the_same_owner() {
+    let registry = HookRegistry::builder().build().unwrap();
+    let first_owner: Arc<str> = Arc::from("skill-registry:first");
+    let other_owner: Arc<str> = Arc::from("skill-registry:other");
+
+    assert!(registry
+        .register_from_skill(
+            Arc::clone(&first_owner),
+            Box::new(RecordingHook::new(
+                "skill:audit",
+                &[HookEventKind::PostToolUse],
+                0,
+                HookOutcome::Continue,
+            )),
+        )
+        .unwrap());
+    assert!(!registry
+        .register_from_skill(
+            Arc::clone(&first_owner),
+            Box::new(RecordingHook::new(
+                "skill:audit",
+                &[HookEventKind::PostToolUse],
+                0,
+                HookOutcome::Continue,
+            )),
+        )
+        .unwrap());
+
+    let collision = registry.register_from_skill(
+        Arc::clone(&other_owner),
+        Box::new(RecordingHook::new(
+            "skill:audit",
+            &[HookEventKind::PostToolUse],
+            0,
+            HookOutcome::Continue,
+        )),
+    );
+    assert!(matches!(collision, Err(RegistrationError::Duplicate(_))));
+    assert!(!registry.deregister_from_skill(&other_owner, "skill:audit"));
+    assert!(registry
+        .snapshot()
+        .handlers_for(HookEventKind::PostToolUse)
+        .iter()
+        .any(|handler| handler.handler_id() == "skill:audit"));
+    assert!(registry.deregister_from_skill(&first_owner, "skill:audit"));
+    assert!(registry
+        .snapshot()
+        .handlers_for(HookEventKind::PostToolUse)
+        .is_empty());
+}
+
+#[test]
+fn skill_handler_batch_is_atomic_when_a_host_id_collides() {
+    let registry = HookRegistry::builder()
+        .with_hook(Box::new(RecordingHook::new(
+            "collision",
+            &[HookEventKind::PostToolUse],
+            0,
+            HookOutcome::Continue,
+        )))
+        .build()
+        .unwrap();
+    let owner: Arc<str> = Arc::from("skill-registry:first");
+    let result = registry.reconcile_skill_handlers(
+        owner,
+        vec![
+            Box::new(RecordingHook::new(
+                "first-new",
+                &[HookEventKind::PostToolUse],
+                0,
+                HookOutcome::Continue,
+            )),
+            Box::new(RecordingHook::new(
+                "collision",
+                &[HookEventKind::PostToolUse],
+                0,
+                HookOutcome::Continue,
+            )),
+        ],
+        &HashSet::new(),
+        &HashSet::new(),
+    );
+
+    assert!(matches!(result, Err(RegistrationError::Duplicate(_))));
+    assert!(registry.origin_for("first-new").is_none());
+    assert_eq!(
+        registry.origin_for("collision"),
+        Some(harness_hook::HookOrigin::Host)
+    );
 }
 
 #[tokio::test]

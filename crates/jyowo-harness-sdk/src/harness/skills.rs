@@ -81,24 +81,26 @@ impl Harness {
     }
 
     fn register_skill_hooks(&self, registry: &SkillRegistry) -> Result<(), HarnessError> {
-        for binding in registry.hook_bindings() {
-            validate_skill_hook_binding(&binding)?;
-            if self
-                .inner
-                .hook_registry
-                .origin_for(&binding.handler_id)
-                .is_some()
-            {
-                continue;
-            }
-            self.inner
-                .hook_registry
-                .register(skill_hook_handler(binding)?)
-                .map_err(|error| {
-                    HarnessError::Hook(harness_contracts::HookError::Message(error.to_string()))
-                })?;
-        }
-        Ok(())
+        let bindings = registry.hook_bindings();
+        let reusable_ids = bindings
+            .iter()
+            .map(|binding| binding.handler_id.clone())
+            .collect::<HashSet<_>>();
+        let handlers = bindings
+            .into_iter()
+            .map(skill_hook_handler)
+            .collect::<Result<Vec<_>, _>>()?;
+        self.inner
+            .hook_registry
+            .reconcile_skill_handlers(
+                registry.hook_owner_token(),
+                handlers,
+                &reusable_ids,
+                &HashSet::new(),
+            )
+            .map_err(|error| {
+                HarnessError::Hook(harness_contracts::HookError::Message(error.to_string()))
+            })
     }
 
     pub(super) fn skill_render_policy(&self) -> SkillRenderPolicy {
@@ -252,71 +254,12 @@ impl Harness {
         current: &SkillRegistrySnapshot,
         candidate: &SkillRegistrySnapshot,
     ) -> Result<(), HarnessError> {
-        let old_bindings = self.inner.skill_registry.hook_bindings_in_snapshot(current);
-        let next_bindings = self
-            .inner
-            .skill_registry
-            .hook_bindings_in_snapshot(candidate);
-        let next_handler_ids = next_bindings
-            .iter()
-            .map(|binding| binding.handler_id.clone())
-            .collect::<HashSet<_>>();
-        let old_handler_ids = old_bindings
-            .iter()
-            .map(|binding| binding.handler_id.clone())
-            .collect::<HashSet<_>>();
-
-        let mut registered = Vec::<String>::new();
-        for binding in next_bindings {
-            if let Err(error) = validate_skill_hook_binding(&binding) {
-                for registered_id in registered {
-                    self.inner.hook_registry.deregister(&registered_id);
-                }
-                return Err(error);
-            }
-            if self
-                .inner
-                .hook_registry
-                .origin_for(&binding.handler_id)
-                .is_some()
-            {
-                if old_handler_ids.contains(&binding.handler_id) {
-                    continue;
-                }
-                for registered_id in registered {
-                    self.inner.hook_registry.deregister(&registered_id);
-                }
-                return Err(HarnessError::Hook(harness_contracts::HookError::Message(
-                    format!("duplicate skill hook handler id: {}", binding.handler_id),
-                )));
-            }
-            let handler_id = binding.handler_id.clone();
-            let handler = match skill_hook_handler(binding) {
-                Ok(handler) => handler,
-                Err(error) => {
-                    for registered_id in registered {
-                        self.inner.hook_registry.deregister(&registered_id);
-                    }
-                    return Err(error);
-                }
-            };
-            if let Err(error) = self.inner.hook_registry.register(handler) {
-                for registered_id in registered {
-                    self.inner.hook_registry.deregister(&registered_id);
-                }
-                return Err(HarnessError::Hook(harness_contracts::HookError::Message(
-                    error.to_string(),
-                )));
-            }
-            registered.push(handler_id);
-        }
-
-        for binding in old_bindings {
-            if !next_handler_ids.contains(&binding.handler_id) {
-                self.inner.hook_registry.deregister(&binding.handler_id);
-            }
-        }
-        Ok(())
+        reconcile_skill_hook_snapshots(
+            &self.inner.skill_registry,
+            &self.inner.hook_registry,
+            current,
+            candidate,
+        )
     }
 
     pub fn register_locked_skill_versions(
@@ -342,6 +285,77 @@ impl Harness {
         }
         Ok(())
     }
+}
+
+pub(super) struct SdkSkillHookReconciler {
+    skill_registry: SkillRegistry,
+    hook_registry: HookRegistry,
+}
+
+impl SdkSkillHookReconciler {
+    pub(super) fn new(skill_registry: SkillRegistry, hook_registry: HookRegistry) -> Self {
+        Self {
+            skill_registry,
+            hook_registry,
+        }
+    }
+}
+
+impl harness_plugin::SkillRegistryReconciler for SdkSkillHookReconciler {
+    fn reconcile(
+        &self,
+        current: &SkillRegistrySnapshot,
+        candidate: &SkillRegistrySnapshot,
+    ) -> Result<(), String> {
+        reconcile_skill_hook_snapshots(
+            &self.skill_registry,
+            &self.hook_registry,
+            current,
+            candidate,
+        )
+        .map_err(|error| error.to_string())
+    }
+}
+
+fn reconcile_skill_hook_snapshots(
+    skill_registry: &SkillRegistry,
+    hook_registry: &HookRegistry,
+    current: &SkillRegistrySnapshot,
+    candidate: &SkillRegistrySnapshot,
+) -> Result<(), HarnessError> {
+    let old_bindings = skill_registry.hook_bindings_in_snapshot(current);
+    let next_bindings = skill_registry.hook_bindings_in_snapshot(candidate);
+    let next_handler_ids = next_bindings
+        .iter()
+        .map(|binding| binding.handler_id.clone())
+        .collect::<HashSet<_>>();
+    let old_handler_ids = old_bindings
+        .iter()
+        .map(|binding| binding.handler_id.clone())
+        .collect::<HashSet<_>>();
+    let reusable_ids = old_handler_ids
+        .intersection(&next_handler_ids)
+        .cloned()
+        .collect::<HashSet<_>>();
+    let remove_ids = old_handler_ids
+        .difference(&next_handler_ids)
+        .cloned()
+        .collect::<HashSet<_>>();
+    let handlers = next_bindings
+        .into_iter()
+        .map(skill_hook_handler)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    hook_registry
+        .reconcile_skill_handlers(
+            skill_registry.hook_owner_token(),
+            handlers,
+            &reusable_ids,
+            &remove_ids,
+        )
+        .map_err(|error| {
+            HarnessError::Hook(harness_contracts::HookError::Message(error.to_string()))
+        })
 }
 
 struct BufferedSkillEventSink {

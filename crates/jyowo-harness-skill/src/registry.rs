@@ -1,20 +1,38 @@
 use std::collections::{BTreeMap, HashMap};
 use std::convert::Infallible;
+use std::ffi::OsStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use harness_contracts::{
     AgentId, HookEventKind, PluginId, SkillFilter, SkillId, SkillParameterInfo, SkillStatus,
     SkillSummary, SkillView, TrustLevel,
 };
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 use crate::{
-    Skill, SkillError, SkillHookTransport, SkillParamType, SkillRegistration, SkillSource,
+    BuiltinHookKind, Skill, SkillError, SkillHookDecl, SkillHookTransport, SkillParamType,
+    SkillRegistration, SkillSource,
 };
 
-#[derive(Debug, Clone, Default)]
+static NEXT_HOOK_OWNER_TOKEN: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone)]
 pub struct SkillRegistry {
     snapshot: Arc<RwLock<Arc<SkillRegistrySnapshot>>>,
+    mutation: Arc<Mutex<()>>,
+    hook_owner_token: Arc<str>,
+}
+
+impl Default for SkillRegistry {
+    fn default() -> Self {
+        let token = NEXT_HOOK_OWNER_TOKEN.fetch_add(1, Ordering::Relaxed);
+        Self {
+            snapshot: Arc::new(RwLock::new(Arc::new(SkillRegistrySnapshot::default()))),
+            mutation: Arc::new(Mutex::new(())),
+            hook_owner_token: Arc::from(format!("skill-registry:{token}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -55,7 +73,13 @@ impl SkillRegistry {
         SkillRegistryBuilder::default()
     }
 
+    #[must_use]
+    pub fn hook_owner_token(&self) -> Arc<str> {
+        Arc::clone(&self.hook_owner_token)
+    }
+
     pub fn register(&self, skill: Skill) -> Result<(), SkillError> {
+        let _mutation = self.mutation.lock();
         let mut guard = self.snapshot.write();
         let current = Arc::clone(&guard);
         let mut next = current.as_ref().clone();
@@ -65,6 +89,7 @@ impl SkillRegistry {
     }
 
     pub fn register_batch(&self, skills: Vec<Skill>) -> Result<SkillRegistrySnapshot, SkillError> {
+        let _mutation = self.mutation.lock();
         let mut guard = self.snapshot.write();
         let current = Arc::clone(&guard);
         let mut next = current.as_ref().clone();
@@ -153,14 +178,14 @@ impl SkillRegistry {
         M: FnOnce(&mut SkillRegistrySnapshot) -> Result<(), SkillError>,
         F: FnOnce(&SkillRegistrySnapshot, &SkillRegistrySnapshot) -> Result<(), E>,
     {
-        let mut guard = self.snapshot.write();
-        let current = Arc::clone(&guard);
+        let _mutation = self.mutation.lock();
+        let current = self.snapshot();
         let mut next = current.as_ref().clone();
         mutate(&mut next).map_err(SkillRegistryUpdateError::Registry)?;
         set_next_generation(&current, &mut next);
         reconcile(&current, &next).map_err(SkillRegistryUpdateError::Reconcile)?;
         if next.candidates != current.candidates {
-            *guard = Arc::new(next.clone());
+            *self.snapshot.write() = Arc::new(next.clone());
         }
         Ok(next)
     }
@@ -169,42 +194,82 @@ impl SkillRegistry {
         &self,
         plugin_id: PluginId,
         trust: TrustLevel,
-        mut skill: Skill,
+        skill: Skill,
     ) -> Result<(), SkillError> {
+        match self.try_register_from_plugin(plugin_id, trust, skill, |_, _| Ok::<_, Infallible>(()))
+        {
+            Ok(_) => Ok(()),
+            Err(SkillRegistryUpdateError::Registry(error)) => Err(error),
+            Err(SkillRegistryUpdateError::Reconcile(never)) => match never {},
+        }
+    }
+
+    pub fn try_register_from_plugin<E, F>(
+        &self,
+        plugin_id: PluginId,
+        trust: TrustLevel,
+        mut skill: Skill,
+        reconcile: F,
+    ) -> Result<SkillRegistrySnapshot, SkillRegistryUpdateError<E>>
+    where
+        F: FnOnce(&SkillRegistrySnapshot, &SkillRegistrySnapshot) -> Result<(), E>,
+    {
         skill.source = SkillSource::Plugin { plugin_id, trust };
-        self.register(skill)
+        self.try_update(move |next| insert_skill(next, skill), reconcile)
     }
 
     pub fn deregister_from_plugin(&self, plugin_id: &PluginId, name: &str) -> Vec<String> {
-        let mut guard = self.snapshot.write();
-        let current = Arc::clone(&guard);
-        let mut next = current.as_ref().clone();
-        let Some(candidates) = next.candidates.get_mut(name) else {
-            return Vec::new();
-        };
-        let removed = candidates
-            .iter()
-            .filter(|skill| matches!(&skill.source, SkillSource::Plugin { plugin_id: owner, .. } if owner == plugin_id))
-            .cloned()
-            .collect::<Vec<_>>();
-        if removed.is_empty() {
-            return Vec::new();
+        match self.try_deregister_from_plugin(plugin_id, name, |_, _| Ok::<_, Infallible>(())) {
+            Ok((_, handler_ids)) => handler_ids,
+            Err(SkillRegistryUpdateError::Registry(error)) => {
+                debug_assert!(false, "plugin deregistration failed: {error}");
+                Vec::new()
+            }
+            Err(SkillRegistryUpdateError::Reconcile(never)) => match never {},
         }
-        candidates.retain(|skill| {
-            !matches!(&skill.source, SkillSource::Plugin { plugin_id: owner, .. } if owner == plugin_id)
-        });
-        if candidates.is_empty() {
-            next.candidates.remove(name);
-        }
-        rebuild_indexes(&mut next);
-        set_next_generation(&current, &mut next);
-        *guard = Arc::new(next);
-        let handler_ids = removed
-            .iter()
-            .flat_map(|skill| hook_bindings_for_skill(skill))
-            .map(|binding| binding.handler_id)
-            .collect();
-        handler_ids
+    }
+
+    pub fn try_deregister_from_plugin<E, F>(
+        &self,
+        plugin_id: &PluginId,
+        name: &str,
+        reconcile: F,
+    ) -> Result<(SkillRegistrySnapshot, Vec<String>), SkillRegistryUpdateError<E>>
+    where
+        F: FnOnce(&SkillRegistrySnapshot, &SkillRegistrySnapshot) -> Result<(), E>,
+    {
+        let mut removed_handler_ids = Vec::new();
+        let snapshot = self.try_update(
+            |next| {
+                let Some(candidates) = next.candidates.get_mut(name) else {
+                    return Ok(());
+                };
+                let removed = candidates
+                    .iter()
+                    .filter(|skill| matches!(&skill.source, SkillSource::Plugin { plugin_id: owner, .. } if owner == plugin_id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if removed.is_empty() {
+                    return Ok(());
+                }
+                removed_handler_ids.extend(
+                    removed
+                        .iter()
+                        .flat_map(|skill| hook_bindings_for_skill(skill))
+                        .map(|binding| binding.handler_id),
+                );
+                candidates.retain(|skill| {
+                    !matches!(&skill.source, SkillSource::Plugin { plugin_id: owner, .. } if owner == plugin_id)
+                });
+                if candidates.is_empty() {
+                    next.candidates.remove(name);
+                }
+                rebuild_indexes(next);
+                Ok(())
+            },
+            reconcile,
+        )?;
+        Ok((snapshot, removed_handler_ids))
     }
 
     #[must_use]
@@ -429,8 +494,7 @@ fn hook_bindings_for_skill(skill: &Skill) -> Vec<SkillHookBinding> {
         .iter()
         .map(|hook| {
             let logical_id = format!("skill:{}:{}", skill.name, hook.id);
-            let declaration = format!("{}|{hook:?}", skill.source.fingerprint_identity());
-            let fingerprint = blake3::hash(declaration.as_bytes()).to_hex();
+            let fingerprint = hook_declaration_fingerprint(&skill.source, hook).to_hex();
             SkillHookBinding {
                 handler_id: format!("{logical_id}:{}", &fingerprint[..16]),
                 logical_id,
@@ -443,6 +507,169 @@ fn hook_bindings_for_skill(skill: &Skill) -> Vec<SkillHookBinding> {
             }
         })
         .collect()
+}
+
+fn hook_declaration_fingerprint(source: &SkillSource, hook: &SkillHookDecl) -> blake3::Hash {
+    let mut writer = HookFingerprintWriter::default();
+    writer.field(b"jyowo.skill-hook.v1");
+    writer.source(source);
+    writer.field(hook.id.as_bytes());
+    writer.u64(hook.events.len() as u64);
+    for event in &hook.events {
+        writer.field(hook_event_tag(event));
+    }
+    writer.transport(&hook.transport);
+    writer.finish()
+}
+
+#[derive(Default)]
+struct HookFingerprintWriter {
+    hasher: blake3::Hasher,
+}
+
+impl HookFingerprintWriter {
+    fn field(&mut self, bytes: &[u8]) {
+        self.hasher.update(&(bytes.len() as u64).to_le_bytes());
+        self.hasher.update(bytes);
+    }
+
+    fn u64(&mut self, value: u64) {
+        self.field(&value.to_le_bytes());
+    }
+
+    fn bool(&mut self, value: bool) {
+        self.field(&[u8::from(value)]);
+    }
+
+    fn os_str(&mut self, value: &OsStr) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            self.field(value.as_bytes());
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            let bytes = value
+                .encode_wide()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>();
+            self.field(&bytes);
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            self.field(value.as_encoded_bytes());
+        }
+    }
+
+    fn source(&mut self, source: &SkillSource) {
+        match source {
+            SkillSource::Bundled => self.field(b"bundled"),
+            SkillSource::Workspace(path) => {
+                self.field(b"workspace");
+                self.os_str(path.as_os_str());
+            }
+            SkillSource::User(path) => {
+                self.field(b"user");
+                self.os_str(path.as_os_str());
+            }
+            SkillSource::Plugin { plugin_id, trust } => {
+                self.field(b"plugin");
+                self.field(plugin_id.0.as_bytes());
+                self.field(trust_level_tag(*trust));
+            }
+            SkillSource::Mcp(server_id) => {
+                self.field(b"mcp");
+                self.field(server_id.0.as_bytes());
+            }
+        }
+    }
+
+    fn transport(&mut self, transport: &SkillHookTransport) {
+        match transport {
+            SkillHookTransport::Builtin(kind) => {
+                self.field(b"builtin");
+                match kind {
+                    BuiltinHookKind::AuditLog => self.field(b"audit_log"),
+                }
+            }
+            SkillHookTransport::Exec(spec) => {
+                self.field(b"exec");
+                self.os_str(spec.command.as_os_str());
+                self.u64(spec.args.len() as u64);
+                for arg in &spec.args {
+                    self.field(arg.as_bytes());
+                }
+                self.u64(spec.timeout_ms);
+                self.field(hook_failure_mode_tag(spec.failure_mode));
+            }
+            SkillHookTransport::Http(spec) => {
+                self.field(b"http");
+                self.field(spec.url.as_bytes());
+                self.u64(spec.timeout_ms);
+                self.string_list(&spec.allowlist);
+                self.string_list(&spec.security.allowlist);
+                self.bool(spec.security.ssrf_guard);
+                self.u64(spec.security.max_redirects as u64);
+                self.u64(spec.security.max_body_bytes);
+                self.bool(spec.security.mtls_required);
+                self.field(hook_failure_mode_tag(spec.failure_mode));
+            }
+        }
+    }
+
+    fn string_list(&mut self, values: &[String]) {
+        self.u64(values.len() as u64);
+        for value in values {
+            self.field(value.as_bytes());
+        }
+    }
+
+    fn finish(self) -> blake3::Hash {
+        self.hasher.finalize()
+    }
+}
+
+fn hook_event_tag(event: &HookEventKind) -> &'static [u8] {
+    match event {
+        HookEventKind::UserPromptSubmit => b"user_prompt_submit",
+        HookEventKind::PreToolUse => b"pre_tool_use",
+        HookEventKind::PostToolUse => b"post_tool_use",
+        HookEventKind::PostToolUseFailure => b"post_tool_use_failure",
+        HookEventKind::PermissionRequest => b"permission_request",
+        HookEventKind::SessionStart => b"session_start",
+        HookEventKind::Setup => b"setup",
+        HookEventKind::SessionEnd => b"session_end",
+        HookEventKind::SubagentStart => b"subagent_start",
+        HookEventKind::SubagentStop => b"subagent_stop",
+        HookEventKind::Notification => b"notification",
+        HookEventKind::PreLlmCall => b"pre_llm_call",
+        HookEventKind::PostLlmCall => b"post_llm_call",
+        HookEventKind::PreApiRequest => b"pre_api_request",
+        HookEventKind::PostApiRequest => b"post_api_request",
+        HookEventKind::TransformToolResult => b"transform_tool_result",
+        HookEventKind::TransformTerminalOutput => b"transform_terminal_output",
+        HookEventKind::Elicitation => b"elicitation",
+        HookEventKind::PreToolSearch => b"pre_tool_search",
+        HookEventKind::PostToolSearchMaterialize => b"post_tool_search_materialize",
+        _ => b"unknown_hook_event",
+    }
+}
+
+fn hook_failure_mode_tag(mode: harness_contracts::HookFailureMode) -> &'static [u8] {
+    match mode {
+        harness_contracts::HookFailureMode::FailOpen => b"fail_open",
+        harness_contracts::HookFailureMode::FailClosed => b"fail_closed",
+        _ => b"unknown_failure_mode",
+    }
+}
+
+fn trust_level_tag(trust: TrustLevel) -> &'static [u8] {
+    match trust {
+        TrustLevel::AdminTrusted => b"admin_trusted",
+        TrustLevel::UserControlled => b"user_controlled",
+        _ => b"unknown_trust_level",
+    }
 }
 
 // Candidate order is insertion order. The newest candidate wins equal-rank ties.
