@@ -1630,6 +1630,23 @@ async fn save_provider_settings_payload_accepts_bedrock_without_api_key() {
         store.record.lock().unwrap().as_ref().unwrap().configs[0].api_key,
         ""
     );
+
+    let listed = list_provider_settings_with_store(&store).await.unwrap();
+    let listed_bedrock = listed
+        .configs
+        .iter()
+        .find(|config| config.id == "bedrock-claude")
+        .expect("saved Bedrock config should be listed");
+    assert!(!listed_bedrock.has_api_key);
+
+    let catalog = serde_json::to_value(list_model_provider_catalog_payload()).unwrap();
+    let bedrock = catalog["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|provider| provider["providerId"] == "bedrock")
+        .expect("Bedrock catalog entry");
+    assert_eq!(bedrock["runtimeCapability"]["authScheme"], "none");
 }
 
 #[tokio::test]

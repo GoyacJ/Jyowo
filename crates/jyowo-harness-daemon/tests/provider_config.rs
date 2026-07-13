@@ -187,6 +187,39 @@ fn empty_api_key_is_rejected_without_echoing_it() {
 }
 
 #[test]
+fn authentication_free_providers_resolve_without_a_non_empty_secret() {
+    for (provider_id, model_id) in [
+        ("local-llama", "llama3.2"),
+        ("bedrock", "anthropic.claude-3-5-sonnet-20241022-v2:0"),
+    ] {
+        for api_key in [None, Some("   ")] {
+            let config = ConfigFixture::new();
+            let mut selected = profile("selected", provider_id, model_id);
+            if provider_id == "bedrock" {
+                selected.protocol = ModelProtocol::Messages;
+                selected.model_descriptor.protocol = ModelProtocol::Messages;
+            }
+            config.write_profiles(&[selected]);
+            config.write_secrets(
+                &api_key
+                    .map(|api_key| vec![secret("selected", api_key)])
+                    .unwrap_or_default(),
+            );
+            config.write_selection(Some("selected"));
+
+            let resolved = ProviderConfigResolver::new(config.path())
+                .resolve(None)
+                .unwrap_or_else(|error| {
+                    panic!("{provider_id} with {api_key:?} secret must resolve: {error}")
+                });
+
+            assert_eq!(resolved.provider.provider_id(), provider_id);
+            assert_eq!(resolved.model_id, model_id);
+        }
+    }
+}
+
+#[test]
 fn absent_default_never_falls_back_to_local_llama() {
     let config = ConfigFixture::new();
     config.write_profiles(&[profile("local", "local-llama", "llama3.2")]);

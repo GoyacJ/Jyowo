@@ -230,6 +230,21 @@ fn provider_catalog_auth_schemes_match_runtime_adapters() {
     );
 }
 
+#[test]
+fn provider_api_key_requirement_is_fail_closed() {
+    #[cfg(feature = "openai")]
+    assert!(harness_model::provider_requires_api_key("openai"));
+    #[cfg(feature = "local-llama")]
+    assert!(!harness_model::provider_requires_api_key("local-llama"));
+    #[cfg(not(feature = "local-llama"))]
+    assert!(harness_model::provider_requires_api_key("local-llama"));
+    #[cfg(feature = "bedrock")]
+    assert!(!harness_model::provider_requires_api_key("bedrock"));
+    #[cfg(not(feature = "bedrock"))]
+    assert!(harness_model::provider_requires_api_key("bedrock"));
+    assert!(harness_model::provider_requires_api_key("unknown-provider"));
+}
+
 #[cfg(feature = "openai")]
 #[test]
 fn openai_catalog_declares_full_platform_service_surface() {

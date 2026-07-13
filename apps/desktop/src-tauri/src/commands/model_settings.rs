@@ -7,7 +7,9 @@ use chrono::{DateTime, Utc};
 use harness_contracts::{
     ModelUsagePeriod, ModelUsageSummary, ModelUsageWindow, UsageAccumulatedEvent, UsageSnapshot,
 };
-use harness_model::{fetch_official_quota, with_staleness, ProviderAccountUsageRequest};
+use harness_model::{
+    fetch_official_quota, provider_requires_api_key, with_staleness, ProviderAccountUsageRequest,
+};
 use harness_observability::{
     normalize_usage_activity, summarize_model_usage, IanaTimezoneResolver, LocalTimezoneResolver,
     WorkspaceTimezoneResolver,
@@ -27,7 +29,7 @@ use super::providers::{
     build_provider_for_config, desktop_provider_service_adapter_availability,
     list_model_provider_catalog_payload, list_provider_capability_route_options_from_inputs,
     list_provider_capability_routes_with_store, list_provider_settings_with_store,
-    model_descriptor_catalog_entry, provider_config_by_id, provider_requires_api_key,
+    model_descriptor_catalog_entry, provider_config_by_id,
 };
 use super::{
     DesktopRuntimeState, GetModelUsageSummaryResponse, ListOfficialQuotaSnapshotsResponse,

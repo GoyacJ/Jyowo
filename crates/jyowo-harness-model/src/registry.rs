@@ -174,6 +174,17 @@ pub fn provider_catalog_entries() -> Vec<ProviderCatalogEntry> {
 }
 
 #[must_use]
+pub fn provider_requires_api_key(provider_id: &str) -> bool {
+    match provider_id {
+        #[cfg(feature = "local-llama")]
+        "local-llama" => false,
+        #[cfg(feature = "bedrock")]
+        "bedrock" => false,
+        _ => true,
+    }
+}
+
+#[must_use]
 pub fn provider_inventory_entries() -> Vec<ProviderInventoryEntry> {
     provider_catalog_entries()
         .into_iter()

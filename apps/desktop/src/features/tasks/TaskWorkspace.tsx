@@ -40,6 +40,11 @@ export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
     queryFn: () => commandClient.listProviderSettings(workspaceRoot),
     queryKey: ['task-model-configs', workspaceRoot],
   }).data
+  const providerCatalog = useQuery({
+    enabled: providerSettings?.configs.some((config) => !config.hasApiKey) ?? false,
+    queryFn: () => commandClient.listModelProviderCatalog(),
+    queryKey: ['model-provider-catalog'],
+  }).data
   const [modelOverride, setModelOverride] = useState<{ taskId: TypedUlid; value: string } | null>(
     null,
   )
@@ -47,7 +52,17 @@ export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
     taskId: TypedUlid
     value: PermissionMode
   } | null>(null)
-  const configuredModels = providerSettings?.configs.filter((config) => config.hasApiKey) ?? []
+  const authenticationFreeProviders = new Set(
+    providerCatalog?.providers
+      .filter((provider) => provider.runtimeCapability.authScheme === 'none')
+      .map((provider) => provider.providerId) ?? [],
+  )
+  const configuredModels =
+    providerSettings?.configs.filter(
+      (config) =>
+        config.modelDescriptor.runtimeStatus.kind === 'runnable' &&
+        (config.hasApiKey || authenticationFreeProviders.has(config.providerId)),
+    ) ?? []
   const modelConfigId = modelOverride?.taskId === taskId ? modelOverride.value : undefined
   const capabilityModelConfigId = modelConfigId ?? providerSettings?.defaultConfigId
   const selectedModel = configuredModels.find((config) => config.id === capabilityModelConfigId)

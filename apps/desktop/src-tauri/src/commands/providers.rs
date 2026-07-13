@@ -29,8 +29,9 @@ use super::validation::*;
 use super::*;
 use harness_contracts::{ProviderSecretEntry, ProviderSelectionRecord};
 use harness_model::{
-    CacheProtocolSemantics, MediaProtocolSemantics, OutputProtocolSemantics, ProviderAuthScheme,
-    ReasoningProtocolSemantics, StreamingProtocolSemantics, ToolProtocolSemantics,
+    provider_requires_api_key, CacheProtocolSemantics, MediaProtocolSemantics,
+    OutputProtocolSemantics, ProviderAuthScheme, ReasoningProtocolSemantics,
+    StreamingProtocolSemantics, ToolProtocolSemantics,
 };
 use harness_provider_state::ProviderContinuationKind;
 
@@ -2944,13 +2945,6 @@ pub(crate) fn provider_config_payload(
 
 pub(crate) fn provider_config_has_api_key(config: &ProviderConfigRecord) -> bool {
     !config.api_key.trim().is_empty()
-}
-
-pub(crate) fn provider_requires_api_key(provider_id: &str) -> bool {
-    harness_model::provider_catalog_entries()
-        .into_iter()
-        .find(|entry| entry.provider_id == provider_id)
-        .is_none_or(|entry| entry.runtime_capability.auth_scheme != ProviderAuthScheme::None)
 }
 
 pub(crate) fn provider_config_has_official_quota_api_key(config: &ProviderConfigRecord) -> bool {
