@@ -81,26 +81,19 @@ impl Harness {
     }
 
     fn register_skill_hooks(&self, registry: &SkillRegistry) -> Result<(), HarnessError> {
-        let bindings = registry.hook_bindings();
-        let reusable_ids = bindings
-            .iter()
-            .map(|binding| binding.handler_id.clone())
-            .collect::<HashSet<_>>();
-        let handlers = bindings
-            .into_iter()
-            .map(skill_hook_handler)
-            .collect::<Result<Vec<_>, _>>()?;
-        self.inner
-            .hook_registry
-            .reconcile_skill_handlers(
-                registry.hook_owner_token(),
-                handlers,
-                &reusable_ids,
-                &HashSet::new(),
-            )
-            .map_err(|error| {
-                HarnessError::Hook(harness_contracts::HookError::Message(error.to_string()))
-            })
+        registry.reconcile_current_snapshot(|snapshot| {
+            let handlers = registry
+                .hook_bindings_in_snapshot(snapshot)
+                .into_iter()
+                .map(skill_hook_handler)
+                .collect::<Result<Vec<_>, _>>()?;
+            self.inner
+                .hook_registry
+                .replace_skill_handlers(registry.hook_owner_token(), handlers)
+                .map_err(|error| {
+                    HarnessError::Hook(harness_contracts::HookError::Message(error.to_string()))
+                })
+        })
     }
 
     pub(super) fn skill_render_policy(&self) -> SkillRenderPolicy {

@@ -949,6 +949,187 @@ unused body
 }
 
 #[tokio::test]
+async fn initial_skill_hook_reconcile_removes_stale_owned_handler() {
+    let workspace = unique_workspace("sdk-skill-hook-initial-stale-owner");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let hook_registry = HookRegistry::builder().build().unwrap();
+    let harness = Harness::builder()
+        .with_workspace_root(&workspace)
+        .with_model(TestModelProvider::default())
+        .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_sandbox(NoopSandbox::new())
+        .with_hook_registry(hook_registry.clone())
+        .build()
+        .await
+        .unwrap();
+    let source = SkillSource::Plugin {
+        plugin_id: PluginId("trusted-plugin".to_owned()),
+        trust: TrustLevel::AdminTrusted,
+    };
+    let stale = skill_registration_from(
+        r"---
+name: audit
+description: Stale audit skill
+hooks:
+  - id: start
+    events: [PostToolUse]
+    transport:
+      type: builtin
+      kind: AuditLog
+---
+Body
+",
+        source.clone(),
+    )
+    .skill;
+    let current = skill_registration_from(
+        r"---
+name: audit
+description: Current audit skill
+hooks:
+  - id: start
+    events: [SessionStart]
+    transport:
+      type: builtin
+      kind: AuditLog
+---
+Body
+",
+        source,
+    )
+    .skill;
+    let stale_id = harness_skill::SkillRegistry::builder()
+        .with_skill(stale)
+        .build()
+        .hook_bindings()
+        .remove(0)
+        .handler_id;
+    harness.skill_registry().register(current).unwrap();
+    let current_id = harness.skill_registry().hook_bindings()[0]
+        .handler_id
+        .clone();
+    let owner = harness.skill_registry().hook_owner_token();
+    hook_registry
+        .register_from_skill(
+            owner.clone(),
+            Box::new(CollidingHookHandler {
+                handler_id: stale_id.clone(),
+            }),
+        )
+        .unwrap();
+
+    harness
+        .create_session(SessionOptions::new(&workspace))
+        .await
+        .unwrap();
+
+    assert!(hook_registry.origin_for(&stale_id).is_none());
+    assert_eq!(
+        hook_registry.origin_for(&current_id),
+        Some(harness_hook::HookOrigin::Skill { owner })
+    );
+}
+
+#[test]
+fn current_hook_reconcile_serializes_replacement_and_finishes_with_registry_winner() {
+    let source = SkillSource::Workspace("/workspace/skills".into());
+    let initial = skill_registration_from(
+        r"---
+name: audit
+description: Initial audit skill
+hooks:
+  - id: start
+    events: [SessionStart]
+    transport:
+      type: builtin
+      kind: AuditLog
+---
+Body
+",
+        source.clone(),
+    )
+    .skill;
+    let replacement = skill_registration_from(
+        r"---
+name: audit
+description: Replacement audit skill
+hooks:
+  - id: start
+    events: [PostToolUse]
+    transport:
+      type: builtin
+      kind: AuditLog
+---
+Body
+",
+        source.clone(),
+    )
+    .skill;
+    let registry = harness_skill::SkillRegistry::builder()
+        .with_skill(initial)
+        .build();
+    let hook_registry = HookRegistry::builder().build().unwrap();
+    let initial_id = registry.hook_bindings()[0].handler_id.clone();
+    let owner = registry.hook_owner_token();
+    let reconcile_registry = registry.clone();
+    let reconcile_hooks = hook_registry.clone();
+    let reconcile_owner = owner.clone();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let initial_reconcile = std::thread::spawn(move || {
+        reconcile_registry.reconcile_current_snapshot(|snapshot| {
+            let handlers = test_skill_handlers(&reconcile_registry, snapshot);
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            reconcile_hooks.replace_skill_handlers(reconcile_owner, handlers)
+        })
+    });
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+
+    let mutation_registry = registry.clone();
+    let mutation_hooks = hook_registry.clone();
+    let mutation_owner = owner.clone();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (mutated_tx, mutated_rx) = std::sync::mpsc::channel();
+    let mutation = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let result =
+            mutation_registry.try_replace_source(source, vec![replacement], |_, candidate| {
+                mutation_hooks.replace_skill_handlers(
+                    mutation_owner,
+                    test_skill_handlers(&mutation_registry, candidate),
+                )
+            });
+        mutated_tx.send(result.is_ok()).unwrap();
+    });
+
+    started_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("replacement should start");
+    assert!(matches!(
+        mutated_rx.recv_timeout(std::time::Duration::from_millis(50)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+    release_tx.send(()).unwrap();
+    initial_reconcile.join().unwrap().unwrap();
+    assert_eq!(
+        mutated_rx.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(true)
+    );
+    mutation.join().unwrap();
+
+    let winner_id = registry.hook_bindings()[0].handler_id.clone();
+    assert_ne!(winner_id, initial_id);
+    assert!(hook_registry.origin_for(&initial_id).is_none());
+    assert_eq!(
+        hook_registry.origin_for(&winner_id),
+        Some(harness_hook::HookOrigin::Skill { owner })
+    );
+}
+
+#[tokio::test]
 async fn workspace_hook_reload_replaces_old_handler_after_new_handler_registers() {
     let workspace = unique_workspace("sdk-skill-hook-replacement");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -1542,6 +1723,21 @@ impl Plugin for SkillHookRuntimePlugin {
     async fn deactivate(&self) -> Result<(), PluginError> {
         Ok(())
     }
+}
+
+fn test_skill_handlers(
+    registry: &harness_skill::SkillRegistry,
+    snapshot: &harness_skill::SkillRegistrySnapshot,
+) -> Vec<Box<dyn harness_hook::HookHandler>> {
+    registry
+        .hook_bindings_in_snapshot(snapshot)
+        .into_iter()
+        .map(|binding| {
+            Box::new(CollidingHookHandler {
+                handler_id: binding.handler_id,
+            }) as Box<dyn harness_hook::HookHandler>
+        })
+        .collect()
 }
 
 #[async_trait]

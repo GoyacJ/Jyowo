@@ -1159,8 +1159,9 @@ impl PluginRegistry {
                 } else {
                     let handler_ids = registry.deregister_from_plugin(plugin_id, name);
                     if let Some(hooks) = &registries.hooks {
+                        let owner = registry.hook_owner_token();
                         for handler_id in handler_ids {
-                            hooks.deregister(&handler_id);
+                            hooks.deregister_from_skill(owner.as_ref(), &handler_id);
                         }
                     }
                 }

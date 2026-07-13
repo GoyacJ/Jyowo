@@ -119,6 +119,73 @@ async fn deactivate_restores_shadow_skill_hook_through_reconciler() {
     assert!(registries.hooks.origin_for(&shadow_handler_id).is_some());
 }
 
+#[tokio::test]
+async fn fallback_deactivate_does_not_delete_host_hook_with_skill_handler_id() {
+    let registries = Registries::new();
+    let record = manifest();
+    let registry = registry_with(
+        record.clone(),
+        Arc::new(RegisteringPlugin {
+            manifest: record.manifest.clone(),
+            invalid_result: false,
+        }),
+        registries.capabilities_without_skill_reconciler(),
+    );
+    registry.discover().await.unwrap();
+    registry.activate(&plugin_id()).await.unwrap();
+    let handler_id = registries.skills.hook_bindings()[0].handler_id.clone();
+    registries
+        .hooks
+        .register(Box::new(FakeSkillBoundHook {
+            handler_id: handler_id.clone(),
+        }))
+        .unwrap();
+
+    registry.deactivate(&plugin_id()).await.unwrap();
+
+    assert_eq!(
+        registries.hooks.origin_for(&handler_id),
+        Some(harness_hook::HookOrigin::Host)
+    );
+}
+
+#[tokio::test]
+async fn fallback_deactivate_does_not_delete_other_skill_owner_hook() {
+    let registries = Registries::new();
+    let record = manifest();
+    let registry = registry_with(
+        record.clone(),
+        Arc::new(RegisteringPlugin {
+            manifest: record.manifest.clone(),
+            invalid_result: false,
+        }),
+        registries.capabilities_without_skill_reconciler(),
+    );
+    registry.discover().await.unwrap();
+    registry.activate(&plugin_id()).await.unwrap();
+    let handler_id = registries.skills.hook_bindings()[0].handler_id.clone();
+    let foreign_registry = SkillRegistry::builder().build();
+    let foreign_owner = foreign_registry.hook_owner_token();
+    registries
+        .hooks
+        .register_from_skill(
+            foreign_owner.clone(),
+            Box::new(FakeSkillBoundHook {
+                handler_id: handler_id.clone(),
+            }),
+        )
+        .unwrap();
+
+    registry.deactivate(&plugin_id()).await.unwrap();
+
+    assert_eq!(
+        registries.hooks.origin_for(&handler_id),
+        Some(harness_hook::HookOrigin::Skill {
+            owner: foreign_owner
+        })
+    );
+}
+
 struct Registries {
     tools: ToolRegistry,
     hooks: HookRegistry,
@@ -149,6 +216,14 @@ impl Registries {
                 skills: self.skills.clone(),
                 hooks: self.hooks.clone(),
             }))
+    }
+
+    fn capabilities_without_skill_reconciler(&self) -> PluginCapabilityRegistries {
+        PluginCapabilityRegistries::default()
+            .with_tool_registry(self.tools.clone())
+            .with_hook_registry(self.hooks.clone())
+            .with_mcp_registry(self.mcp.clone())
+            .with_skill_registry(self.skills.clone())
     }
 
     async fn assert_registered(&self) {

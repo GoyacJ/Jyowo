@@ -395,6 +395,52 @@ fn registry_reconcile_can_query_registry_without_deadlocking() {
 }
 
 #[test]
+fn current_snapshot_reconcile_serializes_later_mutations() {
+    let registry = SkillRegistry::builder()
+        .with_skill(simple_skill("initial", SkillSource::Bundled))
+        .build();
+    let reconcile_registry = registry.clone();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let reconcile = std::thread::spawn(move || {
+        reconcile_registry.reconcile_current_snapshot(|snapshot| {
+            assert!(snapshot.entries.contains_key("initial"));
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            Ok::<_, ()>(())
+        })
+    });
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reconcile should enter");
+
+    let mutation_registry = registry.clone();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (mutated_tx, mutated_rx) = std::sync::mpsc::channel();
+    let mutation = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let result = mutation_registry.register(simple_skill("later", SkillSource::Bundled));
+        mutated_tx.send(result.is_ok()).unwrap();
+    });
+
+    started_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("mutation should start");
+    assert!(matches!(
+        mutated_rx.recv_timeout(std::time::Duration::from_millis(50)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+    release_tx.send(()).unwrap();
+    assert!(reconcile.join().unwrap().is_ok());
+    assert_eq!(
+        mutated_rx.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(true)
+    );
+    mutation.join().unwrap();
+    assert!(registry.snapshot().entries.contains_key("later"));
+}
+
+#[test]
 fn registry_shadow_candidate_changes_increment_generation() {
     let workspace = simple_skill("review", SkillSource::Workspace("data/skills".into()));
     let registry = SkillRegistry::builder().with_skill(workspace).build();

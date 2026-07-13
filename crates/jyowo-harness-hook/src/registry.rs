@@ -98,16 +98,7 @@ impl HookRegistry {
         reusable_ids: &HashSet<String>,
         remove_ids: &HashSet<String>,
     ) -> Result<(), RegistrationError> {
-        let mut additions = Vec::with_capacity(handlers.len());
-        let mut addition_ids = HashSet::with_capacity(handlers.len());
-        for handler in handlers {
-            validate_handler(handler.as_ref())?;
-            let id = handler.handler_id().to_owned();
-            if !addition_ids.insert(id.clone()) {
-                return Err(RegistrationError::Duplicate(id));
-            }
-            additions.push((id, Arc::<dyn HookHandler>::from(handler)));
-        }
+        let (additions, addition_ids) = prepare_skill_handlers(handlers)?;
         if let Some(id) = addition_ids.intersection(remove_ids).next() {
             return Err(RegistrationError::InvalidHandler(format!(
                 "handler cannot be added and removed in one update: {id}"
@@ -115,57 +106,33 @@ impl HookRegistry {
         }
 
         let mut inner = self.inner.write();
-        for (id, _) in &additions {
-            if !inner.ids.contains(id) {
-                continue;
-            }
-            let reusable = reusable_ids.contains(id)
-                && matches!(
-                    inner.origins.get(id),
-                    Some(HookOrigin::Skill { owner: existing }) if existing == &owner
-                );
-            if !reusable {
-                return Err(RegistrationError::Duplicate(id.clone()));
-            }
-        }
-        for id in remove_ids {
-            match inner.origins.get(id) {
-                None => {}
-                Some(HookOrigin::Skill { owner: existing }) if existing == &owner => {}
-                Some(_) => return Err(RegistrationError::OwnershipConflict(id.clone())),
-            }
-        }
+        reconcile_skill_handlers_inner(&mut inner, &owner, additions, reusable_ids, remove_ids)
+    }
 
-        let mut changed = false;
-        for (id, handler) in additions {
-            if inner.ids.contains(&id) {
-                continue;
-            }
-            inner.ids.insert(id.clone());
-            inner.origins.insert(
-                id,
-                HookOrigin::Skill {
-                    owner: Arc::clone(&owner),
-                },
-            );
-            inner.handlers.push(RegisteredHook { handler });
-            changed = true;
-        }
-        if !remove_ids.is_empty() {
-            let before = inner.handlers.len();
-            inner
-                .handlers
-                .retain(|registered| !remove_ids.contains(registered.handler.handler_id()));
-            changed |= inner.handlers.len() != before;
-            for id in remove_ids {
-                inner.ids.remove(id);
-                inner.origins.remove(id);
-            }
-        }
-        if changed {
-            inner.generation += 1;
-        }
-        Ok(())
+    pub fn replace_skill_handlers(
+        &self,
+        owner: Arc<str>,
+        handlers: Vec<Box<dyn HookHandler>>,
+    ) -> Result<(), RegistrationError> {
+        let (additions, addition_ids) = prepare_skill_handlers(handlers)?;
+        let mut inner = self.inner.write();
+        let owned_ids = inner
+            .origins
+            .iter()
+            .filter_map(|(id, origin)| match origin {
+                HookOrigin::Skill { owner: existing } if existing == &owner => Some(id.clone()),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        let reusable_ids = owned_ids
+            .intersection(&addition_ids)
+            .cloned()
+            .collect::<HashSet<_>>();
+        let remove_ids = owned_ids
+            .difference(&addition_ids)
+            .cloned()
+            .collect::<HashSet<_>>();
+        reconcile_skill_handlers_inner(&mut inner, &owner, additions, &reusable_ids, &remove_ids)
     }
 
     fn register_with_origin(
@@ -245,6 +212,82 @@ impl HookRegistry {
         inner.generation += 1;
         true
     }
+}
+
+fn prepare_skill_handlers(
+    handlers: Vec<Box<dyn HookHandler>>,
+) -> Result<(Vec<(String, Arc<dyn HookHandler>)>, HashSet<String>), RegistrationError> {
+    let mut additions = Vec::with_capacity(handlers.len());
+    let mut addition_ids = HashSet::with_capacity(handlers.len());
+    for handler in handlers {
+        validate_handler(handler.as_ref())?;
+        let id = handler.handler_id().to_owned();
+        if !addition_ids.insert(id.clone()) {
+            return Err(RegistrationError::Duplicate(id));
+        }
+        additions.push((id, Arc::<dyn HookHandler>::from(handler)));
+    }
+    Ok((additions, addition_ids))
+}
+
+fn reconcile_skill_handlers_inner(
+    inner: &mut HookRegistryInner,
+    owner: &Arc<str>,
+    additions: Vec<(String, Arc<dyn HookHandler>)>,
+    reusable_ids: &HashSet<String>,
+    remove_ids: &HashSet<String>,
+) -> Result<(), RegistrationError> {
+    for (id, _) in &additions {
+        if !inner.ids.contains(id) {
+            continue;
+        }
+        let reusable = reusable_ids.contains(id)
+            && matches!(
+                inner.origins.get(id),
+                Some(HookOrigin::Skill { owner: existing }) if existing == owner
+            );
+        if !reusable {
+            return Err(RegistrationError::Duplicate(id.clone()));
+        }
+    }
+    for id in remove_ids {
+        match inner.origins.get(id) {
+            None => {}
+            Some(HookOrigin::Skill { owner: existing }) if existing == owner => {}
+            Some(_) => return Err(RegistrationError::OwnershipConflict(id.clone())),
+        }
+    }
+
+    let mut changed = false;
+    for (id, handler) in additions {
+        if inner.ids.contains(&id) {
+            continue;
+        }
+        inner.ids.insert(id.clone());
+        inner.origins.insert(
+            id,
+            HookOrigin::Skill {
+                owner: Arc::clone(&owner),
+            },
+        );
+        inner.handlers.push(RegisteredHook { handler });
+        changed = true;
+    }
+    if !remove_ids.is_empty() {
+        let before = inner.handlers.len();
+        inner
+            .handlers
+            .retain(|registered| !remove_ids.contains(registered.handler.handler_id()));
+        changed |= inner.handlers.len() != before;
+        for id in remove_ids {
+            inner.ids.remove(id);
+            inner.origins.remove(id);
+        }
+    }
+    if changed {
+        inner.generation += 1;
+    }
+    Ok(())
 }
 
 pub struct HookRegistryBuilder {

@@ -100,6 +100,15 @@ impl SkillRegistry {
         Ok(next)
     }
 
+    pub fn reconcile_current_snapshot<E, F>(&self, reconcile: F) -> Result<(), E>
+    where
+        F: FnOnce(&SkillRegistrySnapshot) -> Result<(), E>,
+    {
+        let _mutation = self.mutation.lock();
+        let current = self.snapshot();
+        reconcile(&current)
+    }
+
     pub fn replace_registrations(
         &self,
         registrations: &[SkillRegistration],
