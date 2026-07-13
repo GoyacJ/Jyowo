@@ -2501,6 +2501,8 @@ const mcpServerIdSchema = z
 
 const mcpServerScopeSchema = z.enum(['agent', 'global', 'session'])
 
+const mcpConfigLayerSchema = z.enum(['global', 'project'])
+
 const mcpServerTransportKindSchema = z.enum(['http', 'inProcess', 'sse', 'stdio', 'websocket'])
 
 const mcpServerStatusSchema = z.enum([
@@ -2513,9 +2515,20 @@ const mcpServerStatusSchema = z.enum([
   'reconnecting',
 ])
 
-const mcpServerOriginSchema = z.enum(['managed', 'plugin', 'policy', 'user', 'workspace'])
+const mcpServerOriginSchema = z.enum([
+  'managed',
+  'plugin',
+  'policy',
+  'project',
+  'user',
+  'workspace',
+])
+
+const mcpStatusSourceSchema = z.literal('settings')
 
 const mcpDiagnosticSeveritySchema = z.enum(['info', 'warning', 'error'])
+
+const mcpDiagnosticPlaneSchema = z.enum(['settings', 'task'])
 
 const mcpDiagnosticSummarySchema = z
   .string()
@@ -2531,16 +2544,23 @@ const mcpDiagnosticRecordSchema = z
   .object({
     eventType: z.string().min(1),
     id: z.string().min(1),
+    plane: mcpDiagnosticPlaneSchema.default('settings'),
+    runId: z.string().min(1).optional(),
+    runSegmentId: z.string().min(1).optional(),
     serverId: mcpServerIdSchema,
+    sessionId: z.string().min(1).optional(),
     severity: mcpDiagnosticSeveritySchema,
     summary: mcpDiagnosticSummarySchema,
+    taskId: z.string().min(1).optional(),
     timestamp: z.string().min(1),
   })
   .strict()
 
 const mcpServerSummarySchema = z
   .object({
-    displayName: z.string().min(1),
+    configLayer: mcpConfigLayerSchema,
+    displayName: z.string().min(1).max(256),
+    effective: z.boolean(),
     enabled: z.boolean(),
     exposedToolCount: z.number().int().min(0),
     id: mcpServerIdSchema,
@@ -2549,16 +2569,20 @@ const mcpServerSummarySchema = z
     lastDiagnosticSeverity: mcpDiagnosticSeveritySchema.optional(),
     lastError: z.string().min(1).optional(),
     manageable: z.boolean(),
+    overridesGlobal: z.boolean(),
     origin: mcpServerOriginSchema,
+    required: z.boolean(),
     scope: mcpServerScopeSchema,
     sourcePluginId: z.string().min(1).optional(),
     status: mcpServerStatusSchema,
+    statusSource: mcpStatusSourceSchema,
     transport: mcpServerTransportKindSchema,
   })
   .strict()
 
 const listMcpServersResponseSchema = z
   .object({
+    configLayer: mcpConfigLayerSchema,
     servers: z.array(mcpServerSummarySchema),
   })
   .strict()
@@ -2608,19 +2632,106 @@ function isSensitiveHeaderName(value: string): boolean {
   return /^(?:authorization|cookie|set-cookie|proxy-authorization)$/i.test(value.trim())
 }
 
+function hasNul(value: string): boolean {
+  return value.includes('\0')
+}
+
+function isValidMcpHeaderName(value: string): boolean {
+  return /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(value)
+}
+
+function isValidMcpHeaderValue(value: string): boolean {
+  return [...value].every((character) => {
+    const codePoint = character.codePointAt(0) ?? 0
+    return codePoint === 9 || (codePoint >= 32 && codePoint !== 127)
+  })
+}
+
+function isSecretBearingMcpHeaderValue(value: string): boolean {
+  const normalized = value.trim().toLowerCase()
+  return (
+    normalized.startsWith('bearer ') ||
+    normalized.startsWith('oauth ') ||
+    normalized.includes(' token') ||
+    normalized.includes('secret') ||
+    normalized.includes('password')
+  )
+}
+
+function isSafeMcpHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value)
+    if (
+      !['http:', 'https:'].includes(parsed.protocol) ||
+      parsed.hostname.length === 0 ||
+      parsed.username.length > 0 ||
+      parsed.password.length > 0
+    ) {
+      return false
+    }
+    for (const [key, queryValue] of parsed.searchParams) {
+      if (isSensitiveEnvName(key) || hasObviousUnredactedSecret(queryValue)) {
+        return false
+      }
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 const mcpNameValueConfigSchema = z
   .object({
     hasValue: z.boolean(),
     key: z.string().trim().min(1),
-    value: z.string().optional(),
+    value: z
+      .string()
+      .max(8192)
+      .refine((value) => !hasNul(value))
+      .optional(),
   })
   .strict()
+
+const mcpStdioEnvConfigSchema = mcpNameValueConfigSchema
+  .refine((record) => mcpEnvVarNameSchema.safeParse(record.key).success, {
+    message: 'MCP stdio env key must be an environment variable name',
+  })
+  .refine((record) => !isSensitiveEnvName(record.key), {
+    message: 'MCP stdio inline env must not contain secret-bearing keys',
+  })
+  .refine((record) => record.value == null || !hasObviousUnredactedSecret(record.value), {
+    message: 'MCP stdio inline env must not contain obvious unredacted secrets',
+  })
+  .refine((record) => record.value == null || record.value.length <= 4096, {
+    message: 'MCP stdio inline env values must contain at most 4096 bytes',
+  })
+
+const mcpHttpHeaderConfigSchema = mcpNameValueConfigSchema
+  .refine((record) => isValidMcpHeaderName(record.key.trim()), {
+    message: 'MCP static header names must use RFC field-name characters',
+  })
+  .refine((record) => !isSensitiveHeaderName(record.key), {
+    message: 'MCP static headers must not contain sensitive header names',
+  })
+  .refine((record) => record.value == null || !hasObviousUnredactedSecret(record.value), {
+    message: 'MCP static headers must not contain obvious unredacted secrets',
+  })
+  .refine((record) => record.value == null || isValidMcpHeaderValue(record.value), {
+    message: 'MCP static header values must not contain control characters',
+  })
+  .refine((record) => record.value == null || !isSecretBearingMcpHeaderValue(record.value), {
+    message: 'MCP static header values must not contain secret-bearing content',
+  })
 
 const mcpNameValueSaveRecordSchema = z
   .object({
     key: z.string().trim().min(1),
     preserveExisting: z.boolean().optional(),
-    value: z.string().optional(),
+    value: z
+      .string()
+      .max(8192)
+      .refine((value) => !hasNul(value))
+      .optional(),
   })
   .strict()
   .superRefine((record, context) => {
@@ -2658,13 +2769,25 @@ const mcpStdioEnvRecordSchema = mcpNameValueSaveRecordSchema
   .refine((record) => record.value == null || !hasObviousUnredactedSecret(record.value), {
     message: 'MCP stdio inline env must not contain obvious unredacted secrets',
   })
+  .refine((record) => record.value == null || record.value.length <= 4096, {
+    message: 'MCP stdio inline env values must contain at most 4096 bytes',
+  })
 
 const mcpHttpHeaderRecordSchema = mcpNameValueSaveRecordSchema
+  .refine((record) => isValidMcpHeaderName(record.key.trim()), {
+    message: 'MCP static header names must use RFC field-name characters',
+  })
   .refine((record) => !isSensitiveHeaderName(record.key), {
     message: 'MCP static headers must not contain sensitive header names',
   })
   .refine((record) => record.value == null || !hasObviousUnredactedSecret(record.value), {
     message: 'MCP static headers must not contain obvious unredacted secrets',
+  })
+  .refine((record) => record.value == null || isValidMcpHeaderValue(record.value), {
+    message: 'MCP static header values must not contain control characters',
+  })
+  .refine((record) => record.value == null || !isSecretBearingMcpHeaderValue(record.value), {
+    message: 'MCP static header values must not contain secret-bearing content',
   })
 
 const mcpHeaderEnvRecordSchema = z
@@ -2676,15 +2799,45 @@ const mcpHeaderEnvRecordSchema = z
   .refine((record) => !isSensitiveHeaderName(record.key), {
     message: 'MCP headers from env must not contain sensitive header names',
   })
+  .refine((record) => isValidMcpHeaderName(record.key.trim()), {
+    message: 'MCP headers from env must use RFC field-name characters',
+  })
 
 const mcpStdioTransportRequestSchema = z
   .object({
-    args: z.array(z.string()).max(64).default([]),
-    command: z.string().trim().min(1),
+    args: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .max(4096)
+          .refine((value) => value.trim().length > 0 && !hasNul(value)),
+      )
+      .max(64)
+      .default([]),
+    command: z
+      .string()
+      .trim()
+      .min(1)
+      .max(4096)
+      .refine((value) => !hasNul(value)),
     env: z.array(mcpStdioEnvRecordSchema).max(64).default([]),
-    inheritEnv: z.array(mcpEnvVarNameSchema).max(128).default([]),
+    inheritEnv: z
+      .array(
+        mcpEnvVarNameSchema.refine((value) => !isSensitiveEnvName(value), {
+          message: 'MCP inherited env must not contain secret-bearing names',
+        }),
+      )
+      .max(128)
+      .default([]),
     kind: z.literal('stdio'),
-    workingDir: z.string().trim().min(1).optional(),
+    workingDir: z
+      .string()
+      .trim()
+      .min(1)
+      .max(4096)
+      .refine((value) => !hasNul(value))
+      .optional(),
   })
   .strict()
 
@@ -2694,13 +2847,9 @@ const mcpHttpTransportRequestSchema = z
     headers: z.array(mcpHttpHeaderRecordSchema).max(64).default([]),
     headersFromEnv: z.array(mcpHeaderEnvRecordSchema).max(64).default([]),
     kind: z.literal('http'),
-    url: z
-      .string()
-      .trim()
-      .url()
-      .refine((value) => /^https?:\/\//i.test(value), {
-        message: 'MCP HTTP URL must use http or https',
-      }),
+    url: z.string().trim().url().refine(isSafeMcpHttpUrl, {
+      message: 'MCP HTTP URL must be a safe http or https URL',
+    }),
   })
   .strict()
 
@@ -2711,9 +2860,16 @@ const mcpServerTransportRequestSchema = z.discriminatedUnion('kind', [
 
 const saveMcpServerRequestSchema = z
   .object({
-    displayName: z.string().trim().min(1),
+    configLayer: mcpConfigLayerSchema,
+    displayName: z
+      .string()
+      .trim()
+      .min(1)
+      .max(256)
+      .refine((value) => !hasNul(value)),
     enabled: z.boolean().default(true),
     id: mcpServerIdSchema,
+    required: z.boolean().default(false),
     scope: mcpServerScopeSchema,
     transport: mcpServerTransportRequestSchema,
   })
@@ -2727,23 +2883,30 @@ const saveMcpServerResponseSchema = z
 
 const mcpServerConfigSchema = z
   .object({
-    displayName: z.string().trim().min(1),
+    configLayer: mcpConfigLayerSchema,
+    displayName: z.string().trim().min(1).max(256),
+    effective: z.boolean(),
     enabled: z.boolean(),
     id: mcpServerIdSchema,
+    manageable: z.boolean(),
+    overridesGlobal: z.boolean(),
+    required: z.boolean(),
     scope: mcpServerScopeSchema,
     transport: z.discriminatedUnion('kind', [
       mcpStdioTransportRequestSchema.extend({
-        env: z.array(mcpNameValueConfigSchema).max(64).default([]),
+        env: z.array(mcpStdioEnvConfigSchema).max(64).default([]),
       }),
       mcpHttpTransportRequestSchema.extend({
-        headers: z.array(mcpNameValueConfigSchema).max(64).default([]),
+        headers: z.array(mcpHttpHeaderConfigSchema).max(64).default([]),
       }),
+      z.object({ kind: z.literal('inProcess') }).strict(),
     ]),
   })
   .strict()
 
 const getMcpServerConfigRequestSchema = z
   .object({
+    configLayer: mcpConfigLayerSchema,
     id: mcpServerIdSchema,
   })
   .strict()
@@ -2756,12 +2919,14 @@ const getMcpServerConfigResponseSchema = z
 
 const deleteMcpServerRequestSchema = z
   .object({
+    configLayer: mcpConfigLayerSchema,
     id: mcpServerIdSchema,
   })
   .strict()
 
 const deleteMcpServerResponseSchema = z
   .object({
+    configLayer: mcpConfigLayerSchema,
     id: mcpServerIdSchema,
     status: z.literal('deleted'),
   })
@@ -2769,6 +2934,7 @@ const deleteMcpServerResponseSchema = z
 
 const setMcpServerEnabledRequestSchema = z
   .object({
+    configLayer: mcpConfigLayerSchema,
     enabled: z.boolean(),
     id: mcpServerIdSchema,
   })
@@ -2782,6 +2948,7 @@ const setMcpServerEnabledResponseSchema = z
 
 const restartMcpServerRequestSchema = z
   .object({
+    configLayer: mcpConfigLayerSchema,
     id: mcpServerIdSchema,
   })
   .strict()
@@ -3679,6 +3846,7 @@ export type RequestProviderConfigApiKeyRevealResponse = z.infer<
   typeof requestProviderConfigApiKeyRevealResponseSchema
 >
 export type GetProviderConfigApiKeyResponse = z.infer<typeof getProviderConfigApiKeyResponseSchema>
+export type McpConfigLayer = z.infer<typeof mcpConfigLayerSchema>
 export type McpServerSummary = z.infer<typeof mcpServerSummarySchema>
 export type McpServerConfig = z.infer<typeof mcpServerConfigSchema>
 export type ListMcpServersResponse = z.infer<typeof listMcpServersResponseSchema>
@@ -3745,7 +3913,7 @@ export type ListReferenceCandidatesRequest = z.infer<typeof listReferenceCandida
 
 export interface CommandClient {
   deleteAgentProfile: (id: string) => Promise<DeleteAgentProfileResponse>
-  deleteMcpServer: (id: string) => Promise<DeleteMcpServerResponse>
+  deleteMcpServer: (configLayer: McpConfigLayer, id: string) => Promise<DeleteMcpServerResponse>
   uninstallPlugin: (pluginId: string) => Promise<PluginOperationResult>
   deleteSkill: (id: string) => Promise<DeleteSkillResponse>
   getAppInfo: () => Promise<AppInfo>
@@ -3755,7 +3923,10 @@ export interface CommandClient {
   getModelUsageSummary: () => Promise<GetModelUsageSummaryResponse>
   refreshModelProviderCatalog: () => Promise<RefreshModelProviderCatalogResponse>
   listOfficialQuotaSnapshots: () => Promise<ListOfficialQuotaSnapshotsResponse>
-  getMcpServerConfig: (id: string) => Promise<GetMcpServerConfigResponse>
+  getMcpServerConfig: (
+    configLayer: McpConfigLayer,
+    id: string,
+  ) => Promise<GetMcpServerConfigResponse>
   getPluginDetail: (pluginId: string) => Promise<GetPluginDetailResponse>
   getProviderConfigApiKey: (
     configId: string,
@@ -3783,7 +3954,7 @@ export interface CommandClient {
   listBrowserMcpPresets: () => Promise<ListBrowserMcpPresetsResponse>
   listModelProviderCatalog: () => Promise<ModelProviderCatalogResponse>
   listMcpDiagnostics: (serverId?: string) => Promise<ListMcpDiagnosticsResponse>
-  listMcpServers: () => Promise<ListMcpServersResponse>
+  listMcpServers: (configLayer: McpConfigLayer) => Promise<ListMcpServersResponse>
   listPlugins: () => Promise<ListPluginsResponse>
   listProviderSettings: (workspaceRoot?: string) => Promise<ListProviderSettingsResponse>
   listProviderCapabilityRoutes: () => Promise<ListProviderCapabilityRoutesResponse>
@@ -3814,10 +3985,14 @@ export interface CommandClient {
     request: SaveBrowserMcpPresetRequest,
   ) => Promise<SaveBrowserMcpPresetResponse>
   saveMcpServer: (request: SaveMcpServerRequest) => Promise<SaveMcpServerResponse>
-  setMcpServerEnabled: (id: string, enabled: boolean) => Promise<SetMcpServerEnabledResponse>
+  setMcpServerEnabled: (
+    configLayer: McpConfigLayer,
+    id: string,
+    enabled: boolean,
+  ) => Promise<SetMcpServerEnabledResponse>
   setPluginEnabled: (pluginId: string, enabled: boolean) => Promise<PluginOperationResult>
   setProjectPluginsEnabled: (enabled: boolean) => Promise<SetProjectPluginsEnabledResponse>
-  restartMcpServer: (id: string) => Promise<RestartMcpServerResponse>
+  restartMcpServer: (configLayer: McpConfigLayer, id: string) => Promise<RestartMcpServerResponse>
   clearMcpDiagnostics: (serverId?: string) => Promise<ClearMcpDiagnosticsResponse>
   saveProviderSettings: (request: ProviderSettingsRequest) => Promise<SaveProviderSettingsResponse>
   saveProviderCapabilityRoute: (
@@ -3880,9 +4055,9 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, deleteAgentProfileRequestSchema, { id })
       return parsePayload(command, deleteAgentProfileResponseSchema, await invoke(command, args))
     },
-    async deleteMcpServer(id) {
+    async deleteMcpServer(configLayer, id) {
       const command = 'delete_mcp_server'
-      const args = parseArgs(command, deleteMcpServerRequestSchema, { id })
+      const args = parseArgs(command, deleteMcpServerRequestSchema, { configLayer, id })
       return parsePayload(command, deleteMcpServerResponseSchema, await invoke(command, args))
     },
     async uninstallPlugin(pluginId) {
@@ -4032,13 +4207,16 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       })
       return parsePayload(command, listMcpDiagnosticsResponseSchema, await invoke(command, args))
     },
-    async listMcpServers() {
+    async listMcpServers(configLayer) {
       const command = 'list_mcp_servers'
-      return parsePayload(command, listMcpServersResponseSchema, await invoke(command))
+      const args = parseArgs(command, z.object({ configLayer: mcpConfigLayerSchema }).strict(), {
+        configLayer,
+      })
+      return parsePayload(command, listMcpServersResponseSchema, await invoke(command, args))
     },
-    async getMcpServerConfig(id) {
+    async getMcpServerConfig(configLayer, id) {
       const command = 'get_mcp_server_config'
-      const args = parseArgs(command, getMcpServerConfigRequestSchema, { id })
+      const args = parseArgs(command, getMcpServerConfigRequestSchema, { configLayer, id })
       return parsePayload(command, getMcpServerConfigResponseSchema, await invoke(command, args))
     },
     async getPluginDetail(pluginId) {
@@ -4195,9 +4373,10 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, saveMcpServerRequestSchema, request)
       return parsePayload(command, saveMcpServerResponseSchema, await invoke(command, args))
     },
-    async setMcpServerEnabled(id, enabled) {
+    async setMcpServerEnabled(configLayer, id, enabled) {
       const command = 'set_mcp_server_enabled'
       const args = parseArgs(command, setMcpServerEnabledRequestSchema, {
+        configLayer,
         enabled,
         id,
       })
@@ -4222,9 +4401,9 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         await invoke(command, args),
       )
     },
-    async restartMcpServer(id) {
+    async restartMcpServer(configLayer, id) {
       const command = 'restart_mcp_server'
-      const args = parseArgs(command, restartMcpServerRequestSchema, { id })
+      const args = parseArgs(command, restartMcpServerRequestSchema, { configLayer, id })
       return parsePayload(command, restartMcpServerResponseSchema, await invoke(command, args))
     },
     async clearMcpDiagnostics(serverId) {
@@ -4338,9 +4517,10 @@ export function refreshModelProviderCatalog(
 }
 
 export function listMcpServers(
+  configLayer: McpConfigLayer,
   client: CommandClient = tauriCommandClient,
 ): Promise<ListMcpServersResponse> {
-  return client.listMcpServers()
+  return client.listMcpServers(configLayer)
 }
 
 export function listBrowserMcpPresets(
@@ -4350,10 +4530,11 @@ export function listBrowserMcpPresets(
 }
 
 export function getMcpServerConfig(
+  configLayer: McpConfigLayer,
   id: string,
   client: CommandClient = tauriCommandClient,
 ): Promise<GetMcpServerConfigResponse> {
-  return client.getMcpServerConfig(id)
+  return client.getMcpServerConfig(configLayer, id)
 }
 
 export function listMcpDiagnostics(
@@ -4378,18 +4559,20 @@ export function saveBrowserMcpPreset(
 }
 
 export function setMcpServerEnabled(
+  configLayer: McpConfigLayer,
   id: string,
   enabled: boolean,
   client: CommandClient = tauriCommandClient,
 ): Promise<SetMcpServerEnabledResponse> {
-  return client.setMcpServerEnabled(id, enabled)
+  return client.setMcpServerEnabled(configLayer, id, enabled)
 }
 
 export function restartMcpServer(
+  configLayer: McpConfigLayer,
   id: string,
   client: CommandClient = tauriCommandClient,
 ): Promise<RestartMcpServerResponse> {
-  return client.restartMcpServer(id)
+  return client.restartMcpServer(configLayer, id)
 }
 
 export function clearMcpDiagnostics(
@@ -4421,10 +4604,11 @@ export function unsubscribeMcpDiagnostics(
 }
 
 export function deleteMcpServer(
+  configLayer: McpConfigLayer,
   id: string,
   client: CommandClient = tauriCommandClient,
 ): Promise<DeleteMcpServerResponse> {
-  return client.deleteMcpServer(id)
+  return client.deleteMcpServer(configLayer, id)
 }
 
 export function listPlugins(

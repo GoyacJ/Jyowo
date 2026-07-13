@@ -5,10 +5,11 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { useFieldArray, useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { z } from 'zod'
-
+import { useActiveProjectPath } from '@/features/workspace/use-active-project-path'
 import { formatTime } from '@/shared/formatters'
 import type {
   BrowserMcpPreset,
+  McpConfigLayer,
   McpDiagnosticRecord,
   McpServerConfig,
   McpServerSummary,
@@ -45,7 +46,7 @@ import { MCPServerCard } from './MCPServerCard'
 
 const mcpServerQueryKeys = {
   all: ['mcp-servers'] as const,
-  list: () => [...mcpServerQueryKeys.all, 'list'] as const,
+  list: (configLayer: McpConfigLayer) => [...mcpServerQueryKeys.all, 'list', configLayer] as const,
 }
 
 const mcpDiagnosticQueryKeys = {
@@ -67,6 +68,7 @@ type MCPServerFormValues = {
   headers: Array<{ key: string; preserveExisting?: boolean; value: string }>
   headersFromEnv: Array<{ envVar: string; key: string }>
   inheritEnv: Array<{ value: string }>
+  required: boolean
   scope: 'global' | 'session' | 'agent'
   transportKind: 'stdio' | 'http'
   url: string
@@ -82,6 +84,7 @@ const defaultFormValues: MCPServerFormValues = {
   headers: [],
   headersFromEnv: [],
   inheritEnv: [],
+  required: false,
   scope: 'global',
   transportKind: 'stdio',
   url: '',
@@ -92,9 +95,15 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
   const { t } = useTranslation('settings')
   const commandClient = useCommandClient()
   const queryClient = useQueryClient()
+  const activeProjectPathQuery = useActiveProjectPath()
+  const [configLayer, setConfigLayer] = useState<McpConfigLayer>('global')
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [editingServerId, setEditingServerId] = useState<string | null>(null)
+  const [editingServer, setEditingServer] = useState<{
+    configLayer: McpConfigLayer
+    id: string
+  } | null>(null)
   const [diagnosticServerId, setDiagnosticServerId] = useState<string | null>(null)
+  const [diagnosticPlane, setDiagnosticPlane] = useState<'all' | 'settings' | 'task'>('all')
   const [configLoadError, setConfigLoadError] = useState(false)
   const [loadingConfigId, setLoadingConfigId] = useState<string | null>(null)
   const {
@@ -116,9 +125,10 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
   const inheritEnvFields = useFieldArray({ control, name: 'inheritEnv' })
   const transportKind = watch('transportKind')
   const isConfigLoading = loadingConfigId !== null
+  const activeProjectPath = activeProjectPathQuery.data ?? null
   const serversQuery = useQuery({
-    queryKey: mcpServerQueryKeys.list(),
-    queryFn: () => listMcpServers(commandClient),
+    queryKey: mcpServerQueryKeys.list(configLayer),
+    queryFn: () => listMcpServers(configLayer, commandClient),
   })
   const diagnosticsQuery = useQuery({
     queryKey: mcpDiagnosticQueryKeys.list(diagnosticServerId),
@@ -132,7 +142,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     mutationFn: (request: SaveMcpServerRequest) => saveMcpServer(request, commandClient),
     onSuccess: async () => {
       reset(defaultFormValues)
-      setEditingServerId(null)
+      setEditingServer(null)
       setDialogOpen(false)
       await queryClient.invalidateQueries({ queryKey: mcpServerQueryKeys.all })
     },
@@ -148,20 +158,29 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     },
   })
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => commandClient.deleteMcpServer(id),
+    mutationFn: ({ configLayer, id }: { configLayer: McpConfigLayer; id: string }) =>
+      commandClient.deleteMcpServer(configLayer, id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: mcpServerQueryKeys.all })
     },
   })
   const toggleMutation = useMutation({
-    mutationFn: ({ enabled, id }: { enabled: boolean; id: string }) =>
-      commandClient.setMcpServerEnabled(id, enabled),
+    mutationFn: ({
+      configLayer,
+      enabled,
+      id,
+    }: {
+      configLayer: McpConfigLayer
+      enabled: boolean
+      id: string
+    }) => commandClient.setMcpServerEnabled(configLayer, id, enabled),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: mcpServerQueryKeys.all })
     },
   })
   const restartMutation = useMutation({
-    mutationFn: (id: string) => commandClient.restartMcpServer(id),
+    mutationFn: ({ configLayer, id }: { configLayer: McpConfigLayer; id: string }) =>
+      commandClient.restartMcpServer(configLayer, id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: mcpServerQueryKeys.all })
     },
@@ -174,9 +193,18 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
   })
   const servers = serversQuery.data?.servers ?? []
   const diagnostics = diagnosticsQuery.data?.events ?? []
+  const visibleDiagnostics = diagnostics.filter(
+    (event) => diagnosticPlane === 'all' || event.plane === diagnosticPlane,
+  )
   const browserPresets = browserPresetsQuery.data?.presets ?? []
-  const workspaceServers = servers.filter((server) => server.manageable)
-  const pluginServers = servers.filter((server) => !server.manageable)
+  const pluginServers = servers.filter((server) => server.origin === 'plugin')
+  const workspaceServers = servers.filter((server) => server.origin !== 'plugin')
+
+  useEffect(() => {
+    if (!activeProjectPath && configLayer === 'project') {
+      setConfigLayer('global')
+    }
+  }, [activeProjectPath, configLayer])
 
   useEffect(() => {
     let active = true
@@ -247,6 +275,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           ),
           headersFromEnv: z.array(z.object({ envVar: z.string(), key: z.string() })),
           inheritEnv: z.array(z.object({ value: z.string() })),
+          required: z.boolean(),
           scope: z.enum(['global', 'session', 'agent']),
           transportKind: z.enum(['stdio', 'http']),
           url: z.string(),
@@ -297,11 +326,12 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
 
     const payload = mcpServerPayload(
       parsed.data,
-      editingServerId ??
+      editingServer?.id ??
         serverIdFromName(
           parsed.data.displayName,
           servers.map((server) => server.id),
         ),
+      editingServer?.configLayer ?? configLayer,
       { rowIncomplete: t('mcp.errors.rowIncomplete') },
     )
     if (!payload.ok) {
@@ -318,27 +348,36 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
 
   function openCreateDialog() {
     reset(defaultFormValues)
-    setEditingServerId(null)
+    setEditingServer(null)
     setConfigLoadError(false)
     setLoadingConfigId(null)
     setDialogOpen(true)
   }
 
   async function openConfigureDialog(server: McpServerSummary) {
+    await openConfigDialog(server, server.configLayer)
+  }
+
+  async function openOverrideDialog(server: McpServerSummary) {
+    await openConfigDialog(server, 'project')
+  }
+
+  async function openConfigDialog(server: McpServerSummary, targetConfigLayer: McpConfigLayer) {
     reset({
       ...defaultFormValues,
       displayName: server.displayName,
+      required: server.required,
       scope: server.scope,
       transportKind: server.transport === 'http' ? 'http' : 'stdio',
     })
-    setEditingServerId(server.id)
+    setEditingServer({ configLayer: targetConfigLayer, id: server.id })
     setConfigLoadError(false)
-    setLoadingConfigId(server.id)
+    setLoadingConfigId(`${server.configLayer}:${server.id}`)
     setDialogOpen(true)
     try {
-      const payload = await getMcpServerConfig(server.id, commandClient)
+      const payload = await getMcpServerConfig(server.configLayer, server.id, commandClient)
       reset(mcpFormValuesFromConfig(payload.server))
-      setEditingServerId(payload.server.id)
+      setEditingServer({ configLayer: targetConfigLayer, id: payload.server.id })
     } catch {
       setConfigLoadError(true)
     } finally {
@@ -364,7 +403,9 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <SectionTitle>{t('mcp.title')}</SectionTitle>
-              <Badge variant="outline">{t('scope.globalDefaults')}</Badge>
+              <Badge variant="outline">
+                {t(configLayer === 'global' ? 'scope.globalDefaults' : 'scope.projectOverrides')}
+              </Badge>
             </div>
             <SectionDescription>{t('mcp.description')}</SectionDescription>
             <a
@@ -389,7 +430,15 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           <DialogContent className="max-h-[min(88vh,760px)] w-[min(calc(100vw-2rem),44rem)] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>{t('mcp.dialogTitle')}</DialogTitle>
-              <DialogDescription>{t('mcp.dialogDescription')}</DialogDescription>
+              <DialogDescription>
+                {t('mcp.dialogDescription', {
+                  layer: t(
+                    (editingServer?.configLayer ?? configLayer) === 'global'
+                      ? 'mcp.configLayer.global'
+                      : 'mcp.configLayer.project',
+                  ),
+                })}
+              </DialogDescription>
             </DialogHeader>
             <form className="space-y-5" onSubmit={handleSubmit(submit)}>
               <div className="grid gap-4 md:grid-cols-2">
@@ -410,7 +459,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                 </Field>
                 <Field
                   fieldId="mcp-server-scope"
-                  label={t('mcp.scope')}
+                  label={t('mcp.runtimeScopeLabel')}
                   message={errors.scope?.message}
                 >
                   <Select
@@ -419,11 +468,21 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                     id="mcp-server-scope"
                     {...register('scope')}
                   >
-                    <option value="global">{t('mcp.global')}</option>
-                    <option value="session">{t('mcp.session')}</option>
-                    <option value="agent">{t('mcp.agent')}</option>
+                    <option value="global">{t('mcp.runtimeScope.global')}</option>
+                    <option value="session">{t('mcp.runtimeScope.session')}</option>
+                    <option value="agent">{t('mcp.runtimeScope.agent')}</option>
                   </Select>
                 </Field>
+                <label className="flex items-center gap-2 text-sm" htmlFor="mcp-server-required">
+                  <input
+                    className="size-4"
+                    disabled={isSubmitting || isConfigLoading}
+                    id="mcp-server-required"
+                    type="checkbox"
+                    {...register('required')}
+                  />
+                  <span>{t('mcp.requiredForRuns')}</span>
+                </label>
                 <div className="space-y-2 text-sm">
                   <span className="font-medium">{t('mcp.transport')}</span>
                   <div className="grid grid-cols-2 rounded-md border border-border bg-background p-1">
@@ -515,7 +574,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                           aria-label={t('mcp.inheritedEnvVar')}
                           className={inputClassName}
                           disabled={isSubmitting || isConfigLoading}
-                          placeholder="GITHUB_TOKEN"
+                          placeholder="PATH"
                           {...register(`inheritEnv.${index}.value`)}
                         />
                         <SharedIconButton
@@ -714,67 +773,94 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
         </Dialog>
       </div>
 
+      <div className="space-y-2">
+        <fieldset aria-label={t('mcp.configViews')} className="flex gap-2">
+          <Button
+            onClick={() => setConfigLayer('global')}
+            size="sm"
+            type="button"
+            variant={configLayer === 'global' ? 'default' : 'outline'}
+          >
+            {t('mcp.globalSettings')}
+          </Button>
+          <Button
+            disabled={!activeProjectPath}
+            onClick={() => setConfigLayer('project')}
+            size="sm"
+            type="button"
+            variant={configLayer === 'project' ? 'default' : 'outline'}
+          >
+            {t('mcp.projectSettings')}
+          </Button>
+        </fieldset>
+        {!activeProjectPath ? (
+          <p className="text-muted-foreground text-xs">{t('mcp.noActiveProject')}</p>
+        ) : null}
+      </div>
+
       {serversQuery.isError ? <ErrorMessage>{t('mcp.loadError')}</ErrorMessage> : null}
 
-      <section className="space-y-3 border-border border-t pt-5">
-        <div className="flex items-center gap-2">
-          <Telescope className="size-4 text-muted-foreground" />
-          <h3 className="font-semibold text-sm">{t('mcp.browserPresets.title')}</h3>
-        </div>
-
-        {browserPresetsQuery.isError ? (
-          <ErrorMessage>{t('mcp.browserPresets.loadError')}</ErrorMessage>
-        ) : null}
-
-        {browserPresetsQuery.isLoading ? (
-          <div className="text-muted-foreground text-sm">{t('mcp.browserPresets.loading')}</div>
-        ) : null}
-
-        {!browserPresetsQuery.isLoading && browserPresets.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border bg-background px-4 py-5 text-center text-muted-foreground text-sm">
-            {t('mcp.browserPresets.empty')}
+      {configLayer === 'global' ? (
+        <section className="space-y-3 border-border border-t pt-5">
+          <div className="flex items-center gap-2">
+            <Telescope className="size-4 text-muted-foreground" />
+            <h3 className="font-semibold text-sm">{t('mcp.browserPresets.title')}</h3>
           </div>
-        ) : null}
 
-        {browserPresets.length > 0 ? (
-          <div className="divide-y divide-border rounded-md border border-border bg-background">
-            {browserPresets.map((preset) => (
-              <div
-                className="grid gap-3 px-3 py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center"
-                key={preset.id}
-              >
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h4 className="font-medium text-sm">{preset.displayName}</h4>
-                    <Badge variant={preset.enabled ? 'secondary' : 'outline'}>
-                      {preset.enabled
-                        ? t('mcp.browserPresets.enabled')
-                        : t('mcp.browserPresets.disabled')}
-                    </Badge>
-                  </div>
-                  <p className="mt-1 text-muted-foreground text-sm">{preset.description}</p>
-                </div>
-                <Button
-                  disabled={saveBrowserPresetMutation.isPending}
-                  onClick={() => saveBrowserPresetMutation.mutate(preset)}
-                  size="sm"
-                  type="button"
-                  variant="outline"
+          {browserPresetsQuery.isError ? (
+            <ErrorMessage>{t('mcp.browserPresets.loadError')}</ErrorMessage>
+          ) : null}
+
+          {browserPresetsQuery.isLoading ? (
+            <div className="text-muted-foreground text-sm">{t('mcp.browserPresets.loading')}</div>
+          ) : null}
+
+          {!browserPresetsQuery.isLoading && browserPresets.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border bg-background px-4 py-5 text-center text-muted-foreground text-sm">
+              {t('mcp.browserPresets.empty')}
+            </div>
+          ) : null}
+
+          {browserPresets.length > 0 ? (
+            <div className="divide-y divide-border rounded-md border border-border bg-background">
+              {browserPresets.map((preset) => (
+                <div
+                  className="grid gap-3 px-3 py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center"
+                  key={preset.id}
                 >
-                  {preset.enabled ? <Power className="size-4" /> : <Plus className="size-4" />}
-                  {preset.enabled
-                    ? t('mcp.browserPresets.disable', { name: preset.displayName })
-                    : t('mcp.browserPresets.add', { name: preset.displayName })}
-                </Button>
-              </div>
-            ))}
-          </div>
-        ) : null}
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h4 className="font-medium text-sm">{preset.displayName}</h4>
+                      <Badge variant={preset.enabled ? 'secondary' : 'outline'}>
+                        {preset.enabled
+                          ? t('mcp.browserPresets.enabled')
+                          : t('mcp.browserPresets.disabled')}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-muted-foreground text-sm">{preset.description}</p>
+                  </div>
+                  <Button
+                    disabled={saveBrowserPresetMutation.isPending}
+                    onClick={() => saveBrowserPresetMutation.mutate(preset)}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    {preset.enabled ? <Power className="size-4" /> : <Plus className="size-4" />}
+                    {preset.enabled
+                      ? t('mcp.browserPresets.disable', { name: preset.displayName })
+                      : t('mcp.browserPresets.add', { name: preset.displayName })}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ) : null}
 
-        {saveBrowserPresetMutation.isError ? (
-          <ErrorMessage>{t('mcp.browserPresets.saveError')}</ErrorMessage>
-        ) : null}
-      </section>
+          {saveBrowserPresetMutation.isError ? (
+            <ErrorMessage>{t('mcp.browserPresets.saveError')}</ErrorMessage>
+          ) : null}
+        </section>
+      ) : null}
 
       {serversQuery.isLoading ? (
         <div className="text-muted-foreground text-sm">{t('mcp.loading')}</div>
@@ -791,22 +877,46 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           <ServerGroup
             empty={t('mcp.groupEmpty')}
             onConfigure={openConfigureDialog}
-            onDelete={(id) => deleteMutation.mutate(id)}
+            onDelete={(server) =>
+              deleteMutation.mutate({ configLayer: server.configLayer, id: server.id })
+            }
             onOpenPlugin={onOpenPlugin}
-            onRestart={(id) => restartMutation.mutate(id)}
-            onToggle={(id, enabled) => toggleMutation.mutate({ enabled, id })}
+            onOverride={openOverrideDialog}
+            onRestart={(server) =>
+              restartMutation.mutate({ configLayer: server.configLayer, id: server.id })
+            }
+            onToggle={(server, enabled) =>
+              toggleMutation.mutate({
+                configLayer: server.configLayer,
+                enabled,
+                id: server.id,
+              })
+            }
             servers={workspaceServers}
             title={t('mcp.serversGroup')}
+            viewConfigLayer={configLayer}
           />
           <ServerGroup
             empty={t('mcp.pluginsEmpty')}
             onConfigure={openConfigureDialog}
-            onDelete={(id) => deleteMutation.mutate(id)}
+            onDelete={(server) =>
+              deleteMutation.mutate({ configLayer: server.configLayer, id: server.id })
+            }
             onOpenPlugin={onOpenPlugin}
-            onRestart={(id) => restartMutation.mutate(id)}
-            onToggle={(id, enabled) => toggleMutation.mutate({ enabled, id })}
+            onOverride={openOverrideDialog}
+            onRestart={(server) =>
+              restartMutation.mutate({ configLayer: server.configLayer, id: server.id })
+            }
+            onToggle={(server, enabled) =>
+              toggleMutation.mutate({
+                configLayer: server.configLayer,
+                enabled,
+                id: server.id,
+              })
+            }
             servers={pluginServers}
             title={t('mcp.pluginsGroup')}
+            viewConfigLayer={configLayer}
           />
         </div>
       ) : null}
@@ -820,6 +930,18 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Select
+              aria-label={t('mcp.diagnostics.planeFilter')}
+              className="h-8 rounded-md border border-border bg-background px-2 text-sm"
+              onChange={(event) =>
+                setDiagnosticPlane(event.target.value as 'all' | 'settings' | 'task')
+              }
+              value={diagnosticPlane}
+            >
+              <option value="all">{t('mcp.diagnostics.allPlanes')}</option>
+              <option value="settings">{t('mcp.diagnostics.plane.settings')}</option>
+              <option value="task">{t('mcp.diagnostics.plane.task')}</option>
+            </Select>
+            <Select
               aria-label={t('mcp.diagnostics.filter')}
               className="h-8 rounded-md border border-border bg-background px-2 text-sm"
               onChange={(event) => setDiagnosticServerId(event.target.value || null)}
@@ -827,7 +949,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
             >
               <option value="">{t('mcp.diagnostics.allServers')}</option>
               {servers.map((server) => (
-                <option key={server.id} value={server.id}>
+                <option key={`${server.configLayer}:${server.id}`} value={server.id}>
                   {server.displayName}
                 </option>
               ))}
@@ -853,15 +975,15 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
           <div className="text-muted-foreground text-sm">{t('mcp.diagnostics.loading')}</div>
         ) : null}
 
-        {!diagnosticsQuery.isLoading && diagnostics.length === 0 ? (
+        {!diagnosticsQuery.isLoading && visibleDiagnostics.length === 0 ? (
           <div className="rounded-md border border-dashed border-border bg-background px-4 py-5 text-center text-muted-foreground text-sm">
             {t('mcp.diagnostics.empty')}
           </div>
         ) : null}
 
-        {diagnostics.length > 0 ? (
+        {visibleDiagnostics.length > 0 ? (
           <div className="max-h-72 overflow-auto rounded-md border border-border">
-            {diagnostics
+            {visibleDiagnostics
               .slice()
               .reverse()
               .map((event) => (
@@ -879,19 +1001,23 @@ function ServerGroup({
   onConfigure,
   onDelete,
   onOpenPlugin,
+  onOverride,
   onRestart,
   onToggle,
   servers,
   title,
+  viewConfigLayer,
 }: {
   empty: string
   onConfigure: (server: McpServerSummary) => void
-  onDelete: (id: string) => void
+  onDelete: (server: McpServerSummary) => void
   onOpenPlugin?: (pluginId: string) => void
-  onRestart: (id: string) => void
-  onToggle: (id: string, enabled: boolean) => void
+  onOverride?: (server: McpServerSummary) => void
+  onRestart: (server: McpServerSummary) => void
+  onToggle: (server: McpServerSummary, enabled: boolean) => void
   servers: McpServerSummary[]
   title: string
+  viewConfigLayer: McpConfigLayer
 }) {
   return (
     <section className="space-y-2">
@@ -907,13 +1033,15 @@ function ServerGroup({
         <div className="space-y-2">
           {servers.map((server) => (
             <MCPServerCard
-              key={server.id}
+              key={`${server.configLayer}:${server.id}`}
               onConfigure={onConfigure}
               onDelete={onDelete}
               onOpenPlugin={onOpenPlugin}
+              onOverride={onOverride}
               onRestart={onRestart}
               onToggle={onToggle}
               server={server}
+              viewConfigLayer={viewConfigLayer}
             />
           ))}
         </div>
@@ -999,6 +1127,7 @@ function DiagnosticRow({
         <Badge variant={severityVariant(event.severity)}>
           {t(`mcp.diagnostics.severity.${event.severity}`)}
         </Badge>
+        <Badge variant="outline">{t(`mcp.diagnostics.plane.${event.plane}`)}</Badge>
       </div>
       <div className="min-w-0">
         <div className="truncate font-medium text-sm">{event.summary}</div>
@@ -1014,14 +1143,17 @@ function DiagnosticRow({
 function mcpServerPayload(
   values: MCPServerFormValues,
   serverId: string,
+  configLayer: McpConfigLayer,
   messages: ParseMessages,
 ):
   | { ok: true; request: SaveMcpServerRequest }
   | { field: keyof MCPServerFormValues; message: string; ok: false } {
   const base = {
+    configLayer,
     displayName: values.displayName.trim(),
     enabled: true,
     id: serverId,
+    required: values.required,
     scope: values.scope,
   }
 
@@ -1129,10 +1261,15 @@ function mcpFormValuesFromConfig(server: McpServerConfig): MCPServerFormValues {
         value: header.value ?? '',
       })),
       headersFromEnv: server.transport.headersFromEnv.map((header) => ({ ...header })),
+      required: server.required,
       scope: server.scope,
       transportKind: 'http',
       url: server.transport.url,
     }
+  }
+
+  if (server.transport.kind !== 'stdio') {
+    throw new Error('In-process MCP server configuration is read-only')
   }
 
   return {
@@ -1146,6 +1283,7 @@ function mcpFormValuesFromConfig(server: McpServerConfig): MCPServerFormValues {
       value: item.value ?? '',
     })),
     inheritEnv: server.transport.inheritEnv.map((value) => ({ value })),
+    required: server.required,
     scope: server.scope,
     transportKind: 'stdio',
     workingDir: server.transport.workingDir ?? '',

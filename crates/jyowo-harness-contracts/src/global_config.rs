@@ -428,6 +428,7 @@ pub fn validate_persisted_mcp_server_identity(
 ) -> Result<(), PersistedMcpValidationError> {
     if record.display_name.trim().is_empty()
         || record.display_name.len() > 256
+        || record.display_name.contains('\0')
         || !valid_mcp_server_id(&record.id)
     {
         return Err(PersistedMcpValidationError::Identity);
@@ -458,10 +459,11 @@ pub fn validate_persisted_mcp_transport(
         } => {
             if command.trim().is_empty()
                 || command.len() > 4096
+                || command.contains('\0')
                 || args.len() > 64
                 || args
                     .iter()
-                    .any(|arg| arg.trim().is_empty() || arg.len() > 4096)
+                    .any(|arg| arg.trim().is_empty() || arg.len() > 4096 || arg.contains('\0'))
                 || env.len() > 64
                 || inherit_env.len() > 128
             {
@@ -470,6 +472,7 @@ pub fn validate_persisted_mcp_transport(
             for item in env {
                 if !valid_env_var_name(&item.key)
                     || item.value.len() > 4096
+                    || item.value.contains('\0')
                     || mcp_name_looks_secret_bearing(&item.key)
                     || looks_like_raw_secret(&item.value)
                 {
@@ -515,6 +518,7 @@ pub fn validate_persisted_mcp_transport(
             for header in headers {
                 if !valid_http_header_name(&header.key)
                     || header.value.len() > 8192
+                    || !valid_http_header_value(&header.value)
                     || mcp_http_header_is_sensitive(&header.key)
                     || looks_like_raw_secret(&header.value)
                     || mcp_header_value_looks_secret_bearing(&header.value)
@@ -581,6 +585,12 @@ fn valid_http_header_name(value: &str) -> bool {
                         | b'~'
                 )
         })
+}
+
+fn valid_http_header_value(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|byte| byte == b'\t' || (byte >= b' ' && byte != 0x7f))
 }
 
 fn mcp_name_looks_secret_bearing(value: &str) -> bool {
@@ -821,6 +831,82 @@ mod tests {
         assert!(record.required);
         let serialized = serde_json::to_value(record).expect("serialize MCP server record");
         assert_eq!(serialized["required"], true);
+    }
+
+    #[test]
+    fn persisted_mcp_rejects_nul_and_http_header_controls() {
+        let invalid_identity = McpServerConfigRecord {
+            enabled: true,
+            required: false,
+            display_name: "Browser\0hidden".to_owned(),
+            id: "browser".to_owned(),
+            scope: "global".to_owned(),
+            transport: McpServerTransportConfig::Stdio {
+                command: "node".to_owned(),
+                args: vec![],
+                env: vec![],
+                inherit_env: vec![],
+                working_dir: None,
+            },
+        };
+        assert_eq!(
+            validate_persisted_mcp_server_identity(&invalid_identity),
+            Err(PersistedMcpValidationError::Identity)
+        );
+
+        let stdio_cases = [
+            McpServerTransportConfig::Stdio {
+                command: "node\0hidden".to_owned(),
+                args: vec![],
+                env: vec![],
+                inherit_env: vec![],
+                working_dir: None,
+            },
+            McpServerTransportConfig::Stdio {
+                command: "node".to_owned(),
+                args: vec!["server\0hidden".to_owned()],
+                env: vec![],
+                inherit_env: vec![],
+                working_dir: None,
+            },
+            McpServerTransportConfig::Stdio {
+                command: "node".to_owned(),
+                args: vec![],
+                env: vec![McpNameValueRecord {
+                    key: "LOG_LEVEL".to_owned(),
+                    value: "info\0hidden".to_owned(),
+                }],
+                inherit_env: vec![],
+                working_dir: None,
+            },
+        ];
+        for transport in stdio_cases {
+            assert_eq!(
+                validate_persisted_mcp_transport(&transport),
+                Err(PersistedMcpValidationError::Stdio)
+            );
+        }
+
+        for value in [
+            "first\nsecond",
+            "first\rsecond",
+            "value\0hidden",
+            "value\u{7f}",
+        ] {
+            let transport = McpServerTransportConfig::Http {
+                url: "https://mcp.example.com/mcp".to_owned(),
+                bearer_token_env_var: None,
+                headers: vec![McpNameValueRecord {
+                    key: "X-Value".to_owned(),
+                    value: value.to_owned(),
+                }],
+                headers_from_env: vec![],
+            };
+            assert_eq!(
+                validate_persisted_mcp_transport(&transport),
+                Err(PersistedMcpValidationError::Http)
+            );
+        }
     }
 
     #[test]

@@ -1285,28 +1285,39 @@ describe('CommandClient', () => {
     const invoke = vi.fn(async (command: string) => {
       if (command === 'list_mcp_servers') {
         return {
+          configLayer: 'global',
           servers: [
             {
+              configLayer: 'global',
               displayName: 'Workspace GitHub',
+              effective: true,
               enabled: true,
               exposedToolCount: 2,
               id: 'github',
               manageable: true,
+              overridesGlobal: false,
               origin: 'workspace',
+              required: false,
               scope: 'global',
               status: 'ready',
+              statusSource: 'settings',
               transport: 'stdio',
             },
             {
+              configLayer: 'global',
               displayName: 'Plugin Context',
+              effective: true,
               enabled: true,
               exposedToolCount: 1,
               id: 'plugin-context',
               manageable: false,
+              overridesGlobal: false,
               origin: 'plugin',
+              required: false,
               scope: 'session',
               sourcePluginId: 'formatter@1.0.0',
               status: 'ready',
+              statusSource: 'settings',
               transport: 'http',
             },
           ],
@@ -1316,15 +1327,20 @@ describe('CommandClient', () => {
       if (command === 'get_mcp_server_config') {
         return {
           server: {
+            configLayer: 'global',
             displayName: 'Workspace GitHub',
+            effective: true,
             enabled: true,
             id: 'github',
+            manageable: true,
+            overridesGlobal: false,
+            required: false,
             scope: 'global',
             transport: {
               args: ['mcp-server'],
               command: 'node',
               env: [{ hasValue: true, key: 'LOG_LEVEL' }],
-              inheritEnv: ['GITHUB_TOKEN'],
+              inheritEnv: ['PATH'],
               kind: 'stdio',
             },
           },
@@ -1333,6 +1349,7 @@ describe('CommandClient', () => {
 
       if (command === 'delete_mcp_server') {
         return {
+          configLayer: 'global',
           id: 'github',
           status: 'deleted',
         }
@@ -1340,58 +1357,79 @@ describe('CommandClient', () => {
 
       return {
         server: {
+          configLayer: 'global',
           displayName: 'Workspace GitHub',
+          effective: true,
           enabled: true,
           exposedToolCount: 0,
           id: 'github',
           manageable: true,
+          overridesGlobal: false,
           origin: 'workspace',
+          required: false,
           scope: 'global',
           status: 'configured',
+          statusSource: 'settings',
           transport: 'stdio',
         },
       }
     })
     const client = createInvokeCommandClient(invoke)
 
-    await expect(listMcpServers(client)).resolves.toEqual({
+    await expect(listMcpServers('global', client)).resolves.toEqual({
+      configLayer: 'global',
       servers: [
         {
+          configLayer: 'global',
           displayName: 'Workspace GitHub',
+          effective: true,
           enabled: true,
           exposedToolCount: 2,
           id: 'github',
           manageable: true,
+          overridesGlobal: false,
           origin: 'workspace',
+          required: false,
           scope: 'global',
           status: 'ready',
+          statusSource: 'settings',
           transport: 'stdio',
         },
         {
+          configLayer: 'global',
           displayName: 'Plugin Context',
+          effective: true,
           enabled: true,
           exposedToolCount: 1,
           id: 'plugin-context',
           manageable: false,
+          overridesGlobal: false,
           origin: 'plugin',
+          required: false,
           scope: 'session',
           sourcePluginId: 'formatter@1.0.0',
           status: 'ready',
+          statusSource: 'settings',
           transport: 'http',
         },
       ],
     })
-    await expect(getMcpServerConfig('github', client)).resolves.toEqual({
+    await expect(getMcpServerConfig('global', 'github', client)).resolves.toEqual({
       server: {
+        configLayer: 'global',
         displayName: 'Workspace GitHub',
+        effective: true,
         enabled: true,
         id: 'github',
+        manageable: true,
+        overridesGlobal: false,
+        required: false,
         scope: 'global',
         transport: {
           args: ['mcp-server'],
           command: 'node',
           env: [{ hasValue: true, key: 'LOG_LEVEL' }],
-          inheritEnv: ['GITHUB_TOKEN'],
+          inheritEnv: ['PATH'],
           kind: 'stdio',
         },
       },
@@ -1399,6 +1437,7 @@ describe('CommandClient', () => {
     await expect(
       saveMcpServer(
         {
+          configLayer: 'global',
           displayName: 'Workspace GitHub',
           id: 'github',
           scope: 'global',
@@ -1411,20 +1450,24 @@ describe('CommandClient', () => {
         client,
       ),
     ).resolves.toHaveProperty('server.status', 'configured')
-    await expect(deleteMcpServer('github', client)).resolves.toEqual({
+    await expect(deleteMcpServer('global', 'github', client)).resolves.toEqual({
+      configLayer: 'global',
       id: 'github',
       status: 'deleted',
     })
 
     expect(JSON.stringify(invoke.mock.results)).not.toContain('Authorization')
-    expect(invoke).toHaveBeenCalledWith('list_mcp_servers')
+    expect(invoke).toHaveBeenCalledWith('list_mcp_servers', { configLayer: 'global' })
     expect(invoke).toHaveBeenCalledWith('get_mcp_server_config', {
+      configLayer: 'global',
       id: 'github',
     })
     expect(invoke).toHaveBeenCalledWith('save_mcp_server', {
       displayName: 'Workspace GitHub',
+      configLayer: 'global',
       enabled: true,
       id: 'github',
+      required: false,
       scope: 'global',
       transport: {
         args: ['mcp-server'],
@@ -1434,7 +1477,10 @@ describe('CommandClient', () => {
         kind: 'stdio',
       },
     })
-    expect(invoke).toHaveBeenCalledWith('delete_mcp_server', { id: 'github' })
+    expect(invoke).toHaveBeenCalledWith('delete_mcp_server', {
+      configLayer: 'global',
+      id: 'github',
+    })
   })
 
   it('models browser MCP presets as disabled explicit MCP server configs', async () => {
@@ -1469,14 +1515,19 @@ describe('CommandClient', () => {
           serverId: 'browser-playwright',
         },
         server: {
+          configLayer: 'global',
           displayName: 'Playwright Browser',
+          effective: true,
           enabled: false,
           exposedToolCount: 0,
           id: 'browser-playwright',
           manageable: true,
-          origin: 'workspace',
+          origin: 'user',
+          overridesGlobal: false,
+          required: false,
           scope: 'global',
           status: 'disabled',
+          statusSource: 'settings',
           transport: 'stdio',
         },
       }
@@ -1519,14 +1570,19 @@ describe('CommandClient', () => {
       if (command === 'save_mcp_server') {
         return {
           server: {
+            configLayer: 'global',
             displayName: 'Remote Context',
+            effective: true,
             enabled: true,
             exposedToolCount: 0,
             id: 'context7',
             manageable: true,
-            origin: 'workspace',
+            origin: 'user',
+            overridesGlobal: false,
+            required: false,
             scope: 'global',
             status: 'configured',
+            statusSource: 'settings',
             transport: 'http',
           },
         }
@@ -1534,14 +1590,19 @@ describe('CommandClient', () => {
 
       return {
         server: {
+          configLayer: 'global',
           displayName: 'Workspace GitHub',
+          effective: true,
           enabled: true,
           exposedToolCount: 1,
           id: 'github',
           manageable: true,
-          origin: 'workspace',
+          origin: 'user',
+          overridesGlobal: false,
+          required: false,
           scope: 'global',
           status: 'ready',
+          statusSource: 'settings',
           transport: 'stdio',
         },
       }
@@ -1551,6 +1612,7 @@ describe('CommandClient', () => {
     await expect(
       saveMcpServer(
         {
+          configLayer: 'global',
           displayName: 'Remote Context',
           id: 'context7',
           scope: 'global',
@@ -1565,11 +1627,11 @@ describe('CommandClient', () => {
         client,
       ),
     ).resolves.toHaveProperty('server.transport', 'http')
-    await expect(setMcpServerEnabled('github', true, client)).resolves.toHaveProperty(
+    await expect(setMcpServerEnabled('global', 'github', true, client)).resolves.toHaveProperty(
       'server.status',
       'ready',
     )
-    await expect(restartMcpServer('github', client)).resolves.toHaveProperty(
+    await expect(restartMcpServer('global', 'github', client)).resolves.toHaveProperty(
       'server.transport',
       'stdio',
     )
@@ -1577,8 +1639,10 @@ describe('CommandClient', () => {
     expect(JSON.stringify(invoke.mock.calls)).not.toContain('mcp-secret-token')
     expect(invoke).toHaveBeenCalledWith('save_mcp_server', {
       displayName: 'Remote Context',
+      configLayer: 'global',
       enabled: true,
       id: 'context7',
+      required: false,
       scope: 'global',
       transport: {
         bearerTokenEnvVar: 'MCP_BEARER_TOKEN',
@@ -1589,23 +1653,55 @@ describe('CommandClient', () => {
       },
     })
     expect(invoke).toHaveBeenCalledWith('set_mcp_server_enabled', {
+      configLayer: 'global',
       enabled: true,
       id: 'github',
     })
-    expect(invoke).toHaveBeenCalledWith('restart_mcp_server', { id: 'github' })
+    expect(invoke).toHaveBeenCalledWith('restart_mcp_server', {
+      configLayer: 'global',
+      id: 'github',
+    })
+  })
+
+  it('accepts read-only in-process MCP server configs', async () => {
+    const invoke = vi.fn(async () => ({
+      server: {
+        configLayer: 'global',
+        displayName: 'Plugin Context',
+        effective: true,
+        enabled: true,
+        id: 'plugin-context',
+        manageable: false,
+        overridesGlobal: false,
+        required: false,
+        scope: 'session',
+        transport: { kind: 'inProcess' },
+      },
+    }))
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(getMcpServerConfig('global', 'plugin-context', client)).resolves.toHaveProperty(
+      'server.transport.kind',
+      'inProcess',
+    )
   })
 
   it('accepts MCP save requests that preserve existing redacted inline values', async () => {
     const invoke = vi.fn(async () => ({
       server: {
+        configLayer: 'global',
         displayName: 'Workspace GitHub',
+        effective: true,
         enabled: true,
         exposedToolCount: 0,
         id: 'github',
         manageable: true,
-        origin: 'workspace',
+        origin: 'user',
+        overridesGlobal: false,
+        required: false,
         scope: 'global',
         status: 'configured',
+        statusSource: 'settings',
         transport: 'stdio',
       },
     }))
@@ -1614,6 +1710,7 @@ describe('CommandClient', () => {
     await expect(
       saveMcpServer(
         {
+          configLayer: 'global',
           displayName: 'Workspace GitHub',
           id: 'github',
           scope: 'global',
@@ -1629,8 +1726,10 @@ describe('CommandClient', () => {
 
     expect(invoke).toHaveBeenCalledWith('save_mcp_server', {
       displayName: 'Workspace GitHub',
+      configLayer: 'global',
       enabled: true,
       id: 'github',
+      required: false,
       scope: 'global',
       transport: {
         args: [],
@@ -1683,12 +1782,23 @@ describe('CommandClient', () => {
   it('rejects MCP server config details that contain raw secrets', async () => {
     const invoke = vi.fn(async () => ({
       server: {
+        configLayer: 'global',
         displayName: 'Remote Context',
+        effective: true,
         enabled: true,
         id: 'context7',
+        manageable: true,
+        overridesGlobal: false,
+        required: false,
         scope: 'global',
         transport: {
-          headers: [{ key: 'Authorization', value: 'Bearer mcp-secret-token' }],
+          headers: [
+            {
+              hasValue: true,
+              key: 'Authorization',
+              value: 'Bearer mcp-secret-token',
+            },
+          ],
           kind: 'http',
           url: 'https://mcp.example.com/mcp',
         },
@@ -1696,7 +1806,9 @@ describe('CommandClient', () => {
     }))
     const client = createInvokeCommandClient(invoke)
 
-    await expect(getMcpServerConfig('context7', client)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(getMcpServerConfig('global', 'context7', client)).rejects.toThrow(
+      TauriCommandPayloadError,
+    )
   })
 
   it('parses MCP diagnostics list and live batches without exposing raw payload details', async () => {
@@ -1808,7 +1920,184 @@ describe('CommandClient', () => {
         client,
       ),
     ).rejects.toThrow(TauriCommandPayloadError)
-    await expect(deleteMcpServer('', client)).rejects.toThrow(TauriCommandPayloadError)
+    await expect(deleteMcpServer('global', '', client)).rejects.toThrow(TauriCommandPayloadError)
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('addresses MCP settings by config layer and parses explicit source metadata', async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'list_mcp_servers') {
+        return {
+          configLayer: 'project',
+          servers: [
+            {
+              configLayer: 'project',
+              displayName: 'Project MCP',
+              effective: true,
+              enabled: true,
+              exposedToolCount: 2,
+              id: 'project-mcp',
+              manageable: true,
+              origin: 'project',
+              overridesGlobal: true,
+              required: true,
+              scope: 'session',
+              status: 'ready',
+              statusSource: 'settings',
+              transport: 'stdio',
+            },
+          ],
+        }
+      }
+      if (command === 'list_mcp_diagnostics') {
+        return {
+          events: [
+            {
+              eventType: 'activation_failed',
+              id: 'event-1',
+              plane: 'task',
+              runId: 'run-1',
+              runSegmentId: 'segment-1',
+              serverId: 'project-mcp',
+              sessionId: 'session-1',
+              severity: 'error',
+              summary: 'MCP activation failed.',
+              taskId: 'task-1',
+              timestamp: '2026-07-13T00:00:00Z',
+            },
+          ],
+        }
+      }
+      return {
+        server: {
+          configLayer: 'project',
+          displayName: 'Project MCP',
+          effective: true,
+          enabled: false,
+          exposedToolCount: 0,
+          id: 'project-mcp',
+          manageable: true,
+          origin: 'project',
+          overridesGlobal: false,
+          required: true,
+          scope: 'global',
+          status: 'disabled',
+          statusSource: 'settings',
+          transport: 'stdio',
+        },
+      }
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(client.listMcpServers('project')).resolves.toHaveProperty(
+      'servers.0.configLayer',
+      'project',
+    )
+    await expect(
+      client.saveMcpServer({
+        configLayer: 'project',
+        displayName: 'Project MCP',
+        enabled: false,
+        id: 'project-mcp',
+        required: true,
+        scope: 'global',
+        transport: { command: 'node', kind: 'stdio' },
+      }),
+    ).resolves.toHaveProperty('server.required', true)
+    await expect(client.listMcpDiagnostics()).resolves.toHaveProperty('events.0.plane', 'task')
+
+    expect(invoke).toHaveBeenCalledWith('list_mcp_servers', { configLayer: 'project' })
+    expect(invoke).toHaveBeenCalledWith(
+      'save_mcp_server',
+      expect.objectContaining({ configLayer: 'project', required: true }),
+    )
+  })
+
+  it('rejects MCP values outside Rust persistence constraints before invoking Tauri', async () => {
+    const invalidRequests = [
+      {
+        configLayer: 'global',
+        displayName: 'x'.repeat(257),
+        id: 'too-long-name',
+        required: false,
+        scope: 'global',
+        transport: { command: 'node', kind: 'stdio' },
+      },
+      {
+        configLayer: 'global',
+        displayName: 'NUL argument',
+        id: 'nul-argument',
+        required: false,
+        scope: 'global',
+        transport: { args: ['bad\0argument'], command: 'node', kind: 'stdio' },
+      },
+      {
+        configLayer: 'global',
+        displayName: 'User info',
+        id: 'url-user-info',
+        required: false,
+        scope: 'global',
+        transport: { kind: 'http', url: 'https://user:pass@mcp.example.com/mcp' },
+      },
+      {
+        configLayer: 'global',
+        displayName: 'Secret query',
+        id: 'secret-query',
+        required: false,
+        scope: 'global',
+        transport: { kind: 'http', url: 'https://mcp.example.com/mcp?api_key=public' },
+      },
+      {
+        configLayer: 'global',
+        displayName: 'Secret inherit',
+        id: 'secret-inherit',
+        required: false,
+        scope: 'global',
+        transport: { command: 'node', inheritEnv: ['GITHUB_TOKEN'], kind: 'stdio' },
+      },
+      {
+        configLayer: 'global',
+        displayName: 'Bad header',
+        id: 'bad-header',
+        required: false,
+        scope: 'global',
+        transport: {
+          headers: [{ key: 'Bad Header', value: 'value' }],
+          kind: 'http',
+          url: 'https://mcp.example.com/mcp',
+        },
+      },
+      {
+        configLayer: 'global',
+        displayName: 'Bad header value',
+        id: 'bad-header-value',
+        required: false,
+        scope: 'global',
+        transport: {
+          headers: [{ key: 'X-Value', value: 'first\nsecond' }],
+          kind: 'http',
+          url: 'https://mcp.example.com/mcp',
+        },
+      },
+      {
+        configLayer: 'global',
+        displayName: 'Secret-bearing header value',
+        id: 'secret-bearing-header-value',
+        required: false,
+        scope: 'global',
+        transport: {
+          headers: [{ key: 'X-Value', value: 'Bearer public-value' }],
+          kind: 'http',
+          url: 'https://mcp.example.com/mcp',
+        },
+      },
+    ]
+    const invoke = vi.fn()
+    const client = createInvokeCommandClient(invoke)
+
+    for (const request of invalidRequests) {
+      await expect(client.saveMcpServer(request as never)).rejects.toThrow(TauriCommandPayloadError)
+    }
     expect(invoke).not.toHaveBeenCalled()
   })
 
