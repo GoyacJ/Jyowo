@@ -1122,10 +1122,19 @@ pub struct SkillCatalogInstallProgressPayload {
     pub message: Option<String>,
 }
 
-pub type SkillCatalogInstallProgressEmitter =
-    Arc<dyn Fn(SkillCatalogInstallProgressPayload) + Send + Sync>;
+pub type SkillCatalogInstallProgressEmitter = Arc<
+    dyn Fn(SkillCatalogInstallProgressPayload) -> Result<(), CommandErrorPayload> + Send + Sync,
+>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub type SkillCatalogMaterializeHook = Arc<
+    dyn Fn(
+            &InstallSkillFromCatalogRequest,
+        ) -> Result<(PathBuf, SkillInstallOriginRecord), CommandErrorPayload>
+        + Send
+        + Sync,
+>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillCatalogInstallTaskPayload {
     pub operation_id: String,
@@ -1152,13 +1161,6 @@ pub struct ListSkillCatalogInstallTasksResponse {
 #[serde(rename_all = "camelCase")]
 pub struct InstallSkillFromCatalogResponse {
     pub task: SkillCatalogInstallTaskPayload,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct SkillCatalogInstallTaskKey {
-    pub(crate) source_id: String,
-    pub(crate) entry_id: String,
-    pub(crate) version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1379,6 +1381,14 @@ pub trait SkillStore: Send + Sync {
         enabled: bool,
         source_path: &Path,
     ) -> Result<String, CommandErrorPayload>;
+    fn stage_skill_package(
+        &self,
+        id: &str,
+        source_path: &Path,
+    ) -> Result<String, CommandErrorPayload>;
+    fn read_staged_skill_entry_file(&self, id: &str) -> Result<String, CommandErrorPayload>;
+    fn commit_staged_skill_package(&self, id: &str) -> Result<(), CommandErrorPayload>;
+    fn discard_staged_skill_package(&self, id: &str) -> Result<(), CommandErrorPayload>;
     fn read_skill_entry_file(
         &self,
         record: &SkillStoreRecord,

@@ -11,13 +11,20 @@ use jyowo_desktop_shell::commands::stores::{
     DesktopSkillConfigStore, GlobalConfigStore, SkillConfigStoreFault,
 };
 use jyowo_desktop_shell::commands::{
+    delete_skill_with_runtime_state, get_or_create_skill_catalog_install_task,
     get_skill_config_with_runtime_state, get_skill_detail_with_runtime_state,
-    import_skill_with_runtime_state, list_skills_with_runtime_state,
+    import_skill_with_runtime_state, list_skill_catalog_install_tasks_with_runtime_state,
+    list_skills_with_runtime_state, record_skill_catalog_install_task_progress,
     reload_desktop_settings_runtime_after_plugin_change_for_test,
     runtime_state_with_skill_config_store_for_test, set_skill_config_value_with_runtime_state,
-    set_skill_enabled_with_runtime_state, DesktopRuntimeState, GetSkillConfigRequest,
-    GetSkillDetailRequest, ImportSkillRequest, SetSkillConfigValueRequest, SetSkillEnabledRequest,
-    SkillStore, SkillStoreRecord,
+    set_skill_enabled_with_runtime_state, start_skill_catalog_install_task_with_runtime_state,
+    DeleteSkillRequest, DesktopRuntimeState, GetSkillConfigRequest, GetSkillDetailRequest,
+    ImportSkillRequest, SetSkillConfigValueRequest, SetSkillEnabledRequest, SkillStore,
+    SkillStoreRecord,
+};
+use jyowo_desktop_shell::skill_catalog::{
+    fetch_catalog_http_for_test, CatalogHttpTimeouts, InstallSkillFromCatalogRequest,
+    SkillInstallOriginRecord,
 };
 use jyowo_desktop_shell::storage_layout::{JyowoHome, StorageLayout};
 use jyowo_harness_sdk::ext::StreamBrokerConfig;
@@ -26,6 +33,9 @@ use jyowo_harness_sdk::testing::{InMemoryEventStore, NoopSandbox, TestModelProvi
 use jyowo_harness_sdk::{DesktopSettingsRuntime, HarnessOptions, StreamPermissionRuntime};
 use secrecy::ExposeSecret;
 use serde_json::json;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[derive(Debug, Default)]
 struct MemorySecretStore {
@@ -35,6 +45,379 @@ struct MemorySecretStore {
 #[derive(Debug, Default)]
 struct BlockingLoadGate {
     gate: Mutex<Option<(SyncSender<()>, Receiver<()>)>>,
+}
+
+#[tokio::test]
+async fn catalog_connect_timeout_is_typed() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut client_hello = [0_u8; 1024];
+        stream.read(&mut client_hello).await.unwrap();
+        std::future::pending::<()>().await;
+    });
+
+    let error = fetch_catalog_http_for_test(
+        &format!("https://{address}/stalled-tls-handshake"),
+        CatalogHttpTimeouts {
+            connect: std::time::Duration::from_millis(40),
+            request: std::time::Duration::from_secs(1),
+            response_body: std::time::Duration::from_secs(1),
+        },
+    )
+    .await
+    .expect_err("stalled TLS handshake must hit the connect timeout");
+    server.abort();
+
+    assert_eq!(error.code, "CATALOG_CONNECT_TIMEOUT");
+}
+
+#[tokio::test]
+async fn catalog_request_header_timeout_is_typed() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/slow-headers"))
+        .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_millis(200)))
+        .mount(&server)
+        .await;
+
+    let error = fetch_catalog_http_for_test(
+        &format!("{}/slow-headers", server.uri()),
+        CatalogHttpTimeouts {
+            connect: std::time::Duration::from_secs(1),
+            request: std::time::Duration::from_millis(40),
+            response_body: std::time::Duration::from_secs(1),
+        },
+    )
+    .await
+    .expect_err("stalled response headers must time out");
+
+    assert_eq!(error.code, "CATALOG_REQUEST_TIMEOUT");
+}
+
+#[tokio::test]
+async fn catalog_response_body_timeout_is_typed() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 1024];
+        stream.read(&mut request).await.unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nx")
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+
+    let error = fetch_catalog_http_for_test(
+        &format!("http://{address}/slow-body"),
+        CatalogHttpTimeouts {
+            connect: std::time::Duration::from_secs(1),
+            request: std::time::Duration::from_secs(1),
+            response_body: std::time::Duration::from_millis(40),
+        },
+    )
+    .await
+    .expect_err("stalled response body must time out");
+    server.abort();
+
+    assert_eq!(error.code, "CATALOG_RESPONSE_BODY_TIMEOUT", "{error:?}");
+}
+
+#[tokio::test]
+async fn catalog_install_operations_persist_recover_and_keep_terminal_history() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().canonicalize().unwrap();
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace.clone()).unwrap();
+    let request = InstallSkillFromCatalogRequest {
+        source_id: "anthropic".to_owned(),
+        entry_id: "anthropic:frontend-design".to_owned(),
+        version: Some("main".to_owned()),
+        operation_id: Some("catalog-operation-1".to_owned()),
+    };
+
+    let first = get_or_create_skill_catalog_install_task(&state, &request).unwrap();
+    let duplicate = get_or_create_skill_catalog_install_task(&state, &request).unwrap();
+    assert_eq!(duplicate.operation_id, first.operation_id);
+
+    let reconstructed = DesktopRuntimeState::with_workspace_for_test(workspace.clone()).unwrap();
+    assert_eq!(
+        list_skill_catalog_install_tasks_with_runtime_state(&reconstructed)
+            .await
+            .unwrap()
+            .tasks[0]
+            .status,
+        "running"
+    );
+    reconstructed
+        .recover_skill_catalog_install_tasks_for_test()
+        .unwrap();
+    assert_eq!(
+        list_skill_catalog_install_tasks_with_runtime_state(&reconstructed)
+            .await
+            .unwrap()
+            .tasks[0]
+            .status,
+        "interrupted"
+    );
+
+    let retry = InstallSkillFromCatalogRequest {
+        operation_id: Some("catalog-operation-2".to_owned()),
+        ..request
+    };
+    get_or_create_skill_catalog_install_task(&reconstructed, &retry).unwrap();
+    record_skill_catalog_install_task_progress(&reconstructed, &retry, "completed", 100, None)
+        .await
+        .unwrap();
+    let reinstall = InstallSkillFromCatalogRequest {
+        operation_id: Some("catalog-operation-3".to_owned()),
+        ..retry
+    };
+    get_or_create_skill_catalog_install_task(&reconstructed, &reinstall).unwrap();
+
+    let tasks = list_skill_catalog_install_tasks_with_runtime_state(&reconstructed)
+        .await
+        .unwrap()
+        .tasks;
+    assert_eq!(tasks.len(), 3);
+    assert!(tasks.iter().any(|task| task.status == "completed"));
+    assert!(tasks
+        .iter()
+        .any(|task| { task.operation_id == "catalog-operation-3" && task.status == "running" }));
+}
+
+#[tokio::test]
+async fn catalog_install_delete_and_reinstall_runs_the_full_local_package_flow() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().canonicalize().unwrap();
+    let layout = test_layout(&workspace);
+    let settings_runtime = test_settings_runtime(&workspace).await;
+    let mut state = DesktopRuntimeState::with_settings_runtime_for_workspace(
+        workspace.clone(),
+        settings_runtime.clone(),
+    )
+    .unwrap();
+    let skill_store = Arc::new(jyowo_desktop_shell::commands::DesktopSkillStore::global(
+        layout.clone(),
+    ));
+    state.set_skill_store_for_test(skill_store);
+    state.set_catalog_task_runtime_root_for_test(layout.global_runtime_root());
+    state.set_config_stores_for_test(GlobalConfigStore::new(layout), None);
+
+    let source = workspace.join("catalog-reinstall-source");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(
+        source.join("SKILL.md"),
+        "---\nname: catalog-reinstall-test\ndescription: Catalog reinstall test\n---\nBody.\n",
+    )
+    .unwrap();
+    state.set_catalog_materialize_hook_for_test(Arc::new({
+        let source = source.clone();
+        move |request| {
+            Ok((
+                source.clone(),
+                SkillInstallOriginRecord {
+                    source_id: request.source_id.clone(),
+                    source_label: "Local test catalog".to_owned(),
+                    entry_id: request.entry_id.clone(),
+                    version: request.version.clone(),
+                    commit_sha: None,
+                    homepage_url: None,
+                    installed_from_catalog: true,
+                },
+            ))
+        }
+    }));
+
+    let operation_suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let first_operation_id = format!("catalog-reinstall-operation-1-{operation_suffix}");
+    let second_operation_id = format!("catalog-reinstall-operation-2-{operation_suffix}");
+    let request = InstallSkillFromCatalogRequest {
+        source_id: "local-test".to_owned(),
+        entry_id: "local-test:catalog-reinstall-test".to_owned(),
+        version: Some("v1".to_owned()),
+        operation_id: Some(first_operation_id.clone()),
+    };
+    start_skill_catalog_install_task_with_runtime_state(request.clone(), state.clone(), None)
+        .await
+        .unwrap();
+    wait_for_catalog_task_status(&state, &first_operation_id, "completed").await;
+
+    let first = list_skills_with_runtime_state(&state)
+        .await
+        .unwrap()
+        .skills
+        .into_iter()
+        .find(|skill| skill.name == "catalog-reinstall-test")
+        .unwrap();
+    delete_skill_with_runtime_state(DeleteSkillRequest { id: first.id }, &state)
+        .await
+        .unwrap();
+    assert!(settings_runtime
+        .view_runtime_skill("catalog-reinstall-test", false)
+        .unwrap()
+        .is_none());
+
+    let retry = InstallSkillFromCatalogRequest {
+        operation_id: Some(second_operation_id.clone()),
+        ..request
+    };
+    start_skill_catalog_install_task_with_runtime_state(retry, state.clone(), None)
+        .await
+        .unwrap();
+    wait_for_catalog_task_status(&state, &second_operation_id, "completed").await;
+
+    let installed = list_skills_with_runtime_state(&state).await.unwrap().skills;
+    assert_eq!(
+        installed
+            .iter()
+            .filter(|skill| skill.name == "catalog-reinstall-test")
+            .count(),
+        1
+    );
+    let tasks = list_skill_catalog_install_tasks_with_runtime_state(&state)
+        .await
+        .unwrap()
+        .tasks;
+    for operation_id in [&first_operation_id, &second_operation_id] {
+        assert!(tasks.iter().any(|task| {
+            &task.operation_id == operation_id
+                && task.entry_id == "local-test:catalog-reinstall-test"
+                && task.status == "completed"
+        }));
+    }
+}
+
+#[tokio::test]
+async fn global_skill_commit_reloads_other_live_project_runtimes() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace_one = root.path().join("one");
+    let workspace_two = root.path().join("two");
+    std::fs::create_dir_all(&workspace_one).unwrap();
+    std::fs::create_dir_all(&workspace_two).unwrap();
+    let workspace_one = workspace_one.canonicalize().unwrap();
+    let workspace_two = workspace_two.canonicalize().unwrap();
+    let canonical_root = root.path().canonicalize().unwrap();
+    let layout = StorageLayout::new(JyowoHome::new(canonical_root.join("home").join(".jyowo")));
+
+    let runtime_one = test_settings_runtime(&workspace_one).await;
+    let runtime_two = test_settings_runtime(&workspace_two).await;
+    let mut state_one = DesktopRuntimeState::with_settings_runtime_for_workspace(
+        workspace_one.clone(),
+        runtime_one,
+    )
+    .unwrap();
+    let mut state_two = DesktopRuntimeState::with_settings_runtime_for_workspace(
+        workspace_two,
+        runtime_two.clone(),
+    )
+    .unwrap();
+    let skill_store = Arc::new(jyowo_desktop_shell::commands::DesktopSkillStore::global(
+        layout.clone(),
+    ));
+    state_one.set_skill_store_for_test(skill_store.clone());
+    state_two.set_skill_store_for_test(skill_store);
+    state_one.set_config_stores_for_test(GlobalConfigStore::new(layout.clone()), None);
+    state_two.set_config_stores_for_test(GlobalConfigStore::new(layout), None);
+
+    let source = workspace_one.join("shared-runtime-source");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(
+        source.join("SKILL.md"),
+        "---\nname: shared-runtime-test\ndescription: Shared runtime test\n---\nBody.\n",
+    )
+    .unwrap();
+    assert!(runtime_two
+        .view_runtime_skill("shared-runtime-test", false)
+        .unwrap()
+        .is_none());
+
+    import_skill_with_runtime_state(
+        ImportSkillRequest {
+            source_path: source.to_string_lossy().into_owned(),
+        },
+        &state_one,
+    )
+    .await
+    .unwrap();
+
+    assert!(runtime_two
+        .view_runtime_skill("shared-runtime-test", false)
+        .unwrap()
+        .is_some());
+}
+
+async fn wait_for_catalog_task_status(
+    state: &DesktopRuntimeState,
+    operation_id: &str,
+    expected_status: &str,
+) {
+    let mut last_task = None;
+    for _ in 0..1_000 {
+        let tasks = list_skill_catalog_install_tasks_with_runtime_state(state)
+            .await
+            .unwrap()
+            .tasks;
+        if let Some(task) = tasks.iter().find(|task| task.operation_id == operation_id) {
+            if task.status == expected_status {
+                return;
+            }
+            assert_ne!(task.status, "failed", "catalog task failed: {task:?}");
+            last_task = Some(task.clone());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("catalog task {operation_id} did not reach {expected_status}; last task: {last_task:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn catalog_download_does_not_hold_the_skill_store_lock() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().canonicalize().unwrap();
+    let mut state = DesktopRuntimeState::with_workspace_for_test(workspace).unwrap();
+    let (entered_tx, entered_rx) = sync_channel(1);
+    let (release_tx, release_rx) = sync_channel(1);
+    let release_rx = Mutex::new(release_rx);
+    state.set_catalog_download_hook_for_test(Arc::new(move || {
+        entered_tx.send(()).unwrap();
+        release_rx.lock().unwrap().recv().unwrap();
+    }));
+    let request = InstallSkillFromCatalogRequest {
+        source_id: "anthropic".to_owned(),
+        entry_id: "anthropic:frontend-design".to_owned(),
+        version: Some("main".to_owned()),
+        operation_id: Some("catalog-lock-scope".to_owned()),
+    };
+
+    jyowo_desktop_shell::commands::start_skill_catalog_install_task_with_runtime_state(
+        request,
+        state.clone(),
+        None,
+    )
+    .await
+    .unwrap();
+    tokio::task::spawn_blocking(move || {
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+    })
+    .await
+    .unwrap();
+
+    tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        list_skills_with_runtime_state(&state),
+    )
+    .await
+    .expect("unrelated skill-store mutation must acquire the lock during download")
+    .unwrap();
+    release_tx.send(()).unwrap();
 }
 
 #[tokio::test]

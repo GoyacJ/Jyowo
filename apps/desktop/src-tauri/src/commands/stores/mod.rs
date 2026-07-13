@@ -39,6 +39,7 @@ mod mcp;
 pub(crate) mod plugin;
 mod project_config;
 pub(crate) mod skill;
+mod skill_catalog_tasks;
 mod skill_config;
 
 pub use global_config::GlobalConfigStore;
@@ -47,6 +48,7 @@ pub(crate) use mcp::DesktopMcpServerStore;
 pub use plugin::DesktopPluginStore;
 pub use project_config::ProjectConfigStore;
 pub use skill::DesktopSkillStore;
+pub(crate) use skill_catalog_tasks::DesktopSkillCatalogTaskStore;
 pub use skill_config::{DesktopSkillConfigStore, SkillConfigStoreFault};
 
 pub(crate) fn read_json_file<T: DeserializeOwned>(
@@ -641,6 +643,22 @@ impl NoFollowParentDir {
             Path::new(destination_name),
         )
         .map_err(|error| runtime_operation_failed(format!("{label} commit failed: {error}")))
+    }
+
+    fn rename_to(
+        &self,
+        destination: &NoFollowParentDir,
+        label: &str,
+    ) -> Result<(), CommandErrorPayload> {
+        rustix::fs::renameat(
+            &self.directory,
+            Path::new(self.file_name()),
+            &destination.directory,
+            Path::new(destination.file_name()),
+        )
+        .map_err(|error| runtime_operation_failed(format!("{label} final swap failed: {error}")))?;
+        self.sync_all(label)?;
+        destination.sync_all(label)
     }
 
     fn hard_link_file(
@@ -2334,8 +2352,9 @@ pub struct DesktopRuntimeState {
     pub(crate) execution_settings_store: Arc<DesktopExecutionSettingsStore>,
     pub(crate) global_config_store: Option<GlobalConfigStore>,
     pub(crate) project_config_store: Option<ProjectConfigStore>,
-    pub(crate) skill_catalog_install_tasks:
-        Arc<RwLock<HashMap<SkillCatalogInstallTaskKey, SkillCatalogInstallTaskPayload>>>,
+    pub(crate) skill_catalog_install_task_store: Arc<DesktopSkillCatalogTaskStore>,
+    pub(crate) catalog_download_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub(crate) catalog_materialize_hook: Option<SkillCatalogMaterializeHook>,
     pub(crate) skill_store: Arc<dyn SkillStore>,
     pub(crate) skill_config_store: Arc<DesktopSkillConfigStore>,
     pub(crate) skill_store_lock: Arc<tokio::sync::Mutex<()>>,

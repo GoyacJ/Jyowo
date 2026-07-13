@@ -260,16 +260,17 @@ pub use runtime::{
 pub use runtime_tools::*;
 pub use skills::{
     clear_skill_secret_with_runtime_state, delete_skill_with_runtime_state,
-    get_skill_catalog_entry_with_runtime_state, get_skill_catalog_file_with_runtime_state,
-    get_skill_config_with_runtime_state, get_skill_detail_with_runtime_state,
-    get_skill_file_with_runtime_state, import_skill_with_runtime_state,
-    install_skill_from_catalog_package_with_runtime_state,
+    get_or_create_skill_catalog_install_task, get_skill_catalog_entry_with_runtime_state,
+    get_skill_catalog_file_with_runtime_state, get_skill_config_with_runtime_state,
+    get_skill_detail_with_runtime_state, get_skill_file_with_runtime_state,
+    import_skill_with_runtime_state, install_skill_from_catalog_package_with_runtime_state,
     install_skill_from_catalog_with_progress, install_skill_from_catalog_with_runtime_state,
     list_skill_catalog_entries_with_runtime_state,
     list_skill_catalog_install_tasks_with_runtime_state,
     list_skill_catalog_sources_with_runtime_state, list_skills_with_runtime_state,
-    set_skill_config_value_with_runtime_state, set_skill_enabled_with_runtime_state,
-    set_skill_secret_with_runtime_state, start_skill_catalog_install_task_with_runtime_state,
+    record_skill_catalog_install_task_progress, set_skill_config_value_with_runtime_state,
+    set_skill_enabled_with_runtime_state, set_skill_secret_with_runtime_state,
+    start_skill_catalog_install_task_with_runtime_state,
 };
 pub use stores::{
     DesktopMcpDiagnosticStore, DesktopModelUsageRollupStore, DesktopPluginStore,
@@ -1013,6 +1014,7 @@ pub async fn install_skill_from_catalog(
         let window = window.clone();
         Arc::new(move |payload: SkillCatalogInstallProgressPayload| {
             let _ = window.emit("skill_catalog_install_progress", payload);
+            Ok(())
         }) as SkillCatalogInstallProgressEmitter
     });
     start_skill_catalog_install_task_with_runtime_state(

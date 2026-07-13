@@ -82,6 +82,7 @@ mod tests {
         let captured_events = events.clone();
         let emitter: Option<SkillCatalogInstallProgressEmitter> = Some(Arc::new(move |payload| {
             captured_events.lock().unwrap().push(payload);
+            Ok(())
         }));
         let request = InstallSkillFromCatalogRequest {
             source_id: "anthropic".to_owned(),
@@ -90,7 +91,7 @@ mod tests {
             operation_id: Some("catalog-install-001".to_owned()),
         };
 
-        emit_skill_catalog_install_progress(&emitter, &request, "downloading", 250, None);
+        emit_skill_catalog_install_progress(&emitter, &request, "downloading", 250, None).unwrap();
 
         let recorded_events = events.lock().unwrap();
         assert_eq!(recorded_events.len(), 1);
@@ -108,13 +109,14 @@ mod tests {
             "downloading",
             25,
             None,
-        );
+        )
+        .unwrap();
 
         assert_eq!(events.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
-    async fn skill_catalog_install_tasks_are_deduped_and_listable_by_entry() {
+    async fn skill_catalog_install_tasks_are_keyed_by_operation_id() {
         let workspace = tempfile::tempdir().unwrap();
         let state =
             DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf()).unwrap();
@@ -139,8 +141,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(duplicate.operation_id, first.operation_id);
-        assert_eq!(tasks.tasks.len(), 1);
+        assert_ne!(duplicate.operation_id, first.operation_id);
+        assert_eq!(tasks.tasks.len(), 2);
         assert_eq!(tasks.tasks[0].operation_id, "catalog-install-001");
         assert_eq!(tasks.tasks[0].stage, "downloading");
         assert_eq!(tasks.tasks[0].percent, 45);
