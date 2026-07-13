@@ -7,13 +7,17 @@ use harness_contracts::{NoopRedactor, SkillConfigDocument, SkillStatus};
 use harness_skill::{
     parse_skill_markdown, SkillConfigDecl, SkillParamType, SkillPlatform, SkillSource,
 };
-use jyowo_desktop_shell::commands::stores::{DesktopSkillConfigStore, SkillConfigStoreFault};
+use jyowo_desktop_shell::commands::stores::{
+    DesktopSkillConfigStore, GlobalConfigStore, SkillConfigStoreFault,
+};
 use jyowo_desktop_shell::commands::{
-    get_skill_config_with_runtime_state,
+    get_skill_config_with_runtime_state, get_skill_detail_with_runtime_state,
+    import_skill_with_runtime_state, list_skills_with_runtime_state,
     reload_desktop_settings_runtime_after_plugin_change_for_test,
     runtime_state_with_skill_config_store_for_test, set_skill_config_value_with_runtime_state,
-    DesktopRuntimeState, GetSkillConfigRequest, SetSkillConfigValueRequest, SkillStore,
-    SkillStoreRecord,
+    set_skill_enabled_with_runtime_state, DesktopRuntimeState, GetSkillConfigRequest,
+    GetSkillDetailRequest, ImportSkillRequest, SetSkillConfigValueRequest, SetSkillEnabledRequest,
+    SkillStore, SkillStoreRecord,
 };
 use jyowo_desktop_shell::storage_layout::{JyowoHome, StorageLayout};
 use jyowo_harness_sdk::ext::StreamBrokerConfig;
@@ -31,6 +35,94 @@ struct MemorySecretStore {
 #[derive(Debug, Default)]
 struct BlockingLoadGate {
     gate: Mutex<Option<(SyncSender<()>, Receiver<()>)>>,
+}
+
+#[tokio::test]
+async fn package_integrity_list_marks_a_tampered_installed_skill_rejected() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().canonicalize().unwrap();
+    let layout = test_layout(&workspace);
+    let settings_runtime = test_settings_runtime(&workspace).await;
+    let mut state = DesktopRuntimeState::with_settings_runtime_for_workspace(
+        workspace.clone(),
+        settings_runtime,
+    )
+    .unwrap();
+    let skill_store = Arc::new(jyowo_desktop_shell::commands::DesktopSkillStore::global(
+        layout.clone(),
+    ));
+    state.set_skill_store_for_test(skill_store.clone());
+    state.set_config_stores_for_test(GlobalConfigStore::new(layout.clone()), None);
+
+    let source = workspace.join("source-skill");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(
+        source.join("SKILL.md"),
+        "---\nname: integrity-test\ndescription: Integrity test\n---\nOriginal body.\n",
+    )
+    .unwrap();
+    let imported = import_skill_with_runtime_state(
+        ImportSkillRequest {
+            source_path: source.to_string_lossy().into_owned(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let package = layout
+        .global_skills_root()
+        .join("packages")
+        .join(&imported.skill.id);
+    std::fs::write(
+        package.join("SKILL.md"),
+        "---\nname: integrity-test\ndescription: Integrity test\n---\nTampered body.\n",
+    )
+    .unwrap();
+
+    let response = list_skills_with_runtime_state(&state).await.unwrap();
+    let summary = response
+        .skills
+        .iter()
+        .find(|skill| skill.id == imported.skill.id)
+        .unwrap();
+    assert_eq!(summary.status, "rejected");
+
+    let detail = get_skill_detail_with_runtime_state(
+        GetSkillDetailRequest {
+            id: imported.skill.id.clone(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    assert_eq!(detail.skill.summary.status, "rejected");
+    assert!(detail.skill.validation_error.is_some());
+
+    set_skill_enabled_with_runtime_state(
+        SetSkillEnabledRequest {
+            id: imported.skill.id.clone(),
+            enabled: false,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let enabled = set_skill_enabled_with_runtime_state(
+        SetSkillEnabledRequest {
+            id: imported.skill.id.clone(),
+            enabled: true,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    assert_eq!(enabled.skill.status, "rejected");
+    assert!(state
+        .settings_runtime()
+        .unwrap()
+        .view_runtime_skill("integrity-test", false)
+        .unwrap()
+        .is_none());
 }
 
 impl BlockingLoadGate {

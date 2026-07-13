@@ -1367,6 +1367,12 @@ pub trait SkillStore: Send + Sync {
     fn enabled_dir(&self) -> PathBuf;
     fn load_records(&self) -> Result<Vec<SkillStoreRecord>, CommandErrorPayload>;
     fn save_records(&self, records: &[SkillStoreRecord]) -> Result<(), CommandErrorPayload>;
+    fn current_package_hash(
+        &self,
+        _record: &SkillStoreRecord,
+    ) -> Result<Option<String>, CommandErrorPayload> {
+        Ok(None)
+    }
     fn write_skill_package(
         &self,
         id: &str,

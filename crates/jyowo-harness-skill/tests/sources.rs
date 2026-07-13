@@ -3,7 +3,7 @@ use harness_skill::{
     McpSkillRecord, McpSource, SkillFilter, SkillLoader, SkillPlatform, SkillRegistry, SkillSource,
     SkillSourceConfig, UserSource, WorkspaceSource,
 };
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 #[tokio::test]
 async fn workspace_source_loads_markdown_files() {
@@ -100,7 +100,7 @@ Package body
         .with_source(SkillSourceConfig::DirectoryPackages {
             path: root.clone(),
             source_kind: harness_skill::DirectorySourceKind::Workspace,
-            allowed_package_ids: None,
+            expected_package_hashes: None,
         })
         .with_runtime_platform(SkillPlatform::Macos)
         .load_all()
@@ -139,11 +139,16 @@ Package body
         .expect("write package skill");
     }
 
+    let expected_hash = harness_skill::hash_skill_package(&root.join("enabled-skill"))
+        .expect("hash enabled package");
     let report = SkillLoader::default()
         .with_source(SkillSourceConfig::DirectoryPackages {
             path: root.clone(),
             source_kind: harness_skill::DirectorySourceKind::Workspace,
-            allowed_package_ids: Some(BTreeSet::from(["enabled-skill".to_owned()])),
+            expected_package_hashes: Some(BTreeMap::from([(
+                "enabled-skill".to_owned(),
+                expected_hash,
+            )])),
         })
         .with_runtime_platform(SkillPlatform::Macos)
         .load_all()
@@ -158,6 +163,55 @@ Package body
             .collect::<Vec<_>>(),
         vec!["enabled-skill"]
     );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn skill_loader_rejects_package_hash_mismatch_before_registration() {
+    let root = unique_temp_dir("package-integrity-source");
+    let package = root.join("tampered-skill");
+    std::fs::create_dir_all(&package).expect("package dir");
+    std::fs::write(
+        package.join("SKILL.md"),
+        "---\nname: tampered-skill\ndescription: Tampered skill\n---\nBody.\n",
+    )
+    .expect("write skill");
+
+    let report = SkillLoader::default()
+        .with_source(SkillSourceConfig::DirectoryPackages {
+            path: root.clone(),
+            source_kind: harness_skill::DirectorySourceKind::User,
+            expected_package_hashes: Some(BTreeMap::from([(
+                "tampered-skill".to_owned(),
+                "recorded-before-tamper".to_owned(),
+            )])),
+        })
+        .with_runtime_platform(SkillPlatform::Macos)
+        .load_all()
+        .await
+        .expect("mismatch should be a per-package rejection");
+
+    assert!(report.loaded.is_empty());
+    assert_eq!(report.rejected.len(), 1);
+    assert!(format!("{:?}", report.rejected[0].reason).contains("content hash mismatch"));
+
+    let frozen_report = SkillLoader::default()
+        .with_source(SkillSourceConfig::DirectoryPackages {
+            path: root.clone(),
+            source_kind: harness_skill::DirectorySourceKind::User,
+            expected_package_hashes: Some(BTreeMap::from([(
+                "tampered-skill".to_owned(),
+                "recorded-before-tamper".to_owned(),
+            )])),
+        })
+        .freeze_directory_sources()
+        .expect("freeze should preserve a per-package rejection")
+        .load_all()
+        .await
+        .expect("frozen mismatch should remain a report rejection");
+    assert!(frozen_report.loaded.is_empty());
+    assert_eq!(frozen_report.rejected.len(), 1);
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -187,7 +241,10 @@ External body
         .with_source(SkillSourceConfig::DirectoryPackages {
             path: root.clone(),
             source_kind: harness_skill::DirectorySourceKind::Workspace,
-            allowed_package_ids: Some(BTreeSet::from(["enabled-skill".to_owned()])),
+            expected_package_hashes: Some(BTreeMap::from([(
+                "enabled-skill".to_owned(),
+                "expected-hash".to_owned(),
+            )])),
         })
         .with_runtime_platform(SkillPlatform::Macos)
         .load_all()
@@ -223,7 +280,10 @@ External body
         .with_source(SkillSourceConfig::DirectoryPackages {
             path: root.clone(),
             source_kind: harness_skill::DirectorySourceKind::Workspace,
-            allowed_package_ids: Some(BTreeSet::from(["external-skill".to_owned()])),
+            expected_package_hashes: Some(BTreeMap::from([(
+                "external-skill".to_owned(),
+                "expected-hash".to_owned(),
+            )])),
         })
         .with_runtime_platform(SkillPlatform::Macos)
         .load_all()

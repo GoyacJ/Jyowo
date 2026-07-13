@@ -245,6 +245,16 @@ impl RuntimeConfigResolver {
             &project_config_root.join(SKILLS_FILE),
             "project skill selection",
         )?;
+        let global_skill_index = read_optional_json::<Vec<SkillIndexRecord>>(
+            &global_home.join("skills/index.json"),
+            "global skill index",
+        )?
+        .unwrap_or_default();
+        let project_skill_index = read_optional_json::<Vec<SkillIndexRecord>>(
+            &project_root.join("skills/index.json"),
+            "project skill index",
+        )?
+        .unwrap_or_default();
         let enabled_skill_ids = project_skill_selection
             .as_ref()
             .map(|selection| selection.enabled.iter().cloned().collect())
@@ -254,6 +264,8 @@ impl RuntimeConfigResolver {
             &workspace_root,
             &global_skill_selection,
             project_skill_selection.as_ref(),
+            &global_skill_index,
+            &project_skill_index,
         )
         .freeze_directory_sources()
         .map_err(|source| RuntimeConfigError::Invalid {
@@ -1537,24 +1549,44 @@ fn build_skill_loader(
     workspace_root: &Path,
     global: &SkillSelectionRecord,
     project: Option<&SkillSelectionRecord>,
+    global_index: &[SkillIndexRecord],
+    project_index: &[SkillIndexRecord],
 ) -> SkillLoader {
-    let global_allowed = project
-        .map(|selection| selection.enabled.iter().cloned().collect())
-        .unwrap_or_else(|| global.enabled.iter().cloned().collect());
-    let project_allowed = project
-        .map(|selection| selection.enabled.iter().cloned().collect())
+    let global_enabled = project.unwrap_or(global);
+    let global_expected = expected_skill_package_hashes(global_index, global_enabled);
+    let project_expected = project
+        .map(|selection| expected_skill_package_hashes(project_index, selection))
         .unwrap_or_default();
     SkillLoader::default()
         .with_source(SkillSourceConfig::DirectoryPackages {
             path: global_home.join("skills/packages"),
             source_kind: DirectorySourceKind::User,
-            allowed_package_ids: Some(global_allowed),
+            expected_package_hashes: Some(global_expected),
         })
         .with_source(SkillSourceConfig::DirectoryPackages {
             path: workspace_root.join(".jyowo/skills/packages"),
             source_kind: DirectorySourceKind::Workspace,
-            allowed_package_ids: Some(project_allowed),
+            expected_package_hashes: Some(project_expected),
         })
+}
+
+fn expected_skill_package_hashes(
+    index: &[SkillIndexRecord],
+    selection: &SkillSelectionRecord,
+) -> BTreeMap<String, String> {
+    let enabled = selection.enabled.iter().collect::<HashSet<_>>();
+    index
+        .iter()
+        .filter(|record| enabled.contains(&record.id))
+        .map(|record| (record.id.clone(), record.content_hash.clone()))
+        .collect()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillIndexRecord {
+    id: String,
+    content_hash: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

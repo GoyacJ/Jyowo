@@ -64,6 +64,16 @@ impl SkillStore for DesktopSkillStore {
         write_skill_records(&self.index_path(), records)
     }
 
+    fn current_package_hash(
+        &self,
+        record: &SkillStoreRecord,
+    ) -> Result<Option<String>, CommandErrorPayload> {
+        ensure_skill_id(&record.id)?;
+        let package_root = self.skill_dir(&record.id, record.enabled);
+        ensure_no_symlink_components(&package_root, "skill package")?;
+        hash_skill_package(&package_root).map(Some)
+    }
+
     fn write_skill_package(
         &self,
         id: &str,

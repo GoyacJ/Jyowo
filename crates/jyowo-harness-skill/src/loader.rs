@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -48,6 +48,9 @@ pub enum SkillSourceConfig {
     Preloaded {
         skills: Vec<Skill>,
     },
+    Frozen {
+        report: LoadReport,
+    },
     BundledRecords {
         records: Vec<BundledSkillRecord>,
     },
@@ -58,7 +61,7 @@ pub enum SkillSourceConfig {
     DirectoryPackages {
         path: PathBuf,
         source_kind: DirectorySourceKind,
-        allowed_package_ids: Option<BTreeSet<String>>,
+        expected_package_hashes: Option<BTreeMap<String, String>>,
     },
     McpRecords {
         server_id: McpServerId,
@@ -94,6 +97,9 @@ enum PrefetchLoadUnit {
     Preloaded {
         skill: Skill,
     },
+    Rejected {
+        rejection: SkillRejection,
+    },
     Bundled {
         record: BundledSkillRecord,
     },
@@ -104,6 +110,7 @@ enum PrefetchLoadUnit {
     Directory {
         raw_path: PathBuf,
         source: SkillSource,
+        expected_package_hash: Option<String>,
     },
 }
 
@@ -273,25 +280,45 @@ impl SkillLoader {
                 SkillSourceConfig::DirectoryPackages {
                     path,
                     source_kind,
-                    allowed_package_ids,
+                    expected_package_hashes,
                 } => {
                     if !path.exists() {
                         continue;
                     }
                     let source = source_from_directory(path.clone(), &source_kind);
-                    let skills = directory_package_skill_paths(&path, &allowed_package_ids)?
-                        .into_iter()
-                        .map(|raw_path| {
-                            let markdown = std::fs::read_to_string(&raw_path)?;
-                            parse_skill_markdown(
-                                &markdown,
-                                source.clone(),
-                                Some(raw_path),
-                                self.runtime_platform,
-                            )
-                        })
-                        .collect::<Result<Vec<_>, SkillError>>()?;
-                    frozen.push(SkillSourceConfig::Preloaded { skills });
+                    let mut report = LoadReport {
+                        loaded: Vec::new(),
+                        rejected: Vec::new(),
+                    };
+                    for raw_path in directory_package_skill_paths(&path, &expected_package_hashes)?
+                    {
+                        if let Some(rejection) = package_integrity_rejection(
+                            &raw_path,
+                            expected_hash_for_path(&raw_path, &expected_package_hashes),
+                            &source,
+                        ) {
+                            report.rejected.push(rejection);
+                            continue;
+                        }
+                        match std::fs::read_to_string(&raw_path)
+                            .map_err(SkillError::from)
+                            .and_then(|markdown| {
+                                parse_skill_markdown(
+                                    &markdown,
+                                    source.clone(),
+                                    Some(raw_path.clone()),
+                                    self.runtime_platform,
+                                )
+                            }) {
+                            Ok(skill) => report.loaded.push(skill),
+                            Err(error) => report.rejected.push(SkillRejection {
+                                source: source.clone(),
+                                raw_path: Some(raw_path),
+                                reason: SkillRejectReason::from_error(&error),
+                            }),
+                        }
+                    }
+                    frozen.push(SkillSourceConfig::Frozen { report });
                 }
                 source => frozen.push(source),
             }
@@ -325,6 +352,27 @@ impl SkillLoader {
             match source {
                 SkillSourceConfig::Preloaded { skills } => {
                     for skill in skills {
+                        match self
+                            .validate_loaded_skill(skill.clone(), skill.raw_path.as_deref())
+                            .await
+                        {
+                            Ok(skill) => {
+                                self.emit_loaded(&skill).await;
+                                loaded.push(skill);
+                            }
+                            Err(rejection) => {
+                                self.emit_rejected(&rejection).await;
+                                rejected.push(rejection);
+                            }
+                        }
+                    }
+                }
+                SkillSourceConfig::Frozen { report } => {
+                    for rejection in &report.rejected {
+                        self.emit_rejected(rejection).await;
+                        rejected.push(rejection.clone());
+                    }
+                    for skill in &report.loaded {
                         match self
                             .validate_loaded_skill(skill.clone(), skill.raw_path.as_deref())
                             .await
@@ -418,13 +466,22 @@ impl SkillLoader {
                 SkillSourceConfig::DirectoryPackages {
                     path,
                     source_kind,
-                    allowed_package_ids,
+                    expected_package_hashes,
                 } => {
                     if !path.exists() {
                         continue;
                     }
-                    for raw_path in directory_package_skill_paths(path, allowed_package_ids)? {
+                    for raw_path in directory_package_skill_paths(path, expected_package_hashes)? {
                         let source = source_from_directory(path.clone(), source_kind);
+                        if let Some(rejection) = package_integrity_rejection(
+                            &raw_path,
+                            expected_hash_for_path(&raw_path, expected_package_hashes),
+                            &source,
+                        ) {
+                            self.emit_rejected(&rejection).await;
+                            rejected.push(rejection);
+                            continue;
+                        }
                         let markdown = std::fs::read_to_string(&raw_path)?;
                         match parse_skill_markdown(
                             &markdown,
@@ -481,6 +538,33 @@ impl SkillLoader {
             match source {
                 SkillSourceConfig::Preloaded { skills } => {
                     for skill in skills {
+                        if reached_limit(loaded.len(), limit) {
+                            break;
+                        }
+                        if !matches_hint(&skill.name, hints) {
+                            continue;
+                        }
+                        match self
+                            .validate_loaded_skill(skill.clone(), skill.raw_path.as_deref())
+                            .await
+                        {
+                            Ok(skill) => {
+                                self.emit_loaded(&skill).await;
+                                loaded.push(skill);
+                            }
+                            Err(rejection) => {
+                                self.emit_rejected(&rejection).await;
+                                rejected.push(rejection);
+                            }
+                        }
+                    }
+                }
+                SkillSourceConfig::Frozen { report } => {
+                    for rejection in &report.rejected {
+                        self.emit_rejected(rejection).await;
+                        rejected.push(rejection.clone());
+                    }
+                    for skill in &report.loaded {
                         if reached_limit(loaded.len(), limit) {
                             break;
                         }
@@ -614,16 +698,25 @@ impl SkillLoader {
                 SkillSourceConfig::DirectoryPackages {
                     path,
                     source_kind,
-                    allowed_package_ids,
+                    expected_package_hashes,
                 } => {
                     if !path.exists() {
                         continue;
                     }
-                    for raw_path in directory_package_skill_paths(path, allowed_package_ids)? {
+                    for raw_path in directory_package_skill_paths(path, expected_package_hashes)? {
                         if reached_limit(loaded.len(), limit) {
                             break;
                         }
                         let source = source_from_directory(path.clone(), source_kind);
+                        if let Some(rejection) = package_integrity_rejection(
+                            &raw_path,
+                            expected_hash_for_path(&raw_path, expected_package_hashes),
+                            &source,
+                        ) {
+                            self.emit_rejected(&rejection).await;
+                            rejected.push(rejection);
+                            continue;
+                        }
                         let markdown = std::fs::read_to_string(&raw_path)?;
                         match parse_skill_markdown(
                             &markdown,
@@ -719,6 +812,26 @@ impl SkillLoader {
                         }
                     }
                 }
+                SkillSourceConfig::Frozen { report } => {
+                    for rejection in &report.rejected {
+                        if units.len() >= max_units {
+                            break;
+                        }
+                        units.push(PrefetchLoadUnit::Rejected {
+                            rejection: rejection.clone(),
+                        });
+                    }
+                    for skill in &report.loaded {
+                        if units.len() >= max_units {
+                            break;
+                        }
+                        if matches_hint(&skill.name, hints) {
+                            units.push(PrefetchLoadUnit::Preloaded {
+                                skill: skill.clone(),
+                            });
+                        }
+                    }
+                }
                 SkillSourceConfig::BundledRecords { records } => {
                     for record in records {
                         if units.len() >= max_units {
@@ -756,22 +869,28 @@ impl SkillLoader {
                         units.push(PrefetchLoadUnit::Directory {
                             raw_path,
                             source: source_from_directory(path.clone(), source_kind),
+                            expected_package_hash: None,
                         });
                     }
                 }
                 SkillSourceConfig::DirectoryPackages {
                     path,
                     source_kind,
-                    allowed_package_ids,
+                    expected_package_hashes,
                 } => {
                     if !path.exists() {
                         continue;
                     }
-                    for raw_path in directory_package_skill_paths(path, allowed_package_ids)? {
+                    for raw_path in directory_package_skill_paths(path, expected_package_hashes)? {
                         if units.len() >= max_units {
                             break;
                         }
                         units.push(PrefetchLoadUnit::Directory {
+                            expected_package_hash: expected_hash_for_path(
+                                &raw_path,
+                                expected_package_hashes,
+                            )
+                            .map(ToOwned::to_owned),
                             raw_path,
                             source: source_from_directory(path.clone(), source_kind),
                         });
@@ -795,6 +914,10 @@ impl SkillLoader {
                     .map_err(skill_error_from_rejection)?;
                 self.emit_loaded(&skill).await;
                 Ok(PrefetchUnitOutcome::Loaded(skill))
+            }
+            PrefetchLoadUnit::Rejected { rejection } => {
+                self.emit_rejected(&rejection).await;
+                Ok(PrefetchUnitOutcome::Rejected(rejection))
             }
             PrefetchLoadUnit::Bundled { record } => {
                 let skill = parse_skill_markdown(
@@ -841,7 +964,19 @@ impl SkillLoader {
                     }
                 }
             }
-            PrefetchLoadUnit::Directory { raw_path, source } => {
+            PrefetchLoadUnit::Directory {
+                raw_path,
+                source,
+                expected_package_hash,
+            } => {
+                if let Some(rejection) = package_integrity_rejection(
+                    &raw_path,
+                    expected_package_hash.as_deref(),
+                    &source,
+                ) {
+                    self.emit_rejected(&rejection).await;
+                    return Ok(PrefetchUnitOutcome::Rejected(rejection));
+                }
                 let markdown = std::fs::read_to_string(&raw_path)?;
                 match parse_skill_markdown(
                     &markdown,
@@ -1024,7 +1159,7 @@ impl SkillValidator {
         raw_path: Option<&Path>,
     ) -> Result<Skill, SkillRejection> {
         if let Some(scanner) = &self.threat_scanner {
-            if let Err(error) = self.scan_skill(&mut skill, scanner).await {
+            if let Err(error) = self.scan_skill(&mut skill, raw_path, scanner).await {
                 return Err(SkillRejection {
                     source: skill.source.clone(),
                     raw_path: raw_path.map(Path::to_path_buf),
@@ -1039,6 +1174,7 @@ impl SkillValidator {
     async fn scan_skill(
         &self,
         skill: &mut Skill,
+        raw_path: Option<&Path>,
         scanner: &MemoryThreatScanner,
     ) -> Result<(), SkillError> {
         if matches!(skill.source, SkillSource::Bundled) {
@@ -1056,6 +1192,15 @@ impl SkillValidator {
         let mut body = skill.body.clone();
         self.scan_skill_text(skill, &mut body, scanner).await?;
         skill.body = body;
+
+        if raw_path.is_some_and(|path| path.file_name().is_some_and(|name| name == "SKILL.md")) {
+            let package_root = raw_path
+                .and_then(Path::parent)
+                .expect("SKILL.md has a package parent");
+            for mut auxiliary in crate::scanner::auxiliary_skill_package_text(package_root)? {
+                self.scan_skill_text(skill, &mut auxiliary, scanner).await?;
+            }
+        }
 
         Ok(())
     }
@@ -1264,10 +1409,10 @@ fn directory_skill_paths(
 
 fn directory_package_skill_paths(
     path: &Path,
-    allowed_package_ids: &Option<BTreeSet<String>>,
+    expected_package_hashes: &Option<BTreeMap<String, String>>,
 ) -> Result<Vec<PathBuf>, SkillError> {
     let paths = directory_skill_paths(path, false)?;
-    let Some(allowed_package_ids) = allowed_package_ids else {
+    let Some(expected_package_hashes) = expected_package_hashes else {
         return Ok(paths);
     };
     Ok(paths
@@ -1277,9 +1422,141 @@ fn directory_package_skill_paths(
                 .parent()
                 .and_then(|package_dir| package_dir.file_name())
                 .and_then(|name| name.to_str())
-                .is_some_and(|package_id| allowed_package_ids.contains(package_id))
+                .is_some_and(|package_id| expected_package_hashes.contains_key(package_id))
         })
         .collect())
+}
+
+const MAX_SKILL_PACKAGE_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_SKILL_PACKAGE_FILE_BYTES: u64 = 1024 * 1024;
+const MAX_SKILL_PACKAGE_FILES: usize = 200;
+
+#[derive(Debug)]
+pub(crate) struct SkillPackageFile {
+    pub relative_path: PathBuf,
+    pub bytes: Vec<u8>,
+}
+
+pub(crate) fn read_skill_package_files(root: &Path) -> Result<Vec<SkillPackageFile>, SkillError> {
+    let metadata = std::fs::symlink_metadata(root)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(invalid_package_io(
+            "skill package root must be a regular directory",
+        ));
+    }
+    let mut files = Vec::new();
+    let mut total_bytes = 0_u64;
+    read_skill_package_dir(root, root, &mut files, &mut total_bytes)?;
+    Ok(files)
+}
+
+fn read_skill_package_dir(
+    root: &Path,
+    directory: &Path,
+    files: &mut Vec<SkillPackageFile>,
+    total_bytes: &mut u64,
+) -> Result<(), SkillError> {
+    let mut entries = std::fs::read_dir(directory)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort();
+    for path in entries {
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(invalid_package_io("skill package must not use symlinks"));
+        }
+        if metadata.is_dir() {
+            read_skill_package_dir(root, &path, files, total_bytes)?;
+            continue;
+        }
+        if !metadata.is_file() {
+            return Err(invalid_package_io(
+                "skill package may contain only files and directories",
+            ));
+        }
+        if metadata.len() > MAX_SKILL_PACKAGE_FILE_BYTES {
+            return Err(invalid_package_io("skill package file is too large"));
+        }
+        if files.len() >= MAX_SKILL_PACKAGE_FILES {
+            return Err(invalid_package_io("skill package has too many files"));
+        }
+        let bytes = std::fs::read(&path)?;
+        if bytes.len() as u64 > MAX_SKILL_PACKAGE_FILE_BYTES {
+            return Err(invalid_package_io("skill package file is too large"));
+        }
+        *total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+        if *total_bytes > MAX_SKILL_PACKAGE_BYTES {
+            return Err(invalid_package_io("skill package is too large"));
+        }
+        let relative_path = path
+            .strip_prefix(root)
+            .map_err(|_| invalid_package_io("skill package path escaped its root"))?
+            .to_path_buf();
+        files.push(SkillPackageFile {
+            relative_path,
+            bytes,
+        });
+    }
+    Ok(())
+}
+
+fn invalid_package_io(message: &'static str) -> SkillError {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message).into()
+}
+
+/// Hashes one package using the same path-and-content framing as Desktop storage.
+pub fn hash_skill_package(root: &Path) -> Result<String, SkillError> {
+    let mut hasher = blake3::Hasher::new();
+    for file in read_skill_package_files(root)? {
+        hasher.update(normalized_package_path(&file.relative_path).as_bytes());
+        hasher.update(&[0]);
+        hasher.update(&file.bytes);
+        hasher.update(&[0]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn normalized_package_path(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn expected_hash_for_path<'a>(
+    raw_path: &Path,
+    expected_package_hashes: &'a Option<BTreeMap<String, String>>,
+) -> Option<&'a str> {
+    let package_id = raw_path.parent()?.file_name()?.to_str()?;
+    expected_package_hashes
+        .as_ref()?
+        .get(package_id)
+        .map(String::as_str)
+}
+
+fn package_integrity_rejection(
+    raw_path: &Path,
+    expected_hash: Option<&str>,
+    source: &SkillSource,
+) -> Option<SkillRejection> {
+    let expected_hash = expected_hash?;
+    let package_root = raw_path.parent()?;
+    match hash_skill_package(package_root) {
+        Ok(actual_hash) if actual_hash == expected_hash => None,
+        Ok(_) => Some(SkillRejection {
+            source: source.clone(),
+            raw_path: Some(raw_path.to_path_buf()),
+            reason: SkillRejectReason::Io("skill package content hash mismatch".to_owned()),
+        }),
+        Err(error) => Some(SkillRejection {
+            source: source.clone(),
+            raw_path: Some(raw_path.to_path_buf()),
+            reason: SkillRejectReason::from_error(&error),
+        }),
+    }
 }
 
 fn reached_limit(loaded: usize, limit: Option<usize>) -> bool {

@@ -30,7 +30,9 @@ use super::*;
 use harness_contracts::{SkillConfigEntry, SkillSecretMetadata, SkillSelectionRecord};
 use harness_skill::{SkillConfigDecl, SkillParamType};
 use jyowo_harness_sdk::skill_config::SecretString;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+const SKILL_PACKAGE_INTEGRITY_ERROR: &str = "skill package content hash mismatch";
 
 pub fn get_skill_config_with_runtime_state(
     request: GetSkillConfigRequest,
@@ -129,7 +131,8 @@ fn resolve_skill_config_view(
     let runtime = state.settings_runtime().ok_or_else(|| {
         runtime_unavailable("Skill configuration requires the runtime skill facade.")
     })?;
-    let records = state.skill_store.load_records()?;
+    let mut records = state.skill_store.load_records()?;
+    refresh_skill_package_integrity(state.skill_store.as_ref(), &mut records);
     if let Some(record) = records.iter().find(|record| record.id == request_id) {
         if records
             .iter()
@@ -209,7 +212,8 @@ fn runtime_config_type(
 pub async fn list_skills_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<ListSkillsResponse, CommandErrorPayload> {
-    let records = state.skill_store.load_records()?;
+    let mut records = state.skill_store.load_records()?;
+    refresh_skill_package_integrity(state.skill_store.as_ref(), &mut records);
     let runtime = match state.settings_runtime() {
         Some(settings_runtime) => settings_runtime
             .list_runtime_skills()
@@ -805,7 +809,8 @@ pub async fn get_skill_detail_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<GetSkillDetailResponse, CommandErrorPayload> {
     ensure_skill_id(&request.id)?;
-    let records = state.skill_store.load_records()?;
+    let mut records = state.skill_store.load_records()?;
+    refresh_skill_package_integrity(state.skill_store.as_ref(), &mut records);
     let record = records.iter().find(|record| record.id == request.id);
     let enabled_ids = enabled_skill_ids_for_state(state)?;
     let settings_runtime = state.settings_runtime();
@@ -956,7 +961,14 @@ pub async fn set_skill_enabled_with_runtime_state(
             return Err(error);
         }
     }
-    let record = records[record_index].clone();
+    let record = state
+        .skill_store
+        .load_records()?
+        .into_iter()
+        .find(|record| record.id == request.id)
+        .ok_or_else(|| {
+            runtime_operation_failed("skill record disappeared after reload".to_owned())
+        })?;
     let runtime_status = if request.enabled {
         runtime_status_for_name(&settings_runtime, &record.name)
             .map_err(skill_config_runtime_error)?
@@ -1018,13 +1030,20 @@ pub(crate) async fn reload_managed_skills(
 ) -> Result<(), CommandErrorPayload> {
     if let Some(global_config) = &state.global_config_store {
         let global_skill_store = DesktopSkillStore::global(global_config.layout().clone());
-        let global_allowed = global_config
+        let enabled_ids = global_config
             .load_global_skill_selection_if_present()?
-            .map(|selection| selection.enabled.into_iter().collect());
+            .map(|selection| selection.enabled.into_iter().collect::<BTreeSet<_>>());
+        let mut records = global_skill_store.load_records()?;
+        let previous_records = records.clone();
+        refresh_skill_package_integrity(&global_skill_store, &mut records);
+        if records != previous_records {
+            global_skill_store.save_records(&records)?;
+        }
+        let expected_package_hashes = expected_package_hashes(&records, enabled_ids.as_ref());
         settings_runtime
-            .reload_user_managed_skills_with_allowed_package_ids(
+            .reload_user_managed_skills_with_expected_package_hashes(
                 global_skill_store.enabled_dir(),
-                global_allowed,
+                expected_package_hashes,
             )
             .await
             .map_err(|error| {
@@ -1033,4 +1052,45 @@ pub(crate) async fn reload_managed_skills(
     }
 
     Ok(())
+}
+
+pub(crate) fn expected_package_hashes(
+    records: &[SkillStoreRecord],
+    enabled_ids: Option<&BTreeSet<String>>,
+) -> Option<BTreeMap<String, String>> {
+    enabled_ids.map(|enabled_ids| {
+        records
+            .iter()
+            .filter(|record| enabled_ids.contains(&record.id))
+            .map(|record| (record.id.clone(), record.content_hash.clone()))
+            .collect()
+    })
+}
+
+fn refresh_skill_package_integrity(store: &dyn SkillStore, records: &mut [SkillStoreRecord]) {
+    for record in records {
+        let integrity_error = match store.current_package_hash(record) {
+            Ok(None) => continue,
+            Ok(Some(current_hash)) if current_hash == record.content_hash => None,
+            Ok(Some(_)) => Some(SKILL_PACKAGE_INTEGRITY_ERROR.to_owned()),
+            Err(error) => Some(format!(
+                "skill package integrity check failed: {}",
+                error.message
+            )),
+        };
+        match integrity_error {
+            Some(error) => record.last_validation_error = Some(error),
+            None if record
+                .last_validation_error
+                .as_deref()
+                .is_some_and(|error| {
+                    error == SKILL_PACKAGE_INTEGRITY_ERROR
+                        || error.starts_with("skill package integrity check failed:")
+                }) =>
+            {
+                record.last_validation_error = None;
+            }
+            None => {}
+        }
+    }
 }

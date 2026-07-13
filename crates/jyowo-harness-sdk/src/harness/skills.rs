@@ -152,21 +152,21 @@ impl Harness {
         &self,
         enabled_dir: impl AsRef<Path>,
     ) -> Result<(), HarnessError> {
-        self.reload_workspace_managed_skills_with_allowed_package_ids(enabled_dir, None)
+        self.reload_workspace_managed_skills_with_expected_package_hashes(enabled_dir, None)
             .await
     }
 
-    pub async fn reload_workspace_managed_skills_with_allowed_package_ids(
+    pub async fn reload_workspace_managed_skills_with_expected_package_hashes(
         &self,
         enabled_dir: impl AsRef<Path>,
-        allowed_package_ids: Option<std::collections::BTreeSet<String>>,
+        expected_package_hashes: Option<std::collections::BTreeMap<String, String>>,
     ) -> Result<(), HarnessError> {
         let enabled_dir = enabled_dir.as_ref().to_path_buf();
         let source = SkillSource::Workspace(enabled_dir.clone());
         let loader = SkillLoader::default().with_source(SkillSourceConfig::DirectoryPackages {
             path: enabled_dir,
             source_kind: DirectorySourceKind::Workspace,
-            allowed_package_ids,
+            expected_package_hashes,
         });
         let report = loader.load_all().await.map_err(|error| {
             HarnessError::Other(format!("load workspace skills failed: {error}"))
@@ -182,21 +182,21 @@ impl Harness {
         &self,
         enabled_dir: impl AsRef<Path>,
     ) -> Result<(), HarnessError> {
-        self.reload_user_managed_skills_with_allowed_package_ids(enabled_dir, None)
+        self.reload_user_managed_skills_with_expected_package_hashes(enabled_dir, None)
             .await
     }
 
-    pub async fn reload_user_managed_skills_with_allowed_package_ids(
+    pub async fn reload_user_managed_skills_with_expected_package_hashes(
         &self,
         enabled_dir: impl AsRef<Path>,
-        allowed_package_ids: Option<std::collections::BTreeSet<String>>,
+        expected_package_hashes: Option<std::collections::BTreeMap<String, String>>,
     ) -> Result<(), HarnessError> {
         let enabled_dir = enabled_dir.as_ref().to_path_buf();
         let source = SkillSource::User(enabled_dir.clone());
         let loader = SkillLoader::default().with_source(SkillSourceConfig::DirectoryPackages {
             path: enabled_dir,
             source_kind: DirectorySourceKind::User,
-            allowed_package_ids,
+            expected_package_hashes,
         });
         let report = loader
             .load_all()

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -109,13 +109,16 @@ impl DesktopSettingsRuntime {
             .await
     }
 
-    pub async fn reload_user_managed_skills_with_allowed_package_ids(
+    pub async fn reload_user_managed_skills_with_expected_package_hashes(
         &self,
         enabled_dir: impl AsRef<Path>,
-        allowed_package_ids: Option<BTreeSet<String>>,
+        expected_package_hashes: Option<BTreeMap<String, String>>,
     ) -> Result<(), HarnessError> {
         self.inner
-            .reload_user_managed_skills_with_allowed_package_ids(enabled_dir, allowed_package_ids)
+            .reload_user_managed_skills_with_expected_package_hashes(
+                enabled_dir,
+                expected_package_hashes,
+            )
             .await
     }
 }

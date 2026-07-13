@@ -998,12 +998,15 @@ pub(crate) async fn build_desktop_settings_runtime(
     let global_config_store = global_config_store_for_home();
     let global_skill_selection = global_config_store
         .load_global_skill_selection_if_present()?
-        .map(|selection| selection.enabled.into_iter().collect());
+        .map(|selection| selection.enabled.into_iter().collect::<BTreeSet<_>>());
     let global_skill_store = DesktopSkillStore::global(storage_layout);
+    let records = global_skill_store.load_records()?;
+    let expected_package_hashes =
+        expected_package_hashes(&records, global_skill_selection.as_ref());
     let skill_loader = SkillLoader::default().with_source(SkillSourceConfig::DirectoryPackages {
         path: global_skill_store.enabled_dir(),
         source_kind: DirectorySourceKind::User,
-        allowed_package_ids: global_skill_selection,
+        expected_package_hashes,
     });
     let provider_credential_resolver: Arc<dyn ProviderCredentialResolverCap> =
         Arc::new(DesktopProviderCredentialResolver::new(

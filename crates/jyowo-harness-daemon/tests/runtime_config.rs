@@ -924,6 +924,35 @@ async fn skill_content_is_frozen_when_runtime_snapshot_is_resolved() {
 }
 
 #[tokio::test]
+async fn runtime_skill_loader_rejects_a_package_that_differs_from_its_index_hash() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_project(
+        "skills.json",
+        &SkillSelectionRecord {
+            enabled: vec!["tampered-skill".into()],
+        },
+    );
+    fixture.write_project_skill("tampered-skill", "original body");
+    fs::write(
+        fixture
+            .workspace
+            .join(".jyowo/skills/packages/tampered-skill/SKILL.md"),
+        "---\nname: tampered-skill\ndescription: tampered\n---\nchanged body\n",
+    )
+    .expect("tamper installed package");
+
+    let snapshot = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("integrity mismatch should not invalidate unrelated runtime config");
+    let report = snapshot.skill_loader.load_all().await.expect("load report");
+
+    assert!(report.loaded.is_empty());
+    assert_eq!(report.rejected.len(), 1);
+    assert!(format!("{:?}", report.rejected[0].reason).contains("content hash mismatch"));
+}
+
+#[tokio::test]
 async fn plugin_manifest_is_frozen_when_runtime_snapshot_is_resolved() {
     let fixture = RuntimeFixture::new();
     fixture.write_global_provider_files();
@@ -1490,6 +1519,15 @@ impl RuntimeFixture {
             ),
         )
         .expect("write project skill");
+        let content_hash = jyowo_harness_sdk::ext::hash_skill_package(&package)
+            .expect("hash project skill package");
+        write_json(
+            &self.workspace.join(".jyowo/skills/index.json"),
+            &serde_json::json!([{
+                "id": package_id,
+                "contentHash": content_hash,
+            }]),
+        );
     }
 
     fn write_global_plugin(&self, name: &str, description: &str) {

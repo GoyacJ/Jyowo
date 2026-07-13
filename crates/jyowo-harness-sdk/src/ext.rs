@@ -73,8 +73,8 @@ pub use harness_session::{
     BootstrapFileSpec, SessionOptions, Workspace, WorkspaceBootstrap, WorkspaceSpec,
 };
 pub use harness_skill::{
-    DirectorySourceKind, Skill, SkillConfigResolver, SkillLoader, SkillParamType, SkillPlatform,
-    SkillRegistry, SkillSourceConfig,
+    hash_skill_package, DirectorySourceKind, Skill, SkillConfigResolver, SkillLoader,
+    SkillParamType, SkillPlatform, SkillRegistry, SkillSourceConfig,
 };
 pub use harness_tool::{
     AuthorizationTicketClaims, AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset,
