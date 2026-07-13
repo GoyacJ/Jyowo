@@ -91,6 +91,7 @@ mod mcp;
 mod model_settings;
 mod plugins;
 mod projects;
+mod provider_continuation_runtime;
 mod providers;
 mod runtime;
 mod runtime_tools;

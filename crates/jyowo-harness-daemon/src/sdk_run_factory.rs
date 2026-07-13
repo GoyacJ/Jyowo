@@ -38,6 +38,7 @@ use harness_mcp::{
     McpTransport, NoopMcpEventSink, StdioEnv, StdioPolicy, StdioTransport, TransportChoice,
 };
 use harness_permission::{NoopDecisionPersistence, PermissionAuthority};
+use harness_provider_state::ProviderContinuationStore;
 use harness_sandbox::{LocalIsolation, LocalSandbox, SandboxBackend};
 use harness_subagent::{
     ChildRunOutcome, ChildRunRequest, DefaultSubagentRunner, DelegationPolicy,
@@ -183,8 +184,9 @@ fn apply_runtime_snapshot<M, S, SB>(
     builder: HarnessBuilder<M, S, SB>,
     snapshot: &RuntimeConfigSnapshot,
     mcp_config: McpConfig,
+    provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
 ) -> Result<HarnessBuilder<M, S, SB>, harness_plugin::PluginError> {
-    Ok(builder
+    let builder = builder
         .with_mcp_config(mcp_config)
         .with_plugin_registry(snapshot.materialize_plugin_registry()?)
         .with_skill_loader(snapshot.skill_loader.clone())
@@ -193,7 +195,11 @@ fn apply_runtime_snapshot<M, S, SB>(
         .with_capability::<dyn harness_contracts::ProviderCredentialResolverCap>(
             harness_contracts::ToolCapability::ProviderCredentialResolver,
             Arc::clone(&snapshot.provider_credential_resolver),
-        ))
+        );
+    Ok(match provider_continuation_store {
+        Some(store) => builder.with_provider_continuation_store_arc(store),
+        None => builder,
+    })
 }
 
 async fn mcp_config_from_runtime_snapshot(
@@ -464,6 +470,7 @@ pub struct SdkRunCoordinatorFactory {
     blob_root: PathBuf,
     permissions: Arc<PermissionBroker>,
     redactor: Arc<dyn Redactor>,
+    provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
     subagent_engines: Arc<SdkSubagentEngineRegistry>,
     segments: Arc<Mutex<HashMap<(TaskId, RunSegmentId), SharedSegment>>>,
 }
@@ -526,6 +533,7 @@ struct SdkSubagentRuntimeTemplate {
     runtime_config: RuntimeConfigSnapshot,
     permissions: Arc<PermissionBroker>,
     redactor: Arc<dyn Redactor>,
+    provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
     workspace_tools: WorkspaceToolDispatcher,
     agent_tool_policy: AgentToolPolicy,
 }
@@ -688,6 +696,7 @@ impl SubagentEngineFactory for SdkIsolatedSubagentEngineFactory {
             harness_builder,
             &self.runtime.runtime_config,
             mcp_runtime.config(),
+            self.runtime.provider_continuation_store.clone(),
         )
         .map_err(|error| SubagentError::Engine(error.to_string()))?
         .build()
@@ -766,9 +775,19 @@ impl SdkRunCoordinatorFactory {
             blob_root: blob_root.into(),
             permissions,
             redactor,
+            provider_continuation_store: None,
             subagent_engines,
             segments: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    #[must_use]
+    pub fn with_provider_continuation_store_arc(
+        mut self,
+        store: Arc<dyn ProviderContinuationStore>,
+    ) -> Self {
+        self.provider_continuation_store = Some(store);
+        self
     }
 
     fn running_segment(segment_id: RunSegmentId, shared: SharedSegment) -> RunningSegment {
@@ -795,6 +814,7 @@ impl SdkRunCoordinatorFactory {
         blob_root: PathBuf,
         permissions: Arc<PermissionBroker>,
         redactor: Arc<dyn Redactor>,
+        provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
         request: StartSegmentRequest,
         workspace_tools: WorkspaceToolDispatcher,
         subagent_runner: Arc<dyn SubagentRunner>,
@@ -905,6 +925,7 @@ impl SdkRunCoordinatorFactory {
                     runtime_config: runtime_config.clone(),
                     permissions: Arc::clone(&permissions),
                     redactor: Arc::clone(&redactor),
+                    provider_continuation_store: provider_continuation_store.clone(),
                     workspace_tools: workspace_tools.clone(),
                     agent_tool_policy: agent_tool_policy.clone(),
                 }),
@@ -949,12 +970,16 @@ impl SdkRunCoordinatorFactory {
         } else {
             harness_builder
         };
-        let harness =
-            apply_runtime_snapshot(harness_builder, &runtime_config, mcp_runtime.config())
-                .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?
-                .build()
-                .await
-                .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?;
+        let harness = apply_runtime_snapshot(
+            harness_builder,
+            &runtime_config,
+            mcp_runtime.config(),
+            provider_continuation_store,
+        )
+        .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?
+        .build()
+        .await
+        .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?;
 
         let session_options = SessionOptions::new(&workspace_root)
             .with_project_workspace_root(&runtime_config.workspace_root)
@@ -1654,6 +1679,7 @@ impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
             let blob_root = self.blob_root.clone();
             let permissions = Arc::clone(&self.permissions);
             let redactor = Arc::clone(&self.redactor);
+            let provider_continuation_store = self.provider_continuation_store.clone();
             let subagent_engines = Arc::clone(&self.subagent_engines);
             let segments = Arc::clone(&self.segments);
             let request_digest = request_digest.clone();
@@ -1667,6 +1693,7 @@ impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
                     blob_root,
                     permissions,
                     redactor,
+                    provider_continuation_store,
                     request,
                     workspace_tools,
                     subagent_runner,
@@ -2093,15 +2120,15 @@ mod tests {
         path::Path,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc,
+            Arc, Mutex,
         },
     };
 
     use async_trait::async_trait;
     use harness_contracts::{
-        ClientId, CommandId, DeferPolicy, Event, EventId, ExecutionDefaultsRecord,
-        ExecutionOverridesRecord, IndeterminateToolDecision, IndeterminateToolResolution,
-        ModelError, ModelProtocol, NoopRedactor, PermissionMode,
+        ClientId, CommandId, ConversationTurnInput, DeferPolicy, Event, EventId,
+        ExecutionDefaultsRecord, ExecutionOverridesRecord, IndeterminateToolDecision,
+        IndeterminateToolResolution, ModelError, ModelProtocol, NoopRedactor, PermissionMode,
         ProviderProfileConversationCapability, ProviderProfileDefinition,
         ProviderProfileModelDescriptor, ProviderProfileModelLifecycle, ProviderSecretEntry,
         ProviderSecretsRecord, ProviderSelectionRecord, QueueItemId, RunId, RunSegmentId,
@@ -2120,6 +2147,11 @@ mod tests {
     use harness_plugin::{
         PluginCapabilities, PluginLifecycleState, PluginManifest, PluginName, ToolManifestEntry,
     };
+    use harness_provider_state::{
+        FileProviderContinuationStore, ProviderContinuationKind, ProviderContinuationQuery,
+        ProviderContinuationRecord, ProviderContinuationScope, ProviderContinuationStore,
+        ProviderContinuationStoreError,
+    };
     use harness_sandbox::LocalIsolation;
     use harness_subagent::{
         ParentContext, SubagentError, SubagentHandle, SubagentRunner, SubagentSpec,
@@ -2127,7 +2159,10 @@ mod tests {
     use jyowo_harness_sdk::ext::{
         ContentDelta, InferContext, ModelProvider, ModelRequest, ModelStreamEvent,
     };
-    use jyowo_harness_sdk::testing::{InMemoryEventStore, NoopSandbox, TestTool};
+    use jyowo_harness_sdk::{
+        testing::{InMemoryEventStore, NoopSandbox, TestTool},
+        ConversationRunOptions, ConversationTurnRequest, SessionOptions,
+    };
     use serde_json::json;
 
     use crate::{
@@ -2138,6 +2173,40 @@ mod tests {
         WorkspaceExecutionKind, WorkspaceLeaseRequest, WorkspaceSubagentRunnerFactory,
         WorkspaceToolDispatcher,
     };
+
+    #[derive(Default)]
+    struct RecordingProviderContinuationStore {
+        appended: Mutex<Vec<ProviderContinuationRecord>>,
+    }
+
+    #[async_trait]
+    impl ProviderContinuationStore for RecordingProviderContinuationStore {
+        async fn load_for_messages(
+            &self,
+            _query: ProviderContinuationQuery,
+        ) -> Result<Vec<ProviderContinuationRecord>, ProviderContinuationStoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn append_batch(
+            &self,
+            records: Vec<ProviderContinuationRecord>,
+        ) -> Result<(), ProviderContinuationStoreError> {
+            self.appended
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend(records);
+            Ok(())
+        }
+
+        async fn prune_session(
+            &self,
+            _tenant_id: harness_contracts::TenantId,
+            _session_id: SessionId,
+        ) -> Result<(), ProviderContinuationStoreError> {
+            Ok(())
+        }
+    }
 
     struct UnusedAgentStarter;
 
@@ -2278,6 +2347,77 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn foreground_and_subagent_harnesses_append_to_the_shared_continuation_store() {
+        let fixture = Fixture::new();
+        fixture.write_provider_config();
+        let snapshot = crate::RuntimeConfigResolver::new(fixture._root.path().join("config"))
+            .resolve(&fixture.workspace_root, None)
+            .expect("runtime snapshot");
+        let continuation_store = Arc::new(RecordingProviderContinuationStore::default());
+        let continuation_store_cap: Arc<dyn ProviderContinuationStore> = continuation_store.clone();
+        let build_harness = |message_id: &str| {
+            super::apply_runtime_snapshot(
+                jyowo_harness_sdk::Harness::builder()
+                    .with_workspace_root(&fixture.workspace_root)
+                    .with_model(TestModelProvider::default().with_events(vec![
+                        ModelStreamEvent::MessageStart {
+                            message_id: message_id.to_owned(),
+                            usage: UsageSnapshot::default(),
+                        },
+                        ModelStreamEvent::ProviderContinuationDelta {
+                            kind: ProviderContinuationKind::ReasoningReplay,
+                            payload: json!({ "source": message_id }),
+                        },
+                        ModelStreamEvent::MessageStop,
+                    ]))
+                    .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+                    .with_sandbox(NoopSandbox::new()),
+                &snapshot,
+                jyowo_harness_sdk::McpConfig::default(),
+                Some(Arc::clone(&continuation_store_cap)),
+            )
+            .expect("apply runtime snapshot")
+        };
+        let foreground = build_harness("foreground-continuation")
+            .build()
+            .await
+            .expect("foreground harness");
+        let subagent = build_harness("subagent-continuation")
+            .build()
+            .await
+            .expect("subagent harness");
+
+        for (harness, session_id) in [
+            (&foreground, SessionId::new()),
+            (&subagent, SessionId::new()),
+        ] {
+            let options = SessionOptions::new(&fixture.workspace_root).with_session_id(session_id);
+            harness
+                .open_or_create_conversation_session(options.clone())
+                .await
+                .expect("conversation session");
+            harness
+                .submit_conversation_turn(ConversationTurnRequest {
+                    run_options: ConversationRunOptions::from_session_options(&options),
+                    options,
+                    input: ConversationTurnInput::ask("capture continuation"),
+                    permission_actor_source: None,
+                })
+                .await
+                .expect("continuation turn");
+        }
+
+        let appended = continuation_store
+            .appended
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(appended.len(), 2);
+        assert_eq!(appended[0].payload["source"], "foreground-continuation");
+        assert_eq!(appended[1].payload["source"], "subagent-continuation");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn foreground_and_subagent_harnesses_receive_the_same_runtime_snapshot() {
         let fixture = Fixture::new();
         fixture.write_provider_config();
@@ -2295,6 +2435,7 @@ mod tests {
                     .with_sandbox(NoopSandbox::new()),
                 &snapshot,
                 jyowo_harness_sdk::McpConfig::default(),
+                None,
             )
             .expect("apply runtime snapshot")
         };
@@ -2345,6 +2486,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_factory_retains_the_injected_provider_continuation_store() {
+        let fixture = Fixture::new();
+        let runtime_root = fixture._root.path().join("continuations");
+        std::fs::create_dir(&runtime_root).unwrap();
+        let store: Arc<dyn ProviderContinuationStore> =
+            Arc::new(FileProviderContinuationStore::open_runtime_dir(&runtime_root).unwrap());
+
+        let factory = fixture
+            .factory
+            .with_provider_continuation_store_arc(Arc::clone(&store));
+
+        assert!(Arc::ptr_eq(
+            factory
+                .provider_continuation_store
+                .as_ref()
+                .expect("provider continuation store"),
+            &store,
+        ));
+        store
+            .append_batch(vec![ProviderContinuationRecord {
+                provider_id: "test".to_owned(),
+                model_config_id: Some("test-config".to_owned()),
+                protocol: ModelProtocol::Messages,
+                dialect: "test".to_owned(),
+                tenant_id: harness_contracts::TenantId::SINGLE,
+                session_id: SessionId::new(),
+                producing_run_id: RunId::new(),
+                message_id: harness_contracts::MessageId::new(),
+                scope: ProviderContinuationScope::Conversation,
+                kind: ProviderContinuationKind::ReasoningReplay,
+                payload: json!({ "private": "owner-only" }),
+                created_at: chrono::Utc::now(),
+            }])
+            .await
+            .unwrap();
+        let metadata =
+            std::fs::metadata(runtime_root.join("provider-continuations.jsonl")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        }
+    }
+
+    #[tokio::test]
     async fn production_subagent_factory_executes_the_child_only_in_its_task_scope() {
         use harness_contracts::{AgentToolPolicy, AgentUsePolicy, AgentWorkspaceIsolationMode};
 
@@ -2378,11 +2564,17 @@ mod tests {
                 },
             )
             .unwrap();
+        let continuation_store = Arc::new(RecordingProviderContinuationStore::default());
+        let continuation_store_cap: Arc<dyn ProviderContinuationStore> = continuation_store.clone();
         let provider: Arc<dyn ModelProvider> =
             Arc::new(TestModelProvider::default().with_events(vec![
                 ModelStreamEvent::MessageStart {
                     message_id: "child-response".into(),
                     usage: UsageSnapshot::default(),
+                },
+                ModelStreamEvent::ProviderContinuationDelta {
+                    kind: ProviderContinuationKind::ReasoningReplay,
+                    payload: json!({ "source": "production-child" }),
                 },
                 ModelStreamEvent::ContentBlockDelta {
                     index: 0,
@@ -2409,6 +2601,7 @@ mod tests {
                 runtime_config,
                 permissions: Arc::clone(&fixture.factory.permissions),
                 redactor: Arc::new(NoopRedactor),
+                provider_continuation_store: Some(continuation_store_cap),
                 workspace_tools: fixture.workspace_tools.clone(),
                 agent_tool_policy: AgentToolPolicy {
                     subagents: AgentUsePolicy::Allowed,
@@ -2512,6 +2705,12 @@ mod tests {
             .unwrap()
             .iter()
             .any(|event| event.event_type == "engine.run_started"));
+        let appended = continuation_store
+            .appended
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(appended.len(), 1);
+        assert_eq!(appended[0].payload["source"], "production-child");
     }
 
     #[test]
