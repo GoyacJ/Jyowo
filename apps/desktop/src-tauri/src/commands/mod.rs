@@ -104,7 +104,7 @@ mod tests;
 mod validation;
 
 pub use daemon::*;
-use error::invalid_payload;
+use error::{invalid_payload, runtime_operation_failed};
 use harness_contracts::AgentCapabilityKind;
 use providers::{
     provider_capability_route_runtime_context, save_provider_settings_with_runtime_state_unlocked,
@@ -162,19 +162,20 @@ pub use contracts::{
     McpNameValueSaveRecord, McpServerConfigRecord, McpServerConfigTransportPayload, McpServerStore,
     McpServerSummaryPayload, McpServerTransportConfig, ModelCatalogEntry, ModelLifecyclePayload,
     ModelProviderCatalogEntry, ModelProviderCatalogResponse, ModelRuntimeStatusPayload,
-    ModelSettingsPageResponse, OfficialQuotaScopePayload, OfficialQuotaSnapshotPayload,
-    OfficialQuotaStatusPayload, PermissionDecision, PermissionRequestedRunEventPayload,
-    PluginSettingsRecord, PluginStore, PluginStoreRecord, ProbeProviderConfigRequest,
-    ProbeProviderConfigResponse, ProviderBaseUrlRegionPayload, ProviderCapabilityRouteStore,
-    ProviderCapabilityRouteValidationToken, ProviderConfigPayload, ProviderConfigRecord,
-    ProviderDefaultsRecord, ProviderDiagnosticsStore, ProviderModelDescriptorRecord,
-    ProviderModelLifecycleRecord, ProviderModelModalityRecord, ProviderProbeErrorKindPayload,
-    ProviderProbeSnapshotPayload, ProviderProbeStatusPayload, ProviderQuotaCacheRecord,
-    ProviderQuotaCacheStore, ProviderRuntimeCapabilityPayload, ProviderServiceCapabilityPayload,
-    ProviderSettingsRecord, ProviderSettingsRequest, ProviderSettingsStore,
-    ReferenceCandidatePayload, RefreshModelProviderCatalogResponse, RefreshOfficialQuotaRequest,
-    RefreshOfficialQuotaResponse, ReloadPluginRequest, ReplayTimelineRequest,
-    ReplayTimelineResponse, RequestProviderConfigApiKeyRevealRequest,
+    ModelSettingsPageResponse, ModelSettingsPageSlice, ModelUsageDayModelRecord,
+    ModelUsageDayRecord, ModelUsageRollupRecord, ModelUsageRollupStore, OfficialQuotaScopePayload,
+    OfficialQuotaSnapshotPayload, OfficialQuotaStatusPayload, PermissionDecision,
+    PermissionRequestedRunEventPayload, PluginSettingsRecord, PluginStore, PluginStoreRecord,
+    ProbeProviderConfigRequest, ProbeProviderConfigResponse, ProviderBaseUrlRegionPayload,
+    ProviderCapabilityRouteStore, ProviderCapabilityRouteValidationToken, ProviderConfigPayload,
+    ProviderConfigRecord, ProviderDefaultsRecord, ProviderDiagnosticsStore,
+    ProviderModelDescriptorRecord, ProviderModelLifecycleRecord, ProviderModelModalityRecord,
+    ProviderProbeErrorKindPayload, ProviderProbeSnapshotPayload, ProviderProbeStatusPayload,
+    ProviderQuotaCacheRecord, ProviderQuotaCacheStore, ProviderRuntimeCapabilityPayload,
+    ProviderServiceCapabilityPayload, ProviderSettingsRecord, ProviderSettingsRequest,
+    ProviderSettingsStore, ReferenceCandidatePayload, RefreshModelProviderCatalogResponse,
+    RefreshOfficialQuotaRequest, RefreshOfficialQuotaResponse, ReloadPluginRequest,
+    ReplayTimelineRequest, ReplayTimelineResponse, RequestProviderConfigApiKeyRevealRequest,
     RequestProviderConfigApiKeyRevealResponse, ResolvePermissionRequest, ResolvePermissionResponse,
     RestartMcpServerRequest, RestartMcpServerResponse, RunAutomationNowRequest,
     RunAutomationNowResponse, RunEvalCaseRequest, RunEvalCaseResponse, RunEventBodyPayload,
@@ -212,11 +213,13 @@ pub use mcp::{
     unsubscribe_mcp_diagnostics_with_runtime_state,
 };
 pub use model_settings::{
-    get_model_settings_page_with_runtime_state, get_model_usage_summary_with_runtime_state,
+    get_model_settings_page_with_history_source, get_model_settings_page_with_runtime_state,
+    get_model_usage_summary_with_history_source, get_model_usage_summary_with_runtime_state,
     list_official_quota_snapshots_with_runtime_state,
     list_provider_probe_snapshots_with_runtime_state, probe_provider_config_with_provider,
-    probe_provider_config_with_runtime_state, refresh_model_provider_catalog_with_runtime_state,
-    refresh_official_quota_with_runtime_state,
+    probe_provider_config_with_runtime_state, project_model_usage_with_source,
+    refresh_model_provider_catalog_with_runtime_state, refresh_official_quota_with_runtime_state,
+    ModelUsageHistorySource,
 };
 pub use plugins::{
     get_plugin_detail_with_runtime_state, install_plugin_from_path_with_runtime_state,
@@ -572,17 +575,42 @@ pub async fn list_provider_probe_snapshots(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn get_model_usage_summary(
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+    daemon_state: tauri::State<'_, DaemonBridgeState>,
 ) -> Result<GetModelUsageSummaryResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    model_settings::get_model_usage_summary_with_runtime_state(&*runtime_state).await
+    let client = daemon_state
+        .client()
+        .await
+        .map_err(runtime_operation_failed)?;
+    let model_usage_rollup_store = {
+        let runtime_state = runtime_handle.read().await;
+        Arc::clone(&runtime_state.model_usage_rollup_store)
+    };
+    model_settings::get_model_usage_summary_with_history_store(
+        model_usage_rollup_store.as_ref(),
+        &client,
+    )
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn get_model_settings_page(
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+    daemon_state: tauri::State<'_, DaemonBridgeState>,
 ) -> Result<ModelSettingsPageResponse, CommandErrorPayload> {
-    let runtime_state = runtime_handle.read().await;
-    model_settings::get_model_settings_page_with_runtime_state(&*runtime_state).await
+    let client = daemon_state.client().await.ok();
+    let runtime_state = runtime_handle.read().await.clone();
+    match client.as_ref() {
+        Some(client) => {
+            model_settings::get_model_settings_page_with_history_source(&runtime_state, client)
+                .await
+        }
+        None => {
+            let mut page =
+                model_settings::get_model_settings_page_with_runtime_state(&runtime_state).await?;
+            page.usage_summary = ModelSettingsPageSlice::error("task daemon is not connected");
+            Ok(page)
+        }
+    }
 }
 
 #[tauri::command(rename_all = "camelCase")]

@@ -6,7 +6,8 @@ use std::sync::{Arc, RwLock};
 
 use harness_contracts::{
     AgentCapabilities, BlobId, ClientFrame, ClientId, ClientRequest, HandshakeRequest,
-    HandshakeResponse, ServerFrame, ServerMessage, PROTOCOL_VERSION,
+    HandshakeResponse, ProtocolErrorCode, ServerFrame, ServerMessage, TaskEventHistoryPage,
+    PROTOCOL_VERSION,
 };
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -41,6 +42,13 @@ pub enum DaemonClientError {
     InvalidToken,
     #[error("daemon returned an unexpected handshake response")]
     InvalidHandshake,
+    #[error("daemon returned an unexpected response")]
+    UnexpectedResponse,
+    #[error("daemon protocol error {code:?}: {message}")]
+    ProtocolError {
+        code: ProtocolErrorCode,
+        message: String,
+    },
     #[error("daemon frame exceeds the 8 MiB limit")]
     FrameTooLarge,
     #[error("daemon disconnected")]
@@ -175,6 +183,27 @@ impl DaemonClient {
 
     pub async fn read_blob(&self, blob_id: BlobId) -> Result<ServerFrame, DaemonClientError> {
         self.request(ClientRequest::ReadBlob { blob_id }).await
+    }
+
+    pub async fn load_events(
+        &self,
+        after_global_offset: u64,
+        limit: u16,
+    ) -> Result<TaskEventHistoryPage, DaemonClientError> {
+        let response = self
+            .request(ClientRequest::LoadEvents {
+                after_global_offset,
+                limit,
+            })
+            .await?;
+        match response.message {
+            ServerMessage::EventHistoryPage(page) => Ok(page),
+            ServerMessage::Error(error) => Err(DaemonClientError::ProtocolError {
+                code: error.code,
+                message: error.message,
+            }),
+            _ => Err(DaemonClientError::UnexpectedResponse),
+        }
     }
 
     #[must_use]

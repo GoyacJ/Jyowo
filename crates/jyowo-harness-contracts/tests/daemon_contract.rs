@@ -6,7 +6,7 @@ use serde_json::json;
 
 #[test]
 fn daemon_protocol_exports_one_versioned_schema() {
-    assert_eq!(PROTOCOL_VERSION, 2);
+    assert_eq!(PROTOCOL_VERSION, 3);
 
     let value = serde_json::to_value(daemon_protocol_schema()).expect("serialize daemon schema");
     let text = serde_json::to_string(&value).expect("render daemon schema");
@@ -22,7 +22,9 @@ fn daemon_protocol_exports_one_versioned_schema() {
         "remove_task",
         "resolve_permission",
         "subscribe_events",
+        "load_events",
         "load_task_events",
+        "event_history_page",
         "read_blob",
         "list_runtime_tools",
         "list_memory_items",

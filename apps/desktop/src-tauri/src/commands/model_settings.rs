@@ -3,9 +3,11 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    ModelUsagePeriod, ModelUsageSummary, ModelUsageWindow, UsageAccumulatedEvent, UsageSnapshot,
+    Event, ModelRef, ModelUsagePeriod, ModelUsageSummary, ModelUsageWindow, TaskEventHistoryPage,
+    UsageAccumulatedEvent, UsageSnapshot,
 };
 use harness_model::{
     fetch_official_quota, provider_requires_api_key, with_staleness, ProviderAccountUsageRequest,
@@ -20,8 +22,9 @@ use jyowo_harness_sdk::ext::{inventory_from_models_api_json, runnable_inventory_
 use super::contracts::{
     ConversationModelCapabilityRecord, ModelCatalogEntry, ModelLifecyclePayload,
     ModelRuntimeStatusPayload, ModelSettingsCatalogSnapshotPayload, ModelSettingsPageResponse,
-    ModelSettingsPageSlice, ModelUsageRollupRecord, ProviderCatalogSnapshotRecord,
-    ProviderModelModalityRecord, ProviderProbeSnapshotPayload, RefreshModelProviderCatalogResponse,
+    ModelSettingsPageSlice, ModelUsageDayModelRecord, ModelUsageDayRecord, ModelUsageRollupRecord,
+    ModelUsageRollupStore, ProviderCatalogSnapshotRecord, ProviderModelModalityRecord,
+    ProviderProbeSnapshotPayload, RefreshModelProviderCatalogResponse,
     RefreshOfficialQuotaResponse,
 };
 use super::error::{invalid_payload, runtime_operation_failed, CommandErrorPayload};
@@ -37,6 +40,7 @@ use super::{
     ProbeProviderConfigRequest, ProbeProviderConfigResponse, ProviderConfigRecord,
     ProviderDiagnosticsStore, ProviderProbeInput, ProviderProbeRunner,
 };
+use crate::daemon_client::DaemonClient;
 
 pub(crate) const DEFAULT_PROBE_TIMEOUT_MS: u64 = 10_000;
 pub(crate) const MIN_PROBE_TIMEOUT_MS: u64 = 1_000;
@@ -48,13 +52,57 @@ pub(crate) fn normalize_probe_timeout_ms(timeout_ms: Option<u64>) -> u64 {
         .clamp(MIN_PROBE_TIMEOUT_MS, MAX_PROBE_TIMEOUT_MS)
 }
 
-const MODEL_USAGE_ROLLUP_SCHEMA_VERSION: u32 = 2;
+const MODEL_USAGE_ROLLUP_SCHEMA_VERSION: u32 = 3;
+const MODEL_USAGE_HISTORY_PAGE_LIMIT: u16 = 500;
+const MODEL_USAGE_HISTORY_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_OPENROUTER_MODELS_API_BYTES: usize = 2 * 1024 * 1024;
 static MODEL_USAGE_ROLLUP_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
 
+#[async_trait]
+pub trait ModelUsageHistorySource: Send + Sync {
+    async fn load_events(
+        &self,
+        after_global_offset: u64,
+        limit: u16,
+    ) -> Result<TaskEventHistoryPage, CommandErrorPayload>;
+}
+
+#[async_trait]
+impl ModelUsageHistorySource for DaemonClient {
+    async fn load_events(
+        &self,
+        after_global_offset: u64,
+        limit: u16,
+    ) -> Result<TaskEventHistoryPage, CommandErrorPayload> {
+        tokio::time::timeout(
+            MODEL_USAGE_HISTORY_REQUEST_TIMEOUT,
+            DaemonClient::load_events(self, after_global_offset, limit),
+        )
+        .await
+        .map_err(|_| runtime_operation_failed("model usage history request timed out".to_owned()))?
+        .map_err(|error| {
+            runtime_operation_failed(format!("model usage history request failed: {error}"))
+        })
+    }
+}
+
 pub async fn get_model_settings_page_with_runtime_state(
     runtime_state: &DesktopRuntimeState,
+) -> Result<ModelSettingsPageResponse, CommandErrorPayload> {
+    get_model_settings_page_with_optional_history(runtime_state, None).await
+}
+
+pub async fn get_model_settings_page_with_history_source(
+    runtime_state: &DesktopRuntimeState,
+    source: &dyn ModelUsageHistorySource,
+) -> Result<ModelSettingsPageResponse, CommandErrorPayload> {
+    get_model_settings_page_with_optional_history(runtime_state, Some(source)).await
+}
+
+async fn get_model_settings_page_with_optional_history(
+    runtime_state: &DesktopRuntimeState,
+    source: Option<&dyn ModelUsageHistorySource>,
 ) -> Result<ModelSettingsPageResponse, CommandErrorPayload> {
     let now = Utc::now();
     let (catalog, catalog_snapshot) = local_model_provider_catalog(runtime_state)?;
@@ -69,7 +117,10 @@ pub async fn get_model_settings_page_with_runtime_state(
     let probe_snapshots = slice_from_result(list_provider_probe_snapshots_with_runtime_state(
         runtime_state,
     ));
-    let usage_summary = usage_summary_slice_from_rollup(runtime_state, now).await;
+    let usage_summary = match source {
+        Some(source) => usage_summary_slice_from_history(runtime_state, source, now).await,
+        None => usage_summary_slice_from_rollup(runtime_state, now).await,
+    };
     let quota_snapshots = slice_from_result(list_official_quota_snapshots_with_runtime_state(
         runtime_state,
     ));
@@ -101,6 +152,29 @@ pub async fn get_model_settings_page_with_runtime_state(
         capability_route_options,
         generated_at: now.to_rfc3339(),
     })
+}
+
+async fn usage_summary_slice_from_history(
+    runtime_state: &DesktopRuntimeState,
+    source: &dyn ModelUsageHistorySource,
+    now: DateTime<Utc>,
+) -> ModelSettingsPageSlice<GetModelUsageSummaryResponse> {
+    let _guard = MODEL_USAGE_ROLLUP_LOCK.lock().await;
+    let timezone = workspace_timezone_resolver();
+    match project_model_usage_with_source(
+        runtime_state.model_usage_rollup_store.as_ref(),
+        source,
+        now,
+        &timezone,
+    )
+    .await
+    {
+        Ok(record) if record.dirty || record.rebuilding => {
+            ModelSettingsPageSlice::rebuilding("model usage summary is rebuilding")
+        }
+        Ok(record) => ModelSettingsPageSlice::ready(record.summary.into()),
+        Err(error) => ModelSettingsPageSlice::error(error.message),
+    }
 }
 
 pub async fn refresh_model_provider_catalog_with_runtime_state(
@@ -728,7 +802,7 @@ async fn usage_summary_slice_from_rollup(
 ) -> ModelSettingsPageSlice<GetModelUsageSummaryResponse> {
     let _guard = MODEL_USAGE_ROLLUP_LOCK.lock().await;
     match load_or_create_usage_rollup(runtime_state, now).await {
-        Ok(record) if record.dirty => {
+        Ok(record) if record.dirty || record.rebuilding => {
             ModelSettingsPageSlice::rebuilding("model usage summary is rebuilding")
         }
         Ok(record) => ModelSettingsPageSlice::ready(record.summary.into()),
@@ -742,12 +816,7 @@ async fn load_or_create_usage_rollup(
 ) -> Result<ModelUsageRollupRecord, CommandErrorPayload> {
     let timezone = workspace_timezone_resolver();
     let Some(mut record) = runtime_state.model_usage_rollup_store.load_record()? else {
-        let record = ModelUsageRollupRecord {
-            schema_version: MODEL_USAGE_ROLLUP_SCHEMA_VERSION,
-            dirty: false,
-            summary: empty_usage_summary(now, &timezone),
-            pending_run_starts: BTreeMap::new(),
-        };
+        let record = new_usage_rollup(now, &timezone, false);
         runtime_state
             .model_usage_rollup_store
             .save_record(&record)?;
@@ -780,16 +849,231 @@ fn reset_usage_rollup(
     now: DateTime<Utc>,
 ) -> Result<ModelUsageRollupRecord, CommandErrorPayload> {
     let timezone = workspace_timezone_resolver();
-    let record = ModelUsageRollupRecord {
-        schema_version: MODEL_USAGE_ROLLUP_SCHEMA_VERSION,
-        dirty: false,
-        summary: empty_usage_summary(now, &timezone),
-        pending_run_starts: BTreeMap::new(),
-    };
+    let record = new_usage_rollup(now, &timezone, false);
     runtime_state
         .model_usage_rollup_store
         .save_record(&record)?;
     Ok(record)
+}
+
+fn new_usage_rollup(
+    now: DateTime<Utc>,
+    timezone: &dyn WorkspaceTimezoneResolver,
+    rebuilding: bool,
+) -> ModelUsageRollupRecord {
+    ModelUsageRollupRecord {
+        schema_version: MODEL_USAGE_ROLLUP_SCHEMA_VERSION,
+        dirty: rebuilding,
+        rebuilding,
+        last_global_offset: 0,
+        timezone_id: timezone.timezone_id().map(str::to_owned),
+        timezone_offset_minutes: timezone.offset_minutes_at(now),
+        day_buckets: BTreeMap::new(),
+        summary: empty_usage_summary(now, timezone),
+        pending_run_starts: BTreeMap::new(),
+        longest_completed_duration_ms: 0,
+    }
+}
+
+pub async fn project_model_usage_with_source(
+    store: &dyn ModelUsageRollupStore,
+    source: &dyn ModelUsageHistorySource,
+    now: DateTime<Utc>,
+    timezone: &(dyn WorkspaceTimezoneResolver + Sync),
+) -> Result<ModelUsageRollupRecord, CommandErrorPayload> {
+    let timezone_id = timezone.timezone_id().map(str::to_owned);
+    let timezone_offset_minutes = timezone.offset_minutes_at(now);
+    let record = match store.load_record()? {
+        Some(record)
+            if record.schema_version == MODEL_USAGE_ROLLUP_SCHEMA_VERSION
+                && record.timezone_id == timezone_id
+                && record.timezone_offset_minutes == timezone_offset_minutes =>
+        {
+            record
+        }
+        _ => new_usage_rollup(now, timezone, true),
+    };
+
+    let requested_after = record.last_global_offset;
+    let page = source
+        .load_events(requested_after, MODEL_USAGE_HISTORY_PAGE_LIMIT)
+        .await?;
+    validate_model_usage_history_page(&page, requested_after)?;
+
+    let mut candidate = record;
+    for envelope in &page.events {
+        fold_model_usage_event(&mut candidate, envelope, timezone);
+        candidate.last_global_offset = envelope.global_offset;
+    }
+    candidate.last_global_offset = page.next_after_global_offset;
+
+    let caught_up = !page.has_more && candidate.last_global_offset >= page.latest_global_offset;
+    if caught_up {
+        candidate.summary = usage_summary_from_day_buckets(&candidate, now, timezone);
+        candidate.dirty = false;
+        candidate.rebuilding = false;
+    } else {
+        if candidate.last_global_offset <= requested_after {
+            return Err(runtime_operation_failed(
+                "model usage history pagination made no progress".to_owned(),
+            ));
+        }
+        candidate.dirty = true;
+        candidate.rebuilding = true;
+    }
+    store.save_record(&candidate)?;
+    Ok(candidate)
+}
+
+fn validate_model_usage_history_page(
+    page: &TaskEventHistoryPage,
+    requested_after: u64,
+) -> Result<(), CommandErrorPayload> {
+    let invalid = |reason: &str| {
+        runtime_operation_failed(format!(
+            "model usage history returned invalid page: {reason}"
+        ))
+    };
+    if page.after_global_offset != requested_after {
+        return Err(invalid("response cursor does not match request"));
+    }
+    if page.latest_global_offset < requested_after {
+        return Err(invalid("latest offset precedes request cursor"));
+    }
+    if page.next_after_global_offset > page.latest_global_offset {
+        return Err(invalid("next cursor exceeds latest offset"));
+    }
+    if page.has_more != (page.next_after_global_offset < page.latest_global_offset) {
+        return Err(invalid("hasMore does not match pagination offsets"));
+    }
+    if page.events.is_empty() {
+        if page.next_after_global_offset != requested_after {
+            return Err(invalid("empty page advances the cursor"));
+        }
+        if page.latest_global_offset != requested_after {
+            return Err(invalid("empty page omits available events"));
+        }
+        return Ok(());
+    }
+    let Some(mut expected_offset) = requested_after.checked_add(1) else {
+        return Err(invalid("event follows the maximum cursor"));
+    };
+    for (index, event) in page.events.iter().enumerate() {
+        if event.global_offset != expected_offset {
+            return Err(invalid("event offsets are not contiguous"));
+        }
+        if index + 1 < page.events.len() {
+            let Some(next_expected_offset) = expected_offset.checked_add(1) else {
+                return Err(invalid("event offsets exceed the maximum cursor"));
+            };
+            expected_offset = next_expected_offset;
+        }
+    }
+    if page.next_after_global_offset
+        != page
+            .events
+            .last()
+            .expect("non-empty history page checked above")
+            .global_offset
+    {
+        return Err(invalid("next cursor does not match the last event"));
+    }
+    Ok(())
+}
+
+fn fold_model_usage_event(
+    record: &mut ModelUsageRollupRecord,
+    envelope: &harness_contracts::TaskEventEnvelope,
+    timezone: &dyn WorkspaceTimezoneResolver,
+) {
+    let Some(event) = envelope.payload.get("event") else {
+        return;
+    };
+    let Ok(event) = serde_json::from_value::<Event>(event.clone()) else {
+        return;
+    };
+    match event {
+        Event::UsageAccumulated(event) if !event.diagnostic => {
+            let date = timezone.local_datetime(event.at).date();
+            let (provider_id, model_id) = event.model_ref.map_or((None, None), |model| {
+                (Some(model.provider_id), Some(model.model_id))
+            });
+            let key = serde_json::to_string(&(provider_id.as_deref(), model_id.as_deref()))
+                .expect("model usage identity must serialize");
+            let bucket = record
+                .day_buckets
+                .entry(date)
+                .or_insert_with(ModelUsageDayRecord::default)
+                .by_model
+                .entry(key)
+                .or_insert_with(|| ModelUsageDayModelRecord {
+                    provider_id,
+                    model_id,
+                    usage: UsageSnapshot::default(),
+                    last_used_at: event.at,
+                });
+            merge_usage_snapshot(&mut bucket.usage, &event.delta);
+            bucket.last_used_at = bucket.last_used_at.max(event.at);
+        }
+        Event::RunStarted(event) => {
+            record
+                .pending_run_starts
+                .insert(event.run_id.to_string(), event.started_at);
+        }
+        Event::RunEnded(event) => {
+            if let Some(started_at) = record.pending_run_starts.remove(&event.run_id.to_string()) {
+                if let Ok(duration) = event.ended_at.signed_duration_since(started_at).to_std() {
+                    let duration_ms = duration.as_millis().min(u128::from(u64::MAX)) as u64;
+                    record.longest_completed_duration_ms =
+                        record.longest_completed_duration_ms.max(duration_ms);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn usage_summary_from_day_buckets(
+    record: &ModelUsageRollupRecord,
+    now: DateTime<Utc>,
+    timezone: &dyn WorkspaceTimezoneResolver,
+) -> ModelUsageSummary {
+    let usage_events = record
+        .day_buckets
+        .values()
+        .flat_map(|day| day.by_model.values())
+        .map(|bucket| UsageAccumulatedEvent {
+            session_id: harness_contracts::SessionId::new(),
+            run_id: None,
+            delta: bucket.usage.clone(),
+            model_ref: match (&bucket.provider_id, &bucket.model_id) {
+                (Some(provider_id), Some(model_id)) => Some(ModelRef {
+                    provider_id: provider_id.clone(),
+                    model_id: model_id.clone(),
+                }),
+                _ => None,
+            },
+            pricing_snapshot_id: None,
+            at: bucket.last_used_at,
+            diagnostic: false,
+        })
+        .collect::<Vec<_>>();
+    let mut summary = summarize_model_usage(usage_events.iter(), now, timezone);
+    summary.activity.longest_task_duration_ms = record.longest_completed_duration_ms;
+    summary
+}
+
+fn merge_usage_snapshot(total: &mut UsageSnapshot, delta: &UsageSnapshot) {
+    total.input_tokens = total.input_tokens.saturating_add(delta.input_tokens);
+    total.output_tokens = total.output_tokens.saturating_add(delta.output_tokens);
+    total.cache_read_tokens = total
+        .cache_read_tokens
+        .saturating_add(delta.cache_read_tokens);
+    total.cache_write_tokens = total
+        .cache_write_tokens
+        .saturating_add(delta.cache_write_tokens);
+    total.cost_micros = total.cost_micros.saturating_add(delta.cost_micros);
+    total.tool_calls = total.tool_calls.saturating_add(delta.tool_calls);
 }
 
 fn empty_usage_summary(
@@ -1097,6 +1381,38 @@ pub async fn get_model_usage_summary_with_runtime_state(
 ) -> Result<GetModelUsageSummaryResponse, CommandErrorPayload> {
     let _guard = MODEL_USAGE_ROLLUP_LOCK.lock().await;
     let record = load_or_create_usage_rollup(runtime_state, Utc::now()).await?;
+    if record.dirty || record.rebuilding {
+        return Err(runtime_operation_failed(
+            "model usage summary is rebuilding".to_owned(),
+        ));
+    }
+    Ok(record.summary.into())
+}
+
+pub async fn get_model_usage_summary_with_history_source(
+    runtime_state: &DesktopRuntimeState,
+    source: &dyn ModelUsageHistorySource,
+) -> Result<GetModelUsageSummaryResponse, CommandErrorPayload> {
+    get_model_usage_summary_with_history_store(
+        runtime_state.model_usage_rollup_store.as_ref(),
+        source,
+    )
+    .await
+}
+
+pub(crate) async fn get_model_usage_summary_with_history_store(
+    store: &dyn ModelUsageRollupStore,
+    source: &dyn ModelUsageHistorySource,
+) -> Result<GetModelUsageSummaryResponse, CommandErrorPayload> {
+    let _guard = MODEL_USAGE_ROLLUP_LOCK.lock().await;
+    let now = Utc::now();
+    let timezone = workspace_timezone_resolver();
+    let record = project_model_usage_with_source(store, source, now, &timezone).await?;
+    if record.dirty || record.rebuilding {
+        return Err(runtime_operation_failed(
+            "model usage summary is rebuilding".to_owned(),
+        ));
+    }
     Ok(record.summary.into())
 }
 

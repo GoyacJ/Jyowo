@@ -156,7 +156,7 @@ impl DaemonSubscriptionRegistry {
 }
 
 impl DaemonBridgeState {
-    async fn client(&self) -> Result<DaemonClient, String> {
+    pub(crate) async fn client(&self) -> Result<DaemonClient, String> {
         self.client
             .read()
             .await

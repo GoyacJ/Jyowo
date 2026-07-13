@@ -6,8 +6,9 @@ use base64::Engine as _;
 use harness_contracts::{
     AgentCapabilities, BlobPayload, ClientFrame, ClientId, ClientRequest, CommandAccepted,
     CommandRejected, CommandRejectionReason, HandshakeResponse, ProtocolError, ProtocolErrorCode,
-    QueueItemId, RunSegmentId, ServerFrame, ServerMessage, TaskEventBatch, TaskEventPage, TaskId,
-    TaskSnapshot, PROTOCOL_VERSION,
+    QueueItemId, RunSegmentId, ServerFrame, ServerMessage, TaskEventBatch, TaskEventEnvelope,
+    TaskEventHistoryPage, TaskEventPage, TaskId, TaskSnapshot, MAX_DAEMON_TASK_EVENT_PAGE_BYTES,
+    PROTOCOL_VERSION,
 };
 use harness_journal::{
     AcceptedCommand, BlobRead, CommandOutcome, CommandRejection, NewTaskEvent, TaskBlobStore,
@@ -258,6 +259,29 @@ impl IpcConnection {
                 let batch = self.event_batch(after_offset)?;
                 self.subscription_offset = (!batch.gap).then_some(batch.latest_offset);
                 ServerMessage::EventBatch(batch)
+            }
+            ClientRequest::LoadEvents {
+                after_global_offset,
+                limit,
+            } => {
+                let latest_global_offset = self.store.latest_global_offset()?;
+                if after_global_offset > latest_global_offset {
+                    protocol_error(
+                        ProtocolErrorCode::InvalidFrame,
+                        "history offset is ahead of the daemon",
+                    )
+                } else {
+                    let mut events = self
+                        .store
+                        .events_after(after_global_offset, usize::from(limit.clamp(1, 1000)))?;
+                    events.retain(|event| event.global_offset <= latest_global_offset);
+                    event_history_message_with_budget(
+                        after_global_offset,
+                        latest_global_offset,
+                        events,
+                        MAX_DAEMON_TASK_EVENT_PAGE_BYTES,
+                    )?
+                }
             }
             ClientRequest::ListTasks => ServerMessage::TaskList {
                 tasks: self
@@ -765,6 +789,33 @@ fn protocol_error(code: ProtocolErrorCode, message: &str) -> ServerMessage {
     })
 }
 
+fn event_history_message_with_budget(
+    after_global_offset: u64,
+    latest_global_offset: u64,
+    mut events: Vec<TaskEventEnvelope>,
+    max_page_bytes: usize,
+) -> Result<ServerMessage, serde_json::Error> {
+    while events.len() > 1 && serde_json::to_vec(&events)?.len() > max_page_bytes {
+        events.pop();
+    }
+    if events.len() == 1 && serde_json::to_vec(&events)?.len() > max_page_bytes {
+        return Ok(protocol_error(
+            ProtocolErrorCode::InvalidFrame,
+            "history event is too large",
+        ));
+    }
+    let next_after_global_offset = events
+        .last()
+        .map_or(after_global_offset, |event| event.global_offset);
+    Ok(ServerMessage::EventHistoryPage(TaskEventHistoryPage {
+        after_global_offset,
+        latest_global_offset,
+        next_after_global_offset,
+        has_more: next_after_global_offset < latest_global_offset,
+        events,
+    }))
+}
+
 fn error_frame(request_id: String, code: ProtocolErrorCode, message: &str) -> ServerFrame {
     server_frame(Some(request_id), protocol_error(code, message))
 }
@@ -803,6 +854,40 @@ impl LocalIpcServer {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_history_rejects_one_event_that_exceeds_the_page_budget() {
+        let event = harness_contracts::TaskEventEnvelope {
+            global_offset: 7,
+            task_id: TaskId::new(),
+            stream_sequence: 1,
+            event_id: harness_contracts::EventId::new(),
+            event_type: "test.event".into(),
+            schema_version: 1,
+            recorded_at: chrono::Utc::now(),
+            source: harness_contracts::EventSource {
+                kind: harness_contracts::EventSourceKind::Engine,
+                actor_id: None,
+                client_id: None,
+            },
+            payload: serde_json::json!({ "value": "legal persisted event" }),
+        };
+
+        let message = event_history_message_with_budget(6, 7, vec![event], 1).unwrap();
+
+        let ServerMessage::Error(error) = &message else {
+            panic!("oversized history event must not produce a history page");
+        };
+        assert_eq!(error.code, ProtocolErrorCode::InvalidFrame);
+        assert_eq!(error.message, "history event is too large");
+        crate::ipc::encode_frame(&server_frame(Some("history".into()), message))
+            .expect("history error response must fit one daemon frame");
     }
 }
 

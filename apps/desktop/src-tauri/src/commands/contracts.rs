@@ -2555,9 +2555,34 @@ pub trait ProviderCatalogSnapshotStore: Send + Sync {
 pub struct ModelUsageRollupRecord {
     pub schema_version: u32,
     pub dirty: bool,
+    #[serde(default)]
+    pub rebuilding: bool,
+    #[serde(default)]
+    pub last_global_offset: u64,
+    #[serde(default)]
+    pub timezone_id: Option<String>,
+    #[serde(default)]
+    pub timezone_offset_minutes: i32,
+    #[serde(default)]
+    pub day_buckets: BTreeMap<chrono::NaiveDate, ModelUsageDayRecord>,
     pub summary: ModelUsageSummary,
     #[serde(default)]
     pub pending_run_starts: BTreeMap<String, chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub longest_completed_duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelUsageDayRecord {
+    pub by_model: BTreeMap<String, ModelUsageDayModelRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelUsageDayModelRecord {
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub usage: UsageSnapshot,
+    pub last_used_at: chrono::DateTime<chrono::Utc>,
 }
 
 pub trait ModelUsageRollupStore: Send + Sync {
