@@ -1019,8 +1019,8 @@ async fn failed_hook_replacement_keeps_old_handler_and_registry_snapshot() {
     };
     let initial = skill_registration_from(
         r"---
-name: audit
-description: Audit skill
+name: old-audit
+description: Existing audit skill
 hooks:
   - id: start
     events: [SessionStart]
@@ -1044,12 +1044,27 @@ Body
         .handler_id()
         .to_owned();
 
-    let mut invalid = skill_registration_from(
+    let first_new = skill_registration_from(
         r"---
-name: audit
-description: Changed audit skill
+name: a-new-hook
+description: First new hook
 hooks:
-  - id: start
+  - id: notify
+    events: [PostToolUse]
+    transport:
+      type: builtin
+      kind: AuditLog
+---
+Body
+",
+        source.clone(),
+    );
+    let collision = skill_registration_from(
+        r"---
+name: z-colliding-hook
+description: Colliding hook
+hooks:
+  - id: notify
     events: [PostToolUse]
     transport:
       type: builtin
@@ -1059,11 +1074,36 @@ Body
 ",
         source,
     );
-    invalid.skill.frontmatter.hooks[0].events.clear();
+    let ids = harness_skill::SkillRegistry::builder()
+        .with_skills(vec![first_new.skill.clone(), collision.skill.clone()])
+        .build()
+        .hook_bindings();
+    let first_new_id = ids
+        .iter()
+        .find(|binding| binding.skill_name == "a-new-hook")
+        .unwrap()
+        .handler_id
+        .clone();
+    let collision_id = ids
+        .iter()
+        .find(|binding| binding.skill_name == "z-colliding-hook")
+        .unwrap()
+        .handler_id
+        .clone();
+    hook_registry
+        .register(Box::new(CollidingHookHandler {
+            handler_id: collision_id.clone(),
+        }))
+        .expect("unrelated handler should reserve the deterministic id");
+
     let outcome = session
-        .reload_with(ConfigDelta::for_tenant(TenantId::SINGLE).add_skill(invalid))
+        .reload_with(
+            ConfigDelta::for_tenant(TenantId::SINGLE)
+                .add_skill(first_new)
+                .add_skill(collision),
+        )
         .await
-        .expect("invalid reload should return outcome");
+        .expect("colliding reload should return outcome");
 
     assert!(matches!(outcome.mode, ReloadMode::Rejected { .. }));
     assert_eq!(
@@ -1071,10 +1111,11 @@ Body
         before.generation
     );
     assert!(hook_registry.origin_for(&old_id).is_some());
-    assert_eq!(
-        harness.skill_registry().get("audit").unwrap().description,
-        "Audit skill"
-    );
+    assert!(hook_registry.origin_for(&first_new_id).is_none());
+    assert!(hook_registry.origin_for(&collision_id).is_some());
+    assert!(harness.skill_registry().get("old-audit").is_some());
+    assert!(harness.skill_registry().get("a-new-hook").is_none());
+    assert!(harness.skill_registry().get("z-colliding-hook").is_none());
 }
 
 #[tokio::test]
@@ -1187,6 +1228,75 @@ fn turn_renderer_uses_skill_loader_render_policy() {
     });
 }
 
+#[test]
+fn restored_session_renderer_uses_skill_loader_render_policy() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-restored-skill-render-policy");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let model = Arc::new(ScriptedProvider::new(vec![
+            ScriptedResponse::Stream(vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::ToolUseComplete {
+                        id: ToolUseId::new(),
+                        name: "skills_invoke".to_owned(),
+                        input: json!({ "name": "policy", "params": {} }),
+                    },
+                },
+                ModelStreamEvent::MessageStop,
+            ]),
+            ScriptedResponse::Stream(vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text("done".to_owned()),
+                },
+                ModelStreamEvent::MessageStop,
+            ]),
+        ]));
+        let loader = SkillLoader::default()
+            .with_source(SkillSourceConfig::BundledRecords {
+                records: vec![BundledSkillRecord {
+                    name: "policy".to_owned(),
+                    description: "Render policy".to_owned(),
+                    body: "Restored: !`printf policy`.".to_owned(),
+                }],
+            })
+            .with_shell_allowlist(["printf".to_owned()]);
+        let harness = Harness::builder()
+            .with_workspace_root(&workspace)
+            .with_model_arc(model.clone())
+            .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+            .with_sandbox(NoopSandbox::new())
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
+            .with_skill_loader(loader)
+            .build()
+            .await
+            .expect("harness should build");
+        let options = SessionOptions::new(&workspace)
+            .with_session_id(SessionId::new())
+            .with_permission_mode(PermissionMode::BypassPermissions);
+        harness
+            .open_or_create_conversation_session(options.clone())
+            .await
+            .expect("session should be persisted before restore");
+
+        harness
+            .submit_conversation_turn(conversation_turn_request(
+                options,
+                ConversationTurnInput::ask("invoke policy"),
+                Some(PermissionMode::BypassPermissions),
+                None,
+                None,
+            ))
+            .await
+            .expect("restored session turn should run");
+
+        let requests = model.requests().await;
+        assert!(request_text(&requests[1]).contains("Restored: policy."));
+        assert!(!request_text(&requests[1]).contains("[SHELL_NOT_ALLOWED]"));
+    });
+}
+
 fn write_package_hook(package: &std::path::Path, events: &str) {
     std::fs::write(
         package.join("SKILL.md"),
@@ -1206,6 +1316,29 @@ Body
         ),
     )
     .unwrap();
+}
+
+struct CollidingHookHandler {
+    handler_id: String,
+}
+
+#[async_trait]
+impl harness_hook::HookHandler for CollidingHookHandler {
+    fn handler_id(&self) -> &str {
+        &self.handler_id
+    }
+
+    fn interested_events(&self) -> &[HookEventKind] {
+        &[HookEventKind::PostToolUse]
+    }
+
+    async fn handle(
+        &self,
+        _event: harness_hook::HookEvent,
+        _ctx: harness_hook::HookContext,
+    ) -> Result<harness_hook::HookOutcome, harness_contracts::HookError> {
+        Ok(harness_hook::HookOutcome::Continue)
+    }
 }
 
 #[tokio::test]

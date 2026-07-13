@@ -599,7 +599,10 @@ impl Harness {
             team_id: turn_options.team_id,
             project_workspace_root: turn_options.project_workspace_root.clone(),
             #[cfg(feature = "memory-provider-registry")]
-            memory_database_path: self.memory_database_path()?.to_path_buf(),
+            memory_database_path: self
+                .memory_database_path()
+                .map_err(|error| McpServerError::Internal(error.to_string()))?
+                .to_path_buf(),
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
             deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),

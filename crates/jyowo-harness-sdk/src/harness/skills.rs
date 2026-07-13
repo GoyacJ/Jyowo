@@ -261,6 +261,10 @@ impl Harness {
             .iter()
             .map(|binding| binding.handler_id.clone())
             .collect::<HashSet<_>>();
+        let old_handler_ids = old_bindings
+            .iter()
+            .map(|binding| binding.handler_id.clone())
+            .collect::<HashSet<_>>();
 
         let mut registered = Vec::<String>::new();
         for binding in next_bindings {
@@ -276,7 +280,15 @@ impl Harness {
                 .origin_for(&binding.handler_id)
                 .is_some()
             {
-                continue;
+                if old_handler_ids.contains(&binding.handler_id) {
+                    continue;
+                }
+                for registered_id in registered {
+                    self.inner.hook_registry.deregister(&registered_id);
+                }
+                return Err(HarnessError::Hook(harness_contracts::HookError::Message(
+                    format!("duplicate skill hook handler id: {}", binding.handler_id),
+                )));
             }
             let handler_id = binding.handler_id.clone();
             let handler = match skill_hook_handler(binding) {

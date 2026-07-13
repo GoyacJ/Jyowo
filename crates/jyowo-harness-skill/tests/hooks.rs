@@ -73,6 +73,36 @@ fn hook_handler_id_changes_when_source_or_declaration_changes() {
     assert_ne!(workspace_binding.handler_id, changed_binding.handler_id);
 }
 
+#[test]
+fn hook_handler_id_changes_when_transport_changes() {
+    let builtin = hook_skill_with_transport(
+        r"transport:
+      type: builtin
+      kind: AuditLog",
+    );
+    let http = hook_skill_with_transport(
+        r##"transport:
+      type: http
+      url: https://hooks.example.test/audit
+      security:
+        allowlist: ["hooks.example.test"]"##,
+    );
+
+    let builtin_binding = SkillRegistry::builder()
+        .with_skill(builtin)
+        .build()
+        .hook_bindings()
+        .remove(0);
+    let http_binding = SkillRegistry::builder()
+        .with_skill(http)
+        .build()
+        .hook_bindings()
+        .remove(0);
+
+    assert_eq!(builtin_binding.logical_id, http_binding.logical_id);
+    assert_ne!(builtin_binding.handler_id, http_binding.handler_id);
+}
+
 fn hook_skill(source: SkillSource, events: &str) -> harness_skill::Skill {
     parse_skill_markdown(
         &format!(
@@ -90,6 +120,30 @@ Body
 "
         ),
         source,
+        None,
+        SkillPlatform::Macos,
+    )
+    .expect("skill should parse")
+}
+
+fn hook_skill_with_transport(transport: &str) -> harness_skill::Skill {
+    parse_skill_markdown(
+        &format!(
+            r"---
+name: audit-skill
+description: Skill with hooks
+hooks:
+  - id: audit
+    events: [SessionStart]
+    {transport}
+---
+Body
+"
+        ),
+        SkillSource::Plugin {
+            plugin_id: harness_contracts::PluginId("trusted-plugin".to_owned()),
+            trust: harness_contracts::TrustLevel::AdminTrusted,
+        },
         None,
         SkillPlatform::Macos,
     )

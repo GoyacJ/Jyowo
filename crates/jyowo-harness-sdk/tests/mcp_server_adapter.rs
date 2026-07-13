@@ -13,6 +13,7 @@ use harness_journal::{InMemoryBlobStore, InMemoryEventStore};
 use harness_mcp::{ExposedCapability, HarnessMcpBackend, McpServerRequestContext};
 use harness_model::{ContentDelta, ModelProtocol, ModelStreamEvent};
 use harness_permission::PermissionCheck;
+use harness_skill::{BundledSkillRecord, SkillLoader, SkillSourceConfig};
 use harness_tool::{
     action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
     ToolRegistry, ToolStream, ValidationError,
@@ -179,6 +180,68 @@ fn harness_mcp_messages_send_resumes_workspace_bootstrap() {
         let requests = model.requests().await;
         let system = requests[0].system.as_deref().unwrap_or_default();
         assert!(system.contains("workspace MCP resume rule"));
+    });
+}
+
+#[test]
+fn harness_mcp_messages_send_uses_skill_loader_render_policy() {
+    tokio_runtime().block_on(async {
+        let workspace = unique_workspace("sdk-mcp-skill-render-policy");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let model = Arc::new(ScriptedProvider::new(vec![
+            ScriptedResponse::Stream(tool_call_events(
+                "skills_invoke",
+                json!({ "name": "policy", "params": {} }),
+            )),
+            ScriptedResponse::Stream(text_events("done")),
+        ]));
+        let loader = SkillLoader::default()
+            .with_source(SkillSourceConfig::BundledRecords {
+                records: vec![BundledSkillRecord {
+                    name: "policy".to_owned(),
+                    description: "Render policy".to_owned(),
+                    body: "MCP: !`printf policy`.".to_owned(),
+                }],
+            })
+            .with_shell_allowlist(["printf".to_owned()]);
+        let harness = Harness::builder()
+            .with_workspace_root(&workspace)
+            .with_default_session_options(
+                SessionOptions::new(&workspace)
+                    .with_permission_mode(harness_contracts::PermissionMode::BypassPermissions),
+            )
+            .with_model_arc(model.clone())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .with_skill_loader(loader)
+            .build()
+            .await
+            .expect("harness should build");
+        let session_id = SessionId::new();
+        drop(
+            harness
+                .create_session(
+                    SessionOptions::new(&workspace)
+                        .with_session_id(session_id)
+                        .with_permission_mode(harness_contracts::PermissionMode::BypassPermissions),
+                )
+                .await
+                .expect("session should be persisted"),
+        );
+
+        harness
+            .call_harness_tool(
+                &McpServerRequestContext::default().with_tenant_id(TenantId::SINGLE),
+                ExposedCapability::MessagesSend,
+                json!({"session_id": session_id.to_string(), "message": "invoke policy"}),
+            )
+            .await
+            .expect("MCP messages_send should run");
+
+        let requests = model.requests().await;
+        let text = model_request_text(&requests[1]);
+        assert!(text.contains("MCP: policy."));
+        assert!(!text.contains("[SHELL_NOT_ALLOWED]"));
     });
 }
 
@@ -545,6 +608,23 @@ fn unique_workspace(name: &str) -> std::path::PathBuf {
         std::process::id(),
         SessionId::new()
     ))
+}
+
+fn model_request_text(request: &harness_model::ModelRequest) -> String {
+    request
+        .messages
+        .iter()
+        .flat_map(|message| &message.parts)
+        .filter_map(|part| match part {
+            harness_contracts::MessagePart::Text(text) => Some(text.as_str()),
+            harness_contracts::MessagePart::ToolResult {
+                content: ToolResult::Text(text),
+                ..
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn tool_call_events(name: &str, input: serde_json::Value) -> Vec<ModelStreamEvent> {
