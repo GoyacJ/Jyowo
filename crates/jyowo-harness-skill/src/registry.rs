@@ -778,7 +778,10 @@ fn status_for(skill: &Skill) -> SkillStatus {
     if missing.is_empty() {
         SkillStatus::Ready
     } else {
-        SkillStatus::PrerequisiteMissing { env_vars: missing }
+        SkillStatus::PrerequisiteMissing {
+            env_vars: missing,
+            config_keys: Vec::new(),
+        }
     }
 }
 

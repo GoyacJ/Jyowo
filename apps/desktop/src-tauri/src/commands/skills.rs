@@ -27,8 +27,173 @@ use super::stores::*;
 #[allow(unused_imports)]
 use super::validation::*;
 use super::*;
-use harness_contracts::SkillSelectionRecord;
+use harness_contracts::{SkillConfigEntry, SkillSecretMetadata, SkillSelectionRecord};
+use harness_skill::{SkillConfigDecl, SkillParamType};
+use jyowo_harness_sdk::skill_config::SecretString;
 use std::collections::BTreeSet;
+
+pub fn get_skill_config_with_runtime_state(
+    request: GetSkillConfigRequest,
+    state: &DesktopRuntimeState,
+) -> Result<GetSkillConfigResponse, CommandErrorPayload> {
+    let view = resolve_skill_config_view(&request.skill_id, state)?;
+    let skill_id = view.summary.id;
+    let snapshot = state.skill_config_store.load_snapshot()?;
+    let mut config = SkillConfigEntry::default();
+    for declaration in &view.config {
+        if declaration.secret {
+            config.secrets.insert(
+                declaration.key.clone(),
+                SkillSecretMetadata {
+                    configured: snapshot.secret_is_available_for(&skill_id, &declaration.key),
+                },
+            );
+        } else if let Some(value) = snapshot.value_for(&skill_id, &declaration.key) {
+            config.values.insert(declaration.key.clone(), value.clone());
+        }
+    }
+    Ok(GetSkillConfigResponse { config, skill_id })
+}
+
+pub async fn set_skill_config_value_with_runtime_state(
+    request: SetSkillConfigValueRequest,
+    state: &DesktopRuntimeState,
+) -> Result<SkillConfigMutationResponse, CommandErrorPayload> {
+    let _settings_reload_guard = state.settings_reload_lock.lock().await;
+    let view = resolve_skill_config_view(&request.skill_id, state)?;
+    let declaration = config_declaration(&view, &request.key)?;
+    state
+        .skill_config_store
+        .set_public_value(&view.summary.id, &declaration, request.value)?;
+    refresh_skill_config_snapshot(state)?;
+    Ok(SkillConfigMutationResponse {
+        skill_id: view.summary.id,
+        key: request.key,
+        configured: true,
+    })
+}
+
+pub async fn set_skill_secret_with_runtime_state(
+    request: SetSkillSecretRequest,
+    state: &DesktopRuntimeState,
+) -> Result<SkillConfigMutationResponse, CommandErrorPayload> {
+    let _settings_reload_guard = state.settings_reload_lock.lock().await;
+    let view = resolve_skill_config_view(&request.skill_id, state)?;
+    let declaration = config_declaration(&view, &request.key)?;
+    state.skill_config_store.set_secret(
+        &view.summary.id,
+        &declaration,
+        SecretString::from(request.value),
+    )?;
+    refresh_skill_config_snapshot(state)?;
+    Ok(SkillConfigMutationResponse {
+        skill_id: view.summary.id,
+        key: request.key,
+        configured: true,
+    })
+}
+
+pub async fn clear_skill_secret_with_runtime_state(
+    request: ClearSkillSecretRequest,
+    state: &DesktopRuntimeState,
+) -> Result<SkillConfigMutationResponse, CommandErrorPayload> {
+    let _settings_reload_guard = state.settings_reload_lock.lock().await;
+    let view = resolve_skill_config_view(&request.skill_id, state)?;
+    let declaration = config_declaration(&view, &request.key)?;
+    state
+        .skill_config_store
+        .clear_secret(&view.summary.id, &declaration)?;
+    refresh_skill_config_snapshot(state)?;
+    Ok(SkillConfigMutationResponse {
+        skill_id: view.summary.id,
+        key: request.key,
+        configured: false,
+    })
+}
+
+fn refresh_skill_config_snapshot(state: &DesktopRuntimeState) -> Result<(), CommandErrorPayload> {
+    let snapshot = state.skill_config_store.load_snapshot()?;
+    let runtime = state.settings_runtime().ok_or_else(|| {
+        runtime_unavailable("Skill configuration requires the runtime skill facade.")
+    })?;
+    runtime.replace_skill_config_snapshot(snapshot);
+    Ok(())
+}
+
+fn resolve_skill_config_view(
+    request_id: &str,
+    state: &DesktopRuntimeState,
+) -> Result<RuntimeSkillView, CommandErrorPayload> {
+    let runtime = state.settings_runtime().ok_or_else(|| {
+        runtime_unavailable("Skill configuration requires the runtime skill facade.")
+    })?;
+    let records = state.skill_store.load_records()?;
+    if let Some(record) = records.iter().find(|record| record.id == request_id) {
+        if records
+            .iter()
+            .filter(|candidate| candidate.name == record.name)
+            .count()
+            != 1
+        {
+            return Err(invalid_payload(
+                "managed skill identity is ambiguous".to_owned(),
+            ));
+        }
+        let view = runtime
+            .view_runtime_skill(&record.name, false)
+            .ok_or_else(|| invalid_payload("skill not found".to_owned()))?;
+        let expected_id = format!("user:{}", record.name);
+        if view.summary.id != expected_id {
+            return Err(invalid_payload(
+                "managed skill is shadowed by another skill source".to_owned(),
+            ));
+        }
+        return Ok(view);
+    }
+    let runtime_skills = runtime.list_runtime_skills();
+    let requested_name = runtime_skills
+        .iter()
+        .find(|skill| skill.id == request_id || skill.name == request_id)
+        .map(|skill| skill.name.as_str())
+        .ok_or_else(|| invalid_payload("skill not found".to_owned()))?;
+    runtime
+        .view_runtime_skill(requested_name, false)
+        .ok_or_else(|| invalid_payload("skill not found".to_owned()))
+}
+
+fn config_declaration(
+    view: &RuntimeSkillView,
+    key: &str,
+) -> Result<SkillConfigDecl, CommandErrorPayload> {
+    let declaration = view
+        .config
+        .iter()
+        .find(|declaration| declaration.key == key)
+        .ok_or_else(|| invalid_payload("skill config key is not declared".to_owned()))?;
+    Ok(SkillConfigDecl {
+        key: declaration.key.clone(),
+        value_type: runtime_config_type(declaration)?,
+        secret: declaration.secret,
+        required: declaration.required,
+        default: declaration.default.clone(),
+        description: declaration.description.clone(),
+    })
+}
+
+fn runtime_config_type(
+    declaration: &RuntimeSkillConfig,
+) -> Result<SkillParamType, CommandErrorPayload> {
+    match declaration.value_type.as_str() {
+        "string" => Ok(SkillParamType::String),
+        "number" => Ok(SkillParamType::Number),
+        "boolean" => Ok(SkillParamType::Boolean),
+        "path" => Ok(SkillParamType::Path),
+        "url" => Ok(SkillParamType::Url),
+        _ => Err(runtime_operation_failed(
+            "runtime skill config type is invalid".to_owned(),
+        )),
+    }
+}
 pub async fn list_skills_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<ListSkillsResponse, CommandErrorPayload> {

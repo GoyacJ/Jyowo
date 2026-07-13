@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use secrecy::ExposeSecret;
 use secrecy::SecretString;
 use serde_json::Value;
 
@@ -15,6 +14,22 @@ use crate::{
 pub trait SkillConfigResolver: Send + Sync + 'static {
     async fn resolve(&self, key: &str) -> Result<Value, ConfigResolveError>;
     async fn resolve_secret(&self, key: &str) -> Result<SecretString, ConfigResolveError>;
+
+    async fn resolve_for(
+        &self,
+        _skill_id: &harness_contracts::SkillId,
+        key: &str,
+    ) -> Result<Value, ConfigResolveError> {
+        self.resolve(key).await
+    }
+
+    async fn resolve_secret_for(
+        &self,
+        _skill_id: &harness_contracts::SkillId,
+        key: &str,
+    ) -> Result<SecretString, ConfigResolveError> {
+        self.resolve_secret(key).await
+    }
 }
 
 #[derive(Clone)]
@@ -114,14 +129,26 @@ impl SkillRenderer {
         for config in &skill.frontmatter.config {
             let secret_pattern = format!("${{config.{}:secret}}", config.key);
             if content.contains(&secret_pattern) {
-                let value = self.config_resolver.resolve_secret(&config.key).await?;
-                content = content.replace(&secret_pattern, value.expose_secret());
-                consumed_config_keys.push(config.key.clone());
+                return Err(ConfigResolveError::SecretInterpolationForbidden {
+                    skill_id: skill.id.0.clone(),
+                    key: config.key.clone(),
+                }
+                .into());
             }
 
             let pattern = format!("${{config.{}}}", config.key);
             if content.contains(&pattern) {
-                let value = self.config_resolver.resolve(&config.key).await?;
+                if config.secret {
+                    return Err(ConfigResolveError::SecretInterpolationForbidden {
+                        skill_id: skill.id.0.clone(),
+                        key: config.key.clone(),
+                    }
+                    .into());
+                }
+                let value = self
+                    .config_resolver
+                    .resolve_for(&skill.id, &config.key)
+                    .await?;
                 content = content.replace(&pattern, &render_value_for_template(&value));
                 if !consumed_config_keys.iter().any(|key| key == &config.key) {
                     consumed_config_keys.push(config.key.clone());

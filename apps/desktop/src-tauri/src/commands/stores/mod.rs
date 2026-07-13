@@ -39,6 +39,7 @@ mod mcp;
 pub(crate) mod plugin;
 mod project_config;
 pub(crate) mod skill;
+mod skill_config;
 
 pub use global_config::GlobalConfigStore;
 pub use mcp::DesktopMcpDiagnosticStore;
@@ -46,6 +47,7 @@ pub(crate) use mcp::DesktopMcpServerStore;
 pub use plugin::DesktopPluginStore;
 pub use project_config::ProjectConfigStore;
 pub use skill::DesktopSkillStore;
+pub use skill_config::{DesktopSkillConfigStore, SkillConfigStoreFault};
 
 pub(crate) fn read_json_file<T: DeserializeOwned>(
     path: &Path,
@@ -2399,6 +2401,7 @@ pub struct DesktopRuntimeState {
     pub(crate) skill_catalog_install_tasks:
         Arc<RwLock<HashMap<SkillCatalogInstallTaskKey, SkillCatalogInstallTaskPayload>>>,
     pub(crate) skill_store: Arc<dyn SkillStore>,
+    pub(crate) skill_config_store: Arc<DesktopSkillConfigStore>,
     pub(crate) skill_store_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) settings_reload_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) runtime_layout: crate::storage_layout::RuntimeLayout,

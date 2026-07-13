@@ -121,7 +121,7 @@ impl Harness {
                 skill_registry: Some(self.inner.skill_registry.clone()),
                 skill_metrics_sink: self.skill_metrics_sink(),
                 skill_render_policy: self.skill_render_policy(),
-                skill_config_snapshot: self.inner.skill_config_snapshot.clone(),
+                skill_config_snapshot: self.skill_config_snapshot(),
             }))
             .with_skill_reload_cap(Arc::new(SdkSkillReloadCap {
                 inner: Arc::clone(&self.inner),
@@ -366,7 +366,7 @@ impl Harness {
                 skill_registry: Some(self.inner.skill_registry.clone()),
                 skill_metrics_sink: self.skill_metrics_sink(),
                 skill_render_policy: self.skill_render_policy(),
-                skill_config_snapshot: self.inner.skill_config_snapshot.clone(),
+                skill_config_snapshot: self.skill_config_snapshot(),
             }))
             .with_skill_reload_cap(Arc::new(SdkSkillReloadCap {
                 inner: Arc::clone(&self.inner),
@@ -1291,10 +1291,10 @@ impl EngineSessionTurnRunner {
             return Ok(engine);
         };
 
-        let snapshot = registry.snapshot();
+        let mut snapshot = (*registry.snapshot()).clone();
+        apply_skill_config_statuses(&mut snapshot, &self.skill_config_snapshot);
+        let snapshot = Arc::new(snapshot);
         let mut cap_registry = engine.cap_registry().as_ref().clone();
-        validate_required_skill_config(&snapshot, &self.skill_config_snapshot)
-            .map_err(|error| SessionError::Message(error.to_string()))?;
         let mut renderer = SkillRenderer::new(Arc::new(
             SkillConfigSnapshotResolver::from_registry_snapshot(
                 &snapshot,

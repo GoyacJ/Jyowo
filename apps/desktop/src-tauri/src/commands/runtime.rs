@@ -154,6 +154,10 @@ impl DesktopRuntimeState {
             ),
             skill_catalog_install_tasks: Arc::new(RwLock::new(HashMap::new())),
             skill_store: Arc::new(DesktopSkillStore::global(storage_layout.clone())),
+            skill_config_store: Arc::new(DesktopSkillConfigStore::new(
+                storage_layout.clone(),
+                Arc::new(KeyringSkillSecretStore),
+            )),
             skill_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             settings_reload_lock: Arc::new(tokio::sync::Mutex::new(())),
             global_config_store: Some(GlobalConfigStore::new(storage_layout.clone())),
@@ -354,6 +358,10 @@ impl DesktopRuntimeState {
             )),
             skill_catalog_install_tasks: Arc::new(RwLock::new(HashMap::new())),
             skill_store: Arc::new(DesktopSkillStore::global(storage_layout_for_home())),
+            skill_config_store: Arc::new(DesktopSkillConfigStore::new(
+                storage_layout_for_home(),
+                Arc::new(KeyringSkillSecretStore),
+            )),
             skill_store_lock: Arc::new(tokio::sync::Mutex::new(())),
             settings_reload_lock: Arc::new(tokio::sync::Mutex::new(())),
             global_config_store: Some(global_config_store_for_home()),
@@ -383,6 +391,14 @@ impl DesktopRuntimeState {
     #[doc(hidden)]
     pub fn set_skill_store_for_test(&mut self, skill_store: Arc<dyn SkillStore>) {
         self.skill_store = skill_store;
+    }
+
+    #[doc(hidden)]
+    pub fn set_skill_config_store_for_test(
+        &mut self,
+        skill_config_store: Arc<DesktopSkillConfigStore>,
+    ) {
+        self.skill_config_store = skill_config_store;
     }
 
     #[doc(hidden)]
@@ -598,7 +614,7 @@ pub(crate) async fn runtime_state_for_no_workspace(
 pub async fn runtime_state_for_workspace(
     workspace_root: PathBuf,
 ) -> Result<DesktopRuntimeState, CommandErrorPayload> {
-    runtime_state_from_settings_store(workspace_root, None).await
+    runtime_state_from_settings_stores(workspace_root, None, None).await
 }
 
 pub(crate) async fn runtime_state_for_global_conversation(
@@ -619,6 +635,7 @@ async fn runtime_state_for_global_conversation_layout(
         None,
         Arc::clone(&provider_capability_routes),
         None,
+        None,
     )
     .await?;
 
@@ -636,12 +653,21 @@ pub async fn runtime_state_with_provider_settings_store_for_test(
     workspace_root: PathBuf,
     provider_settings_store: Arc<dyn ProviderSettingsStore>,
 ) -> Result<DesktopRuntimeState, CommandErrorPayload> {
-    runtime_state_from_settings_store(workspace_root, Some(provider_settings_store)).await
+    runtime_state_from_settings_stores(workspace_root, Some(provider_settings_store), None).await
 }
 
-async fn runtime_state_from_settings_store(
+#[doc(hidden)]
+pub async fn runtime_state_with_skill_config_store_for_test(
+    workspace_root: PathBuf,
+    skill_config_store: Arc<DesktopSkillConfigStore>,
+) -> Result<DesktopRuntimeState, CommandErrorPayload> {
+    runtime_state_from_settings_stores(workspace_root, None, Some(skill_config_store)).await
+}
+
+async fn runtime_state_from_settings_stores(
     workspace_root: PathBuf,
     provider_settings_store_override: Option<Arc<dyn ProviderSettingsStore>>,
+    skill_config_store_override: Option<Arc<DesktopSkillConfigStore>>,
 ) -> Result<DesktopRuntimeState, CommandErrorPayload> {
     let workspace_root = canonical_workspace_root(workspace_root, "workspace root".to_owned())?;
     let route_store = DesktopProviderCapabilityRouteStore::new(workspace_root.clone());
@@ -652,6 +678,7 @@ async fn runtime_state_from_settings_store(
         None,
         Arc::clone(&provider_capability_routes),
         provider_settings_store_override.clone(),
+        skill_config_store_override.clone(),
     )
     .await?;
 
@@ -664,6 +691,9 @@ async fn runtime_state_from_settings_store(
     )?;
     if let Some(provider_settings_store) = provider_settings_store_override {
         state.set_provider_settings_store_for_test(provider_settings_store);
+    }
+    if let Some(skill_config_store) = skill_config_store_override {
+        state.set_skill_config_store_for_test(skill_config_store);
     }
     Ok(state)
 }
@@ -908,6 +938,7 @@ pub(crate) async fn build_desktop_settings_runtime(
     model_config_id: Option<&str>,
     provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
     provider_settings_store_override: Option<Arc<dyn ProviderSettingsStore>>,
+    skill_config_store_override: Option<Arc<DesktopSkillConfigStore>>,
 ) -> Result<
     (
         DesktopSettingsRuntime,
@@ -957,6 +988,13 @@ pub(crate) async fn build_desktop_settings_runtime(
                 )
             });
     let storage_layout = storage_layout_for_home();
+    let skill_config_store = skill_config_store_override.unwrap_or_else(|| {
+        Arc::new(DesktopSkillConfigStore::new(
+            storage_layout.clone(),
+            Arc::new(KeyringSkillSecretStore),
+        ))
+    });
+    let skill_config_snapshot = skill_config_store.load_snapshot()?;
     let global_config_store = global_config_store_for_home();
     let global_skill_selection = global_config_store
         .load_global_skill_selection_if_present()?
@@ -1095,6 +1133,7 @@ pub(crate) async fn build_desktop_settings_runtime(
         .with_mcp_config(mcp_config)
         .with_plugin_registry(plugin_registry)
         .with_skill_loader(skill_loader)
+        .with_skill_config_snapshot(skill_config_snapshot)
         .with_permission_authority_arc(authorization_service.permission_authority())
         .with_authorization_service_arc(authorization_service)
         .build()
@@ -1494,6 +1533,7 @@ pub(crate) async fn reload_desktop_settings_runtime_after_plugin_change_locked(
         None,
         Arc::clone(&state.provider_capability_routes),
         Some(Arc::clone(&state.provider_settings_store)),
+        Some(Arc::clone(&state.skill_config_store)),
     )
     .await?;
     if let Some(old_settings_runtime) = state.settings_runtime() {
@@ -1510,6 +1550,14 @@ pub(crate) async fn reload_desktop_settings_runtime_after_plugin_change_locked(
         model_options,
     );
     Ok(())
+}
+
+#[doc(hidden)]
+pub async fn reload_desktop_settings_runtime_after_plugin_change_for_test(
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
+    let _settings_reload_guard = state.settings_reload_lock.lock().await;
+    reload_desktop_settings_runtime_after_plugin_change_locked(state).await
 }
 
 pub(crate) fn current_workspace_root() -> Result<PathBuf, CommandErrorPayload> {

@@ -59,6 +59,7 @@ pub struct RuntimeSkillParameter {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeSkillSummary {
+    pub id: String,
     pub name: String,
     pub description: String,
     pub tags: Vec<String>,
@@ -68,9 +69,20 @@ pub struct RuntimeSkillSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeSkillConfig {
+    pub key: String,
+    pub value_type: String,
+    pub secret: bool,
+    pub required: bool,
+    pub default: Option<Value>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeSkillView {
     pub summary: RuntimeSkillSummary,
     pub parameters: Vec<RuntimeSkillParameter>,
+    pub config: Vec<RuntimeSkillConfig>,
     pub config_keys: Vec<String>,
     pub body_preview: String,
     pub body_full: Option<String>,

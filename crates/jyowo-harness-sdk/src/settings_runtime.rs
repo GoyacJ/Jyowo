@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::{
     Harness, HarnessBuilder, HarnessError, HarnessOptions, McpConfig, RuntimeSkillSummary,
-    RuntimeSkillView, Unset,
+    RuntimeSkillView, SkillConfigSnapshot, Unset,
 };
 
 /// Desktop-only facade for configuration, catalog, and diagnostics APIs.
@@ -87,6 +87,10 @@ impl DesktopSettingsRuntime {
 
     pub fn view_runtime_skill(&self, name: &str, full: bool) -> Option<RuntimeSkillView> {
         self.inner.view_runtime_skill(name, full)
+    }
+
+    pub fn replace_skill_config_snapshot(&self, snapshot: SkillConfigSnapshot) {
+        self.inner.replace_skill_config_snapshot(snapshot);
     }
 
     pub async fn validate_workspace_skill_markdown(

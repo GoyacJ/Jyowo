@@ -1,39 +1,40 @@
 #![cfg(feature = "testing")]
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use futures::{executor::block_on, stream, StreamExt};
 use harness_contracts::{
-    BudgetMetric, Decision, DeferPolicy, Event, ModelError, NetworkAccess, OverflowAction,
-    ProviderRestriction, ResultBudget, SkillInjectionId, SkillInvocationReceipt, SkillRegistryCap,
-    TenantId, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel,
-    ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId, TrustLevel, WorkspaceAccess,
+    BudgetMetric, Decision, DeferPolicy, Event, NetworkAccess, OverflowAction, ProviderRestriction,
+    ResultBudget, SkillInjectionId, SkillInvocationReceipt, SkillRegistryCap, TenantId,
+    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
+    ToolOrigin, ToolProperties, ToolResult, ToolUseId, TrustLevel, WorkspaceAccess,
 };
 use harness_journal::EventStore;
-use harness_model::{
-    ContentDelta, InferContext, ModelDescriptor, ModelProvider, ModelRequest, ModelStream,
-    ModelStreamEvent,
-};
+use harness_model::{ContentDelta, ModelStreamEvent};
 use harness_permission::PermissionCheck;
 use harness_skill::{ConfigResolveError, SkillConfigResolver, SkillLoader, SkillSourceConfig};
 use harness_tool::{
     action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
     ToolStream, ValidationError,
 };
-use jyowo_harness_sdk::skill_config::{SkillConfigSnapshot, SkillConfigSnapshotResolver};
-use jyowo_harness_sdk::{prelude::*, testing::*};
+use jyowo_harness_sdk::skill_config::{
+    SecretString, SkillConfigSnapshot, SkillConfigSnapshotResolver, SkillConfigStoreError,
+    SkillSecretStore,
+};
+use jyowo_harness_sdk::{prelude::*, testing::*, KeyringSkillSecretStore};
 use serde_json::json;
 
 #[test]
-fn skill_config_resolver_missing_required_secret_blocks_session_before_model_invocation() {
+fn missing_required_config_disables_only_its_skill_without_blocking_session() {
     block_on(async {
         let workspace = unique_workspace("sdk-skill-config-missing");
         let skill_dir = workspace.join("skills");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("configured.md"), configured_skill()).unwrap();
-        let model = Arc::new(CountingProvider::default());
+        std::fs::write(skill_dir.join("ready.md"), ready_skill()).unwrap();
+        let model = Arc::new(TestModelProvider::default());
         let loader = SkillLoader::default().with_source(SkillSourceConfig::Directory {
             path: skill_dir,
             source_kind: harness_skill::DirectorySourceKind::Workspace,
@@ -50,21 +51,72 @@ fn skill_config_resolver_missing_required_secret_blocks_session_before_model_inv
             .await
             .expect("harness should build");
 
-        let error = harness
+        let _session = harness
             .create_session(SessionOptions::new(&workspace))
             .await
-            .expect_err("missing required config should fail before runtime starts");
+            .expect("missing config must not block session creation");
 
-        assert!(
-            format!("{error}").contains("missing required skill config `github.org`"),
-            "unexpected error: {error}"
-        );
-        assert_eq!(model.calls(), 0, "model must not be invoked");
+        let configured = harness
+            .view_runtime_skill("configured", false)
+            .expect("configured skill");
+        let ready = harness
+            .view_runtime_skill("ready", false)
+            .expect("ready skill");
+        assert_eq!(configured.summary.id, "workspace:configured");
+        assert!(configured
+            .config
+            .iter()
+            .any(|declaration| declaration.key == "github.token" && declaration.secret));
+        assert!(matches!(
+            configured.summary.status,
+            harness_contracts::SkillStatus::PrerequisiteMissing { ref config_keys, .. }
+                if config_keys == &["github.org".to_owned(), "github.token".to_owned()]
+        ));
+        assert_eq!(ready.summary.status, harness_contracts::SkillStatus::Ready);
     });
 }
 
 #[test]
-fn skill_config_resolver_secret_values_do_not_enter_tool_receipts_or_events() {
+fn required_secret_metadata_without_a_secret_store_entry_remains_missing() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-skill-config-missing-secret-entry");
+        let skill_dir = workspace.join("skills");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("configured.md"), configured_skill()).unwrap();
+        let loader = SkillLoader::default().with_source(SkillSourceConfig::Directory {
+            path: skill_dir,
+            source_kind: harness_skill::DirectorySourceKind::Workspace,
+        });
+        let config = SkillConfigSnapshot::new()
+            .with_skill_value("workspace:configured", "github.org", json!("jyowo"))
+            .with_skill_secret_presence("workspace:configured", "github.token");
+        let harness = Harness::builder()
+            .with_workspace_root(&workspace)
+            .with_model(TestModelProvider::default())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
+            .with_skill_loader(loader)
+            .with_skill_config_snapshot(config)
+            .build()
+            .await
+            .unwrap();
+        let _session = harness
+            .create_session(SessionOptions::new(&workspace))
+            .await
+            .unwrap();
+
+        let configured = harness.view_runtime_skill("configured", false).unwrap();
+        assert!(matches!(
+            configured.summary.status,
+            harness_contracts::SkillStatus::PrerequisiteMissing { ref config_keys, .. }
+                if config_keys == &["github.token".to_owned()]
+        ));
+    });
+}
+
+#[test]
+fn skill_config_resolver_rejects_secret_interpolation_without_leaking_to_events() {
     block_on(async {
         let workspace = unique_workspace("sdk-skill-config-secret-redaction");
         let skill_dir = workspace.join("skills");
@@ -97,9 +149,18 @@ fn skill_config_resolver_secret_values_do_not_enter_tool_receipts_or_events() {
             path: skill_dir,
             source_kind: harness_skill::DirectorySourceKind::Workspace,
         });
+        let secret_store = Arc::new(MemorySecretStore::default());
+        secret_store
+            .set(
+                "workspace:configured",
+                "github.token",
+                SecretString::from("super-secret-token".to_owned()),
+            )
+            .unwrap();
         let config = SkillConfigSnapshot::new()
-            .with_value("github.org", json!("jyowo"))
-            .with_secret("github.token", "super-secret-token");
+            .with_skill_value("workspace:configured", "github.org", json!("jyowo"))
+            .with_skill_secret_presence("workspace:configured", "github.token")
+            .with_secret_store(secret_store);
 
         let harness = Harness::builder()
             .with_workspace_root(&workspace)
@@ -146,13 +207,13 @@ fn skill_config_resolver_secret_values_do_not_enter_tool_receipts_or_events() {
             events.iter().any(|event| {
                 matches!(
                     event,
-                    Event::ToolUseCompleted(completed)
-                        if completed.tool_use_id == tool_use_id
-                            && format!("{:?}", completed.result).contains("github.token")
-                            && !format!("{:?}", completed.result).contains("super-secret-token")
+                    Event::ToolUseFailed(failed)
+                        if failed.tool_use_id == tool_use_id
+                            && failed.error.message.contains("cannot be interpolated")
+                            && !failed.error.message.contains("super-secret-token")
                 )
             }),
-            "configured skill tool should complete with redacted receipt; events: {events:#?}"
+            "configured skill tool should reject secret interpolation; events: {events:#?}"
         );
         assert!(
             !format!("{events:?}").contains("super-secret-token"),
@@ -165,10 +226,20 @@ fn skill_config_resolver_secret_values_do_not_enter_tool_receipts_or_events() {
 fn skill_config_resolver_reads_only_approved_snapshot_refs() {
     block_on(async {
         let snapshot = SkillConfigSnapshot::new()
-            .with_value("approved", json!("ok"))
-            .with_secret("extra.secret", "leak");
-        let resolver =
-            SkillConfigSnapshotResolver::new(snapshot, ["approved".to_owned()].into_iter());
+            .with_skill_value("workspace:configured", "approved", json!("ok"))
+            .with_skill_secret_presence("workspace:configured", "extra.secret");
+        let resolver = SkillConfigSnapshotResolver::for_skill(
+            "workspace:configured",
+            snapshot,
+            [harness_skill::SkillConfigDecl {
+                key: "approved".to_owned(),
+                value_type: harness_skill::SkillParamType::String,
+                secret: false,
+                required: true,
+                default: None,
+                description: None,
+            }],
+        );
 
         assert_eq!(resolver.resolve("approved").await.unwrap(), json!("ok"));
         let error = resolver
@@ -178,6 +249,86 @@ fn skill_config_resolver_reads_only_approved_snapshot_refs() {
 
         assert!(matches!(error, ConfigResolveError::UnknownKey(key) if key == "extra.secret"));
     });
+}
+
+#[test]
+fn secret_template_interpolation_is_forbidden_without_loading_secret_plaintext() {
+    block_on(async {
+        let snapshot = SkillConfigSnapshot::new()
+            .with_skill_secret_presence("workspace:configured", "github.token");
+        let resolver = SkillConfigSnapshotResolver::for_skill(
+            "workspace:configured",
+            snapshot,
+            [harness_skill::SkillConfigDecl {
+                key: "github.token".to_owned(),
+                value_type: harness_skill::SkillParamType::String,
+                secret: true,
+                required: true,
+                default: None,
+                description: None,
+            }],
+        );
+
+        let error = resolver
+            .resolve_secret("github.token")
+            .await
+            .expect_err("ordinary rendering must not resolve secrets");
+
+        assert!(matches!(
+            error,
+            ConfigResolveError::SecretInterpolationForbidden { ref key, .. }
+                if key == "github.token"
+        ));
+        assert!(!format!("{error:?} {error}").contains("super-secret-token"));
+    });
+}
+
+#[test]
+fn resolver_rejects_config_values_with_the_wrong_declared_type() {
+    block_on(async {
+        let snapshot = SkillConfigSnapshot::new().with_skill_value(
+            "workspace:configured",
+            "github.org",
+            json!(42),
+        );
+        let resolver = SkillConfigSnapshotResolver::for_skill(
+            "workspace:configured",
+            snapshot,
+            [harness_skill::SkillConfigDecl {
+                key: "github.org".to_owned(),
+                value_type: harness_skill::SkillParamType::String,
+                secret: false,
+                required: false,
+                default: None,
+                description: None,
+            }],
+        );
+
+        let error = resolver
+            .resolve("github.org")
+            .await
+            .expect_err("wrong config types must not reach the renderer");
+        assert!(matches!(
+            error,
+            ConfigResolveError::InvalidType {
+                ref skill_id,
+                ref key,
+                expected: "string",
+            } if skill_id == "workspace:configured" && key == "github.org"
+        ));
+    });
+}
+
+#[test]
+fn keychain_accounts_are_unambiguous_for_slashes_in_both_components() {
+    assert_eq!(
+        KeyringSkillSecretStore::account_name("user:example", "apiToken"),
+        "user:example/apiToken"
+    );
+    assert_ne!(
+        KeyringSkillSecretStore::account_name("user:a/b", "c"),
+        KeyringSkillSecretStore::account_name("user:a", "b/c")
+    );
 }
 
 fn configured_skill() -> &'static str {
@@ -198,6 +349,15 @@ Token ${config.github.token:secret}
 "#
 }
 
+fn ready_skill() -> &'static str {
+    r#"---
+name: ready
+description: Ready skill.
+---
+Ready
+"#
+}
+
 fn unique_workspace(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "jyowo-{name}-{}-{}",
@@ -207,33 +367,43 @@ fn unique_workspace(name: &str) -> std::path::PathBuf {
 }
 
 #[derive(Default)]
-struct CountingProvider {
-    calls: AtomicUsize,
+struct MemorySecretStore {
+    secrets: Mutex<BTreeMap<(String, String), SecretString>>,
 }
 
-impl CountingProvider {
-    fn calls(&self) -> usize {
-        self.calls.load(Ordering::SeqCst)
-    }
-}
-
-#[async_trait]
-impl ModelProvider for CountingProvider {
-    fn provider_id(&self) -> &str {
-        "counting"
-    }
-
-    fn supported_models(&self) -> Vec<ModelDescriptor> {
-        TestModelProvider::default().supported_models()
-    }
-
-    async fn infer(
+impl SkillSecretStore for MemorySecretStore {
+    fn get(
         &self,
-        _req: ModelRequest,
-        _ctx: InferContext,
-    ) -> Result<ModelStream, ModelError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        Ok(Box::pin(stream::iter([ModelStreamEvent::MessageStop])))
+        skill_id: &str,
+        key: &str,
+    ) -> Result<Option<SecretString>, SkillConfigStoreError> {
+        Ok(self
+            .secrets
+            .lock()
+            .unwrap()
+            .get(&(skill_id.to_owned(), key.to_owned()))
+            .cloned())
+    }
+
+    fn set(
+        &self,
+        skill_id: &str,
+        key: &str,
+        value: SecretString,
+    ) -> Result<(), SkillConfigStoreError> {
+        self.secrets
+            .lock()
+            .unwrap()
+            .insert((skill_id.to_owned(), key.to_owned()), value);
+        Ok(())
+    }
+
+    fn delete(&self, skill_id: &str, key: &str) -> Result<(), SkillConfigStoreError> {
+        self.secrets
+            .lock()
+            .unwrap()
+            .remove(&(skill_id.to_owned(), key.to_owned()));
+        Ok(())
     }
 }
 

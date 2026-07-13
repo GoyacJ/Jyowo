@@ -35,12 +35,14 @@ jyowo-harness-permission = { path = "../../../crates/jyowo-harness-permission", 
 jyowo-harness-plugin = { path = "../../../crates/jyowo-harness-plugin" }
 jyowo-harness-provider-state = { path = "../../../crates/jyowo-harness-provider-state" }
 jyowo-harness-sandbox = { path = "../../../crates/jyowo-harness-sandbox", features = ["local-sandbox", "docker"] }
+harness-skill = { package = "jyowo-harness-skill", path = "../../../crates/jyowo-harness-skill" }
 jyowo-harness-memory = { path = "../../../crates/jyowo-harness-memory" }
 jyowo-harness-journal = { path = "../../../crates/jyowo-harness-journal", features = ["in-memory", "sqlite"] }
 jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false, features = ["stream-permission", "rule-engine-permission", "integrity", "jsonl-store", "sqlite-store", "blob-file", "local-sandbox", "mcp-http", "mcp-stdio", "memory-provider-registry", "provider-anthropic", "provider-bedrock", "provider-codex", "provider-deepseek", "provider-doubao", "provider-gemini", "provider-km", "provider-local-llama", "provider-minimax", "minimax-tools", "gemini-tools", "seedance-tools", "provider-openai", "provider-openrouter", "provider-qwen", "provider-zhipu", "zhipu-tools", "observability-redactor", "agents-subagent", "agents-team"] }
 jyowo-harness-model = { path = "../../../crates/jyowo-harness-model", features = ["openrouter", "deepseek", "bedrock"] }
 jyowo-harness-tool = { path = "../../../crates/jyowo-harness-tool", default-features = false, features = ["builtin-toolset", "minimax-tools", "gemini-tools", "seedance-tools", "zhipu-tools"] }
 libc = { workspace = true }
+keyring = { workspace = true }
 log = { workspace = true }
 parking_lot = "0.12.5"
 oxideav-avif = { workspace = true }
@@ -48,6 +50,7 @@ reqwest = { workspace = true }
 rustix = { workspace = true, features = ["process"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+secrecy = { workspace = true }
 tauri = { version = "2.11.2", features = [] }
 tauri-plugin-dialog = { workspace = true }
 tauri-plugin-process = { workspace = true }
@@ -67,7 +70,6 @@ jyowo-harness-execution = { path = "../../../crates/jyowo-harness-execution" }
 jyowo-harness-journal = { path = "../../../crates/jyowo-harness-journal", features = ["in-memory"] }
 jyowo-harness-permission = { path = "../../../crates/jyowo-harness-permission", features = ["integrity"] }
 jyowo-harness-sdk = { path = "../../../crates/jyowo-harness-sdk", default-features = false, features = ["stream-permission", "rule-engine-permission", "integrity", "jsonl-store", "sqlite-store", "blob-file", "local-sandbox", "mcp-http", "mcp-stdio", "memory-provider-registry", "provider-anthropic", "provider-bedrock", "provider-codex", "provider-deepseek", "provider-doubao", "provider-gemini", "provider-km", "provider-local-llama", "provider-minimax", "minimax-tools", "gemini-tools", "seedance-tools", "provider-openai", "provider-openrouter", "provider-qwen", "provider-zhipu", "zhipu-tools", "observability-redactor", "agents-subagent", "agents-team", "testing"] }
-harness-skill = { package = "jyowo-harness-skill", path = "../../../crates/jyowo-harness-skill" }
 jyowo-harness-model = { path = "../../../crates/jyowo-harness-model", features = ["openrouter", "deepseek", "bedrock"] }
 rusqlite = { workspace = true }
 serde_json = { workspace = true }

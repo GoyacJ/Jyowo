@@ -86,6 +86,19 @@ impl SkillRegistryService {
             }
         }
         .ok_or_else(|| RenderError::SkillNotVisible(name.to_owned()))?;
+        if let Some(snapshot) = &self.snapshot {
+            if let Some(harness_contracts::SkillStatus::PrerequisiteMissing {
+                config_keys, ..
+            }) = snapshot.status.get(&skill.id)
+            {
+                if !config_keys.is_empty() {
+                    return Err(RenderError::MissingConfig {
+                        skill_id: skill.id.0.clone(),
+                        config_keys: config_keys.clone(),
+                    });
+                }
+            }
+        }
         self.renderer
             .render(&skill, params)
             .await

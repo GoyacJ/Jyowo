@@ -14,7 +14,7 @@ use harness_contracts::{
     ProviderCapabilityRouteSettings, ProviderCredential, ProviderCredentialResolveContext,
     ProviderCredentialResolverCap, ProviderProfileDefinition, ProviderSecretEntry,
     ProviderSecretsRecord, ProviderSelectionRecord, ProviderServiceCapability,
-    ProviderServiceCategory, SandboxMode, SkillSelectionRecord, ToolError,
+    ProviderServiceCategory, SandboxMode, SkillConfigDocument, SkillSelectionRecord, ToolError,
 };
 use harness_plugin::{
     CargoExtensionRuntimeLoader, DiscoverySource, FileManifestLoader, ManifestLoadReport,
@@ -25,7 +25,7 @@ use harness_sandbox::{LocalIsolation, LocalSandbox};
 use jyowo_harness_sdk::{
     builtin_agent_profiles,
     ext::{DirectorySourceKind, SkillLoader, SkillSourceConfig},
-    SkillConfigSnapshot,
+    KeyringSkillSecretStore, SkillConfigSnapshot, SkillSecretStore,
 };
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
@@ -37,6 +37,7 @@ const EXECUTION_OVERRIDES_FILE: &str = "execution-overrides.json";
 const PROVIDER_ROUTES_FILE: &str = "provider-capability-routes.json";
 const MCP_SERVERS_FILE: &str = "mcp-servers.json";
 const SKILLS_FILE: &str = "skills.json";
+const SKILL_CONFIG_FILE: &str = "skill-config.json";
 const PLUGINS_FILE: &str = "plugins.json";
 const AGENT_PROFILES_FILE: &str = "agent-profiles.json";
 const AGENT_PROFILE_SELECTION_FILE: &str = "agent-profile-selection.json";
@@ -45,9 +46,10 @@ const PROVIDER_SECRETS_FILE: &str = "provider-secrets.json";
 const MAX_FROZEN_PLUGIN_EXECUTABLE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Resolves immutable SDK factory inputs for one canonical workspace.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RuntimeConfigResolver {
     global_config_root: PathBuf,
+    skill_secret_store: Arc<dyn SkillSecretStore>,
 }
 
 impl RuntimeConfigResolver {
@@ -55,7 +57,17 @@ impl RuntimeConfigResolver {
     pub fn new(global_config_root: impl Into<PathBuf>) -> Self {
         Self {
             global_config_root: global_config_root.into(),
+            skill_secret_store: Arc::new(KeyringSkillSecretStore),
         }
+    }
+
+    #[must_use]
+    pub fn with_skill_secret_store(
+        mut self,
+        skill_secret_store: Arc<dyn SkillSecretStore>,
+    ) -> Self {
+        self.skill_secret_store = skill_secret_store;
+        self
     }
 
     pub fn resolve_memory_database_path(
@@ -248,6 +260,19 @@ impl RuntimeConfigResolver {
             kind: "skill packages",
             reason: source.to_string(),
         })?;
+        let skill_config_document = read_optional_json::<SkillConfigDocument>(
+            &global_config_root.join(SKILL_CONFIG_FILE),
+            "global skill config",
+        )?
+        .unwrap_or_default();
+        let skill_config = SkillConfigSnapshot::from_document(
+            skill_config_document,
+            self.skill_secret_store.clone(),
+        )
+        .map_err(|source| RuntimeConfigError::Invalid {
+            kind: "global skill config",
+            reason: source.to_string(),
+        })?;
 
         let global_plugin_records = read_optional_json::<PluginSettingsFile>(
             &global_home.join("plugins/index.json"),
@@ -332,7 +357,7 @@ impl RuntimeConfigResolver {
             mcp_servers,
             plugin_snapshot,
             skill_loader,
-            skill_config: SkillConfigSnapshot::new(),
+            skill_config,
             enabled_skill_ids,
             enabled_plugin_ids,
             allow_project_plugins,
@@ -345,6 +370,16 @@ impl RuntimeConfigResolver {
                 routes: provider_routes,
             }),
         })
+    }
+}
+
+impl fmt::Debug for RuntimeConfigResolver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RuntimeConfigResolver")
+            .field("global_config_root", &self.global_config_root)
+            .field("skill_secret_store", &"SkillSecretStore")
+            .finish()
     }
 }
 

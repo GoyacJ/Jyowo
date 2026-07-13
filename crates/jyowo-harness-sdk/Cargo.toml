@@ -169,6 +169,7 @@ parking_lot = "0.12.5"
 serde = { workspace = true }
 serde_json = { workspace = true }
 secrecy = { workspace = true }
+keyring = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]

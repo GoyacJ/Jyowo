@@ -122,7 +122,7 @@ use serde_json::{json, Value};
 use crate::builder::BuiltinMemoryConfig;
 use crate::builder::{HarnessBuilder, Set, Unset};
 use crate::skill_config::{
-    validate_required_skill_config, SkillConfigSnapshot, SkillConfigSnapshotResolver,
+    apply_skill_config_statuses, SkillConfigSnapshot, SkillConfigSnapshotResolver,
 };
 use crate::skill_pack_loader::{
     LockedSkillVersionSnapshot, SkillPackLoaderAdapter, SkillPackLoaderError,
@@ -192,8 +192,8 @@ use self::tool_pool::{apply_tenant_tool_filter, filter_unavailable_tools};
 pub use self::types::{
     ConversationEventsPage, ConversationEventsPageRequest, ConversationRunOptions,
     ConversationSession, ConversationSessionSummary, ConversationTurnReceipt,
-    ConversationTurnRequest, HarnessOptions, McpConfig, RuntimeSkillParameter, RuntimeSkillSummary,
-    RuntimeSkillView, TenantPolicy,
+    ConversationTurnRequest, HarnessOptions, McpConfig, RuntimeSkillConfig, RuntimeSkillParameter,
+    RuntimeSkillSummary, RuntimeSkillView, TenantPolicy,
 };
 pub use self::workspace::WorkspaceCreateRequest;
 #[derive(Clone)]
@@ -219,7 +219,7 @@ struct HarnessInner {
     blob_store: Option<Arc<dyn BlobStore>>,
     evidence_ref_store: Option<Arc<harness_journal::EvidenceRefStore>>,
     skill_loader: Option<SkillLoader>,
-    skill_config_snapshot: SkillConfigSnapshot,
+    skill_config_snapshot: Arc<parking_lot::RwLock<SkillConfigSnapshot>>,
     skill_registry: SkillRegistry,
     mcp_config: Option<McpConfig>,
     elicitation_handler: Option<Arc<dyn ElicitationHandler>>,
@@ -1450,7 +1450,9 @@ impl Harness {
                 blob_store: extras.blob_store.take(),
                 evidence_ref_store: extras.evidence_ref_store.take(),
                 skill_loader: extras.skill_loader.take(),
-                skill_config_snapshot: extras.skill_config_snapshot.take().unwrap_or_default(),
+                skill_config_snapshot: Arc::new(parking_lot::RwLock::new(
+                    extras.skill_config_snapshot.take().unwrap_or_default(),
+                )),
                 skill_registry,
                 mcp_config,
                 elicitation_handler,

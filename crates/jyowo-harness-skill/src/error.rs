@@ -46,12 +46,27 @@ pub enum RenderError {
     ShellExec(#[from] std::io::Error),
     #[error("skill not visible: {0}")]
     SkillNotVisible(String),
+    #[error("skill `{skill_id}` is missing required config: {config_keys:?}")]
+    MissingConfig {
+        skill_id: String,
+        config_keys: Vec<String>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigResolveError {
     #[error("unknown config key: {0}")]
     UnknownKey(String),
+    #[error("skill `{skill_id}` is missing required config `{key}`")]
+    MissingRequiredConfig { skill_id: String, key: String },
+    #[error("secret config `{key}` for skill `{skill_id}` cannot be interpolated")]
+    SecretInterpolationForbidden { skill_id: String, key: String },
+    #[error("invalid config `{key}` for skill `{skill_id}`: expected {expected}")]
+    InvalidType {
+        skill_id: String,
+        key: String,
+        expected: &'static str,
+    },
     #[error("{0}")]
     Message(String),
 }

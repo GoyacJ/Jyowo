@@ -11,6 +11,44 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Global non-secret skill configuration stored in
+/// `~/.jyowo/config/skill-config.json`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SkillConfigDocument {
+    pub version: u32,
+    #[serde(default)]
+    pub skills: BTreeMap<String, SkillConfigEntry>,
+}
+
+impl SkillConfigDocument {
+    pub const CURRENT_VERSION: u32 = 1;
+}
+
+impl Default for SkillConfigDocument {
+    fn default() -> Self {
+        Self {
+            version: Self::CURRENT_VERSION,
+            skills: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SkillConfigEntry {
+    #[serde(default)]
+    pub values: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub secrets: BTreeMap<String, SkillSecretMetadata>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SkillSecretMetadata {
+    pub configured: bool,
+}
+
 /// A provider profile definition stored in `~/.jyowo/config/provider-profiles.json`.
 /// Secrets are stored separately in `provider-secrets.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

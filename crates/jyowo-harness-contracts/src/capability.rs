@@ -723,7 +723,12 @@ pub enum ContextPatchLifecycle {
 #[serde(rename_all = "snake_case")]
 pub enum SkillStatus {
     Ready,
-    PrerequisiteMissing { env_vars: Vec<String> },
+    PrerequisiteMissing {
+        #[serde(default)]
+        env_vars: Vec<String>,
+        #[serde(default)]
+        config_keys: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

@@ -1,4 +1,9 @@
-use std::{fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use harness_contracts::{
     AgentProfile, AgentProfileContextMode, AgentProfileMemoryScope, AgentProfileSandboxInheritance,
@@ -11,8 +16,94 @@ use harness_contracts::{
 };
 use harness_daemon::{RuntimeConfigError, RuntimeConfigResolver};
 use harness_plugin::{PluginCapabilities, PluginLifecycleState, PluginManifest, PluginName};
+use jyowo_harness_sdk::{skill_config::SecretString, SkillConfigStoreError, SkillSecretStore};
 use serde::Serialize;
 use tempfile::TempDir;
+
+#[test]
+fn skill_config_document_is_loaded_from_the_global_config_root() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_global_raw(
+        "skill-config.json",
+        r#"{
+          "version": 1,
+          "skills": {
+            "workspace:configured": {
+              "values": { "github.org": "jyowo" },
+              "secrets": { "github.token": { "configured": true } }
+            },
+            "workspace:other": {
+              "values": { "github.org": "other" },
+              "secrets": {}
+            }
+          }
+        }"#,
+    );
+
+    let snapshot = RuntimeConfigResolver::new(fixture.config_root())
+        .resolve(fixture.workspace(), None)
+        .expect("resolve skill config");
+
+    assert_eq!(
+        snapshot
+            .skill_config
+            .value_for("workspace:configured", "github.org"),
+        Some(&serde_json::json!("jyowo"))
+    );
+    assert_eq!(
+        snapshot
+            .skill_config
+            .value_for("workspace:other", "github.org"),
+        Some(&serde_json::json!("other"))
+    );
+    assert!(snapshot
+        .skill_config
+        .contains_secret_for("workspace:configured", "github.token"));
+    assert!(!format!("{snapshot:?}").contains("test-secret-plaintext"));
+}
+
+#[test]
+fn skill_config_secret_availability_uses_the_injected_secret_store() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_global_raw(
+        "skill-config.json",
+        r#"{
+          "version": 1,
+          "skills": {
+            "workspace:configured": {
+              "values": {},
+              "secrets": { "github.token": { "configured": true } }
+            }
+          }
+        }"#,
+    );
+    let secret_store = Arc::new(MemorySecretStore::default());
+    let resolver = RuntimeConfigResolver::new(fixture.config_root())
+        .with_skill_secret_store(secret_store.clone());
+
+    let missing = resolver
+        .resolve(fixture.workspace(), None)
+        .expect("resolve missing secret");
+    assert!(!missing
+        .skill_config
+        .secret_is_available_for("workspace:configured", "github.token"));
+
+    secret_store
+        .set(
+            "workspace:configured",
+            "github.token",
+            SecretString::from("daemon-test-secret".to_owned()),
+        )
+        .unwrap();
+    let available = resolver
+        .resolve(fixture.workspace(), None)
+        .expect("resolve available secret");
+    assert!(available
+        .skill_config
+        .secret_is_available_for("workspace:configured", "github.token"));
+}
 
 #[test]
 fn project_settings_merge_over_global_runtime_configuration() {
@@ -1118,6 +1209,47 @@ fn unindexed_plugin_package_symlink_is_not_scanned() {
     RuntimeConfigResolver::new(fixture.config_root())
         .resolve(fixture.workspace(), None)
         .expect("unindexed plugin package must not be scanned");
+}
+
+#[derive(Default)]
+struct MemorySecretStore {
+    secrets: Mutex<BTreeMap<(String, String), SecretString>>,
+}
+
+impl SkillSecretStore for MemorySecretStore {
+    fn get(
+        &self,
+        skill_id: &str,
+        key: &str,
+    ) -> Result<Option<SecretString>, SkillConfigStoreError> {
+        Ok(self
+            .secrets
+            .lock()
+            .unwrap()
+            .get(&(skill_id.to_owned(), key.to_owned()))
+            .cloned())
+    }
+
+    fn set(
+        &self,
+        skill_id: &str,
+        key: &str,
+        value: SecretString,
+    ) -> Result<(), SkillConfigStoreError> {
+        self.secrets
+            .lock()
+            .unwrap()
+            .insert((skill_id.to_owned(), key.to_owned()), value);
+        Ok(())
+    }
+
+    fn delete(&self, skill_id: &str, key: &str) -> Result<(), SkillConfigStoreError> {
+        self.secrets
+            .lock()
+            .unwrap()
+            .remove(&(skill_id.to_owned(), key.to_owned()));
+        Ok(())
+    }
 }
 
 struct RuntimeFixture {

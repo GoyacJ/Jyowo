@@ -8,7 +8,7 @@ use harness_skill::{
     SkillRegistry, SkillRejectReason, SkillSource, SkillSourceConfig, SkillValidator,
 };
 use parking_lot::Mutex;
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::SecretString;
 use serde_json::Value;
 
 #[test]
@@ -621,7 +621,7 @@ Body
 }
 
 #[tokio::test]
-async fn secret_resolver_uses_secret_string() {
+async fn secret_interpolation_is_rejected_without_reading_secret_plaintext() {
     let skill = harness_skill::parse_skill_markdown(
         r"---
 name: secret-render
@@ -639,13 +639,21 @@ Token: ${config.github.token:secret}
     )
     .expect("skill should parse");
 
-    let rendered = harness_skill::SkillRenderer::new(Arc::new(SecretResolver))
+    let error = harness_skill::SkillRenderer::new(Arc::new(SecretResolver))
         .render(&skill, Value::Null)
         .await
-        .expect("render should resolve secret");
+        .expect_err("render must reject secret interpolation");
 
-    assert!(rendered.content.contains("s3cr3t"));
-    assert_eq!(SecretString::new("s3cr3t".into()).expose_secret(), "s3cr3t");
+    assert!(matches!(
+        error,
+        harness_skill::RenderError::ConfigResolve(
+            harness_skill::ConfigResolveError::SecretInterpolationForbidden {
+                ref skill_id,
+                ref key,
+            }
+        ) if skill_id == "workspace:secret-render" && key == "github.token"
+    ));
+    assert!(!format!("{error:?}").contains("s3cr3t"));
 }
 
 #[tokio::test]
@@ -836,7 +844,7 @@ impl SkillConfigResolver for SecretResolver {
         &self,
         _key: &str,
     ) -> Result<SecretString, harness_skill::ConfigResolveError> {
-        Ok(SecretString::new("s3cr3t".into()))
+        panic!("secret interpolation must not read secret plaintext")
     }
 }
 

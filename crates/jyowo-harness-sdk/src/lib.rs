@@ -35,8 +35,8 @@ pub use harness::{
     filter_unrouted_service_tools, ConversationEventsPage, ConversationEventsPageRequest,
     ConversationRunOptions, ConversationSession, ConversationSessionSummary,
     ConversationTurnReceipt, ConversationTurnRequest, Harness, HarnessOptions,
-    HarnessSamplingProvider, McpConfig, RuntimeSkillParameter, RuntimeSkillSummary,
-    RuntimeSkillView, TenantPolicy, WorkspaceCreateRequest,
+    HarnessSamplingProvider, McpConfig, RuntimeSkillConfig, RuntimeSkillParameter,
+    RuntimeSkillSummary, RuntimeSkillView, TenantPolicy, WorkspaceCreateRequest,
 };
 pub use harness_agent_runtime::builtin_agent_profiles;
 pub use harness_engine::{RunControl, RunControlHandle, TurnOutcome};
@@ -54,8 +54,9 @@ pub use options::{
 pub use session::{EventStream, RunContext, Session, SessionHandle, SessionOptions};
 pub use settings_runtime::DesktopSettingsRuntime;
 pub use skill_config::{
-    validate_required_skill_config, SkillConfigError, SkillConfigSnapshot,
-    SkillConfigSnapshotResolver,
+    apply_skill_config_statuses, validate_required_skill_config, KeyringSkillSecretStore,
+    SkillConfigError, SkillConfigSnapshot, SkillConfigSnapshotResolver, SkillConfigStoreError,
+    SkillSecretStore,
 };
 pub use skill_pack_loader::{
     LockedSkillPackFile, LockedSkillVersionSnapshot, SkillPackLoaderAdapter, SkillPackLoaderError,

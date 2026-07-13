@@ -940,6 +940,61 @@ pub struct DeleteSkillRequest {
     pub id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct GetSkillConfigRequest {
+    pub skill_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetSkillConfigResponse {
+    pub skill_id: String,
+    pub config: harness_contracts::SkillConfigEntry,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SetSkillConfigValueRequest {
+    pub skill_id: String,
+    pub key: String,
+    pub value: Value,
+}
+
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SetSkillSecretRequest {
+    pub skill_id: String,
+    pub key: String,
+    pub value: String,
+}
+
+impl std::fmt::Debug for SetSkillSecretRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SetSkillSecretRequest")
+            .field("skill_id", &self.skill_id)
+            .field("key", &self.key)
+            .field("value", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ClearSkillSecretRequest {
+    pub skill_id: String,
+    pub key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillConfigMutationResponse {
+    pub skill_id: String,
+    pub key: String,
+    pub configured: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SkillStoreRecord {

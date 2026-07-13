@@ -199,6 +199,10 @@ impl StorageLayout {
         self.global_config_root().join("skills.json")
     }
 
+    pub fn global_skill_config_file(&self) -> PathBuf {
+        self.global_config_root().join("skill-config.json")
+    }
+
     pub fn global_skills_index_file(&self) -> PathBuf {
         self.global_skills_root().join("index.json")
     }
@@ -495,6 +499,10 @@ mod tests {
         assert_eq!(
             layout.global_skills_file(),
             Path::new("/home/alice/.jyowo/config/skills.json")
+        );
+        assert_eq!(
+            layout.global_skill_config_file(),
+            Path::new("/home/alice/.jyowo/config/skill-config.json")
         );
         assert_eq!(
             layout.global_skills_index_file(),

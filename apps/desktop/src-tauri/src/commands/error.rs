@@ -62,6 +62,20 @@ pub(crate) fn runtime_operation_failed(message: String) -> CommandErrorPayload {
     }
 }
 
+pub(crate) fn skill_config_commit_indeterminate() -> CommandErrorPayload {
+    CommandErrorPayload {
+        code: "SKILL_CONFIG_COMMIT_INDETERMINATE",
+        message: "skill config commit state could not be verified".to_owned(),
+    }
+}
+
+pub(crate) fn skill_config_compensation_failed() -> CommandErrorPayload {
+    CommandErrorPayload {
+        code: "SKILL_CONFIG_COMPENSATION_FAILED",
+        message: "skill config compensation failed".to_owned(),
+    }
+}
+
 pub(crate) fn not_found(message: String) -> CommandErrorPayload {
     CommandErrorPayload {
         code: "NOT_FOUND",

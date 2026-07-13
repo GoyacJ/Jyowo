@@ -52,20 +52,18 @@ impl Harness {
             }
         }
         self.register_skill_hooks(&registry)?;
-        let snapshot = registry.snapshot();
-        validate_required_skill_config(&snapshot, &self.inner.skill_config_snapshot)
-            .map_err(|error| HarnessError::Other(error.to_string()))?;
+        let mut snapshot = (*registry.snapshot()).clone();
+        let skill_config_snapshot = self.skill_config_snapshot();
+        apply_skill_config_statuses(&mut snapshot, &skill_config_snapshot);
+        let snapshot = Arc::new(snapshot);
         let mut renderer = SkillRenderer::new(Arc::new(
-            SkillConfigSnapshotResolver::from_registry_snapshot(
-                &snapshot,
-                self.inner.skill_config_snapshot.clone(),
-            ),
+            SkillConfigSnapshotResolver::from_registry_snapshot(&snapshot, skill_config_snapshot),
         ))
         .with_policy(self.skill_render_policy());
         if let Some(metrics_sink) = &metrics_sink {
             renderer = renderer.with_metrics_sink(Arc::clone(metrics_sink));
         }
-        let mut service = SkillRegistryService::new(registry, renderer);
+        let mut service = SkillRegistryService::new(registry, renderer).with_snapshot(snapshot);
         if let Some(metrics_sink) = metrics_sink {
             service = service.with_metrics_sink(metrics_sink);
         }
@@ -197,7 +195,9 @@ impl Harness {
     }
 
     pub fn list_runtime_skills(&self) -> Vec<RuntimeSkillSummary> {
-        let snapshot = self.inner.skill_registry.snapshot();
+        let mut snapshot = (*self.inner.skill_registry.snapshot()).clone();
+        let skill_config_snapshot = self.skill_config_snapshot();
+        apply_skill_config_statuses(&mut snapshot, &skill_config_snapshot);
         snapshot
             .entries
             .values()
@@ -213,7 +213,9 @@ impl Harness {
     }
 
     pub fn view_runtime_skill(&self, name: &str, full: bool) -> Option<RuntimeSkillView> {
-        let snapshot = self.inner.skill_registry.snapshot();
+        let mut snapshot = (*self.inner.skill_registry.snapshot()).clone();
+        let skill_config_snapshot = self.skill_config_snapshot();
+        apply_skill_config_statuses(&mut snapshot, &skill_config_snapshot);
         let skill = snapshot.entries.get(name)?;
         let status = snapshot
             .status
@@ -221,6 +223,14 @@ impl Harness {
             .cloned()
             .unwrap_or(harness_contracts::SkillStatus::Ready);
         Some(runtime_skill_view(skill, status, full))
+    }
+
+    pub(crate) fn replace_skill_config_snapshot(&self, snapshot: SkillConfigSnapshot) {
+        *self.inner.skill_config_snapshot.write() = snapshot;
+    }
+
+    pub(super) fn skill_config_snapshot(&self) -> SkillConfigSnapshot {
+        self.inner.skill_config_snapshot.read().clone()
     }
 
     fn replace_workspace_managed_skills(
@@ -499,6 +509,7 @@ fn runtime_skill_summary(
     status: harness_contracts::SkillStatus,
 ) -> RuntimeSkillSummary {
     RuntimeSkillSummary {
+        id: skill.id.0.clone(),
         name: skill.name.clone(),
         description: skill.description.clone(),
         tags: skill.frontmatter.tags.clone(),
@@ -525,6 +536,19 @@ fn runtime_skill_view(
                 required: parameter.required,
                 default: parameter.default.clone(),
                 description: parameter.description.clone(),
+            })
+            .collect(),
+        config: skill
+            .frontmatter
+            .config
+            .iter()
+            .map(|config| super::RuntimeSkillConfig {
+                key: config.key.clone(),
+                value_type: skill_param_type_name(config.value_type).to_owned(),
+                secret: config.secret,
+                required: config.required,
+                default: config.default.clone(),
+                description: config.description.clone(),
             })
             .collect(),
         config_keys: skill
