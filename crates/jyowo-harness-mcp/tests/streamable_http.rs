@@ -4,14 +4,16 @@ use std::{
     collections::BTreeMap,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Condvar, Mutex as StdMutex,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
+use futures::StreamExt;
 use harness_contracts::{McpServerId, McpServerSource};
 use harness_mcp::{
-    HttpTransport, McpClient, McpError, McpServerSpec, McpTimeouts, TransportChoice,
+    HttpTransport, McpChange, McpClient, McpError, McpServerSpec, McpTimeouts, ReconnectPolicy,
+    TransportChoice,
 };
 use serde_json::{json, Value};
 use wiremock::{
@@ -31,6 +33,83 @@ fn spec(server: &MockServer) -> McpServerSpec {
         },
         McpServerSource::Workspace,
     )
+}
+
+async fn wait_for_count(counter: &AtomicUsize, expected: usize, message: &str) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while counter.load(Ordering::SeqCst) < expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{message}"));
+}
+
+#[derive(Clone, Default)]
+struct AcceptedCounter {
+    requests: Arc<AtomicUsize>,
+}
+
+impl Respond for AcceptedCounter {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        self.requests.fetch_add(1, Ordering::SeqCst);
+        ResponseTemplate::new(202)
+    }
+}
+
+#[derive(Clone)]
+struct CountedStatus {
+    requests: Arc<AtomicUsize>,
+    status: u16,
+}
+
+impl CountedStatus {
+    fn new(status: u16) -> Self {
+        Self {
+            requests: Arc::new(AtomicUsize::new(0)),
+            status,
+        }
+    }
+}
+
+impl Respond for CountedStatus {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        self.requests.fetch_add(1, Ordering::SeqCst);
+        ResponseTemplate::new(self.status)
+    }
+}
+
+#[derive(Clone, Default)]
+struct CountedNoCheckpointGet {
+    requests: Arc<AtomicUsize>,
+}
+
+#[derive(Clone, Default)]
+struct SuccessfulToolsResponder;
+
+impl Respond for SuccessfulToolsResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).expect("JSON-RPC request");
+        ResponseTemplate::new(200)
+            .insert_header("content-type", "application/json")
+            .set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": body.get("id").cloned().unwrap_or(Value::Null),
+                "result": { "tools": [] }
+            }))
+    }
+}
+
+impl Respond for CountedNoCheckpointGet {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        self.requests.fetch_add(1, Ordering::SeqCst);
+        ResponseTemplate::new(200)
+            .insert_header("content-type", "text/event-stream")
+            .set_body_raw(
+                "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{}}\n\n",
+                "text/event-stream",
+            )
+    }
 }
 
 #[tokio::test]
@@ -506,6 +585,7 @@ async fn post_sse_stops_after_routing_its_target_response() {
 async fn post_sse_server_request_is_answered_with_independent_post() {
     let server = MockServer::start().await;
     mount_initialize(&server, Some("post-server-request")).await;
+    let answer = AcceptedCounter::default();
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(405))
         .mount(&server)
@@ -514,7 +594,7 @@ async fn post_sse_server_request_is_answered_with_independent_post() {
         .and(body_partial_json(
             json!({ "id": "post-ping", "result": {} }),
         ))
-        .respond_with(ResponseTemplate::new(202))
+        .respond_with(answer.clone())
         .expect(1)
         .mount(&server)
         .await;
@@ -544,7 +624,7 @@ async fn post_sse_server_request_is_answered_with_independent_post() {
         .await
         .expect("list tools")
         .is_empty());
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for_count(&answer.requests, 1, "POST SSE server request is answered").await;
 }
 
 #[tokio::test]
@@ -790,11 +870,12 @@ impl Respond for PostResumeResponder {
 async fn get_sse_server_request_is_answered_with_independent_post() {
     let server = MockServer::start().await;
     mount_initialize(&server, Some("get-session")).await;
+    let answer = AcceptedCounter::default();
     Mock::given(method("POST"))
         .and(body_partial_json(
             json!({ "id": "server-ping", "result": {} }),
         ))
-        .respond_with(ResponseTemplate::new(202))
+        .respond_with(answer.clone())
         .expect(1)
         .mount(&server)
         .await;
@@ -816,7 +897,7 @@ async fn get_sse_server_request_is_answered_with_independent_post() {
         .connect_with_context(spec(&server), support::authorized_connect_context())
         .await
         .expect("streamable HTTP connects");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_count(&answer.requests, 1, "GET SSE server request is answered").await;
 }
 
 #[tokio::test]
@@ -847,15 +928,9 @@ async fn get_sse_reconnects_with_its_own_last_event_id() {
 async fn get_sse_without_a_checkpoint_closes_the_peer() {
     let server = MockServer::start().await;
     mount_initialize(&server, Some("get-no-checkpoint-session")).await;
+    let get = CountedNoCheckpointGet::default();
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_raw(
-                    "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{}}\n\n",
-                    "text/event-stream",
-                ),
-        )
+        .respond_with(get.clone())
         .expect(1)
         .mount(&server)
         .await;
@@ -864,19 +939,20 @@ async fn get_sse_without_a_checkpoint_closes_the_peer() {
         .connect_with_context(spec(&server), support::authorized_connect_context())
         .await
         .expect("streamable HTTP connects");
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    assert!(matches!(
-        connection.list_tools().await,
-        Err(McpError::Connection(_))
-    ));
+    wait_for_count(&get.requests, 1, "GET SSE response is delivered").await;
+    let result = tokio::time::timeout(Duration::from_secs(1), connection.list_tools())
+        .await
+        .expect("peer closure is observed");
+    assert!(matches!(result, Err(McpError::Connection(_))));
 }
 
 #[tokio::test]
 async fn stateless_get_failure_closes_the_peer() {
     let server = MockServer::start().await;
     mount_initialize(&server, None).await;
+    let get = CountedStatus::new(500);
     Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(500))
+        .respond_with(get.clone())
         .expect(1)
         .mount(&server)
         .await;
@@ -885,11 +961,11 @@ async fn stateless_get_failure_closes_the_peer() {
         .connect_with_context(spec(&server), support::authorized_connect_context())
         .await
         .expect("streamable HTTP connects");
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    assert!(matches!(
-        connection.list_tools().await,
-        Err(McpError::Connection(_))
-    ));
+    wait_for_count(&get.requests, 1, "failed GET response is delivered").await;
+    let result = tokio::time::timeout(Duration::from_secs(1), connection.list_tools())
+        .await
+        .expect("peer closure is observed");
+    assert!(matches!(result, Err(McpError::Connection(_))));
 }
 
 #[tokio::test]
@@ -899,6 +975,11 @@ async fn get_sse_reconnect_exhaustion_closes_the_peer() {
     let responder = AlwaysResumableGet::default();
     Mock::given(method("GET"))
         .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({ "method": "tools/list" })))
+        .respond_with(SuccessfulToolsResponder)
         .mount(&server)
         .await;
 
@@ -913,11 +994,18 @@ async fn get_sse_reconnect_exhaustion_closes_the_peer() {
     })
     .await
     .expect("GET reconnect limit is reached");
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    assert!(matches!(
-        connection.list_tools().await,
-        Err(McpError::Connection(_))
-    ));
+    let error = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            match connection.list_tools().await {
+                Err(error @ McpError::Connection(_)) => break error,
+                Ok(_) => tokio::task::yield_now().await,
+                Err(error) => panic!("unexpected error while awaiting peer closure: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("peer closure is observed");
+    assert!(matches!(error, McpError::Connection(_)));
 }
 
 #[derive(Clone, Default)]
@@ -943,8 +1031,9 @@ impl Respond for AlwaysResumableGet {
 async fn ordinary_get_resumption_rejects_responses_without_request_context() {
     let server = MockServer::start().await;
     mount_initialize(&server, Some("get-context-session")).await;
+    let get = GetWithoutRequestContextResponder::default();
     Mock::given(method("GET"))
-        .respond_with(GetWithoutRequestContextResponder::default())
+        .respond_with(get.clone())
         .mount(&server)
         .await;
 
@@ -952,10 +1041,10 @@ async fn ordinary_get_resumption_rejects_responses_without_request_context() {
         .connect_with_context(spec(&server), support::authorized_connect_context())
         .await
         .expect("streamable HTTP connects");
-    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-    let error = connection
-        .list_tools()
+    wait_for_count(&get.gets, 2, "invalid resumed GET response is delivered").await;
+    let error = tokio::time::timeout(Duration::from_secs(1), connection.list_tools())
         .await
+        .expect("peer closure is observed")
         .expect_err("context-free GET response closes the peer");
     assert!(matches!(error, McpError::Connection(_)));
 }
@@ -1020,8 +1109,16 @@ async fn immediate_get_404_on_a_new_generation_starts_the_next_generation() {
         .mount(&server)
         .await;
 
+    let mut two_expiry_spec = spec(&server);
+    two_expiry_spec.reconnect = ReconnectPolicy {
+        max_attempts: 2,
+        initial_backoff: Duration::from_millis(1),
+        max_backoff: Duration::from_millis(1),
+        backoff_jitter: 0.0,
+        ..ReconnectPolicy::default()
+    };
     let _connection = McpClient::new(Arc::new(HttpTransport::new()))
-        .connect_with_context(spec(&server), support::authorized_connect_context())
+        .connect_with_context(two_expiry_spec, support::authorized_connect_context())
         .await
         .expect("first generation connects");
     tokio::time::timeout(Duration::from_secs(1), async {
@@ -1034,9 +1131,243 @@ async fn immediate_get_404_on_a_new_generation_starts_the_next_generation() {
     assert_eq!(post.initializations.load(Ordering::SeqCst), 3);
 }
 
+#[tokio::test]
+async fn successful_business_request_resets_the_session_expiry_budget() {
+    let server = MockServer::start().await;
+    let post = ResettingExpiryPostResponder::default();
+    let get = GetExpiryResponder::default();
+    Mock::given(method("POST"))
+        .respond_with(post.clone())
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(get)
+        .mount(&server)
+        .await;
+
+    let mut reset_spec = spec(&server);
+    reset_spec.reconnect = ReconnectPolicy {
+        max_attempts: 1,
+        initial_backoff: Duration::from_millis(1),
+        max_backoff: Duration::from_millis(1),
+        backoff_jitter: 0.0,
+        ..ReconnectPolicy::default()
+    };
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(reset_spec, support::authorized_connect_context())
+        .await
+        .expect("first generation connects");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while post.initializations.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("GET expiry rebuilds the first session");
+
+    assert!(connection
+        .list_tools()
+        .await
+        .expect("stable business request succeeds")
+        .is_empty());
+    assert!(connection
+        .list_tools()
+        .await
+        .expect("a later expiry receives a fresh retry budget")
+        .is_empty());
+    assert_eq!(post.initializations.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn change_subscription_survives_a_get_404_rebuild() {
+    let server = MockServer::start().await;
+    let post = GetExpiryPostResponder::default();
+    let get = ExpiryThenListChanged::default();
+    Mock::given(method("POST"))
+        .respond_with(post.clone())
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(get.clone())
+        .mount(&server)
+        .await;
+
+    let mut rebuild_spec = spec(&server);
+    rebuild_spec.reconnect = ReconnectPolicy {
+        max_attempts: 1,
+        initial_backoff: Duration::from_millis(1),
+        max_backoff: Duration::from_millis(1),
+        backoff_jitter: 0.0,
+        ..ReconnectPolicy::default()
+    };
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(rebuild_spec, support::authorized_connect_context())
+        .await
+        .expect("first generation connects");
+    let mut changes = connection
+        .subscribe_changes()
+        .await
+        .expect("subscribe before expiry");
+    get.release_first_expiry();
+
+    let change = tokio::time::timeout(Duration::from_secs(1), changes.next())
+        .await
+        .expect("new generation emits a change")
+        .expect("change stream remains open");
+    assert_eq!(change, McpChange::ToolsListChanged);
+    assert_eq!(post.initializations.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn consecutive_get_404s_are_bounded_and_backed_off() {
+    let server = MockServer::start().await;
+    let post = GetExpiryPostResponder::default();
+    let get = AlwaysExpiredGet::default();
+    Mock::given(method("POST"))
+        .respond_with(post.clone())
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(get.clone())
+        .mount(&server)
+        .await;
+
+    let mut bounded_spec = spec(&server);
+    bounded_spec.reconnect = ReconnectPolicy {
+        max_attempts: 2,
+        initial_backoff: Duration::from_millis(25),
+        max_backoff: Duration::from_millis(50),
+        backoff_jitter: 0.0,
+        ..ReconnectPolicy::default()
+    };
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(bounded_spec, support::authorized_connect_context())
+        .await
+        .expect("first generation connects");
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while get.gets.load(Ordering::SeqCst) < 3 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("expiry budget is consumed");
+    let first = tokio::time::timeout(Duration::from_secs(1), connection.list_tools())
+        .await
+        .expect("failed state is published")
+        .expect_err("continuous session expiry is terminal");
+    let second = connection
+        .list_tools()
+        .await
+        .expect_err("following calls observe the same failed state");
+
+    assert_eq!(first, second);
+    assert_eq!(post.initializations.load(Ordering::SeqCst), 3);
+    let gets = get.instants.lock().unwrap();
+    assert_eq!(gets.len(), 3);
+    assert!(gets[1].duration_since(gets[0]) >= Duration::from_millis(25));
+    assert!(gets[2].duration_since(gets[1]) >= Duration::from_millis(50));
+}
+
+#[tokio::test]
+async fn shutdown_interrupts_session_expiry_backoff() {
+    let server = MockServer::start().await;
+    let post = GetExpiryPostResponder::default();
+    let get = AlwaysExpiredGet::default();
+    Mock::given(method("POST"))
+        .respond_with(post.clone())
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(get.clone())
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
+
+    let mut slow_spec = spec(&server);
+    slow_spec.reconnect = ReconnectPolicy {
+        max_attempts: 2,
+        initial_backoff: Duration::from_secs(5),
+        max_backoff: Duration::from_secs(5),
+        backoff_jitter: 0.0,
+        ..ReconnectPolicy::default()
+    };
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(slow_spec, support::authorized_connect_context())
+        .await
+        .expect("first generation connects");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while get.gets.load(Ordering::SeqCst) < 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("GET session expiry is observed");
+
+    assert_eq!(post.initializations.load(Ordering::SeqCst), 1);
+    tokio::time::timeout(Duration::from_millis(250), connection.shutdown())
+        .await
+        .expect("shutdown interrupts backoff")
+        .expect("shutdown succeeds");
+    assert_eq!(post.initializations.load(Ordering::SeqCst), 1);
+}
+
 #[derive(Clone, Default)]
 struct TwoGetExpiries {
     gets: Arc<AtomicUsize>,
+}
+
+#[derive(Clone, Default)]
+struct AlwaysExpiredGet {
+    gets: Arc<AtomicUsize>,
+    instants: Arc<StdMutex<Vec<Instant>>>,
+}
+
+#[derive(Clone, Default)]
+struct ExpiryThenListChanged {
+    gets: Arc<AtomicUsize>,
+    first_expiry_gate: Arc<(StdMutex<bool>, Condvar)>,
+}
+
+impl ExpiryThenListChanged {
+    fn release_first_expiry(&self) {
+        let (gate, wake) = &*self.first_expiry_gate;
+        *gate.lock().unwrap() = true;
+        wake.notify_all();
+    }
+}
+
+impl Respond for ExpiryThenListChanged {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        match self.gets.fetch_add(1, Ordering::SeqCst) {
+            0 => {
+                let (gate, wake) = &*self.first_expiry_gate;
+                let (gate, wait) = wake
+                    .wait_timeout_while(gate.lock().unwrap(), Duration::from_secs(1), |open| !*open)
+                    .unwrap();
+                assert!(!wait.timed_out() && *gate, "subscription did not release GET expiry");
+                ResponseTemplate::new(404)
+            }
+            1 => ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n",
+                    "text/event-stream",
+                ),
+            _ => ResponseTemplate::new(405),
+        }
+    }
+}
+
+impl Respond for AlwaysExpiredGet {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        self.gets.fetch_add(1, Ordering::SeqCst);
+        self.instants.lock().unwrap().push(Instant::now());
+        ResponseTemplate::new(404)
+    }
 }
 
 impl Respond for TwoGetExpiries {
@@ -1052,6 +1383,52 @@ impl Respond for TwoGetExpiries {
 #[derive(Clone, Default)]
 struct GetExpiryPostResponder {
     initializations: Arc<AtomicUsize>,
+}
+
+#[derive(Clone, Default)]
+struct ResettingExpiryPostResponder {
+    initializations: Arc<AtomicUsize>,
+    tool_requests: Arc<AtomicUsize>,
+}
+
+impl Respond for ResettingExpiryPostResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).expect("JSON-RPC request");
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+        match body.get("method").and_then(Value::as_str) {
+            Some("initialize") => {
+                let generation = self.initializations.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .insert_header("mcp-session-id", format!("reset-{generation}"))
+                    .set_body_json(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": { "tools": {} },
+                            "serverInfo": { "name": "fixture", "version": "0.1.0" }
+                        }
+                    }))
+            }
+            Some("notifications/initialized") => ResponseTemplate::new(202),
+            Some("tools/list") => {
+                let attempt = self.tool_requests.fetch_add(1, Ordering::SeqCst);
+                if attempt == 1 {
+                    ResponseTemplate::new(404)
+                } else {
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "application/json")
+                        .set_body_json(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": { "tools": [] }
+                        }))
+                }
+            }
+            method => panic!("unexpected request method: {method:?}"),
+        }
+    }
 }
 
 impl Respond for GetExpiryPostResponder {
@@ -1081,6 +1458,7 @@ impl Respond for GetExpiryPostResponder {
                     }))
             }
             Some("notifications/initialized") => ResponseTemplate::new(202),
+            Some("tools/list") => ResponseTemplate::new(404),
             method => panic!("unexpected request method: {method:?}"),
         }
     }
@@ -1153,6 +1531,32 @@ async fn shutdown_deletes_stateful_session_and_accepts_405() {
         .shutdown()
         .await
         .expect("405 cleanup is accepted");
+}
+
+#[tokio::test]
+async fn shutdown_accepts_delete_404_as_idempotent_success() {
+    let server = MockServer::start().await;
+    mount_initialize(&server, Some("already-deleted-session")).await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(header("mcp-session-id", "already-deleted-session"))
+        .and(header("mcp-protocol-version", "2025-11-25"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(spec(&server), support::authorized_connect_context())
+        .await
+        .expect("streamable HTTP connects");
+    connection
+        .shutdown()
+        .await
+        .expect("an already absent session is cleaned up");
 }
 
 #[tokio::test]
@@ -1334,8 +1738,16 @@ async fn read_only_call_with_stale_generation_snapshot_retries_on_the_new_genera
         .mount(&server)
         .await;
 
+    let mut stale_spec = spec(&server);
+    stale_spec.reconnect = ReconnectPolicy {
+        max_attempts: 1,
+        initial_backoff: Duration::from_millis(1),
+        max_backoff: Duration::from_millis(1),
+        backoff_jitter: 0.0,
+        ..ReconnectPolicy::default()
+    };
     let connection = McpClient::new(Arc::new(HttpTransport::new()))
-        .connect_with_context(spec(&server), support::authorized_connect_context())
+        .connect_with_context(stale_spec, support::authorized_connect_context())
         .await
         .expect("first generation connects");
     let stale_connection = Arc::clone(&connection);
@@ -1375,8 +1787,16 @@ async fn non_idempotent_call_with_stale_generation_snapshot_is_not_replayed() {
         .mount(&server)
         .await;
 
+    let mut stale_spec = spec(&server);
+    stale_spec.reconnect = ReconnectPolicy {
+        max_attempts: 1,
+        initial_backoff: Duration::from_millis(1),
+        max_backoff: Duration::from_millis(1),
+        backoff_jitter: 0.0,
+        ..ReconnectPolicy::default()
+    };
     let connection = McpClient::new(Arc::new(HttpTransport::new()))
-        .connect_with_context(spec(&server), support::authorized_connect_context())
+        .connect_with_context(stale_spec, support::authorized_connect_context())
         .await
         .expect("first generation connects");
     let stale_connection = Arc::clone(&connection);

@@ -1,7 +1,7 @@
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
         Arc, Mutex as StdMutex,
     },
     time::Duration,
@@ -192,7 +192,7 @@ async fn resolve_http_endpoint(
 fn validate_http_address(
     kind: &HttpHostKind,
     ip: IpAddr,
-    explicitly_pinned: bool,
+    _explicitly_pinned: bool,
 ) -> Result<(), McpError> {
     if is_always_blocked_ip(ip) {
         return Err(McpError::PermissionDenied(
@@ -203,8 +203,7 @@ fn validate_http_address(
     let valid = match kind {
         HttpHostKind::Localhost => ip.is_loopback(),
         HttpHostKind::IpLiteral(expected) => ip == normalize_mapped_ip(*expected),
-        HttpHostKind::DnsName if explicitly_pinned => true,
-        HttpHostKind::DnsName => !is_dns_rebinding_target(ip),
+        HttpHostKind::DnsName => is_publicly_routable_dns_ip(ip),
     };
     if valid {
         Ok(())
@@ -247,16 +246,33 @@ fn is_always_blocked_ip(ip: IpAddr) -> bool {
     }
 }
 
-fn is_dns_rebinding_target(ip: IpAddr) -> bool {
-    if is_always_blocked_ip(ip) {
-        return true;
-    }
+fn is_publicly_routable_dns_ip(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ip) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(a == 0
+                || a == 10
+                || a == 127
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 192 && b == 0 && c == 2)
+                || (a == 192 && b == 88 && c == 99)
+                || (a == 192 && b == 168)
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 198 && b == 51 && c == 100)
+                || (a == 203 && b == 0 && c == 113)
+                || a >= 224)
+        }
         IpAddr::V6(ip) => {
-            ip.is_loopback()
-                || (ip.segments()[0] & 0xfe00) == 0xfc00
-                || (ip.segments()[0] & 0xffc0) == 0xfe80
+            let segments = ip.segments();
+            (segments[0] & 0xe000) == 0x2000
+                && !(segments[0] == 0x2001 && segments[1] == 0x0002)
+                && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
+                && !(segments[0] == 0x2001 && (segments[1] & 0xfff0) == 0x0010)
+                && !(segments[0] == 0x2001 && (segments[1] & 0xfff0) == 0x0020)
+                && !((segments[0] & 0xfff0) == 0x3ff0)
         }
     }
 }
@@ -338,6 +354,7 @@ impl McpTransport for HttpTransport {
                 Arc::clone(&context.event_sink),
             );
         let (state, _) = watch::channel(HttpConnectionState::Starting);
+        let (changes, _) = broadcast::channel(64);
         let connection = Arc::new(HttpConnection {
             connection_id: format!("http:{}", spec.server_id.0),
             endpoint: endpoint.url.to_string(),
@@ -349,7 +366,9 @@ impl McpTransport for HttpTransport {
             elicitation_handler: context.elicitation_handler,
             permission_mode: context.permission_mode,
             state,
+            changes,
             reinitialize: Mutex::new(()),
+            session_expiries: SessionExpiryBudget::new(spec.reconnect.max_attempts),
             next_generation_id: AtomicU64::new(1),
             lifetime_cancel: watch::channel(false).0,
         });
@@ -387,7 +406,9 @@ struct HttpConnection {
     elicitation_handler: Option<Arc<dyn ElicitationHandler>>,
     permission_mode: PermissionMode,
     state: watch::Sender<HttpConnectionState>,
+    changes: broadcast::Sender<McpChange>,
     reinitialize: Mutex<()>,
+    session_expiries: SessionExpiryBudget,
     next_generation_id: AtomicU64,
     lifetime_cancel: watch::Sender<bool>,
 }
@@ -401,13 +422,38 @@ enum HttpConnectionState {
     Closed,
 }
 
+struct SessionExpiryBudget {
+    consecutive: AtomicU32,
+    limit: u32,
+}
+
+impl SessionExpiryBudget {
+    fn new(configured_limit: u32) -> Self {
+        Self {
+            consecutive: AtomicU32::new(0),
+            limit: configured_limit.clamp(1, 8),
+        }
+    }
+
+    fn record(&self) -> Option<u32> {
+        let attempt = self
+            .consecutive
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        (attempt <= self.limit).then_some(attempt)
+    }
+
+    fn reset(&self) {
+        self.consecutive.store(0, Ordering::Relaxed);
+    }
+}
+
 struct HttpGeneration {
     id: u64,
     peer: McpPeer,
     headers: Arc<StdMutex<SessionHeaders>>,
     cancel: watch::Sender<bool>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
-    changes: broadcast::Sender<HttpChangeEvent>,
 }
 
 #[derive(Default)]
@@ -416,15 +462,8 @@ struct SessionHeaders {
     protocol_version: Option<String>,
 }
 
-#[derive(Clone)]
-struct HttpChangeEvent {
-    generation: u64,
-    change: McpChange,
-}
-
 struct HttpNotificationHandler {
-    generation: u64,
-    changes: broadcast::Sender<HttpChangeEvent>,
+    changes: broadcast::Sender<McpChange>,
 }
 
 impl McpOrderedNotificationHandler for HttpNotificationHandler {
@@ -432,10 +471,7 @@ impl McpOrderedNotificationHandler for HttpNotificationHandler {
         if let Some(change) =
             notification_change(&notification.method, notification.params.as_ref())
         {
-            let _ = self.changes.send(HttpChangeEvent {
-                generation: self.generation,
-                change,
-            });
+            let _ = self.changes.send(change);
         }
         Ok(())
     }
@@ -515,10 +551,8 @@ impl HttpConnection {
             McpClientCapabilities::default(),
             McpImplementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
         );
-        let (changes, _) = broadcast::channel(64);
         let notification_handler = Arc::new(HttpNotificationHandler {
-            generation: id,
-            changes: changes.clone(),
+            changes: self.changes.clone(),
         });
         let mut peer_builder = McpPeer::builder(sink, session);
         for method in [
@@ -544,7 +578,6 @@ impl HttpConnection {
             headers: Arc::new(StdMutex::new(SessionHeaders::default())),
             cancel,
             tasks: Mutex::new(Vec::new()),
-            changes,
         });
         let dispatcher = tokio::spawn(run_dispatcher(
             Arc::clone(self),
@@ -609,6 +642,9 @@ impl HttpConnection {
             let stale_connection = attempt == 0
                 && matches!(result, Err(McpError::Connection(_)))
                 && self.generation_is_stale(generation.id);
+            if result.is_ok() {
+                self.reset_session_expiries_after_success(generation.id);
+            }
             if !session_expired && !stale_connection {
                 return result;
             }
@@ -634,6 +670,15 @@ impl HttpConnection {
         }
     }
 
+    fn reset_session_expiries_after_success(&self, generation_id: u64) {
+        self.state.send_if_modified(|state| {
+            if matches!(state, HttpConnectionState::Ready(current) if current.id == generation_id) {
+                self.session_expiries.reset();
+            }
+            false
+        });
+    }
+
     async fn reinitialize_generation(self: &Arc<Self>, expired_id: u64) -> Result<(), McpError> {
         let current = match self.state.borrow().clone() {
             HttpConnectionState::Ready(current) if current.id == expired_id => Some(current),
@@ -652,7 +697,7 @@ impl HttpConnection {
         self.generation().await.map(|_| ())
     }
 
-    async fn perform_reinitialize(self: &Arc<Self>, old: Arc<HttpGeneration>) {
+    async fn perform_reinitialize(self: &Arc<Self>, old: Arc<HttpGeneration>, attempt: u32) {
         let _transition = self.reinitialize.lock().await;
         let still_rebuilding = matches!(
             self.state.borrow().clone(),
@@ -661,6 +706,12 @@ impl HttpConnection {
         );
         if !still_rebuilding {
             return;
+        }
+
+        let mut lifetime_cancel = self.lifetime_cancel.subscribe();
+        tokio::select! {
+            _ = wait_for_cancel(&mut lifetime_cancel) => return,
+            _ = tokio::time::sleep(self.reconnect.backoff_for_attempt(attempt)) => {}
         }
 
         old.stop("MCP HTTP session expired").await;
@@ -1486,9 +1537,19 @@ fn is_sse(response: &reqwest::Response) -> bool {
 
 fn request_reinitialize(connection: Arc<HttpConnection>, generation: Arc<HttpGeneration>) {
     let expired_generation = generation.id;
+    let mut rebuild_attempt = None;
+    let mut exhausted = false;
     let started = connection.state.send_if_modified(|state| match state {
         HttpConnectionState::Ready(current) if current.id == expired_generation => {
-            *state = HttpConnectionState::Rebuilding { expired_generation };
+            if let Some(attempt) = connection.session_expiries.record() {
+                rebuild_attempt = Some(attempt);
+                *state = HttpConnectionState::Rebuilding { expired_generation };
+            } else {
+                exhausted = true;
+                *state = HttpConnectionState::Failed(McpError::Connection(
+                    "MCP HTTP session expiry retry budget exhausted".to_owned(),
+                ));
+            }
             true
         }
         _ => false,
@@ -1496,8 +1557,17 @@ fn request_reinitialize(connection: Arc<HttpConnection>, generation: Arc<HttpGen
     if !started {
         return;
     }
+    if exhausted {
+        std::mem::drop(tokio::spawn(async move {
+            generation
+                .stop("MCP HTTP session expiry retry budget exhausted")
+                .await;
+        }));
+        return;
+    }
+    let attempt = rebuild_attempt.expect("rebuild attempt is set for a rebuilding transition");
     std::mem::drop(tokio::spawn(async move {
-        connection.perform_reinitialize(generation).await;
+        connection.perform_reinitialize(generation, attempt).await;
     }));
 }
 
@@ -1600,15 +1670,9 @@ impl McpConnection for HttpConnectionHandle {
     }
 
     async fn subscribe_changes(&self) -> Result<ListChangedEvent, McpError> {
-        let generation = self.generation().await?;
-        let generation_id = generation.id;
-        let stream =
-            BroadcastStream::new(generation.changes.subscribe()).filter_map(move |event| {
-                let change = event
-                    .ok()
-                    .and_then(|event| (event.generation == generation_id).then_some(event.change));
-                async move { change }
-            });
+        self.generation().await?;
+        let stream = BroadcastStream::new(self.changes.subscribe())
+            .filter_map(|event| async move { event.ok() });
         Ok(Box::pin(stream))
     }
 
@@ -1648,7 +1712,12 @@ impl McpConnection for HttpConnectionHandle {
         .await
         .map_err(|_| McpError::HttpCleanupTimeout)??;
         validate_response_session(&generation, &response, false)?;
-        if response.status().is_success() || response.status() == StatusCode::METHOD_NOT_ALLOWED {
+        if response.status().is_success()
+            || matches!(
+                response.status(),
+                StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+            )
+        {
             Ok(())
         } else {
             Err(McpError::HttpCleanupStatus(response.status().as_u16()))
@@ -1685,14 +1754,12 @@ mod tests {
             .build()
             .unwrap();
         let (cancel, _) = watch::channel(false);
-        let (changes, _) = broadcast::channel(1);
         Arc::new(HttpGeneration {
             id,
             peer,
             headers: Arc::new(StdMutex::new(SessionHeaders::default())),
             cancel,
             tasks: Mutex::new(Vec::new()),
-            changes,
         })
     }
 
@@ -1701,6 +1768,7 @@ mod tests {
         endpoint: String,
     ) -> Arc<HttpConnection> {
         let (state, _) = watch::channel(HttpConnectionState::Ready(generation));
+        let (changes, _) = broadcast::channel(1);
         Arc::new(HttpConnection {
             connection_id: "http:test".to_owned(),
             endpoint,
@@ -1712,7 +1780,9 @@ mod tests {
             elicitation_handler: None,
             permission_mode: PermissionMode::Default,
             state,
+            changes,
             reinitialize: Mutex::new(()),
+            session_expiries: SessionExpiryBudget::new(0),
             next_generation_id: AtomicU64::new(2),
             lifetime_cancel: watch::channel(false).0,
         })
@@ -1872,6 +1942,60 @@ mod tests {
     }
 
     #[test]
+    fn dns_names_only_accept_publicly_routable_addresses() {
+        let denied = [
+            IpAddr::V4(Ipv4Addr::new(0, 1, 2, 3)),
+            IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(100, 100, 100, 100)),
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            IpAddr::V4(Ipv4Addr::new(198, 18, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)),
+            IpAddr::V6("2001:db8::1".parse().unwrap()),
+            IpAddr::V6("::ffff:8.8.8.8".parse().unwrap()),
+        ];
+
+        for ip in denied {
+            for explicitly_pinned in [false, true] {
+                assert!(
+                    validate_http_address(&HttpHostKind::DnsName, ip, explicitly_pinned).is_err(),
+                    "DNS name unexpectedly accepted {ip} with explicitly_pinned={explicitly_pinned}"
+                );
+            }
+        }
+
+        for ip in [
+            IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+            IpAddr::V6("2606:4700:4700::1111".parse().unwrap()),
+        ] {
+            for explicitly_pinned in [false, true] {
+                assert!(
+                    validate_http_address(&HttpHostKind::DnsName, ip, explicitly_pinned).is_ok(),
+                    "DNS name unexpectedly rejected {ip} with explicitly_pinned={explicitly_pinned}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_literals_and_localhost_keep_their_own_address_policy() {
+        let private = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7));
+        assert!(validate_http_address(&HttpHostKind::IpLiteral(private), private, false).is_ok());
+        assert!(validate_http_address(
+            &HttpHostKind::Localhost,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            false,
+        )
+        .is_ok());
+        assert!(validate_http_address(
+            &HttpHostKind::Localhost,
+            IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+            false,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn pinned_resolution_keys_use_endpoint_host_normalization() {
         let address = SocketAddr::from(([127, 0, 0, 1], 9000));
         let transport = HttpTransport::new()
@@ -2016,5 +2140,21 @@ mod tests {
             &Err(McpError::SessionExpired),
             1
         ));
+    }
+
+    #[test]
+    fn business_success_does_not_reset_budget_after_rebuild_starts() {
+        let generation = test_generation(1);
+        let connection = test_connection(generation);
+        assert_eq!(connection.session_expiries.record(), Some(1));
+        connection
+            .state
+            .send_replace(HttpConnectionState::Rebuilding {
+                expired_generation: 1,
+            });
+
+        connection.reset_session_expiries_after_success(1);
+
+        assert_eq!(connection.session_expiries.record(), None);
     }
 }
