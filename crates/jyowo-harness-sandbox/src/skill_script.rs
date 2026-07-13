@@ -27,6 +27,7 @@ static TEMP_WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(100);
 const BACKEND_TIMEOUT_GRACE: Duration = Duration::from_millis(250);
 const MAX_ARTIFACT_SCAN_ENTRIES: usize = 4096;
+const MAX_SECRET_REDACTION_LOOKAHEAD_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy)]
 struct ArtifactBaseline {
@@ -101,6 +102,10 @@ pub async fn execute_skill_script(
 ) -> Result<SkillScriptSandboxResult, SandboxError> {
     validate_declaration(&request.declaration)?;
     validate_environment(&request)?;
+    let secret_values = declared_secret_values(&request)?;
+    let secret_lookahead = secret_values
+        .first()
+        .map_or(0, |value| value.len().saturating_sub(1) as u64);
     if !backend
         .capabilities()
         .supports_synchronous_kill_scope
@@ -169,7 +174,8 @@ pub async fn execute_skill_script(
     let stream_backend_limit = request
         .declaration
         .max_stdout_bytes
-        .max(request.declaration.max_stderr_bytes);
+        .max(request.declaration.max_stderr_bytes)
+        .saturating_add(secret_lookahead);
     let authorized_env_keys = request.env.keys().cloned().collect();
     let secret_env_keys = request
         .env
@@ -227,11 +233,17 @@ pub async fn execute_skill_script(
     let mut kill_on_drop = ProcessGroupKillOnDrop::new(Arc::clone(&activity));
     let stdout_task = tokio::spawn(collect_stream(
         handle.stdout.take(),
-        request.declaration.max_stdout_bytes,
+        request
+            .declaration
+            .max_stdout_bytes
+            .saturating_add(secret_lookahead),
     ));
     let stderr_task = tokio::spawn(collect_stream(
         handle.stderr.take(),
-        request.declaration.max_stderr_bytes,
+        request
+            .declaration
+            .max_stderr_bytes
+            .saturating_add(secret_lookahead),
     ));
 
     let mut wait = Box::pin(activity.wait());
@@ -259,27 +271,50 @@ pub async fn execute_skill_script(
             None
         }
     };
-    let (mut stdout, mut stderr) = join_streams(stdout_task, stderr_task).await?;
-    let output_limited = bound_combined_output(
-        &mut stdout,
-        &mut stderr,
-        request.declaration.max_output_bytes,
-    );
-    let output_limited = output_limited || stdout.truncated || stderr.truncated;
-    let (artifacts, artifact_limited) = collect_artifacts(
+    let (stdout, stderr) = join_streams(stdout_task, stderr_task).await?;
+    let mut output_limited = stdout.truncated
+        || stderr.truncated
+        || stdout.bytes.len() as u64 > request.declaration.max_stdout_bytes
+        || stderr.bytes.len() as u64 > request.declaration.max_stderr_bytes
+        || (stdout.bytes.len() as u64).saturating_add(stderr.bytes.len() as u64)
+            > request.declaration.max_output_bytes;
+    let (mut artifacts, mut artifact_limited) = collect_artifacts(
         &root,
         &baseline,
         request.declaration.max_artifact_count,
-        request.declaration.max_artifact_bytes,
+        request
+            .declaration
+            .max_artifact_bytes
+            .saturating_add(secret_lookahead),
     )?;
+    artifact_limited |= artifacts
+        .iter()
+        .map(|artifact| artifact.content.len() as u64)
+        .sum::<u64>()
+        > request.declaration.max_artifact_bytes;
     let elapsed_ms = duration_ms(started.elapsed());
+    let mut stdout = redact_secret_values(&String::from_utf8_lossy(&stdout.bytes), &secret_values);
+    let mut stderr = redact_secret_values(&String::from_utf8_lossy(&stderr.bytes), &secret_values);
+    output_limited |= bound_redacted_output(
+        &mut stdout,
+        &mut stderr,
+        request.declaration.max_stdout_bytes,
+        request.declaration.max_stderr_bytes,
+        request.declaration.max_output_bytes,
+    );
+    for artifact in &mut artifacts {
+        artifact.content = redact_secret_values(&artifact.content, &secret_values);
+        artifact.byte_size = artifact.content.len() as u64;
+    }
+    artifact_limited |=
+        bound_redacted_artifacts(&mut artifacts, request.declaration.max_artifact_bytes);
 
     let (status, exit_code) = result_status(outcome.as_ref(), output_limited, artifact_limited);
     Ok(SkillScriptSandboxResult {
         status,
         exit_code,
-        stdout: String::from_utf8_lossy(&stdout.bytes).into_owned(),
-        stderr: String::from_utf8_lossy(&stderr.bytes).into_owned(),
+        stdout,
+        stderr,
         elapsed_ms,
         enforced_policy: SkillScriptEnforcedPolicy {
             backend_id,
@@ -294,6 +329,105 @@ pub async fn execute_skill_script(
         mounted_files,
         artifacts,
     })
+}
+
+fn declared_secret_values(
+    request: &SkillScriptSandboxRequest,
+) -> Result<Vec<String>, SandboxError> {
+    let mut values = request
+        .declaration
+        .env
+        .iter()
+        .filter(|(_, declaration)| declaration.secret)
+        .filter_map(|(name, _)| request.env.get(name))
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    if values
+        .iter()
+        .any(|value| value.len() > MAX_SECRET_REDACTION_LOOKAHEAD_BYTES)
+    {
+        return Err(SandboxError::CapabilityMismatch {
+            capability: "secret_redaction".to_owned(),
+            detail: format!(
+                "skill script secret exceeds the {MAX_SECRET_REDACTION_LOOKAHEAD_BYTES}-byte redaction limit"
+            ),
+        });
+    }
+    values.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
+    values.dedup();
+    Ok(values)
+}
+
+fn redact_secret_values(value: &str, secrets: &[String]) -> String {
+    let mut redacted = String::with_capacity(value.len());
+    let mut offset = 0;
+    while offset < value.len() {
+        if let Some(secret) = secrets
+            .iter()
+            .find(|secret| value[offset..].starts_with(secret.as_str()))
+        {
+            redacted.push_str("[REDACTED]");
+            offset += secret.len();
+            continue;
+        }
+        let character = value[offset..]
+            .chars()
+            .next()
+            .expect("offset must remain on a character boundary");
+        redacted.push(character);
+        offset += character.len_utf8();
+    }
+    redacted
+}
+
+fn bound_redacted_output(
+    stdout: &mut String,
+    stderr: &mut String,
+    max_stdout_bytes: u64,
+    max_stderr_bytes: u64,
+    max_output_bytes: u64,
+) -> bool {
+    let mut limited = truncate_string(stdout, max_stdout_bytes);
+    limited |= truncate_string(stderr, max_stderr_bytes);
+    limited |= truncate_string(stdout, max_output_bytes);
+    let remaining = max_output_bytes.saturating_sub(stdout.len() as u64);
+    limited |= truncate_string(stderr, remaining);
+    limited
+}
+
+fn bound_redacted_artifacts(artifacts: &mut Vec<SkillScriptArtifact>, max_bytes: u64) -> bool {
+    let mut remaining = max_bytes;
+    let mut limited = false;
+    let mut keep = artifacts.len();
+    for (index, artifact) in artifacts.iter_mut().enumerate() {
+        if remaining == 0 && !artifact.content.is_empty() {
+            keep = index;
+            limited = true;
+            break;
+        }
+        if artifact.content.len() as u64 > remaining {
+            limited |= truncate_string(&mut artifact.content, remaining);
+            artifact.truncated = true;
+        }
+        artifact.byte_size = artifact.content.len() as u64;
+        remaining = remaining.saturating_sub(artifact.byte_size);
+    }
+    artifacts.truncate(keep);
+    limited
+}
+
+fn truncate_string(value: &mut String, max_bytes: u64) -> bool {
+    let max = to_usize(max_bytes);
+    if value.len() <= max {
+        return false;
+    }
+    let mut boundary = max;
+    while !value.is_char_boundary(boundary) {
+        boundary = boundary.saturating_sub(1);
+    }
+    value.truncate(boundary);
+    true
 }
 
 struct ProcessGroupKillOnDrop {
@@ -419,27 +553,6 @@ async fn join_streams(
 
 fn output_task_error(error: tokio::task::JoinError) -> SandboxError {
     SandboxError::Message(format!("skill script output task: {error}"))
-}
-
-fn bound_combined_output(
-    stdout: &mut BoundedStream,
-    stderr: &mut BoundedStream,
-    max_output_bytes: u64,
-) -> bool {
-    let max = to_usize(max_output_bytes);
-    let mut limited = false;
-    if stdout.bytes.len() > max {
-        stdout.bytes.truncate(max);
-        stdout.truncated = true;
-        limited = true;
-    }
-    let remaining = max.saturating_sub(stdout.bytes.len());
-    if stderr.bytes.len() > remaining {
-        stderr.bytes.truncate(remaining);
-        stderr.truncated = true;
-        limited = true;
-    }
-    limited
 }
 
 fn result_status(

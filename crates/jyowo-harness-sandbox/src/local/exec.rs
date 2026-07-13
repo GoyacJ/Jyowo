@@ -46,6 +46,24 @@ const BACKEND_ID: &str = "local";
 const NO_CACHED_SIGNAL: i32 = i32::MIN;
 const PRE_HANDOFF_CLEANUP_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_SECRET_ENV_PAYLOAD_BYTES: usize = 64 * 1024;
+const BUBBLEWRAP_DEFAULT_PATH: &str = "/usr/local/bin:/usr/bin:/bin:/run/current-system/sw/bin";
+const BUBBLEWRAP_RUNTIME_PATHS: &[&str] = &[
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/usr/bin",
+    "/usr/sbin",
+    "/usr/lib",
+    "/usr/lib64",
+    "/usr/local/bin",
+    "/usr/local/lib",
+    "/run/current-system/sw",
+    "/nix/store",
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+];
 #[cfg(unix)]
 const SECRET_ENV_WRAPPER: &str = r#"
 __jyowo_env_fd=$1
@@ -168,6 +186,9 @@ impl SandboxBackend for LocalSandbox {
         let child = command.spawn();
         drop(command);
         let mut child = child.map_err(sandbox_error)?;
+        let mut pre_handoff_kill = ProcessGroupTargetKillOnDrop::new(
+            process_group.as_ref().map(ProcessGroupKeeper::target),
+        );
         if let Some(writer) = secret_environment_writer {
             writer.start();
         }
@@ -203,12 +224,14 @@ impl SandboxBackend for LocalSandbox {
         });
         if let Err(error) = ctx.event_sink.emit(started_event) {
             activity.abort_before_handoff().await?;
+            pre_handoff_kill.disarm();
             return Err(error);
         }
 
         LocalActivity::start_periodic_heartbeat(&activity);
         let stdout = child_stream(stdout_reader, Arc::clone(&activity), OutputStream::Stdout);
         let stderr = child_stream(stderr_reader, Arc::clone(&activity), OutputStream::Stderr);
+        pre_handoff_kill.disarm();
 
         Ok(ProcessHandle {
             pid,
@@ -787,6 +810,7 @@ impl LocalActivity {
 
 impl LocalActivity {
     async fn abort_before_handoff(&self) -> Result<(), SandboxError> {
+        tokio::task::yield_now().await;
         self.killed_signal.store(9, Ordering::Relaxed);
         let mut child = self
             .child
@@ -920,6 +944,35 @@ impl LocalActivity {
         match group.as_mut() {
             Some(group) => group.start_kill(),
             None => Ok(()),
+        }
+    }
+}
+
+struct ProcessGroupTargetKillOnDrop {
+    target: Option<ProcessGroupTarget>,
+    armed: bool,
+}
+
+impl ProcessGroupTargetKillOnDrop {
+    fn new(target: Option<ProcessGroupTarget>) -> Self {
+        Self {
+            target,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ProcessGroupTargetKillOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if let Some(target) = &self.target {
+            let _ = target.signal_sync(9);
         }
     }
 }
@@ -2228,7 +2281,13 @@ fn bubblewrap_args_for_workspace_policy(
     program: &str,
     program_args: &[String],
 ) -> Result<Vec<String>, SandboxError> {
-    let write_paths = workspace_write_paths_for_os_isolation(root, scope, access)?;
+    let root = lexical_normalize_path(root);
+    if root == Path::new("/") {
+        return Err(SandboxError::HostPathDenied {
+            path: root.display().to_string(),
+        });
+    }
+    let write_paths = workspace_write_paths_for_os_isolation(&root, scope, access)?;
     let mut args = vec![
         "--die-with-parent".to_owned(),
         "--unshare-user".to_owned(),
@@ -2251,11 +2310,8 @@ fn bubblewrap_args_for_workspace_policy(
         "/proc".to_owned(),
         "--dev".to_owned(),
         "/dev".to_owned(),
-        "--ro-bind".to_owned(),
-        "/".to_owned(),
-        "/".to_owned(),
     ]);
-    let root = lexical_normalize_path(root);
+    push_bubblewrap_runtime_mounts(&mut args);
     if write_paths.len() == 1 && write_paths[0] == root {
         push_mount(&mut args, "--bind", &root);
     } else {
@@ -2276,8 +2332,24 @@ fn bubblewrap_args_for_workspace_policy(
 
 fn push_bubblewrap_environment(args: &mut Vec<String>, environment: &BTreeMap<String, String>) {
     args.push("--clearenv".to_owned());
+    if !environment.contains_key("PATH") {
+        args.extend([
+            "--setenv".to_owned(),
+            "PATH".to_owned(),
+            BUBBLEWRAP_DEFAULT_PATH.to_owned(),
+        ]);
+    }
     for (key, value) in environment {
         args.extend(["--setenv".to_owned(), key.clone(), value.clone()]);
+    }
+}
+
+fn push_bubblewrap_runtime_mounts(args: &mut Vec<String>) {
+    for path in BUBBLEWRAP_RUNTIME_PATHS {
+        let path = Path::new(path);
+        if path.exists() {
+            push_mount(args, "--ro-bind", path);
+        }
     }
 }
 
@@ -2610,6 +2682,126 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "--die-with-parent"));
         assert!(args.iter().any(|arg| arg == "--unshare-pid"));
         assert!(args.iter().any(|arg| arg == "--unshare-net"));
+    }
+
+    #[test]
+    fn bubblewrap_workspace_only_does_not_mount_the_host_root() {
+        let root = root("bwrap-no-host-root");
+        let args = bubblewrap_args_for_workspace_policy(
+            &root,
+            &root,
+            &NetworkAccess::None,
+            &scope(),
+            &WorkspaceAccess::ReadOnly,
+            &BTreeMap::new(),
+            None,
+            "/bin/sh",
+            &["-c".to_owned(), "printf ok".to_owned()],
+        )
+        .expect("workspace-only bubblewrap policy should be expressible");
+
+        assert!(
+            !args
+                .windows(3)
+                .any(|mount| mount == ["--ro-bind", "/", "/"]),
+            "workspace-only sandbox exposed the entire host root: {args:?}"
+        );
+    }
+
+    #[test]
+    fn bubblewrap_workspace_only_builds_a_minimal_runtime_root() {
+        let root = root("bwrap-minimal-runtime");
+        let args = bubblewrap_args_for_workspace_policy(
+            &root,
+            &root,
+            &NetworkAccess::None,
+            &scope(),
+            &WorkspaceAccess::ReadOnly,
+            &BTreeMap::new(),
+            None,
+            "/bin/sh",
+            &["-c".to_owned(), "printf ok".to_owned()],
+        )
+        .expect("workspace-only bubblewrap policy should be expressible");
+        let runtime_candidates = [
+            "/bin",
+            "/sbin",
+            "/lib",
+            "/lib64",
+            "/usr/bin",
+            "/usr/sbin",
+            "/usr/lib",
+            "/usr/lib64",
+            "/usr/local/bin",
+            "/usr/local/lib",
+            "/run/current-system/sw",
+            "/nix/store",
+            "/etc/ld.so.cache",
+            "/etc/ld.so.conf",
+            "/etc/ld.so.conf.d",
+        ];
+
+        for path in runtime_candidates
+            .iter()
+            .filter(|path| Path::new(path).exists())
+        {
+            assert!(
+                args.windows(3)
+                    .any(|mount| mount == ["--ro-bind", *path, *path]),
+                "existing runtime path {path} was not mounted: {args:?}"
+            );
+        }
+        for mount in args.windows(3).filter(|mount| mount[0] == "--ro-bind") {
+            let source = mount[1].as_str();
+            assert!(
+                source == root.to_string_lossy() || runtime_candidates.contains(&source),
+                "unexpected host path exposed to workspace-only sandbox: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn bubblewrap_runtime_path_does_not_inherit_the_host_path() {
+        let root = root("bwrap-runtime-path");
+        let args = bubblewrap_args_for_workspace_policy(
+            &root,
+            &root,
+            &NetworkAccess::None,
+            &scope(),
+            &WorkspaceAccess::ReadOnly,
+            &BTreeMap::new(),
+            None,
+            "python3",
+            &[],
+        )
+        .expect("workspace-only bubblewrap policy should be expressible");
+
+        assert!(args.windows(3).any(|entry| {
+            entry
+                == [
+                    "--setenv",
+                    "PATH",
+                    "/usr/local/bin:/usr/bin:/bin:/run/current-system/sw/bin",
+                ]
+        }));
+    }
+
+    #[test]
+    fn bubblewrap_rejects_host_root_as_workspace() {
+        let error = bubblewrap_args_for_workspace_policy(
+            Path::new("/"),
+            Path::new("/"),
+            &NetworkAccess::None,
+            &scope(),
+            &WorkspaceAccess::ReadOnly,
+            &BTreeMap::new(),
+            None,
+            "/bin/sh",
+            &[],
+        )
+        .expect_err("host root cannot be a workspace-only mount");
+
+        assert!(matches!(error, SandboxError::HostPathDenied { .. }));
     }
 
     #[test]

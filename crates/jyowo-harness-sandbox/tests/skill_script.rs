@@ -289,6 +289,132 @@ async fn injects_only_explicit_declared_environment_values() {
 }
 
 #[tokio::test]
+async fn redacts_declared_secret_values_from_output_and_artifacts() {
+    let short_secret = "s3cr.et+(x)";
+    let long_secret = "s3cr.et+(x)-extended[]";
+    let backend = Arc::new(TestBackend {
+        stdout: format!("stdout {long_secret} {short_secret} safe").into_bytes(),
+        stderr: format!("stderr {short_secret} {long_secret}").into_bytes(),
+        artifacts: vec![(
+            "result.txt".to_owned(),
+            format!("artifact {long_secret} {short_secret}").into_bytes(),
+        )],
+        ..TestBackend::accepting()
+    });
+    let mut declaration = script_decl();
+    for name in ["LONG_SECRET", "SHORT_SECRET", "EMPTY_SECRET"] {
+        declaration.env.insert(
+            name.to_owned(),
+            harness_skill::SkillScriptEnvDecl {
+                config: name.to_ascii_lowercase(),
+                secret: true,
+            },
+        );
+    }
+    let mut request = request(declaration);
+    request
+        .env
+        .insert("LONG_SECRET".to_owned(), long_secret.to_owned());
+    request
+        .env
+        .insert("SHORT_SECRET".to_owned(), short_secret.to_owned());
+    request.env.insert("EMPTY_SECRET".to_owned(), String::new());
+
+    let result = execute_skill_script(backend, request, test_context())
+        .await
+        .expect("script result should be returned with secrets redacted");
+
+    assert_eq!(result.stdout, "stdout [REDACTED] [REDACTED] safe");
+    assert_eq!(result.stderr, "stderr [REDACTED] [REDACTED]");
+    assert_eq!(result.artifacts.len(), 1);
+    assert_eq!(
+        result.artifacts[0].content,
+        "artifact [REDACTED] [REDACTED]"
+    );
+    let serialized = serde_json::to_string(&result).expect("result should serialize");
+    assert!(!serialized.contains(short_secret));
+    assert!(!serialized.contains(long_secret));
+}
+
+#[tokio::test]
+async fn redaction_expansion_remains_within_declared_result_limits() {
+    let backend = Arc::new(TestBackend {
+        stdout: b"xxxxxxxx".to_vec(),
+        stderr: b"xxxxxxxx".to_vec(),
+        artifacts: vec![("result.txt".to_owned(), b"xxxxxxxx".to_vec())],
+        ..TestBackend::accepting()
+    });
+    let mut declaration = script_decl();
+    declaration.max_stdout_bytes = 8;
+    declaration.max_stderr_bytes = 8;
+    declaration.max_output_bytes = 16;
+    declaration.max_artifact_bytes = 8;
+    declaration.env.insert(
+        "SECRET".to_owned(),
+        harness_skill::SkillScriptEnvDecl {
+            config: "secret".to_owned(),
+            secret: true,
+        },
+    );
+    let mut request = request(declaration);
+    request.env.insert("SECRET".to_owned(), "x".to_owned());
+
+    let result = execute_skill_script(backend, request, test_context())
+        .await
+        .expect("bounded redacted result should be returned");
+
+    assert_eq!(result.status, SkillScriptStatus::OutputLimitExceeded);
+    assert!(result.stdout.len() <= 8);
+    assert!(result.stderr.len() <= 8);
+    assert!(result.stdout.len() + result.stderr.len() <= 16);
+    assert!(!result.stdout.contains('x'));
+    assert!(!result.stderr.contains('x'));
+    assert_eq!(result.artifacts.len(), 1);
+    assert!(result.artifacts[0].content.len() <= 8);
+    assert!(!result.artifacts[0].content.contains('x'));
+    assert_eq!(
+        result.artifacts[0].byte_size,
+        result.artifacts[0].content.len() as u64
+    );
+}
+
+#[tokio::test]
+async fn redaction_lookahead_covers_secrets_crossing_result_boundaries() {
+    let secret = "cross-boundary!";
+    let backend = Arc::new(TestBackend {
+        stdout: format!("123456{secret}tail").into_bytes(),
+        artifacts: vec![(
+            "result.txt".to_owned(),
+            format!("123456{secret}tail").into_bytes(),
+        )],
+        ..TestBackend::accepting()
+    });
+    let mut declaration = script_decl();
+    declaration.max_stdout_bytes = 8;
+    declaration.max_output_bytes = 8;
+    declaration.max_artifact_bytes = 8;
+    declaration.env.insert(
+        "SECRET".to_owned(),
+        harness_skill::SkillScriptEnvDecl {
+            config: "secret".to_owned(),
+            secret: true,
+        },
+    );
+    let mut request = request(declaration);
+    request.env.insert("SECRET".to_owned(), secret.to_owned());
+
+    let result = execute_skill_script(backend, request, test_context())
+        .await
+        .expect("boundary-crossing secret should be redacted before truncation");
+
+    assert_eq!(result.stdout, "123456[R");
+    assert_eq!(result.artifacts.len(), 1);
+    assert_eq!(result.artifacts[0].content, "123456[R");
+    assert!(!result.stdout.contains("cross"));
+    assert!(!result.artifacts[0].content.contains("cross"));
+}
+
+#[tokio::test]
 async fn rejects_backend_that_cannot_inject_explicit_environment_values() {
     let backend = Arc::new(TestBackend {
         per_exec_env: false,

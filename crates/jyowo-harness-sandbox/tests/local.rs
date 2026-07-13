@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::io::Cursor;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
@@ -29,6 +29,12 @@ struct NullSink;
 
 struct RejectStartedSink {
     pid_file: PathBuf,
+}
+
+struct BlockingRejectStartedSink {
+    pid_file: PathBuf,
+    entered: Arc<Barrier>,
+    release: Arc<Barrier>,
 }
 
 #[derive(Default)]
@@ -106,6 +112,23 @@ impl EventSink for RejectStartedSink {
             while !self.pid_file.exists() && started.elapsed() < Duration::from_secs(1) {
                 std::thread::sleep(Duration::from_millis(1));
             }
+            return Err(SandboxError::Message(
+                "sandbox execution started event rejected".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl EventSink for BlockingRejectStartedSink {
+    fn emit(&self, event: Event) -> Result<(), SandboxError> {
+        if matches!(event, Event::SandboxExecutionStarted(_)) {
+            let started = std::time::Instant::now();
+            while !self.pid_file.exists() && started.elapsed() < Duration::from_secs(1) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            self.entered.wait();
+            self.release.wait();
             return Err(SandboxError::Message(
                 "sandbox execution started event rejected".to_owned(),
             ));
@@ -195,6 +218,44 @@ async fn local_sandbox_is_object_safe_and_streams_stdout() {
     assert!(events
         .iter()
         .any(|event| matches!(event, Event::SandboxExecutionCompleted(_))));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore = "requires a live bubblewrap host with unprivileged user namespaces"]
+async fn bubblewrap_workspace_only_hides_a_host_sentinel() {
+    if !std::process::Command::new("bwrap")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        return;
+    }
+
+    let host_root = temp_root("bubblewrap-host-sentinel");
+    let workspace = host_root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let sentinel = host_root.join("host-secret.txt");
+    std::fs::write(&sentinel, "must stay hidden").expect("sentinel should be written");
+    let sandbox = LocalSandbox::new(&workspace).with_isolation(LocalIsolation::Bubblewrap);
+    let mut spec = shell_spec(&format!(
+        "if test -e '{}'; then printf visible; else printf hidden; fi",
+        sentinel.display()
+    ));
+    spec.policy.network = NetworkAccess::None;
+    spec.workspace_access = WorkspaceAccess::ReadOnly;
+
+    let mut handle = sandbox
+        .execute(spec, ExecContext::for_test(Arc::new(NullSink)))
+        .await
+        .expect("bubblewrap should execute with the minimal runtime root");
+    let stdout = collect_stdout(handle.stdout.take().expect("stdout should be piped")).await;
+    let outcome = handle.activity.wait().await.expect("wait should succeed");
+
+    assert_eq!(outcome.exit_status, SandboxExitStatus::Code(0));
+    assert_eq!(stdout, "hidden");
 }
 
 #[tokio::test]
@@ -1039,6 +1100,66 @@ async fn local_execute_reaps_process_group_when_started_event_is_rejected() {
                 .status();
         }
         assert!(reaped, "process {pid} survived failed execute handoff");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aborting_failed_execute_handoff_still_kills_the_process_group() {
+    let root = temp_root("started-event-cleanup-aborted");
+    let pid_file = root.join("processes.pid");
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let mut spec = shell_spec(
+        "trap '' TERM; sleep 30 </dev/null >/dev/null 2>&1 & background=$!; printf '%s %s' \"$$\" \"$background\" > processes.pid; wait",
+    );
+    spec.timeout = Some(Duration::from_secs(5));
+    spec.required_kill_scope = Some(KillScope::ProcessGroup);
+    let task = tokio::spawn({
+        let pid_file = pid_file.clone();
+        let entered = Arc::clone(&entered);
+        let release = Arc::clone(&release);
+        async move {
+            LocalSandbox::new(&root)
+                .execute(
+                    spec,
+                    ExecContext::for_test(Arc::new(BlockingRejectStartedSink {
+                        pid_file,
+                        entered,
+                        release,
+                    })),
+                )
+                .await
+        }
+    });
+
+    entered.wait();
+    task.abort();
+    release.wait();
+    let error = match task.await {
+        Ok(_) => panic!("failed handoff task must be cancelled"),
+        Err(error) => error,
+    };
+    assert!(error.is_cancelled());
+
+    let pids = std::fs::read_to_string(&pid_file)
+        .expect("sink must wait until the script records its processes")
+        .split_whitespace()
+        .map(|pid| pid.parse::<u32>().expect("recorded pid must be numeric"))
+        .collect::<Vec<_>>();
+    assert_eq!(pids.len(), 2);
+    for pid in pids {
+        let terminated = wait_for_process_exit(pid, Duration::from_millis(500)).await;
+        if !terminated {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+        assert!(
+            terminated,
+            "process {pid} survived cancellation during failed handoff cleanup"
+        );
     }
 }
 
