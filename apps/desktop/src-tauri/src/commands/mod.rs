@@ -110,7 +110,6 @@ use providers::{
     provider_capability_route_runtime_context, save_provider_settings_with_runtime_state_unlocked,
     sync_runtime_provider_capability_routes,
 };
-pub(crate) use runtime::build_desktop_settings_runtime;
 pub(crate) use support::*;
 use validation::{ensure_non_empty, ensure_provider_settings};
 
@@ -240,6 +239,7 @@ pub use providers::{
     list_model_provider_catalog_payload_with_remote,
     list_provider_capability_route_options_from_inputs, list_provider_capability_routes_with_store,
     list_provider_settings_for_workspace_with_store, list_provider_settings_with_store,
+    provider_settings_process_lock_for_test,
     request_provider_config_api_key_reveal_with_runtime_state,
     request_provider_config_api_key_reveal_with_store, resolve_effective_execution_settings,
     save_provider_capability_route_settings_with_store, save_provider_capability_route_with_store,
@@ -387,6 +387,7 @@ pub async fn list_provider_settings(
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListProviderSettingsResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
+    let _provider_settings_guard = runtime_state.provider_settings_lock.lock().await;
     let workspace_root = workspace_root
         .map(|workspace_root| {
             runtime::canonical_workspace_root(
@@ -641,26 +642,7 @@ pub async fn save_provider_settings(
     ensure_provider_settings(&request)?;
     let runtime_state = runtime_handle.read().await;
     let _provider_settings_guard = runtime_state.provider_settings_lock.lock().await;
-    let response =
-        save_provider_settings_with_runtime_state_unlocked(request, &runtime_state).await?;
-    if response.config.is_default {
-        let layout = runtime_state.runtime_layout().clone();
-        let (settings_runtime, model_id, protocol, model_options) = build_desktop_settings_runtime(
-            &layout,
-            Some(&response.config.id),
-            Arc::clone(&runtime_state.provider_capability_routes),
-            Some(Arc::clone(&runtime_state.provider_settings_store)),
-        )
-        .await?;
-        let _settings_reload_guard = runtime_state.settings_reload_lock.lock().await;
-        runtime_state.replace_settings_runtime(
-            Arc::new(settings_runtime),
-            model_id,
-            protocol,
-            model_options,
-        );
-    }
-    Ok(response)
+    save_provider_settings_with_runtime_state_unlocked(request, &runtime_state).await
 }
 
 #[tauri::command]

@@ -35,6 +35,13 @@ use harness_model::{
 };
 use harness_provider_state::ProviderContinuationKind;
 
+static PROVIDER_SETTINGS_PROCESS_LOCK: RwLock<()> = RwLock::new(());
+
+#[doc(hidden)]
+pub fn provider_settings_process_lock_for_test() -> &'static RwLock<()> {
+    &PROVIDER_SETTINGS_PROCESS_LOCK
+}
+
 #[derive(Clone)]
 pub(crate) struct DesktopProviderCredentialResolver {
     provider_settings_store: Arc<dyn ProviderSettingsStore>,
@@ -281,11 +288,6 @@ impl DesktopProviderSettingsStore {
     fn load_selection(&self) -> Result<ProviderSelectionRecord, CommandErrorPayload> {
         self.global_config_store().load_global_provider_selection()
     }
-
-    fn save_selection(&self, record: &ProviderSelectionRecord) -> Result<(), CommandErrorPayload> {
-        self.global_config_store()
-            .save_global_provider_selection(record)
-    }
 }
 
 impl ProviderSettingsStore for DesktopProviderSettingsStore {
@@ -294,6 +296,9 @@ impl ProviderSettingsStore for DesktopProviderSettingsStore {
     }
 
     fn load_record(&self) -> Result<Option<ProviderSettingsRecord>, CommandErrorPayload> {
+        let _process_guard = PROVIDER_SETTINGS_PROCESS_LOCK.read().map_err(|_| {
+            runtime_operation_failed("provider settings process lock is poisoned".to_owned())
+        })?;
         let global_config = self.global_config_store();
         let profiles = global_config.load_provider_profiles()?;
         if profiles.is_empty() {
@@ -317,6 +322,9 @@ impl ProviderSettingsStore for DesktopProviderSettingsStore {
     }
 
     fn save_record(&self, record: &ProviderSettingsRecord) -> Result<(), CommandErrorPayload> {
+        let _process_guard = PROVIDER_SETTINGS_PROCESS_LOCK.write().map_err(|_| {
+            runtime_operation_failed("provider settings process lock is poisoned".to_owned())
+        })?;
         ensure_provider_settings_record(record)?;
         let global_config = self.global_config_store();
         let profiles = record
@@ -324,19 +332,22 @@ impl ProviderSettingsStore for DesktopProviderSettingsStore {
             .iter()
             .map(|config| provider_profile_definition_from_config(config, config.id.clone()))
             .collect::<Vec<_>>();
-        global_config.save_provider_profiles(&profiles)?;
-
-        for config in &record.configs {
-            global_config.save_provider_secret(&ProviderSecretEntry {
+        let secrets = record
+            .configs
+            .iter()
+            .map(|config| ProviderSecretEntry {
                 config_id: config.id.clone(),
                 api_key: config.api_key.clone(),
                 official_quota_api_key: config.official_quota_api_key.clone(),
-            })?;
-        }
-
-        self.save_selection(&ProviderSelectionRecord {
-            default_config_id: record.default_config_id.clone(),
-        })
+            })
+            .collect::<Vec<_>>();
+        global_config.save_provider_generation(
+            &profiles,
+            &secrets,
+            &ProviderSelectionRecord {
+                default_config_id: record.default_config_id.clone(),
+            },
+        )
     }
 }
 
@@ -2002,10 +2013,15 @@ pub async fn get_provider_config_api_key_with_runtime_state(
     get_provider_config_api_key_with_runtime_state_unlocked(request, runtime_state).await
 }
 
-pub async fn save_provider_settings_with_store(
+pub(crate) struct PreparedProviderSettingsSave {
+    pub(crate) record: ProviderSettingsRecord,
+    pub(crate) response: SaveProviderSettingsResponse,
+}
+
+pub(crate) async fn prepare_provider_settings_with_store(
     request: ProviderSettingsRequest,
     store: &dyn ProviderSettingsStore,
-) -> Result<SaveProviderSettingsResponse, CommandErrorPayload> {
+) -> Result<PreparedProviderSettingsSave, CommandErrorPayload> {
     ensure_provider_settings(&request)?;
     let base_url = normalized_provider_base_url(&request.provider_id, request.base_url.as_deref())?;
     let mut record = store.load_record()?.unwrap_or_default();
@@ -2121,9 +2137,7 @@ pub async fn save_provider_settings_with_store(
     if request.set_default || record.default_config_id.is_none() {
         record.default_config_id = Some(config_id.clone());
     }
-    store.save_record(&record)?;
-
-    Ok(SaveProviderSettingsResponse {
+    let response = SaveProviderSettingsResponse {
         config: provider_config_payload(
             record
                 .configs
@@ -2133,7 +2147,17 @@ pub async fn save_provider_settings_with_store(
             record.default_config_id.as_deref(),
         )?,
         status: "saved",
-    })
+    };
+    Ok(PreparedProviderSettingsSave { record, response })
+}
+
+pub async fn save_provider_settings_with_store(
+    request: ProviderSettingsRequest,
+    store: &dyn ProviderSettingsStore,
+) -> Result<SaveProviderSettingsResponse, CommandErrorPayload> {
+    let prepared = prepare_provider_settings_with_store(request, store).await?;
+    store.save_record(&prepared.record)?;
+    Ok(prepared.response)
 }
 
 fn previous_config_matches_request_model(
@@ -2146,15 +2170,63 @@ fn previous_config_matches_request_model(
         && config.model_id == request.model_id
 }
 
+struct CandidateProviderSettingsStore {
+    record: ProviderSettingsRecord,
+}
+
+impl ProviderSettingsStore for CandidateProviderSettingsStore {
+    fn load_record(&self) -> Result<Option<ProviderSettingsRecord>, CommandErrorPayload> {
+        Ok(Some(self.record.clone()))
+    }
+
+    fn save_record(&self, _record: &ProviderSettingsRecord) -> Result<(), CommandErrorPayload> {
+        Err(runtime_operation_failed(
+            "candidate provider settings store is read-only".to_owned(),
+        ))
+    }
+}
+
 pub(crate) async fn save_provider_settings_with_runtime_state_unlocked(
     request: ProviderSettingsRequest,
     runtime_state: &DesktopRuntimeState,
 ) -> Result<SaveProviderSettingsResponse, CommandErrorPayload> {
-    let response =
-        save_provider_settings_with_store(request, runtime_state.provider_settings_store.as_ref())
-            .await?;
-    clear_provider_api_key_reveal_tokens_for_config(runtime_state, &response.config.id).await;
-    Ok(response)
+    let prepared = prepare_provider_settings_with_store(
+        request,
+        runtime_state.provider_settings_store.as_ref(),
+    )
+    .await?;
+    let _settings_reload_guard = runtime_state.settings_reload_lock.lock().await;
+    let candidate_runtime = if prepared.response.config.is_default {
+        let candidate_store = Arc::new(CandidateProviderSettingsStore {
+            record: prepared.record.clone(),
+        }) as Arc<dyn ProviderSettingsStore>;
+        Some(
+            build_desktop_settings_runtime(
+                runtime_state.runtime_layout(),
+                Some(&prepared.response.config.id),
+                Arc::clone(&runtime_state.provider_capability_routes),
+                Some(candidate_store),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+
+    runtime_state
+        .provider_settings_store
+        .save_record(&prepared.record)?;
+    if let Some((settings_runtime, model_id, protocol, model_options)) = candidate_runtime {
+        runtime_state.replace_settings_runtime(
+            Arc::new(settings_runtime),
+            model_id,
+            protocol,
+            model_options,
+        );
+    }
+    clear_provider_api_key_reveal_tokens_for_config(runtime_state, &prepared.response.config.id)
+        .await;
+    Ok(prepared.response)
 }
 
 pub async fn save_provider_settings_with_runtime_state(

@@ -34,6 +34,54 @@ fn desktop_provider_settings_store_rejects_config_without_api_key() {
     assert!(error.message.contains("apiKey is required"));
 }
 
+#[test]
+fn desktop_provider_settings_store_replaces_complete_secret_generation() {
+    let workspace = unique_workspace("provider-settings-secret-generation");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    let store = provider_settings_store_for_workspace(&workspace);
+    let config = |id: &str, api_key: &str| ProviderConfigRecord {
+        api_key: api_key.to_owned(),
+        protocol: ModelProtocol::Responses,
+        base_url: None,
+        display_name: id.to_owned(),
+        id: id.to_owned(),
+        model_id: "gpt-5.4-mini".to_owned(),
+        model_options: harness_contracts::ModelRequestOptions::default(),
+        official_quota_api_key: None,
+        provider_id: "openai".to_owned(),
+        provider_defaults: None,
+        model_descriptor: openai_descriptor_record("gpt-5.4-mini"),
+    };
+    store
+        .save_record(&ProviderSettingsRecord {
+            default_config_id: Some("keep".to_owned()),
+            configs: vec![
+                config("keep", "keep-token"),
+                config("remove", "remove-token"),
+            ],
+        })
+        .unwrap();
+
+    store
+        .save_record(&ProviderSettingsRecord {
+            default_config_id: Some("keep".to_owned()),
+            configs: vec![config("keep", "updated-token")],
+        })
+        .unwrap();
+
+    let secret_path = workspace
+        .join(".jyowo-test-home")
+        .join(".jyowo")
+        .join("config")
+        .join("provider-secrets.json");
+    let secrets: Vec<serde_json::Value> =
+        serde_json::from_slice(&std::fs::read(secret_path).unwrap()).unwrap();
+    assert_eq!(secrets.len(), 1);
+    assert_eq!(secrets[0]["configId"], "keep");
+    assert_eq!(secrets[0]["apiKey"], "updated-token");
+}
+
 #[cfg(unix)]
 #[test]
 fn desktop_provider_settings_store_writes_owner_only_file_permissions() {

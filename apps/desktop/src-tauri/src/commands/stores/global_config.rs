@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use harness_contracts::{
     AgentProfile, ExecutionDefaultsRecord, McpPresetRecord, ProviderProfileDefinition,
@@ -9,9 +9,26 @@ use crate::commands::error::CommandErrorPayload;
 use crate::storage_layout::StorageLayout;
 
 use super::{
-    ensure_app_dir_no_symlink, read_json_file, read_json_file_invalid_payload,
-    read_secret_json_file, write_json_file_atomic, write_secret_json_file_atomic,
+    ensure_app_dir_no_symlink, read_file_no_follow, read_json_file, read_json_file_invalid_payload,
+    read_secret_json_file, remove_invalid_json_file, write_bytes_file_atomic,
+    write_json_file_atomic, write_secret_json_file_atomic,
 };
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ProviderGenerationFile {
+    Profiles,
+    Secrets,
+    Selection,
+}
+
+struct ProviderGenerationWrite {
+    file: ProviderGenerationFile,
+    path: PathBuf,
+    label: &'static str,
+    secret: bool,
+    new_bytes: Vec<u8>,
+    old_bytes: Option<Vec<u8>>,
+}
 
 /// Typed store for global configuration under `~/.jyowo/config/`.
 ///
@@ -142,6 +159,128 @@ impl GlobalConfigStore {
         write_json_file_atomic(&path, "provider selection", record)
     }
 
+    pub(crate) fn save_provider_generation(
+        &self,
+        profiles: &[ProviderProfileDefinition],
+        secrets: &[ProviderSecretEntry],
+        selection: &ProviderSelectionRecord,
+    ) -> Result<(), CommandErrorPayload> {
+        self.save_provider_generation_with_writer(
+            profiles,
+            secrets,
+            selection,
+            |_, path, label, bytes, secret| {
+                write_bytes_file_atomic(path, "store.json", label, bytes, secret)
+            },
+        )
+    }
+
+    fn save_provider_generation_with_writer<F>(
+        &self,
+        profiles: &[ProviderProfileDefinition],
+        secrets: &[ProviderSecretEntry],
+        selection: &ProviderSelectionRecord,
+        mut writer: F,
+    ) -> Result<(), CommandErrorPayload>
+    where
+        F: FnMut(
+            ProviderGenerationFile,
+            &Path,
+            &str,
+            &[u8],
+            bool,
+        ) -> Result<(), CommandErrorPayload>,
+    {
+        let profiles_bytes = serde_json::to_vec_pretty(profiles).map_err(|error| {
+            crate::commands::error::runtime_operation_failed(format!(
+                "provider profiles serialization failed: {error}"
+            ))
+        })?;
+        let secrets_bytes = serde_json::to_vec_pretty(secrets).map_err(|error| {
+            crate::commands::error::runtime_operation_failed(format!(
+                "provider secrets serialization failed: {error}"
+            ))
+        })?;
+        let selection_bytes = serde_json::to_vec_pretty(selection).map_err(|error| {
+            crate::commands::error::runtime_operation_failed(format!(
+                "provider selection serialization failed: {error}"
+            ))
+        })?;
+        let paths = [
+            (
+                ProviderGenerationFile::Profiles,
+                self.layout.global_provider_profiles_file(),
+                "provider profiles",
+                false,
+                profiles_bytes,
+            ),
+            (
+                ProviderGenerationFile::Secrets,
+                self.layout.global_provider_secrets_file(),
+                "provider secrets",
+                true,
+                secrets_bytes,
+            ),
+            (
+                ProviderGenerationFile::Selection,
+                self.layout.global_provider_selection_file(),
+                "provider selection",
+                false,
+                selection_bytes,
+            ),
+        ];
+        let mut writes = Vec::with_capacity(paths.len());
+        for (file, path, label, secret, new_bytes) in paths {
+            ensure_config_dir(&path, label)?;
+            let old_bytes = read_file_no_follow(&path, label)?;
+            writes.push(ProviderGenerationWrite {
+                file,
+                path,
+                label,
+                secret,
+                new_bytes,
+                old_bytes,
+            });
+        }
+
+        for index in 0..writes.len() {
+            let write = &writes[index];
+            if let Err(commit_error) = writer(
+                write.file,
+                &write.path,
+                write.label,
+                &write.new_bytes,
+                write.secret,
+            ) {
+                let mut rollback_errors = Vec::new();
+                for rollback in writes[..=index].iter().rev() {
+                    let result = match rollback.old_bytes.as_deref() {
+                        Some(bytes) => writer(
+                            rollback.file,
+                            &rollback.path,
+                            rollback.label,
+                            bytes,
+                            rollback.secret,
+                        ),
+                        None => remove_invalid_json_file(&rollback.path, rollback.label),
+                    };
+                    if let Err(error) = result {
+                        rollback_errors.push(format!("{}: {}", rollback.label, error.message));
+                    }
+                }
+                if rollback_errors.is_empty() {
+                    return Err(commit_error);
+                }
+                return Err(crate::commands::error::runtime_operation_failed(format!(
+                    "{}; provider settings rollback failed: {}",
+                    commit_error.message,
+                    rollback_errors.join("; ")
+                )));
+            }
+        }
+        Ok(())
+    }
+
     // ── Execution defaults ─────────────────────────────────────────────
 
     pub fn load_execution_defaults(&self) -> Result<ExecutionDefaultsRecord, CommandErrorPayload> {
@@ -233,7 +372,7 @@ fn ensure_config_dir(path: &Path, label: &str) -> Result<(), CommandErrorPayload
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use harness_contracts::{
         AgentProfile, AgentProfileContextMode, AgentProfileMemoryScope,
@@ -246,7 +385,7 @@ mod tests {
 
     use crate::storage_layout::{JyowoHome, StorageLayout};
 
-    use super::GlobalConfigStore;
+    use super::{GlobalConfigStore, ProviderGenerationFile};
 
     fn store() -> (GlobalConfigStore, tempfile::TempDir) {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -280,6 +419,95 @@ mod tests {
                 structured_output: true,
             },
             runtime_semantics: None,
+        }
+    }
+
+    fn provider_profile(id: &str) -> ProviderProfileDefinition {
+        ProviderProfileDefinition {
+            id: id.to_owned(),
+            display_name: id.to_owned(),
+            provider_id: "openai".to_owned(),
+            model_id: "gpt-5".to_owned(),
+            protocol: ModelProtocol::ChatCompletions,
+            model_options: harness_contracts::ModelRequestOptions::default(),
+            base_url: None,
+            provider_defaults: None,
+            model_descriptor: make_model_descriptor(),
+        }
+    }
+
+    fn provider_generation_paths(store: &GlobalConfigStore) -> [PathBuf; 3] {
+        [
+            store.layout().global_provider_profiles_file(),
+            store.layout().global_provider_secrets_file(),
+            store.layout().global_provider_selection_file(),
+        ]
+    }
+
+    #[test]
+    fn provider_generation_rolls_back_every_file_when_each_commit_step_fails() {
+        for failed_file in [
+            ProviderGenerationFile::Profiles,
+            ProviderGenerationFile::Secrets,
+            ProviderGenerationFile::Selection,
+        ] {
+            let (store, _temp) = store();
+            store
+                .save_provider_generation(
+                    &[provider_profile("old")],
+                    &[ProviderSecretEntry {
+                        config_id: "old".to_owned(),
+                        api_key: "old-secret".to_owned(),
+                        official_quota_api_key: None,
+                    }],
+                    &ProviderSelectionRecord {
+                        default_config_id: Some("old".to_owned()),
+                    },
+                )
+                .expect("seed old generation");
+            let paths = provider_generation_paths(&store);
+            let old_bytes = paths
+                .clone()
+                .map(|path| std::fs::read(path).expect("read old generation"));
+            let mut injected = false;
+
+            let error = store
+                .save_provider_generation_with_writer(
+                    &[provider_profile("new")],
+                    &[ProviderSecretEntry {
+                        config_id: "new".to_owned(),
+                        api_key: "new-secret".to_owned(),
+                        official_quota_api_key: None,
+                    }],
+                    &ProviderSelectionRecord {
+                        default_config_id: Some("new".to_owned()),
+                    },
+                    |file, path, label, bytes, secret| {
+                        if file == failed_file && !injected {
+                            injected = true;
+                            return Err(crate::commands::error::runtime_operation_failed(format!(
+                                "injected {file:?} write failure"
+                            )));
+                        }
+                        super::super::write_bytes_file_atomic(
+                            path,
+                            "store.json",
+                            label,
+                            bytes,
+                            secret,
+                        )
+                    },
+                )
+                .expect_err("generation commit should fail");
+
+            assert!(error.message.contains("injected"));
+            for (path, expected) in paths.iter().zip(old_bytes.iter()) {
+                assert_eq!(
+                    std::fs::read(path).expect("read rolled back generation"),
+                    *expected,
+                    "{failed_file:?} failure left a mixed generation at {path:?}"
+                );
+            }
         }
     }
 
