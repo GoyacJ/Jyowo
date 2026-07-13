@@ -46,14 +46,21 @@ async fn browser_mcp_preset_summaries_expose_pinned_versions() {
 
 #[tokio::test]
 async fn browser_mcp_presets_are_pinned_and_optional() {
-    for (preset_id, expected_package) in [
-        (BrowserMcpPresetId::Playwright, "@playwright/mcp@0.0.78"),
-        (
-            BrowserMcpPresetId::ChromeDevtools,
-            "chrome-devtools-mcp@1.5.0",
-        ),
+    let summary_store = RecordingMcpServerStore::default();
+    let summaries = list_browser_mcp_presets_with_store(&summary_store)
+        .await
+        .expect("browser MCP presets should list")
+        .presets;
+
+    for (preset_id, package_name) in [
+        (BrowserMcpPresetId::Playwright, "@playwright/mcp"),
+        (BrowserMcpPresetId::ChromeDevtools, "chrome-devtools-mcp"),
     ] {
         let store = RecordingMcpServerStore::default();
+        let summary = summaries
+            .iter()
+            .find(|summary| summary.id == preset_id)
+            .expect("browser MCP preset summary should exist");
 
         save_browser_mcp_preset_with_store(
             SaveBrowserMcpPresetRequest {
@@ -77,7 +84,10 @@ async fn browser_mcp_presets_are_pinned_and_optional() {
                 ref inherit_env,
                 working_dir: None,
             } if command == "npx"
-                && args == &vec!["-y".to_owned(), expected_package.to_owned()]
+                && args == &vec![
+                    "-y".to_owned(),
+                    format!("{package_name}@{}", summary.version),
+                ]
                 && args.iter().all(|arg| !arg.contains("@latest"))
                 && env.is_empty()
                 && inherit_env == &vec![

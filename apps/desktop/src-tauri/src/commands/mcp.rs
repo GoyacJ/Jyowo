@@ -1636,13 +1636,47 @@ pub(crate) fn browser_mcp_preset_ids() -> &'static [BrowserMcpPresetId; 2] {
     ]
 }
 
+struct BrowserMcpPresetDescriptor {
+    description: &'static str,
+    display_name: &'static str,
+    package_name: &'static str,
+    server_id: &'static str,
+    version: &'static str,
+}
+
+const PLAYWRIGHT_BROWSER_MCP_PRESET: BrowserMcpPresetDescriptor = BrowserMcpPresetDescriptor {
+    description: "Browser automation through Playwright MCP.",
+    display_name: "Playwright Browser",
+    package_name: "@playwright/mcp",
+    server_id: "browser-playwright",
+    version: "0.0.78",
+};
+
+const CHROME_DEVTOOLS_BROWSER_MCP_PRESET: BrowserMcpPresetDescriptor = BrowserMcpPresetDescriptor {
+    description: "Browser inspection through Chrome DevTools MCP.",
+    display_name: "Chrome DevTools Browser",
+    package_name: "chrome-devtools-mcp",
+    server_id: "browser-chrome-devtools",
+    version: "1.5.0",
+};
+
+fn browser_mcp_preset_descriptor(
+    preset_id: BrowserMcpPresetId,
+) -> &'static BrowserMcpPresetDescriptor {
+    match preset_id {
+        BrowserMcpPresetId::Playwright => &PLAYWRIGHT_BROWSER_MCP_PRESET,
+        BrowserMcpPresetId::ChromeDevtools => &CHROME_DEVTOOLS_BROWSER_MCP_PRESET,
+    }
+}
+
 pub(crate) fn browser_mcp_preset_summary(
     preset_id: BrowserMcpPresetId,
     records: &[McpServerConfigRecord],
 ) -> BrowserMcpPresetSummaryPayload {
+    let descriptor = browser_mcp_preset_descriptor(preset_id);
     let enabled = records
         .iter()
-        .find(|record| record.id == browser_mcp_preset_server_id(preset_id))
+        .find(|record| record.id == descriptor.server_id)
         .is_some_and(|record| record.enabled);
     browser_mcp_preset_summary_from_enabled(preset_id, enabled)
 }
@@ -1651,13 +1685,14 @@ pub(crate) fn browser_mcp_preset_summary_from_enabled(
     preset_id: BrowserMcpPresetId,
     enabled: bool,
 ) -> BrowserMcpPresetSummaryPayload {
+    let descriptor = browser_mcp_preset_descriptor(preset_id);
     BrowserMcpPresetSummaryPayload {
-        description: browser_mcp_preset_description(preset_id),
-        display_name: browser_mcp_preset_display_name(preset_id),
+        description: descriptor.description,
+        display_name: descriptor.display_name,
         enabled,
         id: preset_id,
-        server_id: browser_mcp_preset_server_id(preset_id),
-        version: browser_mcp_preset_version(preset_id),
+        server_id: descriptor.server_id,
+        version: descriptor.version,
     }
 }
 
@@ -1733,17 +1768,18 @@ pub(crate) fn browser_mcp_preset_record(
     preset_id: BrowserMcpPresetId,
     enabled: bool,
 ) -> McpServerConfigRecord {
+    let descriptor = browser_mcp_preset_descriptor(preset_id);
     McpServerConfigRecord {
         enabled,
         required: false,
-        display_name: browser_mcp_preset_display_name(preset_id).to_owned(),
-        id: browser_mcp_preset_server_id(preset_id).to_owned(),
+        display_name: descriptor.display_name.to_owned(),
+        id: descriptor.server_id.to_owned(),
         scope: "global".to_owned(),
         transport: McpServerTransportConfig::Stdio {
             command: "npx".to_owned(),
             args: vec![
                 "-y".to_owned(),
-                browser_mcp_preset_package_arg(preset_id).to_owned(),
+                format!("{}@{}", descriptor.package_name, descriptor.version),
             ],
             env: Vec::new(),
             inherit_env: browser_mcp_preset_inherit_env(),
@@ -1760,38 +1796,15 @@ pub(crate) fn browser_mcp_preset_inherit_env() -> Vec<String> {
 }
 
 pub(crate) fn browser_mcp_preset_server_id(preset_id: BrowserMcpPresetId) -> &'static str {
-    match preset_id {
-        BrowserMcpPresetId::Playwright => "browser-playwright",
-        BrowserMcpPresetId::ChromeDevtools => "browser-chrome-devtools",
-    }
+    browser_mcp_preset_descriptor(preset_id).server_id
 }
 
 pub(crate) fn browser_mcp_preset_display_name(preset_id: BrowserMcpPresetId) -> &'static str {
-    match preset_id {
-        BrowserMcpPresetId::Playwright => "Playwright Browser",
-        BrowserMcpPresetId::ChromeDevtools => "Chrome DevTools Browser",
-    }
+    browser_mcp_preset_descriptor(preset_id).display_name
 }
 
 pub(crate) fn browser_mcp_preset_description(preset_id: BrowserMcpPresetId) -> &'static str {
-    match preset_id {
-        BrowserMcpPresetId::Playwright => "Browser automation through Playwright MCP.",
-        BrowserMcpPresetId::ChromeDevtools => "Browser inspection through Chrome DevTools MCP.",
-    }
-}
-
-pub(crate) fn browser_mcp_preset_package_arg(preset_id: BrowserMcpPresetId) -> &'static str {
-    match preset_id {
-        BrowserMcpPresetId::Playwright => "@playwright/mcp@0.0.78",
-        BrowserMcpPresetId::ChromeDevtools => "chrome-devtools-mcp@1.5.0",
-    }
-}
-
-pub(crate) fn browser_mcp_preset_version(preset_id: BrowserMcpPresetId) -> &'static str {
-    match preset_id {
-        BrowserMcpPresetId::Playwright => "0.0.78",
-        BrowserMcpPresetId::ChromeDevtools => "1.5.0",
-    }
+    browser_mcp_preset_descriptor(preset_id).description
 }
 
 pub(crate) fn mcp_last_diagnostics_by_server(
