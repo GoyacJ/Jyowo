@@ -2360,7 +2360,6 @@ const capabilityRouteKindSchema = z.enum([
   'text_to_speech',
   'speech_to_text',
   'music_generation',
-  'embedding_generation',
   'moderation',
   'file_management',
   'vector_store_management',

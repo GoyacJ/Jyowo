@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useRef, useState } from 'react'
 
+import { providerSettingsQueryKey } from '@/shared/state/workspace-scope'
 import {
   type DeleteProviderCapabilityRouteRequest,
   deleteProviderCapabilityRoute,
@@ -47,6 +48,8 @@ function useModelSettingsPageQuery() {
   return useQuery({
     queryKey: modelSettingsQueryKeys.page(),
     queryFn: () => getModelSettingsPage(commandClient),
+    refetchInterval: (query) =>
+      query.state.data?.usageSummary.status === 'rebuilding' ? 1_000 : false,
   })
 }
 
@@ -119,6 +122,7 @@ function inputsFromPageQuery(
 }
 
 export function useModelSettingsViewModel() {
+  const queryClient = useQueryClient()
   const pageQuery = useModelSettingsPageQuery()
   const probeMutation = useProbeProviderConfig()
   const catalogMutation = useRefreshModelProviderCatalog()
@@ -144,7 +148,10 @@ export function useModelSettingsViewModel() {
     isSetDefaultPending: defaultMutation.isPendingForConfig,
     isAnySetDefaultPending: defaultMutation.isPending,
     refetchAll: async () => {
-      await pageQuery.refetch()
+      await Promise.all([
+        pageQuery.refetch(),
+        queryClient.invalidateQueries({ queryKey: providerSettingsQueryKey }),
+      ])
     },
   }
 }
@@ -187,7 +194,10 @@ function useSetDefaultProviderConfig() {
       return saveProviderSettings(payload, commandClient)
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: modelSettingsQueryKeys.page() })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: modelSettingsQueryKeys.page() }),
+        queryClient.invalidateQueries({ queryKey: providerSettingsQueryKey }),
+      ])
     },
   })
 

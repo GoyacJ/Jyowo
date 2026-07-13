@@ -17,6 +17,12 @@ import type { TaskConnectionState } from './task-store'
 import type { TaskCommandExecutor } from './use-task-command-executor'
 
 const queueStates = new Set<TaskState>(['running', 'waiting_permission', 'yielding'])
+const idleSubmissionState = { submitting: false, submitError: null }
+
+type SubmissionState = {
+  submitting: boolean
+  submitError: string | null
+}
 
 export function TaskComposer({
   client,
@@ -57,23 +63,38 @@ export function TaskComposer({
   taskState: TaskState
 }) {
   const { t } = useTranslation('tasks')
-  const [submitting, setSubmitting] = useState(false)
-  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [submissionStates, setSubmissionStates] = useState(
+    () => new Map<TypedUlid, SubmissionState>(),
+  )
+  const submissionStatesRef = useRef(submissionStates)
   const pendingMetadata = useRef(new Map<string, ReturnType<typeof createTaskCommandMetadata>>())
   const queues = queueStates.has(taskState)
   const disconnected = connectionState === 'disconnected' || connectionState === 'protocol_error'
+  const normalizedModelConfigId = normalizeModelConfigId(modelConfigId)
+  const submissionState = submissionStates.get(taskId) ?? idleSubmissionState
+
+  function updateSubmissionState(
+    submittedTaskId: TypedUlid,
+    update: (current: SubmissionState) => SubmissionState,
+  ) {
+    const nextStates = new Map(submissionStatesRef.current)
+    const nextState = update(nextStates.get(submittedTaskId) ?? idleSubmissionState)
+    nextStates.set(submittedTaskId, nextState)
+    submissionStatesRef.current = nextStates
+    setSubmissionStates(nextStates)
+  }
 
   async function submit(payload: ComposerSubmitPayload) {
-    if (submitting) return
-    setSubmitting(true)
-    setSubmitError(null)
+    const submittedTaskId = taskId
+    if (submissionStatesRef.current.get(submittedTaskId)?.submitting) return
+    updateSubmissionState(submittedTaskId, () => ({ submitting: true, submitError: null }))
     const requestBody = {
       attachments: (payload.attachments ?? []).map((attachment) => attachment.blobRef.id),
       content: payload.prompt,
       contextReferences: (payload.contextReferences ?? []).map(referenceKey),
       ...(payload.modelConfigId ? { modelConfigId: payload.modelConfigId } : {}),
       ...(permissionMode ? { permissionMode: payload.permissionMode } : {}),
-      taskId,
+      taskId: submittedTaskId,
       type: 'submit_message' as const,
     }
     const operation = `submit:${JSON.stringify(requestBody)}`
@@ -88,19 +109,22 @@ export function TaskComposer({
       } else {
         let metadata = pendingMetadata.current.get(operation)
         if (!metadata) {
-          metadata = createTaskCommandMetadata(taskId, streamVersion, operation)
+          metadata = createTaskCommandMetadata(submittedTaskId, streamVersion, operation)
           pendingMetadata.current.set(operation, metadata)
         }
         frame = await client.request(buildRequest(metadata))
         pendingMetadata.current.delete(operation)
       }
-      const accepted = requireAcceptedCommand(frame, taskId)
+      const accepted = requireAcceptedCommand(frame, submittedTaskId)
       onCommandAccepted?.(accepted.streamVersion)
     } catch (error) {
-      setSubmitError(disconnected ? t('composer.disconnected') : commandError(error))
+      updateSubmissionState(submittedTaskId, (current) => ({
+        ...current,
+        submitError: disconnected ? t('composer.disconnected') : commandError(error),
+      }))
       throw error
     } finally {
-      setSubmitting(false)
+      updateSubmissionState(submittedTaskId, (current) => ({ ...current, submitting: false }))
     }
   }
 
@@ -108,10 +132,18 @@ export function TaskComposer({
     <Composer
       autoModeAvailable
       draftKey={`task:${taskId}`}
-      errorMessage={submitError ?? (disconnected ? t('composer.disconnected') : undefined)}
-      mode={submitting ? { kind: 'submitting' } : queues ? { kind: 'queue' } : { kind: 'ready' }}
+      errorMessage={
+        submissionState.submitError ?? (disconnected ? t('composer.disconnected') : undefined)
+      }
+      mode={
+        submissionState.submitting
+          ? { kind: 'submitting' }
+          : queues
+            ? { kind: 'queue' }
+            : { kind: 'ready' }
+      }
       modelCapability={modelCapability}
-      modelConfigId={modelConfigId}
+      modelConfigId={normalizedModelConfigId}
       modelConfigs={modelConfigs}
       onCreateAttachmentFromPath={
         client.stageBlobFromPath
@@ -129,8 +161,17 @@ export function TaskComposer({
       onRetry={
         disconnected
           ? () => {
-              setSubmitError(null)
-              void client.connect().catch((error) => setSubmitError(commandError(error)))
+              const retryTaskId = taskId
+              updateSubmissionState(retryTaskId, (current) => ({
+                ...current,
+                submitError: null,
+              }))
+              void client.connect().catch((error) =>
+                updateSubmissionState(retryTaskId, (current) => ({
+                  ...current,
+                  submitError: commandError(error),
+                })),
+              )
             }
           : undefined
       }
@@ -139,6 +180,11 @@ export function TaskComposer({
       submitLabel={queues ? t('composer.queue') : t('composer.send')}
     />
   )
+}
+
+export function normalizeModelConfigId(value: string | undefined): string | undefined {
+  const normalized = value?.trim()
+  return normalized ? normalized : undefined
 }
 
 function commandError(error: unknown) {

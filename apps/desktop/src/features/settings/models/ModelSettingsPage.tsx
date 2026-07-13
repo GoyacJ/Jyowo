@@ -2,6 +2,7 @@ import { Plus, RefreshCw } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 import { Checkbox } from '@/shared/ui/checkbox'
@@ -50,6 +51,12 @@ export function ModelSettingsPage() {
   const [detailsConfigId, setDetailsConfigId] = useState<string | null>(null)
   const [createConfigOpen, setCreateConfigOpen] = useState(false)
   const [routeEditorRoute, setRouteEditorRoute] = useState<CapabilityRouteRow | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+
+  function runAction(action: () => Promise<unknown>) {
+    setActionError(null)
+    void action().catch((error) => setActionError(getCommandErrorMessage(error)))
+  }
 
   const filteredRows = useMemo(() => {
     if (pageState.kind !== 'ready') {
@@ -111,7 +118,7 @@ export function ModelSettingsPage() {
         <div className="flex flex-wrap items-center gap-2">
           <Button
             disabled={isCatalogRefreshPending}
-            onClick={() => void refreshCatalog().catch(() => undefined)}
+            onClick={() => runAction(refreshCatalog)}
             type="button"
             variant="outline"
           >
@@ -130,6 +137,15 @@ export function ModelSettingsPage() {
           </Button>
         </div>
       </div>
+
+      {actionError ? (
+        <div
+          className="rounded-md border border-destructive/30 bg-surface px-4 py-3 text-destructive text-sm"
+          role="alert"
+        >
+          {actionError}
+        </div>
+      ) : null}
 
       <Tabs onValueChange={setActiveSurface} value={activeSurface}>
         <TabsList>
@@ -217,13 +233,13 @@ export function ModelSettingsPage() {
             isSetDefaultPending={isSetDefaultPending}
             onDetails={setDetailsConfigId}
             onProbe={(configId) => {
-              void probeConfig(configId, 10_000).catch(() => undefined)
+              runAction(() => probeConfig(configId, 10_000))
             }}
             onRefreshQuota={(configId) => {
-              void refreshQuota(configId).catch(() => undefined)
+              runAction(() => refreshQuota(configId))
             }}
             onSetDefault={(row) => {
-              void setDefaultConfig(defaultRequestFromRow(row)).catch(() => undefined)
+              runAction(() => setDefaultConfig(defaultRequestFromRow(row)))
             }}
             rows={filteredRows}
           />
