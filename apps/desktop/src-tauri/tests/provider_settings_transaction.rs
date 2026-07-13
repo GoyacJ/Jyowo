@@ -553,3 +553,54 @@ async fn non_default_commit_does_not_replace_active_runtime() {
         Some("openai")
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_runtime_saves_retry_instead_of_losing_a_provider_config() {
+    if rerun_with_isolated_home(
+        "concurrent_runtime_saves_retry_instead_of_losing_a_provider_config",
+    ) {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let root_path = root.path().canonicalize().unwrap();
+    let shared_home = root_path.join("shared-provider-home");
+    let layout = StorageLayout::new(JyowoHome::new(&shared_home));
+    let store = DesktopProviderSettingsStore::global_only_with_layout(layout);
+    save_provider_settings_with_store(
+        provider_request("seed", "seed-token", "gpt-5.4-mini", true),
+        &store,
+    )
+    .await
+    .unwrap();
+
+    let workspace_a = root_path.join("workspace-a");
+    let workspace_b = root_path.join("workspace-b");
+    std::fs::create_dir_all(&workspace_a).unwrap();
+    std::fs::create_dir_all(&workspace_b).unwrap();
+    let mut state_a = DesktopRuntimeState::with_workspace_for_test(workspace_a).unwrap();
+    let mut state_b = DesktopRuntimeState::with_workspace_for_test(workspace_b).unwrap();
+    state_a.set_provider_settings_store_for_test(Arc::new(store.clone()));
+    state_b.set_provider_settings_store_for_test(Arc::new(store.clone()));
+
+    let save_a = save_provider_settings_with_runtime_state(
+        provider_request("config-a", "token-a", "gpt-5.4", true),
+        &state_a,
+    );
+    let save_b = save_provider_settings_with_runtime_state(
+        provider_request("config-b", "token-b", "gpt-5.4-mini", true),
+        &state_b,
+    );
+    let (result_a, result_b) = tokio::join!(save_a, save_b);
+    result_a.unwrap();
+    result_b.unwrap();
+
+    let record = store.load_record().unwrap().unwrap();
+    let config_ids = record
+        .configs
+        .iter()
+        .map(|config| config.id.as_str())
+        .collect::<Vec<_>>();
+    assert!(config_ids.contains(&"seed"));
+    assert!(config_ids.contains(&"config-a"));
+    assert!(config_ids.contains(&"config-b"));
+}

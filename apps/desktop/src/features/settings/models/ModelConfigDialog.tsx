@@ -292,7 +292,8 @@ export function ModelConfigDialog({
     if (officialQuotaApiKey) {
       request.officialQuotaApiKey = officialQuotaApiKey
     }
-    if (!profile?.hasApiKey && !apiKey) {
+    const apiKeyRequired = selectedProvider?.runtimeCapability.authScheme !== 'none'
+    if (apiKeyRequired && !profile?.hasApiKey && !apiKey) {
       setError('root', { message: t('provider.errors.apiKeyRequired') })
       return
     }

@@ -98,7 +98,7 @@ pub struct RuntimeToolServiceBindingSummary {
     pub route_kind: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSettingsRequest {
     #[serde(default)]
@@ -1231,6 +1231,24 @@ pub trait ProviderSettingsStore: Send + Sync {
 
     fn load_record(&self) -> Result<Option<ProviderSettingsRecord>, CommandErrorPayload>;
     fn save_record(&self, record: &ProviderSettingsRecord) -> Result<(), CommandErrorPayload>;
+
+    fn compare_and_swap_record(
+        &self,
+        expected: Option<&ProviderSettingsRecord>,
+        record: &ProviderSettingsRecord,
+    ) -> Result<ProviderSettingsSaveOutcome, CommandErrorPayload> {
+        if self.load_record()?.as_ref() != expected {
+            return Ok(ProviderSettingsSaveOutcome::Conflict);
+        }
+        self.save_record(record)?;
+        Ok(ProviderSettingsSaveOutcome::Saved)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderSettingsSaveOutcome {
+    Saved,
+    Conflict,
 }
 
 #[derive(Debug)]

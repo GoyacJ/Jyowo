@@ -57,7 +57,7 @@ impl GlobalConfigStore {
             .map_err(provider_generation_lock_error)
     }
 
-    fn lock_provider_generation_exclusive(
+    pub(crate) fn lock_provider_generation_exclusive(
         &self,
     ) -> Result<harness_fs::AdvisoryFileLock, CommandErrorPayload> {
         harness_fs::lock_provider_generation_for_write(&self.layout.global_config_root())
@@ -179,7 +179,8 @@ impl GlobalConfigStore {
         secrets: &[ProviderSecretEntry],
         selection: &ProviderSelectionRecord,
     ) -> Result<(), CommandErrorPayload> {
-        self.save_provider_generation_with_writer(
+        let _generation_guard = self.lock_provider_generation_exclusive()?;
+        self.save_provider_generation_with_writer_locked(
             profiles,
             secrets,
             selection,
@@ -189,7 +190,44 @@ impl GlobalConfigStore {
         )
     }
 
+    #[cfg(test)]
     fn save_provider_generation_with_writer<F>(
+        &self,
+        profiles: &[ProviderProfileDefinition],
+        secrets: &[ProviderSecretEntry],
+        selection: &ProviderSelectionRecord,
+        writer: F,
+    ) -> Result<(), CommandErrorPayload>
+    where
+        F: FnMut(
+            ProviderGenerationFile,
+            &Path,
+            &str,
+            &[u8],
+            bool,
+        ) -> Result<(), CommandErrorPayload>,
+    {
+        let _generation_guard = self.lock_provider_generation_exclusive()?;
+        self.save_provider_generation_with_writer_locked(profiles, secrets, selection, writer)
+    }
+
+    pub(crate) fn save_provider_generation_locked(
+        &self,
+        profiles: &[ProviderProfileDefinition],
+        secrets: &[ProviderSecretEntry],
+        selection: &ProviderSelectionRecord,
+    ) -> Result<(), CommandErrorPayload> {
+        self.save_provider_generation_with_writer_locked(
+            profiles,
+            secrets,
+            selection,
+            |_, path, label, bytes, secret| {
+                write_bytes_file_atomic(path, "store.json", label, bytes, secret)
+            },
+        )
+    }
+
+    fn save_provider_generation_with_writer_locked<F>(
         &self,
         profiles: &[ProviderProfileDefinition],
         secrets: &[ProviderSecretEntry],
@@ -220,7 +258,6 @@ impl GlobalConfigStore {
                 "provider selection serialization failed: {error}"
             ))
         })?;
-        let _generation_guard = self.lock_provider_generation_exclusive()?;
         let paths = [
             (
                 ProviderGenerationFile::Profiles,
