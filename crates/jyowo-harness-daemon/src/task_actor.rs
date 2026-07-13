@@ -1,10 +1,11 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
     BlobId, CommandId, IndeterminateToolDecision, PermissionMode, PromotionMode, QueueItemId,
-    QueueItemState, RunSegmentId, RunState, StopMode, TaskId, ToolUseId,
+    QueueItemState, RunSegmentId, RunState, StopMode, TaskId, TaskState, ToolUseId,
 };
 use harness_engine::{RunControl, RunControlHandle};
 use harness_journal::{
@@ -26,6 +27,7 @@ pub enum TaskActorMessage {
     Command(Box<ValidatedTaskCommand>, oneshot::Sender<CommandOutcome>),
     RunEvent(RunCoordinatorEvent),
     StartNextQueued(OwnedSemaphorePermit),
+    RetryTerminalWorkspaceRelease,
     Shutdown,
 }
 
@@ -92,8 +94,6 @@ pub(crate) enum TaskActorError {
     Permission(#[from] PermissionBrokerError),
     #[error("workspace coordination failed: {0}")]
     Workspace(#[from] WorkspaceCoordinatorError),
-    #[error("terminal workspace release deferred: {0}")]
-    WorkspaceReleaseDeferred(#[source] WorkspaceCoordinatorError),
 }
 
 impl ValidatedTaskCommand {
@@ -229,6 +229,11 @@ pub(crate) async fn run_task_actor(
                     &mut active,
                     permit,
                 )?;
+            }
+            TaskActorMessage::RetryTerminalWorkspaceRelease => {
+                if !try_release_terminal_task_leases(&store, &factory, task_id)? {
+                    schedule_terminal_workspace_release_retry(mailbox.clone());
+                }
             }
             TaskActorMessage::Shutdown => break,
         }
@@ -1115,7 +1120,9 @@ fn handle_run_event(
                     .lock()
                     .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = None;
                 if !released_before_terminal {
-                    release_terminal_task_leases(store, factory, task_id)?;
+                    retry_terminal_task_lease_release_or_schedule(
+                        store, factory, task_id, mailbox,
+                    )?;
                 }
                 return Ok(true);
             }
@@ -1196,7 +1203,9 @@ fn handle_run_event(
                         .lock()
                         .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = None;
                     if !released_before_terminal {
-                        release_terminal_task_leases(store, factory, task_id)?;
+                        retry_terminal_task_lease_release_or_schedule(
+                            store, factory, task_id, mailbox,
+                        )?;
                     }
                 }
                 return Ok(false);
@@ -1335,7 +1344,9 @@ fn handle_run_event(
                     .lock()
                     .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = None;
                 if !released_before_terminal {
-                    release_terminal_task_leases(store, factory, task_id)?;
+                    retry_terminal_task_lease_release_or_schedule(
+                        store, factory, task_id, mailbox,
+                    )?;
                 }
             }
         }
@@ -1343,20 +1354,51 @@ fn handle_run_event(
     Ok(false)
 }
 
-fn release_terminal_task_leases(
+fn try_release_terminal_task_leases(
     store: &TaskStore,
     factory: &WorkspaceBoundRunCoordinatorFactory,
     task_id: TaskId,
-) -> Result<(), TaskActorError> {
+) -> Result<bool, TaskActorError> {
     let projection = store
         .task_projection(task_id)?
         .ok_or(TaskActorError::TaskNotFound)?;
-    if projection.queue.is_empty() {
-        factory
-            .release_task_leases(task_id)
-            .map_err(TaskActorError::WorkspaceReleaseDeferred)?;
+    if !matches!(
+        projection.state,
+        TaskState::Completed | TaskState::Failed | TaskState::Interrupted
+    ) {
+        return Ok(true);
+    }
+    if !projection.queue.is_empty() {
+        return Ok(true);
+    }
+    match factory.release_task_leases(task_id) {
+        Ok(()) => Ok(true),
+        Err(WorkspaceCoordinatorError::Isolation(
+            harness_agent_runtime::WorkspaceIsolationError::WorkspaceDispatchInFlight { .. },
+        )) => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn retry_terminal_task_lease_release_or_schedule(
+    store: &TaskStore,
+    factory: &WorkspaceBoundRunCoordinatorFactory,
+    task_id: TaskId,
+    mailbox: &mpsc::Sender<TaskActorMessage>,
+) -> Result<(), TaskActorError> {
+    if !try_release_terminal_task_leases(store, factory, task_id)? {
+        schedule_terminal_workspace_release_retry(mailbox.clone());
     }
     Ok(())
+}
+
+fn schedule_terminal_workspace_release_retry(mailbox: mpsc::Sender<TaskActorMessage>) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let _ = mailbox
+            .send(TaskActorMessage::RetryTerminalWorkspaceRelease)
+            .await;
+    });
 }
 
 fn release_terminal_task_leases_before_event(
