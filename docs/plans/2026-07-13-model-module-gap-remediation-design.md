@@ -81,4 +81,3 @@ Regression coverage will include:
 - task override inheritance and query failure UI;
 - cross-query invalidation and slash-containing model IDs;
 - model crate default-feature compilation.
-
