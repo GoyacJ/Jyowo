@@ -202,7 +202,7 @@ async fn sse_accepts_case_insensitive_event_stream_content_type() {
 }
 
 #[tokio::test]
-async fn sse_post_timeout_closes_the_transport() {
+async fn sse_completed_response_cancels_hanging_post_without_closing_the_transport() {
     let (addr, shutdown, _) = spawn_sse_fixture_with_options(SseFixtureOptions {
         hang_tools_post: true,
         ..SseFixtureOptions::default()
@@ -228,9 +228,11 @@ async fn sse_post_timeout_closes_the_transport() {
         .list_tools()
         .await
         .expect("streamed response completes before POST headers");
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    assert!(connection.subscribe_changes().await.is_err());
+    let _changes = connection
+        .subscribe_changes()
+        .await
+        .expect("completed request keeps transport open");
+    connection.shutdown().await.expect("shutdown");
     let _ = shutdown.send(());
 }
 

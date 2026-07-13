@@ -1,7 +1,7 @@
 #![cfg_attr(not(feature = "http"), allow(dead_code))]
 
 use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::SocketAddr,
     sync::{
         atomic::{AtomicU32, AtomicU64, Ordering},
         Arc, Mutex as StdMutex,
@@ -22,7 +22,13 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 use tokio_stream::wrappers::BroadcastStream;
-use url::Host;
+
+#[cfg(test)]
+use super::network_endpoint::validate_network_address;
+use super::network_endpoint::{
+    normalize_endpoint_host, normalize_endpoint_host_key, resolve_network_endpoint,
+    NetworkHostKind, ParsedNetworkEndpoint,
+};
 
 use crate::{
     authorize_mcp_transport_connect, call_tool_params, client_auth,
@@ -75,7 +81,7 @@ impl HttpTransport {
         addrs: Vec<SocketAddr>,
     ) -> Self {
         let host = host.into();
-        let host = normalize_http_host_key(&host).unwrap_or(host);
+        let host = normalize_endpoint_host_key(&host).unwrap_or(host);
         self.pinned_resolutions.push((host, addrs));
         self
     }
@@ -87,48 +93,7 @@ impl Default for HttpTransport {
     }
 }
 
-struct ParsedHttpEndpoint {
-    url: reqwest::Url,
-    host: String,
-    port: u16,
-    kind: HttpHostKind,
-}
-
-#[derive(Clone, Copy)]
-enum HttpHostKind {
-    Localhost,
-    IpLiteral(IpAddr),
-    DnsName,
-}
-
-fn normalize_http_host<S: AsRef<str>>(host: Host<S>) -> Result<(String, HttpHostKind), McpError> {
-    match host {
-        Host::Domain(domain) => {
-            let host = domain.as_ref().trim_end_matches('.').to_ascii_lowercase();
-            if host.is_empty() {
-                return Err(McpError::Protocol(
-                    "MCP HTTP endpoint has no host".to_owned(),
-                ));
-            }
-            let kind = if host == "localhost" {
-                HttpHostKind::Localhost
-            } else {
-                HttpHostKind::DnsName
-            };
-            Ok((host, kind))
-        }
-        Host::Ipv4(ip) => Ok((ip.to_string(), HttpHostKind::IpLiteral(IpAddr::V4(ip)))),
-        Host::Ipv6(ip) => Ok((ip.to_string(), HttpHostKind::IpLiteral(IpAddr::V6(ip)))),
-    }
-}
-
-fn normalize_http_host_key(raw: &str) -> Option<String> {
-    normalize_http_host(Host::parse(raw).ok()?)
-        .ok()
-        .map(|(host, _)| host)
-}
-
-fn parse_http_endpoint(raw: &str) -> Result<ParsedHttpEndpoint, McpError> {
+fn parse_http_endpoint(raw: &str) -> Result<ParsedNetworkEndpoint, McpError> {
     let mut url = reqwest::Url::parse(raw)
         .map_err(|_| McpError::Protocol("invalid MCP HTTP endpoint URL".to_owned()))?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -141,142 +106,23 @@ fn parse_http_endpoint(raw: &str) -> Result<ParsedHttpEndpoint, McpError> {
             "MCP HTTP endpoint must not contain userinfo".to_owned(),
         ));
     }
-    let (host, kind) = normalize_http_host(
+    let (host, kind) = normalize_endpoint_host(
         url.host()
             .ok_or_else(|| McpError::Protocol("MCP HTTP endpoint has no host".to_owned()))?,
     )?;
-    if matches!(kind, HttpHostKind::Localhost | HttpHostKind::DnsName) {
+    if matches!(kind, NetworkHostKind::Localhost | NetworkHostKind::DnsName) {
         url.set_host(Some(&host))
             .map_err(|_| McpError::Protocol("invalid MCP HTTP endpoint host".to_owned()))?;
     }
     let port = url
         .port_or_known_default()
         .ok_or_else(|| McpError::Protocol("MCP HTTP endpoint has no valid port".to_owned()))?;
-    Ok(ParsedHttpEndpoint {
+    Ok(ParsedNetworkEndpoint {
         url,
         host,
         port,
         kind,
     })
-}
-
-async fn resolve_http_endpoint(
-    endpoint: &ParsedHttpEndpoint,
-    explicit: Option<&[SocketAddr]>,
-) -> Result<Vec<SocketAddr>, McpError> {
-    let explicitly_pinned = explicit.is_some();
-    let mut addrs = if let Some(addrs) = explicit {
-        addrs
-            .iter()
-            .map(|addr| SocketAddr::new(addr.ip(), endpoint.port))
-            .collect::<Vec<_>>()
-    } else if let HttpHostKind::IpLiteral(ip) = endpoint.kind {
-        vec![SocketAddr::new(ip, endpoint.port)]
-    } else {
-        tokio::net::lookup_host((endpoint.host.as_str(), endpoint.port))
-            .await
-            .map_err(|_| McpError::Transport("MCP HTTP DNS resolution failed".to_owned()))?
-            .collect::<Vec<_>>()
-    };
-    addrs.sort_unstable();
-    addrs.dedup();
-    if addrs.is_empty() {
-        return Err(McpError::Transport(
-            "MCP HTTP endpoint resolved to no addresses".to_owned(),
-        ));
-    }
-    for addr in &addrs {
-        validate_http_address(&endpoint.kind, addr.ip(), explicitly_pinned)?;
-    }
-    Ok(addrs)
-}
-
-fn validate_http_address(
-    kind: &HttpHostKind,
-    ip: IpAddr,
-    _explicitly_pinned: bool,
-) -> Result<(), McpError> {
-    if is_always_blocked_ip(ip) {
-        return Err(McpError::PermissionDenied(
-            "MCP HTTP endpoint resolved to a disallowed address".to_owned(),
-        ));
-    }
-    let ip = normalize_mapped_ip(ip);
-    let valid = match kind {
-        HttpHostKind::Localhost => ip.is_loopback(),
-        HttpHostKind::IpLiteral(expected) => ip == normalize_mapped_ip(*expected),
-        HttpHostKind::DnsName => is_publicly_routable_dns_ip(ip),
-    };
-    if valid {
-        Ok(())
-    } else {
-        Err(McpError::PermissionDenied(
-            "MCP HTTP endpoint resolved to a disallowed address".to_owned(),
-        ))
-    }
-}
-
-fn normalize_mapped_ip(ip: IpAddr) -> IpAddr {
-    match ip {
-        IpAddr::V6(ip) => ip
-            .to_ipv4_mapped()
-            .map(IpAddr::V4)
-            .unwrap_or(IpAddr::V6(ip)),
-        ip => ip,
-    }
-}
-
-fn is_always_blocked_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            ip.is_unspecified()
-                || ip.is_multicast()
-                || ip.is_link_local()
-                || ip == Ipv4Addr::new(100, 100, 100, 200)
-                || ip == Ipv4Addr::BROADCAST
-        }
-        IpAddr::V6(ip) => {
-            ip.is_unspecified()
-                || ip.is_multicast()
-                || ip.to_ipv4_mapped().is_some()
-                || (ip.segments()[0] & 0xffc0) == 0xfe80
-                || ip
-                    == "fd00:ec2::254"
-                        .parse::<Ipv6Addr>()
-                        .expect("valid metadata IP")
-        }
-    }
-}
-
-fn is_publicly_routable_dns_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            let [a, b, c, _] = ip.octets();
-            !(a == 0
-                || a == 10
-                || a == 127
-                || (a == 100 && (64..=127).contains(&b))
-                || (a == 169 && b == 254)
-                || (a == 172 && (16..=31).contains(&b))
-                || (a == 192 && b == 0 && c == 0)
-                || (a == 192 && b == 0 && c == 2)
-                || (a == 192 && b == 88 && c == 99)
-                || (a == 192 && b == 168)
-                || (a == 198 && (b == 18 || b == 19))
-                || (a == 198 && b == 51 && c == 100)
-                || (a == 203 && b == 0 && c == 113)
-                || a >= 224)
-        }
-        IpAddr::V6(ip) => {
-            let segments = ip.segments();
-            (segments[0] & 0xe000) == 0x2000
-                && !(segments[0] == 0x2001 && segments[1] == 0x0002)
-                && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
-                && !(segments[0] == 0x2001 && (segments[1] & 0xfff0) == 0x0010)
-                && !(segments[0] == 0x2001 && (segments[1] & 0xfff0) == 0x0020)
-                && !((segments[0] & 0xfff0) == 0x3ff0)
-        }
-    }
 }
 
 fn is_transport_owned_header(name: &HeaderName) -> bool {
@@ -314,7 +160,7 @@ pub(super) async fn prepare_http_endpoint(
             .map_err(|error| McpError::Transport(error.to_string()))?;
         default_headers.insert(name, value);
     }
-    let resolved = resolve_http_endpoint(
+    let resolved = resolve_network_endpoint(
         &endpoint,
         pinned_resolutions
             .iter()
@@ -1756,7 +1602,7 @@ mod tests {
     use super::*;
     use std::{
         io::{Read, Write},
-        net::TcpListener,
+        net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener},
         sync::atomic::AtomicBool,
         thread,
     };
@@ -1919,27 +1765,27 @@ mod tests {
         let domain = parse_http_endpoint("https://EXAMPLE.com.:8443/mcp").unwrap();
         assert_eq!(domain.host, "example.com");
         assert_eq!(domain.url.host_str(), Some("example.com"));
-        assert!(matches!(domain.kind, HttpHostKind::DnsName));
+        assert!(matches!(domain.kind, NetworkHostKind::DnsName));
 
         let ipv6 = parse_http_endpoint("http://[::1]:3000/mcp").unwrap();
         assert_eq!(ipv6.host, "::1");
         assert!(matches!(
             ipv6.kind,
-            HttpHostKind::IpLiteral(IpAddr::V6(ip)) if ip == Ipv6Addr::LOCALHOST
+            NetworkHostKind::IpLiteral(IpAddr::V6(ip)) if ip == Ipv6Addr::LOCALHOST
         ));
     }
 
     #[test]
     fn metadata_literals_are_always_rejected() {
-        assert!(validate_http_address(
-            &HttpHostKind::IpLiteral(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))),
+        assert!(validate_network_address(
+            &NetworkHostKind::IpLiteral(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))),
             IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
             false,
         )
         .is_err());
         let metadata = "fd00:ec2::254".parse::<Ipv6Addr>().unwrap();
-        assert!(validate_http_address(
-            &HttpHostKind::IpLiteral(IpAddr::V6(metadata)),
+        assert!(validate_network_address(
+            &NetworkHostKind::IpLiteral(IpAddr::V6(metadata)),
             IpAddr::V6(metadata),
             false,
         )
@@ -1961,7 +1807,7 @@ mod tests {
 
         for ip in denied {
             assert!(
-                validate_http_address(&HttpHostKind::DnsName, ip, true).is_err(),
+                validate_network_address(&NetworkHostKind::DnsName, ip, true).is_err(),
                 "explicit pin unexpectedly allowed {ip}"
             );
         }
@@ -1984,7 +1830,12 @@ mod tests {
         for ip in denied {
             for explicitly_pinned in [false, true] {
                 assert!(
-                    validate_http_address(&HttpHostKind::DnsName, ip, explicitly_pinned).is_err(),
+                    validate_network_address(
+                        &NetworkHostKind::DnsName,
+                        ip,
+                        explicitly_pinned
+                    )
+                    .is_err(),
                     "DNS name unexpectedly accepted {ip} with explicitly_pinned={explicitly_pinned}"
                 );
             }
@@ -1996,7 +1847,12 @@ mod tests {
         ] {
             for explicitly_pinned in [false, true] {
                 assert!(
-                    validate_http_address(&HttpHostKind::DnsName, ip, explicitly_pinned).is_ok(),
+                    validate_network_address(
+                        &NetworkHostKind::DnsName,
+                        ip,
+                        explicitly_pinned
+                    )
+                    .is_ok(),
                     "DNS name unexpectedly rejected {ip} with explicitly_pinned={explicitly_pinned}"
                 );
             }
@@ -2006,15 +1862,17 @@ mod tests {
     #[test]
     fn explicit_literals_and_localhost_keep_their_own_address_policy() {
         let private = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7));
-        assert!(validate_http_address(&HttpHostKind::IpLiteral(private), private, false).is_ok());
-        assert!(validate_http_address(
-            &HttpHostKind::Localhost,
+        assert!(
+            validate_network_address(&NetworkHostKind::IpLiteral(private), private, false).is_ok()
+        );
+        assert!(validate_network_address(
+            &NetworkHostKind::Localhost,
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             false,
         )
         .is_ok());
-        assert!(validate_http_address(
-            &HttpHostKind::Localhost,
+        assert!(validate_network_address(
+            &NetworkHostKind::Localhost,
             IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
             false,
         )

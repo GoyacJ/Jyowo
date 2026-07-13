@@ -67,6 +67,138 @@ async fn websocket_upgrade_respects_handshake_timeout() {
 }
 
 #[tokio::test]
+async fn websocket_transport_rejects_url_userinfo() {
+    let spec = McpServerSpec::new(
+        McpServerId("ws-userinfo".into()),
+        "websocket userinfo fixture",
+        TransportChoice::WebSocket {
+            url: "ws://user:secret@127.0.0.1:9".into(),
+            headers: BTreeMap::default(),
+        },
+        McpServerSource::Workspace,
+    );
+
+    let error = match McpClient::new(Arc::new(WebsocketTransport::new()))
+        .connect_with_context(spec, support::authorized_connect_context())
+        .await
+    {
+        Ok(_) => panic!("websocket URL userinfo must be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(error, McpError::Protocol(message) if message.contains("userinfo")));
+}
+
+#[tokio::test]
+async fn websocket_transport_rejects_url_fragment() {
+    let spec = McpServerSpec::new(
+        McpServerId("ws-fragment".into()),
+        "websocket fragment fixture",
+        TransportChoice::WebSocket {
+            url: "ws://127.0.0.1:9/socket#fragment".into(),
+            headers: BTreeMap::default(),
+        },
+        McpServerSource::Workspace,
+    );
+
+    let error = match McpClient::new(Arc::new(WebsocketTransport::new()))
+        .connect_with_context(spec, support::authorized_connect_context())
+        .await
+    {
+        Ok(_) => panic!("websocket URL fragment must be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(error, McpError::Protocol(message) if message.contains("fragment")));
+}
+
+#[tokio::test]
+async fn websocket_transport_rejects_non_websocket_schemes() {
+    let spec = McpServerSpec::new(
+        McpServerId("ws-scheme".into()),
+        "websocket scheme fixture",
+        TransportChoice::WebSocket {
+            url: "https://127.0.0.1:9/socket".into(),
+            headers: BTreeMap::default(),
+        },
+        McpServerSource::Workspace,
+    );
+
+    let error = match McpClient::new(Arc::new(WebsocketTransport::new()))
+        .connect_with_context(spec, support::authorized_connect_context())
+        .await
+    {
+        Ok(_) => panic!("non-WebSocket URL scheme must be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(error, McpError::Protocol(message) if message.contains("ws or wss")));
+}
+
+#[tokio::test]
+async fn websocket_transport_rejects_dns_names_pinned_to_private_or_metadata_addresses() {
+    for address in ["10.0.0.7:443", "169.254.169.254:443", "100.100.100.200:443"] {
+        let spec = McpServerSpec::new(
+            McpServerId(format!("ws-denied-{address}")),
+            "websocket denied DNS pin fixture",
+            TransportChoice::WebSocket {
+                url: "wss://blocked.example.test/socket".into(),
+                headers: BTreeMap::default(),
+            },
+            McpServerSource::Workspace,
+        );
+        let address = address.parse().expect("socket address");
+
+        let error = match McpClient::new(Arc::new(
+            WebsocketTransport::new().with_pinned_resolution("blocked.example.test", vec![address]),
+        ))
+        .connect_with_context(spec, support::authorized_connect_context())
+        .await
+        {
+            Ok(_) => panic!("disallowed DNS pin must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, McpError::PermissionDenied(_)));
+    }
+}
+
+#[tokio::test]
+async fn websocket_transport_rejects_dns_names_pinned_to_local_addresses_before_sending_headers() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    let mut headers = BTreeMap::new();
+    headers.insert("x-secret".to_owned(), "custom-secret".to_owned());
+    let mut spec = McpServerSpec::new(
+        McpServerId("ws-dns-local".into()),
+        "websocket DNS pin fixture",
+        TransportChoice::WebSocket {
+            url: format!("ws://blocked.example.test:{}/socket", addr.port()),
+            headers,
+        },
+        McpServerSource::Workspace,
+    );
+    spec.auth = McpClientAuth::Bearer("bearer-secret".into());
+
+    let error = match McpClient::new(Arc::new(
+        WebsocketTransport::new().with_pinned_resolution("blocked.example.test", vec![addr]),
+    ))
+    .connect_with_context(spec, support::authorized_connect_context())
+    .await
+    {
+        Ok(_) => panic!("DNS name pinned to loopback must be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(error, McpError::PermissionDenied(_)));
+    tokio::select! {
+        biased;
+        accepted = listener.accept() => panic!("rejected target received a connection: {accepted:?}"),
+        _ = tokio::task::yield_now() => {}
+    }
+}
+
+#[tokio::test]
 async fn websocket_transport_rejects_transport_owned_headers() {
     for owned in [
         "authorization",

@@ -67,6 +67,8 @@ use crate::JsonRpcRequest;
 mod http;
 #[cfg(feature = "in-process")]
 mod in_process;
+#[cfg(any(feature = "http", feature = "sse", feature = "websocket"))]
+mod network_endpoint;
 #[cfg(any(feature = "http", feature = "sse"))]
 mod sse;
 #[cfg(any(feature = "http", feature = "sse"))]

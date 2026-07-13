@@ -125,7 +125,11 @@ pub(super) async fn connect_prepared(
 
     let (changes, _) = broadcast::channel(64);
     let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CAPACITY);
-    let sink = Arc::new(SseMessageSink::new(outbound_tx));
+    let sink = Arc::new(SseMessageSink::new(
+        outbound_tx,
+        spec.timeouts.handshake,
+        spec.timeouts.call_default,
+    ));
     let session = McpSession::new(
         spec.capabilities_expected,
         McpClientCapabilities::default(),
@@ -147,7 +151,6 @@ pub(super) async fn connect_prepared(
         auth_provider,
         peer.clone(),
         outbound_rx,
-        spec.timeouts.call_default,
         cancel.clone(),
         cancel_rx.clone(),
     ));
@@ -196,17 +199,31 @@ pub(super) async fn connect_prepared(
 
 struct SseMessageSink {
     sender: Mutex<Option<mpsc::Sender<SseOutbound>>>,
+    handshake_timeout: Duration,
+    call_timeout: Duration,
 }
 
 enum SseOutbound {
-    Message(McpOutboundMessage),
+    Message(SseOutboundMessage),
     Flush(oneshot::Sender<Result<(), McpError>>),
 }
 
+struct SseOutboundMessage {
+    message: McpOutboundMessage,
+    deadline: tokio::time::Instant,
+    committed: oneshot::Sender<Result<(), McpError>>,
+}
+
 impl SseMessageSink {
-    fn new(sender: mpsc::Sender<SseOutbound>) -> Self {
+    fn new(
+        sender: mpsc::Sender<SseOutbound>,
+        handshake_timeout: Duration,
+        call_timeout: Duration,
+    ) -> Self {
         Self {
             sender: Mutex::new(Some(sender)),
+            handshake_timeout,
+            call_timeout,
         }
     }
 
@@ -215,6 +232,7 @@ impl SseMessageSink {
     }
 
     async fn flush(&self, timeout: Duration) -> Result<(), McpError> {
+        let deadline = tokio::time::Instant::now() + timeout;
         let sender = self
             .sender
             .lock()
@@ -222,11 +240,11 @@ impl SseMessageSink {
             .clone()
             .ok_or_else(|| McpError::Connection("legacy SSE writer is closed".to_owned()))?;
         let (reply, result) = oneshot::channel();
-        sender
-            .send(SseOutbound::Flush(reply))
+        tokio::time::timeout_at(deadline, sender.send(SseOutbound::Flush(reply)))
             .await
+            .map_err(|_| McpError::Connection("legacy SSE POST flush timed out".to_owned()))?
             .map_err(|_| McpError::Connection("legacy SSE writer is closed".to_owned()))?;
-        tokio::time::timeout(timeout, result)
+        tokio::time::timeout_at(deadline, result)
             .await
             .map_err(|_| McpError::Connection("legacy SSE POST flush timed out".to_owned()))?
             .map_err(|_| McpError::Connection("legacy SSE writer is closed".to_owned()))?
@@ -236,18 +254,48 @@ impl SseMessageSink {
 #[async_trait]
 impl McpMessageSink for SseMessageSink {
     async fn send(&self, message: McpOutboundMessage) -> Result<(), McpError> {
+        let cancellation = cancellation_request_key(&message).is_some();
+        let timeout = if is_handshake_message(&message) {
+            self.handshake_timeout
+        } else {
+            self.call_timeout
+        };
+        let deadline = tokio::time::Instant::now() + timeout;
+        let (committed, result) = oneshot::channel();
+        let message = SseOutboundMessage {
+            message,
+            deadline,
+            committed,
+        };
         let sender = self
             .sender
             .lock()
             .await
             .clone()
             .ok_or_else(|| McpError::Connection("legacy SSE writer is closed".to_owned()))?;
-        let permit = sender
-            .reserve_owned()
+        let permit = tokio::time::timeout_at(deadline, sender.reserve_owned())
             .await
+            .map_err(|_| McpError::Connection("legacy SSE POST timed out".to_owned()))?
             .map_err(|_| McpError::Connection("legacy SSE writer is closed".to_owned()))?;
         permit.send(SseOutbound::Message(message));
-        Ok(())
+        match tokio::time::timeout_at(deadline, result).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(McpError::Connection(
+                "legacy SSE writer is closed".to_owned(),
+            )),
+            Err(_) if cancellation => Ok(()),
+            Err(_) => Err(McpError::Connection("legacy SSE POST timed out".to_owned())),
+        }
+    }
+}
+
+fn is_handshake_message(message: &McpOutboundMessage) -> bool {
+    match message.as_message() {
+        McpMessage::Request(request) => request.method == "initialize",
+        McpMessage::Notification(notification) => {
+            notification.method == "notifications/initialized"
+        }
+        _ => false,
     }
 }
 
@@ -719,7 +767,6 @@ async fn run_dispatcher(
     auth_provider: client_auth::McpClientAuthProvider,
     peer: McpPeer,
     mut outbound: mpsc::Receiver<SseOutbound>,
-    post_timeout: Duration,
     cancel_tx: watch::Sender<bool>,
     mut cancel: watch::Receiver<bool>,
 ) {
@@ -737,7 +784,7 @@ async fn run_dispatcher(
             },
             outbound = outbound.recv() => {
                 let Some(outbound) = outbound else { break; };
-                let SseOutbound::Message(message) = outbound else {
+                let SseOutbound::Message(mut message) = outbound else {
                     let SseOutbound::Flush(reply) = outbound else { unreachable!() };
                     let mut result = Ok(());
                     while let Some(worker) = workers.join_next().await {
@@ -755,29 +802,43 @@ async fn run_dispatcher(
                     }
                     continue;
                 };
-                let permit = tokio::select! {
-                    _ = wait_for_cancel(&mut cancel) => break,
-                    permit = Arc::clone(&permits).acquire_owned() => permit,
+                let slot = tokio::select! {
+                    biased;
+                    _ = wait_for_cancel(&mut cancel) => PostSlot::Cancelled,
+                    _ = tokio::time::sleep_until(message.deadline) => PostSlot::Expired,
+                    _ = message.committed.closed() => PostSlot::Abandoned,
+                    permit = Arc::clone(&permits).acquire_owned() => PostSlot::Permit(permit),
                 };
-                let Ok(permit) = permit else { break; };
+                let permit = match slot {
+                    PostSlot::Cancelled => break,
+                    PostSlot::Expired => {
+                        if let Err(error) = expire_outbound_message(message) {
+                            cancel_tx.send_replace(true);
+                            peer.close(format!("legacy SSE POST failed: {error}")).await;
+                            break;
+                        }
+                        continue;
+                    }
+                    PostSlot::Abandoned => continue,
+                    PostSlot::Permit(Ok(permit)) => permit,
+                    PostSlot::Permit(Err(_)) => break,
+                };
                 let client = client.clone();
                 let endpoint = endpoint.clone();
                 let auth_provider = auth_provider.clone();
                 let weak_peer = peer.downgrade();
                 let worker_cancel = cancel_tx.clone();
+                let worker_cancel_rx = cancel_tx.subscribe();
                 workers.spawn(async move {
                     let _permit = permit;
-                    let result = match tokio::time::timeout(
-                        post_timeout,
-                        post_message(&client, &endpoint, &auth_provider, message),
+                    let result = run_post_worker(
+                        &client,
+                        &endpoint,
+                        &auth_provider,
+                        message,
+                        worker_cancel_rx,
                     )
-                    .await
-                    {
-                        Ok(result) => result,
-                        Err(_) => Err(McpError::Connection(
-                            "legacy SSE POST timed out".to_owned(),
-                        )),
-                    };
+                    .await;
                     if let Err(error) = &result {
                         worker_cancel.send_replace(true);
                         weak_peer
@@ -791,6 +852,81 @@ async fn run_dispatcher(
     }
     workers.shutdown().await;
     peer.close("legacy SSE dispatcher stopped").await;
+}
+
+enum PostSlot {
+    Cancelled,
+    Expired,
+    Abandoned,
+    Permit(Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError>),
+}
+
+fn cancellation_request_key(message: &McpOutboundMessage) -> Option<String> {
+    match message.as_message() {
+        McpMessage::Notification(notification)
+            if notification.method == "notifications/cancelled" =>
+        {
+            notification
+                .params
+                .as_ref()?
+                .get("requestId")
+                .map(request_id_key)
+        }
+        _ => None,
+    }
+}
+
+fn request_id_key(id: &Value) -> String {
+    serde_json::to_string(id).expect("JSON-RPC request IDs are serializable")
+}
+
+fn expiry_is_benign(message: &McpOutboundMessage) -> bool {
+    matches!(message.as_message(), McpMessage::Request(_))
+        || cancellation_request_key(message).is_some()
+}
+
+fn expire_outbound_message(message: SseOutboundMessage) -> Result<(), McpError> {
+    if cancellation_request_key(&message.message).is_some() {
+        let _ = message.committed.send(Ok(()));
+        return Ok(());
+    }
+    let error = McpError::Connection("legacy SSE POST timed out".to_owned());
+    let benign = expiry_is_benign(&message.message);
+    let _ = message.committed.send(Err(error.clone()));
+    if benign {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+async fn run_post_worker(
+    client: &reqwest::Client,
+    endpoint: &Url,
+    auth_provider: &client_auth::McpClientAuthProvider,
+    mut message: SseOutboundMessage,
+    mut cancel: watch::Receiver<bool>,
+) -> Result<(), McpError> {
+    let post = post_message(client, endpoint, auth_provider, message.message.clone());
+    tokio::pin!(post);
+    tokio::select! {
+        biased;
+        _ = wait_for_cancel(&mut cancel) => Ok(()),
+        _ = tokio::time::sleep_until(message.deadline) => expire_outbound_message(message),
+        _ = message.committed.closed() => Ok(()),
+        result = &mut post => {
+            match result {
+                Ok(()) => {
+                    let _ = message.committed.send(Ok(()));
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = message.committed.send(Err(error.clone()));
+                    Err(error)
+                }
+            }
+        },
+    }
 }
 
 fn post_worker_result(
@@ -878,7 +1014,14 @@ fn decode_peer_tool_result(result: Result<Value, McpError>) -> Result<McpToolRes
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::convert::Infallible;
+    use std::{
+        convert::Infallible,
+        sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            Mutex as StdMutex,
+        },
+    };
+    use tokio::sync::Notify;
 
     struct NoopSink;
 
@@ -900,6 +1043,596 @@ mod tests {
         )
         .build()
         .expect("peer")
+    }
+
+    fn ready_session() -> McpSession {
+        let mut session = McpSession::new(
+            Default::default(),
+            McpClientCapabilities::default(),
+            McpImplementation::new("test", "0"),
+        );
+        session.begin_initialization().expect("begin initialize");
+        session
+            .accept_initialize_result(crate::InitializeResult {
+                protocol_version: crate::LATEST_PROTOCOL_VERSION.to_owned(),
+                capabilities: crate::McpServerCapabilities {
+                    tools: Some(Default::default()),
+                    ..Default::default()
+                },
+                server_info: McpImplementation::new("fixture", "0"),
+                instructions: None,
+                extra: Default::default(),
+            })
+            .expect("accept initialize");
+        session
+            .mark_initialized_notification_sent()
+            .expect("mark initialized");
+        session
+    }
+
+    async fn wait_for_count(count: &AtomicUsize, notify: &Notify, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let changed = notify.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if count.load(Ordering::SeqCst) >= expected {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .expect("expected POST count");
+    }
+
+    #[tokio::test]
+    async fn initialized_notification_uses_the_handshake_deadline() {
+        let (outbound_tx, mut outbound_rx) = mpsc::channel(1);
+        let sink = SseMessageSink::new(
+            outbound_tx,
+            Duration::from_secs(2),
+            Duration::from_millis(20),
+        );
+        let earliest = tokio::time::Instant::now() + Duration::from_secs(1);
+
+        let send = tokio::spawn(async move {
+            sink.send(
+                McpOutboundMessage::notification_without_params("notifications/initialized")
+                    .expect("initialized notification"),
+            )
+            .await
+        });
+
+        let SseOutbound::Message(message) = outbound_rx.recv().await.expect("queued message")
+        else {
+            panic!("expected queued message");
+        };
+        assert!(message.deadline >= earliest);
+        message
+            .committed
+            .send(Ok(()))
+            .expect("commit initialized notification");
+        send.await
+            .expect("send task")
+            .expect("queue initialized notification");
+    }
+
+    #[tokio::test]
+    async fn dispatcher_does_not_post_a_request_that_timed_out_while_waiting_for_a_worker() {
+        use axum::{body::Bytes, extract::State, http::StatusCode, routing::post, Router};
+
+        #[derive(Clone)]
+        struct StateData {
+            methods: Arc<StdMutex<Vec<String>>>,
+            blocked: Arc<AtomicUsize>,
+            blocked_changed: Arc<Notify>,
+            release: watch::Sender<bool>,
+            barrier_seen: Arc<AtomicBool>,
+            barrier_changed: Arc<Notify>,
+        }
+
+        async fn rpc(State(state): State<StateData>, body: Bytes) -> StatusCode {
+            let message: Value = serde_json::from_slice(&body).expect("POST JSON");
+            let method = message["method"].as_str().expect("POST method").to_owned();
+            state.methods.lock().expect("methods").push(method.clone());
+            match method.as_str() {
+                "notifications/block" => {
+                    state.blocked.fetch_add(1, Ordering::SeqCst);
+                    state.blocked_changed.notify_waiters();
+                    wait_for_cancel(&mut state.release.subscribe()).await;
+                }
+                "notifications/barrier" => {
+                    state.barrier_seen.store(true, Ordering::SeqCst);
+                    state.barrier_changed.notify_waiters();
+                }
+                _ => {}
+            }
+            StatusCode::ACCEPTED
+        }
+
+        let state = StateData {
+            methods: Arc::new(StdMutex::new(Vec::new())),
+            blocked: Arc::new(AtomicUsize::new(0)),
+            blocked_changed: Arc::new(Notify::new()),
+            release: watch::channel(false).0,
+            barrier_seen: Arc::new(AtomicBool::new(false)),
+            barrier_changed: Arc::new(Notify::new()),
+        };
+        let app = Router::new()
+            .route("/rpc", post(rpc))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let endpoint = Url::parse(&format!(
+            "http://{}/rpc",
+            listener.local_addr().expect("local address")
+        ))
+        .expect("endpoint");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+
+        let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CAPACITY);
+        let sink = Arc::new(SseMessageSink::new(
+            outbound_tx,
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+        ));
+        let peer = McpPeer::builder(sink, ready_session())
+            .build()
+            .expect("peer");
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let dispatcher = tokio::spawn(run_dispatcher(
+            reqwest::Client::builder()
+                .pool_max_idle_per_host(0)
+                .no_proxy()
+                .build()
+                .expect("client"),
+            endpoint,
+            client_auth::McpClientAuthProvider::new(&crate::McpClientAuth::None),
+            peer.clone(),
+            outbound_rx,
+            cancel_tx.clone(),
+            cancel_rx,
+        ));
+
+        let mut blocking_posts = JoinSet::new();
+        for _ in 0..MAX_POST_WORKERS {
+            let peer = peer.clone();
+            blocking_posts
+                .spawn(async move { peer.notify_without_params("notifications/block").await });
+        }
+        wait_for_count(&state.blocked, &state.blocked_changed, MAX_POST_WORKERS).await;
+
+        let error = peer
+            .request(
+                "tools/call",
+                serde_json::json!({}),
+                Duration::from_millis(50),
+            )
+            .await
+            .expect_err("queued request must time out");
+        assert!(error.to_string().contains("timed out"), "{error}");
+
+        state.release.send_replace(true);
+        while let Some(post) = blocking_posts.join_next().await {
+            post.expect("blocking POST task")
+                .expect("blocking POST accepted");
+        }
+        peer.notify_without_params("notifications/barrier")
+            .await
+            .expect("queue barrier POST");
+        let barrier = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let changed = state.barrier_changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if state.barrier_seen.load(Ordering::SeqCst) {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await;
+        assert!(
+            barrier.is_ok(),
+            "barrier POST; methods={:?}; cancelled={}; dispatcher_finished={}",
+            state.methods.lock().expect("methods"),
+            *cancel_tx.borrow(),
+            dispatcher.is_finished()
+        );
+
+        let methods = state.methods.lock().expect("methods");
+        assert!(!methods
+            .iter()
+            .any(|method| { matches!(method.as_str(), "tools/call" | "notifications/cancelled") }));
+        drop(methods);
+
+        cancel_tx.send_replace(true);
+        dispatcher.await.expect("dispatcher");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn completed_requests_cancel_hanging_posts_and_release_workers() {
+        use axum::{body::Bytes, extract::State, http::StatusCode, routing::post, Router};
+
+        #[derive(Clone)]
+        struct StateData {
+            requests: Arc<AtomicUsize>,
+            requests_changed: Arc<Notify>,
+            barrier_seen: Arc<AtomicBool>,
+            barrier_changed: Arc<Notify>,
+        }
+
+        async fn rpc(State(state): State<StateData>, body: Bytes) -> StatusCode {
+            let message: Value = serde_json::from_slice(&body).expect("POST JSON");
+            match message["method"].as_str().expect("POST method") {
+                "tools/list" => {
+                    state.requests.fetch_add(1, Ordering::SeqCst);
+                    state.requests_changed.notify_waiters();
+                    std::future::pending::<()>().await;
+                }
+                "notifications/barrier" => {
+                    state.barrier_seen.store(true, Ordering::SeqCst);
+                    state.barrier_changed.notify_waiters();
+                }
+                method => panic!("unexpected POST method: {method}"),
+            }
+            StatusCode::ACCEPTED
+        }
+
+        let state = StateData {
+            requests: Arc::new(AtomicUsize::new(0)),
+            requests_changed: Arc::new(Notify::new()),
+            barrier_seen: Arc::new(AtomicBool::new(false)),
+            barrier_changed: Arc::new(Notify::new()),
+        };
+        let app = Router::new()
+            .route("/rpc", post(rpc))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let endpoint = Url::parse(&format!(
+            "http://{}/rpc",
+            listener.local_addr().expect("local address")
+        ))
+        .expect("endpoint");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+
+        let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CAPACITY);
+        let sink = Arc::new(SseMessageSink::new(
+            outbound_tx,
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+        ));
+        let peer = McpPeer::builder(sink, ready_session())
+            .build()
+            .expect("peer");
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let dispatcher = tokio::spawn(run_dispatcher(
+            reqwest::Client::builder()
+                .pool_max_idle_per_host(0)
+                .no_proxy()
+                .build()
+                .expect("client"),
+            endpoint,
+            client_auth::McpClientAuthProvider::new(&crate::McpClientAuth::None),
+            peer.clone(),
+            outbound_rx,
+            cancel_tx.clone(),
+            cancel_rx,
+        ));
+
+        let mut requests = JoinSet::new();
+        for _ in 0..MAX_POST_WORKERS {
+            let peer = peer.clone();
+            requests.spawn(async move {
+                peer.request("tools/list", serde_json::json!({}), Duration::from_secs(5))
+                    .await
+            });
+        }
+        wait_for_count(&state.requests, &state.requests_changed, MAX_POST_WORKERS).await;
+
+        for id in 1..=MAX_POST_WORKERS {
+            let response = serde_json::from_value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {}
+            }))
+            .expect("JSON-RPC response");
+            peer.receive(response).await.expect("receive response");
+        }
+        while let Some(request) = requests.join_next().await {
+            request.expect("request task").expect("request response");
+        }
+
+        peer.notify_without_params("notifications/barrier")
+            .await
+            .expect("queue barrier POST");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let changed = state.barrier_changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if state.barrier_seen.load(Ordering::SeqCst) {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .expect("completed requests release POST workers");
+
+        cancel_tx.send_replace(true);
+        dispatcher.await.expect("dispatcher");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cancellation_waits_for_the_original_post_success_response() {
+        use axum::{body::Bytes, extract::State, http::StatusCode, routing::post, Router};
+
+        #[derive(Clone)]
+        struct StateData {
+            methods: Arc<StdMutex<Vec<String>>>,
+            request_seen: Arc<AtomicBool>,
+            request_changed: Arc<Notify>,
+            cancellation_seen: Arc<AtomicBool>,
+            cancellation_changed: Arc<Notify>,
+            release_request: watch::Sender<bool>,
+        }
+
+        async fn rpc(State(state): State<StateData>, body: Bytes) -> StatusCode {
+            let message: Value = serde_json::from_slice(&body).expect("POST JSON");
+            let method = message["method"].as_str().expect("POST method").to_owned();
+            state.methods.lock().expect("methods").push(method.clone());
+            match method.as_str() {
+                "tools/call" => {
+                    state.request_seen.store(true, Ordering::SeqCst);
+                    state.request_changed.notify_waiters();
+                    wait_for_cancel(&mut state.release_request.subscribe()).await;
+                }
+                "notifications/cancelled" => {
+                    state.cancellation_seen.store(true, Ordering::SeqCst);
+                    state.cancellation_changed.notify_waiters();
+                }
+                _ => panic!("unexpected POST method: {method}"),
+            }
+            StatusCode::ACCEPTED
+        }
+
+        let state = StateData {
+            methods: Arc::new(StdMutex::new(Vec::new())),
+            request_seen: Arc::new(AtomicBool::new(false)),
+            request_changed: Arc::new(Notify::new()),
+            cancellation_seen: Arc::new(AtomicBool::new(false)),
+            cancellation_changed: Arc::new(Notify::new()),
+            release_request: watch::channel(false).0,
+        };
+        let app = Router::new()
+            .route("/rpc", post(rpc))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let endpoint = Url::parse(&format!(
+            "http://{}/rpc",
+            listener.local_addr().expect("local address")
+        ))
+        .expect("endpoint");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+
+        let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CAPACITY);
+        let sink = Arc::new(SseMessageSink::new(
+            outbound_tx,
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+        ));
+        let peer = McpPeer::builder(sink, ready_session())
+            .build()
+            .expect("peer");
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let dispatcher = tokio::spawn(run_dispatcher(
+            reqwest::Client::builder()
+                .pool_max_idle_per_host(0)
+                .no_proxy()
+                .build()
+                .expect("client"),
+            endpoint,
+            client_auth::McpClientAuthProvider::new(&crate::McpClientAuth::None),
+            peer.clone(),
+            outbound_rx,
+            cancel_tx.clone(),
+            cancel_rx,
+        ));
+
+        let request_peer = peer.clone();
+        let request = tokio::spawn(async move {
+            request_peer
+                .start_request("tools/call", serde_json::json!({}), Duration::from_secs(5))
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let changed = state.request_changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if state.request_seen.load(Ordering::SeqCst) {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .expect("original request body observed");
+        assert!(
+            !request.is_finished(),
+            "request must not be wire-committed before the POST success response"
+        );
+
+        state.release_request.send_replace(true);
+        let pending = request
+            .await
+            .expect("request task")
+            .expect("request POST committed");
+        drop(pending);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let changed = state.cancellation_changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if state.cancellation_seen.load(Ordering::SeqCst) {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .expect("cancellation POST observed");
+        assert_eq!(
+            state.methods.lock().expect("methods").as_slice(),
+            &["tools/call", "notifications/cancelled"]
+        );
+
+        cancel_tx.send_replace(true);
+        dispatcher.await.expect("dispatcher");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn server_request_responses_are_posted_while_another_post_is_blocked() {
+        use axum::{body::Bytes, extract::State, http::StatusCode, routing::post, Router};
+
+        #[derive(Clone)]
+        struct StateData {
+            blocked_seen: Arc<AtomicBool>,
+            blocked_changed: Arc<Notify>,
+            response_seen: Arc<AtomicBool>,
+            response_changed: Arc<Notify>,
+            release: watch::Sender<bool>,
+        }
+
+        async fn rpc(State(state): State<StateData>, body: Bytes) -> StatusCode {
+            let message: Value = serde_json::from_slice(&body).expect("POST JSON");
+            if message["method"] == "notifications/block" {
+                state.blocked_seen.store(true, Ordering::SeqCst);
+                state.blocked_changed.notify_waiters();
+                wait_for_cancel(&mut state.release.subscribe()).await;
+            } else if message["id"] == 99 && message.get("error").is_some() {
+                state.response_seen.store(true, Ordering::SeqCst);
+                state.response_changed.notify_waiters();
+            } else {
+                panic!("unexpected POST: {message}");
+            }
+            StatusCode::ACCEPTED
+        }
+
+        let state = StateData {
+            blocked_seen: Arc::new(AtomicBool::new(false)),
+            blocked_changed: Arc::new(Notify::new()),
+            response_seen: Arc::new(AtomicBool::new(false)),
+            response_changed: Arc::new(Notify::new()),
+            release: watch::channel(false).0,
+        };
+        let app = Router::new()
+            .route("/rpc", post(rpc))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let endpoint = Url::parse(&format!(
+            "http://{}/rpc",
+            listener.local_addr().expect("local address")
+        ))
+        .expect("endpoint");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+
+        let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CAPACITY);
+        let sink = Arc::new(SseMessageSink::new(
+            outbound_tx,
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+        ));
+        let peer = McpPeer::builder(sink, ready_session())
+            .build()
+            .expect("peer");
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let dispatcher = tokio::spawn(run_dispatcher(
+            reqwest::Client::builder()
+                .pool_max_idle_per_host(0)
+                .no_proxy()
+                .build()
+                .expect("client"),
+            endpoint,
+            client_auth::McpClientAuthProvider::new(&crate::McpClientAuth::None),
+            peer.clone(),
+            outbound_rx,
+            cancel_tx.clone(),
+            cancel_rx,
+        ));
+
+        let blocking_peer = peer.clone();
+        let blocking_post = tokio::spawn(async move {
+            blocking_peer
+                .notify_without_params("notifications/block")
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let changed = state.blocked_changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if state.blocked_seen.load(Ordering::SeqCst) {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .expect("blocking POST started");
+
+        let request = serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "fixture/unknown"
+        }))
+        .expect("server request");
+        peer.receive(request).await.expect("receive server request");
+        peer.wait_for_inbound_tasks().await;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let changed = state.response_changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if state.response_seen.load(Ordering::SeqCst) {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .expect("server request response uses a concurrent POST worker");
+
+        state.release.send_replace(true);
+        blocking_post
+            .await
+            .expect("blocking POST task")
+            .expect("blocking POST accepted");
+        cancel_tx.send_replace(true);
+        dispatcher.await.expect("dispatcher");
+        server.abort();
     }
 
     #[test]

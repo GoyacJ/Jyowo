@@ -1,16 +1,17 @@
-use std::{sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use harness_contracts::PermissionMode;
 use serde_json::Value;
 use tokio::{
+    net::TcpStream,
     sync::{broadcast, mpsc, watch, Mutex},
     task::JoinHandle,
 };
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_tungstenite::{
-    connect_async,
+    client_async_tls,
     tungstenite::{
         client::IntoClientRequest,
         http::{HeaderName, HeaderValue, StatusCode},
@@ -43,17 +44,33 @@ const CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub struct WebsocketTransport {
     metrics_sink: Arc<dyn crate::McpMetricsSink>,
+    pinned_resolutions: Vec<(String, Vec<SocketAddr>)>,
 }
 
 impl WebsocketTransport {
     pub fn new() -> Self {
         Self {
             metrics_sink: Arc::new(NoopMcpMetricsSink),
+            pinned_resolutions: Vec::new(),
         }
     }
 
     pub fn with_metrics_sink(metrics_sink: Arc<dyn crate::McpMetricsSink>) -> Self {
-        Self { metrics_sink }
+        Self {
+            metrics_sink,
+            pinned_resolutions: Vec::new(),
+        }
+    }
+
+    pub fn with_pinned_resolution(
+        mut self,
+        host: impl Into<String>,
+        addrs: Vec<SocketAddr>,
+    ) -> Self {
+        let host = host.into();
+        let host = super::network_endpoint::normalize_endpoint_host_key(&host).unwrap_or(host);
+        self.pinned_resolutions.push((host, addrs));
+        self
     }
 }
 
@@ -85,17 +102,30 @@ impl McpTransport for WebsocketTransport {
                 "WebsocketTransport requires TransportChoice::WebSocket".to_owned(),
             ));
         };
+        let endpoint = parse_websocket_endpoint(&url)?;
+        validate_websocket_headers(&headers)?;
 
         let auth_provider = client_auth::McpClientAuthProvider::new(&spec.auth)
             .with_metrics_sink(context.metrics_sink_or(Arc::clone(&self.metrics_sink)));
         let handshake = async {
-            let request = websocket_request(&url, &headers, &auth_provider).await?;
-            match connect_async(request).await {
+            let resolved = super::network_endpoint::resolve_network_endpoint(
+                &endpoint,
+                self.pinned_resolutions
+                    .iter()
+                    .rev()
+                    .find(|(host, _)| host.eq_ignore_ascii_case(&endpoint.host))
+                    .map(|(_, addrs)| addrs.as_slice()),
+            )
+            .await?;
+            let request =
+                websocket_request(endpoint.url.as_str(), &headers, &auth_provider).await?;
+            match websocket_handshake(request, &resolved).await {
                 Ok(connection) => Ok(connection),
                 Err(error) if is_auth_expired_handshake(&error) && auth_provider.can_refresh() => {
                     auth_provider.force_refresh_authorization_header().await?;
-                    let request = websocket_request(&url, &headers, &auth_provider).await?;
-                    connect_async(request)
+                    let request =
+                        websocket_request(endpoint.url.as_str(), &headers, &auth_provider).await?;
+                    websocket_handshake(request, &resolved)
                         .await
                         .map_err(|error| McpError::Transport(error.to_string()))
                 }
@@ -164,6 +194,94 @@ impl McpTransport for WebsocketTransport {
     }
 }
 
+fn parse_websocket_endpoint(
+    raw: &str,
+) -> Result<super::network_endpoint::ParsedNetworkEndpoint, McpError> {
+    let mut url = url::Url::parse(raw)
+        .map_err(|_| McpError::Protocol("invalid MCP WebSocket endpoint URL".to_owned()))?;
+    if !matches!(url.scheme(), "ws" | "wss") {
+        return Err(McpError::Protocol(
+            "MCP WebSocket endpoint must use ws or wss".to_owned(),
+        ));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(McpError::Protocol(
+            "MCP WebSocket endpoint must not contain userinfo".to_owned(),
+        ));
+    }
+    if url.fragment().is_some() {
+        return Err(McpError::Protocol(
+            "MCP WebSocket endpoint must not contain a fragment".to_owned(),
+        ));
+    }
+    let (host, kind) = super::network_endpoint::normalize_endpoint_host(
+        url.host()
+            .ok_or_else(|| McpError::Protocol("MCP WebSocket endpoint has no host".to_owned()))?,
+    )?;
+    if matches!(
+        kind,
+        super::network_endpoint::NetworkHostKind::Localhost
+            | super::network_endpoint::NetworkHostKind::DnsName
+    ) {
+        url.set_host(Some(&host))
+            .map_err(|_| McpError::Protocol("invalid MCP WebSocket endpoint host".to_owned()))?;
+    }
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| McpError::Protocol("MCP WebSocket endpoint has no valid port".to_owned()))?;
+    Ok(super::network_endpoint::ParsedNetworkEndpoint {
+        url,
+        host,
+        port,
+        kind,
+    })
+}
+
+fn validate_websocket_headers(
+    headers: &std::collections::BTreeMap<String, String>,
+) -> Result<(), McpError> {
+    for key in headers.keys() {
+        let name = HeaderName::try_from(key.as_str())
+            .map_err(|error| McpError::Transport(error.to_string()))?;
+        if is_websocket_transport_owned_header(&name) {
+            return Err(McpError::Protocol(format!(
+                "WebSocket header {name} is owned by the MCP transport"
+            )));
+        }
+    }
+    Ok(())
+}
+
+async fn websocket_handshake(
+    request: tokio_tungstenite::tungstenite::handshake::client::Request,
+    resolved: &[SocketAddr],
+) -> Result<
+    (
+        WsStream,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    WebSocketError,
+> {
+    let stream = connect_resolved(resolved).await?;
+    client_async_tls(request, stream).await
+}
+
+async fn connect_resolved(resolved: &[SocketAddr]) -> Result<TcpStream, WebSocketError> {
+    let mut last_error = None;
+    for address in resolved {
+        match TcpStream::connect(address).await {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(WebSocketError::Io(last_error.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            "WebSocket endpoint resolved to no addresses",
+        )
+    })))
+}
+
 async fn websocket_request(
     url: &str,
     headers: &std::collections::BTreeMap<String, String>,
@@ -175,11 +293,6 @@ async fn websocket_request(
     for (key, value) in headers {
         let name = HeaderName::try_from(key.as_str())
             .map_err(|error| McpError::Transport(error.to_string()))?;
-        if is_websocket_transport_owned_header(&name) {
-            return Err(McpError::Protocol(format!(
-                "WebSocket header {name} is owned by the MCP transport"
-            )));
-        }
         let value = HeaderValue::try_from(value.as_str())
             .map_err(|error| McpError::Transport(error.to_string()))?;
         request.headers_mut().insert(name, value);
@@ -501,6 +614,12 @@ impl McpConnection for WebsocketConnection {
 impl Drop for WebsocketConnection {
     fn drop(&mut self) {
         self.cancel.send_replace(true);
+        if let Some(task) = self.writer_task.get_mut().take() {
+            task.abort();
+        }
+        if let Some(task) = self.reader_task.get_mut().take() {
+            task.abort();
+        }
     }
 }
 
@@ -656,6 +775,17 @@ fn decode_peer_tool_result(result: Result<Value, McpError>) -> Result<McpToolRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::oneshot;
+
+    struct TaskDropSignal(Option<oneshot::Sender<()>>);
+
+    impl Drop for TaskDropSignal {
+        fn drop(&mut self) {
+            if let Some(signal) = self.0.take() {
+                let _ = signal.send(());
+            }
+        }
+    }
 
     struct NoopSink;
 
@@ -677,6 +807,42 @@ mod tests {
         )
         .build()
         .expect("peer")
+    }
+
+    #[test]
+    fn endpoint_parser_accepts_ws_wss_and_explicit_local_addresses() {
+        let ws = parse_websocket_endpoint("ws://127.0.0.1:3000/socket").expect("ws endpoint");
+        assert_eq!(ws.port, 3000);
+        assert!(matches!(
+            ws.kind,
+            super::super::network_endpoint::NetworkHostKind::IpLiteral(ip)
+                if ip.is_loopback()
+        ));
+
+        let wss =
+            parse_websocket_endpoint("wss://public.example.test/socket").expect("wss endpoint");
+        assert_eq!(wss.port, 443);
+        assert!(matches!(
+            wss.kind,
+            super::super::network_endpoint::NetworkHostKind::DnsName
+        ));
+    }
+
+    #[tokio::test]
+    async fn public_dns_pins_are_accepted_without_changing_the_url_port() {
+        let endpoint =
+            parse_websocket_endpoint("wss://public.example.test:8443/socket").expect("endpoint");
+        let pinned = ["8.8.8.8:53".parse().expect("public address")];
+
+        let resolved =
+            super::super::network_endpoint::resolve_network_endpoint(&endpoint, Some(&pinned))
+                .await
+                .expect("public DNS pin");
+
+        assert_eq!(
+            resolved,
+            ["8.8.8.8:8443".parse().expect("resolved address")]
+        );
     }
 
     #[tokio::test]
@@ -722,5 +888,51 @@ mod tests {
 
         assert!(*cancel_tx.borrow());
         assert!(peer.ensure_open().is_err());
+    }
+
+    #[tokio::test]
+    async fn dropping_connection_aborts_tasks_that_ignore_cancellation() {
+        let (writer_dropped_tx, writer_dropped_rx) = oneshot::channel();
+        let (writer_started_tx, writer_started_rx) = oneshot::channel();
+        let writer_task = tokio::spawn(async move {
+            let _signal = TaskDropSignal(Some(writer_dropped_tx));
+            let _ = writer_started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        let (reader_dropped_tx, reader_dropped_rx) = oneshot::channel();
+        let (reader_started_tx, reader_started_rx) = oneshot::channel();
+        let reader_task = tokio::spawn(async move {
+            let _signal = TaskDropSignal(Some(reader_dropped_tx));
+            let _ = reader_started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        let (outbound_tx, _outbound_rx) = mpsc::channel(1);
+        let (cancel, _) = watch::channel(false);
+        let connection = WebsocketConnection {
+            connection_id: "websocket:test".to_owned(),
+            changes: broadcast::channel(1).0,
+            timeout: Duration::from_secs(1),
+            peer: test_peer(),
+            sink: Arc::new(WebsocketMessageSink::new(outbound_tx)),
+            cancel,
+            writer_task: Mutex::new(Some(writer_task)),
+            reader_task: Mutex::new(Some(reader_task)),
+            legacy_request_builder: JsonRpcPeer::new(),
+            elicitation_handler: None,
+            permission_mode: PermissionMode::Default,
+        };
+
+        writer_started_rx.await.expect("writer task started");
+        reader_started_rx.await.expect("reader task started");
+        drop(connection);
+
+        tokio::time::timeout(Duration::from_millis(100), writer_dropped_rx)
+            .await
+            .expect("writer task aborted")
+            .expect("writer drop signal");
+        tokio::time::timeout(Duration::from_millis(100), reader_dropped_rx)
+            .await
+            .expect("reader task aborted")
+            .expect("reader drop signal");
     }
 }
