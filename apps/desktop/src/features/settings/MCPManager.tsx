@@ -82,6 +82,12 @@ type MCPServerFormValues = {
   workingDir: string
 }
 
+type McpDialogIdentity = {
+  configLayer: McpConfigLayer
+  projectPath: string | null
+  serverId: string | null
+}
+
 const defaultFormValues: MCPServerFormValues = {
   args: [],
   bearerTokenEnvVar: '',
@@ -107,10 +113,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
   const activeProjectPath = activeProjectPathQuery.data ?? null
   const [configLayer, setConfigLayer] = useState<McpConfigLayer>('global')
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [dialogIdentity, setDialogIdentity] = useState<{
-    configLayer: McpConfigLayer
-    projectPath: string | null
-  } | null>(null)
+  const [dialogIdentity, setDialogIdentityState] = useState<McpDialogIdentity | null>(null)
   const [editingServer, setEditingServer] = useState<{
     configLayer: McpConfigLayer
     id: string
@@ -121,6 +124,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
   const [loadingConfigId, setLoadingConfigId] = useState<string | null>(null)
   const activeProjectPathRef = useRef(activeProjectPath)
   const configRequestGeneration = useRef(0)
+  const dialogIdentityRef = useRef<McpDialogIdentity | null>(null)
   const configRequestIdentity = useRef<{
     generation: number
     id: string
@@ -156,6 +160,8 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
   const diagnosticsQuery = useQuery({
     queryKey: mcpDiagnosticQueryKeys.list(diagnosticServerId),
     queryFn: () => listMcpDiagnostics(diagnosticServerId ?? undefined, commandClient),
+    refetchOnWindowFocus: false,
+    staleTime: Number.POSITIVE_INFINITY,
   })
   const browserPresetsQuery = useQuery({
     queryKey: browserMcpPresetQueryKeys.list(),
@@ -166,6 +172,8 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
       projectPath,
       request,
     }: {
+      dialogGeneration: number
+      dialogIdentity: McpDialogIdentity
       projectPath: string | null
       request: SaveMcpServerRequest
     }) => {
@@ -174,18 +182,20 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
       }
       return saveMcpServer(request, commandClient)
     },
-    onSuccess: async (_, { projectPath, request }) => {
+    onSuccess: async (_, { dialogGeneration, dialogIdentity, projectPath, request }) => {
       await queryClient.invalidateQueries({
         exact: true,
         queryKey: mcpServerQueryKeys.list(request.configLayer, projectPath),
       })
-      if (request.configLayer === 'project' && projectPath !== activeProjectPathRef.current) {
+      if (
+        dialogGeneration !== configRequestGeneration.current ||
+        !sameMcpDialogIdentity(dialogIdentityRef.current, dialogIdentity) ||
+        (request.configLayer === 'project' && projectPath !== activeProjectPathRef.current)
+      ) {
         return
       }
       reset(defaultFormValues)
-      setEditingServer(null)
-      setDialogIdentity(null)
-      setDialogOpen(false)
+      closeDialog()
     },
   })
   const saveBrowserPresetMutation = useMutation({
@@ -227,9 +237,12 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     },
   })
   const clearDiagnosticsMutation = useMutation({
-    mutationFn: () => clearMcpDiagnostics(diagnosticServerId ?? undefined, commandClient),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: mcpDiagnosticQueryKeys.all })
+    mutationFn: (serverId: string | null) =>
+      clearMcpDiagnostics(serverId ?? undefined, commandClient),
+    onSuccess: async (_, serverId) => {
+      const queryKey = mcpDiagnosticQueryKeys.list(serverId)
+      await queryClient.cancelQueries({ exact: true, queryKey })
+      queryClient.setQueryData(queryKey, { events: [] })
     },
   })
   const servers = serversQuery.data?.servers ?? []
@@ -419,6 +432,8 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
 
     try {
       await saveMutation.mutateAsync({
+        dialogGeneration: configRequestGeneration.current,
+        dialogIdentity: identity,
         projectPath: identity.projectPath,
         request: payload.request,
       })
@@ -435,7 +450,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     invalidateConfigRequest()
     reset(defaultFormValues)
     setEditingServer(null)
-    setDialogIdentity({ configLayer, projectPath })
+    setDialogIdentity({ configLayer, projectPath, serverId: null })
     setConfigLoadError(false)
     setLoadingConfigId(null)
     setDialogOpen(true)
@@ -471,7 +486,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
       transportKind: server.transport === 'http' ? 'http' : 'stdio',
     })
     setEditingServer({ configLayer: targetConfigLayer, id: server.id })
-    setDialogIdentity({ configLayer: targetConfigLayer, projectPath })
+    setDialogIdentity({ configLayer: targetConfigLayer, projectPath, serverId: server.id })
     setConfigLoadError(false)
     setLoadingConfigId(`${server.configLayer}:${server.id}`)
     setDialogOpen(true)
@@ -499,6 +514,11 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     configRequestGeneration.current += 1
     configRequestIdentity.current = null
     return configRequestGeneration.current
+  }
+
+  function setDialogIdentity(identity: McpDialogIdentity | null) {
+    dialogIdentityRef.current = identity
+    setDialogIdentityState(identity)
   }
 
   function isCurrentConfigRequest(request: NonNullable<typeof configRequestIdentity.current>) {
@@ -1110,7 +1130,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
             </Select>
             <Button
               disabled={clearDiagnosticsMutation.isPending || diagnostics.length === 0}
-              onClick={() => clearDiagnosticsMutation.mutate()}
+              onClick={() => clearDiagnosticsMutation.mutate(diagnosticServerId)}
               size="sm"
               type="button"
               variant="outline"
@@ -1455,6 +1475,17 @@ function mergeMcpDiagnosticEvents(
     events.set(event.id, event)
   }
   return [...events.values()]
+}
+
+function sameMcpDialogIdentity(
+  current: McpDialogIdentity | null,
+  submitted: McpDialogIdentity,
+): boolean {
+  return (
+    current?.configLayer === submitted.configLayer &&
+    current.projectPath === submitted.projectPath &&
+    current.serverId === submitted.serverId
+  )
 }
 
 function slugFromName(value: string): string {

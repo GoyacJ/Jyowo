@@ -937,6 +937,42 @@ describe('MCPManager', () => {
     expect(screen.getByRole('button', { name: 'Save MCP server' })).toBeEnabled()
   })
 
+  it('does not let an older save success close a newer dialog', async () => {
+    const serverA = mcpServer({ displayName: 'Server A', id: 'server-a' })
+    const serverB = mcpServer({ displayName: 'Server B', id: 'server-b' })
+    const saveA = deferred<{ server: McpServerSummary }>()
+    const saveMcpServer = vi.fn(() => saveA.promise)
+    renderMCPManager({
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [] },
+        mcpServers: { configLayer: 'global', servers: [serverA, serverB] },
+      }),
+      getMcpServerConfig: vi.fn((_: 'global' | 'project', id: string) =>
+        Promise.resolve(mcpConfig(id === serverA.id ? serverA : serverB, `${id}-command`)),
+      ),
+      saveMcpServer,
+    })
+
+    const cardA = await screen.findByRole('article', { name: 'Server A' })
+    fireEvent.click(within(cardA).getByRole('button', { name: 'Configure Server A' }))
+    expect(await screen.findByDisplayValue('server-a-command')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save MCP server' }))
+    await waitFor(() => expect(saveMcpServer).toHaveBeenCalled())
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    const cardB = screen.getByRole('article', { name: 'Server B' })
+    fireEvent.click(within(cardB).getByRole('button', { name: 'Configure Server B' }))
+    expect(await screen.findByDisplayValue('server-b-command')).toBeInTheDocument()
+
+    await act(async () => {
+      saveA.resolve({ server: serverA })
+      await saveA.promise
+    })
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('server-b-command')).toBeInTheDocument()
+  })
+
   it('preserves redacted inline env values when saving unchanged config details', async () => {
     const getMcpServerConfig = vi.fn().mockResolvedValue({
       server: {
@@ -1093,6 +1129,85 @@ describe('MCPManager', () => {
     expect(screen.getByText('Replay diagnostic.')).toBeInTheDocument()
     expect(screen.getByText('Live diagnostic.')).toBeInTheDocument()
     expect(screen.getAllByText('Replay diagnostic.')).toHaveLength(1)
+  })
+
+  it('keeps subscription events across focus and clear cache transitions', async () => {
+    let emitBatch: ((batch: McpDiagnosticBatchPayload) => void) | undefined
+    const initialEvent: McpDiagnosticBatchPayload['events'][number] = {
+      eventType: 'connection_lost',
+      id: 'initial-event',
+      plane: 'settings',
+      serverId: 'github',
+      severity: 'warning',
+      summary: 'Initial diagnostic.',
+      timestamp: '2026-07-13T00:00:00.000Z',
+    }
+    const liveEvent: McpDiagnosticBatchPayload['events'][number] = {
+      eventType: 'connection_recovered',
+      id: 'live-after-focus',
+      plane: 'settings',
+      serverId: 'github',
+      severity: 'info',
+      summary: 'Live after focus.',
+      timestamp: '2026-07-13T00:00:01.000Z',
+    }
+    const afterClearEvent: McpDiagnosticBatchPayload['events'][number] = {
+      ...liveEvent,
+      id: 'live-after-clear',
+      summary: 'Live after clear.',
+      timestamp: '2026-07-13T00:00:02.000Z',
+    }
+    const listMcpDiagnostics = vi.fn().mockResolvedValue({ events: [initialEvent] })
+    const clearMcpDiagnostics = vi.fn().mockResolvedValue({ status: 'cleared' })
+    const client = {
+      ...createTestCommandClient({
+        mcpServers: { configLayer: 'global', servers: [mcpServer()] },
+        subscribeMcpDiagnostics: {
+          replayEvents: [initialEvent],
+          subscriptionId: 'mcp-diagnostic-subscription-transitions',
+        },
+      }),
+      clearMcpDiagnostics,
+      listMcpDiagnostics,
+      listenMcpDiagnosticBatches: vi.fn(
+        async (onBatch: (batch: McpDiagnosticBatchPayload) => void) => {
+          emitBatch = onBatch
+          return () => undefined
+        },
+      ),
+    }
+    renderMCPManager(client)
+
+    await waitFor(() => expect(client.listenMcpDiagnosticBatches).toHaveBeenCalled())
+    act(() => {
+      emitBatch?.({
+        events: [liveEvent],
+        phase: 'live',
+        subscriptionId: 'mcp-diagnostic-subscription-transitions',
+      })
+    })
+    expect(await screen.findByText('Live after focus.')).toBeInTheDocument()
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+      await Promise.resolve()
+    })
+    expect(listMcpDiagnostics).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('Live after focus.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    await waitFor(() => expect(clearMcpDiagnostics).toHaveBeenCalled())
+    await waitFor(() => expect(screen.queryByText('Initial diagnostic.')).not.toBeInTheDocument())
+    expect(listMcpDiagnostics).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      emitBatch?.({
+        events: [afterClearEvent],
+        phase: 'live',
+        subscriptionId: 'mcp-diagnostic-subscription-transitions',
+      })
+    })
+    expect(await screen.findByText('Live after clear.')).toBeInTheDocument()
   })
 
   it('filters diagnostics by settings and task planes', async () => {
