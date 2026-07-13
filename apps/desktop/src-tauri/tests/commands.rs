@@ -33,9 +33,9 @@ use jyowo_desktop_shell::project_registry::ProjectRegistry;
 use jyowo_harness_sdk::ext::{
     now, ArtifactCreatedEvent, ArtifactSource, ArtifactStatus, ArtifactUpdatedEvent, BlobMeta,
     BlobRetention, BlobStore, BudgetMetric, Decision, DecisionScope, DeferPolicy, DeltaChunk,
-    Event, EventStore, FallbackPolicy, InteractivityLevel, McpConnection, McpError, McpRegistry,
-    McpServerId, McpServerScope, McpServerSource, McpServerSpec, McpToolDescriptor, McpToolResult,
-    Message, MessagePart, MessageRole, ModelError, OverflowAction, PermissionCheck,
+    Event, EventStore, FallbackPolicy, InteractivityLevel, McpConnection, McpError, McpEventSink,
+    McpRegistry, McpServerId, McpServerScope, McpServerSource, McpServerSpec, McpToolDescriptor,
+    McpToolResult, Message, MessagePart, MessageRole, ModelError, OverflowAction, PermissionCheck,
     PermissionContext, PermissionMode, PermissionRequest, PermissionSubject,
     ProviderCredentialResolveContext, ProviderRestriction, RequestId, ResultBudget, RuleSnapshot,
     RunId, SessionId, Severity, StreamBrokerConfig, TenantId, ThinkingDelta, Tool, ToolCapability,
@@ -61,6 +61,13 @@ static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
 const WORKSPACE_ROOT_ENV: &str = "JYOWO_WORKSPACE_ROOT";
 const HOME_ENV: &str = "HOME";
 const TEST_MODEL_CONFIG_ID: &str = "test-model-config";
+
+#[derive(Debug, Default)]
+struct NoopMcpEventSink;
+
+impl McpEventSink for NoopMcpEventSink {
+    fn emit(&self, _event: Event) {}
+}
 
 #[path = "commands/agents.rs"]
 mod agents;
