@@ -88,7 +88,7 @@ pub enum StdioSpec {
     File(PathBuf),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ExecSpec {
     pub command: String,
     pub args: Vec<String>,
@@ -110,6 +110,47 @@ pub struct ExecSpec {
     pub output_policy: OutputPolicy,
     pub required_kill_scope: Option<KillScope>,
     pub required_synchronous_kill_scope: Option<KillScope>,
+}
+
+impl std::fmt::Debug for ExecSpec {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let env = self
+            .env
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key,
+                    if self.secret_env_keys.contains(key) {
+                        "[REDACTED]"
+                    } else {
+                        value.as_str()
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        formatter
+            .debug_struct("ExecSpec")
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("env", &env)
+            .field("authorized_env_keys", &self.authorized_env_keys)
+            .field("secret_env_keys", &self.secret_env_keys)
+            .field("cwd", &self.cwd)
+            .field("stdin", &self.stdin)
+            .field("stdout", &self.stdout)
+            .field("stderr", &self.stderr)
+            .field("timeout", &self.timeout)
+            .field("activity_timeout", &self.activity_timeout)
+            .field("policy", &self.policy)
+            .field("workspace_access", &self.workspace_access)
+            .field("output_policy", &self.output_policy)
+            .field("required_kill_scope", &self.required_kill_scope)
+            .field(
+                "required_synchronous_kill_scope",
+                &self.required_synchronous_kill_scope,
+            )
+            .finish()
+    }
 }
 
 impl ExecSpec {

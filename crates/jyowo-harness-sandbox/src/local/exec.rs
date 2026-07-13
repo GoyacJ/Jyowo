@@ -2282,7 +2282,7 @@ fn bubblewrap_args_for_workspace_policy(
     program_args: &[String],
 ) -> Result<Vec<String>, SandboxError> {
     let root = lexical_normalize_path(root);
-    if root == Path::new("/") {
+    if root == Path::new("/") && !matches!(scope, SandboxScope::Unrestricted) {
         return Err(SandboxError::HostPathDenied {
             path: root.display().to_string(),
         });
@@ -2311,14 +2311,28 @@ fn bubblewrap_args_for_workspace_policy(
         "--dev".to_owned(),
         "/dev".to_owned(),
     ]);
-    push_bubblewrap_runtime_mounts(&mut args);
-    if write_paths.len() == 1 && write_paths[0] == root {
-        push_mount(&mut args, "--bind", &root);
-    } else {
-        push_mount(&mut args, "--ro-bind", &root);
-        for path in write_paths {
-            push_mount(&mut args, "--bind", &path);
+    match scope {
+        SandboxScope::Unrestricted => push_mount(&mut args, "--ro-bind", Path::new("/")),
+        SandboxScope::WorkspaceOnly => {
+            push_bubblewrap_runtime_mounts(&mut args);
+            push_mount(&mut args, "--ro-bind", &root);
         }
+        SandboxScope::WorkspacePlus(extra) => {
+            push_bubblewrap_runtime_mounts(&mut args);
+            push_mount(&mut args, "--ro-bind", &root);
+            for path in extra {
+                push_mount(&mut args, "--ro-bind", &normalize_policy_path(&root, path));
+            }
+        }
+        _ => {
+            return Err(SandboxError::CapabilityMismatch {
+                capability: "sandbox_scope".to_owned(),
+                detail: "unsupported local sandbox scope".to_owned(),
+            });
+        }
+    }
+    for path in write_paths {
+        push_mount(&mut args, "--bind", &path);
     }
     args.extend([
         "--chdir".to_owned(),
@@ -2802,6 +2816,53 @@ mod tests {
         .expect_err("host root cannot be a workspace-only mount");
 
         assert!(matches!(error, SandboxError::HostPathDenied { .. }));
+    }
+
+    #[test]
+    fn bubblewrap_workspace_plus_mounts_only_declared_extra_paths() {
+        let workspace = root("bwrap-workspace-plus");
+        let extra = root("bwrap-workspace-plus-extra");
+        let args = bubblewrap_args_for_workspace_policy(
+            &workspace,
+            &workspace,
+            &NetworkAccess::None,
+            &SandboxScope::WorkspacePlus(vec![extra.clone()]),
+            &WorkspaceAccess::ReadOnly,
+            &BTreeMap::new(),
+            None,
+            "/bin/sh",
+            &[],
+        )
+        .expect("workspace-plus paths should be mounted explicitly");
+
+        let extra = extra.display().to_string();
+        assert!(args
+            .windows(3)
+            .any(|mount| mount == ["--ro-bind", &extra, &extra]));
+        assert!(!args
+            .windows(3)
+            .any(|mount| mount == ["--ro-bind", "/", "/"]));
+    }
+
+    #[test]
+    fn bubblewrap_unrestricted_scope_preserves_host_read_access() {
+        let root = root("bwrap-unrestricted");
+        let args = bubblewrap_args_for_workspace_policy(
+            &root,
+            &root,
+            &NetworkAccess::Unrestricted,
+            &SandboxScope::Unrestricted,
+            &WorkspaceAccess::ReadOnly,
+            &BTreeMap::new(),
+            None,
+            "/bin/sh",
+            &[],
+        )
+        .expect("unrestricted scope should preserve host read access");
+
+        assert!(args
+            .windows(3)
+            .any(|mount| mount == ["--ro-bind", "/", "/"]));
     }
 
     #[test]

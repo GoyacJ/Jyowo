@@ -327,6 +327,7 @@ async fn redacts_declared_secret_values_from_output_and_artifacts() {
     assert_eq!(result.stdout, "stdout [REDACTED] [REDACTED] safe");
     assert_eq!(result.stderr, "stderr [REDACTED] [REDACTED]");
     assert_eq!(result.artifacts.len(), 1);
+    assert_eq!(result.artifacts[0].path, "result.txt");
     assert_eq!(
         result.artifacts[0].content,
         "artifact [REDACTED] [REDACTED]"
@@ -337,11 +338,50 @@ async fn redacts_declared_secret_values_from_output_and_artifacts() {
 }
 
 #[tokio::test]
+async fn rejects_artifact_paths_containing_declared_secrets_without_leaking_them() {
+    let first_secret = "alpha-secret";
+    let second_secret = "beta-secret";
+    let backend = Arc::new(TestBackend {
+        artifacts: vec![
+            (format!("{first_secret}.txt"), b"first".to_vec()),
+            (format!("{second_secret}.txt"), b"second".to_vec()),
+        ],
+        ..TestBackend::accepting()
+    });
+    let mut declaration = script_decl();
+    for name in ["FIRST_SECRET", "SECOND_SECRET"] {
+        declaration.env.insert(
+            name.to_owned(),
+            harness_skill::SkillScriptEnvDecl {
+                config: name.to_ascii_lowercase(),
+                secret: true,
+            },
+        );
+    }
+    let mut request = request(declaration);
+    request
+        .env
+        .insert("FIRST_SECRET".to_owned(), first_secret.to_owned());
+    request
+        .env
+        .insert("SECOND_SECRET".to_owned(), second_secret.to_owned());
+
+    let error = execute_skill_script(backend, request, test_context())
+        .await
+        .expect_err("secret-bearing artifact paths must be rejected");
+    let error = format!("{error:?}");
+
+    assert!(error.contains("artifact path contains a declared secret"));
+    assert!(!error.contains(first_secret));
+    assert!(!error.contains(second_secret));
+}
+
+#[tokio::test]
 async fn redaction_expansion_remains_within_declared_result_limits() {
     let backend = Arc::new(TestBackend {
         stdout: b"xxxxxxxx".to_vec(),
         stderr: b"xxxxxxxx".to_vec(),
-        artifacts: vec![("result.txt".to_owned(), b"xxxxxxxx".to_vec())],
+        artifacts: vec![("result.bin".to_owned(), b"xxxxxxxx".to_vec())],
         ..TestBackend::accepting()
     });
     let mut declaration = script_decl();

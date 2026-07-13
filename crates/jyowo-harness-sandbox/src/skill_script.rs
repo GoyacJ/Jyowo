@@ -302,6 +302,16 @@ pub async fn execute_skill_script(
         request.declaration.max_stderr_bytes,
         request.declaration.max_output_bytes,
     );
+    if artifacts.iter().any(|artifact| {
+        secret_values
+            .iter()
+            .any(|secret| artifact.path.contains(secret))
+    }) {
+        return Err(SandboxError::CapabilityMismatch {
+            capability: "secret_redaction".to_owned(),
+            detail: "skill script artifact path contains a declared secret".to_owned(),
+        });
+    }
     for artifact in &mut artifacts {
         artifact.content = redact_secret_values(&artifact.content, &secret_values);
         artifact.byte_size = artifact.content.len() as u64;

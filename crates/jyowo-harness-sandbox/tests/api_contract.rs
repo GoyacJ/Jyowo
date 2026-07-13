@@ -17,6 +17,22 @@ use harness_sandbox::{
     SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
 };
 
+#[test]
+fn exec_spec_debug_redacts_declared_secret_environment_values() {
+    let mut spec = ExecSpec::default();
+    spec.env
+        .insert("PUBLIC".to_owned(), "visible-value".to_owned());
+    spec.env
+        .insert("SECRET".to_owned(), "must-not-leak".to_owned());
+    spec.secret_env_keys.insert("SECRET".to_owned());
+
+    let debug = format!("{spec:?}");
+
+    assert!(debug.contains("visible-value"));
+    assert!(debug.contains("[REDACTED]"));
+    assert!(!debug.contains("must-not-leak"));
+}
+
 #[cfg(feature = "local")]
 use harness_sandbox::{LocalIsolation, LocalSandbox};
 
