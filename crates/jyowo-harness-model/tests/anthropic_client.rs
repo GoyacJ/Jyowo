@@ -169,6 +169,21 @@ async fn anthropic_non_stream_request_posts_messages() {
             tool_calls: 0,
         },
     }));
+    let total_usage = events.iter().fold(
+        harness_contracts::UsageSnapshot::default(),
+        |mut total, event| {
+            let usage = match event {
+                ModelStreamEvent::MessageStart { usage, .. } => usage,
+                ModelStreamEvent::MessageDelta { usage_delta, .. } => usage_delta,
+                _ => return total,
+            };
+            total.input_tokens += usage.input_tokens;
+            total.output_tokens += usage.output_tokens;
+            total
+        },
+    );
+    assert_eq!(total_usage.input_tokens, 7);
+    assert_eq!(total_usage.output_tokens, 3);
 
     let requests = server.received_requests().await.unwrap();
     let body: Value = requests[0].body_json().unwrap();

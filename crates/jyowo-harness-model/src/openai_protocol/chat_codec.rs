@@ -140,7 +140,7 @@ pub(super) fn chat_response_to_stream(
     })?;
     let mut events = vec![ModelStreamEvent::MessageStart {
         message_id: response.id,
-        usage: usage.clone(),
+        usage: UsageSnapshot::default(),
     }];
     if let Some(event) = continuation_event {
         events.push(event);

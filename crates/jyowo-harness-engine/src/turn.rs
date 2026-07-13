@@ -589,6 +589,13 @@ pub(crate) async fn run_turn(
             model_call_started.elapsed(),
             assembly.model_call_usage(),
         );
+        if !assembly.is_terminal() {
+            let error =
+                ModelError::UnexpectedResponse("model stream ended before MessageStop".to_owned());
+            record_model_stream_error(engine, "unexpected_eof");
+            finalize_run_error(engine, &session, &mut emitted, ctx.run_id, &error).await?;
+            return Err(engine_error(error));
+        }
 
         if let Err(error) = apply_request_end_middlewares(&usage, &infer_ctx).await {
             finalize_run_error(engine, &session, &mut emitted, ctx.run_id, &error).await?;
@@ -596,6 +603,8 @@ pub(crate) async fn run_turn(
         }
         let pricing_snapshot_id = pricing_snapshot_for_model(engine, &session, &ctx).await;
         let mut priced_model_call_usage = assembly.model_call_usage().clone();
+        priced_model_call_usage.tool_calls =
+            assembly.tool_calls().len().try_into().unwrap_or(u64::MAX);
         if let Some(cost_micros) = cost_micros_for_usage(
             engine,
             &priced_model_call_usage,

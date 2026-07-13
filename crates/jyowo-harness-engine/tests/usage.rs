@@ -134,6 +134,58 @@ async fn engine_records_stream_usage_into_observer_and_usage_events() {
 }
 
 #[tokio::test]
+async fn engine_records_non_stream_usage_once() {
+    let workspace = tempfile::tempdir().unwrap();
+    let tenant_id = TenantId::SINGLE;
+    let session_id = harness_contracts::SessionId::new();
+    let run_id = harness_contracts::RunId::new();
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+
+    let engine = Engine::builder()
+        .with_engine_id(EngineId::new("non-stream-usage-test"))
+        .with_event_store(store.clone())
+        .with_context(ContextEngine::builder().build().unwrap())
+        .with_hooks(HookDispatcher::new(
+            HookRegistry::builder().build().unwrap().snapshot(),
+        ))
+        .with_model(Arc::new(NonStreamUsageModel))
+        .with_tools(ToolPool::default())
+        .with_authorization_service(test_authorization_service(Arc::new(DenyBroker), store))
+        .with_workspace_root(workspace.path())
+        .with_model_id("usage-model")
+        .with_protocol(ModelProtocol::Messages)
+        .with_cap_registry(Arc::new(CapabilityRegistry::default()))
+        .build()
+        .unwrap();
+
+    let events = engine
+        .run(
+            SessionHandle {
+                tenant_id,
+                session_id,
+            },
+            turn_input("count non-stream usage"),
+            RunContext::new(tenant_id, session_id, run_id),
+        )
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+
+    let accumulated = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::UsageAccumulated(usage) => Some(&usage.delta),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(accumulated.len(), 1);
+    assert_eq!(accumulated[0].input_tokens, 11);
+    assert_eq!(accumulated[0].output_tokens, 7);
+    assert_eq!(accumulated[0].cache_read_tokens, 1);
+}
+
+#[tokio::test]
 async fn usage_uses_session_pricing_snapshot() {
     let workspace = tempfile::tempdir().unwrap();
     let tenant_id = TenantId::SINGLE;
@@ -408,6 +460,31 @@ impl ModelProvider for UsageModel {
     }
 }
 
+struct NonStreamUsageModel;
+
+#[async_trait]
+impl ModelProvider for NonStreamUsageModel {
+    fn provider_id(&self) -> &'static str {
+        "test"
+    }
+
+    fn supported_models(&self) -> Vec<ModelDescriptor> {
+        UsageModel.supported_models()
+    }
+
+    async fn infer(
+        &self,
+        _req: ModelRequest,
+        _ctx: InferContext,
+    ) -> Result<ModelStream, ModelError> {
+        Ok(Box::pin(stream::iter(non_stream_usage_events())))
+    }
+
+    async fn health(&self) -> HealthStatus {
+        HealthStatus::Healthy
+    }
+}
+
 struct StaticPricingSnapshotResolver {
     snapshot: PricingSnapshotId,
     calls: Mutex<Vec<PricingSnapshotResolveContext>>,
@@ -476,6 +553,31 @@ fn usage_events() -> Vec<ModelStreamEvent> {
                 input_tokens: 1,
                 output_tokens: 7,
                 cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                cost_micros: 0,
+                tool_calls: 0,
+            },
+        },
+        ModelStreamEvent::MessageStop,
+    ]
+}
+
+fn non_stream_usage_events() -> Vec<ModelStreamEvent> {
+    vec![
+        ModelStreamEvent::MessageStart {
+            message_id: "assistant-non-stream".to_owned(),
+            usage: UsageSnapshot::default(),
+        },
+        ModelStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentDelta::Text("done".to_owned()),
+        },
+        ModelStreamEvent::MessageDelta {
+            stop_reason: Some(StopReason::EndTurn),
+            usage_delta: UsageSnapshot {
+                input_tokens: 11,
+                output_tokens: 7,
+                cache_read_tokens: 1,
                 cache_write_tokens: 0,
                 cost_micros: 0,
                 tool_calls: 0,

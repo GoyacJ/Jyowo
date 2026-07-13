@@ -37,7 +37,8 @@ use harness_memory::{
 use harness_model::ModelModality;
 use harness_model::{
     ContentDelta, ConversationModelCapability, ErrorClass, ErrorHints, HealthStatus, InferContext,
-    ModelDescriptor, ModelProtocol, ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
+    InferMiddleware, ModelDescriptor, ModelProtocol, ModelProvider, ModelRequest, ModelStream,
+    ModelStreamEvent,
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_sandbox::{
@@ -667,6 +668,95 @@ async fn model_stream_error_records_run_end_error() {
         event,
         Event::RunEnded(ended)
             if matches!(&ended.reason, EndReason::Error(message) if message.contains("bad chunk"))
+    )));
+}
+
+#[tokio::test]
+async fn model_stream_eof_before_message_stop_records_run_end_error() {
+    let mut events = text_events("partial response");
+    assert!(matches!(events.last(), Some(ModelStreamEvent::MessageStop)));
+    events.pop();
+    let harness = TestHarness::new(events).await;
+    let middleware_before_calls = Arc::new(AtomicUsize::new(0));
+    let middleware_end_calls = Arc::new(AtomicUsize::new(0));
+    let hook_before_calls = Arc::new(AtomicUsize::new(0));
+    let hook_after_calls = Arc::new(AtomicUsize::new(0));
+    let hooks = HookRegistry::builder()
+        .with_hook(Box::new(RecordingModelHook {
+            before_calls: hook_before_calls.clone(),
+            after_calls: hook_after_calls.clone(),
+        }))
+        .build()
+        .unwrap();
+    let engine = harness
+        .engine
+        .clone()
+        .into_builder()
+        .with_hooks(HookDispatcher::new(hooks.snapshot()))
+        .with_model_middleware(Arc::new(RecordingRequestEndMiddleware {
+            before_calls: middleware_before_calls.clone(),
+            end_calls: middleware_end_calls.clone(),
+        }))
+        .build()
+        .unwrap();
+
+    let error = match engine
+        .run(
+            harness.session_handle(),
+            turn_input("hello"),
+            harness.run_context(),
+        )
+        .await
+    {
+        Ok(_) => panic!("truncated model stream should fail"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("before MessageStop"));
+    let persisted = harness.events().await;
+    assert!(persisted.iter().any(|event| matches!(
+        event,
+        Event::RunEnded(ended)
+            if matches!(&ended.reason, EndReason::Error(message) if message.contains("before MessageStop"))
+    )));
+    assert!(!persisted
+        .iter()
+        .any(|event| matches!(event, Event::AssistantMessageCompleted(_))));
+    assert!(!persisted.iter().any(|event| matches!(
+        event,
+        Event::RunEnded(ended) if ended.reason == EndReason::Completed
+    )));
+    assert!(!persisted
+        .iter()
+        .any(|event| matches!(event, Event::UsageAccumulated(_))));
+    assert_eq!(middleware_before_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(middleware_end_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(hook_before_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(hook_after_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn usage_events_account_for_model_requested_tool_calls() {
+    let harness = TestHarness::new_sequence(vec![
+        tool_call_events("ListDir", json!({ "path": "" })),
+        text_events("done"),
+    ])
+    .await;
+
+    let events = harness.run("list files").await.unwrap();
+
+    let accumulated_tool_calls = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::UsageAccumulated(usage) => Some(usage.delta.tool_calls),
+            _ => None,
+        })
+        .sum::<u64>();
+    assert_eq!(accumulated_tool_calls, 1);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::RunEnded(ended)
+            if ended.usage.as_ref().is_some_and(|usage| usage.tool_calls == 1)
     )));
 }
 
@@ -1457,6 +1547,74 @@ impl PermissionBroker for AllowBroker {
 
 struct CountingHook {
     calls: Arc<AtomicUsize>,
+}
+
+struct RecordingRequestEndMiddleware {
+    before_calls: Arc<AtomicUsize>,
+    end_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl InferMiddleware for RecordingRequestEndMiddleware {
+    fn middleware_id(&self) -> &str {
+        "record-request-end"
+    }
+
+    async fn before_request(
+        &self,
+        _req: &mut ModelRequest,
+        _ctx: &mut InferContext,
+    ) -> Result<(), ModelError> {
+        self.before_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn on_request_end(
+        &self,
+        _usage: &UsageSnapshot,
+        _ctx: &InferContext,
+    ) -> Result<(), ModelError> {
+        self.end_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+struct RecordingModelHook {
+    before_calls: Arc<AtomicUsize>,
+    after_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl HookHandler for RecordingModelHook {
+    fn handler_id(&self) -> &'static str {
+        "record-model-hooks"
+    }
+
+    fn interested_events(&self) -> &[HookEventKind] {
+        &[
+            HookEventKind::PreLlmCall,
+            HookEventKind::PreApiRequest,
+            HookEventKind::PostLlmCall,
+            HookEventKind::PostApiRequest,
+        ]
+    }
+
+    async fn handle(
+        &self,
+        event: HookEvent,
+        _ctx: HookContext,
+    ) -> Result<HookOutcome, harness_contracts::HookError> {
+        match event {
+            HookEvent::PreLlmCall { .. } | HookEvent::PreApiRequest { .. } => {
+                self.before_calls.fetch_add(1, Ordering::SeqCst);
+            }
+            HookEvent::PostLlmCall { .. } | HookEvent::PostApiRequest { .. } => {
+                self.after_calls.fetch_add(1, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+        Ok(HookOutcome::Continue)
+    }
 }
 
 #[async_trait]

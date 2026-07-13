@@ -11,6 +11,7 @@ use harness_contracts::{
     KimiChatOptions, KimiPartialAssistant, Message, MessageId, MessagePart, MessageRole,
     ModelError, ModelModality, OverflowAction, ProviderRestriction, ResultBudget, ToolDescriptor,
     ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolResultPart, ToolUseId, TrustLevel,
+    UsageSnapshot,
 };
 use harness_model::{KmProvider, *};
 use serde_json::{json, Value};
@@ -477,13 +478,22 @@ async fn kimi_non_stream_reads_top_level_cached_tokens() {
         .collect::<Vec<_>>()
         .await;
 
-    assert!(events.iter().any(|event| matches!(
-        event,
-        ModelStreamEvent::MessageStart { usage, .. }
-            if usage.input_tokens == 10
-                && usage.output_tokens == 3
-                && usage.cache_read_tokens == 7
-    )));
+    let total_usage = events
+        .iter()
+        .fold(UsageSnapshot::default(), |mut total, event| {
+            let usage = match event {
+                ModelStreamEvent::MessageStart { usage, .. } => usage,
+                ModelStreamEvent::MessageDelta { usage_delta, .. } => usage_delta,
+                _ => return total,
+            };
+            total.input_tokens += usage.input_tokens;
+            total.output_tokens += usage.output_tokens;
+            total.cache_read_tokens += usage.cache_read_tokens;
+            total
+        });
+    assert_eq!(total_usage.input_tokens, 10);
+    assert_eq!(total_usage.output_tokens, 3);
+    assert_eq!(total_usage.cache_read_tokens, 7);
 }
 
 #[tokio::test]

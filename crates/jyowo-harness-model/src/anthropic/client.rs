@@ -748,7 +748,7 @@ fn response_to_stream(response: AnthropicResponse) -> Result<ModelStream, ModelE
     let usage = usage(response.usage);
     let mut events = vec![ModelStreamEvent::MessageStart {
         message_id: response.id,
-        usage: usage.clone(),
+        usage: UsageSnapshot::default(),
     }];
 
     for (index, part) in response.content.into_iter().enumerate() {

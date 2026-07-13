@@ -545,9 +545,6 @@ fn response_to_stream(response: reqwest::Response) -> ModelStream {
                 yield mapped;
             }
         }
-        if state.started && !state.stopped {
-            yield ModelStreamEvent::MessageStop;
-        }
     })
 }
 
@@ -602,7 +599,7 @@ impl GeminiStreamState {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_owned(),
-                usage: usage(value.get("usageMetadata")),
+                usage: UsageSnapshot::default(),
             });
         }
 

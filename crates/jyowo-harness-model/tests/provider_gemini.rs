@@ -7,7 +7,7 @@ use chrono::Utc;
 use futures::StreamExt;
 use harness_contracts::{
     BlobError, BlobMeta, BlobRef, BlobStore, Message, MessageId, MessagePart, MessageRole,
-    ModelError, StopReason, TenantId,
+    ModelError, StopReason, TenantId, UsageSnapshot,
 };
 use harness_model::{gemini::GeminiProvider, *};
 use serde_json::{json, Value};
@@ -182,6 +182,35 @@ async fn gemini_streams_text_tool_usage_and_request_shape() {
 }
 
 #[tokio::test]
+async fn gemini_stream_eof_without_finish_reason_does_not_emit_message_stop() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1beta/models/gemini-2.5-flash:streamGenerateContent",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    "data: {\"responseId\":\"resp_1\",\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\n",
+                    "text/event-stream",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let events = GeminiProvider::from_api_key("test-key")
+        .with_base_url(server.uri())
+        .infer(request(true), InferContext::for_test())
+        .await
+        .expect("stream should start")
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(!events.contains(&ModelStreamEvent::MessageStop));
+}
+
+#[tokio::test]
 async fn gemini_request_merges_provider_defaults_extra() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -205,13 +234,27 @@ async fn gemini_request_merges_provider_defaults_extra() {
         "cachedContent": "cachedContents/provider-default"
     });
 
-    GeminiProvider::from_api_key("test-key")
+    let events = GeminiProvider::from_api_key("test-key")
         .with_base_url(server.uri())
         .infer(req, InferContext::for_test())
         .await
         .expect("request should succeed")
         .collect::<Vec<_>>()
         .await;
+    let total_usage = events
+        .iter()
+        .fold(UsageSnapshot::default(), |mut total, event| {
+            let usage = match event {
+                ModelStreamEvent::MessageStart { usage, .. } => usage,
+                ModelStreamEvent::MessageDelta { usage_delta, .. } => usage_delta,
+                _ => return total,
+            };
+            total.input_tokens += usage.input_tokens;
+            total.output_tokens += usage.output_tokens;
+            total
+        });
+    assert_eq!(total_usage.input_tokens, 1);
+    assert_eq!(total_usage.output_tokens, 1);
 
     let requests = server.received_requests().await.unwrap();
     let body: Value = requests[0].body_json().unwrap();

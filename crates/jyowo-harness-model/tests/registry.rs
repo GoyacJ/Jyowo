@@ -1,7 +1,6 @@
 use chrono::NaiveDate;
 #[cfg(feature = "zhipu")]
 use harness_model::ModelLifecycle;
-#[cfg(any(feature = "doubao", feature = "minimax"))]
 use harness_model::ModelProtocol;
 #[cfg(any(
     feature = "doubao",

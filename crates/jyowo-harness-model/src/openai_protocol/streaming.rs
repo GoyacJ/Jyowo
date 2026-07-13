@@ -123,7 +123,7 @@ pub(super) fn response_to_stream(
             }
         }
 
-        if state.started && !state.stopped {
+        if state.terminal_pending && !state.stopped {
             for event in state.finish_message() {
                 yield event;
             }
