@@ -273,7 +273,126 @@ parameters:
     assert_eq!(rendered.content, "Daily M4\n");
 }
 
+#[tokio::test]
+async fn script_preparation_resolves_only_declared_script_environment() {
+    let package = tempfile::tempdir().unwrap();
+    let script_dir = package.path().join("scripts");
+    std::fs::create_dir_all(&script_dir).unwrap();
+    std::fs::write(
+        script_dir.join("collect.sh"),
+        "#!/bin/sh\nprintf '%s:%s' \"$REGION\" \"$API_TOKEN\"\n",
+    )
+    .unwrap();
+    let markdown = r#"---
+name: collector
+description: Collector
+config:
+  - key: region
+    type: string
+    required: true
+  - key: apiToken
+    type: string
+    secret: true
+    required: true
+scripts:
+  - id: collect
+    path: scripts/collect.sh
+    network: deny
+    env:
+      REGION:
+        config: region
+      API_TOKEN:
+        config: apiToken
+        secret: true
+---
+Token ${config.apiToken:secret}
+"#;
+    let skill_path = package.path().join("SKILL.md");
+    std::fs::write(&skill_path, markdown).unwrap();
+    let skill = parse_skill_markdown(
+        markdown,
+        SkillSource::Workspace(package.path().to_path_buf()),
+        Some(skill_path),
+        SkillPlatform::Macos,
+    )
+    .unwrap();
+    let registry = registry_with_skill(skill);
+    let service = SkillRegistryService::new(
+        registry,
+        harness_skill::SkillRenderer::new(Arc::new(ScriptConfigResolver)),
+    );
+
+    let prepared = service
+        .prepare_script(
+            &AgentId::from_u128(1),
+            "collector",
+            "collect",
+            json!({ "query": "open" }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(prepared.skill_name, "collector");
+    assert_eq!(prepared.script_id, "collect");
+    assert!(!prepared.package_hash.is_empty());
+    assert_eq!(prepared.arguments, json!({ "query": "open" }));
+    assert_eq!(prepared.env["REGION"], "cn-east");
+    assert_eq!(prepared.env["API_TOKEN"], "secret-token");
+    assert_eq!(
+        prepared.declaration.secret_env_keys,
+        std::collections::BTreeSet::from(["API_TOKEN".to_owned()])
+    );
+    assert!(prepared
+        .files
+        .iter()
+        .any(|file| file.path == "scripts/collect.sh"));
+    assert!(!format!("{prepared:?}").contains("secret-token"));
+
+    let undeclared = service
+        .prepare_script(&AgentId::from_u128(1), "collector", "missing", json!({}))
+        .await
+        .unwrap_err();
+    assert!(undeclared.to_string().contains("undeclared"));
+
+    let render_error = service
+        .render(&AgentId::from_u128(1), "collector", json!({}))
+        .await
+        .unwrap_err();
+    assert!(render_error.to_string().contains("cannot be interpolated"));
+}
+
 struct TestConfigResolver;
+
+struct ScriptConfigResolver;
+
+#[async_trait]
+impl SkillConfigResolver for ScriptConfigResolver {
+    async fn resolve(&self, key: &str) -> Result<Value, ConfigResolveError> {
+        match key {
+            "region" => Ok(json!("cn-east")),
+            other => Err(ConfigResolveError::UnknownKey(other.to_owned())),
+        }
+    }
+
+    async fn resolve_secret(&self, key: &str) -> Result<secrecy::SecretString, ConfigResolveError> {
+        Err(ConfigResolveError::SecretInterpolationForbidden {
+            skill_id: "workspace:collector".to_owned(),
+            key: key.to_owned(),
+        })
+    }
+
+    async fn resolve_secret_for_script(
+        &self,
+        skill_id: &harness_contracts::SkillId,
+        key: &str,
+    ) -> Result<secrecy::SecretString, ConfigResolveError> {
+        assert_eq!(skill_id.0, "workspace:collector");
+        match key {
+            "apiToken" => Ok(secrecy::SecretString::from("secret-token".to_owned())),
+            other => Err(ConfigResolveError::UnknownKey(other.to_owned())),
+        }
+    }
+}
 
 #[async_trait]
 impl SkillConfigResolver for TestConfigResolver {

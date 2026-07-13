@@ -55,6 +55,7 @@ jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
 jyowo-harness-model = { path = "../jyowo-harness-model", optional = true }
 jyowo-harness-permission = { path = "../jyowo-harness-permission" }
 jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox" }
+jyowo-harness-skill = { path = "../jyowo-harness-skill" }
 async-trait = { workspace = true }
 base64 = { workspace = true, optional = true }
 blake3 = { workspace = true }

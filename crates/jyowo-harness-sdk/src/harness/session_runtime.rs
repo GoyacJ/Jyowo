@@ -523,6 +523,7 @@ impl Harness {
             })?;
         }
         let mut cap_registry = (*self.inner.cap_registry).clone();
+        cap_registry.install(ToolCapability::ProcessSandbox, Arc::new(()));
         if let Some(blob_store) = &self.inner.blob_store {
             cap_registry.install::<dyn harness_contracts::BlobReaderCap>(
                 ToolCapability::BlobReader,

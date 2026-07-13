@@ -523,6 +523,48 @@ fn secret_template_interpolation_is_forbidden_without_loading_secret_plaintext()
 }
 
 #[test]
+fn script_only_secret_resolution_does_not_open_template_interpolation() {
+    block_on(async {
+        let store = Arc::new(MemorySecretStore::default());
+        store
+            .set(
+                "workspace:configured",
+                "github.token",
+                SecretString::from("script-only-secret".to_owned()),
+            )
+            .unwrap();
+        let snapshot = SkillConfigSnapshot::new().with_secret_store(store);
+        let resolver = SkillConfigSnapshotResolver::for_skill(
+            "workspace:configured",
+            snapshot,
+            [harness_skill::SkillConfigDecl {
+                key: "github.token".to_owned(),
+                value_type: harness_skill::SkillParamType::String,
+                secret: true,
+                required: true,
+                default: None,
+                description: None,
+            }],
+        );
+
+        let template_error = resolver
+            .resolve_secret_for(&SkillId("workspace:configured".to_owned()), "github.token")
+            .await
+            .expect_err("ordinary rendering must remain unable to read secrets");
+        assert!(matches!(
+            template_error,
+            ConfigResolveError::SecretInterpolationForbidden { .. }
+        ));
+
+        let script_secret = resolver
+            .resolve_secret_for_script(&SkillId("workspace:configured".to_owned()), "github.token")
+            .await
+            .expect("declared script resolution may read the secret");
+        assert_eq!(script_secret.expose_secret(), "script-only-secret");
+    });
+}
+
+#[test]
 fn resolver_rejects_config_values_with_the_wrong_declared_type() {
     block_on(async {
         let snapshot = SkillConfigSnapshot::new().with_skill_value(

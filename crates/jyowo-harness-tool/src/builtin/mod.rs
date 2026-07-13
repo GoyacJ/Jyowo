@@ -117,7 +117,7 @@ pub use read_blob::ReadBlobTool;
 pub use seedance::{SeedanceImageToVideo, SeedanceTextToVideo, SeedanceVideoGenerationQueryTool};
 #[cfg(feature = "builtin-toolset")]
 pub use send_message::SendMessageTool;
-pub use skills::{SkillsInvokeTool, SkillsListTool, SkillsViewTool};
+pub use skills::{SkillsInvokeTool, SkillsListTool, SkillsRunScriptTool, SkillsViewTool};
 #[cfg(feature = "builtin-toolset")]
 pub use task_stop::TaskStopTool;
 #[cfg(feature = "builtin-toolset")]

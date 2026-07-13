@@ -403,6 +403,28 @@ impl SkillConfigResolver for SkillConfigSnapshotResolver {
             key: key.to_owned(),
         })
     }
+
+    async fn resolve_secret_for_script(
+        &self,
+        skill_id: &SkillId,
+        key: &str,
+    ) -> Result<SecretString, ConfigResolveError> {
+        let declaration = self.declaration(&skill_id.0, key)?;
+        if !declaration.secret {
+            return Err(ConfigResolveError::InvalidType {
+                skill_id: skill_id.0.clone(),
+                key: key.to_owned(),
+                expected: "secret config",
+            });
+        }
+        self.snapshot
+            .secret_for_script(&skill_id.0, key)
+            .map_err(|error| ConfigResolveError::Message(error.to_string()))?
+            .ok_or_else(|| ConfigResolveError::MissingRequiredConfig {
+                skill_id: skill_id.0.clone(),
+                key: key.to_owned(),
+            })
+    }
 }
 
 pub fn apply_skill_config_statuses(

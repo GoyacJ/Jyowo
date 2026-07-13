@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -29,6 +29,17 @@ pub trait SkillConfigResolver: Send + Sync + 'static {
         key: &str,
     ) -> Result<SecretString, ConfigResolveError> {
         self.resolve_secret(key).await
+    }
+
+    async fn resolve_secret_for_script(
+        &self,
+        skill_id: &harness_contracts::SkillId,
+        key: &str,
+    ) -> Result<SecretString, ConfigResolveError> {
+        Err(ConfigResolveError::Message(format!(
+            "script secret resolution is unavailable for config `{key}` in skill `{}`",
+            skill_id.0
+        )))
     }
 }
 
@@ -205,6 +216,54 @@ impl SkillRenderer {
         Ok(rendered)
     }
 
+    pub(crate) async fn resolve_script_environment(
+        &self,
+        skill: &Skill,
+        declaration: &crate::SkillScriptDecl,
+    ) -> Result<(BTreeMap<String, String>, BTreeSet<String>), ConfigResolveError> {
+        use secrecy::ExposeSecret;
+
+        let resolver = self.config_resolver.for_skill(skill);
+        let declarations = skill
+            .frontmatter
+            .config
+            .iter()
+            .map(|config| (config.key.as_str(), config))
+            .collect::<BTreeMap<_, _>>();
+        let mut env = BTreeMap::new();
+        let mut secret_env_keys = BTreeSet::new();
+        for (env_name, mapping) in &declaration.env {
+            let config = declarations
+                .get(mapping.config.as_str())
+                .ok_or_else(|| ConfigResolveError::UnknownKey(mapping.config.clone()))?;
+            if config.secret != mapping.secret {
+                return Err(ConfigResolveError::Message(format!(
+                    "script environment `{env_name}` does not match config secrecy"
+                )));
+            }
+            let value = if mapping.secret {
+                secret_env_keys.insert(env_name.clone());
+                resolver
+                    .resolve_secret_for_script(&skill.id, &mapping.config)
+                    .await?
+                    .expose_secret()
+                    .to_owned()
+            } else {
+                let value = resolver.resolve_for(&skill.id, &mapping.config).await?;
+                if !script_config_type_matches(&value, config.value_type) {
+                    return Err(ConfigResolveError::InvalidType {
+                        skill_id: skill.id.0.clone(),
+                        key: mapping.config.clone(),
+                        expected: expected_type_label(config.value_type),
+                    });
+                }
+                render_value_for_template(&value)
+            };
+            env.insert(env_name.clone(), value);
+        }
+        Ok((env, secret_env_keys))
+    }
+
     fn render_shell_blocks(
         &self,
         content: &str,
@@ -263,6 +322,17 @@ impl SkillRenderer {
                 exit_code,
             },
         ))
+    }
+}
+
+fn script_config_type_matches(value: &Value, value_type: SkillParamType) -> bool {
+    match value_type {
+        SkillParamType::String | SkillParamType::Path => value.is_string(),
+        SkillParamType::Url => value
+            .as_str()
+            .is_some_and(|value| value.starts_with("http://") || value.starts_with("https://")),
+        SkillParamType::Number => value.is_number(),
+        SkillParamType::Boolean => value.is_boolean(),
     }
 }
 

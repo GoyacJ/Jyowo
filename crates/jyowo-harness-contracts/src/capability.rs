@@ -1,7 +1,12 @@
 //! Tool capability marker traits.
 //!
 
-use std::{any::Any, collections::HashMap, sync::Arc};
+use std::{
+    any::Any,
+    collections::{BTreeMap, BTreeSet, HashMap},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
@@ -15,9 +20,9 @@ use futures::stream::BoxStream;
 use crate::{
     AgentId, BlobMeta, BlobRef, BlobStore, CapabilityRouteKind, CorrelationId,
     DiagnosticsRawOutput, DiagnosticsRunRequest, Event, HookEventKind, InteractivityLevel,
-    MemoryId, OverflowMetadata, PermissionMode, RunId, SessionId, SkillId, SkillSourceKind,
-    SubagentId, TeamId, TenantId, ToolCapability, ToolError, ToolProfile, ToolSearchMode,
-    ToolUseId, TranscriptRef, TurnInput, UsageSnapshot,
+    MemoryId, NetworkAccess, OverflowMetadata, PermissionMode, RunId, SessionId, SkillId,
+    SkillSourceKind, SubagentId, TeamId, TenantId, ToolCapability, ToolError, ToolProfile,
+    ToolSearchMode, ToolUseId, TranscriptRef, TurnInput, UsageSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -589,6 +594,68 @@ pub trait SkillRegistryCap: Send + Sync + 'static {
         name: String,
         params: Value,
     ) -> BoxFuture<'static, Result<RenderedSkill, ToolError>>;
+
+    fn prepare_script(
+        &self,
+        _agent: &AgentId,
+        _name: String,
+        _script_id: String,
+        _arguments: Value,
+    ) -> BoxFuture<'static, Result<SkillScriptRunPreparation, ToolError>> {
+        Box::pin(async {
+            Err(ToolError::Validation(
+                "skill script execution is unavailable".to_owned(),
+            ))
+        })
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub struct SkillScriptRunPreparation {
+    pub skill_id: SkillId,
+    pub skill_name: String,
+    pub script_id: String,
+    pub package_hash: String,
+    pub arguments: Value,
+    pub declaration: SkillScriptRunDeclaration,
+    pub files: Vec<SkillScriptRunFile>,
+    pub env: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for SkillScriptRunPreparation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SkillScriptRunPreparation")
+            .field("skill_id", &self.skill_id)
+            .field("skill_name", &self.skill_name)
+            .field("script_id", &self.script_id)
+            .field("package_hash", &self.package_hash)
+            .field("arguments", &self.arguments)
+            .field("declaration", &self.declaration)
+            .field("files", &self.files)
+            .field("env_keys", &self.env.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillScriptRunDeclaration {
+    pub path: PathBuf,
+    pub timeout_seconds: u64,
+    pub max_stdout_bytes: u64,
+    pub max_stderr_bytes: u64,
+    pub max_output_bytes: u64,
+    pub max_artifact_count: u64,
+    pub max_artifact_bytes: u64,
+    pub network_access: NetworkAccess,
+    pub env_config_keys: BTreeMap<String, String>,
+    pub secret_env_keys: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillScriptRunFile {
+    pub path: String,
+    pub content: String,
 }
 pub trait ContextPatchSinkCap: Send + Sync + 'static {
     fn push_patch(&self, request: ContextPatchRequest)
