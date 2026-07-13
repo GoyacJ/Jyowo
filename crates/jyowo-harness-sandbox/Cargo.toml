@@ -29,6 +29,7 @@ code-runtime = []
 
 [dependencies]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
+jyowo-harness-skill = { path = "../jyowo-harness-skill" }
 async-trait = { workspace = true }
 blake3 = "1.8.5"
 bytes = { workspace = true }

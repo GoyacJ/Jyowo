@@ -416,6 +416,7 @@ fn fake_skill() -> Skill {
             allowlist_agents: None,
             parameters: Vec::new(),
             config: Vec::<SkillConfigDecl>::new(),
+            scripts: Vec::new(),
             platforms: Vec::new(),
             prerequisites: SkillPrerequisites::default(),
             hooks: vec![SkillHookDecl {

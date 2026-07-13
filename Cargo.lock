@@ -3666,6 +3666,7 @@ dependencies = [
  "command-fds",
  "futures",
  "jyowo-harness-contracts",
+ "jyowo-harness-skill",
  "os_pipe",
  "parking_lot",
  "serde",

@@ -6,6 +6,8 @@ use crate::SkillPlatform;
 pub enum SkillError {
     #[error("parse frontmatter: {0}")]
     ParseFrontmatter(String),
+    #[error("invalid script declaration: {0}")]
+    InvalidScriptDeclaration(String),
     #[error("missing required parameter: {0}")]
     MissingParam(String),
     #[error("io: {0}")]

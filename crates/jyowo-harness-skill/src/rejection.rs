@@ -48,7 +48,10 @@ impl SkillRejectReason {
     #[must_use]
     pub fn from_error(error: &SkillError) -> Self {
         match error {
-            SkillError::ParseFrontmatter(message) => Self::ParseFrontmatter(message.clone()),
+            SkillError::ParseFrontmatter(message)
+            | SkillError::InvalidScriptDeclaration(message) => {
+                Self::ParseFrontmatter(message.clone())
+            }
             SkillError::PlatformMismatch { required } => Self::PlatformMismatch {
                 required: required.clone(),
             },
