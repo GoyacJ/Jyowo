@@ -1795,18 +1795,6 @@ pub(crate) fn browser_mcp_preset_inherit_env() -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn browser_mcp_preset_server_id(preset_id: BrowserMcpPresetId) -> &'static str {
-    browser_mcp_preset_descriptor(preset_id).server_id
-}
-
-pub(crate) fn browser_mcp_preset_display_name(preset_id: BrowserMcpPresetId) -> &'static str {
-    browser_mcp_preset_descriptor(preset_id).display_name
-}
-
-pub(crate) fn browser_mcp_preset_description(preset_id: BrowserMcpPresetId) -> &'static str {
-    browser_mcp_preset_descriptor(preset_id).description
-}
-
 pub(crate) fn mcp_last_diagnostics_by_server(
     records: &[McpDiagnosticRecord],
 ) -> BTreeMap<String, McpDiagnosticRecord> {
