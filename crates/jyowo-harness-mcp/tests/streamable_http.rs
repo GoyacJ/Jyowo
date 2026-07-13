@@ -10,7 +10,9 @@ use std::{
 };
 
 use harness_contracts::{McpServerId, McpServerSource};
-use harness_mcp::{HttpTransport, McpClient, McpError, McpServerSpec, TransportChoice};
+use harness_mcp::{
+    HttpTransport, McpClient, McpError, McpServerSpec, McpTimeouts, TransportChoice,
+};
 use serde_json::{json, Value};
 use wiremock::{
     matchers::{body_partial_json, header, header_exists, method},
@@ -152,11 +154,29 @@ async fn initialize_request_has_no_session_or_protocol_headers() {
         .respond_with(ResponseTemplate::new(405))
         .mount(&server)
         .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({ "method": "tools/list" })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "result": { "tools": [] }
+                })),
+        )
+        .mount(&server)
+        .await;
 
-    McpClient::new(Arc::new(HttpTransport::new()))
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
         .connect_with_context(spec(&server), support::authorized_connect_context())
         .await
         .expect("stateless streamable HTTP connects");
+    assert!(connection
+        .list_tools()
+        .await
+        .expect("list tools")
+        .is_empty());
 
     let requests = server.received_requests().await.expect("request log");
     let initialize = requests
@@ -165,6 +185,19 @@ async fn initialize_request_has_no_session_or_protocol_headers() {
         .expect("initialize request");
     assert!(!initialize.headers.contains_key("mcp-session-id"));
     assert!(!initialize.headers.contains_key("mcp-protocol-version"));
+    for request in requests.iter().filter(|request| {
+        serde_json::from_slice::<Value>(&request.body)
+            .ok()
+            .and_then(|body| body.get("method").cloned())
+            != Some(json!("initialize"))
+            && request.method.as_str() == "POST"
+    }) {
+        assert_eq!(
+            request.headers.get("mcp-protocol-version").unwrap(),
+            "2025-11-25"
+        );
+        assert!(!request.headers.contains_key("mcp-session-id"));
+    }
 }
 
 #[tokio::test]
@@ -244,6 +277,33 @@ async fn redirects_are_disabled_by_default() {
         .await
         .expect("destination request log")
         .is_empty());
+}
+
+#[tokio::test]
+async fn transport_errors_do_not_expose_endpoint_query_secrets() {
+    let secret = "query-secret-must-not-leak";
+    let mut failing = McpServerSpec::new(
+        McpServerId("redaction".into()),
+        "redaction fixture",
+        TransportChoice::Http {
+            url: format!("http://localhost:1/mcp?token={secret}"),
+            headers: BTreeMap::new(),
+        },
+        McpServerSource::Workspace,
+    );
+    failing.timeouts.handshake = Duration::from_millis(250);
+    failing.timeouts.call_default = Duration::from_millis(250);
+
+    let error = match McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(failing, support::authorized_connect_context())
+        .await
+    {
+        Ok(_) => panic!("closed endpoint unexpectedly connected"),
+        Err(error) => error,
+    };
+    let rendered = format!("{error:?} {error}");
+    assert!(!rendered.contains(secret));
+    assert!(!rendered.contains("token="));
 }
 
 #[tokio::test]
@@ -373,6 +433,39 @@ async fn json_response_requires_application_json_and_matching_request_id() {
 }
 
 #[tokio::test]
+async fn response_mime_types_are_case_insensitive_and_allow_parameters() {
+    let server = MockServer::start().await;
+    mount_initialize(&server, None).await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({ "method": "tools/list" })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "Application/JSON; Charset=UTF-8")
+                .set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "result": { "tools": [] }
+                })),
+        )
+        .mount(&server)
+        .await;
+
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(spec(&server), support::authorized_connect_context())
+        .await
+        .expect("connect");
+    assert!(connection
+        .list_tools()
+        .await
+        .expect("list tools")
+        .is_empty());
+}
+
+#[tokio::test]
 async fn post_sse_stops_after_routing_its_target_response() {
     let server = MockServer::start().await;
     mount_initialize(&server, Some("sse-session")).await;
@@ -407,6 +500,51 @@ async fn post_sse_stops_after_routing_its_target_response() {
         .await
         .expect("SSE tools list")
         .is_empty());
+}
+
+#[tokio::test]
+async fn post_sse_server_request_is_answered_with_independent_post() {
+    let server = MockServer::start().await;
+    mount_initialize(&server, Some("post-server-request")).await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(
+            json!({ "id": "post-ping", "result": {} }),
+        ))
+        .respond_with(ResponseTemplate::new(202))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({ "method": "tools/list" })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    concat!(
+                        "data: {\"jsonrpc\":\"2.0\",\"id\":\"post-ping\",\"method\":\"ping\"}\n\n",
+                        "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[]}}\n\n"
+                    ),
+                    "text/event-stream",
+                ),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(spec(&server), support::authorized_connect_context())
+        .await
+        .expect("connect");
+    assert!(connection
+        .list_tools()
+        .await
+        .expect("list tools")
+        .is_empty());
+    tokio::time::sleep(Duration::from_millis(50)).await;
 }
 
 #[tokio::test]
@@ -450,6 +588,111 @@ async fn timed_out_posts_release_worker_capacity() {
         .expect("the next request reaches the server");
     assert!(tools.is_empty());
     assert_eq!(responder.requests.load(Ordering::SeqCst), 17);
+}
+
+#[tokio::test]
+async fn long_post_sse_streams_do_not_starve_short_posts() {
+    let server = MockServer::start().await;
+    let responder = SaturatedPostSseResponder::default();
+    Mock::given(method("POST"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
+
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(spec(&server), support::authorized_connect_context())
+        .await
+        .expect("connect");
+    let mut streams = Vec::new();
+    for _ in 0..16 {
+        let connection = Arc::clone(&connection);
+        streams.push(tokio::spawn(async move { connection.list_tools().await }));
+    }
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while responder.tool_requests.load(Ordering::SeqCst) < 16 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("all long POST streams start");
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while responder.response_posts.load(Ordering::SeqCst) < 16 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("server request responses are not starved");
+
+    let tools = tokio::time::timeout(Duration::from_millis(500), connection.list_tools())
+        .await
+        .expect("short POST is not starved")
+        .expect("short POST succeeds");
+    assert!(tools.is_empty());
+
+    for stream in streams {
+        stream.abort();
+    }
+}
+
+#[derive(Clone, Default)]
+struct SaturatedPostSseResponder {
+    tool_requests: Arc<AtomicUsize>,
+    response_posts: Arc<AtomicUsize>,
+}
+
+impl Respond for SaturatedPostSseResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).expect("JSON-RPC request");
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+        match body.get("method").and_then(Value::as_str) {
+            Some("initialize") => ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": { "tools": {} },
+                        "serverInfo": { "name": "fixture", "version": "0.1.0" }
+                    }
+                })),
+            Some("notifications/initialized") => ResponseTemplate::new(202),
+            Some("tools/list") => {
+                let request_index = self.tool_requests.fetch_add(1, Ordering::SeqCst);
+                if request_index < 16 {
+                    ResponseTemplate::new(200).set_body_raw(
+                        format!(
+                            concat!(
+                                "id: hold-{}\n",
+                                "data: {{\"jsonrpc\":\"2.0\",\"id\":\"hold-ping-{}\",\"method\":\"ping\"}}\n\n",
+                                "retry: 5000\n\n"
+                            ),
+                            request_index,
+                            request_index,
+                        ),
+                        "text/event-stream",
+                    )
+                } else {
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "application/json")
+                        .set_body_json(json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": { "tools": [] }
+                        }))
+                }
+            }
+            None if body.get("id").is_some() => {
+                self.response_posts.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(202)
+            }
+            method => panic!("unexpected request method: {method:?}"),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -764,6 +1007,48 @@ async fn get_404_starts_one_new_generation_without_waiting_for_a_business_call()
     assert_eq!(post.initializations.load(Ordering::SeqCst), 2);
 }
 
+#[tokio::test]
+async fn immediate_get_404_on_a_new_generation_starts_the_next_generation() {
+    let server = MockServer::start().await;
+    let post = GetExpiryPostResponder::default();
+    Mock::given(method("POST"))
+        .respond_with(post.clone())
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(TwoGetExpiries::default())
+        .mount(&server)
+        .await;
+
+    let _connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(spec(&server), support::authorized_connect_context())
+        .await
+        .expect("first generation connects");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while post.initializations.load(Ordering::SeqCst) < 3 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("both GET expiries rebuild");
+    assert_eq!(post.initializations.load(Ordering::SeqCst), 3);
+}
+
+#[derive(Clone, Default)]
+struct TwoGetExpiries {
+    gets: Arc<AtomicUsize>,
+}
+
+impl Respond for TwoGetExpiries {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        if self.gets.fetch_add(1, Ordering::SeqCst) < 2 {
+            ResponseTemplate::new(404)
+        } else {
+            ResponseTemplate::new(405)
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct GetExpiryPostResponder {
     initializations: Arc<AtomicUsize>,
@@ -871,6 +1156,57 @@ async fn shutdown_deletes_stateful_session_and_accepts_405() {
 }
 
 #[tokio::test]
+async fn shutdown_reports_delete_status_as_cleanup_error() {
+    let server = MockServer::start().await;
+    mount_initialize(&server, Some("cleanup-status")).await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(spec(&server), support::authorized_connect_context())
+        .await
+        .expect("connect");
+    assert_eq!(
+        connection.shutdown().await,
+        Err(McpError::HttpCleanupStatus(500))
+    );
+}
+
+#[tokio::test]
+async fn shutdown_reports_delete_timeout_as_cleanup_error() {
+    let server = MockServer::start().await;
+    mount_initialize(&server, Some("cleanup-timeout")).await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(204).set_delay(Duration::from_millis(100)))
+        .mount(&server)
+        .await;
+
+    let mut cleanup_spec = spec(&server);
+    cleanup_spec.timeouts = McpTimeouts {
+        call_default: Duration::from_millis(10),
+        ..McpTimeouts::default()
+    };
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(cleanup_spec, support::authorized_connect_context())
+        .await
+        .expect("connect");
+    assert_eq!(
+        connection.shutdown().await,
+        Err(McpError::HttpCleanupTimeout)
+    );
+}
+
+#[tokio::test]
 async fn session_404_reinitializes_once_and_retries_the_original_request() {
     let server = MockServer::start().await;
     let responder = ExpiringSessionResponder::default();
@@ -913,6 +1249,484 @@ async fn session_404_reinitializes_once_and_retries_the_original_request() {
         tools[1].headers.get("mcp-session-id").unwrap(),
         "new-session"
     );
+}
+
+#[tokio::test]
+async fn session_404_rebuilds_but_does_not_replay_a_tool_call() {
+    let server = MockServer::start().await;
+    let responder = ExpiringToolCallResponder::default();
+    Mock::given(method("POST"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
+
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(spec(&server), support::authorized_connect_context())
+        .await
+        .expect("first generation connects");
+    let error = connection
+        .call_tool("unsafe", json!({}))
+        .await
+        .expect_err("a committed tool call must not be replayed");
+
+    assert_eq!(error, McpError::SessionExpired);
+    assert_eq!(responder.initializations.load(Ordering::SeqCst), 2);
+    assert_eq!(responder.tool_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn calls_arriving_during_rebuild_wait_for_the_same_new_generation() {
+    let server = MockServer::start().await;
+    let responder = DelayedRebuildResponder::default();
+    Mock::given(method("POST"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
+
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(spec(&server), support::authorized_connect_context())
+        .await
+        .expect("first generation connects");
+    let first_connection = Arc::clone(&connection);
+    let first = tokio::spawn(async move { first_connection.list_tools().await });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while responder.initializations.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("rebuild starts");
+
+    let second_connection = Arc::clone(&connection);
+    let second = tokio::spawn(async move { second_connection.list_tools().await });
+    let (first, second) = tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::join!(first, second)
+    })
+    .await
+    .expect("both calls finish after rebuilding");
+
+    assert!(first.expect("first task").expect("first call").is_empty());
+    assert!(second
+        .expect("second task")
+        .expect("second call")
+        .is_empty());
+    assert_eq!(responder.initializations.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn read_only_call_with_stale_generation_snapshot_retries_on_the_new_generation() {
+    let server = MockServer::start().await;
+    let responder = StaleGenerationResponder::new("tools/list");
+    Mock::given(method("POST"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
+
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(spec(&server), support::authorized_connect_context())
+        .await
+        .expect("first generation connects");
+    let stale_connection = Arc::clone(&connection);
+    let stale = tokio::spawn(async move { stale_connection.list_tools().await });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while responder.stale_requests.load(Ordering::SeqCst) < 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the stale request reaches the old generation");
+
+    assert!(connection
+        .list_tools()
+        .await
+        .expect("the request that expires the session retries")
+        .is_empty());
+    assert!(stale
+        .await
+        .expect("stale request task")
+        .expect("stale read-only request retries")
+        .is_empty());
+    assert_eq!(responder.initializations.load(Ordering::SeqCst), 2);
+    assert_eq!(responder.stale_requests.load(Ordering::SeqCst), 4);
+}
+
+#[tokio::test]
+async fn non_idempotent_call_with_stale_generation_snapshot_is_not_replayed() {
+    let server = MockServer::start().await;
+    let responder = StaleGenerationResponder::new("tools/call");
+    Mock::given(method("POST"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
+
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(spec(&server), support::authorized_connect_context())
+        .await
+        .expect("first generation connects");
+    let stale_connection = Arc::clone(&connection);
+    let stale = tokio::spawn(async move { stale_connection.call_tool("unsafe", json!({})).await });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while responder.stale_requests.load(Ordering::SeqCst) < 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the tool call reaches the old generation");
+
+    assert!(connection
+        .list_tools()
+        .await
+        .expect("the request that expires the session retries")
+        .is_empty());
+    assert_eq!(
+        stale.await.expect("stale request task"),
+        Err(McpError::SessionExpired)
+    );
+    assert_eq!(responder.initializations.load(Ordering::SeqCst), 2);
+    assert_eq!(responder.stale_requests.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn shutdown_during_rebuild_leaves_the_connection_closed() {
+    let server = MockServer::start().await;
+    let responder = DelayedRebuildResponder::default();
+    Mock::given(method("POST"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
+
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(spec(&server), support::authorized_connect_context())
+        .await
+        .expect("first generation connects");
+    let first_connection = Arc::clone(&connection);
+    let first = tokio::spawn(async move { first_connection.list_tools().await });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while responder.initializations.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("rebuild starts");
+
+    connection.shutdown().await.expect("shutdown");
+    let error = connection
+        .list_tools()
+        .await
+        .expect_err("shutdown is terminal");
+    assert!(matches!(error, McpError::Connection(message) if message.contains("closed")));
+    let _ = first.await;
+}
+
+#[tokio::test]
+async fn failed_rebuild_is_published_to_following_calls() {
+    let server = MockServer::start().await;
+    let responder = FailedRebuildResponder::default();
+    Mock::given(method("POST"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
+
+    let connection = McpClient::new(Arc::new(HttpTransport::new()))
+        .connect_with_context(spec(&server), support::authorized_connect_context())
+        .await
+        .expect("first generation connects");
+    let first = connection
+        .list_tools()
+        .await
+        .expect_err("replacement initialize fails");
+    let second = connection
+        .list_tools()
+        .await
+        .expect_err("following calls observe the same failed state");
+
+    assert_eq!(first, second);
+    assert_eq!(responder.initializations.load(Ordering::SeqCst), 2);
+}
+
+#[derive(Clone, Default)]
+struct FailedRebuildResponder {
+    initializations: Arc<AtomicUsize>,
+}
+
+impl Respond for FailedRebuildResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).expect("JSON-RPC request");
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+        match body.get("method").and_then(Value::as_str) {
+            Some("initialize") => {
+                let generation = self.initializations.fetch_add(1, Ordering::SeqCst);
+                if generation == 0 {
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "application/json")
+                        .insert_header("mcp-session-id", "failed-old")
+                        .set_body_json(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "protocolVersion": "2025-11-25",
+                                "capabilities": { "tools": {} },
+                                "serverInfo": { "name": "fixture", "version": "0.1.0" }
+                            }
+                        }))
+                } else {
+                    ResponseTemplate::new(500)
+                }
+            }
+            Some("notifications/initialized") => ResponseTemplate::new(202),
+            Some("tools/list") => ResponseTemplate::new(404),
+            method => panic!("unexpected request method: {method:?}"),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct DelayedRebuildResponder {
+    initializations: Arc<AtomicUsize>,
+    old_lists: Arc<AtomicUsize>,
+}
+
+#[derive(Clone)]
+struct StaleGenerationResponder {
+    stale_method: &'static str,
+    initializations: Arc<AtomicUsize>,
+    stale_requests: Arc<AtomicUsize>,
+    list_requests: Arc<AtomicUsize>,
+}
+
+impl StaleGenerationResponder {
+    fn new(stale_method: &'static str) -> Self {
+        Self {
+            stale_method,
+            initializations: Arc::new(AtomicUsize::new(0)),
+            stale_requests: Arc::new(AtomicUsize::new(0)),
+            list_requests: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl Respond for StaleGenerationResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).expect("JSON-RPC request");
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+        let method = body.get("method").and_then(Value::as_str);
+        match method {
+            Some("initialize") => {
+                let generation = self.initializations.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .insert_header(
+                        "mcp-session-id",
+                        if generation == 0 {
+                            "stale-old"
+                        } else {
+                            "stale-new"
+                        },
+                    )
+                    .set_body_json(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": { "tools": {} },
+                            "serverInfo": { "name": "fixture", "version": "0.1.0" }
+                        }
+                    }))
+            }
+            Some("notifications/initialized") => ResponseTemplate::new(202),
+            Some("tools/list") if self.stale_method == "tools/list" => {
+                let attempt = self.stale_requests.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "application/json")
+                        .set_body_json(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": { "tools": [] }
+                        }))
+                        .set_delay(Duration::from_millis(250))
+                } else if attempt == 1 {
+                    ResponseTemplate::new(404)
+                } else {
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "application/json")
+                        .set_body_json(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": { "tools": [] }
+                        }))
+                }
+            }
+            Some("tools/list") => {
+                let attempt = self.list_requests.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    ResponseTemplate::new(404)
+                } else {
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "application/json")
+                        .set_body_json(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": { "tools": [] }
+                        }))
+                }
+            }
+            Some("tools/call") if self.stale_method == "tools/call" => {
+                self.stale_requests.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "content": [{ "type": "text", "text": "must not be observed" }],
+                            "isError": false
+                        }
+                    }))
+                    .set_delay(Duration::from_millis(250))
+            }
+            method => panic!("unexpected request method: {method:?}"),
+        }
+    }
+}
+
+impl Respond for DelayedRebuildResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).expect("JSON-RPC request");
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+        match body.get("method").and_then(Value::as_str) {
+            Some("initialize") => {
+                let generation = self.initializations.fetch_add(1, Ordering::SeqCst);
+                let response = ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .insert_header(
+                        "mcp-session-id",
+                        if generation == 0 {
+                            "delayed-old"
+                        } else {
+                            "delayed-new"
+                        },
+                    )
+                    .set_body_json(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": { "tools": {} },
+                            "serverInfo": { "name": "fixture", "version": "0.1.0" }
+                        }
+                    }));
+                if generation == 0 {
+                    response
+                } else {
+                    response.set_delay(Duration::from_millis(100))
+                }
+            }
+            Some("notifications/initialized") => ResponseTemplate::new(202),
+            Some("tools/list") => {
+                let old_session = request
+                    .headers
+                    .get("mcp-session-id")
+                    .and_then(|value| value.to_str().ok())
+                    == Some("delayed-old");
+                if old_session && self.old_lists.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(404)
+                } else {
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "application/json")
+                        .set_body_json(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": { "tools": [] }
+                        }))
+                }
+            }
+            method => panic!("unexpected request method: {method:?}"),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct ExpiringToolCallResponder {
+    initializations: Arc<AtomicUsize>,
+    tool_calls: Arc<AtomicUsize>,
+}
+
+impl Respond for ExpiringToolCallResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).expect("JSON-RPC request");
+        match body.get("method").and_then(Value::as_str) {
+            Some("initialize") => {
+                let generation = self.initializations.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .insert_header(
+                        "mcp-session-id",
+                        if generation == 0 {
+                            "unsafe-old"
+                        } else {
+                            "unsafe-new"
+                        },
+                    )
+                    .set_body_json(json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": { "tools": {} },
+                            "serverInfo": { "name": "fixture", "version": "0.1.0" }
+                        }
+                    }))
+            }
+            Some("notifications/initialized") => ResponseTemplate::new(202),
+            Some("tools/call") => {
+                let attempt = self.tool_calls.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    ResponseTemplate::new(404)
+                } else {
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "application/json")
+                        .set_body_json(json!({
+                            "jsonrpc": "2.0",
+                            "id": 2,
+                            "result": {
+                                "content": [{ "type": "text", "text": "replayed" }],
+                                "isError": false
+                            }
+                        }))
+                }
+            }
+            method => panic!("unexpected request method: {method:?}"),
+        }
+    }
 }
 
 #[derive(Clone, Default)]

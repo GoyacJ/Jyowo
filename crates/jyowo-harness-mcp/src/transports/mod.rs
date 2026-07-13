@@ -1,9 +1,4 @@
-#[cfg(any(
-    feature = "stdio",
-    feature = "http",
-    feature = "websocket",
-    feature = "sse"
-))]
+#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(any(
     feature = "stdio",
@@ -51,9 +46,12 @@ use harness_contracts::PermissionMode;
 ))]
 use crate::{
     elicitation_from_jsonrpc_error, handle_jsonrpc_elicitation_error, ElicitationHandler,
-    JsonRpcRequest, JsonRpcResponse, McpError, McpListPage, McpPrompt, McpPromptMessages,
-    McpReadResourceResult, McpResource, McpResourceContents, McpToolDescriptor, McpToolResult,
+    JsonRpcResponse, McpError, McpListPage, McpPrompt, McpPromptMessages, McpReadResourceResult,
+    McpResource, McpResourceContents, McpToolDescriptor, McpToolResult,
 };
+
+#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
+use crate::JsonRpcRequest;
 
 #[cfg(any(feature = "websocket", feature = "sse"))]
 use crate::{InitializeParams, JsonRpcNotification, McpClientCapabilities, McpImplementation};
@@ -138,22 +136,12 @@ struct ListPromptsResult {
     next_cursor: Option<String>,
 }
 
-#[cfg(any(
-    feature = "stdio",
-    feature = "http",
-    feature = "websocket",
-    feature = "sse"
-))]
+#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
 pub(crate) struct JsonRpcPeer {
     next_id: AtomicU64,
 }
 
-#[cfg(any(
-    feature = "stdio",
-    feature = "http",
-    feature = "websocket",
-    feature = "sse"
-))]
+#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
 impl JsonRpcPeer {
     pub(crate) fn new() -> Self {
         Self {
@@ -217,6 +205,7 @@ mod lifecycle_compatibility_tests {
         assert_eq!(protocol_version, Some("2025-03-26"));
     }
 
+    #[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
     #[test]
     fn paginated_requests_only_send_a_cursor_when_present() {
         let peer = JsonRpcPeer::new();
@@ -260,96 +249,44 @@ mod lifecycle_compatibility_tests {
     }
 }
 
-#[cfg(any(
-    feature = "stdio",
-    feature = "http",
-    feature = "websocket",
-    feature = "sse"
-))]
+#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
 pub(crate) fn list_tools_request(peer: &JsonRpcPeer, cursor: Option<&str>) -> JsonRpcRequest {
     peer.request("tools/list", pagination_params(cursor))
 }
 
-#[cfg(any(
-    feature = "stdio",
-    feature = "http",
-    feature = "websocket",
-    feature = "sse"
-))]
+#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
 pub(crate) fn call_tool_request(peer: &JsonRpcPeer, name: &str, args: Value) -> JsonRpcRequest {
-    peer.request(
-        "tools/call",
-        Some(json!({
-            "name": name,
-            "arguments": args,
-        })),
-    )
+    peer.request("tools/call", call_tool_params(name, args))
 }
 
-#[cfg(any(
-    feature = "stdio",
-    feature = "http",
-    feature = "websocket",
-    feature = "sse"
-))]
+#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
 pub(crate) fn list_resources_request(peer: &JsonRpcPeer, cursor: Option<&str>) -> JsonRpcRequest {
     peer.request("resources/list", pagination_params(cursor))
 }
 
-#[cfg(any(
-    feature = "stdio",
-    feature = "http",
-    feature = "websocket",
-    feature = "sse"
-))]
+#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
 pub(crate) fn read_resource_request(peer: &JsonRpcPeer, uri: &str) -> JsonRpcRequest {
-    peer.request("resources/read", Some(json!({ "uri": uri })))
+    peer.request("resources/read", read_resource_params(uri))
 }
 
-#[cfg(any(
-    feature = "stdio",
-    feature = "http",
-    feature = "websocket",
-    feature = "sse"
-))]
+#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
 pub(crate) fn subscribe_resource_request(peer: &JsonRpcPeer, uri: &str) -> JsonRpcRequest {
-    peer.request("resources/subscribe", Some(json!({ "uri": uri })))
+    peer.request("resources/subscribe", resource_subscription_params(uri))
 }
 
-#[cfg(any(
-    feature = "stdio",
-    feature = "http",
-    feature = "websocket",
-    feature = "sse"
-))]
+#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
 pub(crate) fn unsubscribe_resource_request(peer: &JsonRpcPeer, uri: &str) -> JsonRpcRequest {
-    peer.request("resources/unsubscribe", Some(json!({ "uri": uri })))
+    peer.request("resources/unsubscribe", resource_subscription_params(uri))
 }
 
-#[cfg(any(
-    feature = "stdio",
-    feature = "http",
-    feature = "websocket",
-    feature = "sse"
-))]
+#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
 pub(crate) fn list_prompts_request(peer: &JsonRpcPeer, cursor: Option<&str>) -> JsonRpcRequest {
     peer.request("prompts/list", pagination_params(cursor))
 }
 
-#[cfg(any(
-    feature = "stdio",
-    feature = "http",
-    feature = "websocket",
-    feature = "sse"
-))]
+#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
 pub(crate) fn get_prompt_request(peer: &JsonRpcPeer, name: &str, args: Value) -> JsonRpcRequest {
-    peer.request(
-        "prompts/get",
-        Some(json!({
-            "name": name,
-            "arguments": args,
-        })),
-    )
+    peer.request("prompts/get", get_prompt_params(name, args))
 }
 
 #[cfg(any(
@@ -433,8 +370,48 @@ pub(crate) fn decode_list_prompts(
     feature = "websocket",
     feature = "sse"
 ))]
-fn pagination_params(cursor: Option<&str>) -> Option<Value> {
+pub(crate) fn pagination_params(cursor: Option<&str>) -> Option<Value> {
     cursor.map(|cursor| json!({ "cursor": cursor }))
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn call_tool_params(name: &str, args: Value) -> Option<Value> {
+    Some(json!({ "name": name, "arguments": args }))
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn read_resource_params(uri: &str) -> Option<Value> {
+    Some(json!({ "uri": uri }))
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn resource_subscription_params(uri: &str) -> Option<Value> {
+    Some(json!({ "uri": uri }))
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) fn get_prompt_params(name: &str, args: Value) -> Option<Value> {
+    Some(json!({ "name": name, "arguments": args }))
 }
 
 #[cfg(any(
@@ -493,12 +470,7 @@ where
     serde_json::from_value(result).map_err(|error| McpError::InvalidResponse(error.to_string()))
 }
 
-#[cfg(any(
-    feature = "stdio",
-    feature = "http",
-    feature = "websocket",
-    feature = "sse"
-))]
+#[cfg(any(feature = "stdio", feature = "websocket", feature = "sse"))]
 pub(crate) async fn continue_after_elicitation_response(
     response: &JsonRpcResponse,
     request: &JsonRpcRequest,
@@ -506,6 +478,30 @@ pub(crate) async fn continue_after_elicitation_response(
     handler: Option<&Arc<dyn ElicitationHandler>>,
     permission_mode: PermissionMode,
 ) -> Result<Option<JsonRpcRequest>, McpError> {
+    let params = continue_after_elicitation_params(
+        response,
+        &request.method,
+        request.params.as_ref(),
+        handler,
+        permission_mode,
+    )
+    .await?;
+    Ok(params.map(|params| peer.request(&request.method, Some(params))))
+}
+
+#[cfg(any(
+    feature = "stdio",
+    feature = "http",
+    feature = "websocket",
+    feature = "sse"
+))]
+pub(crate) async fn continue_after_elicitation_params(
+    response: &JsonRpcResponse,
+    method: &str,
+    params: Option<&Value>,
+    handler: Option<&Arc<dyn ElicitationHandler>>,
+    permission_mode: PermissionMode,
+) -> Result<Option<Value>, McpError> {
     let Some(error) = response.error.as_ref() else {
         return Ok(None);
     };
@@ -518,7 +514,7 @@ pub(crate) async fn continue_after_elicitation_response(
     let Some(value) = value else {
         return Ok(None);
     };
-    continue_tool_call_after_elicitation(request, value, peer).map(Some)
+    continue_tool_call_params(method, params, value).map(Some)
 }
 
 #[cfg(any(
@@ -527,15 +523,15 @@ pub(crate) async fn continue_after_elicitation_response(
     feature = "websocket",
     feature = "sse"
 ))]
-pub(crate) fn continue_tool_call_after_elicitation(
-    request: &JsonRpcRequest,
+fn continue_tool_call_params(
+    method: &str,
+    params: Option<&Value>,
     value: Value,
-    peer: &JsonRpcPeer,
-) -> Result<JsonRpcRequest, McpError> {
-    if request.method != "tools/call" {
+) -> Result<Value, McpError> {
+    if method != "tools/call" {
         return Err(McpError::Elicitation(format!(
             "elicitation continuation is not supported for {}",
-            request.method
+            method
         )));
     }
     let Value::Object(resolved) = value else {
@@ -543,10 +539,7 @@ pub(crate) fn continue_tool_call_after_elicitation(
             "elicitation handler returned non-object value".to_owned(),
         ));
     };
-    let mut params = request
-        .params
-        .clone()
-        .unwrap_or_else(|| serde_json::json!({}));
+    let mut params = params.cloned().unwrap_or_else(|| serde_json::json!({}));
     let Some(params_obj) = params.as_object_mut() else {
         return Err(McpError::Elicitation(
             "tools/call params are not an object".to_owned(),
@@ -563,7 +556,7 @@ pub(crate) fn continue_tool_call_after_elicitation(
     for (key, value) in resolved {
         arguments_obj.insert(key, value);
     }
-    Ok(peer.request("tools/call", Some(params)))
+    Ok(params)
 }
 
 #[cfg(any(feature = "websocket", feature = "sse"))]

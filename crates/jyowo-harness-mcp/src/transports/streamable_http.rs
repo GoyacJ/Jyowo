@@ -8,7 +8,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use futures::{future::BoxFuture, FutureExt, StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt};
 use harness_contracts::PermissionMode;
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE},
@@ -16,29 +16,29 @@ use reqwest::{
 };
 use serde_json::Value;
 use tokio::{
-    sync::{broadcast, mpsc, oneshot, watch, Mutex, RwLock, Semaphore},
+    sync::{broadcast, mpsc, oneshot, watch, Mutex, Semaphore},
     task::{JoinHandle, JoinSet},
 };
 use tokio_stream::wrappers::BroadcastStream;
 use url::Host;
 
 use crate::{
-    authorize_mcp_transport_connect, call_tool_request, client_auth,
-    continue_after_elicitation_response, decode_empty_result, decode_list_prompts,
+    authorize_mcp_transport_connect, call_tool_params, client_auth,
+    continue_after_elicitation_params, decode_empty_result, decode_list_prompts,
     decode_list_resources, decode_list_tools, decode_prompt_messages, decode_read_resource,
-    decode_tool_result, get_prompt_request, list_prompts_request, list_resources_request,
-    list_tools_request, notification_change, read_resource_request, subscribe_resource_request,
-    unsubscribe_resource_request, ElicitationHandler, JsonRpcNotification, JsonRpcPeer,
-    JsonRpcRequest, JsonRpcResponse, ListChangedEvent, McpChange, McpClientCapabilities,
-    McpConnectContext, McpConnection, McpError, McpImplementation, McpListPage, McpMessage,
-    McpMessageSink, McpOrderedNotificationHandler, McpOutboundMessage, McpPeer, McpPrompt,
-    McpPromptMessages, McpReadResourceResult, McpResource, McpServerSpec, McpSession,
-    McpToolDescriptor, McpToolResult, McpTransport, NoopMcpMetricsSink, ReconnectPolicy,
-    SseDecoder, SseLimits, TransportChoice,
+    decode_tool_result, get_prompt_params, notification_change, pagination_params,
+    read_resource_params, resource_subscription_params, ElicitationHandler, JsonRpcNotification,
+    JsonRpcResponse, ListChangedEvent, McpChange, McpClientCapabilities, McpConnectContext,
+    McpConnection, McpError, McpImplementation, McpListPage, McpMessage, McpMessageSink,
+    McpOrderedNotificationHandler, McpOutboundMessage, McpPeer, McpPrompt, McpPromptMessages,
+    McpReadResourceResult, McpResource, McpServerSpec, McpSession, McpToolDescriptor,
+    McpToolResult, McpTransport, NoopMcpMetricsSink, ReconnectPolicy, SseDecoder, SseLimits,
+    TransportChoice,
 };
 
 const OUTBOUND_CAPACITY: usize = 64;
 const MAX_POST_WORKERS: usize = 16;
+const MAX_POST_STREAM_WORKERS: usize = 16;
 const MAX_JSON_BODY: usize = 4 * 1024 * 1024;
 const MCP_SESSION_ID: &str = "mcp-session-id";
 const MCP_PROTOCOL_VERSION: &str = "mcp-protocol-version";
@@ -72,7 +72,9 @@ impl HttpTransport {
         host: impl Into<String>,
         addrs: Vec<SocketAddr>,
     ) -> Self {
-        self.pinned_resolutions.push((host.into(), addrs));
+        let host = host.into();
+        let host = normalize_http_host_key(&host).unwrap_or(host);
+        self.pinned_resolutions.push((host, addrs));
         self
     }
 }
@@ -97,6 +99,33 @@ enum HttpHostKind {
     DnsName,
 }
 
+fn normalize_http_host<S: AsRef<str>>(host: Host<S>) -> Result<(String, HttpHostKind), McpError> {
+    match host {
+        Host::Domain(domain) => {
+            let host = domain.as_ref().trim_end_matches('.').to_ascii_lowercase();
+            if host.is_empty() {
+                return Err(McpError::Protocol(
+                    "MCP HTTP endpoint has no host".to_owned(),
+                ));
+            }
+            let kind = if host == "localhost" {
+                HttpHostKind::Localhost
+            } else {
+                HttpHostKind::DnsName
+            };
+            Ok((host, kind))
+        }
+        Host::Ipv4(ip) => Ok((ip.to_string(), HttpHostKind::IpLiteral(IpAddr::V4(ip)))),
+        Host::Ipv6(ip) => Ok((ip.to_string(), HttpHostKind::IpLiteral(IpAddr::V6(ip)))),
+    }
+}
+
+fn normalize_http_host_key(raw: &str) -> Option<String> {
+    normalize_http_host(Host::parse(raw).ok()?)
+        .ok()
+        .map(|(host, _)| host)
+}
+
 fn parse_http_endpoint(raw: &str) -> Result<ParsedHttpEndpoint, McpError> {
     let mut url = reqwest::Url::parse(raw)
         .map_err(|_| McpError::Protocol("invalid MCP HTTP endpoint URL".to_owned()))?;
@@ -110,29 +139,14 @@ fn parse_http_endpoint(raw: &str) -> Result<ParsedHttpEndpoint, McpError> {
             "MCP HTTP endpoint must not contain userinfo".to_owned(),
         ));
     }
-    let (host, kind) = match url
-        .host()
-        .ok_or_else(|| McpError::Protocol("MCP HTTP endpoint has no host".to_owned()))?
-    {
-        Host::Domain(domain) => {
-            let host = domain.trim_end_matches('.').to_ascii_lowercase();
-            if host.is_empty() {
-                return Err(McpError::Protocol(
-                    "MCP HTTP endpoint has no host".to_owned(),
-                ));
-            }
-            url.set_host(Some(&host))
-                .map_err(|_| McpError::Protocol("invalid MCP HTTP endpoint host".to_owned()))?;
-            let kind = if host == "localhost" {
-                HttpHostKind::Localhost
-            } else {
-                HttpHostKind::DnsName
-            };
-            (host, kind)
-        }
-        Host::Ipv4(ip) => (ip.to_string(), HttpHostKind::IpLiteral(IpAddr::V4(ip))),
-        Host::Ipv6(ip) => (ip.to_string(), HttpHostKind::IpLiteral(IpAddr::V6(ip))),
-    };
+    let (host, kind) = normalize_http_host(
+        url.host()
+            .ok_or_else(|| McpError::Protocol("MCP HTTP endpoint has no host".to_owned()))?,
+    )?;
+    if matches!(kind, HttpHostKind::Localhost | HttpHostKind::DnsName) {
+        url.set_host(Some(&host))
+            .map_err(|_| McpError::Protocol("invalid MCP HTTP endpoint host".to_owned()))?;
+    }
     let port = url
         .port_or_known_default()
         .ok_or_else(|| McpError::Protocol("MCP HTTP endpoint has no valid port".to_owned()))?;
@@ -180,16 +194,16 @@ fn validate_http_address(
     ip: IpAddr,
     explicitly_pinned: bool,
 ) -> Result<(), McpError> {
-    let ip = normalize_mapped_ip(ip);
     if is_always_blocked_ip(ip) {
         return Err(McpError::PermissionDenied(
             "MCP HTTP endpoint resolved to a disallowed address".to_owned(),
         ));
     }
+    let ip = normalize_mapped_ip(ip);
     let valid = match kind {
         HttpHostKind::Localhost => ip.is_loopback(),
         HttpHostKind::IpLiteral(expected) => ip == normalize_mapped_ip(*expected),
-        HttpHostKind::DnsName if explicitly_pinned => !is_always_blocked_ip(ip),
+        HttpHostKind::DnsName if explicitly_pinned => true,
         HttpHostKind::DnsName => !is_dns_rebinding_target(ip),
     };
     if valid {
@@ -216,12 +230,15 @@ fn is_always_blocked_ip(ip: IpAddr) -> bool {
         IpAddr::V4(ip) => {
             ip.is_unspecified()
                 || ip.is_multicast()
-                || ip == Ipv4Addr::new(169, 254, 169, 254)
+                || ip.is_link_local()
+                || ip == Ipv4Addr::new(100, 100, 100, 200)
                 || ip == Ipv4Addr::BROADCAST
         }
         IpAddr::V6(ip) => {
             ip.is_unspecified()
                 || ip.is_multicast()
+                || ip.to_ipv4_mapped().is_some()
+                || (ip.segments()[0] & 0xffc0) == 0xfe80
                 || ip
                     == "fd00:ec2::254"
                         .parse::<Ipv6Addr>()
@@ -320,6 +337,7 @@ impl McpTransport for HttpTransport {
                 self.transport_id(),
                 Arc::clone(&context.event_sink),
             );
+        let (state, _) = watch::channel(HttpConnectionState::Starting);
         let connection = Arc::new(HttpConnection {
             connection_id: format!("http:{}", spec.server_id.0),
             endpoint: endpoint.url.to_string(),
@@ -330,10 +348,9 @@ impl McpTransport for HttpTransport {
             reconnect: spec.reconnect,
             elicitation_handler: context.elicitation_handler,
             permission_mode: context.permission_mode,
-            current: RwLock::new(None),
+            state,
             reinitialize: Mutex::new(()),
-            next_generation: AtomicU64::new(1),
-            legacy_request_builder: JsonRpcPeer::new(),
+            next_generation_id: AtomicU64::new(1),
             lifetime_cancel: watch::channel(false).0,
         });
         connection.install_generation().await?;
@@ -369,11 +386,19 @@ struct HttpConnection {
     reconnect: ReconnectPolicy,
     elicitation_handler: Option<Arc<dyn ElicitationHandler>>,
     permission_mode: PermissionMode,
-    current: RwLock<Option<Arc<HttpGeneration>>>,
+    state: watch::Sender<HttpConnectionState>,
     reinitialize: Mutex<()>,
-    next_generation: AtomicU64,
-    legacy_request_builder: JsonRpcPeer,
+    next_generation_id: AtomicU64,
     lifetime_cancel: watch::Sender<bool>,
+}
+
+#[derive(Clone)]
+enum HttpConnectionState {
+    Starting,
+    Ready(Arc<HttpGeneration>),
+    Rebuilding { expired_generation: u64 },
+    Failed(McpError),
+    Closed,
 }
 
 struct HttpGeneration {
@@ -422,6 +447,22 @@ struct OutboundEnvelope {
     deadline: tokio::time::Instant,
 }
 
+struct PostSseStart {
+    response: reqwest::Response,
+    target: Value,
+    cancel: watch::Receiver<bool>,
+}
+
+struct PostSseJob {
+    connection: Arc<HttpConnection>,
+    generation: Arc<HttpGeneration>,
+    peer: McpPeer,
+    start: PostSseStart,
+    deadline: tokio::time::Instant,
+    request_completed: Option<watch::Receiver<bool>>,
+    lifetime_cancel: watch::Receiver<bool>,
+}
+
 struct HttpMessageSink {
     outbound: mpsc::Sender<OutboundEnvelope>,
     handshake_timeout: Duration,
@@ -462,7 +503,7 @@ impl HttpConnection {
                 "MCP HTTP connection is closed".to_owned(),
             ));
         }
-        let id = self.next_generation.fetch_add(1, Ordering::Relaxed);
+        let id = self.next_generation_id.fetch_add(1, Ordering::Relaxed);
         let (outbound, outbound_rx) = mpsc::channel(OUTBOUND_CAPACITY);
         let sink = Arc::new(HttpMessageSink {
             outbound,
@@ -513,30 +554,44 @@ impl HttpConnection {
             cancel_rx,
             lifetime_cancel.clone(),
         ));
-        generation.tasks.lock().await.push(dispatcher);
+        generation.track_task(dispatcher).await;
         if let Err(error) = generation.peer.initialize(self.timeouts.handshake).await {
             generation
                 .stop(format!("MCP HTTP initialize failed: {error}"))
                 .await;
             return Err(error);
         }
+        self.state
+            .send_replace(HttpConnectionState::Ready(Arc::clone(&generation)));
         let get_task = tokio::spawn(run_get_channel(
             Arc::clone(self),
             Arc::clone(&generation),
             generation.cancel.subscribe(),
             lifetime_cancel,
         ));
-        generation.tasks.lock().await.push(get_task);
-        *self.current.write().await = Some(Arc::clone(&generation));
+        generation.track_task(get_task).await;
         Ok(generation)
     }
 
     async fn generation(&self) -> Result<Arc<HttpGeneration>, McpError> {
-        self.current
-            .read()
-            .await
-            .clone()
-            .ok_or_else(|| McpError::Connection("MCP HTTP connection is closed".to_owned()))
+        let mut state = self.state.subscribe();
+        loop {
+            let snapshot = state.borrow().clone();
+            match snapshot {
+                HttpConnectionState::Ready(generation) => return Ok(generation),
+                HttpConnectionState::Failed(error) => return Err(error),
+                HttpConnectionState::Closed => {
+                    return Err(McpError::Connection(
+                        "MCP HTTP connection is closed".to_owned(),
+                    ));
+                }
+                HttpConnectionState::Starting | HttpConnectionState::Rebuilding { .. } => {}
+            }
+            state
+                .changed()
+                .await
+                .map_err(|_| McpError::Connection("MCP HTTP connection state closed".to_owned()))?;
+        }
     }
 
     async fn request_value(
@@ -550,48 +605,98 @@ impl HttpConnection {
                 .peer
                 .request_optional(method.clone(), params.clone(), self.timeouts.call_default)
                 .await;
-            if !should_retry_session_request(&result, attempt) {
+            let session_expired = should_retry_session_request(&result, attempt);
+            let stale_connection = attempt == 0
+                && matches!(result, Err(McpError::Connection(_)))
+                && self.generation_is_stale(generation.id);
+            if !session_expired && !stale_connection {
                 return result;
             }
-            self.reinitialize_generation(generation.id).await?;
+            if session_expired {
+                self.reinitialize_generation(generation.id).await?;
+            }
+            if !is_safe_session_retry(&method) {
+                return Err(McpError::SessionExpired);
+            }
         }
         unreachable!()
     }
 
-    async fn reinitialize_generation(self: &Arc<Self>, expired_id: u64) -> Result<(), McpError> {
-        let _guard = self.reinitialize.lock().await;
-        let current = self.generation().await?;
-        if current.id != expired_id {
-            return Ok(());
+    fn generation_is_stale(&self, generation_id: u64) -> bool {
+        match self.state.borrow().clone() {
+            HttpConnectionState::Ready(current) => current.id != generation_id,
+            HttpConnectionState::Rebuilding { expired_generation } => {
+                expired_generation == generation_id
+            }
+            HttpConnectionState::Starting
+            | HttpConnectionState::Failed(_)
+            | HttpConnectionState::Closed => false,
         }
-        current.stop("MCP HTTP session expired").await;
-        self.install_generation().await.map(|_| ())
     }
 
-    async fn send(self: &Arc<Self>, request: JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
-        let id = request.id;
-        match self.request_value(request.method, request.params).await {
-            Ok(result) => Ok(JsonRpcResponse::success(id, result)),
-            Err(McpError::RemoteJsonRpc(error)) => Ok(JsonRpcResponse::failure(id, error)),
+    async fn reinitialize_generation(self: &Arc<Self>, expired_id: u64) -> Result<(), McpError> {
+        let current = match self.state.borrow().clone() {
+            HttpConnectionState::Ready(current) if current.id == expired_id => Some(current),
+            HttpConnectionState::Ready(_) => return Ok(()),
+            HttpConnectionState::Failed(error) => return Err(error),
+            HttpConnectionState::Closed => {
+                return Err(McpError::Connection(
+                    "MCP HTTP connection is closed".to_owned(),
+                ));
+            }
+            HttpConnectionState::Starting | HttpConnectionState::Rebuilding { .. } => None,
+        };
+        if let Some(current) = current {
+            request_reinitialize(Arc::clone(self), current);
+        }
+        self.generation().await.map(|_| ())
+    }
+
+    async fn perform_reinitialize(self: &Arc<Self>, old: Arc<HttpGeneration>) {
+        let _transition = self.reinitialize.lock().await;
+        let still_rebuilding = matches!(
+            self.state.borrow().clone(),
+            HttpConnectionState::Rebuilding { expired_generation }
+                if expired_generation == old.id
+        );
+        if !still_rebuilding {
+            return;
+        }
+
+        old.stop("MCP HTTP session expired").await;
+        if let Err(error) = self.install_generation().await {
+            self.state.send_replace(HttpConnectionState::Failed(error));
+        }
+    }
+
+    async fn request_response(
+        self: &Arc<Self>,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<JsonRpcResponse, McpError> {
+        match self.request_value(method.to_owned(), params).await {
+            Ok(result) => Ok(JsonRpcResponse::success(Value::Null, result)),
+            Err(McpError::RemoteJsonRpc(error)) => Ok(JsonRpcResponse::failure(Value::Null, error)),
             Err(error) => Err(error),
         }
     }
 
     async fn send_with_elicitation(
         self: &Arc<Self>,
-        request: JsonRpcRequest,
+        method: &str,
+        params: Option<Value>,
     ) -> Result<JsonRpcResponse, McpError> {
-        let response = self.send(request.clone()).await?;
-        if let Some(retry) = continue_after_elicitation_response(
+        let response = self.request_response(method, params.clone()).await?;
+        if let Some(retry_params) = continue_after_elicitation_params(
             &response,
-            &request,
-            &self.legacy_request_builder,
+            method,
+            params.as_ref(),
             self.elicitation_handler.as_ref(),
             self.permission_mode,
         )
         .await?
         {
-            return self.send(retry).await;
+            return self.request_response(method, Some(retry_params)).await;
         }
         Ok(response)
     }
@@ -614,7 +719,23 @@ fn should_retry_session_request(result: &Result<Value, McpError>, attempt: usize
     attempt == 0 && matches!(result, Err(McpError::SessionExpired))
 }
 
+fn is_safe_session_retry(method: &str) -> bool {
+    matches!(
+        method,
+        "tools/list" | "resources/list" | "resources/read" | "prompts/list" | "prompts/get"
+    )
+}
+
 impl HttpGeneration {
+    async fn track_task(&self, task: JoinHandle<()>) {
+        let mut tasks = self.tasks.lock().await;
+        if *self.cancel.borrow() {
+            task.abort();
+        } else {
+            tasks.push(task);
+        }
+    }
+
     async fn stop(&self, reason: impl Into<String>) {
         let _ = self.cancel.send(true);
         self.peer.close(reason).await;
@@ -633,21 +754,31 @@ async fn run_dispatcher(
     mut cancel: watch::Receiver<bool>,
     mut lifetime_cancel: watch::Receiver<bool>,
 ) {
-    let permits = Arc::new(Semaphore::new(MAX_POST_WORKERS));
-    let mut workers = JoinSet::new();
+    let short_permits = Arc::new(Semaphore::new(MAX_POST_WORKERS));
+    let stream_permits = Arc::new(Semaphore::new(MAX_POST_STREAM_WORKERS));
+    let mut short_workers = JoinSet::new();
+    let mut stream_workers = JoinSet::new();
     loop {
         tokio::select! {
             biased;
             _ = wait_for_cancel(&mut cancel) => break,
             _ = wait_for_cancel(&mut lifetime_cancel) => break,
-            Some(_) = workers.join_next(), if !workers.is_empty() => {},
+            Some(result) = short_workers.join_next(), if !short_workers.is_empty() => {
+                if let Ok(Some(job)) = result {
+                    let stream_permits = Arc::clone(&stream_permits);
+                    stream_workers.spawn(async move {
+                        run_post_sse_job(job, stream_permits).await;
+                    });
+                }
+            },
+            Some(_) = stream_workers.join_next(), if !stream_workers.is_empty() => {},
             envelope = outbound.recv() => {
                 let Some(envelope) = envelope else { break; };
                 let permit = tokio::select! {
                     biased;
                     _ = wait_for_cancel(&mut cancel) => break,
                     _ = wait_for_cancel(&mut lifetime_cancel) => break,
-                    permit = Arc::clone(&permits).acquire_owned() => permit,
+                    permit = Arc::clone(&short_permits).acquire_owned() => permit,
                 };
                 let Ok(permit) = permit else { break; };
                 let connection = Arc::clone(&connection);
@@ -655,7 +786,7 @@ async fn run_dispatcher(
                 let peer = peer.clone();
                 let cancel = cancel.clone();
                 let lifetime_cancel = lifetime_cancel.clone();
-                workers.spawn(async move {
+                short_workers.spawn(async move {
                     let _permit = permit;
                     post_message(
                         connection,
@@ -665,12 +796,13 @@ async fn run_dispatcher(
                         cancel,
                         lifetime_cancel,
                     )
-                    .await;
+                    .await
                 });
             }
         }
     }
-    workers.shutdown().await;
+    short_workers.shutdown().await;
+    stream_workers.shutdown().await;
     peer.close("MCP HTTP dispatcher stopped").await;
 }
 
@@ -681,7 +813,7 @@ async fn post_message(
     envelope: OutboundEnvelope,
     mut cancel: watch::Receiver<bool>,
     mut lifetime_cancel: watch::Receiver<bool>,
-) {
+) -> Option<PostSseJob> {
     let deadline = envelope.deadline;
     let message = envelope.message.into_message();
     let expected_id = match &message {
@@ -723,11 +855,81 @@ async fn post_message(
             }
         } => None,
     };
-    if let Some(Err(error)) = outcome {
-        if let Some(id) = expected_id.as_ref() {
-            let _ = peer.fail_request(id, error);
+    match outcome {
+        Some(Ok(Some(start))) => Some(PostSseJob {
+            connection,
+            generation,
+            peer,
+            start,
+            deadline,
+            request_completed,
+            lifetime_cancel,
+        }),
+        Some(Err(error)) => {
+            if let Some(id) = expected_id.as_ref() {
+                let _ = peer.fail_request(id, error);
+            }
+            None
         }
+        Some(Ok(None)) | None => None,
     }
+}
+
+async fn run_post_sse_job(mut job: PostSseJob, permits: Arc<Semaphore>) {
+    let target = job.start.target.clone();
+    let permit = tokio::select! {
+        biased;
+        _ = wait_for_cancel(&mut job.start.cancel) => return,
+        _ = wait_for_cancel(&mut job.lifetime_cancel) => return,
+        _ = wait_for_request_completion(&mut job.request_completed) => return,
+        _ = tokio::time::sleep_until(job.deadline) => {
+            let _ = job.peer.fail_request(
+                &target,
+                McpError::Connection("MCP HTTP request timed out".to_owned()),
+            );
+            return;
+        },
+        permit = permits.acquire_owned() => permit,
+    };
+    let Ok(_permit) = permit else {
+        return;
+    };
+    let mut operation = Box::pin(process_post_sse(
+        job.connection,
+        job.generation,
+        job.peer.clone(),
+        job.start.response,
+        target.clone(),
+        job.start.cancel.clone(),
+    ));
+    let outcome = tokio::select! {
+        biased;
+        result = &mut operation => Some(result),
+        _ = wait_for_cancel(&mut job.start.cancel) => None,
+        _ = wait_for_cancel(&mut job.lifetime_cancel) => None,
+        _ = wait_for_request_completion(&mut job.request_completed) => None,
+        _ = tokio::time::sleep_until(job.deadline) => {
+            let _ = job.peer.fail_request(
+                &target,
+                McpError::Connection("MCP HTTP request timed out".to_owned()),
+            );
+            None
+        },
+    };
+    if let Some(Err(error)) = outcome {
+        let _ = job.peer.fail_request(&target, error);
+    }
+}
+
+async fn wait_for_request_completion(completed: &mut Option<watch::Receiver<bool>>) {
+    let Some(completed) = completed else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    if *completed.borrow() {
+        return;
+    }
+    let _ = completed.changed().await;
 }
 
 async fn post_message_inner(
@@ -738,20 +940,20 @@ async fn post_message_inner(
     expected_id: Option<Value>,
     mut committed: oneshot::Sender<Result<(), McpError>>,
     mut cancel: watch::Receiver<bool>,
-) -> Result<(), McpError> {
+) -> Result<Option<PostSseStart>, McpError> {
     let initialize =
         matches!(&message, McpMessage::Request(request) if request.method == "initialize");
     let response = tokio::select! {
         biased;
-        _ = committed.closed() => return Ok(()),
-        _ = wait_for_cancel(&mut cancel) => return Ok(()),
+        _ = committed.closed() => return Ok(None),
+        _ = wait_for_cancel(&mut cancel) => return Ok(None),
         result = send_http(&connection, &generation, reqwest::Method::POST, Some(&message), initialize, None) => result,
     };
     let response = match response {
         Ok(response) => response,
         Err(error) => {
             let _ = committed.send(Err(error));
-            return Ok(());
+            return Ok(None);
         }
     };
     if response.status() == StatusCode::NOT_FOUND && !initialize && has_session(&generation) {
@@ -761,8 +963,8 @@ async fn post_message_inner(
         } else {
             let _ = committed.send(Err(McpError::SessionExpired));
         }
-        spawn_reinitialize(Arc::clone(&connection), generation.id);
-        return Ok(());
+        request_reinitialize(Arc::clone(&connection), Arc::clone(&generation));
+        return Ok(None);
     }
     if initialize
         && matches!(
@@ -773,23 +975,23 @@ async fn post_message_inner(
         let _ = committed.send(Err(McpError::StreamableHttpUnavailable(
             response.status().as_u16(),
         )));
-        return Ok(());
+        return Ok(None);
     }
     if let Err(error) = validate_response_session(&generation, &response, initialize) {
         let _ = committed.send(Err(error));
-        return Ok(());
+        return Ok(None);
     }
     if expected_id.is_none() {
         let result = validate_accepted(response, &mut cancel).await;
         let _ = committed.send(result);
-        return Ok(());
+        return Ok(None);
     }
     let status = response.status();
     if !status.is_success() {
         let _ = committed.send(Err(McpError::Transport(format!(
             "MCP HTTP POST failed with status {status}"
         ))));
-        return Ok(());
+        return Ok(None);
     }
     let content_type = response
         .headers()
@@ -807,22 +1009,17 @@ async fn post_message_inner(
         let _ = committed.send(result);
     } else if content_type.eq_ignore_ascii_case("text/event-stream") {
         let _ = committed.send(Ok(()));
-        let expected_id = expected_id.unwrap();
-        process_post_sse(
-            Arc::clone(&connection),
-            Arc::clone(&generation),
-            peer.clone(),
+        return Ok(Some(PostSseStart {
             response,
-            expected_id.clone(),
+            target: expected_id.unwrap(),
             cancel,
-        )
-        .await?;
+        }));
     } else {
         let _ = committed.send(Err(McpError::InvalidResponse(format!(
             "MCP HTTP request returned unsupported Content-Type {content_type:?}"
         ))));
     }
-    Ok(())
+    Ok(None)
 }
 
 async fn send_http(
@@ -922,7 +1119,23 @@ fn validate_response_session(
     response: &reqwest::Response,
     initialize: bool,
 ) -> Result<(), McpError> {
-    let received_values = response.headers().get_all(MCP_SESSION_ID);
+    let received = parse_response_session_id(response.headers())?;
+    let mut headers = generation
+        .headers
+        .lock()
+        .map_err(|_| McpError::Connection("MCP HTTP session header lock poisoned".to_owned()))?;
+    if initialize {
+        headers.session_id = received;
+    } else if received != headers.session_id && received.is_some() {
+        return Err(McpError::InvalidResponse(
+            "MCP-Session-Id changed within a generation".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn parse_response_session_id(headers: &HeaderMap) -> Result<Option<String>, McpError> {
+    let received_values = headers.get_all(MCP_SESSION_ID);
     let mut received_values = received_values.iter();
     let received = received_values
         .next()
@@ -944,18 +1157,7 @@ fn validate_response_session(
             "MCP response contains multiple MCP-Session-Id headers".to_owned(),
         ));
     }
-    let mut headers = generation
-        .headers
-        .lock()
-        .map_err(|_| McpError::Connection("MCP HTTP session header lock poisoned".to_owned()))?;
-    if initialize {
-        headers.session_id = received;
-    } else if received != headers.session_id && received.is_some() {
-        return Err(McpError::InvalidResponse(
-            "MCP-Session-Id changed within a generation".to_owned(),
-        ));
-    }
-    Ok(())
+    Ok(received)
 }
 
 async fn validate_accepted(
@@ -1207,8 +1409,7 @@ async fn run_get_channel(
             return;
         }
         if response.status() == StatusCode::NOT_FOUND && has_session(&generation) {
-            lifecycle.close("MCP HTTP GET session expired").await;
-            spawn_reinitialize(Arc::clone(&connection), generation.id);
+            request_reinitialize(Arc::clone(&connection), Arc::clone(&generation));
             return;
         }
         if let Err(error) = validate_response_session(&generation, &response, false) {
@@ -1278,12 +1479,21 @@ fn is_sse(response: &reqwest::Response) -> bool {
         })
 }
 
-fn spawn_reinitialize(connection: Arc<HttpConnection>, generation_id: u64) {
-    let task: BoxFuture<'static, ()> = async move {
-        let _ = connection.reinitialize_generation(generation_id).await;
+fn request_reinitialize(connection: Arc<HttpConnection>, generation: Arc<HttpGeneration>) {
+    let expired_generation = generation.id;
+    let started = connection.state.send_if_modified(|state| match state {
+        HttpConnectionState::Ready(current) if current.id == expired_generation => {
+            *state = HttpConnectionState::Rebuilding { expired_generation };
+            true
+        }
+        _ => false,
+    });
+    if !started {
+        return;
     }
-    .boxed();
-    std::mem::drop(tokio::spawn(task));
+    std::mem::drop(tokio::spawn(async move {
+        connection.perform_reinitialize(generation).await;
+    }));
 }
 
 #[async_trait]
@@ -1301,14 +1511,14 @@ impl McpConnection for HttpConnectionHandle {
         cursor: Option<&str>,
     ) -> Result<McpListPage<McpToolDescriptor>, McpError> {
         decode_list_tools(
-            self.send(list_tools_request(&self.legacy_request_builder, cursor))
+            self.request_response("tools/list", pagination_params(cursor))
                 .await?,
         )
     }
 
     async fn call_tool(&self, name: &str, args: Value) -> Result<McpToolResult, McpError> {
         decode_tool_result(
-            self.send_with_elicitation(call_tool_request(&self.legacy_request_builder, name, args))
+            self.send_with_elicitation("tools/call", call_tool_params(name, args))
                 .await?,
         )
     }
@@ -1337,35 +1547,29 @@ impl McpConnection for HttpConnectionHandle {
         cursor: Option<&str>,
     ) -> Result<McpListPage<McpResource>, McpError> {
         decode_list_resources(
-            self.send(list_resources_request(&self.legacy_request_builder, cursor))
+            self.request_response("resources/list", pagination_params(cursor))
                 .await?,
         )
     }
 
     async fn read_resource(&self, uri: &str) -> Result<McpReadResourceResult, McpError> {
         decode_read_resource(
-            self.send(read_resource_request(&self.legacy_request_builder, uri))
+            self.request_response("resources/read", read_resource_params(uri))
                 .await?,
         )
     }
 
     async fn subscribe_resource(&self, uri: &str) -> Result<(), McpError> {
         decode_empty_result(
-            self.send(subscribe_resource_request(
-                &self.legacy_request_builder,
-                uri,
-            ))
-            .await?,
+            self.request_response("resources/subscribe", resource_subscription_params(uri))
+                .await?,
         )
     }
 
     async fn unsubscribe_resource(&self, uri: &str) -> Result<(), McpError> {
         decode_empty_result(
-            self.send(unsubscribe_resource_request(
-                &self.legacy_request_builder,
-                uri,
-            ))
-            .await?,
+            self.request_response("resources/unsubscribe", resource_subscription_params(uri))
+                .await?,
         )
     }
 
@@ -1378,14 +1582,14 @@ impl McpConnection for HttpConnectionHandle {
         cursor: Option<&str>,
     ) -> Result<McpListPage<McpPrompt>, McpError> {
         decode_list_prompts(
-            self.send(list_prompts_request(&self.legacy_request_builder, cursor))
+            self.request_response("prompts/list", pagination_params(cursor))
                 .await?,
         )
     }
 
     async fn get_prompt(&self, name: &str, args: Value) -> Result<McpPromptMessages, McpError> {
         decode_prompt_messages(
-            self.send(get_prompt_request(&self.legacy_request_builder, name, args))
+            self.request_response("prompts/get", get_prompt_params(name, args))
                 .await?,
         )
     }
@@ -1404,7 +1608,14 @@ impl McpConnection for HttpConnectionHandle {
     }
 
     async fn shutdown(&self) -> Result<(), McpError> {
-        let generation = self.current.write().await.take();
+        let _transition = self.reinitialize.lock().await;
+        let generation = match self.state.send_replace(HttpConnectionState::Closed) {
+            HttpConnectionState::Ready(generation) => Some(generation),
+            HttpConnectionState::Starting
+            | HttpConnectionState::Rebuilding { .. }
+            | HttpConnectionState::Failed(_)
+            | HttpConnectionState::Closed => None,
+        };
         let Some(generation) = generation else {
             return Ok(());
         };
@@ -1429,15 +1640,12 @@ impl McpConnection for HttpConnectionHandle {
             ),
         )
         .await
-        .map_err(|_| McpError::Transport("MCP HTTP DELETE timed out".to_owned()))??;
+        .map_err(|_| McpError::HttpCleanupTimeout)??;
         validate_response_session(&generation, &response, false)?;
         if response.status().is_success() || response.status() == StatusCode::METHOD_NOT_ALLOWED {
             Ok(())
         } else {
-            Err(McpError::Transport(format!(
-                "MCP HTTP DELETE failed with status {}",
-                response.status()
-            )))
+            Err(McpError::HttpCleanupStatus(response.status().as_u16()))
         }
     }
 }
@@ -1476,6 +1684,61 @@ mod tests {
             false,
         )
         .is_err());
+    }
+
+    #[test]
+    fn permanent_address_denials_cannot_be_bypassed_by_explicit_pins() {
+        let denied = [
+            IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1)),
+            IpAddr::V4(Ipv4Addr::new(169, 254, 170, 2)),
+            IpAddr::V4(Ipv4Addr::new(100, 100, 100, 200)),
+            IpAddr::V6("fe80::1".parse().unwrap()),
+            IpAddr::V6("febf:ffff::1".parse().unwrap()),
+            IpAddr::V6("fd00:ec2::254".parse().unwrap()),
+            IpAddr::V6("::ffff:8.8.8.8".parse().unwrap()),
+            IpAddr::V6("::ffff:169.254.170.2".parse().unwrap()),
+        ];
+
+        for ip in denied {
+            assert!(
+                validate_http_address(&HttpHostKind::DnsName, ip, true).is_err(),
+                "explicit pin unexpectedly allowed {ip}"
+            );
+        }
+    }
+
+    #[test]
+    fn pinned_resolution_keys_use_endpoint_host_normalization() {
+        let address = SocketAddr::from(([127, 0, 0, 1], 9000));
+        let transport = HttpTransport::new()
+            .with_pinned_resolution("EXAMPLE.COM.", vec![address])
+            .with_pinned_resolution("[::1]", vec![address]);
+
+        let domain = parse_http_endpoint("https://example.com/mcp").unwrap();
+        let ipv6 = parse_http_endpoint("http://[::1]/mcp").unwrap();
+
+        assert!(transport
+            .pinned_resolutions
+            .iter()
+            .any(|(host, _)| host == &domain.host));
+        assert!(transport
+            .pinned_resolutions
+            .iter()
+            .any(|(host, _)| host == &ipv6.host));
+    }
+
+    #[test]
+    fn session_header_rejects_empty_whitespace_control_and_multiple_values() {
+        for value in [b"".as_slice(), b" ".as_slice(), b"bad\tvalue".as_slice()] {
+            let mut headers = HeaderMap::new();
+            headers.insert(MCP_SESSION_ID, HeaderValue::from_bytes(value).unwrap());
+            assert!(parse_response_session_id(&headers).is_err());
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.append(MCP_SESSION_ID, HeaderValue::from_static("first"));
+        headers.append(MCP_SESSION_ID, HeaderValue::from_static("second"));
+        assert!(parse_response_session_id(&headers).is_err());
     }
 
     #[tokio::test]

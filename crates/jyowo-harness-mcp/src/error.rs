@@ -17,6 +17,10 @@ pub enum McpError {
     Connection(String),
     #[error("MCP HTTP session expired")]
     SessionExpired,
+    #[error("MCP HTTP session cleanup timed out")]
+    HttpCleanupTimeout,
+    #[error("MCP HTTP session cleanup failed (status {0})")]
+    HttpCleanupStatus(u16),
     #[error("Streamable HTTP unavailable (status {0})")]
     StreamableHttpUnavailable(u16),
     #[error("server not found: {0}")]

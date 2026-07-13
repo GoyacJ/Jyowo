@@ -185,6 +185,10 @@ async fn http_transport_satisfies_client_contract() {
         .respond_with(ResponseTemplate::new(202))
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
     Mock::given(method("POST"))
         .and(body_partial_json(json!({ "method": "tools/list" })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({

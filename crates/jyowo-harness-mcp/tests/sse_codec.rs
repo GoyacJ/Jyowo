@@ -69,4 +69,23 @@ fn decoder_rejects_invalid_utf8_and_configured_limits() {
 
     let mut long_data = SseDecoder::new(limits);
     assert!(long_data.push(b"data: 1234\ndata: 5678\n\n").is_err());
+
+    let mut long_event = SseDecoder::new(SseLimits {
+        max_line_bytes: 16,
+        max_event_bytes: 20,
+        max_data_bytes: 16,
+    });
+    assert!(long_event.push(b"event: 123456\ndata: 123456\n\n").is_err());
+}
+
+#[test]
+fn decoder_ignores_an_id_field_containing_nul() {
+    let mut decoder = SseDecoder::new(SseLimits::default());
+    let events = decoder
+        .push(b"id: bad\0cursor\ndata: payload\n\n")
+        .expect("NUL id is ignored");
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].data, "payload");
+    assert_eq!(events[0].id, None);
 }

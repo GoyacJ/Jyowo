@@ -29,9 +29,17 @@ use wiremock::{
 
 mod support;
 
+async fn mount_get_unsupported(server: &MockServer) {
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(server)
+        .await;
+}
+
 #[tokio::test]
 async fn http_transport_posts_jsonrpc_with_headers_and_auth() {
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(header("x-mcp-client", "jyowo"))
         .and(header("authorization", "Bearer token"))
@@ -112,6 +120,7 @@ async fn http_transport_posts_jsonrpc_with_headers_and_auth() {
 #[tokio::test]
 async fn http_transport_decodes_elicitation_required_error() {
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(body_partial_json(json!({ "method": "initialize" })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -186,6 +195,7 @@ async fn http_transport_decodes_elicitation_required_error() {
 #[tokio::test]
 async fn http_transport_continues_tool_call_after_elicitation_resolution() {
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(body_partial_json(json!({ "method": "initialize" })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -289,6 +299,7 @@ async fn http_transport_continues_tool_call_after_elicitation_resolution() {
 #[tokio::test]
 async fn http_transport_fails_closed_when_elicitation_is_declined() {
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(body_partial_json(json!({ "method": "initialize" })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -365,6 +376,7 @@ async fn http_transport_fails_closed_when_elicitation_is_declined() {
 #[tokio::test]
 async fn http_transport_fails_closed_when_elicitation_times_out() {
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(body_partial_json(json!({ "method": "initialize" })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -441,6 +453,7 @@ async fn http_transport_fails_closed_when_elicitation_times_out() {
 #[tokio::test]
 async fn http_transport_does_not_loop_on_repeated_elicitation() {
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(body_partial_json(json!({ "method": "initialize" })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -574,6 +587,7 @@ async fn http_transport_refreshes_oauth_and_posts_with_access_token() {
         .await;
 
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(header("authorization", "Bearer oauth-access"))
         .and(body_partial_json(json!({ "method": "initialize" })))
@@ -753,6 +767,7 @@ async fn http_transport_retries_once_after_unauthorized_when_oauth_refresh_succe
         .await;
 
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(header("authorization", "Bearer retry-1"))
         .and(body_partial_json(json!({ "method": "initialize" })))
@@ -847,6 +862,7 @@ async fn http_transport_emits_oauth_refresh_lifecycle_events() {
         .await;
 
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(header("authorization", "Bearer fresh"))
         .and(body_partial_json(json!({ "method": "initialize" })))
@@ -948,6 +964,7 @@ async fn http_transport_fails_closed_when_unauthorized_oauth_refresh_fails() {
         .await;
 
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(header("authorization", "Bearer stale"))
         .and(body_partial_json(json!({ "method": "initialize" })))
