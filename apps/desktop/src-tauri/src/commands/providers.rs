@@ -2229,10 +2229,27 @@ fn previous_config_matches_request_model(
 
 struct CandidateProviderSettingsStore {
     record: ProviderSettingsRecord,
+    committed_store: ParkingRwLock<Option<Arc<dyn ProviderSettingsStore>>>,
+}
+
+impl CandidateProviderSettingsStore {
+    fn new(record: ProviderSettingsRecord) -> Self {
+        Self {
+            record,
+            committed_store: ParkingRwLock::new(None),
+        }
+    }
+
+    fn activate(&self, committed_store: Arc<dyn ProviderSettingsStore>) {
+        *self.committed_store.write() = Some(committed_store);
+    }
 }
 
 impl ProviderSettingsStore for CandidateProviderSettingsStore {
     fn load_record(&self) -> Result<Option<ProviderSettingsRecord>, CommandErrorPayload> {
+        if let Some(store) = self.committed_store.read().as_ref().map(Arc::clone) {
+            return store.load_record();
+        }
         Ok(Some(self.record.clone()))
     }
 
@@ -2241,6 +2258,21 @@ impl ProviderSettingsStore for CandidateProviderSettingsStore {
             "candidate provider settings store is read-only".to_owned(),
         ))
     }
+}
+
+fn compare_and_swap_provider_settings_with_candidate(
+    store: &Arc<dyn ProviderSettingsStore>,
+    expected: Option<&ProviderSettingsRecord>,
+    record: &ProviderSettingsRecord,
+    candidate_store: Option<&CandidateProviderSettingsStore>,
+) -> Result<ProviderSettingsSaveOutcome, CommandErrorPayload> {
+    let outcome = store.compare_and_swap_record(expected, record)?;
+    if outcome == ProviderSettingsSaveOutcome::Saved {
+        if let Some(candidate_store) = candidate_store {
+            candidate_store.activate(Arc::clone(store));
+        }
+    }
+    Ok(outcome)
 }
 
 pub(crate) async fn save_provider_settings_with_runtime_state_unlocked(
@@ -2255,30 +2287,33 @@ pub(crate) async fn save_provider_settings_with_runtime_state_unlocked(
         .await?;
         let _settings_reload_guard = runtime_state.settings_reload_lock.lock().await;
         let candidate_runtime = if prepared.response.config.is_default {
-            let candidate_store = Arc::new(CandidateProviderSettingsStore {
-                record: prepared.record.clone(),
-            }) as Arc<dyn ProviderSettingsStore>;
-            Some(
-                build_desktop_settings_runtime(
-                    runtime_state.runtime_layout(),
-                    Some(&prepared.response.config.id),
-                    Arc::clone(&runtime_state.provider_capability_routes),
-                    Some(candidate_store),
-                )
-                .await?,
+            let candidate_store =
+                Arc::new(CandidateProviderSettingsStore::new(prepared.record.clone()));
+            let candidate_runtime = build_desktop_settings_runtime(
+                runtime_state.runtime_layout(),
+                Some(&prepared.response.config.id),
+                Arc::clone(&runtime_state.provider_capability_routes),
+                Some(Arc::clone(&candidate_store) as Arc<dyn ProviderSettingsStore>),
             )
+            .await?;
+            Some((candidate_runtime, candidate_store))
         } else {
             None
         };
 
-        if runtime_state
-            .provider_settings_store
-            .compare_and_swap_record(prepared.expected_record.as_ref(), &prepared.record)?
-            == ProviderSettingsSaveOutcome::Conflict
+        if compare_and_swap_provider_settings_with_candidate(
+            &runtime_state.provider_settings_store,
+            prepared.expected_record.as_ref(),
+            &prepared.record,
+            candidate_runtime
+                .as_ref()
+                .map(|(_, candidate_store)| candidate_store.as_ref()),
+        )? == ProviderSettingsSaveOutcome::Conflict
         {
             continue;
         }
-        if let Some((settings_runtime, model_id, protocol, model_options)) = candidate_runtime {
+        if let Some((candidate_runtime, _candidate_store)) = candidate_runtime {
+            let (settings_runtime, model_id, protocol, model_options) = candidate_runtime;
             runtime_state.replace_settings_runtime(
                 Arc::new(settings_runtime),
                 model_id,
@@ -4382,5 +4417,121 @@ mod execution_settings_tests {
         assert!(response.agent_capabilities.subagents_enabled);
         assert!(response.agent_capabilities.subagents_available);
         assert!(store.load_record().expect("load record").subagents_enabled);
+    }
+
+    #[tokio::test]
+    async fn activated_candidate_store_reads_committed_route_config_updates() {
+        let home = temp_execution_settings_home();
+        let layout = StorageLayout::new(JyowoHome::new(home.path().join(".jyowo")));
+        let active_store = Arc::new(DesktopProviderSettingsStore::global_only_with_layout(
+            layout,
+        ));
+        let mut route_config = provider_config("route-config");
+        route_config.api_key = "old-route-key".to_owned();
+        let original = ProviderSettingsRecord {
+            default_config_id: Some("default-config".to_owned()),
+            configs: vec![provider_config("default-config"), route_config],
+        };
+        active_store
+            .save_record(&original)
+            .expect("save original provider settings");
+        let original = active_store
+            .load_record()
+            .expect("load original provider settings")
+            .expect("original provider settings");
+        let candidate_store = Arc::new(CandidateProviderSettingsStore::new(original.clone()));
+        let routes = Arc::new(ParkingRwLock::new(ProviderCapabilityRouteSettings {
+            version: 1,
+            routes: vec![ProviderCapabilityRoute {
+                kind: CapabilityRouteKind::ImageGeneration,
+                config_id: "route-config".to_owned(),
+                provider_id: "openai".to_owned(),
+                operation_ids: vec!["test.image_generation".to_owned()],
+                enabled: true,
+            }],
+        }));
+        let resolver = DesktopProviderCredentialResolver::new(candidate_store.clone(), routes);
+
+        let mut committed = original.clone();
+        committed
+            .configs
+            .iter_mut()
+            .find(|config| config.id == "route-config")
+            .expect("route config")
+            .api_key = "new-route-key".to_owned();
+        let resolve_context = || ProviderCredentialResolveContext {
+            tenant_id: TenantId::SINGLE,
+            session_id: SessionId::new(),
+            run_id: RunId::new(),
+            provider_id: "openai".to_owned(),
+            model_config_id: None,
+            operation_id: Some("test.image_generation".to_owned()),
+            route_kind: Some(CapabilityRouteKind::ImageGeneration),
+        };
+        assert_eq!(
+            resolver
+                .resolve_provider_credential(resolve_context())
+                .await
+                .expect("candidate credential before activation")
+                .api_key,
+            "old-route-key"
+        );
+        let active_store: Arc<dyn ProviderSettingsStore> = active_store;
+        let conflict = compare_and_swap_provider_settings_with_candidate(
+            &active_store,
+            Some(&committed),
+            &committed,
+            Some(candidate_store.as_ref()),
+        )
+        .expect("conflicting commit result");
+        assert_eq!(conflict, ProviderSettingsSaveOutcome::Conflict);
+        assert_eq!(
+            resolver
+                .resolve_provider_credential(resolve_context())
+                .await
+                .expect("candidate credential after conflict")
+                .api_key,
+            "old-route-key"
+        );
+
+        let saved = compare_and_swap_provider_settings_with_candidate(
+            &active_store,
+            Some(&original),
+            &committed,
+            Some(candidate_store.as_ref()),
+        )
+        .expect("successful commit result");
+        assert_eq!(saved, ProviderSettingsSaveOutcome::Saved);
+
+        let credential = resolver
+            .resolve_provider_credential(resolve_context())
+            .await
+            .expect("resolve updated route credential");
+
+        assert_eq!(credential.api_key, "new-route-key");
+        assert_ne!(credential.api_key, "old-route-key");
+
+        let revoked = ProviderSettingsRecord {
+            default_config_id: committed.default_config_id.clone(),
+            configs: committed
+                .configs
+                .iter()
+                .filter(|config| config.id != "route-config")
+                .cloned()
+                .collect(),
+        };
+        let revoked_outcome = compare_and_swap_provider_settings_with_candidate(
+            &active_store,
+            Some(&committed),
+            &revoked,
+            None,
+        )
+        .expect("revoke route config");
+        assert_eq!(revoked_outcome, ProviderSettingsSaveOutcome::Saved);
+        let error = resolver
+            .resolve_provider_credential(resolve_context())
+            .await
+            .expect_err("revoked route credential must not remain available");
+        assert!(matches!(error, ToolError::PermissionDenied(_)));
     }
 }
