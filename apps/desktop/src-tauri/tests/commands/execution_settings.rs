@@ -101,6 +101,57 @@ fn get_execution_settings_reports_only_capabilities_missing_from_daemon() {
 }
 
 #[test]
+fn execution_settings_agent_capabilities_reflect_authenticated_daemon() {
+    let workspace = unique_workspace("execution-settings-agent-capabilities");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace)
+        .expect("runtime state should initialize");
+    let capabilities = harness_contracts::AgentCapabilities::daemon_native();
+    let store = global_execution_settings_store(state.workspace_root());
+
+    let settings = get_execution_settings_with_store(&store, Some(&capabilities))
+        .expect("settings should load");
+
+    assert!(settings.agent_capabilities.subagents_available);
+    assert!(settings.agent_capabilities.agent_teams_available);
+    assert!(settings.agent_capabilities.background_agents_available);
+
+    let saved = set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Full,
+            context_compression_trigger_ratio: 0.8,
+            subagents_enabled: true,
+            agent_teams_enabled: false,
+            background_agents_enabled: false,
+        },
+        &store,
+        Some(&capabilities),
+    )
+    .expect("subagents should save when resolver reports availability");
+
+    assert!(saved.agent_capabilities.subagents_enabled);
+    assert!(saved.agent_capabilities.subagents_available);
+
+    let background = set_execution_settings_with_store(
+        SetExecutionSettingsRequest {
+            permission_mode: PermissionMode::Default,
+            tool_profile: ToolProfile::Full,
+            context_compression_trigger_ratio: 0.8,
+            subagents_enabled: true,
+            agent_teams_enabled: false,
+            background_agents_enabled: true,
+        },
+        &store,
+        Some(&capabilities),
+    )
+    .expect("background agents should save when daemon reports support");
+
+    assert!(background.agent_capabilities.background_agents_enabled);
+    assert!(background.agent_capabilities.background_agents_available);
+}
+
+#[test]
 fn get_execution_settings_ignores_old_runtime_record() {
     let workspace = unique_workspace("execution-settings-ignore-old-runtime");
     std::fs::create_dir_all(&workspace).expect("workspace directory should exist");
