@@ -333,4 +333,3 @@ frontend Vitest, typecheck, and lint
 - Removing the custom `shutdown` method is an intentional protocol correction.
 - Unknown content is preserved instead of failing an entire result.
 - Current task connections remain immutable snapshots; configuration changes affect new runs.
-
