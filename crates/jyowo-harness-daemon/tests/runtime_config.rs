@@ -110,25 +110,60 @@ fn skill_config_secret_availability_uses_the_injected_secret_store() {
 }
 
 #[test]
-fn skill_secret_store_failure_aborts_runtime_snapshot_construction() {
+fn configured_false_public_metadata_does_not_require_secret_store_access() {
     let fixture = RuntimeFixture::new();
     fixture.write_global_provider_files();
     fixture.write_global_raw(
         "skill-config.json",
-        r#"{"version":1,"skills":{"workspace:configured":{"values":{},"secrets":{"github.token":{"configured":false}}}}}"#,
+        r#"{"version":1,"skills":{"workspace:configured":{"values":{"region":"cn-east"},"secrets":{"region":{"configured":false}}}}}"#,
     );
 
-    let error = RuntimeConfigResolver::new(fixture.config_root())
+    let snapshot = RuntimeConfigResolver::new(fixture.config_root())
         .with_skill_secret_store(Arc::new(UnavailableSecretStore))
         .resolve(fixture.workspace(), None)
-        .expect_err("secure-store failure must not become an empty skill config snapshot");
+        .expect("public config snapshot must not read the secret store");
 
-    assert!(matches!(
-        error,
-        RuntimeConfigError::SkillConfigStore {
-            source: SkillConfigStoreError::SecretStoreUnavailable
-        }
-    ));
+    assert_eq!(
+        snapshot
+            .skill_config
+            .value_for("workspace:configured", "region"),
+        Some(&serde_json::json!("cn-east"))
+    );
+}
+
+#[tokio::test]
+async fn required_secret_status_query_propagates_store_failure() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_project(
+        "skills.json",
+        &SkillSelectionRecord {
+            enabled: vec!["required-secret".into()],
+        },
+    );
+    fixture.write_project_skill_with_frontmatter(
+        "required-secret",
+        "config:\n  - key: token\n    type: string\n    secret: true\n    required: true",
+        "Body.",
+    );
+
+    let snapshot = RuntimeConfigResolver::new(fixture.config_root())
+        .with_skill_secret_store(Arc::new(UnavailableSecretStore))
+        .resolve(fixture.workspace(), None)
+        .expect("snapshot construction does not read undeclared runtime secrets");
+    let report = snapshot.skill_loader.load_all().await.expect("load skills");
+    let registry = jyowo_harness_sdk::ext::SkillRegistry::builder()
+        .with_skills(report.loaded)
+        .build();
+    let mut registry_snapshot = (*registry.snapshot()).clone();
+
+    let error = jyowo_harness_sdk::apply_skill_config_statuses(
+        &mut registry_snapshot,
+        &snapshot.skill_config,
+    )
+    .expect_err("required secret status must propagate secure-store failure");
+
+    assert_eq!(error, SkillConfigStoreError::SecretStoreUnavailable);
     assert!(!format!("{error:?} {error}").contains("must-not-leak-secret"));
 }
 

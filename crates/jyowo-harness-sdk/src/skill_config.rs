@@ -129,13 +129,6 @@ impl SkillConfigSnapshot {
                 document.version,
             ));
         }
-        // Metadata only selects accounts for eager access validation. Readiness
-        // still queries the store directly through `secret_is_available_for`.
-        for (skill_id, entry) in &document.skills {
-            for key in entry.secrets.keys() {
-                secret_store.get(skill_id, key)?;
-            }
-        }
         let skills = document
             .skills
             .into_iter()
