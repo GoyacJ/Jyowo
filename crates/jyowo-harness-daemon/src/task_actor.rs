@@ -284,6 +284,24 @@ async fn handle_command(
             };
             let command_id = command.command_id;
             let command_task_id = command.task_id;
+            if removes_task {
+                let projection = store
+                    .task_projection(task_id)?
+                    .ok_or(TaskActorError::TaskNotFound)?;
+                let has_active_run = projection.current_run.as_ref().is_some_and(|run| {
+                    matches!(
+                        run.state,
+                        RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                    )
+                });
+                if !has_active_run
+                    && projection.queue.is_empty()
+                    && command.expected_stream_version == projection.stream_version
+                {
+                    factory.release_task_leases(task_id)?;
+                    command.expected_stream_version = store.stream_version(task_id)?;
+                }
+            }
             let outcome = match store.transact_command(command, |projection| {
                 if invalid_title {
                     return Err(CommandRejection::InvalidCommand {
@@ -308,11 +326,7 @@ async fn handle_command(
                 Ok(outcome) => outcome,
                 Err(error) => command_store_error(error, command_id, command_task_id)?,
             };
-            let accepted = matches!(outcome, CommandOutcome::Accepted { .. });
             let _ = reply.send(outcome);
-            if accepted && removes_task {
-                factory.release_task_leases(task_id)?;
-            }
         }
         ValidatedTaskCommand::SubmitMessage {
             command,
@@ -1081,6 +1095,8 @@ fn handle_run_event(
                     return Ok(false);
                 }
             }
+            let released_before_terminal =
+                release_terminal_task_leases_before_event(store, factory, task_id)?;
             let outcome = commit_run_terminal(
                 store,
                 task_id,
@@ -1096,7 +1112,9 @@ fn handle_run_event(
                 *active_segment_state
                     .lock()
                     .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = None;
-                release_terminal_task_leases(store, factory, task_id)?;
+                if !released_before_terminal {
+                    release_terminal_task_leases(store, factory, task_id)?;
+                }
                 return Ok(true);
             }
         }
@@ -1136,11 +1154,13 @@ fn handle_run_event(
                 } else {
                     harness_contracts::RunTerminalReason::Cancelled
                 };
+                let released_before_terminal =
+                    release_terminal_task_leases_before_event(store, factory, task_id)?;
                 let command = AcceptedCommand {
                     command_id: CommandId::new(),
                     task_id,
                     idempotency_key: format!("stop-transition-{}", CommandId::new()),
-                    expected_stream_version: projection.stream_version,
+                    expected_stream_version: store.stream_version(task_id)?,
                     authority: TaskStore::supervisor_authority(),
                     payload: json!({
                         "type": "stop_transition",
@@ -1173,7 +1193,9 @@ fn handle_run_event(
                     *active_segment_state
                         .lock()
                         .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = None;
-                    release_terminal_task_leases(store, factory, task_id)?;
+                    if !released_before_terminal {
+                        release_terminal_task_leases(store, factory, task_id)?;
+                    }
                 }
                 return Ok(false);
             }
@@ -1267,11 +1289,13 @@ fn handle_run_event(
                 .iter()
                 .find(|item| item.state == QueueItemState::Promoting);
             let checkpoint_tool_use_ids = indeterminate_tool_use_ids.clone();
+            let released_before_terminal =
+                release_terminal_task_leases_before_event(store, factory, task_id)?;
             let command = AcceptedCommand {
                 command_id: CommandId::new(),
                 task_id,
                 idempotency_key: format!("force-stop-timeout-{}", CommandId::new()),
-                expected_stream_version: projection.stream_version,
+                expected_stream_version: store.stream_version(task_id)?,
                 authority: TaskStore::recovery_authority(),
                 payload: json!({
                     "type": "force_stop_timed_out",
@@ -1308,7 +1332,9 @@ fn handle_run_event(
                 *active_segment_state
                     .lock()
                     .map_err(|_| TaskActorError::RuntimeStatePoisoned)? = None;
-                release_terminal_task_leases(store, factory, task_id)?;
+                if !released_before_terminal {
+                    release_terminal_task_leases(store, factory, task_id)?;
+                }
             }
         }
     }
@@ -1327,6 +1353,26 @@ fn release_terminal_task_leases(
         factory.release_task_leases(task_id)?;
     }
     Ok(())
+}
+
+fn release_terminal_task_leases_before_event(
+    store: &TaskStore,
+    factory: &WorkspaceBoundRunCoordinatorFactory,
+    task_id: TaskId,
+) -> Result<bool, TaskActorError> {
+    let projection = store
+        .task_projection(task_id)?
+        .ok_or(TaskActorError::TaskNotFound)?;
+    if !projection.queue.is_empty() {
+        return Ok(false);
+    }
+    match factory.release_task_leases(task_id) {
+        Ok(()) => Ok(true),
+        Err(WorkspaceCoordinatorError::Store(TaskStoreError::WorkspaceDispatchInFlight {
+            ..
+        })) => Ok(false),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn schedule_consume_next(foreground_runs: Arc<Semaphore>, mailbox: mpsc::Sender<TaskActorMessage>) {

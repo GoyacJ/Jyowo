@@ -6,7 +6,7 @@ use std::time::Duration;
 use chrono::Utc;
 use futures::FutureExt;
 use harness_contracts::{
-    ActorId, CommandId, NoopRedactor, Redactor, RunState, TaskId, WorkspaceLeaseState,
+    ActorId, CommandId, NoopRedactor, Redactor, RunState, TaskId, TaskState, WorkspaceLeaseState,
 };
 use harness_journal::{
     AcceptedCommand, CommandOutcome, CommandRejection, NewTaskEvent, PendingSegmentStart,
@@ -175,6 +175,7 @@ impl Supervisor {
         permissions: Arc<PermissionBroker>,
     ) -> Result<Self, SupervisorError> {
         recover_unreconnectable_subagents(&store, &workspace)?;
+        recover_terminal_task_leases(&store, &workspace)?;
         let (requests, receiver) = bounded_command_channel(SUPERVISOR_REQUEST_CAPACITY);
         let (events, _) = broadcast::channel(64);
         let factory = Arc::new(WorkspaceBoundRunCoordinatorFactory::new(
@@ -385,6 +386,34 @@ fn recover_unreconnectable_subagents(
     Ok(())
 }
 
+fn recover_terminal_task_leases(
+    store: &TaskStore,
+    workspace: &WorkspaceCoordinator,
+) -> Result<(), SupervisorError> {
+    for task in store.task_projections()? {
+        let terminal = matches!(task.state, TaskState::Completed | TaskState::Failed);
+        if task.removed || (terminal && task.queue.is_empty()) {
+            workspace.release_task_leases(task.task_id)?;
+        }
+    }
+    Ok(())
+}
+
+fn retry_terminal_task_lease_release(
+    store: &TaskStore,
+    workspace: &WorkspaceCoordinator,
+    task_id: TaskId,
+) -> bool {
+    let Ok(Some(task)) = store.task_projection(task_id) else {
+        return false;
+    };
+    let terminal = matches!(task.state, TaskState::Completed | TaskState::Failed);
+    if !task.removed && (!terminal || !task.queue.is_empty()) {
+        return false;
+    }
+    workspace.release_task_leases(task_id).is_err()
+}
+
 impl Drop for Supervisor {
     fn drop(&mut self) {
         self.task.abort();
@@ -431,6 +460,7 @@ async fn run_supervisor(
     let mut pending_start_retries =
         HashMap::<TaskId, (harness_contracts::RunSegmentId, u32)>::new();
     let mut pending_parent_stop_compensations = HashSet::<TaskId>::new();
+    let mut pending_workspace_release_compensations = HashSet::<TaskId>::new();
     let mut next_generation = 1_u64;
     let mut workspace_expiry = tokio::time::interval(WORKSPACE_EXPIRY_INTERVAL);
     workspace_expiry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -443,6 +473,9 @@ async fn run_supervisor(
                     &mut pending_parent_stop_compensations,
                     |task_id| factory.request_parent_stop(task_id, SubagentStopMode::Force),
                 );
+                pending_workspace_release_compensations.retain(|task_id| {
+                    retry_terminal_task_lease_release(&store, &workspace, *task_id)
+                });
             }
             request = requests.recv() => {
                 let Some(request) = request else { break };
@@ -501,7 +534,9 @@ async fn run_supervisor(
                         |task_id| factory.request_parent_stop(task_id, SubagentStopMode::Force),
                     );
                     if exited_current_generation {
-                        let _ = workspace.release_task_leases(exit.task_id);
+                        if workspace.release_task_leases(exit.task_id).is_err() {
+                            pending_workspace_release_compensations.insert(exit.task_id);
+                        }
                     }
                     let pending_start_retry_segment = exit.active_segment.filter(|segment_id| {
                         pending_segment_start_requires_retry(

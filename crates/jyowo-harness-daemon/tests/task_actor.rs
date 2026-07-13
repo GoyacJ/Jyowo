@@ -6,7 +6,7 @@ use std::time::Duration;
 use chrono::Utc;
 use harness_contracts::{
     ActorId, BlobId, ClientId, CommandId, PermissionMode, QueueItemId, QueueItemState, RequestId,
-    RunSegmentId, RunState, RunTerminalReason, TaskId, TaskState, WorkspaceMode,
+    RunSegmentId, RunState, RunTerminalReason, StopMode, TaskId, TaskState, WorkspaceMode,
 };
 use harness_daemon::{
     DaemonPermissionKind, PermissionOption, PermissionRequestDraft, QueueCommand,
@@ -99,6 +99,22 @@ impl ControlledFactory {
                 terminal_reason: RunTerminalReason::Completed,
                 incomplete_output: false,
                 ended_at: Utc::now(),
+            })
+            .unwrap();
+    }
+
+    fn force_stop_timeout(&self, task_id: TaskId, segment_id: RunSegmentId) {
+        let sender = {
+            let mut state = self.state.lock().unwrap();
+            let active = state.active.get_mut(&task_id).unwrap();
+            *active -= 1;
+            state.controls.remove(&segment_id).unwrap()
+        };
+        sender
+            .send(RunCoordinatorEvent::ForceStopTimedOut {
+                segment_id,
+                indeterminate_tool_use_ids: Vec::new(),
+                timed_out_at: Utc::now(),
             })
             .unwrap();
     }

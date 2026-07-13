@@ -285,7 +285,7 @@ describe('TaskWorkspace', () => {
         taskId: snapshot.projection.taskId,
         type: 'command_accepted',
       },
-      protocolVersion: 2,
+      protocolVersion: 3,
     })
     render(
       <TaskWorkspaceView
@@ -679,6 +679,6 @@ function acceptedCommand(streamVersion: number, committedOffset: number) {
       taskId: snapshot.projection.taskId,
       type: 'command_accepted' as const,
     },
-    protocolVersion: 2,
+    protocolVersion: 3,
   }
 }

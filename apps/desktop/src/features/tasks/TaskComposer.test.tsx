@@ -211,7 +211,7 @@ function acceptedFrame() {
       taskId,
       type: 'command_accepted' as const,
     },
-    protocolVersion: 2,
+    protocolVersion: 3,
     requestId: 'request-1',
   }
 }

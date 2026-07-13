@@ -6,7 +6,7 @@ describe('daemon memory client', () => {
   it('sends the active workspace root with memory list requests', async () => {
     const invoke = vi.fn().mockResolvedValue({
       message: { items: [], type: 'memory_items' },
-      protocolVersion: 2,
+      protocolVersion: 3,
       requestId: 'memory-request',
     })
     const client = createDaemonClient(
@@ -18,7 +18,7 @@ describe('daemon memory client', () => {
 
     expect(invoke).toHaveBeenCalledWith('daemon_request', {
       frame: {
-        protocolVersion: 2,
+        protocolVersion: 3,
         request: { type: 'list_memory_items', workspaceRoot: '/workspace/active' },
         requestId: 'memory-request',
       },
@@ -57,7 +57,7 @@ describe('daemon memory client', () => {
     ]
     const invoke = vi.fn().mockImplementation(async () => ({
       message: messages.shift(),
-      protocolVersion: 2,
+      protocolVersion: 3,
       requestId: 'memory-request',
     }))
     const client = createDaemonClient(
@@ -104,7 +104,7 @@ describe('daemon memory client', () => {
     }
     const invoke = vi.fn().mockResolvedValue({
       message: { preview, type: 'model_request_preview' },
-      protocolVersion: 2,
+      protocolVersion: 3,
       requestId: 'memory-request',
     })
     const client = createDaemonClient(
@@ -120,7 +120,7 @@ describe('daemon memory client', () => {
 
     expect(invoke).toHaveBeenCalledWith('daemon_request', {
       frame: {
-        protocolVersion: 2,
+        protocolVersion: 3,
         request: {
           request: {
             run_id: preview.run_id,

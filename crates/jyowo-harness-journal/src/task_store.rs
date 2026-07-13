@@ -1889,9 +1889,7 @@ impl TaskStore {
             .lock()
             .map_err(|_| TaskStoreError::LockPoisoned)?;
         if dispatches.get(&lease_id).copied().unwrap_or_default() > 0 {
-            return Err(TaskStoreError::InvalidInput(format!(
-                "workspace lease {lease_id} has an in-flight dispatch"
-            )));
+            return Err(TaskStoreError::WorkspaceDispatchInFlight { lease_id });
         }
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -2036,9 +2034,7 @@ impl TaskStore {
             .lock()
             .map_err(|_| TaskStoreError::LockPoisoned)?;
         if dispatches.get(&lease_id).copied().unwrap_or_default() > 0 {
-            return Err(TaskStoreError::InvalidInput(format!(
-                "workspace lease {lease_id} has an in-flight dispatch"
-            )));
+            return Err(TaskStoreError::WorkspaceDispatchInFlight { lease_id });
         }
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -2131,8 +2127,7 @@ impl TaskStore {
                     TaskWorkspaceLeaseState::Expired,
                 ) {
                     Ok(outcome) => outcomes.push(outcome),
-                    Err(TaskStoreError::InvalidInput(message))
-                        if message.contains("in-flight dispatch") => {}
+                    Err(TaskStoreError::WorkspaceDispatchInFlight { .. }) => {}
                     Err(error) => return Err(error),
                 }
             }
@@ -2156,9 +2151,7 @@ impl TaskStore {
             .lock()
             .map_err(|_| TaskStoreError::LockPoisoned)?;
         if dispatches.get(&lease_id).copied().unwrap_or_default() > 0 {
-            return Err(TaskStoreError::InvalidInput(format!(
-                "workspace lease {lease_id} has an in-flight dispatch"
-            )));
+            return Err(TaskStoreError::WorkspaceDispatchInFlight { lease_id });
         }
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -5452,6 +5445,8 @@ pub enum TaskStoreError {
     },
     #[error("invalid task store input: {0}")]
     InvalidInput(String),
+    #[error("workspace lease {lease_id} has an in-flight dispatch")]
+    WorkspaceDispatchInFlight { lease_id: WorkspaceLeaseId },
     #[error("task blob not found: {blob_id}")]
     BlobNotFound { blob_id: BlobId },
     #[error("task {task_id} does not own blob {blob_id}")]

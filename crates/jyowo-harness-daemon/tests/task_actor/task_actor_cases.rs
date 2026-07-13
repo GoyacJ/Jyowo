@@ -64,6 +64,21 @@ async fn completed_run_releases_workspace_for_next_task() {
 
     factory.complete(first, segment_id);
     wait_for_state(&store, first, TaskState::Completed).await;
+    let terminal_events = store.events_after(0, 100).unwrap();
+    let released_offset = terminal_events
+        .iter()
+        .find(|event| event.task_id == first && event.event_type == "workspace.released")
+        .expect("completed task releases its workspace")
+        .global_offset;
+    let completed_offset = terminal_events
+        .iter()
+        .find(|event| event.task_id == first && event.event_type == "run.completed")
+        .expect("run completion is persisted")
+        .global_offset;
+    assert!(
+        released_offset < completed_offset,
+        "workspace release must be visible before terminal state"
+    );
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if store
@@ -128,6 +143,21 @@ async fn removing_idle_task_releases_its_workspace_lease() {
         matches!(outcome, CommandOutcome::Accepted { .. }),
         "{outcome:?}"
     );
+    let removal_events = store.events_after(0, 100).unwrap();
+    let released_offset = removal_events
+        .iter()
+        .find(|event| event.task_id == task_id && event.event_type == "workspace.released")
+        .expect("removed task releases its workspace")
+        .global_offset;
+    let removed_offset = removal_events
+        .iter()
+        .find(|event| event.task_id == task_id && event.event_type == "task.removed")
+        .expect("task removal is persisted")
+        .global_offset;
+    assert!(
+        released_offset < removed_offset,
+        "workspace release must be visible before task removal"
+    );
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if store
@@ -144,6 +174,208 @@ async fn removing_idle_task_releases_its_workspace_lease() {
     })
     .await
     .expect("removed task should release its workspace lease");
+}
+
+#[tokio::test]
+async fn force_stop_timeout_retries_workspace_release_after_dispatch_finishes() {
+    let (store, root) = test_store();
+    let workspace_root = root.path().join("force-stop-workspace");
+    std::fs::create_dir(&workspace_root).unwrap();
+    let task_id = create_task_in_workspace(&store, "force stop", &workspace_root);
+    let factory = Arc::new(ControlledFactory::default());
+    let supervisor = Supervisor::start(
+        Arc::clone(&store),
+        factory.clone(),
+        SupervisorQuotas::new(1, 1),
+    )
+    .unwrap();
+
+    assert!(accepted(
+        supervisor
+            .dispatch(task_id, submit_message_command(&store, task_id))
+            .await
+            .unwrap()
+    ));
+    wait_for_start_count(&factory, task_id, 1).await;
+    let segment_id = factory.requests(task_id)[0].segment_id;
+    let lease_id = store
+        .nonterminal_workspace_leases_for_task(task_id)
+        .unwrap()
+        .into_iter()
+        .find(|lease| lease.state == harness_contracts::WorkspaceLeaseState::Active)
+        .unwrap()
+        .lease_id;
+    let dispatch = store.begin_workspace_dispatch(lease_id).unwrap();
+
+    assert!(accepted(
+        supervisor
+            .dispatch(
+                task_id,
+                ValidatedTaskCommand::StopRun {
+                    command: command(
+                        task_id,
+                        store.stream_version(task_id).unwrap(),
+                        json!({ "type": "stop_run", "mode": "force" }),
+                    ),
+                    mode: StopMode::Force,
+                },
+            )
+            .await
+            .unwrap()
+    ));
+    factory.force_stop_timeout(task_id, segment_id);
+    wait_for_state(&store, task_id, TaskState::Failed).await;
+    assert_eq!(
+        store.workspace_lease(lease_id).unwrap().unwrap().state,
+        harness_contracts::WorkspaceLeaseState::Active
+    );
+
+    drop(dispatch);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if store.workspace_lease(lease_id).unwrap().unwrap().state
+                == harness_contracts::WorkspaceLeaseState::Released
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("terminal workspace release should be retried");
+}
+
+#[tokio::test]
+async fn queued_segment_retains_workspace_until_the_final_segment_completes() {
+    let (store, root) = test_store();
+    let workspace_root = root.path().join("queued-workspace");
+    std::fs::create_dir(&workspace_root).unwrap();
+    let task_id = create_task_in_workspace(&store, "queued", &workspace_root);
+    let factory = Arc::new(ControlledFactory::default());
+    let supervisor = Supervisor::start(
+        Arc::clone(&store),
+        factory.clone(),
+        SupervisorQuotas::new(1, 1),
+    )
+    .unwrap();
+
+    assert!(accepted(
+        supervisor
+            .dispatch(task_id, submit_message_command(&store, task_id))
+            .await
+            .unwrap()
+    ));
+    wait_for_start_count(&factory, task_id, 1).await;
+    let first_segment = factory.requests(task_id)[0].segment_id;
+    let queue_item_id = QueueItemId::new();
+    assert!(accepted(
+        supervisor
+            .dispatch(
+                task_id,
+                ValidatedTaskCommand::Queue {
+                    command: command(
+                        task_id,
+                        store.stream_version(task_id).unwrap(),
+                        json!({ "type": "queue", "queueItemId": queue_item_id }),
+                    ),
+                    queue_item_id,
+                    queue_command: QueueCommand::Submit {
+                        queue_item_id,
+                        content: "next".into(),
+                        attachments: Vec::new(),
+                        context_references: Vec::new(),
+                        created_at: Utc::now(),
+                    },
+                },
+            )
+            .await
+            .unwrap()
+    ));
+
+    factory.complete(task_id, first_segment);
+    wait_for_start_count(&factory, task_id, 2).await;
+    assert!(store
+        .nonterminal_workspace_leases_for_task(task_id)
+        .unwrap()
+        .iter()
+        .any(|lease| lease.state == harness_contracts::WorkspaceLeaseState::Active));
+    assert!(!store
+        .events_after(0, 100)
+        .unwrap()
+        .iter()
+        .any(|event| event.task_id == task_id && event.event_type == "workspace.released"));
+
+    let second_segment = factory.requests(task_id)[1].segment_id;
+    factory.complete(task_id, second_segment);
+    wait_for_state(&store, task_id, TaskState::Completed).await;
+    assert!(store
+        .nonterminal_workspace_leases_for_task(task_id)
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn supervisor_start_releases_a_stale_terminal_workspace_lease() {
+    let (store, root) = test_store();
+    let workspace_root = root.path().join("stale-terminal-workspace");
+    std::fs::create_dir(&workspace_root).unwrap();
+    let task_id = create_task_in_workspace(&store, "stale terminal", &workspace_root);
+    let coordinator =
+        WorkspaceCoordinator::new(Arc::clone(&store), root.path().join("managed-worktrees"))
+            .unwrap();
+    let lease = match coordinator
+        .acquire(WorkspaceLeaseRequest {
+            task_id,
+            actor_id: ActorId::from_u128(u128::from_be_bytes(task_id.as_bytes())),
+            root: workspace_root,
+            mode: Some(WorkspaceMode::Current),
+            access: WorkspaceAccess::Write,
+            execution_kind: WorkspaceExecutionKind::Foreground,
+            expires_at: None,
+        })
+        .unwrap()
+    {
+        harness_daemon::WorkspaceAcquireOutcome::Acquired(lease) => lease,
+        harness_daemon::WorkspaceAcquireOutcome::Waiting(_) => panic!("workspace should be free"),
+    };
+    let segment_id = RunSegmentId::new();
+    let mut terminal_command = command(
+        task_id,
+        store.stream_version(task_id).unwrap(),
+        json!({ "type": "seed_terminal_run" }),
+    );
+    terminal_command.authority = TaskStore::supervisor_authority();
+    assert!(accepted(
+        store
+            .transact_command(terminal_command, |_| {
+                Ok(vec![
+                    NewTaskEvent::run_started(segment_id, Utc::now()),
+                    NewTaskEvent::run_completed(
+                        segment_id,
+                        Utc::now(),
+                        RunTerminalReason::Completed,
+                        false,
+                    ),
+                ])
+            },)
+            .unwrap()
+    ));
+
+    let _supervisor = Supervisor::start(
+        Arc::clone(&store),
+        Arc::new(ControlledFactory::default()),
+        SupervisorQuotas::new(1, 1),
+    )
+    .unwrap();
+
+    assert_eq!(
+        store
+            .workspace_lease(lease.lease_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        harness_contracts::WorkspaceLeaseState::Released
+    );
 }
 
 #[tokio::test]

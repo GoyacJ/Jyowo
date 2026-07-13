@@ -20,7 +20,7 @@ use crate::{
     UpdateThreadMemorySettingsRequest, UpdateThreadMemorySettingsResponse, WorkspaceLeaseId,
 };
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// Maximum JSON body accepted by the length-prefixed local daemon transport.
 pub const MAX_DAEMON_FRAME_BYTES: usize = 8 * 1024 * 1024;
