@@ -133,23 +133,6 @@ export function wait(delayMs: number | undefined) {
   })
 }
 
-function isResponseOverrideHandler<Args extends unknown[], Response>(
-  override: Response | ((...args: Args) => Promise<Response> | Response) | undefined,
-): override is (...args: Args) => Promise<Response> | Response {
-  return typeof override === 'function'
-}
-
-export async function resolveResponseOverride<Args extends unknown[], Response>(
-  override: Response | ((...args: Args) => Promise<Response> | Response) | undefined,
-  fallback: Response,
-  ...args: Args
-): Promise<Response> {
-  const response = isResponseOverrideHandler(override)
-    ? await override(...args)
-    : (override ?? fallback)
-  return cloneResponse(response)
-}
-
 export interface TestCommandClientOptions {
   appInfo?: AppInfo
   executionSettings?: GetExecutionSettingsResponse

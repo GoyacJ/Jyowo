@@ -33,7 +33,7 @@ export function ProjectionList({ items }: { items: TimelineItemProjection[] }) {
   )
 }
 
-export function EventList({ events }: { events: TaskEventEnvelope[] }) {
+function EventList({ events }: { events: TaskEventEnvelope[] }) {
   return (
     <ol className="divide-y divide-border/70">
       {events.map((event) => (

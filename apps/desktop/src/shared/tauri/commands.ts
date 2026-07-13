@@ -4677,13 +4677,6 @@ export function getDefaultWorkspace(
   return client.getDefaultWorkspace()
 }
 
-export function addProject(
-  path: string,
-  client: CommandClient = tauriCommandClient,
-): Promise<SwitchProjectResponse> {
-  return client.addProject(path)
-}
-
 export function moveProject(
   path: string,
   direction: MoveProjectDirection,
