@@ -286,7 +286,7 @@ done
 }
 
 #[tokio::test]
-async fn stdio_transport_continues_tool_call_after_elicitation_resolution() {
+async fn stdio_transport_does_not_retry_legacy_form_elicitation_errors() {
     let script = format!(
         r#"
 call_count=0
@@ -337,11 +337,11 @@ done
         .await
         .expect("stdio connects");
 
-    let result = connection
+    let error = connection
         .call_tool("search", json!({ "q": "mcp" }))
         .await
-        .expect("tool call continues");
-    assert_eq!(result, harness_mcp::McpToolResult::text("stdio-found"));
+        .expect_err("legacy form elicitation errors are not retried");
+    assert!(matches!(error, McpError::Protocol(message) if message.contains("-32042")));
 
     connection.shutdown().await.expect("shutdown");
 }
@@ -458,7 +458,7 @@ done
 }
 
 #[tokio::test]
-async fn stdio_tool_call_stream_preserves_legacy_elicitation_error_mapping() {
+async fn stdio_tool_call_stream_rejects_legacy_form_elicitation_errors() {
     let script = format!(
         r#"
 while IFS= read -r line; do
@@ -496,9 +496,9 @@ done
         .expect("tool stream");
 
     let Some(McpToolCallEvent::Error(error)) = events.next().await else {
-        panic!("expected elicitation error event")
+        panic!("expected protocol error event")
     };
-    assert!(matches!(error, harness_mcp::McpError::Elicitation(_)));
+    assert!(matches!(error, McpError::Protocol(message) if message.contains("-32042")));
     connection.shutdown().await.expect("shutdown");
 }
 

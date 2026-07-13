@@ -10,7 +10,7 @@ use crate::{
     JsonRpcResultResponse, McpAuthorizationContext, McpConnectionState, McpError, McpEventSink,
     McpListPage, McpMessage, McpMetricsSink, McpPaginationLimits, McpPrompt, McpPromptMessages,
     McpReadResourceResult, McpResource, McpServerSpec, McpToolDescriptor, McpToolResult,
-    NoopMcpEventSink,
+    NoopMcpEventSink, SamplingProvider,
 };
 
 /// An MCP message that passed the protocol shape checks at the transport boundary.
@@ -111,6 +111,7 @@ pub struct McpConnectContext {
     pub event_sink: Arc<dyn McpEventSink>,
     pub metrics_sink: Option<Arc<dyn McpMetricsSink>>,
     pub elicitation_handler: Option<Arc<dyn ElicitationHandler>>,
+    pub sampling_provider: Option<Arc<dyn SamplingProvider>>,
     pub permission_mode: PermissionMode,
     pub authorization: Option<McpAuthorizationContext>,
     pub(crate) transport_authorized: bool,
@@ -122,6 +123,7 @@ impl Default for McpConnectContext {
             event_sink: Arc::new(NoopMcpEventSink),
             metrics_sink: None,
             elicitation_handler: None,
+            sampling_provider: None,
             permission_mode: PermissionMode::Default,
             authorization: None,
             transport_authorized: false,
@@ -152,6 +154,12 @@ impl McpConnectContext {
     #[must_use]
     pub fn with_elicitation_handler(mut self, handler: Arc<dyn ElicitationHandler>) -> Self {
         self.elicitation_handler = Some(handler);
+        self
+    }
+
+    #[must_use]
+    pub fn with_sampling_provider(mut self, provider: Arc<dyn SamplingProvider>) -> Self {
+        self.sampling_provider = Some(provider);
         self
     }
 

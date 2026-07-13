@@ -5,7 +5,8 @@ use harness_contracts::{
     now, ElicitationOutcome, ElicitationSchemaSummary, Event, McpElicitationRequestedEvent,
     McpElicitationResolvedEvent, McpServerId, PermissionMode, RequestId, RunId, SessionId,
 };
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 use tokio::sync::{oneshot, Mutex};
 
 use crate::{JsonRpcError, JsonRpcRequest, McpEventSink, NoopMcpEventSink};
@@ -20,6 +21,13 @@ pub struct ElicitationRequest {
     pub subject: String,
     pub detail: Option<String>,
     pub timeout: Option<Duration>,
+    pub mode: ElicitationMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ElicitationMode {
+    Form,
+    Url { elicitation_id: String, url: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -51,6 +59,192 @@ pub trait ElicitationRequestRouter: Send + Sync + 'static {
         &self,
         request: JsonRpcRequest,
     ) -> Result<Value, JsonRpcError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+pub enum ElicitRequestParams {
+    Form {
+        message: String,
+        #[serde(rename = "requestedSchema")]
+        requested_schema: Value,
+        #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+        extra: Map<String, Value>,
+    },
+    Url(ElicitUrlRequestParams),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElicitUrlRequestParams {
+    pub message: String,
+    pub elicitation_id: String,
+    pub url: String,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone)]
+pub struct ElicitationJsonRpcHandler {
+    server_id: McpServerId,
+    permission_mode: PermissionMode,
+    handler: Arc<dyn ElicitationHandler>,
+    timeout: Option<Duration>,
+}
+
+impl ElicitationJsonRpcHandler {
+    pub fn new(
+        server_id: McpServerId,
+        permission_mode: PermissionMode,
+        handler: Arc<dyn ElicitationHandler>,
+    ) -> Self {
+        Self {
+            server_id,
+            permission_mode,
+            handler,
+            timeout: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    pub async fn route_elicitation_request(
+        &self,
+        request: JsonRpcRequest,
+    ) -> Result<Value, JsonRpcError> {
+        if request.method != "elicitation/create" {
+            return Err(elicitation_error(-32601, "method not found"));
+        }
+        let params = request
+            .params
+            .ok_or_else(|| elicitation_error(-32602, "elicitation/create missing params"))?;
+        let params = normalize_form_mode(params)?;
+        let wire: ElicitRequestParams = serde_json::from_value(params).map_err(|error| {
+            elicitation_error(
+                -32602,
+                &format!("invalid elicitation/create params: {error}"),
+            )
+        })?;
+        let (subject, schema, mode) = match wire {
+            ElicitRequestParams::Form {
+                message,
+                requested_schema,
+                ..
+            } => {
+                validate_form_schema(&requested_schema)?;
+                (message, requested_schema, ElicitationMode::Form)
+            }
+            ElicitRequestParams::Url(params) => {
+                if url::Url::parse(&params.url).is_err() {
+                    return Err(elicitation_error(
+                        -32602,
+                        "elicitation URL must be absolute",
+                    ));
+                }
+                let mode = ElicitationMode::Url {
+                    elicitation_id: params.elicitation_id,
+                    url: params.url,
+                };
+                (params.message, Value::Null, mode)
+            }
+        };
+        let form = matches!(mode, ElicitationMode::Form);
+        let request = ElicitationRequest {
+            request_id: RequestId::new(),
+            server_id: self.server_id.clone(),
+            schema,
+            subject,
+            detail: None,
+            timeout: self.timeout,
+            mode,
+        };
+        if matches!(
+            self.permission_mode,
+            PermissionMode::BypassPermissions | PermissionMode::DontAsk
+        ) {
+            return Ok(json!({ "action": "decline" }));
+        }
+        match self.handler.handle(request).await {
+            Ok(content) if form => {
+                validate_form_content(&content)?;
+                Ok(json!({ "action": "accept", "content": content }))
+            }
+            Ok(_) => Ok(json!({ "action": "accept" })),
+            Err(ElicitationError::UserDeclined) => Ok(json!({ "action": "decline" })),
+            Err(ElicitationError::Timeout) => Ok(json!({ "action": "cancel" })),
+            Err(ElicitationError::Invalid(message)) => Err(elicitation_error(-32602, &message)),
+            Err(ElicitationError::NoHandlerRegistered) => Err(elicitation_error(
+                -32601,
+                "no elicitation handler registered",
+            )),
+        }
+    }
+}
+
+#[async_trait]
+impl ElicitationRequestRouter for ElicitationJsonRpcHandler {
+    async fn route_elicitation_request(
+        &self,
+        request: JsonRpcRequest,
+    ) -> Result<Value, JsonRpcError> {
+        ElicitationJsonRpcHandler::route_elicitation_request(self, request).await
+    }
+}
+
+fn normalize_form_mode(mut params: Value) -> Result<Value, JsonRpcError> {
+    let object = params
+        .as_object_mut()
+        .ok_or_else(|| elicitation_error(-32602, "elicitation params must be an object"))?;
+    object
+        .entry("mode")
+        .or_insert_with(|| Value::String("form".to_owned()));
+    Ok(params)
+}
+
+fn validate_form_schema(schema: &Value) -> Result<(), JsonRpcError> {
+    if schema.get("type").and_then(Value::as_str) != Some("object")
+        || !schema.get("properties").is_some_and(Value::is_object)
+    {
+        return Err(elicitation_error(
+            -32602,
+            "elicitation requestedSchema must be an object schema",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_form_content(content: &Value) -> Result<(), JsonRpcError> {
+    let object = content
+        .as_object()
+        .ok_or_else(|| elicitation_error(-32602, "accepted form content must be an object"))?;
+    if object.values().all(|value| {
+        value.is_string()
+            || value.is_number()
+            || value.is_boolean()
+            || value
+                .as_array()
+                .is_some_and(|items| items.iter().all(Value::is_string))
+    }) {
+        Ok(())
+    } else {
+        Err(elicitation_error(
+            -32602,
+            "elicitation form content contains a non-primitive value",
+        ))
+    }
+}
+
+fn elicitation_error(code: i32, message: &str) -> JsonRpcError {
+    JsonRpcError {
+        code,
+        message: message.to_owned(),
+        data: None,
+        extra: Default::default(),
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -239,53 +433,13 @@ pub fn summarize_elicitation_schema(schema: &Value) -> ElicitationSchemaSummary 
     }
 }
 
-pub fn elicitation_from_jsonrpc_error(error: &JsonRpcError) -> Option<ElicitationRequest> {
+pub fn url_elicitations_from_jsonrpc_error(
+    error: &JsonRpcError,
+) -> Option<Vec<ElicitUrlRequestParams>> {
     if error.code != MCP_ELICITATION_REQUIRED_CODE {
         return None;
     }
-    let data = error.data.as_ref()?;
-    let request_id = serde_json::from_value(data.get("request_id")?.clone()).ok()?;
-    let server_id = McpServerId(data.get("server_id")?.as_str()?.to_owned());
-    let subject = data.get("subject")?.as_str()?.to_owned();
-    let schema = data.get("schema").cloned().unwrap_or(Value::Null);
-    let detail = data
-        .get("detail")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned);
-    let timeout = data
-        .get("timeout_ms")
-        .and_then(Value::as_u64)
-        .map(Duration::from_millis);
-    Some(ElicitationRequest {
-        request_id,
-        server_id,
-        schema,
-        subject,
-        detail,
-        timeout,
-    })
-}
-
-pub async fn handle_jsonrpc_elicitation_error<H>(
-    error: &JsonRpcError,
-    permission_mode: PermissionMode,
-    handler: Arc<H>,
-) -> Result<Option<Value>, ElicitationError>
-where
-    H: ElicitationHandler + ?Sized,
-{
-    let Some(request) = elicitation_from_jsonrpc_error(error) else {
-        return Ok(None);
-    };
-
-    if matches!(
-        permission_mode,
-        PermissionMode::BypassPermissions | PermissionMode::DontAsk
-    ) {
-        return RejectAllElicitationHandler.handle(request).await.map(Some);
-    }
-
-    handler.handle(request).await.map(Some)
+    serde_json::from_value(error.data.as_ref()?.get("elicitations")?.clone()).ok()
 }
 
 fn outcome_for_result(result: &Result<Value, ElicitationError>) -> ElicitationOutcome {

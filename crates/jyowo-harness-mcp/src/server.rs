@@ -1575,7 +1575,7 @@ where
         let payload = serde_json::to_string(&response)
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
         socket
-            .send(WsMessage::Text(payload))
+            .send(WsMessage::Text(payload.into()))
             .await
             .map_err(|error| McpServerError::Internal(error.to_string()))?;
     }

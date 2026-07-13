@@ -562,6 +562,7 @@ fn sdk_installs_default_stream_elicitation_handler() {
                     subject: "Need input".to_owned(),
                     detail: None,
                     timeout: Some(std::time::Duration::from_secs(1)),
+                    mode: harness_mcp::ElicitationMode::Form,
                 })
                 .await
         });

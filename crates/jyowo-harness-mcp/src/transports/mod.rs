@@ -41,18 +41,12 @@ use serde_json::{json, Value};
     feature = "websocket",
     feature = "sse"
 ))]
-use harness_contracts::PermissionMode;
-
-#[cfg(any(
-    feature = "stdio",
-    feature = "http",
-    feature = "websocket",
-    feature = "sse"
-))]
 use crate::{
-    elicitation_from_jsonrpc_error, handle_jsonrpc_elicitation_error, ElicitationHandler,
-    JsonRpcResponse, McpError, McpListPage, McpPrompt, McpPromptMessages, McpReadResourceResult,
-    McpResource, McpResourceContents, McpToolDescriptor, McpToolResult,
+    url_elicitations_from_jsonrpc_error, ElicitationClientCapability, ElicitationJsonRpcHandler,
+    ElicitationRequestRouter, EmptyClientCapability, JsonRpcResponse, McpClientCapabilities,
+    McpConnectContext, McpError, McpListPage, McpPrompt, McpPromptMessages, McpReadResourceResult,
+    McpResource, McpResourceContents, McpServerSpec, McpToolDescriptor, McpToolResult,
+    SamplingClientCapability, SamplingJsonRpcHandler, SamplingRequestRouter,
 };
 
 #[cfg(any(
@@ -476,15 +470,10 @@ where
     T: DeserializeOwned,
 {
     if let Some(error) = response.error {
-        if let Some(request) = elicitation_from_jsonrpc_error(&error) {
-            let detail = request
-                .detail
-                .as_deref()
-                .map(|detail| format!(": {detail}"))
-                .unwrap_or_default();
+        if let Some(requests) = url_elicitations_from_jsonrpc_error(&error) {
             return Err(McpError::Elicitation(format!(
-                "mcp server {} requires elicitation for {}{}",
-                request.server_id.0, request.subject, detail
+                "mcp server requires {} URL elicitation request(s)",
+                requests.len()
             )));
         }
         return Err(McpError::Protocol(format!(
@@ -505,22 +494,10 @@ where
     feature = "websocket",
     feature = "sse"
 ))]
-pub(crate) async fn continue_after_elicitation_response(
-    response: &JsonRpcResponse,
-    request: &JsonRpcRequest,
-    peer: &JsonRpcPeer,
-    handler: Option<&Arc<dyn ElicitationHandler>>,
-    permission_mode: PermissionMode,
-) -> Result<Option<JsonRpcRequest>, McpError> {
-    let params = continue_after_elicitation_params(
-        response,
-        &request.method,
-        request.params.as_ref(),
-        handler,
-        permission_mode,
-    )
-    .await?;
-    Ok(params.map(|params| peer.request(&request.method, Some(params))))
+pub(crate) struct ClientInboundSupport {
+    pub(crate) capabilities: McpClientCapabilities,
+    pub(crate) sampling: Option<Arc<dyn SamplingRequestRouter>>,
+    pub(crate) elicitation: Option<Arc<dyn ElicitationRequestRouter>>,
 }
 
 #[cfg(any(
@@ -529,68 +506,56 @@ pub(crate) async fn continue_after_elicitation_response(
     feature = "websocket",
     feature = "sse"
 ))]
-pub(crate) async fn continue_after_elicitation_params(
-    response: &JsonRpcResponse,
-    method: &str,
-    params: Option<&Value>,
-    handler: Option<&Arc<dyn ElicitationHandler>>,
-    permission_mode: PermissionMode,
-) -> Result<Option<Value>, McpError> {
-    let Some(error) = response.error.as_ref() else {
-        return Ok(None);
+pub(crate) fn client_inbound_support(
+    spec: &McpServerSpec,
+    context: &McpConnectContext,
+) -> ClientInboundSupport {
+    let sampling = context
+        .sampling_provider
+        .as_ref()
+        .filter(|_| !spec.sampling.is_denied())
+        .zip(context.authorization.as_ref())
+        .map(|(provider, authorization)| {
+            let handler =
+                SamplingJsonRpcHandler::new(spec.sampling.clone(), Arc::clone(&context.event_sink))
+                    .with_timeouts(spec.timeouts)
+                    .with_session_id(authorization.session_id)
+                    .with_run_id(Some(authorization.run_id))
+                    .with_server_id(spec.server_id.clone())
+                    .with_permission_mode(context.permission_mode)
+                    .with_server_trust(spec.trust)
+                    .with_metrics_sink(context.metrics_sink_or(Arc::new(crate::NoopMcpMetricsSink)))
+                    .with_provider(Arc::clone(provider))
+                    .with_authorization_context(authorization.clone());
+            Arc::new(handler) as Arc<dyn SamplingRequestRouter>
+        });
+    let elicitation = context.elicitation_handler.as_ref().map(|handler| {
+        Arc::new(
+            ElicitationJsonRpcHandler::new(
+                spec.server_id.clone(),
+                context.permission_mode,
+                Arc::clone(handler),
+            )
+            .with_timeout(spec.timeouts.call_default),
+        ) as Arc<dyn ElicitationRequestRouter>
+    });
+    let capabilities = McpClientCapabilities {
+        sampling: sampling.as_ref().map(|_| SamplingClientCapability {
+            tools: Some(EmptyClientCapability::default()),
+            ..Default::default()
+        }),
+        elicitation: elicitation.as_ref().map(|_| ElicitationClientCapability {
+            form: Some(EmptyClientCapability::default()),
+            url: Some(EmptyClientCapability::default()),
+            ..Default::default()
+        }),
+        ..Default::default()
     };
-    let Some(handler) = handler else {
-        return Ok(None);
-    };
-    let value = handle_jsonrpc_elicitation_error(error, permission_mode, Arc::clone(handler))
-        .await
-        .map_err(|error| McpError::Elicitation(error.to_string()))?;
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    continue_tool_call_params(method, params, value).map(Some)
-}
-
-#[cfg(any(
-    feature = "stdio",
-    feature = "http",
-    feature = "websocket",
-    feature = "sse"
-))]
-fn continue_tool_call_params(
-    method: &str,
-    params: Option<&Value>,
-    value: Value,
-) -> Result<Value, McpError> {
-    if method != "tools/call" {
-        return Err(McpError::Elicitation(format!(
-            "elicitation continuation is not supported for {}",
-            method
-        )));
+    ClientInboundSupport {
+        capabilities,
+        sampling,
+        elicitation,
     }
-    let Value::Object(resolved) = value else {
-        return Err(McpError::Elicitation(
-            "elicitation handler returned non-object value".to_owned(),
-        ));
-    };
-    let mut params = params.cloned().unwrap_or_else(|| serde_json::json!({}));
-    let Some(params_obj) = params.as_object_mut() else {
-        return Err(McpError::Elicitation(
-            "tools/call params are not an object".to_owned(),
-        ));
-    };
-    let arguments = params_obj
-        .entry("arguments")
-        .or_insert_with(|| serde_json::json!({}));
-    let Some(arguments_obj) = arguments.as_object_mut() else {
-        return Err(McpError::Elicitation(
-            "tools/call arguments are not an object".to_owned(),
-        ));
-    };
-    for (key, value) in resolved {
-        arguments_obj.insert(key, value);
-    }
-    Ok(params)
 }
 
 #[cfg(any(feature = "http", feature = "websocket", feature = "sse"))]

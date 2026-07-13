@@ -11,7 +11,6 @@ use std::{
 
 use async_trait::async_trait;
 use futures::{StreamExt, TryStreamExt};
-use harness_contracts::PermissionMode;
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE},
     StatusCode,
@@ -31,17 +30,16 @@ use super::network_endpoint::{
 };
 
 use crate::{
-    authorize_mcp_transport_connect, call_tool_params, client_auth,
-    continue_after_elicitation_params, decode_empty_result, decode_list_prompts,
-    decode_list_resources, decode_list_tools, decode_prompt_messages, decode_read_resource,
-    decode_tool_result, get_prompt_params, notification_change, pagination_params,
-    read_resource_params, resource_subscription_params, ElicitationHandler, JsonRpcNotification,
-    JsonRpcResponse, ListChangedEvent, McpChange, McpClientCapabilities, McpConnectContext,
-    McpConnection, McpError, McpImplementation, McpListPage, McpMessage, McpMessageSink,
-    McpOrderedNotificationHandler, McpOutboundMessage, McpPeer, McpPrompt, McpPromptMessages,
-    McpReadResourceResult, McpResource, McpServerSpec, McpSession, McpToolDescriptor,
-    McpToolResult, McpTransport, NoopMcpMetricsSink, ReconnectPolicy, SseDecoder, SseLimits,
-    TransportChoice,
+    authorize_mcp_transport_connect, call_tool_params, client_auth, client_inbound_support,
+    decode_empty_result, decode_list_prompts, decode_list_resources, decode_list_tools,
+    decode_prompt_messages, decode_read_resource, decode_tool_result, get_prompt_params,
+    notification_change, pagination_params, read_resource_params, resource_subscription_params,
+    JsonRpcNotification, JsonRpcResponse, ListChangedEvent, McpChange, McpClientCapabilities,
+    McpConnectContext, McpConnection, McpError, McpImplementation, McpListPage, McpMessage,
+    McpMessageSink, McpOrderedNotificationHandler, McpOutboundMessage, McpPeer, McpPrompt,
+    McpPromptMessages, McpReadResourceResult, McpResource, McpServerSpec, McpSession,
+    McpToolDescriptor, McpToolResult, McpTransport, NoopMcpMetricsSink, ReconnectPolicy,
+    SseDecoder, SseLimits, TransportChoice,
 };
 
 const OUTBOUND_CAPACITY: usize = 64;
@@ -213,6 +211,7 @@ impl McpTransport for HttpTransport {
             );
         let (state, _) = watch::channel(HttpConnectionState::Starting);
         let (changes, _) = broadcast::channel(64);
+        let support = client_inbound_support(&spec, &context);
         let connection = Arc::new(HttpConnection {
             connection_id: format!("http:{}", spec.server_id.0),
             endpoint: endpoint.to_string(),
@@ -221,8 +220,9 @@ impl McpTransport for HttpTransport {
             expected: spec.capabilities_expected,
             timeouts: spec.timeouts,
             reconnect: spec.reconnect,
-            elicitation_handler: context.elicitation_handler.clone(),
-            permission_mode: context.permission_mode,
+            client_capabilities: support.capabilities,
+            sampling_handler: support.sampling,
+            elicitation_handler: support.elicitation,
             state,
             changes,
             reinitialize: Mutex::new(()),
@@ -275,8 +275,9 @@ struct HttpConnection {
     expected: crate::McpExpectedCapabilities,
     timeouts: crate::McpTimeouts,
     reconnect: ReconnectPolicy,
-    elicitation_handler: Option<Arc<dyn ElicitationHandler>>,
-    permission_mode: PermissionMode,
+    client_capabilities: McpClientCapabilities,
+    sampling_handler: Option<Arc<dyn crate::SamplingRequestRouter>>,
+    elicitation_handler: Option<Arc<dyn crate::ElicitationRequestRouter>>,
     state: watch::Sender<HttpConnectionState>,
     changes: broadcast::Sender<McpChange>,
     reinitialize: Mutex<()>,
@@ -420,13 +421,19 @@ impl HttpConnection {
         });
         let session = McpSession::new(
             self.expected.clone(),
-            McpClientCapabilities::default(),
+            self.client_capabilities.clone(),
             McpImplementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
         );
         let notification_handler = Arc::new(HttpNotificationHandler {
             changes: self.changes.clone(),
         });
         let mut peer_builder = McpPeer::builder(sink, session);
+        if let Some(handler) = &self.sampling_handler {
+            peer_builder = peer_builder.sampling_handler(Arc::clone(handler));
+        }
+        if let Some(handler) = &self.elicitation_handler {
+            peer_builder = peer_builder.elicitation_handler(Arc::clone(handler));
+        }
         for method in [
             "tools/list_changed",
             "notifications/tools/list_changed",
@@ -602,26 +609,6 @@ impl HttpConnection {
             Err(McpError::RemoteJsonRpc(error)) => Ok(JsonRpcResponse::failure(Value::Null, error)),
             Err(error) => Err(error),
         }
-    }
-
-    async fn send_with_elicitation(
-        self: &Arc<Self>,
-        method: &str,
-        params: Option<Value>,
-    ) -> Result<JsonRpcResponse, McpError> {
-        let response = self.request_response(method, params.clone()).await?;
-        if let Some(retry_params) = continue_after_elicitation_params(
-            &response,
-            method,
-            params.as_ref(),
-            self.elicitation_handler.as_ref(),
-            self.permission_mode,
-        )
-        .await?
-        {
-            return self.request_response(method, Some(retry_params)).await;
-        }
-        Ok(response)
     }
 
     async fn send_notification(&self, notification: JsonRpcNotification) -> Result<(), McpError> {
@@ -1465,7 +1452,7 @@ impl McpConnection for HttpConnectionHandle {
 
     async fn call_tool(&self, name: &str, args: Value) -> Result<McpToolResult, McpError> {
         decode_tool_result(
-            self.send_with_elicitation("tools/call", call_tool_params(name, args))
+            self.request_response("tools/call", call_tool_params(name, args))
                 .await?,
         )
     }
@@ -1649,8 +1636,9 @@ mod tests {
             expected: crate::McpExpectedCapabilities::default(),
             timeouts: crate::McpTimeouts::default(),
             reconnect: ReconnectPolicy::default(),
+            client_capabilities: McpClientCapabilities::default(),
+            sampling_handler: None,
             elicitation_handler: None,
-            permission_mode: PermissionMode::Default,
             state,
             changes,
             reinitialize: Mutex::new(()),

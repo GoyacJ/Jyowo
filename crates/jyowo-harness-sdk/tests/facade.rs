@@ -610,6 +610,7 @@ fn harness_resolves_stream_elicitation_requests() {
                     subject: "credentials".to_owned(),
                     detail: None,
                     timeout: Some(Duration::from_secs(5)),
+                    mode: harness_mcp::ElicitationMode::Form,
                 })
                 .await
         });

@@ -1,6 +1,5 @@
 #![cfg(feature = "websocket")]
 
-#[cfg(feature = "oauth")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -506,13 +505,14 @@ async fn websocket_close_frame_wakes_pending_request_without_jsonrpc_shutdown() 
 }
 
 #[tokio::test]
-async fn websocket_transport_continues_tool_call_after_elicitation_resolution() {
+async fn websocket_transport_does_not_retry_legacy_form_elicitation_errors() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local addr");
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let received_tool_calls = Arc::clone(&tool_calls);
     tokio::spawn(async move {
         let (stream, _) = listener.accept().await.expect("accept");
         let mut socket = accept_async(stream).await.expect("websocket accept");
-        let mut call_count = 0usize;
         while let Some(message) = socket.next().await {
             let text = message.expect("message").into_text().expect("text");
             let value: Value = serde_json::from_str(&text).expect("json");
@@ -535,8 +535,8 @@ async fn websocket_transport_continues_tool_call_after_elicitation_resolution() 
                         .expect("send initialize");
                 }
                 Some("tools/call") => {
-                    call_count += 1;
-                    if call_count == 1 {
+                    let call = received_tool_calls.fetch_add(1, Ordering::SeqCst) + 1;
+                    if call == 1 {
                         socket
                             .send(Message::text(
                                 json!({
@@ -602,11 +602,12 @@ async fn websocket_transport_continues_tool_call_after_elicitation_resolution() 
         .await
         .expect("websocket connects");
 
-    let result = connection
+    let error = connection
         .call_tool("lookup", json!({ "id": 1 }))
         .await
-        .expect("tool call continues");
-    assert_eq!(result, harness_mcp::McpToolResult::text("looked up"));
+        .expect_err("legacy form elicitation errors are not retried");
+    assert!(matches!(error, McpError::Protocol(message) if message.contains("-32042")));
+    assert_eq!(tool_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

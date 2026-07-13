@@ -10,9 +10,7 @@ use std::{
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
-use harness_contracts::{
-    now, Event, NoopRedactor, PermissionMode, RedactRules, Redactor, UnexpectedErrorEvent,
-};
+use harness_contracts::{now, Event, NoopRedactor, RedactRules, Redactor, UnexpectedErrorEvent};
 use serde_json::Value;
 use tokio::{
     io::AsyncWrite,
@@ -24,19 +22,21 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
 
 use crate::{
-    authorize_mcp_transport_connect, call_tool_request, continue_after_elicitation_response,
+    authorize_mcp_transport_connect, call_tool_request, client_inbound_support,
     decode_empty_result, decode_list_prompts, decode_list_resources, decode_list_tools,
     decode_prompt_messages, decode_read_resource, decode_tool_result, get_prompt_request,
     list_prompts_request, list_resources_request, list_tools_request, notification_change,
     read_resource_request, subscribe_resource_request, unsubscribe_resource_request,
-    ElicitationHandler, JsonRpcNotification, JsonRpcPeer, JsonRpcRequest, JsonRpcResponse,
-    ListChangedEvent, McpChange, McpClientCapabilities, McpConnectContext, McpConnection, McpError,
-    McpImplementation, McpListPage, McpMessage, McpMessageSink, McpOrderedNotificationHandler,
-    McpOutboundMessage, McpPeer, McpPrompt, McpPromptMessages, McpReadResourceResult, McpResource,
-    McpServerSpec, McpSession, McpToolCallEvent, McpToolCallStream, McpToolDescriptor,
-    McpToolResult, McpTransport, McpWeakPeer, NoopMcpEventSink, StdioEnv, StdioPolicy,
-    TransportChoice,
+    JsonRpcNotification, JsonRpcPeer, JsonRpcRequest, JsonRpcResponse, ListChangedEvent, McpChange,
+    McpConnectContext, McpConnection, McpError, McpImplementation, McpListPage, McpMessage,
+    McpMessageSink, McpOrderedNotificationHandler, McpOutboundMessage, McpPeer, McpPrompt,
+    McpPromptMessages, McpReadResourceResult, McpResource, McpServerSpec, McpSession,
+    McpToolCallEvent, McpToolCallStream, McpToolDescriptor, McpToolResult, McpTransport,
+    McpWeakPeer, NoopMcpEventSink, StdioEnv, StdioPolicy, TransportChoice,
 };
+
+#[cfg(test)]
+use crate::McpClientCapabilities;
 
 const STDIO_OUTBOUND_CAPACITY: usize = 64;
 
@@ -175,15 +175,22 @@ impl McpTransport for StdioTransport {
         let (changes, _) = broadcast::channel(64);
         let (outbound, outbound_rx) = mpsc::channel(STDIO_OUTBOUND_CAPACITY);
         let sink = Arc::new(StdioMessageSink::new(outbound));
+        let support = client_inbound_support(&spec, &context);
         let session = McpSession::new(
             spec.capabilities_expected,
-            McpClientCapabilities::default(),
+            support.capabilities,
             McpImplementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
         );
         let notification_handler = Arc::new(StdioNotificationHandler {
             changes: changes.clone(),
         });
         let mut peer_builder = McpPeer::builder(sink.clone(), session);
+        if let Some(handler) = support.sampling {
+            peer_builder = peer_builder.sampling_handler(handler);
+        }
+        if let Some(handler) = support.elicitation {
+            peer_builder = peer_builder.elicitation_handler(handler);
+        }
         for method in [
             "tools/list_changed",
             "notifications/tools/list_changed",
@@ -233,8 +240,6 @@ impl McpTransport for StdioTransport {
             sink,
             writer_task: Arc::new(Mutex::new(Some(writer_task))),
             legacy_request_builder: JsonRpcPeer::new(),
-            elicitation_handler: context.elicitation_handler,
-            permission_mode: context.permission_mode,
             active_tool_calls: Arc::new(StdMutex::new(HashMap::new())),
         });
         Ok(connection)
@@ -345,8 +350,6 @@ pub struct StdioConnection {
     sink: Arc<StdioMessageSink>,
     writer_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     legacy_request_builder: JsonRpcPeer,
-    elicitation_handler: Option<Arc<dyn ElicitationHandler>>,
-    permission_mode: PermissionMode,
     active_tool_calls: Arc<StdMutex<HashMap<String, Value>>>,
 }
 
@@ -371,25 +374,6 @@ impl StdioConnection {
         }?;
         self.sink.flush().await?;
         self.peer.ensure_open()
-    }
-
-    async fn send_with_elicitation(
-        &self,
-        request: JsonRpcRequest,
-    ) -> Result<JsonRpcResponse, McpError> {
-        let response = self.send(request.clone()).await?;
-        if let Some(retry) = continue_after_elicitation_response(
-            &response,
-            &request,
-            &self.legacy_request_builder,
-            self.elicitation_handler.as_ref(),
-            self.permission_mode,
-        )
-        .await?
-        {
-            return self.send(retry).await;
-        }
-        Ok(response)
     }
 
     async fn call_tool_events_inner(
@@ -481,7 +465,7 @@ impl McpConnection for StdioConnection {
 
     async fn call_tool(&self, name: &str, args: Value) -> Result<McpToolResult, McpError> {
         decode_tool_result(
-            self.send_with_elicitation(call_tool_request(&self.legacy_request_builder, name, args))
+            self.send(call_tool_request(&self.legacy_request_builder, name, args))
                 .await?,
         )
     }

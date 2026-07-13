@@ -12,10 +12,10 @@ use std::{
 
 #[cfg(feature = "oauth")]
 use harness_contracts::{Event, McpOAuthRefreshOutcome, McpOAuthRefreshPhase};
-use harness_contracts::{McpServerId, McpServerSource, RequestId};
+use harness_contracts::{McpServerId, McpServerSource};
 use harness_mcp::{
-    DirectElicitationHandler, ElicitationError, HttpTransport, McpClient, McpClientAuth,
-    McpConnectContext, McpError, McpServerSpec, TransportChoice, MCP_ELICITATION_REQUIRED_CODE,
+    DirectElicitationHandler, HttpTransport, McpClient, McpClientAuth, McpConnectContext, McpError,
+    McpServerSpec, TransportChoice, MCP_ELICITATION_REQUIRED_CODE,
 };
 #[cfg(feature = "oauth")]
 use harness_mcp::{McpEventSink, McpMetric, McpMetricOutcome, McpMetricsSink};
@@ -118,7 +118,7 @@ async fn http_transport_posts_jsonrpc_with_headers_and_auth() {
 }
 
 #[tokio::test]
-async fn http_transport_decodes_elicitation_required_error() {
+async fn http_transport_decodes_url_elicitation_required_error() {
     let server = MockServer::start().await;
     mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
@@ -152,13 +152,12 @@ async fn http_transport_decodes_elicitation_required_error() {
                 "code": MCP_ELICITATION_REQUIRED_CODE,
                 "message": "more input required",
                 "data": {
-                    "server_id": "http",
-                    "request_id": RequestId::from_u128(42),
-                    "subject": "credentials",
-                    "schema": {
-                        "type": "object",
-                        "properties": { "token": { "type": "string" } }
-                    }
+                    "elicitations": [{
+                        "mode": "url",
+                        "message": "authorize access",
+                        "elicitationId": "auth-42",
+                        "url": "https://example.com/authorize"
+                    }]
                 }
             }
         })))
@@ -187,13 +186,12 @@ async fn http_transport_decodes_elicitation_required_error() {
 
     assert!(matches!(
         error,
-        McpError::Elicitation(message)
-            if message.contains("credentials") && !message.contains("github")
+        McpError::Elicitation(message) if message.contains("1 URL elicitation request")
     ));
 }
 
 #[tokio::test]
-async fn http_transport_continues_tool_call_after_elicitation_resolution() {
+async fn http_transport_does_not_retry_legacy_form_elicitation_errors() {
     let server = MockServer::start().await;
     mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
@@ -235,7 +233,7 @@ async fn http_transport_continues_tool_call_after_elicitation_resolution() {
                 "message": "more input required",
                 "data": {
                     "server_id": "http",
-                    "request_id": RequestId::from_u128(42),
+                    "request_id": "legacy-42",
                     "subject": "credentials",
                     "schema": {
                         "type": "object",
@@ -264,268 +262,7 @@ async fn http_transport_continues_tool_call_after_elicitation_resolution() {
                 "isError": false
             }
         })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let spec = McpServerSpec::new(
-        McpServerId("http".into()),
-        "http fixture",
-        TransportChoice::Http {
-            url: server.uri(),
-            headers: BTreeMap::new(),
-        },
-        McpServerSource::Workspace,
-    );
-    let handler =
-        DirectElicitationHandler::new(|_request| async { Ok(json!({ "token": "resolved" })) });
-    let connection = McpClient::new(Arc::new(HttpTransport::new()))
-        .connect_with_context(
-            spec,
-            support::with_transport_authorization(
-                McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
-            ),
-        )
-        .await
-        .expect("http connects");
-
-    let result = connection
-        .call_tool("search", json!({ "q": "mcp" }))
-        .await
-        .expect("tool call continues");
-    assert_eq!(result, harness_mcp::McpToolResult::text("found"));
-}
-
-#[tokio::test]
-async fn http_transport_fails_closed_when_elicitation_is_declined() {
-    let server = MockServer::start().await;
-    mount_get_unsupported(&server).await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(json!({ "method": "initialize" })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {
-                "protocolVersion": "2025-03-26",
-                "capabilities": { "tools": {} },
-                "serverInfo": { "name": "fixture", "version": "0.1.0" }
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(
-            json!({ "method": "notifications/initialized" }),
-        ))
-        .respond_with(ResponseTemplate::new(202))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(json!({ "method": "tools/call" })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "error": {
-                "code": MCP_ELICITATION_REQUIRED_CODE,
-                "message": "more input required",
-                "data": {
-                    "server_id": "http",
-                    "request_id": RequestId::from_u128(42),
-                    "subject": "credentials",
-                    "schema": { "type": "object" }
-                }
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let spec = McpServerSpec::new(
-        McpServerId("http".into()),
-        "http fixture",
-        TransportChoice::Http {
-            url: server.uri(),
-            headers: BTreeMap::new(),
-        },
-        McpServerSource::Workspace,
-    );
-    let handler =
-        DirectElicitationHandler::new(|_request| async { Err(ElicitationError::UserDeclined) });
-    let connection = McpClient::new(Arc::new(HttpTransport::new()))
-        .connect_with_context(
-            spec,
-            support::with_transport_authorization(
-                McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
-            ),
-        )
-        .await
-        .expect("http connects");
-
-    let error = connection
-        .call_tool("search", json!({ "q": "mcp" }))
-        .await
-        .expect_err("declined elicitation fails closed");
-    assert!(matches!(
-        error,
-        McpError::Elicitation(message) if message.contains("user declined")
-    ));
-}
-
-#[tokio::test]
-async fn http_transport_fails_closed_when_elicitation_times_out() {
-    let server = MockServer::start().await;
-    mount_get_unsupported(&server).await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(json!({ "method": "initialize" })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {
-                "protocolVersion": "2025-03-26",
-                "capabilities": { "tools": {} },
-                "serverInfo": { "name": "fixture", "version": "0.1.0" }
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(
-            json!({ "method": "notifications/initialized" }),
-        ))
-        .respond_with(ResponseTemplate::new(202))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(json!({ "method": "tools/call" })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "error": {
-                "code": MCP_ELICITATION_REQUIRED_CODE,
-                "message": "more input required",
-                "data": {
-                    "server_id": "http",
-                    "request_id": RequestId::from_u128(42),
-                    "subject": "credentials",
-                    "schema": { "type": "object" }
-                }
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let spec = McpServerSpec::new(
-        McpServerId("http".into()),
-        "http fixture",
-        TransportChoice::Http {
-            url: server.uri(),
-            headers: BTreeMap::new(),
-        },
-        McpServerSource::Workspace,
-    );
-    let handler =
-        DirectElicitationHandler::new(|_request| async { Err(ElicitationError::Timeout) });
-    let connection = McpClient::new(Arc::new(HttpTransport::new()))
-        .connect_with_context(
-            spec,
-            support::with_transport_authorization(
-                McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
-            ),
-        )
-        .await
-        .expect("http connects");
-
-    let error = connection
-        .call_tool("search", json!({ "q": "mcp" }))
-        .await
-        .expect_err("timed-out elicitation fails closed");
-    assert!(matches!(
-        error,
-        McpError::Elicitation(message) if message.contains("timed out")
-    ));
-}
-
-#[tokio::test]
-async fn http_transport_does_not_loop_on_repeated_elicitation() {
-    let server = MockServer::start().await;
-    mount_get_unsupported(&server).await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(json!({ "method": "initialize" })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {
-                "protocolVersion": "2025-03-26",
-                "capabilities": { "tools": {} },
-                "serverInfo": { "name": "fixture", "version": "0.1.0" }
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(
-            json!({ "method": "notifications/initialized" }),
-        ))
-        .respond_with(ResponseTemplate::new(202))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(json!({
-            "id": 2,
-            "method": "tools/call",
-            "params": {
-                "name": "search",
-                "arguments": { "q": "mcp" }
-            }
-        })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "error": {
-                "code": MCP_ELICITATION_REQUIRED_CODE,
-                "message": "more input required",
-                "data": {
-                    "server_id": "http",
-                    "request_id": RequestId::from_u128(42),
-                    "subject": "credentials",
-                    "schema": { "type": "object" }
-                }
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(json!({
-            "id": 3,
-            "method": "tools/call",
-            "params": {
-                "name": "search",
-                "arguments": { "q": "mcp", "token": "resolved" }
-            }
-        })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "error": {
-                "code": MCP_ELICITATION_REQUIRED_CODE,
-                "message": "more input still required",
-                "data": {
-                    "server_id": "http",
-                    "request_id": RequestId::from_u128(43),
-                    "subject": "second-secret",
-                    "schema": { "type": "object" }
-                }
-            }
-        })))
-        .expect(1)
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -557,12 +294,9 @@ async fn http_transport_does_not_loop_on_repeated_elicitation() {
     let error = connection
         .call_tool("search", json!({ "q": "mcp" }))
         .await
-        .expect_err("repeated elicitation fails closed");
-    assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
-    assert!(matches!(
-        error,
-        McpError::Elicitation(message) if message.contains("second-secret")
-    ));
+        .expect_err("legacy form elicitation errors are not retried");
+    assert_eq!(handler_calls.load(Ordering::SeqCst), 0);
+    assert!(matches!(error, McpError::Protocol(message) if message.contains("-32042")));
 }
 
 #[tokio::test]

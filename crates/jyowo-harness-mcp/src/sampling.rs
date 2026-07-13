@@ -10,7 +10,8 @@ use harness_contracts::{
     PermissionActorSource, PermissionMode, RequestId, RunId, SamplingBudgetDimension,
     SamplingDenyReason, SamplingOutcome, SessionId, TrustLevel,
 };
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 
 use crate::{
     authorize_mcp_sampling, JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpAuthorizationContext,
@@ -416,6 +417,125 @@ pub struct SamplingRequest {
     pub params: Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateMessageRequestParams {
+    pub messages: Vec<SamplingMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_preferences: Option<ModelPreferences>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_context: Option<SamplingIncludeContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    pub max_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_sequences: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<SamplingToolChoice>,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+impl CreateMessageRequestParams {
+    fn validate(&self) -> Result<(), JsonRpcError> {
+        if let Some(preferences) = &self.model_preferences {
+            for (name, value) in [
+                ("costPriority", preferences.cost_priority),
+                ("speedPriority", preferences.speed_priority),
+                ("intelligencePriority", preferences.intelligence_priority),
+            ] {
+                if value.is_some_and(|value| !(0.0..=1.0).contains(&value)) {
+                    return Err(invalid_params(&format!(
+                        "sampling modelPreferences.{name} must be between 0 and 1"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn preferred_model(&self) -> Option<String> {
+        self.model_preferences
+            .as_ref()?
+            .hints
+            .as_ref()?
+            .iter()
+            .find_map(|hint| hint.name.clone())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SamplingMessage {
+    pub role: SamplingRole,
+    pub content: Value,
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Map<String, Value>>,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SamplingRole {
+    User,
+    Assistant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SamplingIncludeContext {
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "thisServer")]
+    ThisServer,
+    #[serde(rename = "allServers")]
+    AllServers,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPreferences {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hints: Option<Vec<ModelHint>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_priority: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_priority: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intelligence_priority: Option<f64>,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelHint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SamplingToolChoice {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<SamplingToolChoiceMode>,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SamplingToolChoiceMode {
+    Auto,
+    Required,
+    None,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SamplingResponse {
     pub model_id: String,
@@ -603,7 +723,8 @@ impl SamplingJsonRpcHandler {
             );
         }
 
-        let sampling_request = match self.request_from_params(request.params.as_ref()) {
+        let sampling_request = match self.request_from_params(&request.id, request.params.as_ref())
+        {
             Ok(request) => request,
             Err(error) => return JsonRpcResponse::failure(request.id, error),
         };
@@ -945,37 +1066,29 @@ impl SamplingJsonRpcHandler {
         });
     }
 
-    fn request_from_params(&self, params: Option<&Value>) -> Result<SamplingRequest, JsonRpcError> {
+    fn request_from_params(
+        &self,
+        jsonrpc_id: &Value,
+        params: Option<&Value>,
+    ) -> Result<SamplingRequest, JsonRpcError> {
         let params =
             params.ok_or_else(|| invalid_params("sampling/createMessage missing params"))?;
+        let wire: CreateMessageRequestParams =
+            serde_json::from_value(params.clone()).map_err(|error| {
+                invalid_params(&format!("invalid sampling/createMessage params: {error}"))
+            })?;
+        wire.validate()?;
         Ok(SamplingRequest {
             session_id: self.session_id,
             run_id: self.run_id,
             server_id: self.server_id.clone(),
-            request_id: parse_optional_id(params.get("request_id"))?.unwrap_or_else(RequestId::new),
-            model_id: params
-                .get("model")
-                .or_else(|| params.get("model_id"))
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-            input_tokens: params
-                .get("input_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or_default(),
-            max_output_tokens: params
-                .get("max_tokens")
-                .or_else(|| params.get("max_output_tokens"))
-                .and_then(Value::as_u64)
-                .unwrap_or_default(),
-            tool_rounds: params
-                .get("tool_rounds")
-                .and_then(Value::as_u64)
-                .map(|value| value.min(u64::from(u8::MAX)) as u8)
-                .unwrap_or_default(),
-            requested_timeout: params
-                .get("timeout_ms")
-                .and_then(Value::as_u64)
-                .map(Duration::from_millis),
+            request_id: serde_json::from_value(jsonrpc_id.clone())
+                .unwrap_or_else(|_| RequestId::new()),
+            model_id: wire.preferred_model(),
+            input_tokens: 0,
+            max_output_tokens: wire.max_tokens,
+            tool_rounds: 0,
+            requested_timeout: None,
             permission_mode: self.permission_mode,
             server_trust: self.server_trust,
             prompt_cache_namespace: None,
@@ -1056,17 +1169,6 @@ fn emit_completed_sampling_event(
         prompt_cache_namespace: prompt_cache_namespace.to_owned(),
         at: now(),
     }));
-}
-
-fn parse_optional_id<T>(value: Option<&Value>) -> Result<Option<T>, JsonRpcError>
-where
-    T: serde::de::DeserializeOwned,
-{
-    value
-        .cloned()
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|error| invalid_params(format!("invalid id: {error}")))
 }
 
 fn invalid_params(message: impl Into<String>) -> JsonRpcError {

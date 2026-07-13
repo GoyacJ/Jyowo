@@ -2,7 +2,6 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
-use harness_contracts::PermissionMode;
 use serde_json::Value;
 use tokio::{
     net::TcpStream,
@@ -21,19 +20,21 @@ use tokio_tungstenite::{
 };
 
 use crate::{
-    authorize_mcp_transport_connect, call_tool_request, client_auth,
-    continue_after_elicitation_response, decode_empty_result, decode_list_prompts,
-    decode_list_resources, decode_list_tools, decode_prompt_messages, decode_read_resource,
-    decode_tool_result, get_prompt_request, list_prompts_request, list_resources_request,
-    list_tools_request, notification_change, read_resource_request, response_key,
-    subscribe_resource_request, tool_call_event_from_change, unsubscribe_resource_request,
-    ElicitationHandler, JsonRpcNotification, JsonRpcPeer, JsonRpcRequest, JsonRpcResponse,
-    ListChangedEvent, McpChange, McpClientCapabilities, McpConnectContext, McpConnection, McpError,
+    authorize_mcp_transport_connect, call_tool_request, client_auth, client_inbound_support,
+    decode_empty_result, decode_list_prompts, decode_list_resources, decode_list_tools,
+    decode_prompt_messages, decode_read_resource, decode_tool_result, get_prompt_request,
+    list_prompts_request, list_resources_request, list_tools_request, notification_change,
+    read_resource_request, response_key, subscribe_resource_request, tool_call_event_from_change,
+    unsubscribe_resource_request, JsonRpcNotification, JsonRpcPeer, JsonRpcRequest,
+    JsonRpcResponse, ListChangedEvent, McpChange, McpConnectContext, McpConnection, McpError,
     McpImplementation, McpListPage, McpMessage, McpMessageSink, McpOrderedNotificationHandler,
     McpOutboundMessage, McpPeer, McpPrompt, McpPromptMessages, McpReadResourceResult, McpResource,
     McpServerSpec, McpSession, McpToolCallEvent, McpToolCallStream, McpToolDescriptor,
     McpToolResult, McpTransport, NoopMcpMetricsSink, TransportChoice,
 };
+
+#[cfg(test)]
+use crate::McpClientCapabilities;
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 type WsWriter = futures::stream::SplitSink<WsStream, Message>;
@@ -139,15 +140,22 @@ impl McpTransport for WebsocketTransport {
         let (changes, _) = broadcast::channel(64);
         let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CAPACITY);
         let sink = Arc::new(WebsocketMessageSink::new(outbound_tx));
+        let support = client_inbound_support(&spec, &context);
         let session = McpSession::new(
             spec.capabilities_expected,
-            McpClientCapabilities::default(),
+            support.capabilities,
             McpImplementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
         );
         let notification_handler = Arc::new(WebsocketNotificationHandler {
             changes: changes.clone(),
         });
         let mut peer_builder = McpPeer::builder(sink.clone(), session);
+        if let Some(handler) = support.sampling {
+            peer_builder = peer_builder.sampling_handler(handler);
+        }
+        if let Some(handler) = support.elicitation {
+            peer_builder = peer_builder.elicitation_handler(handler);
+        }
         for method in change_notification_methods() {
             peer_builder =
                 peer_builder.ordered_notification_handler(method, notification_handler.clone());
@@ -188,8 +196,6 @@ impl McpTransport for WebsocketTransport {
             writer_task: Mutex::new(Some(writer_task)),
             reader_task: Mutex::new(Some(reader_task)),
             legacy_request_builder: JsonRpcPeer::new(),
-            elicitation_handler: context.elicitation_handler,
-            permission_mode: context.permission_mode,
         }))
     }
 }
@@ -388,8 +394,6 @@ pub struct WebsocketConnection {
     writer_task: Mutex<Option<JoinHandle<()>>>,
     reader_task: Mutex<Option<JoinHandle<()>>>,
     legacy_request_builder: JsonRpcPeer,
-    elicitation_handler: Option<Arc<dyn ElicitationHandler>>,
-    permission_mode: PermissionMode,
 }
 
 impl WebsocketConnection {
@@ -411,25 +415,6 @@ impl WebsocketConnection {
             Some(params) => self.peer.notify(notification.method, params).await,
             None => self.peer.notify_without_params(notification.method).await,
         }
-    }
-
-    async fn send_with_elicitation(
-        &self,
-        request: JsonRpcRequest,
-    ) -> Result<JsonRpcResponse, McpError> {
-        let response = self.send(request.clone()).await?;
-        if let Some(retry) = continue_after_elicitation_response(
-            &response,
-            &request,
-            &self.legacy_request_builder,
-            self.elicitation_handler.as_ref(),
-            self.permission_mode,
-        )
-        .await?
-        {
-            return self.send(retry).await;
-        }
-        Ok(response)
     }
 
     async fn call_tool_events_inner(
@@ -504,7 +489,7 @@ impl McpConnection for WebsocketConnection {
 
     async fn call_tool(&self, name: &str, args: Value) -> Result<McpToolResult, McpError> {
         decode_tool_result(
-            self.send_with_elicitation(call_tool_request(&self.legacy_request_builder, name, args))
+            self.send(call_tool_request(&self.legacy_request_builder, name, args))
                 .await?,
         )
     }
@@ -918,8 +903,6 @@ mod tests {
             writer_task: Mutex::new(Some(writer_task)),
             reader_task: Mutex::new(Some(reader_task)),
             legacy_request_builder: JsonRpcPeer::new(),
-            elicitation_handler: None,
-            permission_mode: PermissionMode::Default,
         };
 
         writer_started_rx.await.expect("writer task started");

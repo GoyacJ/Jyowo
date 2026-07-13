@@ -14,7 +14,7 @@ use std::{
 use futures::StreamExt;
 use harness_contracts::{McpServerId, McpServerSource, RequestId};
 use harness_mcp::{
-    DirectElicitationHandler, McpChange, McpClient, McpClientAuth, McpConnectContext,
+    DirectElicitationHandler, McpChange, McpClient, McpClientAuth, McpConnectContext, McpError,
     McpServerSpec, SseTransport, TransportChoice, MCP_ELICITATION_REQUIRED_CODE,
 };
 use parking_lot::Mutex;
@@ -69,8 +69,8 @@ async fn sse_transport_posts_requests_and_receives_streamed_responses() {
 }
 
 #[tokio::test]
-async fn sse_transport_continues_tool_call_after_elicitation_resolution() {
-    let (addr, shutdown, _methods) = spawn_sse_elicitation_fixture().await;
+async fn sse_transport_does_not_retry_legacy_form_elicitation_errors() {
+    let (addr, shutdown, methods) = spawn_sse_elicitation_fixture().await;
     let mut spec = McpServerSpec::new(
         McpServerId("sse".into()),
         "sse fixture",
@@ -94,11 +94,19 @@ async fn sse_transport_continues_tool_call_after_elicitation_resolution() {
         .await
         .expect("sse connects");
 
-    let result = connection
+    let error = connection
         .call_tool("sse_search", json!({ "q": "mcp" }))
         .await
-        .expect("tool call continues");
-    assert_eq!(result, harness_mcp::McpToolResult::text("sse-found"));
+        .expect_err("legacy form elicitation errors are not retried");
+    assert!(matches!(error, McpError::Protocol(message) if message.contains("-32042")));
+    assert_eq!(
+        methods
+            .lock()
+            .iter()
+            .filter(|method| method.as_str() == "tools/call")
+            .count(),
+        1
+    );
 
     connection.shutdown().await.expect("shutdown");
     let _ = shutdown.send(());
