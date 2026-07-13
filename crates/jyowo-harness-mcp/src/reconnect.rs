@@ -2,14 +2,14 @@ use std::{
     future::Future,
     panic::AssertUnwindSafe,
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc,
     },
     time::Instant,
 };
 
 use async_trait::async_trait;
-use futures::{stream, FutureExt, StreamExt};
+use futures::{stream, FutureExt};
 use harness_contracts::{
     now, Event, McpConnectionLostEvent, McpConnectionLostReason, McpConnectionRecoveredEvent,
     SessionId,
@@ -65,6 +65,9 @@ pub struct ManagedMcpConnection {
     downtime_started: Arc<Mutex<Option<Instant>>>,
     schema_fingerprint: Arc<RwLock<Option<McpSchemaFingerprint>>>,
     changes_tx: broadcast::Sender<McpChange>,
+    change_generation: Arc<AtomicU64>,
+    change_forwarder: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    retired_shutdown_tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     event_sink: Arc<dyn McpEventSink>,
     metrics_sink: Arc<dyn McpMetricsSink>,
 }
@@ -153,7 +156,7 @@ impl ManagedMcpConnection {
             connect_context: context,
             session_id,
             state: Arc::new(RwLock::new(McpConnectionState::Ready)),
-            connection: Arc::new(RwLock::new(Some(connection))),
+            connection: Arc::new(RwLock::new(Some(Arc::clone(&connection)))),
             attempts: Arc::new(AtomicU32::new(0)),
             reconnecting: Arc::new(AtomicBool::new(false)),
             reconnect_task: Arc::new(Mutex::new(None)),
@@ -164,9 +167,13 @@ impl ManagedMcpConnection {
             downtime_started: Arc::new(Mutex::new(None)),
             schema_fingerprint: Arc::new(RwLock::new(None)),
             changes_tx,
+            change_generation: Arc::new(AtomicU64::new(0)),
+            change_forwarder: Arc::new(Mutex::new(None)),
+            retired_shutdown_tasks: Arc::new(Mutex::new(Vec::new())),
             event_sink,
             metrics_sink,
         };
+        managed.replace_change_forwarder(connection).await;
         managed.record_state(McpMetricConnectionState::Ready);
         managed.emit_recovered(true, 0, 0, false);
         Ok(managed)
@@ -227,11 +234,14 @@ impl ManagedMcpConnection {
         }
         self.attempts.store(0, Ordering::SeqCst);
         *self.downtime_started.lock().await = Some(Instant::now());
-        *self.connection.write().await = None;
         *state = McpConnectionState::Reconnecting {
             attempt: 0,
             last_error,
         };
+        self.stop_change_forwarder().await;
+        if let Some(connection) = self.connection.write().await.take() {
+            self.spawn_retired_shutdown(connection).await;
+        }
         self.record_state(McpMetricConnectionState::Reconnecting);
         self.emit_lost(reason, 0, false);
 
@@ -339,7 +349,8 @@ impl ManagedMcpConnection {
                     } else {
                         false
                     };
-                    *self.connection.write().await = Some(connection);
+                    *self.connection.write().await = Some(Arc::clone(&connection));
+                    self.replace_change_forwarder(connection).await;
                     *state = McpConnectionState::Ready;
                     self.record_reconnect_attempt(next_attempt, McpMetricOutcome::Success);
                     self.record_state(McpMetricConnectionState::Ready);
@@ -492,6 +503,65 @@ impl ManagedMcpConnection {
             outcome,
         });
     }
+
+    async fn replace_change_forwarder(&self, connection: Arc<dyn McpConnection>) {
+        self.stop_change_forwarder().await;
+        let generation = self.change_generation.load(Ordering::SeqCst);
+        let current_generation = Arc::clone(&self.change_generation);
+        let changes_tx = self.changes_tx.clone();
+        let forwarder = tokio::spawn(async move {
+            let Ok(mut changes) = connection.subscribe_changes().await else {
+                return;
+            };
+            while let Some(change) = futures::StreamExt::next(&mut changes).await {
+                if current_generation.load(Ordering::SeqCst) != generation {
+                    return;
+                }
+                let _ = changes_tx.send(change);
+            }
+        });
+        *self.change_forwarder.lock().await = Some(forwarder);
+    }
+
+    async fn stop_change_forwarder(&self) {
+        self.change_generation.fetch_add(1, Ordering::SeqCst);
+        if let Some(forwarder) = self.change_forwarder.lock().await.take() {
+            forwarder.abort();
+            let _ = forwarder.await;
+        }
+    }
+
+    async fn spawn_retired_shutdown(&self, connection: Arc<dyn McpConnection>) {
+        let task = tokio::spawn(async move {
+            let _ = connection.shutdown().await;
+        });
+        let completed = {
+            let mut tasks = self.retired_shutdown_tasks.lock().await;
+            let mut pending = Vec::with_capacity(tasks.len().saturating_add(1));
+            let mut completed = Vec::new();
+            for task in tasks.drain(..) {
+                if task.is_finished() {
+                    completed.push(task);
+                } else {
+                    pending.push(task);
+                }
+            }
+            pending.push(task);
+            *tasks = pending;
+            completed
+        };
+        for task in completed {
+            let _ = task.await;
+        }
+    }
+
+    async fn stop_retired_shutdown_tasks(&self) {
+        let tasks = std::mem::take(&mut *self.retired_shutdown_tasks.lock().await);
+        for task in tasks {
+            task.abort();
+            let _ = task.await;
+        }
+    }
 }
 
 #[async_trait]
@@ -633,9 +703,8 @@ impl McpConnection for ManagedMcpConnection {
     }
 
     async fn subscribe_changes(&self) -> Result<ListChangedEvent, McpError> {
-        let connection_changes = self.current_connection().await?.subscribe_changes().await?;
         let receiver = self.changes_tx.subscribe();
-        let internal_changes = stream::unfold(receiver, |mut receiver| async move {
+        let changes = stream::unfold(receiver, |mut receiver| async move {
             loop {
                 match receiver.recv().await {
                     Ok(change) => return Some((change, receiver)),
@@ -644,10 +713,7 @@ impl McpConnection for ManagedMcpConnection {
                 }
             }
         });
-        Ok(Box::pin(stream::select(
-            connection_changes,
-            internal_changes.boxed(),
-        )))
+        Ok(Box::pin(changes))
     }
 
     async fn shutdown(&self) -> Result<(), McpError> {
@@ -690,6 +756,9 @@ impl ManagedMcpConnection {
         self.reconnecting.store(false, Ordering::SeqCst);
         let reconnect_task = self.reconnect_task.lock().await.take();
         drop(state);
+
+        self.stop_change_forwarder().await;
+        self.stop_retired_shutdown_tasks().await;
 
         let connection_result = match self.connection.write().await.take() {
             Some(connection) => connection.shutdown().await,

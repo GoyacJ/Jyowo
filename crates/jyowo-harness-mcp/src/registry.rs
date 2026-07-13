@@ -15,7 +15,10 @@ use harness_contracts::{
 use harness_tool::ToolRegistry;
 use serde::Serialize;
 use serde_json::Value;
-use tokio::sync::RwLock;
+use tokio::{
+    sync::{Mutex, RwLock},
+    task::JoinHandle,
+};
 
 use crate::{
     trust_level_for_source, FilterDecision, ManagedMcpConnection, McpChange, McpConnectContext,
@@ -46,7 +49,8 @@ pub struct ManagedMcpServer {
     pub spec: McpServerSpec,
     pub scope: McpServerScope,
     pub connection: Arc<dyn McpConnection>,
-    pub connection_state: McpConnectionState,
+    pub tool_sync_error: Option<String>,
+    tool_sync_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     pub injected_tools: BTreeMap<String, DeferPolicy>,
     pub known_resources: BTreeSet<String>,
     pub resource_observers: BTreeMap<String, ResourceObservationState>,
@@ -115,7 +119,8 @@ impl McpRegistry {
                 spec,
                 scope,
                 connection,
-                connection_state: McpConnectionState::Ready,
+                tool_sync_error: None,
+                tool_sync_task: Arc::new(Mutex::new(None)),
                 injected_tools: BTreeMap::new(),
                 known_resources: BTreeSet::new(),
                 resource_observers: BTreeMap::new(),
@@ -178,7 +183,8 @@ impl McpRegistry {
                 spec,
                 scope,
                 connection,
-                connection_state: McpConnectionState::Ready,
+                tool_sync_error: None,
+                tool_sync_task: Arc::new(Mutex::new(None)),
                 injected_tools: BTreeMap::new(),
                 known_resources: BTreeSet::new(),
                 resource_observers: BTreeMap::new(),
@@ -210,8 +216,9 @@ impl McpRegistry {
             ManagedMcpServer {
                 spec,
                 scope,
-                connection: Arc::new(FailedMcpConnection),
-                connection_state: McpConnectionState::Failed { last_error },
+                connection: Arc::new(FailedMcpConnection { last_error }),
+                tool_sync_error: None,
+                tool_sync_task: Arc::new(Mutex::new(None)),
                 injected_tools: BTreeMap::new(),
                 known_resources: BTreeSet::new(),
                 resource_observers: BTreeMap::new(),
@@ -236,7 +243,8 @@ impl McpRegistry {
             spec,
             scope: McpServerScope::Global,
             connection: Arc::new(RegisteredPluginMcpConnection),
-            connection_state: McpConnectionState::Ready,
+            tool_sync_error: None,
+            tool_sync_task: Arc::new(Mutex::new(None)),
             injected_tools: BTreeMap::new(),
             known_resources: BTreeSet::new(),
             resource_observers: BTreeMap::new(),
@@ -261,7 +269,8 @@ impl McpRegistry {
             spec,
             scope: McpServerScope::Global,
             connection,
-            connection_state: McpConnectionState::Ready,
+            tool_sync_error: None,
+            tool_sync_task: Arc::new(Mutex::new(None)),
             injected_tools: BTreeMap::new(),
             known_resources: BTreeSet::new(),
             resource_observers: BTreeMap::new(),
@@ -279,16 +288,28 @@ impl McpRegistry {
         server_id: McpServerId,
         event_sink: Arc<dyn McpEventSink>,
     ) -> Result<(), McpError> {
-        let connection = self
+        let (connection, task_slot) = self
             .inner
             .read()
             .await
             .get(&server_id)
-            .map(|managed| Arc::clone(&managed.connection))
+            .map(|managed| {
+                (
+                    Arc::clone(&managed.connection),
+                    Arc::clone(&managed.tool_sync_task),
+                )
+            })
             .ok_or_else(|| McpError::ServerNotFound(server_id.0.clone()))?;
+        let mut task_slot = task_slot.lock().await;
+        if task_slot.as_ref().is_some_and(|task| !task.is_finished()) {
+            return Ok(());
+        }
+        if let Some(finished) = task_slot.take() {
+            let _ = finished.await;
+        }
         let mut changes = connection.subscribe_changes().await?;
         let registry = self.clone();
-        tokio::spawn(async move {
+        *task_slot = Some(tokio::spawn(async move {
             while let Some(change) = changes.next().await {
                 let result = match change {
                     McpChange::ToolsListChanged => registry
@@ -313,6 +334,9 @@ impl McpRegistry {
                     McpChange::Cancelled { .. } | McpChange::Progress { .. } => Ok(()),
                 };
                 if let Err(error) = result {
+                    let _ = registry
+                        .set_tool_sync_error(&server_id, Some(error.to_string()))
+                        .await;
                     event_sink.emit(Event::UnexpectedError(UnexpectedErrorEvent {
                         session_id: None,
                         run_id: None,
@@ -322,9 +346,11 @@ impl McpRegistry {
                         ),
                         at: now(),
                     }));
+                } else {
+                    let _ = registry.set_tool_sync_error(&server_id, None).await;
                 }
             }
-        });
+        }));
         Ok(())
     }
 
@@ -341,24 +367,38 @@ impl McpRegistry {
     }
 
     pub async fn ready_plugin_server_ids(&self) -> Vec<McpServerId> {
-        self.inner
+        let plugins = self
+            .inner
             .read()
             .await
             .iter()
-            .filter(|(_, managed)| {
-                matches!(managed.spec.source, McpServerSource::Plugin(_))
-                    && matches!(managed.connection_state, McpConnectionState::Ready)
-            })
-            .map(|(server_id, _)| server_id.clone())
-            .collect()
+            .filter(|(_, managed)| matches!(managed.spec.source, McpServerSource::Plugin(_)))
+            .map(|(server_id, managed)| (server_id.clone(), Arc::clone(&managed.connection)))
+            .collect::<Vec<_>>();
+        futures::future::join_all(
+            plugins
+                .into_iter()
+                .map(|(server_id, connection)| async move {
+                    (server_id, connection.connection_state().await)
+                }),
+        )
+        .await
+        .into_iter()
+        .filter_map(|(server_id, state)| (state == McpConnectionState::Ready).then_some(server_id))
+        .collect()
     }
 
     pub async fn connection_state(&self, server_id: &McpServerId) -> Option<McpConnectionState> {
-        self.inner
+        let connection = self
+            .inner
             .read()
             .await
             .get(server_id)
-            .map(|managed| managed.connection_state.clone())
+            .map(|managed| Arc::clone(&managed.connection));
+        match connection {
+            Some(connection) => Some(connection.connection_state().await),
+            None => None,
+        }
     }
 
     pub async fn server_scope(&self, server_id: &McpServerId) -> Option<McpServerScope> {
@@ -404,18 +444,26 @@ impl McpRegistry {
             .and_then(|managed| managed.schema_fingerprint)
     }
 
-    pub async fn set_connection_state(
+    pub async fn set_tool_sync_error(
         &self,
         server_id: &McpServerId,
-        state: McpConnectionState,
+        error: Option<String>,
     ) -> Result<(), McpError> {
         self.inner
             .write()
             .await
             .get_mut(server_id)
             .ok_or_else(|| McpError::ServerNotFound(server_id.0.clone()))?
-            .connection_state = state;
+            .tool_sync_error = error;
         Ok(())
+    }
+
+    pub async fn tool_sync_error(&self, server_id: &McpServerId) -> Option<String> {
+        self.inner
+            .read()
+            .await
+            .get(server_id)
+            .and_then(|managed| managed.tool_sync_error.clone())
     }
 
     pub async fn evaluate_required(
@@ -424,9 +472,17 @@ impl McpRegistry {
         required: &[McpServerPattern],
     ) -> Vec<RequiredEvaluation> {
         let managed = self.inner.read().await.clone();
+        let states = futures::future::join_all(managed.iter().map(|(server_id, server)| {
+            let server_id = server_id.clone();
+            let connection = Arc::clone(&server.connection);
+            async move { (server_id, connection.connection_state().await) }
+        }))
+        .await
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
         required
             .iter()
-            .map(|pattern| evaluate_required_pattern(&managed, refs, pattern))
+            .map(|pattern| evaluate_required_pattern(&managed, &states, refs, pattern))
             .collect()
     }
 
@@ -437,19 +493,18 @@ impl McpRegistry {
             .await
             .remove(server_id)
             .ok_or_else(|| McpError::ServerNotFound(server_id.0.clone()))?;
-        shutdown_connection(managed.connection).await
+        shutdown_managed_server(managed).await
     }
 
     pub async fn shutdown_all(&self) -> Result<(), McpError> {
-        let connections = {
+        let servers = {
             let mut inner = self.inner.write().await;
             std::mem::take(&mut *inner)
                 .into_values()
-                .map(|managed| managed.connection)
                 .collect::<Vec<_>>()
         };
         let results =
-            futures::future::join_all(connections.into_iter().map(shutdown_connection)).await;
+            futures::future::join_all(servers.into_iter().map(shutdown_managed_server)).await;
         match results.into_iter().find_map(Result::err) {
             Some(error) => Err(error),
             None => Ok(()),
@@ -477,7 +532,7 @@ impl McpRegistry {
                 .remove(server_id)
                 .expect("owned plugin server was checked while holding write lock")
         };
-        shutdown_connection(managed.connection).await
+        shutdown_managed_server(managed).await
     }
 
     async fn insert_plugin_server(
@@ -499,7 +554,7 @@ impl McpRegistry {
             inner.insert(server.spec.server_id.clone(), server)
         };
         match replaced {
-            Some(replaced) => shutdown_connection(replaced.connection).await,
+            Some(replaced) => shutdown_managed_server(replaced).await,
             None => Ok(()),
         }
     }
@@ -549,6 +604,7 @@ impl McpRegistry {
         if let Some(managed) = self.inner.write().await.get_mut(server_id) {
             managed.injected_tools = injected_snapshot;
             managed.schema_fingerprint = Some(schema_fingerprint);
+            managed.tool_sync_error = None;
         }
 
         Ok(registered)
@@ -705,13 +761,9 @@ impl McpRegistry {
                 pending.push(server_id.clone());
                 continue;
             };
-            let connection_state = server.connection.connection_state().await;
             let lifecycle_pending = matches!(
-                (&server.connection_state, &connection_state),
-                (McpConnectionState::Connecting, _)
-                    | (McpConnectionState::Reconnecting { .. }, _)
-                    | (_, McpConnectionState::Connecting)
-                    | (_, McpConnectionState::Reconnecting { .. })
+                server.connection.connection_state().await,
+                McpConnectionState::Connecting | McpConnectionState::Reconnecting { .. }
             ) && server.spec.reconnect.keep_deferred_during_reconnect;
             if server.pending_list_changed || lifecycle_pending {
                 pending.push(server_id.clone());
@@ -874,25 +926,27 @@ impl McpRegistry {
         server_id: &McpServerId,
         at: DateTime<Utc>,
     ) -> Result<(), McpError> {
-        let mut guard = self.inner.write().await;
-        let Some(managed) = guard.get_mut(server_id) else {
-            return Err(McpError::ServerNotFound(server_id.0.clone()));
-        };
-        let idle = chrono::Duration::from_std(managed.spec.timeouts.idle)
-            .unwrap_or_else(|_| chrono::Duration::seconds(300));
-        let idle_uri = managed
-            .resource_observers
-            .iter()
-            .find(|(_, subscription)| {
-                !subscription.downgraded
-                    && at.signed_duration_since(subscription.last_update) > idle
-            })
-            .map(|(uri, _)| uri.clone());
-        if let Some(uri) = idle_uri {
-            managed.connection_state = McpConnectionState::Reconnecting {
-                attempt: 1,
-                last_error: format!("resource update stream idle for {uri}"),
+        let (connection, idle_uri) = {
+            let guard = self.inner.read().await;
+            let Some(managed) = guard.get(server_id) else {
+                return Err(McpError::ServerNotFound(server_id.0.clone()));
             };
+            let idle = chrono::Duration::from_std(managed.spec.timeouts.idle)
+                .unwrap_or_else(|_| chrono::Duration::seconds(300));
+            let idle_uri = managed
+                .resource_observers
+                .iter()
+                .find(|(_, subscription)| {
+                    !subscription.downgraded
+                        && at.signed_duration_since(subscription.last_update) > idle
+                })
+                .map(|(uri, _)| uri.clone());
+            (Arc::clone(&managed.connection), idle_uri)
+        };
+        if let Some(uri) = idle_uri {
+            connection
+                .mark_unhealthy(format!("resource update stream idle for {uri}"))
+                .await?;
         }
         Ok(())
     }
@@ -994,6 +1048,14 @@ impl McpRegistry {
     }
 }
 
+async fn shutdown_managed_server(managed: ManagedMcpServer) -> Result<(), McpError> {
+    if let Some(task) = managed.tool_sync_task.lock().await.take() {
+        task.abort();
+        let _ = task.await;
+    }
+    shutdown_connection(managed.connection).await
+}
+
 async fn shutdown_connection(connection: Arc<dyn McpConnection>) -> Result<(), McpError> {
     let connection_id = connection.connection_id().to_owned();
     match tokio::time::timeout(CONNECTION_SHUTDOWN_TIMEOUT, connection.shutdown()).await {
@@ -1027,12 +1089,20 @@ impl McpConnection for RegisteredPluginMcpConnection {
     }
 }
 
-struct FailedMcpConnection;
+struct FailedMcpConnection {
+    last_error: String,
+}
 
 #[async_trait::async_trait]
 impl McpConnection for FailedMcpConnection {
     fn connection_id(&self) -> &str {
         "failed-mcp"
+    }
+
+    async fn connection_state(&self) -> McpConnectionState {
+        McpConnectionState::Failed {
+            last_error: self.last_error.clone(),
+        }
     }
 
     async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
@@ -1223,6 +1293,7 @@ fn resolve_defer_policy(mcp_tool: &McpToolDescriptor) -> DeferPolicy {
 
 fn evaluate_required_pattern(
     managed: &BTreeMap<McpServerId, ManagedMcpServer>,
+    states: &BTreeMap<McpServerId, McpConnectionState>,
     refs: &[McpServerRef],
     pattern: &McpServerPattern,
 ) -> RequiredEvaluation {
@@ -1256,15 +1327,18 @@ fn evaluate_required_pattern(
 
     if matching
         .iter()
-        .any(|(_, server)| server.connection_state == McpConnectionState::Ready)
+        .any(|(server_id, _)| states.get(*server_id) == Some(&McpConnectionState::Ready))
     {
         return RequiredEvaluation::Satisfied;
     }
 
-    let (server_id, server) = matching[0];
+    let (server_id, _) = matching[0];
     RequiredEvaluation::NotReady {
         server_id: server_id.clone(),
-        state: server.connection_state.clone(),
+        state: states
+            .get(server_id)
+            .cloned()
+            .unwrap_or(McpConnectionState::Closed),
     }
 }
 

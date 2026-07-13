@@ -332,6 +332,7 @@ struct MutableMetadata {
     prompts: Mutex<Vec<McpPrompt>>,
     subscribed: Mutex<Vec<String>>,
     unsubscribed: Mutex<Vec<String>>,
+    unhealthy_reason: Mutex<Option<String>>,
 }
 
 impl MutableMetadata {
@@ -356,6 +357,21 @@ impl MutableMetadata {
 impl McpConnection for MutableMetadata {
     fn connection_id(&self) -> &'static str {
         "metadata"
+    }
+
+    async fn connection_state(&self) -> harness_mcp::McpConnectionState {
+        match self.unhealthy_reason.lock().clone() {
+            Some(last_error) => harness_mcp::McpConnectionState::Reconnecting {
+                attempt: 0,
+                last_error,
+            },
+            None => harness_mcp::McpConnectionState::Ready,
+        }
+    }
+
+    async fn mark_unhealthy(&self, reason: String) -> Result<(), McpError> {
+        *self.unhealthy_reason.lock() = Some(reason);
+        Ok(())
     }
 
     async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {

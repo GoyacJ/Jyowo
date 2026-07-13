@@ -1,13 +1,21 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 use async_trait::async_trait;
+use futures::{channel::mpsc, SinkExt};
 use harness_contracts::{
     Event, McpServerId, McpServerSource, SessionId, ToolPoolChangeSource,
     ToolsListChangedDisposition,
 };
 use harness_mcp::{
-    ListChangedDisposition, McpConnection, McpError, McpEventSink, McpMetric, McpMetricsSink,
-    McpRegistry, McpServerScope, McpServerSpec, McpToolDescriptor, McpToolResult, TransportChoice,
+    ListChangedDisposition, ListChangedEvent, McpChange, McpConnection, McpError, McpEventSink,
+    McpMetric, McpMetricsSink, McpRegistry, McpServerScope, McpServerSpec, McpToolDescriptor,
+    McpToolResult, TransportChoice,
 };
 use harness_tool::{BuiltinToolset, ToolRegistry};
 use parking_lot::Mutex;
@@ -208,6 +216,64 @@ async fn unchanged_or_rejected_list_changed_does_not_mutate_registry() {
     assert!(tool_registry.get("mcp__fixture__old").is_some());
 }
 
+#[tokio::test]
+async fn list_changed_subscription_is_idempotent_and_stops_on_remove() {
+    let tool_registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Empty)
+        .build()
+        .expect("registry");
+    let (connection, mut changes) = CountingChanges::new();
+    let registry = McpRegistry::new();
+    registry
+        .add_ready_server(spec(), McpServerScope::Global, connection.clone())
+        .await
+        .expect("server");
+    let sink = Arc::new(CollectingSink::default());
+
+    registry
+        .subscribe_list_changed(tool_registry.clone(), server_id(), sink.clone())
+        .await
+        .expect("first subscription");
+    registry
+        .subscribe_list_changed(tool_registry, server_id(), sink)
+        .await
+        .expect("duplicate subscription is idempotent");
+
+    assert_eq!(connection.subscriptions.load(Ordering::SeqCst), 1);
+
+    registry
+        .remove_server(&server_id())
+        .await
+        .expect("remove server");
+    assert!(changes.send(McpChange::ToolsListChanged).await.is_err());
+}
+
+#[tokio::test]
+async fn registry_shutdown_stops_list_changed_subscription() {
+    let tool_registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Empty)
+        .build()
+        .expect("registry");
+    let (connection, mut changes) = CountingChanges::new();
+    let registry = McpRegistry::new();
+    registry
+        .add_ready_server(spec(), McpServerScope::Global, connection)
+        .await
+        .expect("server");
+    registry
+        .subscribe_list_changed(
+            tool_registry,
+            server_id(),
+            Arc::new(CollectingSink::default()),
+        )
+        .await
+        .expect("subscription");
+
+    registry.shutdown_all().await.expect("shutdown registry");
+
+    assert!(changes.send(McpChange::ToolsListChanged).await.is_err());
+}
+
 async fn registry_with(connection: Arc<MutableTools>, scope: McpServerScope) -> McpRegistry {
     registry_with_metrics(connection, scope, Arc::new(CollectingMetrics::default())).await
 }
@@ -262,6 +328,53 @@ fn tool_with_schema(name: &str, always_load: bool, input_schema: Value) -> McpTo
 
 struct MutableTools {
     tools: Mutex<Vec<McpToolDescriptor>>,
+}
+
+struct CountingChanges {
+    subscriptions: AtomicUsize,
+    changes: Mutex<Option<mpsc::Receiver<McpChange>>>,
+}
+
+impl CountingChanges {
+    fn new() -> (Arc<Self>, mpsc::Sender<McpChange>) {
+        let (sender, receiver) = mpsc::channel(8);
+        (
+            Arc::new(Self {
+                subscriptions: AtomicUsize::new(0),
+                changes: Mutex::new(Some(receiver)),
+            }),
+            sender,
+        )
+    }
+}
+
+#[async_trait]
+impl McpConnection for CountingChanges {
+    fn connection_id(&self) -> &'static str {
+        "counting-changes"
+    }
+
+    async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
+        Ok(Vec::new())
+    }
+
+    async fn call_tool(&self, _name: &str, _args: Value) -> Result<McpToolResult, McpError> {
+        Ok(McpToolResult::text("ok"))
+    }
+
+    async fn subscribe_changes(&self) -> Result<ListChangedEvent, McpError> {
+        self.subscriptions.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::pin(
+            self.changes
+                .lock()
+                .take()
+                .expect("subscribe_changes called more than once"),
+        ))
+    }
+
+    async fn shutdown(&self) -> Result<(), McpError> {
+        Ok(())
+    }
 }
 
 impl MutableTools {

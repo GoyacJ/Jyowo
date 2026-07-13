@@ -184,6 +184,7 @@ fn mcp_tools_are_injected_into_default_session() {
                 McpServerScope::Session(session_id),
                 Arc::new(TestMcpConnection {
                     tools: vec![mcp_tool("lookup", false), mcp_tool("always", true)],
+                    state: McpConnectionState::Ready,
                 }),
             )
             .await
@@ -255,6 +256,7 @@ fn mcp_metrics_are_forwarded_to_observer() {
                 McpServerScope::Session(session_id),
                 Arc::new(TestMcpConnection {
                     tools: vec![mcp_tool("lookup", false)],
+                    state: McpConnectionState::Ready,
                 }),
             )
             .await
@@ -424,21 +426,19 @@ fn tool_search_pending_mcp_servers_reflect_registry_state_and_retains_deferred_d
                     McpServerScope::Session(session_id),
                     Arc::new(TestMcpConnection {
                         tools: vec![mcp_tool("lookup", false)],
+                        state: if server_id == pending_server_id {
+                            McpConnectionState::Reconnecting {
+                                attempt: 1,
+                                last_error: "transport reset".to_owned(),
+                            }
+                        } else {
+                            McpConnectionState::Ready
+                        },
                     }),
                 )
                 .await
                 .expect("mcp server registers");
         }
-        mcp_registry
-            .set_connection_state(
-                &pending_server_id,
-                McpConnectionState::Reconnecting {
-                    attempt: 1,
-                    last_error: "transport reset".to_owned(),
-                },
-            )
-            .await
-            .expect("pending state");
         let tool_use_id = ToolUseId::new();
         let model = Arc::new(ScriptedProvider::new(vec![
             ScriptedResponse::Stream(vec![

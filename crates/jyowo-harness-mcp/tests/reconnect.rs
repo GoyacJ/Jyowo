@@ -8,7 +8,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use futures::StreamExt;
+use futures::{channel::mpsc, SinkExt, StreamExt};
 use harness_contracts::{
     Event, McpConnectionLostReason, McpServerId, McpServerSource, SessionId, TrustLevel,
 };
@@ -542,6 +542,112 @@ async fn managed_connection_reports_schema_changed_after_reconnect() {
 }
 
 #[tokio::test]
+async fn stable_change_stream_forwards_new_generation_and_suppresses_old_generation() {
+    let notify = Arc::new(Notify::new());
+    let (initial, mut initial_changes) =
+        TestConnection::with_change_channel(vec![Err(McpError::Connection("lost".into()))]);
+    let (reconnected, mut reconnected_changes) =
+        TestConnection::with_change_channel(vec![Ok(McpToolResult::text("after"))]);
+    let managed = managed_connection(
+        policy(0),
+        TestTransport::new(vec![Ok(initial), Ok(reconnected)]).with_attempt_notify(notify.clone()),
+        Arc::new(RecordingSink::default()),
+    )
+    .await;
+    let mut changes = managed
+        .subscribe_changes()
+        .await
+        .expect("stable change stream");
+
+    initial_changes
+        .send(McpChange::ResourcesListChanged)
+        .await
+        .expect("initial generation notification");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_millis(100), changes.next())
+            .await
+            .expect("initial notification timeout"),
+        Some(McpChange::ResourcesListChanged)
+    );
+
+    assert!(managed.call_tool("search", json!({})).await.is_err());
+    notify.notified().await;
+    wait_for_ready(&managed).await;
+
+    let _ = initial_changes
+        .send(McpChange::ResourceUpdated {
+            uri: "jyowo://stale".to_owned(),
+        })
+        .await;
+    reconnected_changes
+        .send(McpChange::PromptsListChanged)
+        .await
+        .expect("reconnected generation notification");
+
+    assert_eq!(
+        tokio::time::timeout(Duration::from_millis(100), changes.next())
+            .await
+            .expect("reconnected notification timeout"),
+        Some(McpChange::PromptsListChanged)
+    );
+}
+
+#[tokio::test]
+async fn reconnect_shuts_down_the_replaced_connection() {
+    let notify = Arc::new(Notify::new());
+    let initial_shutdowns = Arc::new(AtomicUsize::new(0));
+    let managed = managed_connection(
+        policy(0),
+        TestTransport::new(vec![
+            Ok(TestConnection {
+                tools: vec![tool("search")],
+                results: Mutex::new(VecDeque::from([Err(McpError::Connection("lost".into()))])),
+                shutdowns: initial_shutdowns.clone(),
+                ..Default::default()
+            }),
+            Ok(TestConnection::default()),
+        ])
+        .with_attempt_notify(notify.clone()),
+        Arc::new(RecordingSink::default()),
+    )
+    .await;
+
+    assert!(managed.call_tool("search", json!({})).await.is_err());
+    notify.notified().await;
+    wait_for_ready(&managed).await;
+    for _ in 0..50 {
+        if initial_shutdowns.load(Ordering::SeqCst) == 1 {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(initial_shutdowns.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn shutdown_terminates_the_generation_change_forwarder() {
+    let (connection, mut connection_changes) = TestConnection::with_change_channel(Vec::new());
+    let managed = managed_connection(
+        policy(0),
+        TestTransport::new(vec![Ok(connection)]),
+        Arc::new(RecordingSink::default()),
+    )
+    .await;
+    let _changes = managed
+        .subscribe_changes()
+        .await
+        .expect("stable change stream");
+
+    managed.shutdown().await.expect("shutdown");
+
+    assert!(connection_changes
+        .send(McpChange::ToolsListChanged)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
 async fn managed_connection_terminal_failure_after_max_attempts() {
     let notify = Arc::new(Notify::new());
     let sink = Arc::new(RecordingSink::default());
@@ -871,6 +977,7 @@ struct TestConnection {
     shutdown_error: Option<String>,
     shutdown_panics: bool,
     shutdowns: Arc<AtomicUsize>,
+    changes: Mutex<Option<mpsc::Receiver<McpChange>>>,
 }
 
 impl TestConnection {
@@ -891,6 +998,21 @@ impl TestConnection {
             results: Mutex::new(VecDeque::from(results)),
             ..Default::default()
         }
+    }
+
+    fn with_change_channel(
+        results: Vec<Result<McpToolResult, McpError>>,
+    ) -> (Self, mpsc::Sender<McpChange>) {
+        let (sender, receiver) = mpsc::channel(8);
+        (
+            Self {
+                tools: vec![tool("search")],
+                results: Mutex::new(VecDeque::from(results)),
+                changes: Mutex::new(Some(receiver)),
+                ..Default::default()
+            },
+            sender,
+        )
     }
 }
 
@@ -918,9 +1040,10 @@ impl McpConnection for TestConnection {
     }
 
     async fn subscribe_changes(&self) -> Result<ListChangedEvent, McpError> {
-        Ok(Box::pin(futures::stream::iter([
-            McpChange::ToolsListChanged,
-        ])))
+        Ok(match self.changes.lock().take() {
+            Some(changes) => Box::pin(changes),
+            None => Box::pin(futures::stream::empty()),
+        })
     }
 
     async fn shutdown(&self) -> Result<(), McpError> {

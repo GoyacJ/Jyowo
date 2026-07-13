@@ -697,12 +697,7 @@ pub(crate) async fn register_mcp_record_with_settings_runtime(
         {
             config
                 .registry
-                .set_connection_state(
-                    &server_id,
-                    McpConnectionState::Failed {
-                        last_error: error.to_string(),
-                    },
-                )
+                .set_tool_sync_error(&server_id, Some(error.to_string()))
                 .await
                 .map_err(|error| runtime_operation_failed(error.to_string()))?;
         }
