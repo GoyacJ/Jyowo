@@ -1298,6 +1298,15 @@ fn yaml_quoted_scalar(value: &str) -> String {
 
 fn validate_hook_trust(skill: &Skill) -> Result<(), SkillError> {
     for hook in &skill.frontmatter.hooks {
+        if matches!(
+            &hook.transport,
+            SkillHookTransport::Http(spec) if spec.security.mtls_required
+        ) {
+            return Err(SkillError::ParseFrontmatter(format!(
+                "hook `{}` requires mTLS, but no client certificate source is configured",
+                hook.id
+            )));
+        }
         match (&skill.source, &hook.transport) {
             (SkillSource::Mcp(_), _) => {
                 return Err(SkillError::HookTransportNotPermitted {

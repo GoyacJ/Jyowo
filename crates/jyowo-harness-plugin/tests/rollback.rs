@@ -65,9 +65,12 @@ async fn deactivate_unregisters_registered_capabilities() {
     registry.discover().await.expect("discover");
 
     registry.activate(&plugin_id()).await.expect("activate");
+    let skill_handler_id = registries.skills.hook_bindings()[0].handler_id.clone();
     registries
         .hooks
-        .register(Box::new(FakeSkillBoundHook))
+        .register(Box::new(FakeSkillBoundHook {
+            handler_id: skill_handler_id,
+        }))
         .expect("skill-bound hook should register");
     registries.assert_registered().await;
 
@@ -125,8 +128,9 @@ impl Registries {
         assert!(self.skills.get("registered-skill").is_none());
         assert!(self
             .hooks
-            .origin_for("skill:registered-skill:audit")
-            .is_none());
+            .snapshot()
+            .handlers_for(HookEventKind::SessionStart)
+            .is_empty());
     }
 }
 
@@ -325,12 +329,14 @@ impl HookHandler for FakeHook {
     }
 }
 
-struct FakeSkillBoundHook;
+struct FakeSkillBoundHook {
+    handler_id: String,
+}
 
 #[async_trait]
 impl HookHandler for FakeSkillBoundHook {
     fn handler_id(&self) -> &str {
-        "skill:registered-skill:audit"
+        &self.handler_id
     }
 
     fn interested_events(&self) -> &[HookEventKind] {

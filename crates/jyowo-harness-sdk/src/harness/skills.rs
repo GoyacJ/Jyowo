@@ -60,7 +60,8 @@ impl Harness {
                 &snapshot,
                 self.inner.skill_config_snapshot.clone(),
             ),
-        ));
+        ))
+        .with_policy(self.skill_render_policy());
         if let Some(metrics_sink) = &metrics_sink {
             renderer = renderer.with_metrics_sink(Arc::clone(metrics_sink));
         }
@@ -81,6 +82,7 @@ impl Harness {
 
     fn register_skill_hooks(&self, registry: &SkillRegistry) -> Result<(), HarnessError> {
         for binding in registry.hook_bindings() {
+            validate_skill_hook_binding(&binding)?;
             if self
                 .inner
                 .hook_registry
@@ -97,6 +99,14 @@ impl Harness {
                 })?;
         }
         Ok(())
+    }
+
+    pub(super) fn skill_render_policy(&self) -> SkillRenderPolicy {
+        self.inner
+            .skill_loader
+            .as_ref()
+            .map(SkillLoader::render_policy)
+            .unwrap_or_default()
     }
 
     pub fn skill_loader(&self) -> Option<&SkillLoader> {
@@ -223,27 +233,30 @@ impl Harness {
         source: SkillSource,
         skills: Vec<Skill>,
     ) -> Result<(), HarnessError> {
-        let current = self.inner.skill_registry.snapshot();
-        let old_bindings = self
+        match self
             .inner
             .skill_registry
-            .hook_bindings_in_snapshot(&current);
-        let mut next_skills = current
-            .entries
-            .values()
-            .filter(|skill| skill.source != source)
-            .map(|skill| skill.as_ref().clone())
-            .collect::<Vec<_>>();
-        next_skills.extend(skills);
-
-        let replacement = SkillRegistry::builder().with_skills(next_skills).build();
-        let mut candidate = replacement.snapshot().as_ref().clone();
-        if candidate.entries != current.entries {
-            candidate.generation = current.generation.saturating_add(1);
-        } else {
-            candidate.generation = current.generation;
+            .try_replace_source(source, skills, |current, candidate| {
+                self.reconcile_skill_hooks(current, candidate)
+            }) {
+            Ok(_) => Ok(()),
+            Err(SkillRegistryUpdateError::Registry(error)) => Err(HarnessError::Other(format!(
+                "replace skill source failed: {error}"
+            ))),
+            Err(SkillRegistryUpdateError::Reconcile(error)) => Err(error),
         }
-        let next_bindings = replacement.hook_bindings_in_snapshot(&candidate);
+    }
+
+    fn reconcile_skill_hooks(
+        &self,
+        current: &SkillRegistrySnapshot,
+        candidate: &SkillRegistrySnapshot,
+    ) -> Result<(), HarnessError> {
+        let old_bindings = self.inner.skill_registry.hook_bindings_in_snapshot(current);
+        let next_bindings = self
+            .inner
+            .skill_registry
+            .hook_bindings_in_snapshot(candidate);
         let next_handler_ids = next_bindings
             .iter()
             .map(|binding| binding.handler_id.clone())
@@ -251,6 +264,12 @@ impl Harness {
 
         let mut registered = Vec::<String>::new();
         for binding in next_bindings {
+            if let Err(error) = validate_skill_hook_binding(&binding) {
+                for registered_id in registered {
+                    self.inner.hook_registry.deregister(&registered_id);
+                }
+                return Err(error);
+            }
             if self
                 .inner
                 .hook_registry
@@ -260,7 +279,15 @@ impl Harness {
                 continue;
             }
             let handler_id = binding.handler_id.clone();
-            let handler = skill_hook_handler(binding)?;
+            let handler = match skill_hook_handler(binding) {
+                Ok(handler) => handler,
+                Err(error) => {
+                    for registered_id in registered {
+                        self.inner.hook_registry.deregister(&registered_id);
+                    }
+                    return Err(error);
+                }
+            };
             if let Err(error) = self.inner.hook_registry.register(handler) {
                 for registered_id in registered {
                     self.inner.hook_registry.deregister(&registered_id);
@@ -277,7 +304,6 @@ impl Harness {
                 self.inner.hook_registry.deregister(&binding.handler_id);
             }
         }
-        self.inner.skill_registry.commit_snapshot(candidate);
         Ok(())
     }
 
@@ -534,47 +560,19 @@ impl SkillReloadCap for SdkSkillReloadCap {
             });
         }
 
-        let candidate = self
-            .inner
-            .skill_registry
-            .candidate_snapshot(&validated)
-            .map_err(|error| error.to_string())?;
-        let bindings = self
-            .inner
-            .skill_registry
-            .hook_bindings_in_snapshot(&candidate);
-        let mut registered = Vec::<String>::new();
-
-        for binding in bindings {
-            if self
-                .inner
-                .hook_registry
-                .origin_for(&binding.handler_id)
-                .is_some()
-            {
-                continue;
-            }
-            let handler_id = binding.handler_id.clone();
-            let handler = match skill_hook_handler(binding) {
-                Ok(handler) => handler,
-                Err(error) => {
-                    for registered_id in registered {
-                        self.inner.hook_registry.deregister(&registered_id);
-                    }
-                    return Err(error.to_string());
+        match self.inner.skill_registry.try_replace_registrations(
+            &validated,
+            |current, candidate| {
+                Harness {
+                    inner: Arc::clone(&self.inner),
                 }
-            };
-            if let Err(error) = self.inner.hook_registry.register(handler) {
-                for registered_id in registered {
-                    self.inner.hook_registry.deregister(&registered_id);
-                }
-                return Err(error.to_string());
-            }
-            registered.push(handler_id);
+                .reconcile_skill_hooks(current, candidate)
+            },
+        ) {
+            Ok(_) => Ok(()),
+            Err(SkillRegistryUpdateError::Registry(error)) => Err(error.to_string()),
+            Err(SkillRegistryUpdateError::Reconcile(error)) => Err(error.to_string()),
         }
-
-        self.inner.skill_registry.commit_snapshot(candidate);
-        Ok(())
     }
 }
 
@@ -687,6 +685,17 @@ fn skill_ssrf_guard_policy(enabled: bool) -> SsrfGuardPolicy {
 }
 
 fn validate_skill_hook_binding(binding: &SkillHookBinding) -> Result<(), HarnessError> {
+    if matches!(
+        &binding.transport,
+        SkillHookTransport::Http(spec) if spec.security.mtls_required
+    ) {
+        return Err(HarnessError::Hook(
+            harness_contracts::HookError::Unauthorized(format!(
+                "skill hook `{}` requires mTLS, but no client certificate source is configured",
+                binding.logical_id
+            )),
+        ));
+    }
     let denied = match (&binding.source, &binding.transport) {
         (SkillSource::Mcp(_), _) => true,
         (_, SkillHookTransport::Builtin(_)) => false,

@@ -17,6 +17,7 @@ pub(super) struct EngineSessionTurnRunner {
     pub(super) process_registry: Option<Arc<dyn RunScopedProcessRegistryCap>>,
     pub(super) skill_registry: Option<SkillRegistry>,
     pub(super) skill_metrics_sink: Option<Arc<dyn SkillMetricsSink>>,
+    pub(super) skill_render_policy: SkillRenderPolicy,
     pub(super) skill_config_snapshot: SkillConfigSnapshot,
 }
 

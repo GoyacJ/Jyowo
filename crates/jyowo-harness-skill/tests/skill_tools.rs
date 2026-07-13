@@ -210,7 +210,16 @@ allowlist_agents: ["{}"]
         "current body",
     ))
     .snapshot();
-    registry.commit_snapshot((*replacement).clone());
+    registry
+        .replace_source(
+            SkillSource::Workspace("data/skills".into()),
+            replacement
+                .entries
+                .values()
+                .map(|skill| skill.as_ref().clone())
+                .collect(),
+        )
+        .expect("current registry should be replaced");
     let service = SkillRegistryService::new(
         registry,
         harness_skill::SkillRenderer::new(Arc::new(TestConfigResolver)),

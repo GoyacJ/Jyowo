@@ -105,8 +105,9 @@ use harness_session::{
 use harness_skill::{
     parse_skill_markdown, BuiltinHookKind, DirectorySourceKind, Skill, SkillHookBinding,
     SkillHookTransport, SkillLoader, SkillMetricsSink, SkillParamType, SkillPlatform,
-    SkillRegistration, SkillRegistry, SkillRegistryService, SkillRenderer, SkillSource,
-    SkillSourceConfig, SkillThreatEventScope, SkillValidator,
+    SkillRegistration, SkillRegistry, SkillRegistryService, SkillRegistrySnapshot,
+    SkillRegistryUpdateError, SkillRenderPolicy, SkillRenderer, SkillSource, SkillSourceConfig,
+    SkillThreatEventScope, SkillValidator,
 };
 use harness_tool::{
     DefaultRunScopedProcessRegistry, SchemaResolverContext, ToolPool, ToolPoolFilter,

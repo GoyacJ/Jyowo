@@ -25,6 +25,7 @@ threat-scanner = ["jyowo-harness-memory/threat-scanner"]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
 jyowo-harness-memory = { path = "../jyowo-harness-memory" }
 async-trait = { workspace = true }
+blake3 = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

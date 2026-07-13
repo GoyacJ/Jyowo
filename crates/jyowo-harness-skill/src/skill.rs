@@ -150,6 +150,18 @@ pub struct SkillRegistration {
 }
 
 impl SkillSource {
+    pub(crate) fn fingerprint_identity(&self) -> String {
+        match self {
+            Self::Bundled => "bundled".to_owned(),
+            Self::Workspace(path) => format!("workspace:{}", path.display()),
+            Self::User(path) => format!("user:{}", path.display()),
+            Self::Plugin { plugin_id, trust } => {
+                format!("plugin:{}:{trust:?}", plugin_id.0)
+            }
+            Self::Mcp(server_id) => format!("mcp:{}", server_id.0),
+        }
+    }
+
     #[must_use]
     pub fn to_kind(&self) -> SkillSourceKind {
         match self {

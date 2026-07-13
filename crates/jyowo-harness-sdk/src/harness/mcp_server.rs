@@ -623,6 +623,7 @@ impl Harness {
                 process_registry: self.run_scoped_process_registry(),
                 skill_registry: Some(self.inner.skill_registry.clone()),
                 skill_metrics_sink: self.skill_metrics_sink(),
+                skill_render_policy: self.skill_render_policy(),
                 skill_config_snapshot: self.inner.skill_config_snapshot.clone(),
             }))
             .with_skill_reload_cap(Arc::new(SdkSkillReloadCap {

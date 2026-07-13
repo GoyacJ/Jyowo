@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use harness_contracts::{
@@ -19,6 +20,7 @@ pub struct SkillRegistry {
 #[derive(Debug, Clone, Default)]
 pub struct SkillRegistrySnapshot {
     pub generation: u64,
+    pub candidates: BTreeMap<String, Vec<Arc<Skill>>>,
     pub entries: BTreeMap<String, Arc<Skill>>,
     pub by_source: HashMap<SkillSource, Vec<SkillId>>,
     pub status: BTreeMap<SkillId, SkillStatus>,
@@ -31,6 +33,7 @@ pub struct SkillRegistryBuilder {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillHookBinding {
+    pub logical_id: String,
     pub handler_id: String,
     pub skill_id: SkillId,
     pub skill_name: String,
@@ -40,6 +43,12 @@ pub struct SkillHookBinding {
     pub transport: SkillHookTransport,
 }
 
+#[derive(Debug)]
+pub enum SkillRegistryUpdateError<E> {
+    Registry(SkillError),
+    Reconcile(E),
+}
+
 impl SkillRegistry {
     #[must_use]
     pub fn builder() -> SkillRegistryBuilder {
@@ -47,46 +56,113 @@ impl SkillRegistry {
     }
 
     pub fn register(&self, skill: Skill) -> Result<(), SkillError> {
-        let current = self.snapshot();
-        let mut next = (*current).clone();
+        let mut guard = self.snapshot.write();
+        let current = Arc::clone(&guard);
+        let mut next = current.as_ref().clone();
         insert_skill(&mut next, skill)?;
-        if next.entries != current.entries {
-            next.generation = current.generation.saturating_add(1);
-        }
-        *self.snapshot.write() = Arc::new(next);
+        publish_if_changed(&mut guard, &current, &mut next);
         Ok(())
     }
 
     pub fn register_batch(&self, skills: Vec<Skill>) -> Result<SkillRegistrySnapshot, SkillError> {
-        let current = self.snapshot();
-        let mut next = (*current).clone();
+        let mut guard = self.snapshot.write();
+        let current = Arc::clone(&guard);
+        let mut next = current.as_ref().clone();
         for skill in skills {
             insert_skill(&mut next, skill)?;
         }
-        if next.entries != current.entries {
-            next.generation = current.generation.saturating_add(1);
-        }
-        *self.snapshot.write() = Arc::new(next.clone());
+        publish_if_changed(&mut guard, &current, &mut next);
         Ok(next)
     }
 
-    pub fn candidate_snapshot(
+    pub fn replace_registrations(
         &self,
         registrations: &[SkillRegistration],
     ) -> Result<SkillRegistrySnapshot, SkillError> {
-        let current = self.snapshot();
-        let mut next = (*current).clone();
-        for registration in registrations {
-            insert_registration(&mut next, registration)?;
+        match self.try_replace_registrations(registrations, |_, _| Ok::<_, Infallible>(())) {
+            Ok(snapshot) => Ok(snapshot),
+            Err(SkillRegistryUpdateError::Registry(error)) => Err(error),
+            Err(SkillRegistryUpdateError::Reconcile(never)) => match never {},
         }
-        if next.entries != current.entries {
-            next.generation = current.generation.saturating_add(1);
-        }
-        Ok(next)
     }
 
-    pub fn commit_snapshot(&self, snapshot: SkillRegistrySnapshot) {
-        *self.snapshot.write() = Arc::new(snapshot);
+    pub fn try_replace_registrations<E, F>(
+        &self,
+        registrations: &[SkillRegistration],
+        reconcile: F,
+    ) -> Result<SkillRegistrySnapshot, SkillRegistryUpdateError<E>>
+    where
+        F: FnOnce(&SkillRegistrySnapshot, &SkillRegistrySnapshot) -> Result<(), E>,
+    {
+        self.try_update(
+            |next| {
+                for registration in registrations {
+                    insert_registration(next, registration)?;
+                }
+                Ok(())
+            },
+            reconcile,
+        )
+    }
+
+    pub fn replace_source(
+        &self,
+        source: SkillSource,
+        skills: Vec<Skill>,
+    ) -> Result<SkillRegistrySnapshot, SkillError> {
+        match self.try_replace_source(source, skills, |_, _| Ok::<_, Infallible>(())) {
+            Ok(snapshot) => Ok(snapshot),
+            Err(SkillRegistryUpdateError::Registry(error)) => Err(error),
+            Err(SkillRegistryUpdateError::Reconcile(never)) => match never {},
+        }
+    }
+
+    pub fn try_replace_source<E, F>(
+        &self,
+        source: SkillSource,
+        mut skills: Vec<Skill>,
+        reconcile: F,
+    ) -> Result<SkillRegistrySnapshot, SkillRegistryUpdateError<E>>
+    where
+        F: FnOnce(&SkillRegistrySnapshot, &SkillRegistrySnapshot) -> Result<(), E>,
+    {
+        self.try_update(
+            move |next| {
+                for candidates in next.candidates.values_mut() {
+                    candidates.retain(|skill| skill.source != source);
+                }
+                next.candidates
+                    .retain(|_, candidates| !candidates.is_empty());
+                for mut skill in skills.drain(..) {
+                    skill.source = source.clone();
+                    insert_skill_for_reload(next, skill)?;
+                }
+                rebuild_indexes(next);
+                Ok(())
+            },
+            reconcile,
+        )
+    }
+
+    fn try_update<E, M, F>(
+        &self,
+        mutate: M,
+        reconcile: F,
+    ) -> Result<SkillRegistrySnapshot, SkillRegistryUpdateError<E>>
+    where
+        M: FnOnce(&mut SkillRegistrySnapshot) -> Result<(), SkillError>,
+        F: FnOnce(&SkillRegistrySnapshot, &SkillRegistrySnapshot) -> Result<(), E>,
+    {
+        let mut guard = self.snapshot.write();
+        let current = Arc::clone(&guard);
+        let mut next = current.as_ref().clone();
+        mutate(&mut next).map_err(SkillRegistryUpdateError::Registry)?;
+        set_next_generation(&current, &mut next);
+        reconcile(&current, &next).map_err(SkillRegistryUpdateError::Reconcile)?;
+        if next.candidates != current.candidates {
+            *guard = Arc::new(next.clone());
+        }
+        Ok(next)
     }
 
     pub fn register_from_plugin(
@@ -100,25 +176,34 @@ impl SkillRegistry {
     }
 
     pub fn deregister_from_plugin(&self, plugin_id: &PluginId, name: &str) -> Vec<String> {
-        let current = self.snapshot();
-        let Some(skill) = current.entries.get(name) else {
+        let mut guard = self.snapshot.write();
+        let current = Arc::clone(&guard);
+        let mut next = current.as_ref().clone();
+        let Some(candidates) = next.candidates.get_mut(name) else {
             return Vec::new();
         };
-        if !matches!(&skill.source, SkillSource::Plugin { plugin_id: owner, .. } if owner == plugin_id)
-        {
+        let removed = candidates
+            .iter()
+            .filter(|skill| matches!(&skill.source, SkillSource::Plugin { plugin_id: owner, .. } if owner == plugin_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if removed.is_empty() {
             return Vec::new();
         }
-        let handler_ids = skill
-            .frontmatter
-            .hooks
-            .iter()
-            .map(|hook| format!("skill:{}:{}", skill.name, hook.id))
-            .collect::<Vec<_>>();
-        let mut next = (*current).clone();
-        next.entries.remove(name);
+        candidates.retain(|skill| {
+            !matches!(&skill.source, SkillSource::Plugin { plugin_id: owner, .. } if owner == plugin_id)
+        });
+        if candidates.is_empty() {
+            next.candidates.remove(name);
+        }
         rebuild_indexes(&mut next);
-        next.generation = current.generation.saturating_add(1);
-        *self.snapshot.write() = Arc::new(next);
+        set_next_generation(&current, &mut next);
+        *guard = Arc::new(next);
+        let handler_ids = removed
+            .iter()
+            .flat_map(|skill| hook_bindings_for_skill(skill))
+            .map(|binding| binding.handler_id)
+            .collect();
         handler_ids
     }
 
@@ -247,17 +332,7 @@ impl SkillRegistry {
         snapshot
             .entries
             .values()
-            .flat_map(|skill| {
-                skill.frontmatter.hooks.iter().map(|hook| SkillHookBinding {
-                    handler_id: format!("skill:{}:{}", skill.name, hook.id),
-                    skill_id: skill.id.clone(),
-                    skill_name: skill.name.clone(),
-                    source: skill.source.clone(),
-                    hook_id: hook.id.clone(),
-                    events: hook.events.clone(),
-                    transport: hook.transport.clone(),
-                })
-            })
+            .flat_map(|skill| hook_bindings_for_skill(skill))
             .collect()
     }
 }
@@ -307,25 +382,76 @@ fn insert_skill_with_policy(
     skill: Skill,
     same_source_policy: SameSourcePolicy,
 ) -> Result<(), SkillError> {
-    if let Some(existing) = snapshot.entries.get(&skill.name) {
-        if existing.source == skill.source {
-            if existing.as_ref() == &skill {
-                return Ok(());
-            }
-            if matches!(same_source_policy, SameSourcePolicy::Replace) {
-                snapshot.entries.insert(skill.name.clone(), Arc::new(skill));
-                rebuild_indexes(snapshot);
-                return Ok(());
-            }
-            return Err(SkillError::Duplicate(skill.name));
-        }
-        if source_rank(&existing.source) > source_rank(&skill.source) {
+    let candidates = snapshot.candidates.entry(skill.name.clone()).or_default();
+    if let Some(existing_index) = candidates
+        .iter()
+        .position(|existing| existing.source == skill.source)
+    {
+        let existing = &candidates[existing_index];
+        if existing.as_ref() == &skill {
             return Ok(());
         }
+        if matches!(same_source_policy, SameSourcePolicy::Replace) {
+            candidates[existing_index] = Arc::new(skill);
+            rebuild_indexes(snapshot);
+            return Ok(());
+        }
+        return Err(SkillError::Duplicate(skill.name));
     }
-    snapshot.entries.insert(skill.name.clone(), Arc::new(skill));
+    candidates.push(Arc::new(skill));
     rebuild_indexes(snapshot);
     Ok(())
+}
+
+fn publish_if_changed(
+    guard: &mut Arc<SkillRegistrySnapshot>,
+    current: &SkillRegistrySnapshot,
+    next: &mut SkillRegistrySnapshot,
+) {
+    set_next_generation(current, next);
+    if next.candidates != current.candidates {
+        *guard = Arc::new(next.clone());
+    }
+}
+
+fn set_next_generation(current: &SkillRegistrySnapshot, next: &mut SkillRegistrySnapshot) {
+    next.generation = if next.candidates == current.candidates {
+        current.generation
+    } else {
+        current.generation.saturating_add(1)
+    };
+}
+
+fn hook_bindings_for_skill(skill: &Skill) -> Vec<SkillHookBinding> {
+    skill
+        .frontmatter
+        .hooks
+        .iter()
+        .map(|hook| {
+            let logical_id = format!("skill:{}:{}", skill.name, hook.id);
+            let declaration = format!("{}|{hook:?}", skill.source.fingerprint_identity());
+            let fingerprint = blake3::hash(declaration.as_bytes()).to_hex();
+            SkillHookBinding {
+                handler_id: format!("{logical_id}:{}", &fingerprint[..16]),
+                logical_id,
+                skill_id: skill.id.clone(),
+                skill_name: skill.name.clone(),
+                source: skill.source.clone(),
+                hook_id: hook.id.clone(),
+                events: hook.events.clone(),
+                transport: hook.transport.clone(),
+            }
+        })
+        .collect()
+}
+
+// Candidate order is insertion order. The newest candidate wins equal-rank ties.
+fn active_candidate(candidates: &[Arc<Skill>]) -> Option<Arc<Skill>> {
+    candidates
+        .iter()
+        .enumerate()
+        .max_by_key(|(index, skill)| (source_rank(&skill.source), *index))
+        .map(|(_, skill)| Arc::clone(skill))
 }
 
 fn insert_registration(
@@ -341,15 +467,21 @@ fn insert_registration(
 }
 
 fn rebuild_indexes(snapshot: &mut SkillRegistrySnapshot) {
+    snapshot.entries.clear();
     snapshot.by_source.clear();
     snapshot.status.clear();
-    for skill in snapshot.entries.values() {
-        snapshot
-            .by_source
-            .entry(skill.source.clone())
-            .or_default()
-            .push(skill.id.clone());
-        snapshot.status.insert(skill.id.clone(), status_for(skill));
+    for (name, candidates) in &snapshot.candidates {
+        if let Some(active) = active_candidate(candidates) {
+            snapshot.entries.insert(name.clone(), active);
+        }
+        for skill in candidates {
+            snapshot
+                .by_source
+                .entry(skill.source.clone())
+                .or_default()
+                .push(skill.id.clone());
+            snapshot.status.insert(skill.id.clone(), status_for(skill));
+        }
     }
 }
 

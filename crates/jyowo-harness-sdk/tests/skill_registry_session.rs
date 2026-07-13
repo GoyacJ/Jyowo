@@ -188,7 +188,16 @@ current body
             )))
             .build()
             .snapshot();
-        registry.commit_snapshot((*replacement).clone());
+        registry
+            .replace_source(
+                SkillSource::Workspace("data/skills".into()),
+                replacement
+                    .entries
+                    .values()
+                    .map(|skill| skill.as_ref().clone())
+                    .collect(),
+            )
+            .expect("current registry should be replaced");
 
         let service = SkillRegistryService::new(
             registry,
@@ -285,7 +294,7 @@ async fn session_start_hook_count(store: &InMemoryEventStore, session_id: Sessio
             let matches = matches!(
                 event,
                 Event::HookTriggered(triggered)
-                    if triggered.handler_id == "skill:audit:start"
+                    if triggered.handler_id.starts_with("skill:audit:start:")
                         && triggered.hook_event_kind == HookEventKind::SessionStart
             );
             async move { matches }

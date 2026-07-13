@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 
 use async_trait::async_trait;
 use harness_contracts::{Event, McpServerId, PluginId, TrustLevel};
@@ -287,18 +287,98 @@ fn registry_same_source_duplicate_policy_requires_explicit_reload_for_changed_co
     assert!(matches!(error, harness_skill::SkillError::Duplicate(name) if name == "dup"));
     assert_eq!(before.generation, after_changed_register.generation);
 
-    let candidate = registry
-        .candidate_snapshot(&[SkillRegistration {
+    registry
+        .replace_registrations(&[SkillRegistration {
             skill: changed,
             force_allowlist: None,
         }])
         .expect("explicit reload path should accept changed same source skill");
-    registry.commit_snapshot(candidate);
     let after_reload = registry.snapshot();
     assert_eq!(after_reload.generation, before.generation + 1);
     assert_eq!(
         after_reload.entries.get("dup").expect("skill").body,
         "changed body"
+    );
+}
+
+#[test]
+fn registry_restores_user_candidate_after_workspace_source_is_removed() {
+    let user_source = SkillSource::User("home/skills".into());
+    let workspace_source = SkillSource::Workspace("data/skills".into());
+    let mut user = simple_skill("review", user_source);
+    user.body = "user body".to_owned();
+    let mut workspace = simple_skill("review", workspace_source.clone());
+    workspace.body = "workspace body".to_owned();
+    let registry = SkillRegistry::builder().with_skill(user).build();
+
+    registry
+        .register(workspace)
+        .expect("workspace should register");
+    assert_eq!(
+        registry.get("review").expect("workspace winner").body,
+        "workspace body"
+    );
+
+    registry
+        .replace_source(workspace_source, Vec::new())
+        .expect("workspace source should be removed");
+
+    assert_eq!(
+        registry.get("review").expect("user restored").body,
+        "user body"
+    );
+}
+
+#[test]
+fn registry_concurrent_registers_do_not_lose_updates() {
+    const THREADS: usize = 24;
+    let registry = SkillRegistry::builder().build();
+    let barrier = Arc::new(Barrier::new(THREADS));
+    let handles = (0..THREADS)
+        .map(|index| {
+            let registry = registry.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                registry
+                    .register(simple_skill(
+                        &format!("concurrent-{index}"),
+                        SkillSource::Bundled,
+                    ))
+                    .expect("skill should register");
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for handle in handles {
+        handle.join().expect("register thread should finish");
+    }
+
+    assert_eq!(registry.snapshot().entries.len(), THREADS);
+}
+
+#[test]
+fn registry_shadow_candidate_changes_increment_generation() {
+    let workspace = simple_skill("review", SkillSource::Workspace("data/skills".into()));
+    let registry = SkillRegistry::builder().with_skill(workspace).build();
+    let before = registry.snapshot();
+
+    registry
+        .register(simple_skill(
+            "review",
+            SkillSource::User("home/skills".into()),
+        ))
+        .expect("shadowed user skill should register");
+    let after = registry.snapshot();
+
+    assert_eq!(after.generation, before.generation + 1);
+    assert_eq!(
+        after
+            .candidates
+            .get("review")
+            .expect("candidate stack")
+            .len(),
+        2
     );
 }
 
@@ -348,8 +428,55 @@ Body
         .expect("plugin skill should register");
     let removed = registry.deregister_from_plugin(&plugin_id, "plugin-skill");
 
-    assert_eq!(removed, vec!["skill:plugin-skill:audit"]);
+    assert_eq!(removed.len(), 1);
+    assert!(removed[0].starts_with("skill:plugin-skill:audit:"));
     assert!(registry.get("plugin-skill").is_none());
+}
+
+#[test]
+fn deregister_from_plugin_restores_same_name_candidate_from_other_source() {
+    let plugin_id = PluginId("plugin@1.0.0".to_owned());
+    let mut bundled = simple_skill("shared", SkillSource::Bundled);
+    bundled.body = "bundled body".to_owned();
+    let mut plugin = simple_skill("shared", SkillSource::Bundled);
+    plugin.body = "plugin body".to_owned();
+    let registry = SkillRegistry::builder().with_skill(bundled).build();
+
+    registry
+        .register_from_plugin(plugin_id.clone(), TrustLevel::AdminTrusted, plugin)
+        .expect("plugin skill should register");
+    registry.deregister_from_plugin(&plugin_id, "shared");
+
+    let restored = registry
+        .get("shared")
+        .expect("bundled skill should be restored");
+    assert_eq!(restored.body, "bundled body");
+    assert_eq!(restored.source, SkillSource::Bundled);
+}
+
+#[tokio::test]
+async fn validator_explicitly_rejects_http_hooks_that_require_mtls() {
+    let registration = SkillRegistration {
+        skill: harness_skill::parse_skill_markdown(
+            &http_mtls_hook_skill("mtls-hook"),
+            SkillSource::Plugin {
+                plugin_id: PluginId("trusted-plugin".to_owned()),
+                trust: TrustLevel::AdminTrusted,
+            },
+            None,
+            SkillPlatform::Macos,
+        )
+        .expect("skill should parse"),
+        force_allowlist: None,
+    };
+
+    let error = SkillValidator::default()
+        .with_runtime_platform(SkillPlatform::Macos)
+        .validate_registration(&registration)
+        .await
+        .expect_err("mTLS must reject until a certificate source exists");
+
+    assert!(format!("{error}").contains("mTLS"));
 }
 
 #[test]
@@ -676,6 +803,26 @@ hooks:
       url: https://hooks.example.test/audit
       security:
         allowlist: ["hooks.example.test"]
+---
+Body
+"##
+    )
+}
+
+fn http_mtls_hook_skill(name: &str) -> String {
+    format!(
+        r##"---
+name: {name}
+description: HTTP mTLS hook skill
+hooks:
+  - id: audit
+    events: [PostToolUse]
+    transport:
+      type: http
+      url: https://hooks.example.test/audit
+      security:
+        allowlist: ["hooks.example.test"]
+        mtls_required: true
 ---
 Body
 "##

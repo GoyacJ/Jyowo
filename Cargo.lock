@@ -3455,6 +3455,7 @@ name = "jyowo-harness-skill"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "futures",
  "jyowo-harness-contracts",
  "jyowo-harness-memory",
