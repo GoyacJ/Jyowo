@@ -10,12 +10,11 @@ use harness_contracts::{
     AgentProfileSandboxInheritance, AgentProfileScope, AgentUsePolicy, AgentWorkspaceIsolationMode,
     ArtifactRevisionId, AssistantClarificationRequestedEvent, AssistantDeltaProducedEvent,
     AssistantMessageCompletedEvent, AssistantNoticeEvent, AssistantReviewRequestedEvent,
-    AutomationRunStatus, AutomationSchedule, AutomationSpec, AutomationWorkspaceScope,
     CapabilityRouteKind, ConfigHash, ConversationAttachmentReference, ConversationCursor,
     ConversationModelCapability, CorrelationId, DecidedBy, DecisionLifetime, DecisionMatcherKind,
     DecisionMatcherSummary, EngineError, EngineFailedEvent, EventId, McpConnectionLostEvent,
-    McpConnectionLostReason, MessageContent, MessageId, MessageMetadata, MissedRunPolicy,
-    ModelModality, ModelProtocol, NoopRedactor, PermissionActorSource, PermissionDecisionOption,
+    McpConnectionLostReason, MessageContent, MessageId, MessageMetadata, ModelModality,
+    ModelProtocol, NoopRedactor, PermissionActorSource, PermissionDecisionOption,
     PermissionOptionId, PermissionRequestedEvent, PermissionResolvedEvent, ProviderCapabilityRoute,
     ProviderCapabilityRouteSettings, ProviderServiceAdapterAvailability, ReasoningSummaryChunk,
     RedactPatternSet, RedactRules, RedactScope, Redactor, RunModelSnapshot, RunStartedEvent,
@@ -66,10 +65,6 @@ const TEST_MODEL_CONFIG_ID: &str = "test-model-config";
 mod agents;
 #[path = "commands/app_info.rs"]
 mod app_info;
-#[path = "commands/automation_support.rs"]
-mod automation_support;
-#[path = "commands/automations.rs"]
-mod automations;
 #[path = "commands/execution_settings.rs"]
 mod execution_settings;
 #[path = "commands/mcp.rs"]
@@ -101,7 +96,6 @@ mod skills;
 #[path = "commands/support.rs"]
 mod support;
 
-pub(crate) use automation_support::*;
 pub(crate) use provider_route_support::*;
 pub(crate) use provider_support::*;
 pub(crate) use support::*;

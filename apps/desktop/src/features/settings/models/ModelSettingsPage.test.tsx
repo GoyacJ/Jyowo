@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -360,7 +360,7 @@ function renderModelSettingsPage(client: CommandClient = readyClient()) {
     )
   }
 
-  return render(<ModelSettingsPage />, { wrapper: Wrapper })
+  return { ...render(<ModelSettingsPage />, { wrapper: Wrapper }), queryClient }
 }
 
 function readyClient(overrides: Parameters<typeof createTestCommandClient>[0] = {}) {
@@ -484,6 +484,34 @@ describe('ModelSettingsPage', () => {
     await waitFor(() => expect(refreshModelProviderCatalog).toHaveBeenCalledTimes(1))
   })
 
+  it('shows model action failures instead of swallowing rejected mutations', async () => {
+    renderModelSettingsPage({
+      ...readyClient(),
+      refreshModelProviderCatalog: vi.fn().mockRejectedValue(new Error('Catalog refresh failed')),
+      probeProviderConfig: vi.fn().mockRejectedValue(new Error('Provider probe failed')),
+      refreshOfficialQuota: vi.fn().mockRejectedValue(new Error('Quota refresh failed')),
+      saveProviderSettings: vi.fn().mockRejectedValue(new Error('Default update failed')),
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Refresh catalog' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Catalog refresh failed')
+
+    const primaryRow = within(screen.getByRole('row', { name: /Primary OpenAI/ }))
+    fireEvent.click(primaryRow.getByRole('button', { name: 'Probe Primary OpenAI' }))
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('Provider probe failed'),
+    )
+
+    fireEvent.click(primaryRow.getByRole('button', { name: 'Refresh quota for Primary OpenAI' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Quota refresh failed'))
+
+    const researchRow = within(screen.getByRole('row', { name: /Research Claude/ }))
+    fireEvent.click(researchRow.getByRole('button', { name: 'Set Research Claude as default' }))
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('Default update failed'),
+    )
+  })
+
   it('does not present metadata validation as a connectivity check', async () => {
     renderModelSettingsPage()
 
@@ -503,10 +531,14 @@ describe('ModelSettingsPage', () => {
       },
       status: 'saved',
     })
-    renderModelSettingsPage({
+    const { queryClient } = renderModelSettingsPage({
       ...readyClient(),
       saveProviderSettings,
     })
+    const globalTaskQuery = ['provider-settings', 'list', null] as const
+    const projectTaskQuery = ['provider-settings', 'list', '/workspace/project'] as const
+    queryClient.setQueryData(globalTaskQuery, settings)
+    queryClient.setQueryData(projectTaskQuery, settings)
 
     const row = within(await screen.findByRole('row', { name: /Primary OpenAI/ }))
 
@@ -541,6 +573,8 @@ describe('ModelSettingsPage', () => {
     )
     expect(saveProviderSettings.mock.calls[0]?.[0]).not.toHaveProperty('apiKey')
     expect(saveProviderSettings.mock.calls[0]?.[0]).not.toHaveProperty('officialQuotaApiKey')
+    expect(queryClient.getQueryState(globalTaskQuery)?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(projectTaskQuery)?.isInvalidated).toBe(true)
   })
 
   it('filters by provider, health, default state, failing state, and search', async () => {
@@ -793,6 +827,35 @@ describe('ModelSettingsPage', () => {
     expect(await screen.findByRole('row', { name: /Primary OpenAI/ })).toBeInTheDocument()
     await waitFor(() => expect(screen.getAllByText('Unavailable').length).toBeGreaterThanOrEqual(3))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('polls model settings only while the usage slice is rebuilding', async () => {
+    vi.useFakeTimers()
+    try {
+      let page = readyModelSettingsPage({
+        usageSummary: { status: 'rebuilding', safeMessage: 'Usage projection rebuilding' },
+      })
+      const getModelSettingsPage = vi.fn(async () => page)
+      renderModelSettingsPage({ ...readyClient(), getModelSettingsPage })
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(getModelSettingsPage).toHaveBeenCalledTimes(1)
+
+      page = readyModelSettingsPage()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000)
+      })
+      expect(getModelSettingsPage).toHaveBeenCalledTimes(2)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000)
+      })
+      expect(getModelSettingsPage).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('opens the configuration dialog for new provider profiles', async () => {

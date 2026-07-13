@@ -1,10 +1,3 @@
-export function formatDateTime(value: Date | string, locale?: string) {
-  return new Intl.DateTimeFormat(locale, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(toDate(value))
-}
-
 export function formatTime(value: Date | string, locale?: string) {
   return new Intl.DateTimeFormat(locale, {
     hour: '2-digit',

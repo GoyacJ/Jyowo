@@ -10,17 +10,19 @@ import type {
 import type { DaemonClient } from '@/shared/daemon/client'
 import { useUiStore } from '@/shared/state/ui-store'
 import type { TaskWorkbenchPanel } from '@/shared/state/workbench-selection'
+import { providerSettingsQueryKey } from '@/shared/state/workspace-scope'
 import type {
   ConversationModelCapability,
   ListReferenceCandidatesResponse,
   PermissionMode,
 } from '@/shared/tauri/commands'
+import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { pickAttachmentPath } from '@/shared/tauri/file-dialog'
 import { useCommandClient, useDaemonClient } from '@/shared/tauri/react'
 import { PendingPermissionDecision } from './PendingPermissionDecision'
 import { QueuedMessages } from './queue/QueuedMessages'
 import { RunStatusBar } from './RunStatusBar'
-import { TaskComposer } from './TaskComposer'
+import { normalizeModelConfigId, TaskComposer } from './TaskComposer'
 import { deriveLiveTaskSnapshot, liveTimelineItems } from './task-live-projection'
 import type { TaskConnectionState, TaskSnapshot } from './task-store'
 import { TaskTimeline } from './timeline/TaskTimeline'
@@ -36,10 +38,19 @@ export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
   const daemonClient = useDaemonClient()
   const commandClient = useCommandClient()
   const workspaceRoot = task.snapshot?.projection.workspace?.root
-  const providerSettings = useQuery({
+  const providerSettingsQuery = useQuery({
     queryFn: () => commandClient.listProviderSettings(workspaceRoot),
-    queryKey: ['task-model-configs', workspaceRoot],
-  }).data
+    queryKey: [...providerSettingsQueryKey, 'list', workspaceRoot ?? null],
+  })
+  const providerSettings = providerSettingsQuery.data
+  const requiresProviderCatalog =
+    providerSettings?.configs.some((config) => !config.hasApiKey) ?? false
+  const providerCatalogQuery = useQuery({
+    enabled: requiresProviderCatalog,
+    queryFn: () => commandClient.listModelProviderCatalog(),
+    queryKey: ['model-provider-catalog'],
+  })
+  const providerCatalog = providerCatalogQuery.data
   const [modelOverride, setModelOverride] = useState<{ taskId: TypedUlid; value: string } | null>(
     null,
   )
@@ -47,10 +58,25 @@ export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
     taskId: TypedUlid
     value: PermissionMode
   } | null>(null)
-  const configuredModels = providerSettings?.configs.filter((config) => config.hasApiKey) ?? []
-  const modelConfigId = modelOverride?.taskId === taskId ? modelOverride.value : undefined
-  const capabilityModelConfigId = modelConfigId ?? providerSettings?.defaultConfigId
+  const authenticationFreeProviders = new Set(
+    providerCatalog?.providers
+      .filter((provider) => provider.runtimeCapability.authScheme === 'none')
+      .map((provider) => provider.providerId) ?? [],
+  )
+  const configuredModels =
+    providerSettings?.configs.filter(
+      (config) =>
+        config.modelDescriptor.runtimeStatus.kind === 'runnable' &&
+        (config.hasApiKey || authenticationFreeProviders.has(config.providerId)),
+    ) ?? []
+  const modelConfigId = normalizeModelConfigId(
+    modelOverride?.taskId === taskId ? modelOverride.value : undefined,
+  )
+  const capabilityModelConfigId =
+    modelConfigId ?? normalizeModelConfigId(providerSettings?.defaultConfigId ?? undefined)
   const selectedModel = configuredModels.find((config) => config.id === capabilityModelConfigId)
+  const modelSettingsError =
+    providerSettingsQuery.error ?? (requiresProviderCatalog ? providerCatalogQuery.error : null)
   const permissionMode =
     permissionOverride?.taskId === taskId ? permissionOverride.value : undefined
   return (
@@ -61,6 +87,9 @@ export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
       events={task.events}
       modelCapability={selectedModel?.modelDescriptor.conversationCapability ?? null}
       modelConfigId={modelConfigId}
+      modelSettingsError={
+        modelSettingsError === null ? null : getCommandErrorMessage(modelSettingsError)
+      }
       modelConfigs={configuredModels.map((config) => ({
         id: config.id,
         label: `${config.displayName} / ${config.modelId}${
@@ -69,6 +98,15 @@ export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
       }))}
       onListReferenceCandidates={() => daemonClient.listReferenceCandidates(taskId)}
       onModelConfigChange={(value) => setModelOverride({ taskId, value })}
+      onRetryModelSettings={() => {
+        if (providerSettingsQuery.isError) {
+          void providerSettingsQuery.refetch()
+          return
+        }
+        if (requiresProviderCatalog) {
+          void providerCatalogQuery.refetch()
+        }
+      }}
       onPickAttachmentPath={pickAttachmentPath}
       onPermissionModeChange={(value) => setPermissionOverride({ taskId, value })}
       permissionMode={permissionMode}
@@ -85,11 +123,13 @@ export function TaskWorkspaceView({
   modelCapability,
   modelConfigId,
   modelConfigs,
+  modelSettingsError,
   onListReferenceCandidates,
   onModelConfigChange,
   onPickAttachmentPath,
   onPermissionModeChange,
   permissionMode,
+  onRetryModelSettings,
   snapshot,
 }: {
   client?: Pick<DaemonClient, 'connect' | 'request'> &
@@ -100,14 +140,17 @@ export function TaskWorkspaceView({
   modelCapability?: ConversationModelCapability | null
   modelConfigId?: string
   modelConfigs?: Array<{ id: string; label: string }>
+  modelSettingsError?: string | null
   onListReferenceCandidates?: () => Promise<ListReferenceCandidatesResponse>
   onModelConfigChange?: (modelConfigId: string) => void
   onPickAttachmentPath?: Parameters<typeof TaskComposer>[0]['onPickAttachmentPath']
   onPermissionModeChange?: (mode: PermissionMode) => void
+  onRetryModelSettings?: () => void
   permissionMode?: PermissionMode
   snapshot: TaskSnapshot | null
 }) {
   const { t: tTasks } = useTranslation('tasks')
+  const { t: tCommon } = useTranslation('common')
   const snapshotTaskId = snapshot?.projection.taskId ?? null
   const workbenchMode = useUiStore((state) => state.taskWorkbenchMode)
   const workbenchSelection = useUiStore((state) => state.taskWorkbenchSelection)
@@ -221,6 +264,21 @@ export function TaskWorkspaceView({
           </div>
           {client ? (
             <div className="shrink-0 border-border/70 border-t bg-background/95 px-1 pt-3 pb-1 backdrop-blur-sm">
+              {modelSettingsError ? (
+                <div
+                  className="mb-3 flex items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm"
+                  role="alert"
+                >
+                  <span>{modelSettingsError}</span>
+                  <button
+                    className="shrink-0 rounded-md border border-destructive/30 px-2 py-1 font-medium"
+                    onClick={onRetryModelSettings}
+                    type="button"
+                  >
+                    {tCommon('retry')}
+                  </button>
+                </div>
+              ) : null}
               {liveSnapshot.projection.pendingPermission && executeCommand ? (
                 <PendingPermissionDecision
                   executeCommand={executeCommand}

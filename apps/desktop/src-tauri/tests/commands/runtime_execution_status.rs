@@ -5,6 +5,7 @@ use super::*;
 
 #[tokio::test]
 async fn runtime_execution_status_returns_the_settings_runtime_payload() {
+    let _home_lock = HOME_ENV_LOCK.lock().unwrap();
     let workspace = unique_workspace("runtime-status");
     std::fs::create_dir_all(&workspace).unwrap();
     let state = runtime_state_for_workspace(workspace)
@@ -22,6 +23,7 @@ async fn runtime_execution_status_returns_the_settings_runtime_payload() {
 
 #[tokio::test]
 async fn desktop_settings_runtime_does_not_start_the_legacy_memory_owner() {
+    let _home_lock = HOME_ENV_LOCK.lock().unwrap();
     let workspace = unique_workspace("settings-runtime-without-memory-owner");
     std::fs::create_dir_all(&workspace).unwrap();
     let state = runtime_state_for_workspace(workspace)

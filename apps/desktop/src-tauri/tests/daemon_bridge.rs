@@ -8,6 +8,7 @@ use harness_contracts::{
     AgentCapabilities, BlobId, ClientFrame, ClientRequest, HandshakeResponse, ProtocolError,
     ProtocolErrorCode, ServerFrame, ServerMessage, PROTOCOL_VERSION,
 };
+use jyowo_desktop_shell::commands::ModelUsageHistorySource;
 use jyowo_desktop_shell::daemon_client::{DaemonClient, DaemonClientConfig, DaemonClientError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -183,6 +184,104 @@ async fn requestless_protocol_error_completes_the_current_non_streaming_request(
     ));
 }
 
+#[tokio::test(start_paused = true)]
+async fn model_usage_history_request_has_a_finite_timeout() {
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("daemon.sock");
+    let token = root.path().join("connection.token");
+    write_private_token(&token, "token-a");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let (release_server, hold_server) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let handshake = read_frame(&mut stream).await;
+        write_frame(
+            &mut stream,
+            &ServerFrame {
+                request_id: Some(handshake.request_id),
+                protocol_version: PROTOCOL_VERSION,
+                message: ServerMessage::Handshake(HandshakeResponse {
+                    daemon_version: "0.1.0".into(),
+                    user_instance_id: "user-a".into(),
+                    latest_global_offset: 0,
+                    agent_capabilities: AgentCapabilities::daemon_native(),
+                }),
+            },
+        )
+        .await;
+        let request = read_frame(&mut stream).await;
+        assert!(matches!(request.request, ClientRequest::LoadEvents { .. }));
+        let _ = hold_server.await;
+    });
+    let client = client(&socket, &token);
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(6),
+        ModelUsageHistorySource::load_events(&client, 0, 1),
+    )
+    .await;
+
+    let _ = release_server.send(());
+    server.await.unwrap();
+    let error = result
+        .expect("usage history source must enforce its own timeout")
+        .unwrap_err();
+    assert!(error.message.contains("timed out"));
+}
+
+#[tokio::test]
+async fn load_events_preserves_daemon_protocol_errors() {
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("daemon.sock");
+    let token = root.path().join("connection.token");
+    write_private_token(&token, "token-a");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let handshake = read_frame(&mut stream).await;
+        write_frame(
+            &mut stream,
+            &ServerFrame {
+                request_id: Some(handshake.request_id),
+                protocol_version: PROTOCOL_VERSION,
+                message: ServerMessage::Handshake(HandshakeResponse {
+                    daemon_version: "0.1.0".into(),
+                    user_instance_id: "user-a".into(),
+                    latest_global_offset: 0,
+                    agent_capabilities: AgentCapabilities::daemon_native(),
+                }),
+            },
+        )
+        .await;
+        let request = read_frame(&mut stream).await;
+        assert!(matches!(request.request, ClientRequest::LoadEvents { .. }));
+        write_frame(
+            &mut stream,
+            &ServerFrame {
+                request_id: Some(request.request_id),
+                protocol_version: PROTOCOL_VERSION,
+                message: ServerMessage::Error(ProtocolError {
+                    code: ProtocolErrorCode::FrameTooLarge,
+                    message: "history event exceeds frame budget".into(),
+                }),
+            },
+        )
+        .await;
+    });
+    let client = client(&socket, &token);
+
+    let error = client.load_events(0, 1).await.unwrap_err();
+    server.await.unwrap();
+
+    match error {
+        DaemonClientError::ProtocolError { code, message } => {
+            assert_eq!(code, ProtocolErrorCode::FrameTooLarge);
+            assert_eq!(message, "history event exceeds frame budget");
+        }
+        other => panic!("unexpected client error: {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn bridge_rejects_symlinked_or_overexposed_connection_tokens() {
     let root = tempfile::tempdir().unwrap();
@@ -302,6 +401,19 @@ fn tauri_exposes_only_thin_daemon_bridge_commands() {
         source.contains("subscription.token == token"),
         "natural completion must not remove a replacement subscription with a reused id"
     );
+}
+
+#[test]
+fn model_usage_commands_release_the_managed_runtime_read_guard_before_history_awaits() {
+    let source = std::fs::read_to_string("src/commands/mod.rs").unwrap();
+
+    assert!(source.contains(
+        "let model_usage_rollup_store = {\n        let runtime_state = runtime_handle.read().await;\n        Arc::clone(&runtime_state.model_usage_rollup_store)\n    };"
+    ));
+    assert!(source.contains("let runtime_state = runtime_handle.read().await.clone();"));
+    assert!(!source.contains(
+        "let runtime_state = runtime_handle.read().await;\n    model_settings::get_model_usage_summary_with_history_source(&*runtime_state, &client).await"
+    ));
 }
 
 #[test]

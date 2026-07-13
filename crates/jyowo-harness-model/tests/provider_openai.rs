@@ -214,6 +214,22 @@ async fn openai_non_stream_request_posts_responses_and_maps_events() {
         },
     }));
     assert!(events.contains(&ModelStreamEvent::MessageStop));
+    let total_usage = events
+        .iter()
+        .fold(UsageSnapshot::default(), |mut total, event| {
+            let usage = match event {
+                ModelStreamEvent::MessageStart { usage, .. } => usage,
+                ModelStreamEvent::MessageDelta { usage_delta, .. } => usage_delta,
+                _ => return total,
+            };
+            total.input_tokens += usage.input_tokens;
+            total.output_tokens += usage.output_tokens;
+            total.cache_read_tokens += usage.cache_read_tokens;
+            total
+        });
+    assert_eq!(total_usage.input_tokens, 7);
+    assert_eq!(total_usage.output_tokens, 3);
+    assert_eq!(total_usage.cache_read_tokens, 2);
 
     let requests = server.received_requests().await.unwrap();
     let body: Value = requests[0].body_json().unwrap();
@@ -520,6 +536,35 @@ async fn openai_stream_response_maps_text_tool_usage_and_done() {
     let requests = server.received_requests().await.unwrap();
     let body: Value = requests[0].body_json().unwrap();
     assert_eq!(body["stream"], true);
+}
+
+#[tokio::test]
+async fn openai_stream_eof_without_response_completed_does_not_emit_message_stop() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    concat!(
+                        "event: response.output_text.delta\n",
+                        "data: {\"delta\":\"partial\"}\n\n",
+                    ),
+                    "text/event-stream",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let events = provider(&server)
+        .infer(request(true), InferContext::for_test())
+        .await
+        .expect("stream request should start")
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(!events.contains(&ModelStreamEvent::MessageStop));
 }
 
 #[tokio::test]

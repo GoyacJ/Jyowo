@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 
 const _validEvidenceContentHash = 'a'.repeat(64)
@@ -1174,6 +1176,17 @@ describe('CommandClient', () => {
     await expect(refreshOfficialQuota({ configId: '   ' }, client)).rejects.toThrow(
       TauriCommandPayloadError,
     )
+  })
+
+  it('declares every capability route kind exactly once', () => {
+    const source = readFileSync(join(process.cwd(), 'src/shared/tauri/commands.ts'), 'utf8')
+    const schemaSource = source.match(
+      /const capabilityRouteKindSchema = z\.enum\(\[([\s\S]*?)\]\)/,
+    )?.[1]
+    const kinds = [...(schemaSource?.matchAll(/'([^']+)'/g) ?? [])].map((match) => match[1])
+
+    expect(kinds.length).toBeGreaterThan(0)
+    expect(kinds).toEqual([...new Set(kinds)])
   })
 
   it('parses provider capability route list responses', async () => {

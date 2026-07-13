@@ -19,10 +19,12 @@ import { createTestCommandClient } from '@/testing/command-client'
 import { ModelConfigDialog } from './ModelConfigDialog'
 
 function renderDialog({
+  modelCatalog = catalog,
   client = createTestCommandClient(),
   onOpenChange = vi.fn(),
   profile = existingProfile,
 }: {
+  modelCatalog?: ModelProviderCatalogResponse
   client?: CommandClient
   onOpenChange?: (open: boolean) => void
   profile?: ProviderConfig | null
@@ -44,7 +46,7 @@ function renderDialog({
 
   return render(
     <ModelConfigDialog
-      catalog={catalog}
+      catalog={modelCatalog}
       onOpenChange={onOpenChange}
       onSaved={vi.fn()}
       open
@@ -55,6 +57,50 @@ function renderDialog({
 }
 
 describe('ModelConfigDialog', () => {
+  it('saves a new Local Llama config without an API key when catalog auth is none', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: authFreeProfile('local-llama', 'llama3.2'),
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      modelCatalog: authFreeCatalog('local-llama', 'llama3.2'),
+      profile: null,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Create model configuration' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      modelId: 'llama3.2',
+      providerId: 'local-llama',
+    })
+    expect(saveProviderSettings.mock.calls[0][0]).not.toHaveProperty('apiKey')
+  })
+
+  it('saves an existing Bedrock config with hasApiKey false when catalog auth is none', async () => {
+    const profile = authFreeProfile('bedrock', 'anthropic.claude-sonnet-4')
+    const saveProviderSettings = vi.fn().mockResolvedValue({ config: profile, status: 'saved' })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      modelCatalog: authFreeCatalog('bedrock', 'anthropic.claude-sonnet-4'),
+      profile,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).not.toHaveProperty('apiKey')
+  })
+
   it('saves edits through saveProviderSettings without resubmitting an unchanged key', async () => {
     const saveProviderSettings = vi.fn().mockResolvedValue({
       config: {
@@ -257,6 +303,113 @@ describe('ModelConfigDialog', () => {
     })
 
     expect(within(dialog).getByLabelText('Model')).toHaveValue('claude-sonnet-4')
+  })
+
+  it('keeps unsupported catalog models visible but disables their options', () => {
+    const unsupportedModel = {
+      ...gpt41,
+      displayName: 'Unsupported image model',
+      modelId: 'vendor/image-model',
+      runtimeStatus: {
+        kind: 'unsupported' as const,
+        reason: 'image output is not supported',
+      },
+    }
+    const modelCatalog: ModelProviderCatalogResponse = {
+      ...catalog,
+      providers: catalog.providers.map((provider) =>
+        provider.providerId === 'openai'
+          ? { ...provider, models: [...provider.models, unsupportedModel] }
+          : provider,
+      ),
+    }
+
+    renderDialog({ modelCatalog })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    expect(within(dialog).getByRole('option', { name: 'Unsupported image model' })).toBeDisabled()
+  })
+
+  it('selects the first runnable model when switching providers', () => {
+    const unsupportedModel = {
+      ...gpt41,
+      displayName: 'Unsupported Claude',
+      modelId: 'claude-unsupported',
+      runtimeStatus: {
+        kind: 'unsupported' as const,
+        reason: 'descriptor is not registered',
+      },
+    }
+    const modelCatalog: ModelProviderCatalogResponse = {
+      ...catalog,
+      providers: catalog.providers.map((provider) =>
+        provider.providerId === 'anthropic'
+          ? { ...provider, models: [unsupportedModel, ...provider.models] }
+          : provider,
+      ),
+    }
+
+    renderDialog({ modelCatalog })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    fireEvent.change(within(dialog).getByLabelText('Provider'), {
+      target: { value: 'anthropic' },
+    })
+
+    expect(within(dialog).getByLabelText('Model')).toHaveValue('claude-sonnet-4')
+  })
+
+  it('clears the model and disables save when a provider has no runnable models', () => {
+    const unsupportedModel = {
+      ...gpt41,
+      displayName: 'Unsupported Claude',
+      modelId: 'claude-unsupported',
+      runtimeStatus: {
+        kind: 'unsupported' as const,
+        reason: 'descriptor is not registered',
+      },
+    }
+    const modelCatalog: ModelProviderCatalogResponse = {
+      ...catalog,
+      providers: catalog.providers.map((provider) =>
+        provider.providerId === 'anthropic'
+          ? { ...provider, models: [unsupportedModel] }
+          : provider,
+      ),
+    }
+
+    renderDialog({ modelCatalog })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    fireEvent.change(within(dialog).getByLabelText('Provider'), {
+      target: { value: 'anthropic' },
+    })
+
+    expect(within(dialog).getByLabelText('Model')).toHaveValue('')
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  it('shows an unsupported model from an existing profile but does not allow saving it', () => {
+    const unsupportedModel = {
+      ...gpt41,
+      runtimeStatus: {
+        kind: 'unsupported' as const,
+        reason: 'descriptor is not registered',
+      },
+    }
+    const modelCatalog: ModelProviderCatalogResponse = {
+      ...catalog,
+      providers: catalog.providers.map((provider) =>
+        provider.providerId === 'openai' ? { ...provider, models: [unsupportedModel] } : provider,
+      ),
+    }
+
+    renderDialog({ modelCatalog })
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit model configuration' })
+    expect(within(dialog).getByLabelText('Model')).toHaveValue('gpt-4.1')
+    expect(within(dialog).getByRole('option', { name: 'GPT-4.1' })).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 
   it('saves Anthropic provider defaults from structured controls', async () => {
@@ -950,6 +1103,48 @@ const gpt41 = {
   maxOutputTokens: 8192,
   modelId: 'gpt-4.1',
   runtimeStatus: { kind: 'runnable' as const },
+}
+
+function authFreeCatalog(providerId: string, modelId: string): ModelProviderCatalogResponse {
+  return {
+    providers: [
+      {
+        defaultBaseUrl:
+          providerId === 'local-llama'
+            ? 'http://127.0.0.1:11434'
+            : 'https://bedrock-runtime.us-east-1.amazonaws.com',
+        displayName: providerId === 'local-llama' ? 'Local Llama' : 'Bedrock',
+        models: [{ ...gpt41, displayName: modelId, modelId }],
+        providerId,
+        runtimeCapability: {
+          authScheme: 'none',
+          baseUrlRegions: [],
+          supportsLiveValidation: false,
+          supportsStreamingValidation: true,
+          secretRevealSupported: false,
+        },
+        serviceCapabilities: [],
+        sourceUrl: 'https://example.invalid/docs',
+        verifiedDate: '2026-07-13',
+      },
+    ],
+  }
+}
+
+function authFreeProfile(providerId: string, modelId: string): ProviderConfig {
+  const provider = authFreeCatalog(providerId, modelId).providers[0]
+  return {
+    id: `cfg-${providerId}`,
+    providerId,
+    modelId,
+    displayName: provider.displayName,
+    baseUrl: provider.defaultBaseUrl,
+    hasApiKey: false,
+    hasOfficialQuotaApiKey: false,
+    isDefault: true,
+    protocol: 'responses',
+    modelDescriptor: provider.models[0],
+  }
 }
 
 const qwen37Max = {

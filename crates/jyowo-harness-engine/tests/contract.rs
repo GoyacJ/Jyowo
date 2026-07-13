@@ -15,7 +15,7 @@ use harness_hook::{HookDispatcher, HookRegistry};
 use harness_journal::InMemoryEventStore;
 use harness_model::{
     ConversationModelCapability, HealthStatus, InferContext, InferMiddleware, ModelDescriptor,
-    ModelProvider, ModelRequest, ModelStream,
+    ModelProvider, ModelRequest, ModelStream, ModelStreamEvent,
 };
 use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
 use harness_tool::ToolPool;
@@ -196,7 +196,7 @@ impl ModelProvider for DummyModel {
         _req: ModelRequest,
         _ctx: InferContext,
     ) -> Result<ModelStream, ModelError> {
-        Ok(Box::pin(stream::empty()))
+        Ok(Box::pin(stream::iter([ModelStreamEvent::MessageStop])))
     }
 
     async fn health(&self) -> HealthStatus {

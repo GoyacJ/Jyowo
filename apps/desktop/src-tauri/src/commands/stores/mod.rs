@@ -2508,38 +2508,6 @@ mod tests {
         assert_eq!(mode, 0o600);
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn write_automation_specs_creates_owner_only_file() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temp = tempfile::tempdir().expect("tempdir");
-        let temp_root = canonical_temp_root(&temp);
-        let path = temp_root.join("automations.json");
-        let now = Utc::now();
-        let records = vec![AutomationSpec {
-            id: "daily-check".to_owned(),
-            enabled: true,
-            prompt: "private prompt".to_owned(),
-            schedule: harness_contracts::AutomationSchedule {
-                interval_minutes: 60,
-            },
-            tool_profile: ToolProfile::Minimal,
-            permission_mode: PermissionMode::Default,
-            sandbox_mode: SandboxMode::None,
-            workspace_scope: AutomationWorkspaceScope::CurrentWorkspace,
-            workspace_access: WorkspaceAccess::ReadOnly,
-            missed_run_policy: MissedRunPolicy::Skip,
-            created_at: now,
-            updated_at: now,
-        }];
-
-        write_automation_specs(&path, &records).expect("automation write should succeed");
-
-        let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-    }
-
     #[test]
     fn read_json_file_reports_typed_error_for_invalid_json() {
         let temp = tempfile::tempdir().expect("tempdir");

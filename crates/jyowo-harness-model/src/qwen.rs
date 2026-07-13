@@ -489,8 +489,10 @@ fn dashscope_response_to_stream(response: reqwest::Response) -> ModelStream {
                 yield mapped;
             }
         }
-        for event in state.finish() {
-            yield event;
+        if state.terminal_seen {
+            for event in state.finish() {
+                yield event;
+            }
         }
     })
 }
@@ -552,6 +554,7 @@ fn parse_sse_frame(frame: &str) -> Option<String> {
 struct DashScopeStreamState {
     started: bool,
     stopped: bool,
+    terminal_seen: bool,
     text_started: bool,
     thinking_started: bool,
 }
@@ -618,6 +621,7 @@ impl DashScopeStreamState {
                 }
             }
             if let Some(reason) = choice.finish_reason {
+                self.terminal_seen = true;
                 events.push(ModelStreamEvent::MessageDelta {
                     stop_reason: Some(dashscope_stop_reason(&reason)),
                     usage_delta: usage_snapshot(chunk.usage.as_ref()),

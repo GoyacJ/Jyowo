@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use harness_contracts::{
     AgentProfile, ExecutionDefaultsRecord, McpPresetRecord, ProviderProfileDefinition,
@@ -9,9 +9,26 @@ use crate::commands::error::CommandErrorPayload;
 use crate::storage_layout::StorageLayout;
 
 use super::{
-    ensure_app_dir_no_symlink, read_json_file, read_json_file_invalid_payload,
-    read_secret_json_file, write_json_file_atomic, write_secret_json_file_atomic,
+    ensure_app_dir_no_symlink, read_file_no_follow, read_json_file, read_json_file_invalid_payload,
+    read_secret_json_file, remove_invalid_json_file, write_bytes_file_atomic,
+    write_json_file_atomic, write_secret_json_file_atomic,
 };
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ProviderGenerationFile {
+    Profiles,
+    Secrets,
+    Selection,
+}
+
+struct ProviderGenerationWrite {
+    file: ProviderGenerationFile,
+    path: PathBuf,
+    label: &'static str,
+    secret: bool,
+    new_bytes: Vec<u8>,
+    old_bytes: Option<Vec<u8>>,
+}
 
 /// Typed store for global configuration under `~/.jyowo/config/`.
 ///
@@ -31,6 +48,20 @@ impl GlobalConfigStore {
     /// Returns a reference to the underlying [`StorageLayout`].
     pub fn layout(&self) -> &StorageLayout {
         &self.layout
+    }
+
+    pub(crate) fn lock_provider_generation_shared(
+        &self,
+    ) -> Result<harness_fs::AdvisoryFileLock, CommandErrorPayload> {
+        harness_fs::lock_provider_generation_for_read(&self.layout.global_config_root())
+            .map_err(provider_generation_lock_error)
+    }
+
+    pub(crate) fn lock_provider_generation_exclusive(
+        &self,
+    ) -> Result<harness_fs::AdvisoryFileLock, CommandErrorPayload> {
+        harness_fs::lock_provider_generation_for_write(&self.layout.global_config_root())
+            .map_err(provider_generation_lock_error)
     }
 
     // ── Provider profiles ──────────────────────────────────────────────
@@ -142,6 +173,191 @@ impl GlobalConfigStore {
         write_json_file_atomic(&path, "provider selection", record)
     }
 
+    pub(crate) fn save_provider_generation(
+        &self,
+        profiles: &[ProviderProfileDefinition],
+        secrets: &[ProviderSecretEntry],
+        selection: &ProviderSelectionRecord,
+    ) -> Result<(), CommandErrorPayload> {
+        let _generation_guard = self.lock_provider_generation_exclusive()?;
+        self.save_provider_generation_with_writer_locked(
+            profiles,
+            secrets,
+            selection,
+            |_, path, label, bytes, secret| {
+                write_bytes_file_atomic(path, "store.json", label, bytes, secret)
+            },
+        )
+    }
+
+    #[cfg(test)]
+    fn save_provider_generation_with_writer<F>(
+        &self,
+        profiles: &[ProviderProfileDefinition],
+        secrets: &[ProviderSecretEntry],
+        selection: &ProviderSelectionRecord,
+        writer: F,
+    ) -> Result<(), CommandErrorPayload>
+    where
+        F: FnMut(
+            ProviderGenerationFile,
+            &Path,
+            &str,
+            &[u8],
+            bool,
+        ) -> Result<(), CommandErrorPayload>,
+    {
+        let _generation_guard = self.lock_provider_generation_exclusive()?;
+        self.save_provider_generation_with_writer_locked(profiles, secrets, selection, writer)
+    }
+
+    pub(crate) fn save_provider_generation_locked(
+        &self,
+        profiles: &[ProviderProfileDefinition],
+        secrets: &[ProviderSecretEntry],
+        selection: &ProviderSelectionRecord,
+    ) -> Result<(), CommandErrorPayload> {
+        self.save_provider_generation_with_writer_locked(
+            profiles,
+            secrets,
+            selection,
+            |_, path, label, bytes, secret| {
+                write_bytes_file_atomic(path, "store.json", label, bytes, secret)
+            },
+        )
+    }
+
+    fn save_provider_generation_with_writer_locked<F>(
+        &self,
+        profiles: &[ProviderProfileDefinition],
+        secrets: &[ProviderSecretEntry],
+        selection: &ProviderSelectionRecord,
+        mut writer: F,
+    ) -> Result<(), CommandErrorPayload>
+    where
+        F: FnMut(
+            ProviderGenerationFile,
+            &Path,
+            &str,
+            &[u8],
+            bool,
+        ) -> Result<(), CommandErrorPayload>,
+    {
+        let profiles_bytes = serde_json::to_vec_pretty(profiles).map_err(|error| {
+            crate::commands::error::runtime_operation_failed(format!(
+                "provider profiles serialization failed: {error}"
+            ))
+        })?;
+        let secrets_bytes = serde_json::to_vec_pretty(secrets).map_err(|error| {
+            crate::commands::error::runtime_operation_failed(format!(
+                "provider secrets serialization failed: {error}"
+            ))
+        })?;
+        let selection_bytes = serde_json::to_vec_pretty(selection).map_err(|error| {
+            crate::commands::error::runtime_operation_failed(format!(
+                "provider selection serialization failed: {error}"
+            ))
+        })?;
+        let paths = [
+            (
+                ProviderGenerationFile::Profiles,
+                self.layout.global_provider_profiles_file(),
+                "provider profiles",
+                false,
+                profiles_bytes,
+            ),
+            (
+                ProviderGenerationFile::Secrets,
+                self.layout.global_provider_secrets_file(),
+                "provider secrets",
+                true,
+                secrets_bytes,
+            ),
+            (
+                ProviderGenerationFile::Selection,
+                self.layout.global_provider_selection_file(),
+                "provider selection",
+                false,
+                selection_bytes,
+            ),
+        ];
+        let mut writes = Vec::with_capacity(paths.len());
+        for (file, path, label, secret, new_bytes) in paths {
+            ensure_config_dir(&path, label)?;
+            let old_bytes = read_file_no_follow(&path, label)?;
+            writes.push(ProviderGenerationWrite {
+                file,
+                path,
+                label,
+                secret,
+                new_bytes,
+                old_bytes,
+            });
+        }
+        harness_fs::begin_provider_generation_write(
+            &self.layout.global_config_root(),
+            writes[0].old_bytes.as_deref(),
+            writes[1].old_bytes.as_deref(),
+            writes[2].old_bytes.as_deref(),
+        )
+        .map_err(provider_generation_lock_error)?;
+
+        for index in 0..writes.len() {
+            let write = &writes[index];
+            if let Err(commit_error) = writer(
+                write.file,
+                &write.path,
+                write.label,
+                &write.new_bytes,
+                write.secret,
+            ) {
+                let mut rollback_errors = Vec::new();
+                for rollback in writes[..=index].iter().rev() {
+                    let result = match rollback.old_bytes.as_deref() {
+                        Some(bytes) => writer(
+                            rollback.file,
+                            &rollback.path,
+                            rollback.label,
+                            bytes,
+                            rollback.secret,
+                        ),
+                        None => remove_invalid_json_file(&rollback.path, rollback.label),
+                    };
+                    if let Err(error) = result {
+                        rollback_errors.push(format!("{}: {}", rollback.label, error.message));
+                    }
+                }
+                if rollback_errors.is_empty() {
+                    self.finish_provider_generation_write()?;
+                    return Err(commit_error);
+                }
+                return Err(crate::commands::error::runtime_operation_failed(format!(
+                    "{}; provider settings rollback failed: {}",
+                    commit_error.message,
+                    rollback_errors.join("; ")
+                )));
+            }
+        }
+        self.finish_provider_generation_write()?;
+        Ok(())
+    }
+
+    fn finish_provider_generation_write(&self) -> Result<(), CommandErrorPayload> {
+        match harness_fs::finish_provider_generation_write(&self.layout.global_config_root())
+            .map_err(provider_generation_lock_error)?
+        {
+            harness_fs::ProviderGenerationFinishOutcome::Committed => {}
+            harness_fs::ProviderGenerationFinishOutcome::CommittedWithoutDirectorySync {
+                source,
+            } => {
+                log::warn!(
+                    "provider generation committed, but recovery marker directory sync failed: {source}"
+                );
+            }
+        }
+        Ok(())
+    }
+
     // ── Execution defaults ─────────────────────────────────────────────
 
     pub fn load_execution_defaults(&self) -> Result<ExecutionDefaultsRecord, CommandErrorPayload> {
@@ -221,6 +437,12 @@ impl GlobalConfigStore {
     }
 }
 
+fn provider_generation_lock_error(error: harness_fs::FsError) -> CommandErrorPayload {
+    crate::commands::error::runtime_operation_failed(format!(
+        "provider generation lock failed: {error}"
+    ))
+}
+
 /// Ensure the parent config directory exists without following symlinks.
 fn ensure_config_dir(path: &Path, label: &str) -> Result<(), CommandErrorPayload> {
     let parent = path.parent().ok_or_else(|| {
@@ -233,7 +455,10 @@ fn ensure_config_dir(path: &Path, label: &str) -> Result<(), CommandErrorPayload
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
 
     use harness_contracts::{
         AgentProfile, AgentProfileContextMode, AgentProfileMemoryScope,
@@ -246,7 +471,12 @@ mod tests {
 
     use crate::storage_layout::{JyowoHome, StorageLayout};
 
-    use super::GlobalConfigStore;
+    use crate::commands::{DesktopProviderSettingsStore, ProviderSettingsStore};
+
+    use super::{GlobalConfigStore, ProviderGenerationFile};
+
+    const PROVIDER_GENERATION_READER_CHILD: &str =
+        "commands::stores::global_config::tests::provider_generation_reader_child";
 
     fn store() -> (GlobalConfigStore, tempfile::TempDir) {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -280,6 +510,312 @@ mod tests {
                 structured_output: true,
             },
             runtime_semantics: None,
+        }
+    }
+
+    fn provider_profile(id: &str) -> ProviderProfileDefinition {
+        ProviderProfileDefinition {
+            id: id.to_owned(),
+            display_name: id.to_owned(),
+            provider_id: "openai".to_owned(),
+            model_id: "gpt-5".to_owned(),
+            protocol: ModelProtocol::ChatCompletions,
+            model_options: harness_contracts::ModelRequestOptions::default(),
+            base_url: None,
+            provider_defaults: None,
+            model_descriptor: make_model_descriptor(),
+        }
+    }
+
+    fn provider_generation_paths(store: &GlobalConfigStore) -> [PathBuf; 3] {
+        [
+            store.layout().global_provider_profiles_file(),
+            store.layout().global_provider_secrets_file(),
+            store.layout().global_provider_selection_file(),
+        ]
+    }
+
+    fn spawn_provider_generation_reader(
+        store: &GlobalConfigStore,
+        started_path: &Path,
+        output_path: &Path,
+    ) -> Child {
+        Command::new(std::env::current_exe().expect("current test executable"))
+            .arg("--exact")
+            .arg(PROVIDER_GENERATION_READER_CHILD)
+            .arg("--nocapture")
+            .env(
+                "JYOWO_PROVIDER_GENERATION_CONFIG_ROOT",
+                store.layout().global_config_root(),
+            )
+            .env("JYOWO_PROVIDER_GENERATION_READER_STARTED", started_path)
+            .env("JYOWO_PROVIDER_GENERATION_READER_OUTPUT", output_path)
+            .env("JYOWO_PROVIDER_GENERATION_READER_EXPECT_BLOCKED", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn provider generation reader")
+    }
+
+    fn wait_for_path(path: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !path.exists() {
+            assert!(Instant::now() < deadline, "timed out waiting for {path:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn read_generation_result(path: &Path) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(path).expect("read generation result"))
+            .expect("decode generation result")
+    }
+
+    #[test]
+    fn provider_generation_reader_child() {
+        let Some(config_root) = std::env::var_os("JYOWO_PROVIDER_GENERATION_CONFIG_ROOT") else {
+            return;
+        };
+        let config_root = PathBuf::from(config_root);
+        let started_path = PathBuf::from(
+            std::env::var_os("JYOWO_PROVIDER_GENERATION_READER_STARTED")
+                .expect("reader started path"),
+        );
+        let output_path = PathBuf::from(
+            std::env::var_os("JYOWO_PROVIDER_GENERATION_READER_OUTPUT")
+                .expect("reader output path"),
+        );
+        let lock_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(config_root.join("provider-generation.lock"))
+            .expect("open provider generation lock");
+        let error = fs2::FileExt::try_lock_shared(&lock_file)
+            .expect_err("writer must hold the provider generation lock");
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        std::fs::write(&started_path, b"started").expect("signal reader start");
+        let layout = StorageLayout::new(JyowoHome::new(
+            config_root.parent().expect("config root parent"),
+        ));
+        let record = DesktopProviderSettingsStore::global_only_with_layout(layout)
+            .load_record()
+            .expect("load provider generation")
+            .expect("provider generation exists");
+        let selected = record.configs.first().expect("provider config exists");
+        std::fs::write(
+            output_path,
+            serde_json::to_vec(&serde_json::json!({
+                "configId": selected.id,
+                "apiKey": selected.api_key,
+                "defaultConfigId": record.default_config_id,
+            }))
+            .expect("serialize generation result"),
+        )
+        .expect("write generation result");
+    }
+
+    #[test]
+    fn provider_generation_reader_waits_for_complete_commit() {
+        let (store, temp) = store();
+        store
+            .save_provider_generation(
+                &[provider_profile("old")],
+                &[ProviderSecretEntry {
+                    config_id: "old".to_owned(),
+                    api_key: "old-secret".to_owned(),
+                    official_quota_api_key: None,
+                }],
+                &ProviderSelectionRecord {
+                    default_config_id: Some("old".to_owned()),
+                },
+            )
+            .expect("seed old generation");
+        let writer_store = store.clone();
+        let (profiles_written_tx, profiles_written_rx) = mpsc::sync_channel(0);
+        let (resume_tx, resume_rx) = mpsc::sync_channel(0);
+        let writer = std::thread::spawn(move || {
+            writer_store.save_provider_generation_with_writer(
+                &[provider_profile("new")],
+                &[ProviderSecretEntry {
+                    config_id: "new".to_owned(),
+                    api_key: "new-secret".to_owned(),
+                    official_quota_api_key: None,
+                }],
+                &ProviderSelectionRecord {
+                    default_config_id: Some("new".to_owned()),
+                },
+                |file, path, label, bytes, secret| {
+                    super::super::write_bytes_file_atomic(
+                        path,
+                        "store.json",
+                        label,
+                        bytes,
+                        secret,
+                    )?;
+                    if file == ProviderGenerationFile::Profiles {
+                        profiles_written_tx.send(()).expect("signal profiles write");
+                        resume_rx.recv().expect("resume generation commit");
+                    }
+                    Ok(())
+                },
+            )
+        });
+        profiles_written_rx.recv().expect("profiles written");
+
+        let started_path = temp.path().join("reader-started");
+        let output_path = temp.path().join("reader-output.json");
+        let mut child = spawn_provider_generation_reader(&store, &started_path, &output_path);
+        wait_for_path(&started_path);
+
+        resume_tx.send(()).expect("resume writer");
+        writer
+            .join()
+            .expect("join writer")
+            .expect("commit generation");
+        assert!(child.wait().expect("wait reader").success());
+        let result = read_generation_result(&output_path);
+
+        assert_eq!(result["configId"], "new");
+        assert_eq!(result["apiKey"], "new-secret");
+        assert_eq!(result["defaultConfigId"], "new");
+    }
+
+    #[test]
+    fn provider_generation_reader_waits_for_complete_rollback() {
+        let (store, temp) = store();
+        store
+            .save_provider_generation(
+                &[provider_profile("old")],
+                &[ProviderSecretEntry {
+                    config_id: "old".to_owned(),
+                    api_key: "old-secret".to_owned(),
+                    official_quota_api_key: None,
+                }],
+                &ProviderSelectionRecord {
+                    default_config_id: Some("old".to_owned()),
+                },
+            )
+            .expect("seed old generation");
+        let writer_store = store.clone();
+        let (profiles_written_tx, profiles_written_rx) = mpsc::sync_channel(0);
+        let (resume_tx, resume_rx) = mpsc::sync_channel(0);
+        let writer = std::thread::spawn(move || {
+            let mut inject_failure = true;
+            writer_store.save_provider_generation_with_writer(
+                &[provider_profile("new")],
+                &[ProviderSecretEntry {
+                    config_id: "new".to_owned(),
+                    api_key: "new-secret".to_owned(),
+                    official_quota_api_key: None,
+                }],
+                &ProviderSelectionRecord {
+                    default_config_id: Some("new".to_owned()),
+                },
+                |file, path, label, bytes, secret| {
+                    if file == ProviderGenerationFile::Secrets && inject_failure {
+                        inject_failure = false;
+                        return Err(crate::commands::error::runtime_operation_failed(
+                            "injected provider secrets write failure".to_owned(),
+                        ));
+                    }
+                    super::super::write_bytes_file_atomic(
+                        path,
+                        "store.json",
+                        label,
+                        bytes,
+                        secret,
+                    )?;
+                    if file == ProviderGenerationFile::Profiles && inject_failure {
+                        profiles_written_tx.send(()).expect("signal profiles write");
+                        resume_rx.recv().expect("resume generation rollback");
+                    }
+                    Ok(())
+                },
+            )
+        });
+        profiles_written_rx.recv().expect("profiles written");
+
+        let started_path = temp.path().join("rollback-reader-started");
+        let output_path = temp.path().join("rollback-reader-output.json");
+        let mut child = spawn_provider_generation_reader(&store, &started_path, &output_path);
+        wait_for_path(&started_path);
+
+        resume_tx.send(()).expect("resume writer");
+        writer
+            .join()
+            .expect("join writer")
+            .expect_err("generation commit must roll back");
+        assert!(child.wait().expect("wait reader").success());
+        let result = read_generation_result(&output_path);
+
+        assert_eq!(result["configId"], "old");
+        assert_eq!(result["apiKey"], "old-secret");
+        assert_eq!(result["defaultConfigId"], "old");
+    }
+
+    #[test]
+    fn provider_generation_rolls_back_every_file_when_each_commit_step_fails() {
+        for failed_file in [
+            ProviderGenerationFile::Profiles,
+            ProviderGenerationFile::Secrets,
+            ProviderGenerationFile::Selection,
+        ] {
+            let (store, _temp) = store();
+            store
+                .save_provider_generation(
+                    &[provider_profile("old")],
+                    &[ProviderSecretEntry {
+                        config_id: "old".to_owned(),
+                        api_key: "old-secret".to_owned(),
+                        official_quota_api_key: None,
+                    }],
+                    &ProviderSelectionRecord {
+                        default_config_id: Some("old".to_owned()),
+                    },
+                )
+                .expect("seed old generation");
+            let paths = provider_generation_paths(&store);
+            let old_bytes = paths
+                .clone()
+                .map(|path| std::fs::read(path).expect("read old generation"));
+            let mut injected = false;
+
+            let error = store
+                .save_provider_generation_with_writer(
+                    &[provider_profile("new")],
+                    &[ProviderSecretEntry {
+                        config_id: "new".to_owned(),
+                        api_key: "new-secret".to_owned(),
+                        official_quota_api_key: None,
+                    }],
+                    &ProviderSelectionRecord {
+                        default_config_id: Some("new".to_owned()),
+                    },
+                    |file, path, label, bytes, secret| {
+                        if file == failed_file && !injected {
+                            injected = true;
+                            return Err(crate::commands::error::runtime_operation_failed(format!(
+                                "injected {file:?} write failure"
+                            )));
+                        }
+                        super::super::write_bytes_file_atomic(
+                            path,
+                            "store.json",
+                            label,
+                            bytes,
+                            secret,
+                        )
+                    },
+                )
+                .expect_err("generation commit should fail");
+
+            assert!(error.message.contains("injected"));
+            for (path, expected) in paths.iter().zip(old_bytes.iter()) {
+                assert_eq!(
+                    std::fs::read(path).expect("read rolled back generation"),
+                    *expected,
+                    "{failed_file:?} failure left a mixed generation at {path:?}"
+                );
+            }
         }
     }
 

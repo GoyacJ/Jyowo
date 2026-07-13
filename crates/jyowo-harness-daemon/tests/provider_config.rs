@@ -1,4 +1,7 @@
 use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use harness_contracts::{
     ExecutionDefaultsRecord, ModelProtocol, ProviderProfileConversationCapability,
@@ -8,6 +11,85 @@ use harness_contracts::{
 };
 use harness_daemon::{ProviderConfigError, ProviderConfigResolver};
 use tempfile::TempDir;
+
+const GENERATION_READER_CHILD: &str = "provider_generation_reader_child";
+
+fn wait_for_path(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !path.exists() {
+        assert!(Instant::now() < deadline, "timed out waiting for {path:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn provider_generation_reader_child() {
+    let Some(config_root) = std::env::var_os("JYOWO_DAEMON_PROVIDER_CONFIG_ROOT") else {
+        return;
+    };
+    let started_path = PathBuf::from(
+        std::env::var_os("JYOWO_DAEMON_PROVIDER_READER_STARTED").expect("reader started path"),
+    );
+    let output_path = PathBuf::from(
+        std::env::var_os("JYOWO_DAEMON_PROVIDER_READER_OUTPUT").expect("reader output path"),
+    );
+    let lock_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(PathBuf::from(&config_root).join("provider-generation.lock"))
+        .expect("open provider generation lock");
+    let error = fs2::FileExt::try_lock_shared(&lock_file)
+        .expect_err("writer must hold the provider generation lock");
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    fs::write(started_path, b"started").expect("signal reader start");
+    let result = match ProviderConfigResolver::new(PathBuf::from(config_root)).resolve(None) {
+        Ok(resolved) => serde_json::json!({
+            "configId": resolved.config_id,
+            "modelId": resolved.model_id,
+        }),
+        Err(error) => serde_json::json!({"error": error.to_string()}),
+    };
+    fs::write(output_path, serde_json::to_vec(&result).unwrap()).expect("write reader result");
+}
+
+#[test]
+fn provider_resolver_waits_for_complete_generation_commit() {
+    let config = ConfigFixture::new();
+    config.write_profiles(&[profile("old", "anthropic", "claude-sonnet-4-20250514")]);
+    config.write_secrets(&[secret("old", "old-secret")]);
+    config.write_selection(Some("old"));
+    let config_root = config.path().canonicalize().expect("canonical config root");
+    let generation_guard =
+        harness_fs::lock_file_exclusive(&config_root.join("provider-generation.lock"))
+            .expect("lock provider generation");
+    config.write_profiles(&[profile("new", "anthropic", "claude-opus-4-20250514")]);
+
+    let started_path = config_root.join("reader-started");
+    let output_path = config_root.join("reader-output.json");
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg(GENERATION_READER_CHILD)
+        .arg("--nocapture")
+        .env("JYOWO_DAEMON_PROVIDER_CONFIG_ROOT", &config_root)
+        .env("JYOWO_DAEMON_PROVIDER_READER_STARTED", &started_path)
+        .env("JYOWO_DAEMON_PROVIDER_READER_OUTPUT", &output_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn provider reader");
+    wait_for_path(&started_path);
+
+    config.write_secrets(&[secret("new", "new-secret")]);
+    config.write_selection(Some("new"));
+    drop(generation_guard);
+    assert!(child.wait().expect("wait provider reader").success());
+    let result: serde_json::Value =
+        serde_json::from_slice(&fs::read(output_path).expect("read reader result"))
+            .expect("decode reader result");
+
+    assert_eq!(result["configId"], "new");
+    assert_eq!(result["modelId"], "claude-opus-4-20250514");
+}
 
 #[test]
 fn missing_execution_defaults_use_the_disabled_contract_defaults() {
@@ -184,6 +266,39 @@ fn empty_api_key_is_rejected_without_echoing_it() {
         ProviderConfigError::EmptyApiKey { ref config_id } if config_id == "selected"
     ));
     assert!(!error.to_string().contains("   "));
+}
+
+#[test]
+fn authentication_free_providers_resolve_without_a_non_empty_secret() {
+    for (provider_id, model_id) in [
+        ("local-llama", "llama3.2"),
+        ("bedrock", "anthropic.claude-3-5-sonnet-20241022-v2:0"),
+    ] {
+        for api_key in [None, Some("   ")] {
+            let config = ConfigFixture::new();
+            let mut selected = profile("selected", provider_id, model_id);
+            if provider_id == "bedrock" {
+                selected.protocol = ModelProtocol::Messages;
+                selected.model_descriptor.protocol = ModelProtocol::Messages;
+            }
+            config.write_profiles(&[selected]);
+            config.write_secrets(
+                &api_key
+                    .map(|api_key| vec![secret("selected", api_key)])
+                    .unwrap_or_default(),
+            );
+            config.write_selection(Some("selected"));
+
+            let resolved = ProviderConfigResolver::new(config.path())
+                .resolve(None)
+                .unwrap_or_else(|error| {
+                    panic!("{provider_id} with {api_key:?} secret must resolve: {error}")
+                });
+
+            assert_eq!(resolved.provider.provider_id(), provider_id);
+            assert_eq!(resolved.model_id, model_id);
+        }
+    }
 }
 
 #[test]
@@ -400,18 +515,22 @@ fn structured_output_capability_must_match_runtime_output_semantics() {
 }
 
 struct ConfigFixture {
-    root: TempDir,
+    _root: TempDir,
+    canonical_root: PathBuf,
 }
 
 impl ConfigFixture {
     fn new() -> Self {
+        let root = tempfile::tempdir().expect("temp config root");
+        let canonical_root = root.path().canonicalize().expect("canonical config root");
         Self {
-            root: tempfile::tempdir().expect("temp config root"),
+            _root: root,
+            canonical_root,
         }
     }
 
     fn path(&self) -> &std::path::Path {
-        self.root.path()
+        &self.canonical_root
     }
 
     fn write_profiles(&self, profiles: &[ProviderProfileDefinition]) {

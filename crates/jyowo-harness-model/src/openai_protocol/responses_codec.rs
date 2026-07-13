@@ -165,9 +165,6 @@ pub(super) fn response_to_stream(
             }
         }
 
-        if state.started && !state.stopped {
-            yield ModelStreamEvent::MessageStop;
-        }
     })
 }
 
@@ -187,7 +184,7 @@ pub(super) fn json_response_to_stream(
     let usage = usage(response.usage.as_ref());
     let mut events = vec![ModelStreamEvent::MessageStart {
         message_id: response_id.clone(),
-        usage: usage.clone(),
+        usage: UsageSnapshot::default(),
     }];
     let mut next_index = 0;
 

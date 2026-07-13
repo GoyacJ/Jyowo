@@ -89,6 +89,7 @@ impl Tool for CatalogTestTool {
 
 #[tokio::test]
 async fn list_runtime_tools_returns_the_complete_settings_catalog() {
+    let _home_lock = HOME_ENV_LOCK.lock().unwrap();
     let workspace = unique_workspace("runtime-tools");
     std::fs::create_dir_all(&workspace).unwrap();
     let state = runtime_state_for_workspace(workspace)
@@ -151,6 +152,7 @@ async fn list_runtime_tools_returns_the_complete_settings_catalog() {
 
 #[tokio::test]
 async fn list_runtime_tools_includes_dynamic_sources_from_the_same_registry() {
+    let _home_lock = HOME_ENV_LOCK.lock().unwrap();
     let workspace = unique_workspace("runtime-tools-dynamic-origin");
     std::fs::create_dir_all(&workspace).unwrap();
     let state = runtime_state_for_workspace(workspace)

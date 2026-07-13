@@ -223,6 +223,34 @@ provider_test!(
 );
 
 #[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_chat_eof_without_finish_reason_does_not_emit_message_stop() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    "data: {\"id\":\"chat_partial\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n",
+                    "text/event-stream",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let provider = DeepSeekProvider::from_api_key("provider-key").with_base_url(server.uri());
+    let events = provider
+        .infer(request("deepseek-v4-flash"), InferContext::for_test())
+        .await
+        .expect("chat request should start")
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(!events.contains(&ModelStreamEvent::MessageStop));
+}
+
+#[cfg(feature = "deepseek")]
 #[test]
 fn provider_deepseek_catalog_matches_official_capabilities_and_pricing() {
     let provider = DeepSeekProvider::from_api_key("provider-key");
@@ -572,6 +600,20 @@ async fn provider_deepseek_fim_uses_beta_completions_api() {
         index: 0,
         delta: ContentDelta::Text("    if a < 2:\n        return a\n".to_owned()),
     }));
+    let total_usage = events
+        .iter()
+        .fold(UsageSnapshot::default(), |mut total, event| {
+            let usage = match event {
+                ModelStreamEvent::MessageStart { usage, .. } => usage,
+                ModelStreamEvent::MessageDelta { usage_delta, .. } => usage_delta,
+                _ => return total,
+            };
+            total.input_tokens += usage.input_tokens;
+            total.output_tokens += usage.output_tokens;
+            total
+        });
+    assert_eq!(total_usage.input_tokens, 9);
+    assert_eq!(total_usage.output_tokens, 7);
 
     let requests = server.received_requests().await.unwrap();
     let body: Value = requests[0].body_json().unwrap();
@@ -580,6 +622,37 @@ async fn provider_deepseek_fim_uses_beta_completions_api() {
     assert_eq!(body["suffix"], "    return fib(a-1) + fib(a-2)");
     assert_eq!(body["max_tokens"], 128);
     assert!(body.get("messages").is_none());
+}
+
+#[cfg(feature = "deepseek")]
+#[tokio::test]
+async fn provider_deepseek_fim_eof_without_finish_reason_does_not_emit_message_stop() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/beta/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    "data: {\"id\":\"cmpl_partial\",\"choices\":[{\"index\":0,\"text\":\"partial\"}]}\n\n",
+                    "text/event-stream",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let provider = DeepSeekProvider::from_api_key("provider-key")
+        .with_base_url(format!("{}/beta", server.uri()));
+    let mut req = deepseek_fim_request();
+    req.stream = true;
+    let events = provider
+        .infer(req, InferContext::for_test())
+        .await
+        .expect("FIM request should start")
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(!events.contains(&ModelStreamEvent::MessageStop));
 }
 
 #[cfg(feature = "deepseek")]
@@ -658,6 +731,22 @@ async fn provider_deepseek_non_stream_maps_cache_hit_miss_usage() {
             tool_calls: 0,
         },
     }));
+    let total_usage = events
+        .iter()
+        .fold(UsageSnapshot::default(), |mut total, event| {
+            let usage = match event {
+                ModelStreamEvent::MessageStart { usage, .. } => usage,
+                ModelStreamEvent::MessageDelta { usage_delta, .. } => usage_delta,
+                _ => return total,
+            };
+            total.input_tokens += usage.input_tokens;
+            total.output_tokens += usage.output_tokens;
+            total.cache_read_tokens += usage.cache_read_tokens;
+            total
+        });
+    assert_eq!(total_usage.input_tokens, 3);
+    assert_eq!(total_usage.output_tokens, 2);
+    assert_eq!(total_usage.cache_read_tokens, 7);
 }
 
 #[cfg(feature = "deepseek")]
@@ -1052,6 +1141,37 @@ async fn provider_qwen_streams_dashscope_generation() {
         body["parameters"]["search_options"],
         json!({ "search_strategy": "agent_max" })
     );
+}
+
+#[cfg(feature = "qwen")]
+#[tokio::test]
+async fn provider_qwen_dashscope_eof_without_done_does_not_emit_message_stop() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/services/aigc/text-generation/generation"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    "data: {\"output\":{\"choices\":[{\"message\":{\"content\":\"partial\"}}]}}\n\n",
+                    "text/event-stream",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let provider = QwenProvider::from_api_key("provider-key").with_base_url(server.uri());
+    let events = provider
+        .infer(
+            request_with_protocol("qwen3.7-max", ModelProtocol::Dashscope),
+            InferContext::for_test(),
+        )
+        .await
+        .expect("Qwen DashScope request should start")
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(!events.contains(&ModelStreamEvent::MessageStop));
 }
 
 #[cfg(feature = "qwen")]

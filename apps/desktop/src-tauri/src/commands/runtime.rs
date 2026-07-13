@@ -1071,7 +1071,7 @@ pub(crate) async fn build_desktop_settings_runtime(
         default_session_options =
             default_session_options.with_project_workspace_root(project_workspace_root);
     }
-    let settings_harness = DesktopSettingsRuntime::builder()
+    let settings_harness_builder = DesktopSettingsRuntime::builder()
         .with_workspace_root(execution_cwd)
         .with_model_arc(model_provider)
         .with_model_id(model_id.clone())
@@ -1096,7 +1096,17 @@ pub(crate) async fn build_desktop_settings_runtime(
         .with_plugin_registry(plugin_registry)
         .with_skill_loader(skill_loader)
         .with_permission_authority_arc(authorization_service.permission_authority())
-        .with_authorization_service_arc(authorization_service)
+        .with_authorization_service_arc(authorization_service);
+    let settings_harness =
+        super::provider_continuation_runtime::with_file_provider_continuation_store(
+            settings_harness_builder,
+            runtime_root,
+        )
+        .map_err(|error| {
+            runtime_init_failed(format!(
+                "provider continuation store initialization failed: {error}"
+            ))
+        })?
         .build()
         .await
         .map_err(|error| {

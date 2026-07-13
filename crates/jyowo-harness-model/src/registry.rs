@@ -174,6 +174,14 @@ pub fn provider_catalog_entries() -> Vec<ProviderCatalogEntry> {
 }
 
 #[must_use]
+pub fn provider_requires_api_key(provider_id: &str) -> bool {
+    provider_catalog_entries()
+        .into_iter()
+        .find(|entry| entry.provider_id == provider_id)
+        .is_none_or(|entry| entry.runtime_capability.auth_scheme != ProviderAuthScheme::None)
+}
+
+#[must_use]
 pub fn provider_inventory_entries() -> Vec<ProviderInventoryEntry> {
     provider_catalog_entries()
         .into_iter()

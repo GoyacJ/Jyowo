@@ -77,6 +77,10 @@ pub enum ClientRequest {
     SubscribeEvents {
         after_offset: u64,
     },
+    LoadEvents {
+        after_global_offset: u64,
+        limit: u16,
+    },
     LoadTask {
         task_id: TaskId,
     },
@@ -206,6 +210,7 @@ pub enum ServerMessage {
     CommandRejected(CommandRejected),
     TaskSnapshot(TaskSnapshot),
     TaskEventPage(TaskEventPage),
+    EventHistoryPage(TaskEventHistoryPage),
     TaskList { tasks: Vec<TaskProjection> },
     RuntimeTools(ListRuntimeToolsResponse),
     MemoryItems(ListMemoryItemsResponse),
@@ -766,6 +771,16 @@ pub struct TaskEventBatch {
     pub after_offset: u64,
     pub latest_offset: u64,
     pub gap: bool,
+    pub events: Vec<TaskEventEnvelope>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskEventHistoryPage {
+    pub after_global_offset: u64,
+    pub latest_global_offset: u64,
+    pub next_after_global_offset: u64,
+    pub has_more: bool,
     pub events: Vec<TaskEventEnvelope>,
 }
 

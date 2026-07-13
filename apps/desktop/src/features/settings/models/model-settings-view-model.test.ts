@@ -411,6 +411,74 @@ describe('model-settings-view-model', () => {
     expect(modelUsageKey('openai', 'gpt-4.1')).toBe('openai/gpt-4.1')
   })
 
+  it('preserves slash-containing model ids when matching structured usage buckets', () => {
+    const modelId = 'organization/model-v1'
+    const config = {
+      ...settings.configs[0],
+      modelId,
+      modelDescriptor: { ...modelDescriptor, modelId },
+    }
+    const bucket = {
+      ...usageBucket,
+      key: `openai/${modelId}`,
+      modelId,
+      usage: { ...usageBucket.usage, inputTokens: 37 },
+    }
+    const summary: GetModelUsageSummaryResponse = {
+      ...usageSummary,
+      today: { ...usageSummary.today, byModel: [bucket] },
+      monthToDate: { ...usageSummary.monthToDate, byModel: [bucket] },
+      allTime: { ...usageSummary.allTime, byModel: [bucket] },
+    }
+
+    const viewModel = buildModelSettingsViewModel(
+      baseInput({
+        providerSettings: ready({
+          ...settings,
+          configs: [config],
+          defaultConfigId: config.id,
+        }),
+        usageSummary: ready(summary),
+      }),
+    )
+
+    expect(viewModel.rows[0]?.modelId).toBe(modelId)
+    expect(viewModel.rows[0]?.usage).toMatchObject({
+      status: 'ready',
+      today: { inputTokens: 37 },
+      monthToDate: { inputTokens: 37 },
+      allTime: { inputTokens: 37 },
+    })
+  })
+
+  it('does not mark distinct structured usage identities as shared when flat keys collide', () => {
+    const configs = [
+      {
+        ...settings.configs[0],
+        id: 'cfg-provider-slash',
+        providerId: 'a/b',
+        modelId: 'c',
+      },
+      {
+        ...settings.configs[1],
+        id: 'cfg-model-slash',
+        providerId: 'a',
+        modelId: 'b/c',
+      },
+    ]
+
+    const viewModel = buildModelSettingsViewModel(
+      baseInput({
+        providerSettings: ready({ ...settings, configs }),
+      }),
+    )
+
+    expect(viewModel.rows).toHaveLength(2)
+    for (const row of viewModel.rows) {
+      expect(row.usage).toMatchObject({ status: 'ready', sharedModelUsage: false })
+    }
+  })
+
   it('never derives today or month usage from all-time totals in the view model', () => {
     const viewModel = buildModelSettingsViewModel(baseInput())
     const row = viewModel.rows[0]

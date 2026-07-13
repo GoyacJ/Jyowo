@@ -1,10 +1,6 @@
 import type {
-  AutomationSpec,
   ConversationModelCapability,
   GetModelUsageSummaryResponse,
-  ListAutomationRunsResponse,
-  ListAutomationsResponse,
-  ListEvalCasesResponse,
   ListOfficialQuotaSnapshotsResponse,
   ListProjectsResponse,
   ListProviderProbeSnapshotsResponse,
@@ -12,44 +8,11 @@ import type {
   ModelProviderCatalogResponse,
   ProbeProviderConfigResponse,
   RefreshOfficialQuotaResponse,
-  SaveAutomationRequest,
   SaveProviderSettingsResponse,
   ValidateProviderSettingsResponse,
 } from '@/shared/tauri/commands'
 
 import { timestamp } from './base'
-
-export const fixtureAutomation = {
-  id: 'checks',
-  enabled: false,
-  prompt: 'Run checks',
-  schedule: { intervalMinutes: 30 },
-  toolProfile: 'coding',
-  permissionMode: 'default',
-  sandboxMode: 'none',
-  workspaceScope: 'current_workspace',
-  workspaceAccess: 'read_only',
-  missedRunPolicy: 'skip',
-  createdAt: '2026-06-30T01:00:00Z',
-  updatedAt: '2026-06-30T01:00:00Z',
-} satisfies ListAutomationsResponse['automations'][number]
-
-export const fixtureListAutomations: ListAutomationsResponse = {
-  automations: [fixtureAutomation],
-}
-
-export const fixtureAutomationRun = {
-  automationId: 'checks',
-  completedAt: '2026-06-30T01:01:00Z',
-  id: 'automation-run-001',
-  message: 'Starting automation runs requires the runtime conversation facade.',
-  startedAt: '2026-06-30T01:00:00Z',
-  status: 'rejected',
-} satisfies ListAutomationRunsResponse['runs'][number]
-
-export const fixtureAutomationRuns: ListAutomationRunsResponse = {
-  runs: [fixtureAutomationRun],
-}
 
 export const fixtureValidateProviderSettings: ValidateProviderSettingsResponse = {
   modelId: 'gpt-4o-mini',
@@ -281,46 +244,6 @@ export const testJyowoProject: ListProjectsResponse = {
   ],
 }
 
-export const fixtureListEvalCases: ListEvalCasesResponse = {
-  cases: [
-    {
-      id: 'regression-smoke',
-      lastRun: {
-        completedAt: timestamp,
-        failed: 0,
-        passed: 3,
-        status: 'passed',
-      },
-      title: 'Regression smoke',
-    },
-  ],
-}
-
 export function fixtureProviderApiKeyForConfig(configId: string) {
   return ['fixture', 'provider', 'revealed', configId].join(':')
-}
-
-export function normalizeAutomationSpec(
-  automation: SaveAutomationRequest['automation'],
-): AutomationSpec {
-  return {
-    ...automation,
-    enabled: automation.enabled ?? false,
-    missedRunPolicy: automation.missedRunPolicy ?? 'skip',
-    workspaceAccess: normalizeAutomationWorkspaceAccess(automation.workspaceAccess),
-  }
-}
-
-function normalizeAutomationWorkspaceAccess(
-  workspaceAccess: SaveAutomationRequest['automation']['workspaceAccess'],
-): AutomationSpec['workspaceAccess'] {
-  if (typeof workspaceAccess === 'object' && 'read_write' in workspaceAccess) {
-    return {
-      read_write: {
-        allowed_writable_subpaths: workspaceAccess.read_write.allowed_writable_subpaths ?? [],
-      },
-    }
-  }
-
-  return workspaceAccess
 }

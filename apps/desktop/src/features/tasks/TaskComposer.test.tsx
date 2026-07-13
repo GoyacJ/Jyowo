@@ -64,6 +64,129 @@ describe('TaskComposer', () => {
     )
   })
 
+  it('treats a whitespace-only model override as inherited', async () => {
+    const request = vi.fn().mockResolvedValue(acceptedFrame())
+    render(
+      <TaskComposer
+        client={clientWith(request)}
+        connectionState="connected"
+        modelConfigId="   "
+        streamVersion={9}
+        taskId={taskId}
+        taskState="idle"
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
+      target: { value: 'Use the inherited model' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+    expect(request.mock.calls[0]?.[0]).not.toHaveProperty('modelConfigId')
+  })
+
+  it('keeps submission errors scoped to their task', async () => {
+    const request = vi.fn().mockRejectedValue(new Error('Task A failed'))
+    const client = clientWith(request)
+    const { rerender } = render(
+      <TaskComposer
+        client={client}
+        connectionState="connected"
+        streamVersion={9}
+        taskId={taskId}
+        taskState="idle"
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
+      target: { value: 'Submit task A' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Task A failed')
+
+    rerender(
+      <TaskComposer
+        client={client}
+        connectionState="connected"
+        streamVersion={3}
+        taskId={taskBId}
+        taskState="idle"
+      />,
+    )
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+    rerender(
+      <TaskComposer
+        client={client}
+        connectionState="connected"
+        streamVersion={9}
+        taskId={taskId}
+        taskState="idle"
+      />,
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent('Task A failed')
+  })
+
+  it('lets the next task submit while an earlier task fails late', async () => {
+    let rejectTaskA!: (error: Error) => void
+    const taskARequest = new Promise<ReturnType<typeof acceptedFrame>>((_, reject) => {
+      rejectTaskA = reject
+    })
+    const request = vi.fn((requestBody: { taskId: string }) =>
+      requestBody.taskId === taskId ? taskARequest : Promise.resolve(acceptedFrame(taskBId)),
+    )
+    const client = clientWith(request)
+    const { rerender } = render(
+      <TaskComposer
+        client={client}
+        connectionState="connected"
+        streamVersion={9}
+        taskId={taskId}
+        taskState="idle"
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
+      target: { value: 'Pending task A' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+
+    rerender(
+      <TaskComposer
+        client={client}
+        connectionState="connected"
+        streamVersion={3}
+        taskId={taskBId}
+        taskState="idle"
+      />,
+    )
+    const taskBEditor = screen.getByPlaceholderText('Ask Jyowo anything about this project…')
+    fireEvent.change(taskBEditor, { target: { value: 'Independent task B' } })
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(expect.objectContaining({ taskId: taskBId })),
+    )
+
+    rejectTaskA(new Error('Task A failed late'))
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(taskBEditor).toHaveValue('')
+
+    rerender(
+      <TaskComposer
+        client={client}
+        connectionState="connected"
+        streamVersion={9}
+        taskId={taskId}
+        taskState="idle"
+      />,
+    )
+    expect(await screen.findByRole('alert')).toHaveTextContent('Task A failed late')
+  })
+
   it('stages a selected attachment in the daemon task blob store', async () => {
     const request = vi.fn().mockResolvedValue(acceptedFrame())
     const stageBlobFromPath = vi.fn().mockResolvedValue({
@@ -171,6 +294,7 @@ describe('TaskComposer', () => {
 })
 
 const taskId = '01J00000000000000000000000'
+const taskBId = '01J00000000000000000000006'
 
 function renderComposer({
   client,
@@ -202,13 +326,13 @@ function clientWith(
   }
 }
 
-function acceptedFrame() {
+function acceptedFrame(acceptedTaskId = taskId) {
   return {
     message: {
       commandId: '01J00000000000000000000001',
       committedOffset: 14,
       streamVersion: 10,
-      taskId,
+      taskId: acceptedTaskId,
       type: 'command_accepted' as const,
     },
     protocolVersion: 3,

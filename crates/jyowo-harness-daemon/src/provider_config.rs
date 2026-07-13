@@ -12,9 +12,9 @@ use harness_contracts::{
     ProviderSelectionRecord,
 };
 use harness_model::{
-    build_provider, CacheProtocolSemantics, ConversationModelCapability, MediaProtocolSemantics,
-    ModelDescriptor, ModelLifecycle, ModelProvider, ModelRuntimeSemantics, OutputProtocolSemantics,
-    ProviderBuildConfig, ProviderRegistryError, ProviderRequestDefaults,
+    build_provider, provider_requires_api_key, CacheProtocolSemantics, ConversationModelCapability,
+    MediaProtocolSemantics, ModelDescriptor, ModelLifecycle, ModelProvider, ModelRuntimeSemantics,
+    OutputProtocolSemantics, ProviderBuildConfig, ProviderRegistryError, ProviderRequestDefaults,
     ReasoningProtocolSemantics, StreamingProtocolSemantics, ToolProtocolSemantics,
 };
 use harness_provider_state::ProviderContinuationKind;
@@ -45,6 +45,21 @@ impl ProviderConfigResolver {
         &self,
         model_config_id: Option<&str>,
     ) -> Result<ResolvedProviderConfig, ProviderConfigError> {
+        let _generation_guard = self.lock_generation_shared()?;
+        self.resolve_unlocked(model_config_id)
+    }
+
+    pub(crate) fn lock_generation_shared(
+        &self,
+    ) -> Result<harness_fs::AdvisoryFileLock, ProviderConfigError> {
+        harness_fs::lock_provider_generation_for_read(&self.config_root)
+            .map_err(|source| ProviderConfigError::GenerationLock { source })
+    }
+
+    pub(crate) fn resolve_unlocked(
+        &self,
+        model_config_id: Option<&str>,
+    ) -> Result<ResolvedProviderConfig, ProviderConfigError> {
         let profiles = read_json::<Vec<ProviderProfileDefinition>>(
             &self.config_root.join(PROFILES_FILE),
             "provider profiles",
@@ -66,19 +81,24 @@ impl ProviderConfigResolver {
             .ok_or_else(|| ProviderConfigError::ProfileNotFound {
                 config_id: config_id.clone(),
             })?;
-        let secrets = read_secrets(&self.config_root.join(SECRETS_FILE))?;
-        reject_duplicate_secret_ids(&secrets.entries)?;
-        let secret = secrets
-            .entries
-            .into_iter()
-            .find(|secret| secret.config_id == config_id)
-            .ok_or_else(|| ProviderConfigError::SecretNotFound {
-                config_id: config_id.clone(),
-            })?;
-        let api_key = secret.api_key.trim();
-        if api_key.is_empty() {
-            return Err(ProviderConfigError::EmptyApiKey { config_id });
-        }
+        let api_key = if provider_requires_api_key(&profile.provider_id) {
+            let secrets = read_secrets(&self.config_root.join(SECRETS_FILE))?;
+            reject_duplicate_secret_ids(&secrets.entries)?;
+            let secret = secrets
+                .entries
+                .into_iter()
+                .find(|secret| secret.config_id == config_id)
+                .ok_or_else(|| ProviderConfigError::SecretNotFound {
+                    config_id: config_id.clone(),
+                })?;
+            let api_key = secret.api_key.trim();
+            if api_key.is_empty() {
+                return Err(ProviderConfigError::EmptyApiKey { config_id });
+            }
+            api_key.to_owned()
+        } else {
+            String::new()
+        };
 
         let descriptor = descriptor_from_profile(&profile)?;
         let provider_id = profile.provider_id.clone();
@@ -95,7 +115,7 @@ impl ProviderConfigResolver {
             });
         let provider = build_provider(ProviderBuildConfig {
             provider_id,
-            api_key: api_key.to_owned(),
+            api_key,
             base_url: profile
                 .base_url
                 .filter(|base_url| !base_url.trim().is_empty()),
@@ -165,6 +185,11 @@ impl fmt::Debug for ResolvedProviderConfig {
 
 #[derive(Debug, Error)]
 pub enum ProviderConfigError {
+    #[error("provider generation lock failed")]
+    GenerationLock {
+        #[source]
+        source: harness_fs::FsError,
+    },
     #[error("failed to read {kind} from {path}")]
     Read {
         kind: &'static str,

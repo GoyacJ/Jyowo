@@ -129,7 +129,7 @@ export function ModelConfigDialog({
   const formRef = useRef<HTMLFormElement>(null)
   const providers = catalog.providers
   const defaultProvider = providers[0]
-  const defaultModel = defaultProvider?.models[0]
+  const defaultModel = firstRunnableModel(defaultProvider)
   const {
     formState: { errors, isSubmitting },
     clearErrors,
@@ -174,9 +174,10 @@ export function ModelConfigDialog({
     return models
   }, [profile, selectedProvider])
   const selectedModel = useMemo(
-    () => modelOptions.find((model) => model.modelId === modelId) ?? modelOptions[0],
+    () => modelOptions.find((model) => model.modelId === modelId),
     [modelId, modelOptions],
   )
+  const selectedModelIsRunnable = selectedModel?.runtimeStatus.kind === 'runnable'
   const providerCapabilityMetadata = getAnthropicCapabilityMetadata(
     selectedModel?.providerCapabilityMetadata,
   )
@@ -210,12 +211,13 @@ export function ModelConfigDialog({
       return
     }
 
-    const modelExists = modelOptions.some((model) => model.modelId === modelId)
-    const firstModel = modelOptions[0]
-    if (!modelExists && firstModel) {
-      setValue('modelId', firstModel.modelId)
+    const model = modelOptions.find((candidate) => candidate.modelId === modelId)
+    const isExistingProfileModel =
+      profile?.providerId === selectedProvider.providerId && profile.modelId === modelId
+    if (model?.runtimeStatus.kind !== 'runnable' && !isExistingProfileModel) {
+      setValue('modelId', firstRunnableModel(selectedProvider)?.modelId ?? '')
     }
-  }, [modelId, modelOptions, open, selectedProvider, setValue])
+  }, [modelId, modelOptions, open, profile, selectedProvider, setValue])
 
   function changeOpen(nextOpen: boolean) {
     if (!nextOpen) {
@@ -290,7 +292,8 @@ export function ModelConfigDialog({
     if (officialQuotaApiKey) {
       request.officialQuotaApiKey = officialQuotaApiKey
     }
-    if (!profile?.hasApiKey && !apiKey) {
+    const apiKeyRequired = selectedProvider?.runtimeCapability.authScheme !== 'none'
+    if (apiKeyRequired && !profile?.hasApiKey && !apiKey) {
       setError('root', { message: t('provider.errors.apiKeyRequired') })
       return
     }
@@ -342,9 +345,10 @@ export function ModelConfigDialog({
                   const provider = providers.find(
                     (candidate) => candidate.providerId === event.target.value,
                   )
+                  const model = firstRunnableModel(provider)
                   setValue('baseUrl', provider?.defaultBaseUrl ?? '')
-                  setValue('modelId', provider?.models[0]?.modelId ?? '')
-                  setValue('protocol', defaultProtocolForProvider(provider))
+                  setValue('modelId', model?.modelId ?? '')
+                  setValue('protocol', defaultProtocolForModel(model))
                   resetProviderOptionFields(setValue)
                 },
               })}
@@ -363,6 +367,10 @@ export function ModelConfigDialog({
               id="provider-model-id"
               {...register('modelId', {
                 required: t('provider.errors.modelRequired'),
+                validate: (value) =>
+                  modelOptions.some(
+                    (model) => model.modelId === value && model.runtimeStatus.kind === 'runnable',
+                  ) || t('provider.errors.modelRequired'),
                 onChange: (event) => {
                   const model = modelOptions.find(
                     (candidate) => candidate.modelId === event.target.value,
@@ -371,8 +379,13 @@ export function ModelConfigDialog({
                 },
               })}
             >
+              {!selectedModel ? <option hidden value="" /> : null}
               {modelOptions.map((model) => (
-                <option key={model.modelId} value={model.modelId}>
+                <option
+                  disabled={model.runtimeStatus.kind !== 'runnable'}
+                  key={model.modelId}
+                  value={model.modelId}
+                >
                   {model.displayName}
                 </option>
               ))}
@@ -1121,7 +1134,7 @@ export function ModelConfigDialog({
             >
               {t('models.configDialog.cancel')}
             </Button>
-            <Button disabled={isSubmitting} type="submit">
+            <Button disabled={isSubmitting || !selectedModelIsRunnable} type="submit">
               {isSubmitting ? t('provider.saving') : t('provider.save')}
             </Button>
           </DialogFooter>
@@ -1226,7 +1239,13 @@ function formValuesFromProfile(
 function defaultProtocolForProvider(
   provider: ModelProviderCatalogResponse['providers'][number] | undefined,
 ): ModelProtocol {
-  return defaultProtocolForModel(provider?.models[0])
+  return defaultProtocolForModel(firstRunnableModel(provider))
+}
+
+function firstRunnableModel(
+  provider: ModelProviderCatalogResponse['providers'][number] | undefined,
+) {
+  return provider?.models.find((model) => model.runtimeStatus.kind === 'runnable')
 }
 
 function defaultProtocolForModel(

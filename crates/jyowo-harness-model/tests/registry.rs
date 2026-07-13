@@ -1,7 +1,6 @@
 use chrono::NaiveDate;
 #[cfg(feature = "zhipu")]
 use harness_model::ModelLifecycle;
-#[cfg(any(feature = "doubao", feature = "minimax"))]
 use harness_model::ModelProtocol;
 #[cfg(any(
     feature = "doubao",
@@ -14,8 +13,9 @@ use harness_model::ProviderServiceCategory;
 use harness_model::ProviderServiceExecution;
 use harness_model::{
     build_provider, model_catalog_entries, provider_catalog_entries, provider_inventory_entries,
-    resolve_model_descriptor, ConversationModelCapability, ModelModality, ModelRuntimeSemantics,
-    ProviderBuildConfig, ProviderRegistryError, ReasoningProtocolSemantics,
+    provider_requires_api_key, resolve_model_descriptor, ConversationModelCapability,
+    ModelModality, ModelRuntimeSemantics, ProviderAuthScheme, ProviderBuildConfig,
+    ProviderRegistryError, ReasoningProtocolSemantics,
 };
 #[cfg(feature = "km")]
 use harness_model::{Currency, ProviderServiceCostRisk};
@@ -45,6 +45,35 @@ fn registry_rejects_unknown_provider_fail_closed() {
         build_error,
         ProviderRegistryError::UnsupportedProvider { .. }
     ));
+}
+
+#[test]
+fn secret_requirement_is_derived_from_catalog_auth_scheme_without_provider_id_rules() {
+    for provider in provider_catalog_entries() {
+        assert_eq!(
+            provider_requires_api_key(&provider.provider_id),
+            provider.runtime_capability.auth_scheme != ProviderAuthScheme::None,
+            "{} secret requirement drifted from its runtime capability",
+            provider.provider_id
+        );
+    }
+    assert!(provider_requires_api_key("unknown-provider"));
+
+    let registry_source = include_str!("../src/registry.rs");
+    let requirement_source = registry_source
+        .split("pub fn provider_requires_api_key")
+        .nth(1)
+        .expect("secret requirement function")
+        .split("pub fn provider_inventory_entries")
+        .next()
+        .expect("secret requirement function body");
+    assert!(
+        !requirement_source.contains("local-llama")
+            && !requirement_source.contains("bedrock")
+            && !requirement_source.contains("anthropic")
+            && !requirement_source.contains("gemini"),
+        "secret requirement must not maintain provider-id auth rules"
+    );
 }
 
 #[cfg(feature = "bedrock")]
@@ -229,6 +258,21 @@ fn provider_catalog_auth_schemes_match_runtime_adapters() {
         catalog_auth_scheme(&entries, "local-llama"),
         harness_model::ProviderAuthScheme::None
     );
+}
+
+#[test]
+fn provider_api_key_requirement_is_fail_closed() {
+    #[cfg(feature = "openai")]
+    assert!(harness_model::provider_requires_api_key("openai"));
+    #[cfg(feature = "local-llama")]
+    assert!(!harness_model::provider_requires_api_key("local-llama"));
+    #[cfg(not(feature = "local-llama"))]
+    assert!(harness_model::provider_requires_api_key("local-llama"));
+    #[cfg(feature = "bedrock")]
+    assert!(!harness_model::provider_requires_api_key("bedrock"));
+    #[cfg(not(feature = "bedrock"))]
+    assert!(harness_model::provider_requires_api_key("bedrock"));
+    assert!(harness_model::provider_requires_api_key("unknown-provider"));
 }
 
 #[cfg(feature = "openai")]

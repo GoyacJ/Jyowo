@@ -82,11 +82,6 @@ pub(super) fn response_to_stream(response: reqwest::Response) -> ModelStream {
                 yield mapped;
             }
         }
-        if state.started && !state.stopped {
-            for event in state.finish(None, UsageSnapshot::default()) {
-                yield event;
-            }
-        }
     })
 }
 
@@ -100,7 +95,7 @@ pub(super) fn json_response_to_stream(value: Value) -> Result<ModelStream, Model
     })?;
     let mut events = vec![ModelStreamEvent::MessageStart {
         message_id: response.id,
-        usage: usage.clone(),
+        usage: UsageSnapshot::default(),
     }];
     if !choice.text.is_empty() {
         events.push(ModelStreamEvent::ContentBlockStart {

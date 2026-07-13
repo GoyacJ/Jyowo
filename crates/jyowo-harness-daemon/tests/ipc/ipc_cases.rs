@@ -82,22 +82,105 @@ fn handshake_rejects_protocol_token_and_instance_mismatches() {
 }
 
 #[test]
-fn protocol_v3_client_rejects_a_protocol_v1_daemon_connection() {
+fn protocol_v3_client_rejects_a_protocol_v2_daemon_connection() {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
     let mut connection = IpcConnection::new(store, config());
     let mut legacy = handshake("token-a");
-    legacy.protocol_version = 1;
+    legacy.protocol_version = 2;
 
     let response = connection.handle(legacy).unwrap();
 
     let ServerMessage::Error(error) = &response[0].message else {
-        panic!("protocol v1 handshake must be rejected");
+        panic!("protocol v2 handshake must be rejected");
     };
     assert_eq!(
         error.code,
         harness_contracts::ProtocolErrorCode::ProtocolMismatch
     );
+}
+
+#[test]
+fn load_events_pages_exact_history_without_subscription_gap_semantics() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let mut connection = IpcConnection::new(Arc::clone(&store), config());
+    connection.handle(handshake("token-a")).unwrap();
+
+    for index in 0..5 {
+        connection
+            .handle(create(
+                &format!("create-{index}"),
+                CommandId::new(),
+                &format!("create-{index}"),
+            ))
+            .unwrap();
+    }
+
+    let first = connection
+        .handle(frame(
+            "history-1",
+            ClientRequest::LoadEvents {
+                after_global_offset: 0,
+                limit: 2,
+            },
+        ))
+        .unwrap();
+    let ServerMessage::EventHistoryPage(first) = &first[0].message else {
+        panic!("expected exact history page");
+    };
+    assert_eq!(first.after_global_offset, 0);
+    assert_eq!(first.latest_global_offset, 5);
+    assert_eq!(first.next_after_global_offset, 2);
+    assert!(first.has_more);
+    assert_eq!(
+        first
+            .events
+            .iter()
+            .map(|event| event.global_offset)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+
+    let second = connection
+        .handle(frame(
+            "history-2",
+            ClientRequest::LoadEvents {
+                after_global_offset: first.next_after_global_offset,
+                limit: 2,
+            },
+        ))
+        .unwrap();
+    let ServerMessage::EventHistoryPage(second) = &second[0].message else {
+        panic!("expected exact history page");
+    };
+    assert_eq!(second.latest_global_offset, 5);
+    assert_eq!(second.next_after_global_offset, 4);
+    assert!(second.has_more);
+    assert_eq!(
+        second
+            .events
+            .iter()
+            .map(|event| event.global_offset)
+            .collect::<Vec<_>>(),
+        vec![3, 4]
+    );
+
+    let final_page = connection
+        .handle(frame(
+            "history-3",
+            ClientRequest::LoadEvents {
+                after_global_offset: second.next_after_global_offset,
+                limit: 2,
+            },
+        ))
+        .unwrap();
+    let ServerMessage::EventHistoryPage(final_page) = &final_page[0].message else {
+        panic!("expected exact history page");
+    };
+    assert_eq!(final_page.next_after_global_offset, 5);
+    assert!(!final_page.has_more);
+    assert_eq!(final_page.events.len(), 1);
 }
 
 #[test]
@@ -1309,4 +1392,29 @@ async fn task_event_pages_with_large_legal_payloads_fit_daemon_frames_without_sk
     }
     loaded_offsets.sort_unstable();
     assert_eq!(loaded_offsets, expected_offsets);
+
+    let mut loaded_history_offsets = Vec::new();
+    let mut after_global_offset = 0;
+    loop {
+        let response = connection
+            .handle(frame(
+                &"h".repeat(128),
+                ClientRequest::LoadEvents {
+                    after_global_offset,
+                    limit: u16::MAX,
+                },
+            ))
+            .unwrap();
+        let encoded = encode_frame(&response[0]).expect("history page must fit one daemon frame");
+        assert!(encoded.len() <= MAX_FRAME_BYTES + 4);
+        let ServerMessage::EventHistoryPage(page) = &response[0].message else {
+            panic!("unexpected {:?}", response[0].message);
+        };
+        loaded_history_offsets.extend(page.events.iter().map(|event| event.global_offset));
+        after_global_offset = page.next_after_global_offset;
+        if !page.has_more {
+            break;
+        }
+    }
+    assert_eq!(loaded_history_offsets, expected_offsets);
 }

@@ -40,7 +40,7 @@ function renderTaskWorkspace(
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
-  return testingLibraryRender(<TaskWorkspace taskId={snapshot.projection.taskId} />, {
+  const result = testingLibraryRender(<TaskWorkspace taskId={snapshot.projection.taskId} />, {
     wrapper: ({ children }) => (
       <I18nextProvider i18n={i18n}>
         <CommandClientProvider client={commandClient}>
@@ -51,12 +51,180 @@ function renderTaskWorkspace(
       </I18nextProvider>
     ),
   })
+  return { ...result, queryClient }
 }
 
 describe('TaskWorkspace', () => {
   beforeEach(() => {
     useTask.mockReset()
     uiStore.setState({ taskWorkbenchMode: 'closed', taskWorkbenchSelection: null })
+  })
+
+  it('offers runnable authentication-free providers without an API key', async () => {
+    const commandClient = createTestCommandClient()
+    const settings = await commandClient.listProviderSettings()
+    const baseConfig = settings.configs[0]
+    if (!baseConfig) throw new Error('provider settings fixture requires a config')
+    const localConfig = {
+      ...baseConfig,
+      displayName: 'Local Llama',
+      hasApiKey: false,
+      id: 'local-llama',
+      isDefault: true,
+      modelId: 'llama3.1',
+      providerId: 'local-llama',
+    }
+    useTask.mockReturnValue({
+      connectionError: null,
+      connectionState: 'connected',
+      events: [],
+      snapshot: idleSnapshot,
+    })
+
+    renderTaskWorkspace(
+      createTestCommandClient({
+        providerSettingsList: {
+          configs: [localConfig],
+          defaultConfigId: localConfig.id,
+          selectionScope: 'global',
+        },
+      }),
+      {
+        connect: vi.fn().mockResolvedValue(undefined),
+        request: vi.fn(),
+      },
+    )
+
+    expect(await screen.findByRole('option', { name: /Local Llama/ })).toBeInTheDocument()
+  })
+
+  it.each([
+    {
+      displayName: 'Unavailable Model',
+      override: {
+        hasApiKey: true,
+        modelDescriptor: {
+          runtimeStatus: { kind: 'unsupported' as const, reason: 'Not executable' },
+        },
+        providerId: 'openai',
+      },
+    },
+    {
+      displayName: 'OpenAI Missing Key',
+      override: { hasApiKey: false, providerId: 'openai' },
+    },
+    {
+      displayName: 'Unknown Provider',
+      override: { hasApiKey: false, providerId: 'unknown-provider' },
+    },
+  ])('does not offer $displayName', async ({ displayName, override }) => {
+    const commandClient = createTestCommandClient()
+    const settings = await commandClient.listProviderSettings()
+    const baseConfig = settings.configs[0]
+    if (!baseConfig) throw new Error('provider settings fixture requires a config')
+    const candidate = {
+      ...baseConfig,
+      ...override,
+      displayName,
+      id: displayName.toLowerCase().replaceAll(' ', '-'),
+      isDefault: false,
+      modelDescriptor: {
+        ...baseConfig.modelDescriptor,
+        ...override.modelDescriptor,
+        displayName,
+      },
+    }
+    useTask.mockReturnValue({
+      connectionError: null,
+      connectionState: 'connected',
+      events: [],
+      snapshot: idleSnapshot,
+    })
+
+    renderTaskWorkspace(
+      createTestCommandClient({
+        providerSettingsList: { ...settings, configs: [baseConfig, candidate] },
+      }),
+      {
+        connect: vi.fn().mockResolvedValue(undefined),
+        request: vi.fn(),
+      },
+    )
+
+    await screen.findByRole('option', { name: /OpenAI/ })
+    expect(screen.queryByRole('option', { name: displayName })).not.toBeInTheDocument()
+  })
+
+  it('loads the provider catalog only after settings reveal a config without an API key', async () => {
+    const commandClient = createTestCommandClient()
+    const settings = await commandClient.listProviderSettings()
+    const baseConfig = settings.configs[0]
+    if (!baseConfig) throw new Error('provider settings fixture requires a config')
+    let resolveSettings!: (value: typeof settings) => void
+    const pendingSettings = new Promise<typeof settings>((resolve) => {
+      resolveSettings = resolve
+    })
+    const listProviderSettings = vi
+      .spyOn(commandClient, 'listProviderSettings')
+      .mockReturnValue(pendingSettings)
+    const listModelProviderCatalog = vi.spyOn(commandClient, 'listModelProviderCatalog')
+    useTask.mockReturnValue({
+      connectionError: null,
+      connectionState: 'connected',
+      events: [],
+      snapshot: idleSnapshot,
+    })
+
+    renderTaskWorkspace(commandClient, {
+      connect: vi.fn().mockResolvedValue(undefined),
+      request: vi.fn(),
+    })
+
+    await waitFor(() => expect(listProviderSettings).toHaveBeenCalledTimes(1))
+    expect(listModelProviderCatalog).not.toHaveBeenCalled()
+
+    resolveSettings({
+      ...settings,
+      configs: [{ ...baseConfig, hasApiKey: false, providerId: 'local-llama' }],
+    })
+
+    await waitFor(() => expect(listModelProviderCatalog).toHaveBeenCalledTimes(1))
+  })
+
+  it('does not load the provider catalog when every config has an API key', async () => {
+    const commandClient = createTestCommandClient()
+    const listModelProviderCatalog = vi.spyOn(commandClient, 'listModelProviderCatalog')
+    useTask.mockReturnValue({
+      connectionError: null,
+      connectionState: 'connected',
+      events: [],
+      snapshot: idleSnapshot,
+    })
+
+    renderTaskWorkspace(commandClient, {
+      connect: vi.fn().mockResolvedValue(undefined),
+      request: vi.fn(),
+    })
+
+    await screen.findByRole('option', { name: /OpenAI/ })
+    expect(listModelProviderCatalog).not.toHaveBeenCalled()
+  })
+
+  it('stores task provider settings under the shared provider-settings query prefix', async () => {
+    useTask.mockReturnValue({
+      connectionError: null,
+      connectionState: 'connected',
+      events: [],
+      snapshot: idleSnapshot,
+    })
+
+    const { queryClient } = renderTaskWorkspace(createTestCommandClient(), {
+      connect: vi.fn().mockResolvedValue(undefined),
+      request: vi.fn(),
+    })
+
+    await screen.findByRole('option', { name: /OpenAI/ })
+    expect(queryClient.getQueryData(['provider-settings', 'list', null])).toBeDefined()
   })
 
   it('does not turn global desktop defaults into task runtime overrides', async () => {
@@ -160,6 +328,151 @@ describe('TaskWorkspace', () => {
       target: { value: imageConfig.id },
     })
     expect(screen.getByRole('button', { name: 'Attach file' })).not.toBeDisabled()
+  })
+
+  it('restores the inherited capability and omits the override after clearing selection', async () => {
+    const request = vi.fn().mockResolvedValue(acceptedCommand(3, 3))
+    const providerSettings = await createTestCommandClient().listProviderSettings()
+    const baseConfig = providerSettings.configs[0]
+    if (!baseConfig) throw new Error('provider settings fixture requires a config')
+    const inheritedConfig: typeof baseConfig = {
+      ...baseConfig,
+      id: 'inherited-image-config',
+      isDefault: true,
+      modelDescriptor: {
+        ...baseConfig.modelDescriptor,
+        conversationCapability: {
+          ...baseConfig.modelDescriptor.conversationCapability,
+          inputModalities: ['text', 'image'],
+        },
+      },
+    }
+    const textOnlyConfig: typeof baseConfig = {
+      ...baseConfig,
+      id: 'explicit-text-config',
+      isDefault: false,
+      modelDescriptor: {
+        ...baseConfig.modelDescriptor,
+        conversationCapability: {
+          ...baseConfig.modelDescriptor.conversationCapability,
+          inputModalities: ['text'],
+        },
+      },
+    }
+    useTask.mockReturnValue({
+      connectionError: null,
+      connectionState: 'connected',
+      events: [],
+      snapshot: idleSnapshot,
+    })
+
+    renderTaskWorkspace(
+      createTestCommandClient({
+        providerSettingsList: {
+          configs: [inheritedConfig, textOnlyConfig],
+          defaultConfigId: inheritedConfig.id,
+          selectionScope: 'global',
+        },
+      }),
+      { connect: vi.fn().mockResolvedValue(undefined), request },
+    )
+
+    const model = await screen.findByRole('combobox', { name: 'Model' })
+    expect(screen.getByRole('button', { name: 'Attach file' })).toBeEnabled()
+
+    fireEvent.change(model, { target: { value: textOnlyConfig.id } })
+    expect(screen.getByRole('button', { name: 'Attach file' })).toBeDisabled()
+
+    fireEvent.change(model, { target: { value: '' } })
+    expect(screen.getByRole('button', { name: 'Attach file' })).toBeEnabled()
+
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
+      target: { value: 'Use inherited capability and runtime' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+    expect(request.mock.calls[0]?.[0]).not.toHaveProperty('modelConfigId')
+  })
+
+  it('shows provider settings failures and retries the query', async () => {
+    const commandClient = createTestCommandClient()
+    const providerSettings = await commandClient.listProviderSettings()
+    const listProviderSettings = vi
+      .spyOn(commandClient, 'listProviderSettings')
+      .mockRejectedValueOnce(new Error('Provider settings unavailable'))
+      .mockResolvedValue(providerSettings)
+    useTask.mockReturnValue({
+      connectionError: null,
+      connectionState: 'connected',
+      events: [],
+      snapshot: idleSnapshot,
+    })
+
+    renderTaskWorkspace(commandClient, {
+      connect: vi.fn().mockResolvedValue(undefined),
+      request: vi.fn(),
+    })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Provider settings unavailable')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+
+    expect(await screen.findByRole('option', { name: /OpenAI/ })).toBeInTheDocument()
+    expect(listProviderSettings).toHaveBeenCalledTimes(2)
+  })
+
+  it('clears a stale catalog error when the next task does not require the catalog', async () => {
+    const taskA = '01J00000000000000000000010'
+    const taskB = '01J00000000000000000000011'
+    const workspaceA = '/workspace/catalog-required'
+    const workspaceB = '/workspace/catalog-not-required'
+    const commandClient = createTestCommandClient()
+    const providerSettings = await commandClient.listProviderSettings()
+    const baseConfig = providerSettings.configs[0]
+    if (!baseConfig) throw new Error('provider settings fixture requires a config')
+    const listProviderSettings = vi.fn(async (workspaceRoot?: string) => ({
+      ...providerSettings,
+      configs: [
+        {
+          ...baseConfig,
+          hasApiKey: workspaceRoot === workspaceB,
+          id: workspaceRoot === workspaceB ? 'keyed-config' : 'catalog-config',
+        },
+      ],
+      defaultConfigId: workspaceRoot === workspaceB ? 'keyed-config' : 'catalog-config',
+    }))
+    const listModelProviderCatalog = vi.fn().mockRejectedValue(new Error('Catalog unavailable'))
+    useTask.mockImplementation((requestedTaskId: string) => ({
+      connectionError: null,
+      connectionState: 'connected',
+      events: [],
+      snapshot: {
+        ...idleSnapshot,
+        projection: {
+          ...idleSnapshot.projection,
+          taskId: requestedTaskId,
+          workspace: {
+            mode: 'current' as const,
+            root: requestedTaskId === taskA ? workspaceA : workspaceB,
+          },
+        },
+      },
+    }))
+
+    const { rerender } = renderTaskWorkspace(
+      { ...commandClient, listModelProviderCatalog, listProviderSettings },
+      { connect: vi.fn().mockResolvedValue(undefined), request: vi.fn() },
+    )
+    rerender(<TaskWorkspace taskId={taskA} />)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Catalog unavailable')
+
+    rerender(<TaskWorkspace taskId={taskB} />)
+
+    expect(await screen.findByRole('option', { name: /OpenAI/ })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    expect(listModelProviderCatalog).toHaveBeenCalledTimes(1)
   })
 
   it('submits runtime overrides after the user selects them', async () => {

@@ -11,6 +11,7 @@ use harness_daemon::{
 };
 use harness_journal::TaskStore;
 use harness_observability::DefaultRedactor;
+use harness_provider_state::FileProviderContinuationStore;
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
@@ -40,17 +41,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&redactor),
     ));
     let subagent_engines = Arc::new(SdkSubagentEngineRegistry::default());
+    let provider_continuation_store = Arc::new(FileProviderContinuationStore::open_runtime_dir(
+        runtime.runtime_dir(),
+    )?);
     let config_root = config_root();
     let runtime_config = RuntimeConfigResolver::new(config_root.clone());
     let memory_service = Arc::new(MemoryService::new(runtime_config.clone()));
-    let run_factory = Arc::new(SdkRunCoordinatorFactory::new_with_subagent_engines(
-        Arc::clone(&store),
-        runtime_config,
-        blob_root,
-        Arc::clone(&permissions),
-        Arc::clone(&redactor),
-        Arc::clone(&subagent_engines),
-    ));
+    let run_factory = Arc::new(
+        SdkRunCoordinatorFactory::new_with_subagent_engines(
+            Arc::clone(&store),
+            runtime_config,
+            blob_root,
+            Arc::clone(&permissions),
+            Arc::clone(&redactor),
+            Arc::clone(&subagent_engines),
+        )
+        .with_provider_continuation_store_arc(provider_continuation_store),
+    );
     let runner_factory: Arc<dyn WorkspaceSubagentRunnerFactory> =
         Arc::new(SdkWorkspaceSubagentRunnerFactory::new(subagent_engines));
     let supervisor = Arc::new(Supervisor::start_with_runtime_components(

@@ -291,7 +291,7 @@ export function buildModelSettingsViewModel(
   const probeByConfigId = buildProbeIndex(input.probeSnapshots)
   const quotaByConfigId = buildQuotaIndex(input.quotaSnapshots)
   const usageLookup = buildUsageLookup(input.usageSummary)
-  const sharedUsageKeys = buildSharedUsageKeys(settings.configs)
+  const sharedUsageCounts = buildSharedUsageCounts(settings.configs)
 
   const rows = settings.configs.map((config) =>
     buildModelAssetRow({
@@ -303,7 +303,7 @@ export function buildModelSettingsViewModel(
       quotaStatus: input.quotaSnapshots.status,
       usageStatus: input.usageSummary.status,
       usageLookup,
-      sharedUsageKeys,
+      sharedUsageCounts,
     }),
   )
 
@@ -379,44 +379,53 @@ function buildQuotaIndex(
 
 function buildUsageLookup(
   slice: QuerySlice<GetModelUsageSummaryResponse>,
-): Map<string, { today: UsageSnapshot; monthToDate: UsageSnapshot; allTime: UsageSnapshot }> {
+): Map<
+  string,
+  Map<string, { today: UsageSnapshot; monthToDate: UsageSnapshot; allTime: UsageSnapshot }>
+> {
   if (slice.status !== 'ready') {
     return new Map()
   }
 
   const summary = slice.data
-  const keys = new Set<string>([
-    ...summary.today.byModel.map((bucket) => modelUsageKey(bucket.providerId, bucket.modelId)),
-    ...summary.monthToDate.byModel.map((bucket) =>
-      modelUsageKey(bucket.providerId, bucket.modelId),
-    ),
-    ...summary.allTime.byModel.map((bucket) => modelUsageKey(bucket.providerId, bucket.modelId)),
-  ])
-
-  return new Map(
-    [...keys].map((key) => {
-      const [providerId, modelId] = key.split('/')
-      return [
-        key,
-        {
-          today: findUsageInWindow(summary.today, providerId, modelId),
-          monthToDate: findUsageInWindow(summary.monthToDate, providerId, modelId),
-          allTime: findUsageInWindow(summary.allTime, providerId, modelId),
-        },
-      ]
-    }),
-  )
+  const lookup = new Map<
+    string,
+    Map<string, { today: UsageSnapshot; monthToDate: UsageSnapshot; allTime: UsageSnapshot }>
+  >()
+  for (const bucket of [
+    ...summary.today.byModel,
+    ...summary.monthToDate.byModel,
+    ...summary.allTime.byModel,
+  ]) {
+    let providerModels = lookup.get(bucket.providerId)
+    if (!providerModels) {
+      providerModels = new Map()
+      lookup.set(bucket.providerId, providerModels)
+    }
+    if (!providerModels.has(bucket.modelId)) {
+      providerModels.set(bucket.modelId, {
+        today: findUsageInWindow(summary.today, bucket.providerId, bucket.modelId),
+        monthToDate: findUsageInWindow(summary.monthToDate, bucket.providerId, bucket.modelId),
+        allTime: findUsageInWindow(summary.allTime, bucket.providerId, bucket.modelId),
+      })
+    }
+  }
+  return lookup
 }
 
-function buildSharedUsageKeys(configs: ProviderConfig[]): Set<string> {
-  const counts = new Map<string, number>()
+function buildSharedUsageCounts(configs: ProviderConfig[]): Map<string, Map<string, number>> {
+  const counts = new Map<string, Map<string, number>>()
 
   for (const config of configs) {
-    const key = modelUsageKey(config.providerId, config.modelId)
-    counts.set(key, (counts.get(key) ?? 0) + 1)
+    let providerModels = counts.get(config.providerId)
+    if (!providerModels) {
+      providerModels = new Map()
+      counts.set(config.providerId, providerModels)
+    }
+    providerModels.set(config.modelId, (providerModels.get(config.modelId) ?? 0) + 1)
   }
 
-  return new Set([...counts.entries()].filter(([, count]) => count > 1).map(([key]) => key))
+  return counts
 }
 
 function buildModelAssetRow({
@@ -428,7 +437,7 @@ function buildModelAssetRow({
   quotaStatus,
   usageStatus,
   usageLookup,
-  sharedUsageKeys,
+  sharedUsageCounts,
 }: {
   config: ProviderConfig
   providerDisplayName: string
@@ -439,14 +448,13 @@ function buildModelAssetRow({
   usageStatus: QuerySlice<GetModelUsageSummaryResponse>['status']
   usageLookup: Map<
     string,
-    { today: UsageSnapshot; monthToDate: UsageSnapshot; allTime: UsageSnapshot }
+    Map<string, { today: UsageSnapshot; monthToDate: UsageSnapshot; allTime: UsageSnapshot }>
   >
-  sharedUsageKeys: Set<string>
+  sharedUsageCounts: Map<string, Map<string, number>>
 }): ModelAssetRow {
-  const usageKey = modelUsageKey(config.providerId, config.modelId)
   const usageValues =
     usageStatus === 'ready'
-      ? (usageLookup.get(usageKey) ?? {
+      ? (usageLookup.get(config.providerId)?.get(config.modelId) ?? {
           today: ZERO_USAGE,
           monthToDate: ZERO_USAGE,
           allTime: ZERO_USAGE,
@@ -468,7 +476,11 @@ function buildModelAssetRow({
     hasApiKey: config.hasApiKey,
     hasOfficialQuotaApiKey: config.hasOfficialQuotaApiKey,
     connectivity: buildConnectivityDisplay(probe, probeStatus),
-    usage: buildUsageDisplay(usageValues, sharedUsageKeys.has(usageKey), usageStatus),
+    usage: buildUsageDisplay(
+      usageValues,
+      (sharedUsageCounts.get(config.providerId)?.get(config.modelId) ?? 0) > 1,
+      usageStatus,
+    ),
     quota: buildQuotaDisplay(quota, quotaStatus),
     routeBindings: { status: 'loading' },
   }

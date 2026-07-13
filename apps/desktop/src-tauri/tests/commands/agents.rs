@@ -20,20 +20,11 @@ fn sample_user_profile(id: &str) -> AgentProfile {
 
 #[tokio::test]
 async fn agent_profile_commands_list_save_and_delete_user_profile() {
-    let _lock = HOME_ENV_LOCK.lock().unwrap();
-    let home = tempfile::tempdir().unwrap();
-    let canonical_home = home.path().canonicalize().unwrap();
-    let _home = EnvVarGuard::set(HOME_ENV, canonical_home.as_os_str());
     let workspace = unique_workspace("agent-profile-commands");
     std::fs::create_dir_all(&workspace).unwrap();
-    let state = runtime_state_for_workspace(workspace.clone())
-        .await
-        .unwrap();
-    let global_profiles_path = home
-        .path()
-        .join(".jyowo")
-        .join("config")
-        .join("agent-profiles.json");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace.clone()).unwrap();
+    let global_profiles_path =
+        test_storage_layout_for_workspace(&workspace).global_agent_profiles_file();
     let old_profiles_path = workspace
         .join(".jyowo")
         .join("runtime")
@@ -85,13 +76,9 @@ async fn agent_profile_commands_list_save_and_delete_user_profile() {
 
 #[tokio::test]
 async fn agent_profile_commands_reject_invalid_profile_id() {
-    let _lock = HOME_ENV_LOCK.lock().unwrap();
-    let home = tempfile::tempdir().unwrap();
-    let canonical_home = home.path().canonicalize().unwrap();
-    let _home = EnvVarGuard::set(HOME_ENV, canonical_home.as_os_str());
     let workspace = unique_workspace("agent-profile-invalid-id");
     std::fs::create_dir_all(&workspace).unwrap();
-    let state = runtime_state_for_workspace(workspace).await.unwrap();
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace).unwrap();
 
     let error = save_agent_profile_with_runtime_state(sample_user_profile("Invalid-ID"), &state)
         .await
@@ -102,13 +89,9 @@ async fn agent_profile_commands_reject_invalid_profile_id() {
 
 #[tokio::test]
 async fn agent_profile_commands_reject_builtin_delete() {
-    let _lock = HOME_ENV_LOCK.lock().unwrap();
-    let home = tempfile::tempdir().unwrap();
-    let canonical_home = home.path().canonicalize().unwrap();
-    let _home = EnvVarGuard::set(HOME_ENV, canonical_home.as_os_str());
     let workspace = unique_workspace("agent-profile-builtin-delete");
     std::fs::create_dir_all(&workspace).unwrap();
-    let state = runtime_state_for_workspace(workspace).await.unwrap();
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace).unwrap();
 
     let error = delete_agent_profile_with_runtime_state(
         DeleteAgentProfileRequest {
@@ -124,20 +107,10 @@ async fn agent_profile_commands_reject_builtin_delete() {
 
 #[tokio::test]
 async fn agent_profile_commands_reject_invalid_global_profile_file() {
-    let _lock = HOME_ENV_LOCK.lock().unwrap();
-    let home = tempfile::tempdir().unwrap();
-    let canonical_home = home.path().canonicalize().unwrap();
-    let _home = EnvVarGuard::set(HOME_ENV, canonical_home.as_os_str());
     let workspace = unique_workspace("agent-profile-quarantine");
     std::fs::create_dir_all(&workspace).unwrap();
-    let state = runtime_state_for_workspace(workspace.clone())
-        .await
-        .unwrap();
-    let profile_path = home
-        .path()
-        .join(".jyowo")
-        .join("config")
-        .join("agent-profiles.json");
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace.clone()).unwrap();
+    let profile_path = test_storage_layout_for_workspace(&workspace).global_agent_profiles_file();
     std::fs::create_dir_all(profile_path.parent().unwrap()).unwrap();
     std::fs::write(&profile_path, "{not-json").unwrap();
 

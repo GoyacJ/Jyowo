@@ -96,6 +96,11 @@ impl TurnAssembly {
         &self.provider_continuations
     }
 
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        self.stream_aggregator.is_terminal()
+    }
+
     pub fn push_event(&mut self, run_id: RunId, event: ModelStreamEvent) -> TurnAssemblyStep {
         let mut step = TurnAssemblyStep::default();
         for aggregate in self.stream_aggregator.push(event) {
